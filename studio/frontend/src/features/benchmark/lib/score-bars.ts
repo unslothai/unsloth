@@ -12,6 +12,19 @@ export function modelName(model: string): string {
   return model.split(/[\\/]/).filter(Boolean).pop() ?? model;
 }
 
+/** Each model's short name, plus its owner (or parent folder) where two would read the same. */
+export function modelLabels(models: string[]): Map<string, string> {
+  const tail = (m: string, n: number) =>
+    m.split(/[\\/]/).filter(Boolean).slice(-n).join("/") || m;
+  const out = new Map<string, string>();
+  for (const m of models) {
+    const clash = (n: number) =>
+      models.some((o) => o !== m && tail(o, n) === tail(m, n));
+    out.set(m, !clash(1) ? tail(m, 1) : !clash(2) ? tail(m, 2) : m);
+  }
+  return out;
+}
+
 /** The model as a bar label: the quant ("repo:Q8_0") never truncates, so two quants stay told apart. */
 export function barLabel(model: string, max = 40): string {
   const cut = model.lastIndexOf(":");
@@ -38,7 +51,9 @@ export function runScore(
 }
 
 export interface ScoreBar {
+  /** The full run.model: two owners' same-named quants are different bars. */
   model: string;
+  label: string;
   score: number;
   stderr: number | null;
   run: BenchmarkRunSummary;
@@ -54,6 +69,7 @@ export function latestScores(
 ): {
   groups: { task: string; bars: ScoreBar[] }[];
   models: string[];
+  labels: Map<string, string>;
   best: ScoreBar | undefined;
 } {
   const newestFirst = [...runs].sort((a, b) =>
@@ -61,18 +77,18 @@ export function latestScores(
   );
   const models: string[] = [];
   for (const r of [...newestFirst].reverse()) {
-    const name = modelName(r.model);
-    if (!models.includes(name)) models.push(name);
+    if (!models.includes(r.model)) models.push(r.model);
   }
   const shown = models.slice(0, maxModels);
+  const labels = modelLabels(shown);
   const byTask = new Map<string, ScoreBar[]>();
   for (const run of newestFirst) {
     const s = runScore(run);
-    const model = modelName(run.model);
+    const model = run.model;
     if (!s || !shown.includes(model)) continue;
     const bars = byTask.get(run.task) ?? [];
     if (bars.some((b) => b.model === model)) continue;
-    bars.push({ model, ...s, run });
+    bars.push({ model, label: labels.get(model) ?? model, ...s, run });
     byTask.set(run.task, bars);
   }
   const groups = [...byTask.entries()].map(([task, bars]) => ({
@@ -82,7 +98,7 @@ export function latestScores(
   const best = groups
     .flatMap((g) => g.bars)
     .sort((a, b) => b.score - a.score)[0];
-  return { groups, models: shown, best };
+  return { groups, models: shown, labels, best };
 }
 
 export const fmtScore = (v: number): string => `${v.toFixed(1)}%`;
@@ -104,7 +120,7 @@ export function scoreboardGroups(
       const err = b.stderr === null ? null : b.stderr * 100;
       return {
         key: b.model,
-        label: barLabel(b.model),
+        label: barLabel(b.label),
         value,
         low: err === null ? null : value - err,
         high: err === null ? null : value + err,
@@ -157,6 +173,7 @@ export function comparisonGroups(
   const byTask = new Map<string, BarGroup>();
   let percent = true;
   let peak = 0;
+  const labels = modelLabels(modelsOf(runs));
   for (const run of runs) {
     const v = metricValue(run, metric);
     if (!v) continue;
@@ -167,14 +184,13 @@ export function comparisonGroups(
       label: run.task,
       rows: [],
     };
-    const model = modelName(run.model);
     group.rows.push({
       key: run.id,
-      label: barLabel(model),
+      label: barLabel(labels.get(run.model) ?? run.model),
       value: v.value,
       low: v.stderr === null ? null : v.value - v.stderr,
       high: v.stderr === null ? null : v.value + v.stderr,
-      color: color(model),
+      color: color(run.model),
       tail: v.stderr === null ? undefined : `± ${v.stderr.toFixed(1)}`,
       tip: [
         run.model,
@@ -195,8 +211,7 @@ export function modelsOf(runs: BenchmarkRunSummary[]): string[] {
     a.created_at.localeCompare(b.created_at),
   );
   for (const r of oldestFirst) {
-    const m = modelName(r.model);
-    if (!out.includes(m)) out.push(m);
+    if (!out.includes(r.model)) out.push(r.model);
   }
   return out;
 }

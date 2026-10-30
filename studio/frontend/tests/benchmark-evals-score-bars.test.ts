@@ -12,6 +12,7 @@ import {
   fmtScore,
   latestScores,
   metricValue,
+  modelLabels,
   modelsOf,
   scoreboardGroups,
 } from "../src/features/benchmark/lib/score-bars.ts";
@@ -49,7 +50,7 @@ const runs = [
 
 test("the scoreboard keeps each model's latest run per task, best first", () => {
   const { groups, models, best } = latestScores(runs, 7);
-  assert.deepEqual(models, ["Llama-3.2-1B-Instruct-GGUF:Q4_K_M", "Other-Model"]);
+  assert.deepEqual(models, ["unsloth/Llama-3.2-1B-Instruct-GGUF:Q4_K_M", "org/Other-Model"]);
   assert.deepEqual(
     groups.map((g) => [g.task, g.bars.map((b) => b.run.id)]),
     [
@@ -110,4 +111,27 @@ test("a metric outside 0-1 stays raw and turns the percent axis off", () => {
 test("the comparison colours a model the way the scoreboard does, whatever the run order", () => {
   const reordered = [runs[3], runs[0], runs[2], runs[1]];
   assert.deepEqual(modelsOf(reordered), latestScores(runs, 7).models);
+});
+
+test("two owners' same-named quants stay separate bars, labelled with the owner", () => {
+  const quant = "Qwen3-4B-GGUF:Q4_K_M";
+  const both = [
+    run("a", "copa", `unsloth/${quant}`, 0.6, null, "2026-10-01T00:00:00"),
+    run("b", "copa", `bartowski/${quant}`, 0.5, null, "2026-10-02T00:00:00"),
+    run("c", "copa", "org/Other-Model", 0.4, null, "2026-10-03T00:00:00"),
+  ];
+  const { groups, labels } = latestScores(both, 7);
+  assert.deepEqual(groups[0].bars.map((b) => [b.run.id, b.label]), [
+    ["a", `unsloth/${quant}`],
+    ["b", `bartowski/${quant}`],
+    ["c", "Other-Model"],
+  ]);
+  assert.equal(labels.size, 3);
+  const palette = ["#1", "#2", "#3"];
+  const models = modelsOf(both);
+  const rows = comparisonGroups(both, ACCURACY, (m) => palette[models.indexOf(m)], fmtScore)
+    .groups[0].rows;
+  assert.deepEqual(rows.map((r) => r.color), ["#1", "#2", "#3"]);
+  assert.notEqual(rows[0].label, rows[1].label);
+  assert.equal(modelLabels(["/a/m.gguf", "/b/m.gguf"]).get("/b/m.gguf"), "b/m.gguf");
 });

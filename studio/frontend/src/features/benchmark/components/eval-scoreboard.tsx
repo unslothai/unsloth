@@ -43,7 +43,7 @@ export function EvalScoreboard(): ReactElement | null {
     };
   }, [running]);
 
-  const { groups, models, best } = useMemo(
+  const { groups, models, labels, best } = useMemo(
     () => latestScores(runs, palette.length),
     [runs, palette.length],
   );
@@ -72,7 +72,7 @@ export function EvalScoreboard(): ReactElement | null {
         <StatTile
           label="Best score"
           value={best ? pct(best.score) : "—"}
-          detail={best ? `${best.run.task} · ${best.model}` : undefined}
+          detail={best ? `${best.run.task} · ${best.label}` : undefined}
         />
         <StatTile
           label="Benchmarks"
@@ -98,7 +98,9 @@ export function EvalScoreboard(): ReactElement | null {
                     style={{ background: color(m) }}
                     aria-hidden={true}
                   />
-                  <span className="truncate">{m}</span>
+                  <span className="truncate" title={m}>
+                    {labels.get(m) ?? m}
+                  </span>
                 </li>
               ))}
             </ul>

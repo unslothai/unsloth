@@ -150,7 +150,7 @@ export function CompareDialog({
 
   const models = modelsOf(loadedDetails);
   const color = (model: string) =>
-    palette[models.indexOf(modelName(model)) % palette.length] ?? palette[0];
+    palette[models.indexOf(model) % palette.length] ?? palette[0];
 
   // Collect all metric names across all runs
   const allMetricNames =
