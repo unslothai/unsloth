@@ -1350,15 +1350,22 @@ export async function listChatMessages(
 }
 
 /** Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers. */
+/**
+ * view "search" asks for only what the search index reads: no metadata, media or document bodies.
+ * Older backends ignore it and return full messages, which index the same.
+ */
 export async function batchListChatMessages(
   threadIds: string[],
+  options: { view?: "search" } = {},
 ): Promise<Map<string, MessageRecord[]>> {
   const out = new Map<string, MessageRecord[]>();
   if (threadIds.length === 0) return out;
   const response = await authFetch("/api/chat/messages:batch", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ threadIds }),
+    body: JSON.stringify(
+      options.view ? { threadIds, view: options.view } : { threadIds },
+    ),
   });
   if (response.status === 404 || response.status === 405) {
     const per = await Promise.all(
