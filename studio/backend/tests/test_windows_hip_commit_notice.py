@@ -10,6 +10,7 @@ import sys
 import types as _types
 from pathlib import Path
 
+import psutil
 import pytest
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -71,8 +72,6 @@ def _windows_child(
         LlamaCppBackend, "_installed_ggml_backends", staticmethod(lambda binary = None: backends)
     )
     monkeypatch.setattr(diffusion_memory, "_windows_commit_headroom_mib", lambda: headroom_mib)
-    import psutil
-
     monkeypatch.setattr(psutil, "Process", _FakeProcess)
 
 
@@ -97,7 +96,6 @@ def test_off_windows_or_without_a_child_nothing_is_measured(monkeypatch):
 
 def test_a_failed_probe_never_fails_the_load(monkeypatch):
     _windows_child(monkeypatch, frozenset({"hip"}))
-    import psutil
 
     def _gone(pid):
         raise psutil.NoSuchProcess(pid)
