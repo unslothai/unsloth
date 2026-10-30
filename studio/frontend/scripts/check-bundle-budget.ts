@@ -439,6 +439,10 @@ export const BUDGET = {
   // (5,942,150 -> 5,972,134 B raw, 1,836,750 -> 1,847,702 B transfer, ed9857c0c3 -> 39b8a6ce13, Node 24,
   // 85 chunks): its color themes are read by the theme store at startup, and loading its dialog on first
   // open saves 3 KB transfer but adds five startup chunks. Raised by that growth.
+  // The GPU rendering setting (#15482) adds 1,948 B raw / 637 B transfer (5,977,895 -> 5,979,843 B raw,
+  // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
+  // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
+  // the eager English catalog and its search rows. Raised by that.
   // The per-tool MCP switches at the end of Settings > Agents (#14348) add 3,593 B raw / 1,086 B transfer
   // (6,972,239 -> 6,975,832 B raw, 2,102,226 -> 2,103,312 B transfer against a5956882f6, one machine and build,
   // Node 24, 103 chunks both): the Agents panel and its tools dialog are lazy, so the growth is their strings in the
@@ -447,8 +451,8 @@ export const BUDGET = {
   // 1,363 B raw / 366 B transfer on top (6,975,832 -> 6,977,195 B raw, 2,103,312 -> 2,103,678 B transfer against
   // 8eeb3df91b, one machine and build, Node 24, 103 chunks both), in the eager chat chunk and English catalog.
   // Raised by that.
-  transferBytes: 1_851_225,
-  rawBytes: 5_994_398,
+  transferBytes: 1_851_862,
+  rawBytes: 5_996_346,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

@@ -3465,6 +3465,8 @@ from models.inference import (
     EstimateMemoryResponse,
     Int8PrefillAvailabilityRequest,
     Int8PrefillAvailabilityResponse,
+    AnePrefillAvailabilityRequest,
+    AnePrefillAvailabilityResponse,
     MlxDraftersRequest,
     MlxDraftersResponse,
     TransformersUpgradeInfo,
@@ -8091,6 +8093,9 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_int8_prefill = None,
         mlx_int8_prefill_requested = None,
         mlx_int8_prefill_reason = None,
+        mlx_ane_prefill = None,
+        mlx_ane_prefill_requested = None,
+        mlx_ane_prefill_reason = None,
         mlx_offload = None,
         mlx_context_budget = None,
         spec_draft_model = None,
@@ -17102,6 +17107,8 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         == (request.chat_template_override or None)
         and bool(entry.get("mlx_int8_prefill_requested"))
         == bool(getattr(request, "mlx_int8_prefill", False))
+        and bool(entry.get("mlx_ane_prefill_requested"))
+        == bool(getattr(request, "mlx_ane_prefill", False))
         and all(
             normalize_mlx_offload(
                 ((entry.get("mlx_offload") or {}).get(part) or {}).get("requested")
@@ -18868,6 +18875,9 @@ async def _load_model_impl(
                     mlx_int8_prefill = _model_info.get("mlx_int8_prefill"),
                     mlx_int8_prefill_requested = _model_info.get("mlx_int8_prefill_requested"),
                     mlx_int8_prefill_reason = _model_info.get("mlx_int8_prefill_reason"),
+                    mlx_ane_prefill = _model_info.get("mlx_ane_prefill"),
+                    mlx_ane_prefill_requested = _model_info.get("mlx_ane_prefill_requested"),
+                    mlx_ane_prefill_reason = _model_info.get("mlx_ane_prefill_reason"),
                     mlx_offload = _model_info.get("mlx_offload"),
                     memory_warning = _mlx_offload_warning(_model_info),
                     # Requested, as /status reports it: a null override would read
@@ -19540,6 +19550,7 @@ async def _load_model_impl(
                 subject = current_subject,
                 mlx_kv_quant = request.mlx_kv_quant,
                 mlx_int8_prefill = request.mlx_int8_prefill,
+                mlx_ane_prefill = request.mlx_ane_prefill,
                 mlx_offload = (request.mlx_ple_offload, request.mlx_expert_offload),
                 speculative_type = request.speculative_type,
                 spec_draft_n_max = request.spec_draft_n_max,
@@ -19735,6 +19746,9 @@ async def _load_model_impl(
             mlx_int8_prefill = _model_info.get("mlx_int8_prefill"),
             mlx_int8_prefill_requested = _model_info.get("mlx_int8_prefill_requested"),
             mlx_int8_prefill_reason = _model_info.get("mlx_int8_prefill_reason"),
+            mlx_ane_prefill = _model_info.get("mlx_ane_prefill"),
+            mlx_ane_prefill_requested = _model_info.get("mlx_ane_prefill_requested"),
+            mlx_ane_prefill_reason = _model_info.get("mlx_ane_prefill_reason"),
             mlx_offload = _model_info.get("mlx_offload"),
             memory_warning = _mlx_offload_warning(_model_info),
             # Requested, as /status reports it: a null override would read as
@@ -20898,23 +20912,20 @@ def _cached_estimate_config(
     return config
 
 
-@router.post("/int8-prefill-availability", response_model = Int8PrefillAvailabilityResponse)
-async def int8_prefill_availability(
-    request: Int8PrefillAvailabilityRequest, current_subject: str = Depends(get_current_subject)
-):
-    """Whether MLX int8 prefill would apply to this model, judged from its downloaded checkpoint
-    without loading it. The first answer on a new macOS or MLX version builds the kernels once."""
+async def _mlx_prefill_option_availability(request, response, checkpoint_status):
+    """`response` for an MLX prefill option that `checkpoint_status(model_dir)` judges from the
+    downloaded checkpoint, without loading it."""
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     if is_ollama_manifest_ref(request.model_path):
-        return Int8PrefillAvailabilityResponse(available = False, reason = "unsupported_model")
+        return response(available = False, reason = "unsupported_model")
 
-    def _check() -> Int8PrefillAvailabilityResponse:
+    def _check():
         if not _mlx_estimate_available():
-            return Int8PrefillAvailabilityResponse(available = False, reason = "unsupported_model")
+            return response(available = False, reason = "unsupported_model")
         config = _cached_estimate_config(request.model_path, None, request.hf_token, False)
         if config is _ESTIMATE_NOT_ON_DISK:
-            return Int8PrefillAvailabilityResponse(available = False, reason = "not_downloaded")
+            return response(available = False, reason = "not_downloaded")
         from core.inference.native_audio import is_native_audio_model
 
         if (
@@ -20923,16 +20934,38 @@ async def int8_prefill_availability(
             or getattr(config, "is_lora", False)
             or is_native_audio_model(request.model_path)
         ):
-            return Int8PrefillAvailabilityResponse(available = False, reason = "unsupported_model")
+            return response(available = False, reason = "unsupported_model")
         model_dir = _local_mlx_model_dir(config)
         if not model_dir:
-            return Int8PrefillAvailabilityResponse(available = False, reason = "not_downloaded")
-        from core.inference.mlx_inference import mlx_int8_prefill_checkpoint_status
-
-        available, reason = mlx_int8_prefill_checkpoint_status(model_dir)
-        return Int8PrefillAvailabilityResponse(available = available, reason = reason or None)
+            return response(available = False, reason = "not_downloaded")
+        available, reason = checkpoint_status(model_dir)
+        return response(available = available, reason = reason or None)
 
     return await asyncio.to_thread(_check)
+
+
+@router.post("/int8-prefill-availability", response_model = Int8PrefillAvailabilityResponse)
+async def int8_prefill_availability(
+    request: Int8PrefillAvailabilityRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Whether MLX int8 prefill would apply to this model, judged from its downloaded checkpoint
+    without loading it. The first answer on a new macOS or MLX version builds the kernels once."""
+    from core.inference.mlx_inference import mlx_int8_prefill_checkpoint_status
+    return await _mlx_prefill_option_availability(
+        request, Int8PrefillAvailabilityResponse, mlx_int8_prefill_checkpoint_status
+    )
+
+
+@router.post("/ane-prefill-availability", response_model = AnePrefillAvailabilityResponse)
+async def ane_prefill_availability(
+    request: AnePrefillAvailabilityRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Whether MLX Neural Engine prefill could apply to this model, judged from its downloaded
+    checkpoint without loading it; calibration and free memory still decide at load."""
+    from core.inference.mlx_inference import mlx_ane_prefill_checkpoint_status
+    return await _mlx_prefill_option_availability(
+        request, AnePrefillAvailabilityResponse, mlx_ane_prefill_checkpoint_status
+    )
 
 
 @router.post("/estimate-memory", response_model = EstimateMemoryResponse)
@@ -22266,6 +22299,9 @@ async def _slot_status(current_subject: str):
             mlx_int8_prefill = model_info.get("mlx_int8_prefill"),
             mlx_int8_prefill_requested = model_info.get("mlx_int8_prefill_requested"),
             mlx_int8_prefill_reason = model_info.get("mlx_int8_prefill_reason"),
+            mlx_ane_prefill = model_info.get("mlx_ane_prefill"),
+            mlx_ane_prefill_requested = model_info.get("mlx_ane_prefill_requested"),
+            mlx_ane_prefill_reason = model_info.get("mlx_ane_prefill_reason"),
             mlx_offload = model_info.get("mlx_offload"),
             memory_warning = _mlx_offload_warning(model_info),
             chat_template_override = model_info.get("chat_template_override_requested"),
@@ -31041,7 +31077,12 @@ async def produce_openai_chat_completions(
                 else {}
             )
             _audio_heal = (
-                heal_gate(payload.auto_heal_tool_calls, _audio_tools, payload.tool_choice)
+                heal_gate(
+                    payload.auto_heal_tool_calls,
+                    _audio_tools,
+                    payload.tool_choice,
+                    response_format = _extract_response_format(payload),
+                )
                 if _audio_tools
                 else None
             )

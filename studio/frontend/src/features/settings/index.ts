@@ -16,6 +16,7 @@ export {
   updateDownloadTransportSettings,
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
+export { notifyRendererReady } from "./api/gpu-rendering";
 export { updateHubSource } from "./api/hub-settings";
 export { loadLanAccess, publishLanUrls } from "./api/lan-access";
 export { lanApiUrls } from "./api/lan-access-state";

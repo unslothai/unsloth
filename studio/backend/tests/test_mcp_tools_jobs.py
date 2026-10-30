@@ -261,3 +261,19 @@ def test_a_first_read_that_stalls_ends_with_a_retry_hint(monkeypatch):
     assert time.monotonic() - started < 5
     assert result["isError"] is True
     assert "call get_job again" in result["content"][0]["text"]
+
+
+def test_the_wait_bound_holds_while_max_wait_is_shortened(monkeypatch):
+    # get_job's annotations are lazy: the schema is built on first use, which can be inside a test that has
+    # shortened MAX_WAIT_S to 0.1. An int field bounded by that float cannot be built at all.
+    import typing
+
+    from pydantic import TypeAdapter, ValidationError
+
+    from studio_mcp.tools import jobs
+
+    monkeypatch.setattr(loading, "MAX_WAIT_S", 0.1)
+    wait_s = TypeAdapter(typing.get_type_hints(jobs.get_job, include_extras = True)["wait_s"])
+    assert wait_s.validate_python(240) == 240
+    with pytest.raises(ValidationError):
+        wait_s.validate_python(241)
