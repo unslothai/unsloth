@@ -45,8 +45,15 @@ test("the pane resizes by drag and keyboard and remembers its height", () => {
     "onKeyDown={onResizeKey}",
     "onDoubleClick={() => resizePane(null)}",
     'const PANE_HEIGHT_STORAGE_KEY = "unsloth_debug_log_pane_height";',
-    "}, [text, wrap, paneHeight]);",
+    "}, [shownText, wrap, paneHeight]);",
   ]) {
     assert.ok(tab.includes(needle), needle);
   }
+});
+
+test("the pane repaints from the held text, so a poll cannot drop a selection", () => {
+  assert.match(tab, /if \(!holding && shownText !== text\) setShownText\(text\);/);
+  assert.match(pane, /\{shownText \|\|/);
+  assert.doesNotMatch(pane, /\{text \|\|/);
+  assert.match(tab, /document\.addEventListener\("selectionchange", update\)/);
 });
