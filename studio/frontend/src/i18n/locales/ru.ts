@@ -4978,6 +4978,8 @@ export const ru = {
       weight: "Вес",
       bundled: "Встроенное",
       user: "Ваше",
+      kindRule: "Правило",
+      kindPython: "Python",
       invalid: "Недопустимое",
       tryTitle: "Попробовать",
       tryCompletion: "Пример ответа",
@@ -5024,6 +5026,7 @@ export const ru = {
     prompt: {
       title: "Формат промпта",
       description: "Что модель должна написать",
+      presetHint: "Отправляется перед каждым промптом. Ваши вознаграждения читают теги, которые он запрашивает, поэтому держите их согласованными.",
       presetLabel: "Шаблон системного промпта",
       presets: {
         reasoningTags: "Теги решения и ответа",

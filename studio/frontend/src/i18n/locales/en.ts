@@ -5027,6 +5027,8 @@ export const en = {
       weight: "Weight",
       bundled: "Bundled",
       user: "Yours",
+      kindRule: "Rule",
+      kindPython: "Python",
       invalid: "Invalid",
       tryTitle: "Try it",
       tryCompletion: "Sample completion",
@@ -5073,6 +5075,7 @@ export const en = {
     prompt: {
       title: "Prompt format",
       description: "What the model is asked to write",
+      presetHint: "Sent before every prompt. Your rewards read the tags it asks for, so keep the two in step.",
       presetLabel: "System prompt preset",
       presets: {
         reasoningTags: "Working out + solution tags",
