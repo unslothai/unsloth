@@ -2,8 +2,7 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
 """Opt-in fused batch-1 NF4 Llama decode: UNSLOTH_DECODE_FUSED_NF4=1 (tuned GPUs) or =force.
-A failed check leaves the sequence on the regular path. Each site's NF4 weights are re-homed into
-one buffer the projections view, so no memory is added."""
+A failed check keeps the regular path; NF4 weights are re-homed into one view-backed buffer per site."""
 
 import functools
 import os
@@ -110,8 +109,7 @@ def _adapter_state(modules):
 
 
 def _site_watch(projs):
-    # One PEFT layer per site: adapter toggles / switches apply model-wide. Any projection may
-    # carry it (LoRA on k / v or up only), not just the first.
+    # One PEFT layer per site (toggles apply model-wide); any projection may carry it, not just the first.
     return [p for p in projs if hasattr(p, "lora_A")][:1]
 
 
@@ -342,8 +340,7 @@ def _build(model, X):
         return "model type"
     qk_norm, allow_bias = _FAMILIES[model_type]
     if getattr(model, "vllm_engine", None) is not None:
-        # fast_inference: the base weights are views of vLLM's, re-homing would copy them and move
-        # quant buffers vLLM's CUDA graphs captured.
+        # fast_inference: weights view vLLM's; re-homing would copy them and move vLLM-graph-captured buffers.
         return "weights shared with vLLM (fast_inference)"
     device = X.device
     if device.type != "cuda" or torch.version.hip is not None:
