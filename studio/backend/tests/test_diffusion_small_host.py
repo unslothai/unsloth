@@ -560,11 +560,22 @@ def test_small_host_fetch_only_for_an_online_unstaged_hub_load():
     assert dif._small_host_fetch(object, "org/model", kw, None, False) is None
 
 
-def _header_only(root, name, mib, filename = "diffusion_pytorch_model.safetensors"):
+def _header_only(
+    root,
+    name,
+    mib,
+    filename = "diffusion_pytorch_model.safetensors",
+):
     sub = root / name
     sub.mkdir(parents = True, exist_ok = True)
     raw = json.dumps(
-        {"weight": {"dtype": "BF16", "shape": [mib * 1024 * 1024 // 2], "data_offsets": [0, mib * 1024 * 1024]}}
+        {
+            "weight": {
+                "dtype": "BF16",
+                "shape": [mib * 1024 * 1024 // 2],
+                "data_offsets": [0, mib * 1024 * 1024],
+            }
+        }
     ).encode()
     (sub / filename).write_bytes(struct.pack("<Q", len(raw)) + raw)
 
@@ -594,10 +605,17 @@ def test_a_partially_cached_snapshot_downloads_before_the_decision(tmp_path, mon
     if cached == "vae_only":
         _header_only(partial, "vae", 161)
     if cached == "one_dit_shard":
-        _header_only(partial, "transformer", 4096, "diffusion_pytorch_model-00001-of-00005.safetensors")
+        _header_only(
+            partial, "transformer", 4096, "diffusion_pytorch_model-00001-of-00005.safetensors"
+        )
         (partial / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
             json.dumps(
-                {"weight_map": {f"w{i}": f"diffusion_pytorch_model-0000{i}-of-00005.safetensors" for i in range(1, 6)}}
+                {
+                    "weight_map": {
+                        f"w{i}": f"diffusion_pytorch_model-0000{i}-of-00005.safetensors"
+                        for i in range(1, 6)
+                    }
+                }
             )
         )
     monkeypatch.setattr(dif, "host_ram_mib", lambda: (12977, 11161))
@@ -611,14 +629,23 @@ def test_a_partially_cached_snapshot_downloads_before_the_decision(tmp_path, mon
         return str(full)
 
     d = dif.DiffusionBackend()._small_host_decision(
-        str(partial), {}, types.SimpleNamespace(device = "cuda"), torch.float16, lora_active = False, fetch = fetch
+        str(partial),
+        {},
+        types.SimpleNamespace(device = "cuda"),
+        torch.float16,
+        lora_active = False,
+        fetch = fetch,
     )
     assert calls == [1]
     assert d.engaged and d.int8_spill
 
 
 def test_a_complete_snapshot_with_a_supplied_component_skips_the_download(tmp_path):
-    index = {"transformer": ["diffusers", "X"], "vae": ["diffusers", "Y"], "tokenizer": ["transformers", "T"]}
+    index = {
+        "transformer": ["diffusers", "X"],
+        "vae": ["diffusers", "Y"],
+        "tokenizer": ["transformers", "T"],
+    }
     (tmp_path / "model_index.json").write_text(json.dumps(index))
     _header_only(tmp_path, "vae", 1)
     (tmp_path / "tokenizer").mkdir()

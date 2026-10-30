@@ -284,7 +284,11 @@ def snapshot_weights_complete(snapshot: Any, skip: Any = ()) -> bool:
             return False  # a model folder without weights; tokenizer / scheduler folders have no config.json
         for shard_index in sub.glob("*.index.json"):
             try:
-                shards = set(json.loads(shard_index.read_text(encoding = "utf-8")).get("weight_map", {}).values())
+                shards = set(
+                    json.loads(shard_index.read_text(encoding = "utf-8"))
+                    .get("weight_map", {})
+                    .values()
+                )
             except Exception:  # noqa: BLE001
                 return False
             if any(not (sub / shard).is_file() for shard in shards):
