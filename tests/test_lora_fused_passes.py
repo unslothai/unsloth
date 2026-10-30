@@ -40,6 +40,8 @@ def _model(
     device,
     dtype,
     alpha_pattern = None,
+    dropout = 0.0,
+    lora_bias = False,
 ):
     from peft import LoraConfig, get_peft_model
 
@@ -47,14 +49,20 @@ def _model(
     cfg = LoraConfig(
         r = 4,
         lora_alpha = 8,
-        lora_dropout = 0.0,
+        lora_dropout = dropout,
         target_modules = TARGETS,
         init_lora_weights = False,
         alpha_pattern = alpha_pattern or {},
+        lora_bias = lora_bias,
     )
     model = get_peft_model(_Block(), cfg).to(device, dtype)
     for name, p in model.named_parameters():
         p.requires_grad_("lora_" in name)
+    if lora_bias:
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if "lora_B" in name and name.endswith("bias"):
+                    p.normal_()
     model.train()
     return model, model.base_model.model
 
@@ -160,3 +168,40 @@ def test_shared_paths_engage_only_when_they_apply(monkeypatch):
         model, block = _model("cpu", torch.float32, {"k_proj": 16} if alphas == "mixed" else None)
         _run(PATHS["qkv"][0](block), model, X0)
         assert (calls["xa"], calls["bwd"]) == want, (alphas, on, calls)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_kill_switch_is_the_base_then_lora_order(device, dtype, monkeypatch):
+    # UNSLOTH_LORA_FUSED_PASSES=0: base GEMM, then the rank-r term added in place, bit for bit.
+    if device == "cpu" and dtype is torch.bfloat16:
+        pytest.skip("bf16 GEMMs on CPU are slow and not what runs in training")
+    _set(monkeypatch, False)
+    g = torch.Generator(device = "cpu").manual_seed(0)
+    X, W = torch.randn(7, H, generator = g), torch.randn(I, H, generator = g)
+    A, B = torch.randn(4, H, generator = g), torch.randn(I, 4, generator = g)
+    X, W, A, B = (t.to(device, dtype) for t in (X, W, A, B))
+    want = X @ W.t()
+    kernel_utils.addmm_(want, X @ A.t(), B.t(), alpha = 2.0)
+    assert torch.equal(kernel_utils.matmul_lora(X, W, None, A, B, 2.0), want)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("path", ["qkv", "o", "mlp"])
+@pytest.mark.parametrize("config", ["dropout", "lora_bias"])
+def test_dropout_and_lora_bias_keep_the_base_then_lora_order(device, path, config, monkeypatch):
+    # These configs add the LoRA term after the base GEMM in both passes, so the switch changes nothing.
+    if device == "cpu" and path == "mlp":
+        pytest.skip("the SwiGLU kernels are Triton")
+    kwargs = {"dropout": 0.1} if config == "dropout" else {"lora_bias": True}
+    model, block = _model(device, torch.float32, **kwargs)
+    X0 = torch.randn(3, 5, H, device = device)
+    runs = []
+    for on in (False, True):
+        _set(monkeypatch, on)
+        torch.manual_seed(11)
+        runs.append(_run(PATHS[path][0](block), model, X0))
+    (out0, dX0, g0), (out1, dX1, g1) = runs
+    assert all(torch.equal(a, b) for a, b in zip(out0, out1))
+    assert torch.equal(dX0, dX1)
+    assert set(g0) == set(g1) and all(torch.equal(g0[n], g1[n]) for n in g0)
