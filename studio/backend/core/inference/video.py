@@ -2302,6 +2302,28 @@ def _video_index_repo(base: str, *, local_files_only: bool = False) -> str:
     return mirror
 
 
+def _video_cached_while_hub_unreachable(
+    base_local: Optional[str],
+    base_repo: Optional[str],
+    checkpoint_repo: Optional[str],
+    checkpoint_file: Optional[str],
+) -> bool:
+    """No local snapshot, the Hub verdict says unreachable, and the base manifest (plus a GGUF / single-file pick)
+    is cached. False on any doubt, so a first download still asks."""
+    if base_local or not base_repo or not hub_reachability.hub_unreachable():
+        return False
+    try:
+        from core.inference.diffusion import _cached_while_hub_unreachable
+
+        if not _cached_while_hub_unreachable(base_repo, "model_index.json"):
+            return False
+        if checkpoint_file and checkpoint_repo and not Path(checkpoint_repo).expanduser().exists():
+            return _cached_while_hub_unreachable(checkpoint_repo, checkpoint_file)
+        return True
+    except Exception:  # noqa: BLE001 - any doubt keeps the online load
+        return False
+
+
 def _video_offline_base_choice(
     base: str,
     folders: Optional[Sequence[str]] = None,
@@ -5575,13 +5597,47 @@ class VideoBackend:
 
             from .diffusion_families import pinned_repo_revision
 
-            # Every hub-id config read of the base during assembly (encoder / VAE / transformer configs, the LTX-2.5
-            # companions and encoder worker) reads the commit the plan pinned; a no-op for an unpinned load.
-            with pread_safetensors():
-                with pinned_repo_revision(
-                    kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
+            # With the Hub unreachable, diffusers' "Couldn't connect" fallback first sends an untimed model_info.
+            # A cached base loads offline instead, as the image backend does; a cache miss retries online.
+            forced_offline = not local_files_only and _video_cached_while_hub_unreachable(
+                base_local,
+                kwargs.get("_base_fetch_repo") or base,
+                kwargs["repo_id"] if kind != "pipeline" else None,
+                kwargs.get("gguf_filename") if kind != "pipeline" else None,
+            )
+
+            def _load(offline: bool) -> None:
+                if forced_offline:
+                    kwargs["local_files_only"] = offline
+                # Every hub-id config read of the base during assembly (encoder / VAE / transformer configs, the LTX-2.5
+                # companions and encoder worker) reads the commit the plan pinned; a no-op for an unpinned load.
+                with pread_safetensors():
+                    with pinned_repo_revision(
+                        kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
+                    ):
+                        self.load_pipeline(**kwargs)
+
+            if forced_offline:
+                logger.info(
+                    "video.hub_unreachable: %s is cached and the Hub did not connect moments ago; loading "
+                    "from the cache",
+                    kwargs["repo_id"],
+                )
+            try:
+                _load(True if forced_offline else local_files_only)
+            except OSError as exc:
+                if (
+                    not forced_offline
+                    or self._load_token != token
+                    or (cancel_event is not None and cancel_event.is_set())
                 ):
-                    self.load_pipeline(**kwargs)
+                    raise
+                logger.info(
+                    "video.hub_unreachable: %s is not fully cached (%s); retrying online",
+                    kwargs["repo_id"],
+                    exc,
+                )
+                _load(False)
             with self._lock:
                 if self._load_token == token:
                     self._loading = None
