@@ -54,7 +54,9 @@ def _fake_model(attn_cls):
 
 
 def _llama_style():
-    return _fake_model(type("LlamaAttention", (torch.nn.Module,), {"forward": LlamaAttention_fast_forward}))
+    return _fake_model(
+        type("LlamaAttention", (torch.nn.Module,), {"forward": LlamaAttention_fast_forward})
+    )
 
 
 def _minimax_m2():

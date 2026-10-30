@@ -748,7 +748,6 @@ def _check_cp_runtime(self, size: int, backend: str) -> None:
 def _runs_hf_ulysses_attention(model, backend) -> bool:
     # Attention the RL hooks do not shard: Hugging Face forwards wrapped for Ulysses, not Llama-style.
     from .models.llama import LlamaAttention_fast_forward, runs_fast_forward
-
     if backend != "ulysses" or not isinstance(model, torch.nn.Module):
         return False
     return any(

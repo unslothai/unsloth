@@ -38,7 +38,13 @@ PARITY_FAILURE = r"AssertionError: (output|input grad|logits)"
 SEQ = 22
 
 
-def _config(kind, block_size = 4, heads = 4, kv_heads = 2, layer_types = None):
+def _config(
+    kind,
+    block_size = 4,
+    heads = 4,
+    kv_heads = 2,
+    layer_types = None,
+):
     common = dict(
         vocab_size = 64,
         hidden_size = 32,
@@ -73,7 +79,12 @@ def _config(kind, block_size = 4, heads = 4, kv_heads = 2, layer_types = None):
     return transformers.MiniMaxM2Config(**common), transformers.MiniMaxM2ForCausalLM
 
 
-def _model(kind, lora = False, checkpoint = None, **config_kwargs):
+def _model(
+    kind,
+    lora = False,
+    checkpoint = None,
+    **config_kwargs,
+):
     torch.manual_seed(0)
     config, cls = _config(kind, **config_kwargs)
     model = cls(config).train()
@@ -86,7 +97,6 @@ def _model(kind, lora = False, checkpoint = None, **config_kwargs):
             module.set_experts_implementation("eager")
     if lora:
         from peft import LoraConfig, get_peft_model
-
         targets = ["q_proj", "k_proj", "v_proj", "o_proj", "qkv_proj", "out_proj", "output_gate"]
         # init_lora_weights = False: B is random, so the adapters change the forward.
         model = get_peft_model(
@@ -128,8 +138,10 @@ MUTANTS = {
         "    out = module.norm(out)",
     ),
     # Blocks restart at the shard start instead of the global sequence start.
-    "shard_aligned_blocks": ("block, total = module.block_size, q.shape[2]",
-                             "block, total = local_len, q.shape[2]"),
+    "shard_aligned_blocks": (
+        "block, total = module.block_size, q.shape[2]",
+        "block, total = local_len, q.shape[2]",
+    ),
 }
 
 
@@ -302,7 +314,11 @@ def _model_worker(rank, world, kind, cp_size, lora, control, model_kwargs):
                 if norm is None:
                     continue
 
-                def grouped(self, x, size = cp_size):
+                def grouped(
+                    self,
+                    x,
+                    size = cp_size,
+                ):
                     parts = x.chunk(size, dim = -1)
                     weights = self.weight.chunk(size)
                     out = []
@@ -314,9 +330,17 @@ def _model_worker(rank, world, kind, cp_size, lora, control, model_kwargs):
                 norm.forward = types.MethodType(grouped, norm)
 
     calls = {"lightning": 0, "attention": 0}
-    for key, fn_name in (("lightning", "ulysses_lightning_forward"), ("attention", "_ulysses_hf_attention")):
+    for key, fn_name in (
+        ("lightning", "ulysses_lightning_forward"),
+        ("attention", "_ulysses_hf_attention"),
+    ):
 
-        def counted(*args, _fn = getattr(uh, fn_name), _key = key, **kwargs):
+        def counted(
+            *args,
+            _fn = getattr(uh, fn_name),
+            _key = key,
+            **kwargs,
+        ):
             calls[_key] += 1
             return _fn(*args, **kwargs)
 
