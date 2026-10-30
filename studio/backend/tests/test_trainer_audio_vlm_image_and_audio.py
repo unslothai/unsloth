@@ -87,14 +87,14 @@ class _NoAudioCast:
         return self._ds[idx]
 
 
-def _dataset(columns):
+def _dataset(columns, per_row = None):
     image = PIL_Image.new("RGB", (8, 8), "red")
     rows = {
         "audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * 2,
         "text": ["a red square", "still red"],
     }
     for name in columns:
-        rows[name] = [image, image]
+        rows[name] = [[image] * n for n in per_row] if per_row else [image, image]
     return _NoAudioCast(datasets.Dataset.from_dict(rows))
 
 
@@ -134,6 +134,14 @@ def test_a_mapped_image_column_is_used(audio_vlm_trainer):
     assert audio_vlm_trainer._audio_vlm_image_col == "photo"
 
 
+def test_a_list_of_images_per_row_gets_one_slot_per_image(audio_vlm_trainer):
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(_dataset(["images"], per_row = [1, 2]))
+
+    assert audio_vlm_trainer._audio_vlm_image_col == "images"
+    users = [next(m for m in row["messages"] if m["role"] == "user") for row in formatted]
+    assert [[p["type"] for p in u["content"]].count("image") for u in users] == [1, 2]
+
+
 def _collator_block():
     lines = (_BACKEND / "core" / "training" / "trainer.py").read_text(encoding = "utf-8").splitlines()
     start = next(
@@ -164,7 +172,7 @@ class _RecordingProcessor:
         return {"input_ids": torch.ones((len(text), 2), dtype = torch.long)}
 
 
-def _collate(image_col):
+def _collate(image_col, row_image = None):
     pytest.importorskip("torch")
     processor = _RecordingProcessor()
     namespace = {
@@ -178,9 +186,10 @@ def _collate(image_col):
     }
     exec(_collator_block(), namespace)
     image = PIL_Image.new("L", (4, 4))
+    row_image = image if row_image is None else row_image
     examples = [
-        {"messages": [], "audio": {"array": [0.0]}, "image": image},
-        {"messages": [], "audio": {"array": [0.0]}, "image": image},
+        {"messages": [], "audio": {"array": [0.0]}, "image": row_image},
+        {"messages": [], "audio": {"array": [0.0]}, "image": row_image},
     ]
     namespace["audio_vlm_collate_fn"](examples)
     return processor.calls[0]
@@ -193,6 +202,14 @@ def test_collator_passes_one_rgb_image_per_example():
     assert images is not None, "images never reached the processor"
     assert [len(per_example) for per_example in images] == [1, 1]
     assert all(per_example[0].mode == "RGB" for per_example in images)
+
+
+def test_collator_passes_every_image_of_a_list_row():
+    image = PIL_Image.new("L", (4, 4))
+    images = _collate("image", row_image = [image, image])["images"]
+
+    assert [len(per_example) for per_example in images] == [2, 2]
+    assert all(i.mode == "RGB" for per_example in images for i in per_example)
 
 
 def test_collator_without_images_does_not_pass_the_kwarg():

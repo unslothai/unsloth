@@ -2379,9 +2379,15 @@ class UnslothTrainer:
 
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = 16000))
         if image_col:
-            from datasets import Image
+            from datasets import Image, Sequence
 
-            if not isinstance(dataset.features.get(image_col), Image):
+            feature = dataset.features.get(image_col)
+            inner = feature[0] if isinstance(feature, list) else getattr(feature, "feature", None)
+            if inner is not None:
+                # A list of images per row (e.g. an "images" column) stays a list.
+                if not isinstance(inner, Image):
+                    dataset = dataset.cast_column(image_col, Sequence(Image()))
+            elif not isinstance(feature, Image):
                 dataset = dataset.cast_column(image_col, Image())
             logger.info(f"Audio VLM dataset also has images in '{image_col}'; training on both\n")
 
@@ -2395,8 +2401,10 @@ class UnslothTrainer:
                     {"type": "text", "text": "Please transcribe this audio."},
                 ]
                 if image_col:
-                    # The collator passes the image itself; the template only needs the slot.
-                    user_content.insert(0, {"type": "image"})
+                    # The collator passes the images themselves; the template only needs the slots.
+                    row_images = samples[image_col][idx]
+                    n_images = len(row_images) if isinstance(row_images, list) else 1
+                    user_content[:0] = [{"type": "image"} for _ in range(n_images)]
                 message = [
                     {
                         "role": "system",
@@ -4657,8 +4665,9 @@ class UnslothTrainer:
                         texts.append(text)
                         audios.append(example[audio_col_name]["array"])
                         if image_col_name:
-                            image = example[image_col_name]
-                            images.append([image.convert("RGB") if hasattr(image, "convert") else image])
+                            row = example[image_col_name]
+                            row = row if isinstance(row, list) else [row]
+                            images.append([i.convert("RGB") if hasattr(i, "convert") else i for i in row])
 
                     image_kwargs = {"images": images} if image_col_name else {}
                     batch = processor(
