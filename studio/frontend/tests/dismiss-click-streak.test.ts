@@ -4,7 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { installDismissClickStreakGuard } from "../src/lib/dismiss-click-streak.ts";
+import {
+  installDismissClickStreakGuard,
+  shiftedSelection,
+  wordBounds,
+} from "../src/lib/dismiss-click-streak.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const INSTALL_ONCE =
@@ -29,6 +33,10 @@ function fakeDoc() {
     closest: (selector: string) =>
       inside.some((s) => selector.includes(s)) ? {} : null,
   });
+  const selected: number[] = [];
+  const select = (event: MouseEvent) => {
+    selected.push(event.detail);
+  };
   const press = (detail: number, target = el(), button = 0): boolean => {
     let prevented = false;
     const base = {
@@ -48,6 +56,8 @@ function fakeDoc() {
   };
   return {
     doc,
+    select,
+    selected,
     press,
     el,
     openMenu: () => {
@@ -57,18 +67,34 @@ function fakeDoc() {
   };
 }
 
-test("the clicks after a menu-dismissing press start no word or block selection", () => {
+test("after a menu-dismissing press, the rest of the run selects one step finer", () => {
   const f = fakeDoc();
-  installDismissClickStreakGuard(f.doc);
+  installDismissClickStreakGuard(f.doc, f.select);
   f.openMenu();
   assert.equal(f.press(1), false, "the dismissing press itself is untouched");
-  assert.equal(f.press(2), true);
-  assert.equal(f.press(3), true);
+  for (const detail of [2, 3, 4, 5, 6]) assert.equal(f.press(detail), true);
+  assert.deepEqual(f.selected, [2, 3, 4, 5, 6]);
+});
+
+test("a run that began by dismissing a menu still selects: caret, word, then paragraph", () => {
+  assert.equal(shiftedSelection(2), "caret");
+  assert.equal(shiftedSelection(3), "word");
+  assert.equal(shiftedSelection(4), "paragraph");
+  assert.equal(shiftedSelection(9), "paragraph");
+});
+
+test("the word under the pointer is found the same way on every platform", () => {
+  const text = "Answer 12. Lorem ipsum";
+  assert.deepEqual(wordBounds(text, 2), [0, 6]);
+  assert.deepEqual(wordBounds(text, 0), [0, 6]);
+  assert.deepEqual(wordBounds(text, 13), [11, 16]);
+  assert.deepEqual(wordBounds(text, text.length), [17, 22]);
+  assert.deepEqual(wordBounds("", 0), [0, 0]);
 });
 
 test("double and triple clicks select as usual when no menu was dismissed", () => {
   const f = fakeDoc();
-  installDismissClickStreakGuard(f.doc);
+  installDismissClickStreakGuard(f.doc, f.select);
   assert.equal(f.press(1), false);
   assert.equal(f.press(2), false);
   assert.equal(f.press(3), false);
@@ -76,7 +102,7 @@ test("double and triple clicks select as usual when no menu was dismissed", () =
 
 test("a new click run after a dismissal selects as usual", () => {
   const f = fakeDoc();
-  installDismissClickStreakGuard(f.doc);
+  installDismissClickStreakGuard(f.doc, f.select);
   f.openMenu();
   f.press(1);
   assert.equal(f.press(1), false);
@@ -85,7 +111,7 @@ test("a new click run after a dismissal selects as usual", () => {
 
 test("presses inside the menu and in text fields keep native selection", () => {
   const f = fakeDoc();
-  installDismissClickStreakGuard(f.doc);
+  installDismissClickStreakGuard(f.doc, f.select);
   f.openMenu();
   f.press(1, f.el(["data-radix-popper-content-wrapper"]));
   assert.equal(f.press(2), false, "a press inside the menu dismisses nothing");
@@ -101,7 +127,7 @@ test("presses inside the menu and in text fields keep native selection", () => {
 
 test("the guard removes its listeners and is installed once for the app", () => {
   const f = fakeDoc();
-  const stop = installDismissClickStreakGuard(f.doc);
+  const stop = installDismissClickStreakGuard(f.doc, f.select);
   assert.equal(f.count(), 2);
   stop();
   assert.equal(f.count(), 0);
