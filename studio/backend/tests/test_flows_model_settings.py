@@ -53,11 +53,13 @@ def test_unsaved_keys_keep_the_card_values():
     assert model_settings.overlay(card, None, GENERATE) is card
 
 
-def test_server_min_p_and_max_output_are_not_copied():
+def test_server_min_p_is_not_copied_and_a_max_output_cap_takes_the_cards_ceiling():
     card = param_values(GENERATE, {"params": {"max_tokens": 900}})
     saved = {"minP": 0.2, "minPMode": "server-default", "maxTokens": 2**31 - 1}
     out = model_settings.overlay(card, saved, GENERATE)
-    assert out["min_p"] is None and out["max_tokens"] == 900
+    assert out["min_p"] is None and out["max_tokens"] == 32768
+    vision = model_settings.overlay(param_values(VISION, {}), {"maxTokens": 2**31 - 1}, VISION)
+    assert vision["max_tokens"] == 8192
 
 
 def test_server_min_p_clears_the_cards_own():

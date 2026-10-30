@@ -40,7 +40,8 @@ REQUEST_PARAMS = (
     "reasoning_effort",
 )
 
-# Chat records a "Max" output cap as this, meaning the load's whole window.
+# Chat records a "Max" output cap as this, meaning the load's whole window. A card takes its own ceiling
+# instead: the server treats a cap at or over the window as uncapped.
 _MAX_TOKENS_AS_MAX = 2**31 - 1
 
 
@@ -76,7 +77,7 @@ def overlay(
             continue
         if value is None:
             continue
-        if key == "maxTokens" and value >= _MAX_TOKENS_AS_MAX:
+        if key == "maxTokens" and value >= _MAX_TOKENS_AS_MAX and by_id[pid].get("max") is None:
             continue
         if key == "systemPrompt":
             if isinstance(value, str):

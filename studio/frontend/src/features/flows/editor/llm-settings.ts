@@ -63,7 +63,7 @@ const SAVED_TO_PARAM = [
   ["maxTokens", "max_tokens"],
 ] as const;
 
-/** Chat's "Max" output cap: the load's whole window, which a card has no way to know. */
+/** Chat's "Max" output cap: the load's whole window. A card takes its own ceiling, as the engine does. */
 const MAX_TOKENS_AS_MAX = 2 ** 31 - 1;
 
 const panelSpecs = new WeakMap<NodeSpec, NodeSpec>();
@@ -143,7 +143,12 @@ export function savedAsParams(
       continue;
     }
     if (typeof value !== "number" || !Number.isFinite(value)) continue;
-    if (key === "maxTokens" && value >= MAX_TOKENS_AS_MAX) continue;
+    if (
+      key === "maxTokens" &&
+      value >= MAX_TOKENS_AS_MAX &&
+      param.max === undefined
+    )
+      continue;
     let n = value;
     if (param.min !== undefined) n = Math.max(param.min, n);
     if (param.max !== undefined) n = Math.min(param.max, n);
