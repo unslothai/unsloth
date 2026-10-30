@@ -63,6 +63,7 @@ from models.providers import (
     ProviderTestRequest,
     ProviderTestResult,
     ProviderUpdate,
+    normalize_provider_extra_headers,
     validate_provider_reasoning_contract,
 )
 from storage import credential_secrets, providers_db
@@ -143,6 +144,16 @@ def _log_provider_failure(event: str, exc: Exception, **fields) -> None:
 _SHARED_READ_ONLY = "This connection is shared by the installation owner. Only they can change it."
 
 
+def _request_extra_headers(payload) -> dict[str, str]:
+    if "extra_headers" in getattr(payload, "model_fields_set", set()):
+        return normalize_provider_extra_headers(payload.extra_headers)
+    provider_id = getattr(payload, "provider_id", None)
+    if not provider_id:
+        return {}
+    row = providers_db.get_provider(provider_id)
+    return normalize_provider_extra_headers(row.get("extra_headers") if row else None)
+
+
 def _provider_response(row: dict) -> ProviderResponse:
     has_api_key = credential_secrets.provider_api_key_saved(row["id"])
     return ProviderResponse(
@@ -152,6 +163,7 @@ def _provider_response(row: dict) -> ProviderResponse:
         base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
+        extra_headers = normalize_provider_extra_headers(row.get("extra_headers")),
         is_enabled = bool(row["is_enabled"]),
         has_api_key = has_api_key,
         auth_kind = ("chatgpt_oauth" if row["provider_type"] == "openai_codex" else "api_key"),
@@ -368,6 +380,7 @@ async def create_provider_config(
             max_output_tokens = payload.max_output_tokens,
             api_type = payload.api_type,
             reasoning_config = payload.reasoning_config,
+            extra_headers = payload.extra_headers,
             shared = payload.shared,
         )
         try:
@@ -472,6 +485,7 @@ async def update_provider_config(
         "max_output_tokens",
         "api_type",
         "reasoning_config",
+        "extra_headers",
         "shared",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
@@ -513,6 +527,8 @@ async def update_provider_config(
                 if payload.reasoning_config is not None
                 else None
             )
+        if "extra_headers" in payload.model_fields_set:
+            metadata_updates["extra_headers"] = payload.extra_headers or {}
 
     # The row snapshot this request found, keyed the way update_provider takes it.
     _restorable = dict(
@@ -524,6 +540,7 @@ async def update_provider_config(
         max_output_tokens = existing.get("max_output_tokens"),
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
+        extra_headers = existing.get("extra_headers") or {},
         shared = bool(existing.get("shared")),
     )
 
@@ -545,7 +562,11 @@ async def update_provider_config(
             if field == "id":
                 continue
             # Explicit null clears nullable overrides; elsewhere it means "not sent".
-            if written is None and field not in {"max_output_tokens", "reasoning_config"}:
+            if written is None and field not in {
+                "max_output_tokens",
+                "reasoning_config",
+                "extra_headers",
+            }:
                 continue
             if not _current_matches(current, field, written):
                 continue
@@ -976,6 +997,7 @@ async def test_provider(
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
+        extra_headers = _request_extra_headers(payload),
         timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
     )
 
@@ -1165,6 +1187,7 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
+        extra_headers = _request_extra_headers(payload),
         timeout = 15.0,
     )
     try:
@@ -1251,6 +1274,7 @@ async def list_provider_models(
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
+        extra_headers = _request_extra_headers(payload),
         timeout = 15.0,
     )
 
