@@ -123,6 +123,11 @@ def test_a_hand_typed_or_inherited_folder_is_kept(monkeypatch):
     )
 
 
+def test_an_older_build_ignores_the_inherited_folder_so_the_check_does_too(monkeypatch):
+    _tools_at(monkeypatch, "/opt/bin/ffmpeg", "/opt/bin/ffprobe")
+    assert _video_ffmpeg_dir_flags({}, env = {"LLAMA_ARG_VIDEO_FFMPEG_DIR": "/env"}) == ([], None)
+
+
 def test_the_launch_command_carries_the_folder(tmp_path, monkeypatch):
     monkeypatch.delenv("LLAMA_ARG_VIDEO_FFMPEG_DIR", raising = False)
     _tools_at(monkeypatch, "/opt/bin/ffmpeg", "/opt/bin/ffprobe")

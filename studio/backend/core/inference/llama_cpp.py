@@ -5656,6 +5656,9 @@ def _video_ffmpeg_dir_flags(
 ) -> tuple[list[str], Optional[str]]:
     """Flags pinning llama-server to the ffmpeg/ffprobe Studio checked, and the directory the
     child will search (None for PATH). A user's own --video-ffmpeg-dir or env value is kept."""
+    # A build without the option ignores its env twin too, and searches PATH.
+    if not server_caps.get("supports_video_ffmpeg_dir"):
+        return [], None
     source = os.environ if env is None else env
     try:
         chosen = _last_flag_value(extra_args, frozenset({"--video-ffmpeg-dir"}))
@@ -5665,7 +5668,7 @@ def _video_ffmpeg_dir_flags(
     if chosen:
         return [], chosen
     tools = video_tools()
-    if tools is None or not server_caps.get("supports_video_ffmpeg_dir"):
+    if tools is None:
         return [], None
     ffmpeg_dir = os.path.dirname(tools[0])
     if os.path.dirname(tools[1]) != ffmpeg_dir:
