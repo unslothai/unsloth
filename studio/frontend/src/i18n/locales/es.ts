@@ -5041,6 +5041,8 @@ export const es = {
       weight: "Peso",
       bundled: "Incluida",
       user: "Tuya",
+      kindRule: "Regla",
+      kindPython: "Python",
       invalid: "No válida",
       tryTitle: "Pruébalo",
       tryCompletion: "Respuesta de ejemplo",
@@ -5087,6 +5089,7 @@ export const es = {
     prompt: {
       title: "Formato del prompt",
       description: "Lo que se le pide escribir al modelo",
+      presetHint: "Se envía antes de cada prompt. Tus recompensas leen las etiquetas que pide, así que mantén ambos en sintonía.",
       presetLabel: "Preajuste del prompt de sistema",
       presets: {
         reasoningTags: "Etiquetas de razonamiento + solución",

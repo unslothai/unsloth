@@ -10,9 +10,14 @@ import { cn } from "@/lib/utils";
 import { ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
+import { RL_PANEL_CLASS } from "../rl/rl-panel";
 import { keepNewest, shownIndex } from "./rl-sample-groups";
 
 const POLL_MS = 5000;
+
+const SCORE_CHIP_CLASS =
+  "inline-flex h-5 items-center rounded-md px-1.5 font-mono text-ui-11";
+const SAMPLE_LABEL_CLASS = "text-xs font-medium text-muted-foreground";
 
 function scoreTone(value: number | null): string {
   if (value === null || value === 0) {
@@ -42,16 +47,15 @@ function SampleItem({
   return (
     <div
       className={cn(
-        "flex flex-col gap-2 rounded-xl border p-3",
-        best
-          ? "border-emerald-300/70 dark:border-emerald-800/70"
-          : "border-border/70",
+        "flex min-w-0 flex-col gap-3 rounded-xl border p-4",
+        best ? "border-control-accent/50" : "border-border/70",
       )}
     >
       <div className="flex flex-wrap items-center gap-1.5">
         <span
           className={cn(
-            "rounded-md px-1.5 py-0.5 font-mono text-ui-11 font-medium",
+            SCORE_CHIP_CLASS,
+            "font-medium",
             scoreTone(item.total),
           )}
         >
@@ -61,7 +65,7 @@ function SampleItem({
           <span
             key={name}
             className={cn(
-              "rounded-md px-1.5 py-0.5 font-mono text-ui-10",
+              SCORE_CHIP_CLASS,
               scoreTone(value),
             )}
           >
@@ -71,19 +75,21 @@ function SampleItem({
       </div>
       <pre
         className={cn(
-          "whitespace-pre-wrap break-words font-mono text-ui-11p5 text-foreground/90",
+          "whitespace-pre-wrap break-words font-mono text-ui-11p5 leading-ui-15 text-foreground",
           !open && "line-clamp-6",
         )}
       >
         {item.completion || t("rl.samples.empty")}
       </pre>
-      <button
+      <Button
         type="button"
-        className="self-start text-ui-11 text-muted-foreground hover:text-foreground"
+        size="xs"
+        variant="ghost"
+        className="-ml-2.5 self-start text-muted-foreground"
         onClick={() => setOpen(!open)}
       >
         {open ? t("rl.samples.showLess") : t("rl.samples.showAll")}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -224,29 +230,30 @@ export function RlSamplesCard({
           {t("rl.samples.description")}
         </p>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3">
+      <CardContent className="flex flex-col gap-4">
         {errorLine}
-        <div className="grid gap-2 rounded-xl bg-muted/40 p-3 text-ui-11p5 md:grid-cols-[minmax(0,1fr)_minmax(0,14rem)]">
-          <div className="min-w-0">
-            <p className="text-ui-10 uppercase tracking-[0.05em] text-muted-foreground/70">
-              {t("rl.samples.prompt")}
-            </p>
-            <p className="line-clamp-4 whitespace-pre-wrap break-words text-foreground/90">
+        <div
+          className={cn(
+            RL_PANEL_CLASS,
+            "grid gap-4 text-ui-11p5 leading-ui-15 md:grid-cols-[minmax(0,1fr)_minmax(0,14rem)]",
+          )}
+        >
+          <div className="flex min-w-0 flex-col gap-1">
+            <p className={SAMPLE_LABEL_CLASS}>{t("rl.samples.prompt")}</p>
+            <p className="line-clamp-4 whitespace-pre-wrap break-words text-foreground">
               {group.prompt}
             </p>
           </div>
           {group.answer !== null && (
-            <div className="min-w-0">
-              <p className="text-ui-10 uppercase tracking-[0.05em] text-muted-foreground/70">
-                {t("rl.samples.answer")}
-              </p>
-              <p className="line-clamp-4 whitespace-pre-wrap break-words font-mono text-foreground/90">
+            <div className="flex min-w-0 flex-col gap-1">
+              <p className={SAMPLE_LABEL_CLASS}>{t("rl.samples.answer")}</p>
+              <p className="line-clamp-4 whitespace-pre-wrap break-words font-mono text-foreground">
                 {group.answer}
               </p>
             </div>
           )}
         </div>
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className="grid gap-4 lg:grid-cols-2">
           {group.items.map((item, i) => (
             <SampleItem
               key={`${group.seq}-${i}`}

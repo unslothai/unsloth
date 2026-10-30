@@ -4978,6 +4978,8 @@ export const hi = {
       weight: "वज़न",
       bundled: "साथ में शामिल",
       user: "आपका",
+      kindRule: "नियम",
+      kindPython: "Python",
       invalid: "अमान्य",
       tryTitle: "आज़माएं",
       tryCompletion: "उदाहरण जवाब",
@@ -5024,6 +5026,7 @@ export const hi = {
     prompt: {
       title: "प्रॉम्प्ट फ़ॉर्मेट",
       description: "मॉडल से क्या लिखवाना है",
+      presetHint: "हर प्रॉम्प्ट से पहले भेजा जाता है। आपके रिवॉर्ड वही टैग पढ़ते हैं जो यह मांगता है, इसलिए दोनों को मेल में रखें।",
       presetLabel: "सिस्टम प्रॉम्प्ट प्रीसेट",
       presets: {
         reasoningTags: "हल की प्रक्रिया + समाधान टैग",

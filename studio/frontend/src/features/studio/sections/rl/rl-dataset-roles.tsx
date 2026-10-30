@@ -47,6 +47,7 @@ import {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { RL_PANEL_CLASS } from "./rl-panel";
 
 const ROLE_LABEL: Record<RlRole, TranslationKey> = {
   prompt: "rl.dataset.role.prompt",
@@ -263,7 +264,7 @@ export function RlDatasetRoles({
     ).includes("prompt");
 
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border/70 p-3">
+    <div className={RL_PANEL_CLASS}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="flex items-center gap-1.5 text-xs font-medium text-foreground">
@@ -351,10 +352,7 @@ export function RlDatasetRoles({
                   value={role ?? IGNORE}
                   onValueChange={(next) => setRole(column, next)}
                 >
-                  <SelectTrigger
-                    size="sm"
-                    className={cn("w-full", role && ROLE_TONE[role])}
-                  >
+                  <SelectTrigger size="sm" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
