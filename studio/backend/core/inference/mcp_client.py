@@ -861,6 +861,17 @@ def _is_protocol_error(exc: BaseException) -> bool:
     return False
 
 
+def _is_session_terminated(exc: BaseException) -> bool:
+    # The mcp SDK's synthetic error for an HTTP 404 on an unknown session id (e.g. server
+    # restart): the request never ran and the session is gone, so the connection is not alive.
+    error = getattr(exc, "error", None)
+    return (
+        _is_protocol_error(exc)
+        and getattr(error, "message", None) == "Session terminated"
+        and getattr(error, "code", None) in (32600, -32600)
+    )
+
+
 def _transport_dead(session) -> bool:
     """Only stdio can prove a transport dead; HTTP always reads unknown, so this returns False there."""
     client = getattr(session, "client", None)
@@ -918,7 +929,7 @@ def _session_responsive(
         return not timeout_is_fatal
     except Exception as exc:  # noqa: BLE001
         # A JSON-RPC error means the transport works; reconnecting would lose session state.
-        if not _is_protocol_error(exc):
+        if _is_session_terminated(exc) or not _is_protocol_error(exc):
             return False
     session.dirty = False
     session.proved_at = time.monotonic()
@@ -2233,13 +2244,18 @@ def _call_session_tool(
                 # Intentional close may look like a transport error or AttributeError; do not treat as crash
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
+            if _is_session_terminated(exc):
+                # A 404 means the server never processed the request, so reconnect and replay once.
+                discard_session = True
+                retry = attempt == 0
             # Protocol error = server alive, keep session. Transport error: evict but DO NOT replay.
-            if _is_protocol_error(exc):
+            elif _is_protocol_error(exc):
                 # A protocol error means the server replied, so keep the session but probe it before the next call.
                 session.dirty = True
             elif not _is_tool_error(exc):
                 discard_session = True
-            raise
+            if not retry:
+                raise
         finally:
             if slot is not None:
                 session.posts.settle(slot, abandoned = False)
