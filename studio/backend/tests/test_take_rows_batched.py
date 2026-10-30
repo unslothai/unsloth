@@ -142,8 +142,32 @@ def test_take_rows_builds_the_schema_per_batch_not_per_row(tmp_path, monkeypatch
     row_by_row = len(calls)
     calls.clear()
     assert take_rows(make(), 2345) == expected
-    assert row_by_row >= 2345
-    assert 0 < len(calls) <= 10
+    # datasets 3.4 builds the schema once per stream on both paths; later releases build it per row.
+    assert len(calls) <= min(10, row_by_row)
+
+
+def test_take_rows_matches_when_files_drift_from_declared_features(tmp_path):
+    # README features with per-file inferred schemas that differ: datasets 4.3 cannot join the two
+    # files into one Arrow batch (ArrowInvalid), so take_rows must fall back to the row-by-row read.
+    (tmp_path / "data").mkdir()
+    (tmp_path / "README.md").write_text(
+        "---\ndataset_info:\n  features:\n  - name: a\n    dtype: int64\n  - name: b\n"
+        "    dtype: string\n  - name: c\n    dtype: float64\nconfigs:\n- config_name: default\n"
+        "  data_files:\n  - split: train\n    path: data/*.jsonl\n---\n",
+        encoding = "utf-8",
+    )
+    _jsonl(tmp_path / "data", "1.jsonl", [{"a": i, "b": None, "c": i} for i in range(600)])
+    _jsonl(tmp_path / "data", "2.jsonl", [{"b": f"s{i}", "a": i, "c": i + 0.5} for i in range(600)])
+
+    def make():
+        return load_dataset(str(tmp_path), split = "train", streaming = True)
+
+    assert make().features
+    for count in (599, 1100, 5000):
+        expected = list(make().take(count))
+        got = take_rows(make(), count)
+        assert got == expected
+        assert [list(row) for row in got] == [list(row) for row in expected]
 
 
 def test_take_rows_reads_row_by_row_when_batches_disagree():
