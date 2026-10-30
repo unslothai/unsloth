@@ -109,7 +109,12 @@ def retire_account_scheduled_tasks(account: AccountContext) -> None:
 
 
 def next_run_for(task: dict, after_ms: int) -> Optional[int]:
-    return next_run_after(parse_schedule(task["schedule"]), task["timezone"], after_ms)
+    return next_run_after(
+        parse_schedule(task["schedule"]),
+        task["timezone"],
+        after_ms,
+        anchor_ms = task.get("nextRunAt"),
+    )
 
 
 def system_prompt(task: dict, now_ms: int) -> str:
