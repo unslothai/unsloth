@@ -1202,3 +1202,31 @@ def test_a_windows_worker_that_cannot_cap_itself_loads_no_reward(monkeypatch, tm
     ready = json.loads((tmp_path / "ready.json").read_text(encoding = "utf-8"))
     assert loaded == [] and ready["loaded"] == []
     assert "memory limit" in ready["errors"]["greedy"]
+
+
+def test_an_image_named_text_column_is_not_kept_for_python_rewards():
+    # TRL would read it as images, and keeping it also stopped the prompts' tools from rendering.
+    from datasets import Dataset
+
+    tool = {"type": "function", "function": {"name": "add", "parameters": {"type": "object"}}}
+    rows = [{"q": "1+1?", "answer": "2", "image": "none", "note": "n", "tools": [tool]}]
+    out = rl.format_rl_dataset(
+        Dataset.from_list(rows), "grpo", {"q": "prompt", "answer": "answer"}, keep_columns = ("*",)
+    )
+    out = out[0] if isinstance(out, tuple) else out
+    assert "image" not in out.column_names and "note" in out.column_names
+
+    class Tok:
+        chat_template = "{{ tools }}"
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = False,
+            **kw,
+        ):
+            return f"tools={bool(kw.get('tools'))}"
+
+    rendered, _ = rl.render_grpo_prompts(out, Tok(), None)
+    assert rendered[0]["prompt"] == "tools=True"

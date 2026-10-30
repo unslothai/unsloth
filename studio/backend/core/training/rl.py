@@ -40,6 +40,9 @@ _AUTO_ROLE_NAMES = {
 }
 _RL_ROW_KEYS = ("prompt", "answer", "chosen", "rejected")
 _TRL_SCHEMA_KEYS = ("messages", "completion", "label")
+# GRPOTrainer feeds a column with one of these names to the processor as images; RL here is
+# text-only (image datasets are refused), so such a column is not real image data.
+_TRL_IMAGE_KEYS = ("image", "images")
 # Names TRL's GRPOTrainer passes to every reward itself (grpo_trainer.py, the reward_func call and
 # the reward_kwargs it adds), so a dataset column with one of them collides or is overwritten.
 _REWARD_CALL_KEYS = (
@@ -275,9 +278,10 @@ def format_rl_dataset(
     # Rewards read their compare_to column by name, so keep it even when it also fills a role.
     # "*": Python rewards can read any column, so keep them all. TRL passes its own reward
     # arguments by name, so a column called one of them would collide.
-    # TRL reads these as dataset schema keys and refuses them beside a prompt.
+    # TRL reads these as dataset schema keys and refuses them beside a prompt, and an image-named
+    # column as images.
     wanted = (
-        [c for c in columns if c not in _RL_ROW_KEYS + _TRL_SCHEMA_KEYS]
+        [c for c in columns if c not in _RL_ROW_KEYS + _TRL_SCHEMA_KEYS + _TRL_IMAGE_KEYS]
         if "*" in keep_columns
         else keep_columns
     )
