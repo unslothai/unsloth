@@ -458,8 +458,7 @@ def test_torch_fallback_without_the_zoo_kernel(monkeypatch):
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 def test_torch_fallback_runs_ldexp_on_the_operands_gpu(dtype, monkeypatch):
-    # torch.ldexp (>= 2.11) launches on the current device: with the operands on cuda:1 and cuda:0 current it
-    # decodes garbage or faults. float32 always takes this path (the zoo decoder serves only fp16 / bf16).
+    # float32 always takes this path (the zoo decoder serves only fp16 / bf16).
     import contextlib
     from torch._subclasses.fake_tensor import FakeTensorMode
     import unsloth.models.mxfp4_compressed_linear as mcl

@@ -74,8 +74,8 @@ def mxfp4_keep_packed_enabled() -> bool:
 
 
 def _operand_device_guard(tensor):
-    """Make ``tensor``'s GPU current: torch.ldexp (>= 2.11) launches on the current device, so operands on another
-    GPU (a model split across cards) decode garbage or fault. Compiled code gets Inductor's own device guard."""
+    """Make ``tensor``'s GPU current: torch.ldexp (>= 2.11) launches on the current device, so split-model operands
+    decode garbage or fault otherwise. Compiled code gets Inductor's own guard."""
     device = tensor.device
     if device.index is None or device.type not in ("cuda", "xpu") or torch.compiler.is_compiling():
         return contextlib.nullcontext()
