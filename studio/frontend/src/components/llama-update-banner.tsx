@@ -258,7 +258,7 @@ export function LlamaUpdateBanner({
   }
   const rows = jobRows ?? liveRows;
   const components = rows.map((row) => row.component);
-  // The toast text comes from llama-job-lifecycle in English, so it keeps the English list.
+  // llama-job-lifecycle builds the toast in English.
   const toastLabel = updateComponentsLabel(components);
   const label =
     components.length > 1

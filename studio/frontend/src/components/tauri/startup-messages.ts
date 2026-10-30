@@ -1,6 +1,5 @@
 import type { TranslationKey } from "@/i18n";
 
-// Message keys, not text: the screen translates them, so a language switch mid-start still applies.
 export const INITIAL_STARTUP_MESSAGE = "desktopStartup.starting";
 export const MODELS_STARTUP_MESSAGE = "desktopStartup.loadingModels";
 export const SERVER_STARTUP_MESSAGE = "desktopStartup.nearlyDone";

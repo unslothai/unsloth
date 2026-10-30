@@ -168,7 +168,6 @@ function modelDisplayName(modelName?: string): string | null {
   return modelName.split("/").pop() || modelName;
 }
 
-/** Fills `{name}` slots with nodes so the model and provider keep their emphasis in any word order. */
 function fillSlots(template: string, slots: Record<string, ReactNode>): ReactNode[] {
   return template
     .split(/\{(\w+)\}/)

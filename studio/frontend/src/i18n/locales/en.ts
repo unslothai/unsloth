@@ -5197,7 +5197,7 @@ export const en = {
     unsafeTitle: "Unsafe files detected",
     blockedTitle: "Custom code blocked",
     enableTitle: "Enable custom code for this model?",
-    // {model} and {provider} render emphasized ({provider} with its quotes); {note} is one of the three notes below.
+    // {provider} renders with its quotes; {note} is one of the notes below.
     thisModel: "This model",
     unsafeBody:
       "{model} contains files that Hugging Face's security scan flagged as unsafe (for example, a malicious pickle that would run code when the model loads). It cannot be loaded. The flagged files were never downloaded.",
@@ -5217,7 +5217,6 @@ export const en = {
     enableAndContinue: "Enable and continue",
   },
   tour: {
-    // Rendered lowercase in a mono pill after "1/5".
     badge: "guided tour",
     defaultTitle: "Quick tour",
     defaultBody: "Let’s get you oriented.",
@@ -5261,7 +5260,7 @@ export const en = {
     useDefaultLocation: "Use default",
     longPaths: {
       title: "Windows will ask for permission",
-      // {tool} is the Windows app name "Registry Console Tool", shown in bold and never translated.
+      // {tool}: "Registry Console Tool", never translated.
       approve:
         "Approve {tool} once to turn on long file paths for compiled kernels.",
       waiting: "Waiting for Windows permission...",
@@ -5369,7 +5368,7 @@ export const en = {
     close: "Close window",
   },
   runtimeUpdate: {
-    // {component} is a runtime name (llama.cpp, whisper.cpp, audio.cpp); {components} a list of them.
+    // {component}: llama.cpp, whisper.cpp or audio.cpp; {components}: a list of them.
     installAudio: "Install the audio runtime",
     installingAudio: "Installing the audio runtime...",
     unknownVersion: "unknown",
@@ -5384,7 +5383,7 @@ export const en = {
     vulkanFaster: "Vulkan is >10% faster than ROCM. No restart needed",
     noRestart: "No restart needed",
     downloadSize: "{size} download",
-    // {change} is "<from backend> → <to backend>".
+    // {change}: "<from backend> → <to backend>".
     backendChange: "{change} backend",
     updating: "Updating {component}...",
     updatingLabel: "Updating {component}",
