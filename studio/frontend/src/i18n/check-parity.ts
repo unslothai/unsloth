@@ -8,7 +8,6 @@ import { ar } from "./locales/ar.ts";
 import { cs } from "./locales/cs.ts";
 import { de } from "./locales/de.ts";
 import { en } from "./locales/en.ts";
-import { es419 } from "./locales/es-419.ts";
 import { es } from "./locales/es.ts";
 import { fa } from "./locales/fa.ts";
 import { fr } from "./locales/fr.ts";
@@ -21,7 +20,6 @@ import { ko } from "./locales/ko.ts";
 import { nl } from "./locales/nl.ts";
 import { pl } from "./locales/pl.ts";
 import { ptBR } from "./locales/pt-br.ts";
-import { ptPT } from "./locales/pt-pt.ts";
 import { ru } from "./locales/ru.ts";
 import { sv } from "./locales/sv.ts";
 import { th } from "./locales/th.ts";
@@ -87,7 +85,6 @@ function checkOverlay(
         errors.push(`${subPath} should be an object, got ${typeof overlaySub}`);
         continue;
       }
-      // `section: en.section` passes the key check but ships English.
       if (overlaySub === v) {
         errors.push(`${subPath} reuses the English subtree; translate it`);
         continue;
@@ -135,8 +132,6 @@ const overlays: Record<string, Tree> = {
   ko: ko as unknown as Tree,
   it: it as unknown as Tree,
   "zh-TW": zhTW as unknown as Tree,
-  "es-419": es419 as unknown as Tree,
-  "pt-PT": ptPT as unknown as Tree,
   id: id as unknown as Tree,
   vi: vi as unknown as Tree,
   tr: tr as unknown as Tree,

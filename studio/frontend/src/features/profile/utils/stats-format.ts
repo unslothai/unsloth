@@ -226,16 +226,6 @@ const PROFILE_COUNT_TEMPLATES = {
     message: { other: "{value} 則訊息" },
     step: { other: "{value} 步" },
   },
-  "es-419": {
-    token: { one: "{value} token", other: "{value} tokens" },
-    message: { one: "{value} mensaje", other: "{value} mensajes" },
-    step: { one: "{value} paso", other: "{value} pasos" },
-  },
-  "pt-PT": {
-    token: { one: "{value} token", other: "{value} tokens" },
-    message: { one: "{value} mensagem", other: "{value} mensagens" },
-    step: { one: "{value} passo", other: "{value} passos" },
-  },
   id: {
     token: { other: "{value} token" },
     message: { other: "{value} pesan" },

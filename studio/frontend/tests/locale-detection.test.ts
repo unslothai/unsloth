@@ -31,33 +31,7 @@ test("Traditional Chinese tags pick zh-TW, Simplified ones zh-CN", () => {
   for (const tag of ["zh", "zh-CN", "zh-SG", "zh-Hans", "zh-Hans-HK"]) {
     assert.equal(detect(tag), "zh-CN", tag);
   }
-  // The bare zh a browser appends after zh-TW must not win over it.
   assert.equal(detect("zh-TW", "zh"), "zh-TW");
-});
-
-test("Latin American Spanish picks es-419, other Spanish es", () => {
-  for (const tag of [
-    "es-419",
-    "es-MX",
-    "es-AR",
-    "es-CO",
-    "es-CL",
-    "es-PE",
-    "es-US",
-    "es-PR",
-    "es-Latn-UY",
-  ]) {
-    assert.equal(detect(tag), "es-419", tag);
-  }
-  for (const tag of ["es", "es-ES", "es-GQ"])
-    assert.equal(detect(tag), "es", tag);
-});
-
-test("European and African Portuguese pick pt-PT, Brazil and bare pt pt-BR", () => {
-  for (const tag of ["pt-PT", "pt-AO", "pt-MZ"]) {
-    assert.equal(detect(tag), "pt-PT", tag);
-  }
-  for (const tag of ["pt", "pt-BR"]) assert.equal(detect(tag), "pt-BR", tag);
 });
 
 test("other new languages match by their base subtag", () => {
