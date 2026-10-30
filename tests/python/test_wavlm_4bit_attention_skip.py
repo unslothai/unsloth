@@ -97,9 +97,11 @@ def test_transformers_4_matcher_keeps_wavlm_attention_and_a_bart_decoder_quantiz
 def _zoo_transformers5_skips(name, keys):
     """unsloth_zoo's patched transformers 5 `should_convert_module`: regex prefix, suffix, or a path component."""
     import re
-
     return any(
-        re.match(f"{k}\\.", name) or re.match(k, name) or name.endswith(k) or f".{k}." in f".{name}."
+        re.match(f"{k}\\.", name)
+        or re.match(k, name)
+        or name.endswith(k)
+        or f".{k}." in f".{name}."
         for k in keys
     )
 
@@ -107,14 +109,23 @@ def _zoo_transformers5_skips(name, keys):
 def _wavlm_bert_speech_encoder_decoder_linears(num_layers = 24):
     """Linear names of SpeechEncoderDecoderModel(WavLM encoder, BERT decoder with cross-attention),
     the same on transformers 4.57 and 5.x."""
-    names = ["encoder.feature_projection.projection", "decoder.cls.predictions.transform.dense", "decoder.cls.predictions.decoder"]
+    names = [
+        "encoder.feature_projection.projection",
+        "decoder.cls.predictions.transform.dense",
+        "decoder.cls.predictions.decoder",
+    ]
     for i in range(num_layers):
         enc = f"encoder.encoder.layers.{i}."
-        names += [enc + "attention." + p for p in ("q_proj", "k_proj", "v_proj", "out_proj", "gru_rel_pos_linear")]
+        names += [
+            enc + "attention." + p
+            for p in ("q_proj", "k_proj", "v_proj", "out_proj", "gru_rel_pos_linear")
+        ]
         names += [enc + "feed_forward.intermediate_dense", enc + "feed_forward.output_dense"]
         dec = f"decoder.bert.encoder.layer.{i}."
         for attn in ("attention", "crossattention"):
-            names += [dec + attn + ".self." + p for p in ("query", "key", "value")] + [dec + attn + ".output.dense"]
+            names += [dec + attn + ".self." + p for p in ("query", "key", "value")] + [
+                dec + attn + ".output.dense"
+            ]
         names += [dec + "intermediate.dense", dec + "output.dense"]
     return names
 
@@ -156,6 +167,8 @@ def test_a_bert_decoder_attention_is_still_quantized(matcher):
     kept = {n for n in linears if matcher(n, skip)}
     decoder_kept = sorted(n for n in kept if n.startswith("decoder."))
     assert not decoder_kept, decoder_kept
-    encoder_attention = {n for n in linears if n.startswith("encoder.encoder.layers.") and ".attention." in n}
+    encoder_attention = {
+        n for n in linears if n.startswith("encoder.encoder.layers.") and ".attention." in n
+    }
     assert {n for n in encoder_attention if not n.endswith("gru_rel_pos_linear")} <= kept
     assert kept <= encoder_attention
