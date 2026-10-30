@@ -189,9 +189,8 @@ def scan_tests() -> dict[str, list[tuple[int, str]]]:
 
 class TestEveryPwshCallUsesTheSharedRunner:
     def test_no_test_file_spawns_powershell_directly(self):
-        """The guard itself. A new direct call site fails here with its own line number,
-        rather than as an unrelated FileLoadException in someone else's test a month
-        later."""
+        """The guard itself: a new direct call site fails here with its own line number, not as an
+        unrelated FileLoadException in another test."""
         offenders = {
             rel: calls
             for rel, calls in scan_tests().items()

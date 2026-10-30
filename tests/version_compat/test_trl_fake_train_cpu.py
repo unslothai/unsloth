@@ -274,9 +274,8 @@ def test_dpo_trains_on_cpu(tmp_path):
 
     from trl.trainer import dpo_trainer
 
-    # TRL 1.15 scores DPO through its fused LM head, a Triton kernel with no CPU path, so
-    # plain TRL cannot train DPO on a CPU either. Only skip when that is what the installed
-    # TRL does, so an older TRL still has to train here.
+    # TRL 1.15 scores DPO through a fused LM head (a Triton kernel with no CPU path); skip only when
+    # the installed TRL does this, so older TRL still trains here.
     if "fused_lm_head=True" in inspect.getsource(dpo_trainer):
         pytest.skip("this TRL computes DPO log-probs with a Triton GPU kernel only")
     model, tok = _load_plain()

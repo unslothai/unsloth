@@ -885,14 +885,9 @@ def _flex_kernel_options_for_head_dim(head_dim):
     return dict(_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS)
 
 
-# Inductor's sm8x default flex BACKWARD config at 128 < head_dim <= 256 is (64, 64, 64, 64,
-# 2 stages, 4 warps). On an A100 (sm80) that config runs about 10x slower than a 32 x 32 tile with
-# one stage: Gemma 3 4B shapes (8 query / 4 kv heads, head_dim 256, bf16) fwd+bwd, causal
-# B8 x 1024: 32.4 ms default vs 3.2 ms; sliding 1024 window B2 x 4096: 53.3 vs 4.8 ms; causal
-# B2 x 4096: 115.3 vs 9.5 ms. In Gemma 3 4B LoRA training the flex backward was half of an A100
-# step. B200 (sm100, its own default) is faster on the default, so only the measured capability
-# gets the override. Backward only ("bwd_" keys): the forward template is unchanged, and so is the
-# math (tile sizes only reorder the float32 accumulation).
+# Default flex backward tiles are about 10x slower on sm80 for 128 < head_dim <= 256, so only that
+# capability gets the override (B200 keeps default); backward only, forward and math unchanged since
+# tile sizes only reorder fp32 accumulation
 _FLEX_TUNED_BWD_HEAD_DIM_RANGE = (128, 256)  # (exclusive low, inclusive high)
 _FLEX_TUNED_BWD_CAPABILITIES = ((8, 0),)
 _FLEX_TUNED_BWD_KERNEL_OPTIONS = {
@@ -966,9 +961,8 @@ def _flex_tuned_bwd_fits(
         return False
 
 
-# sm86 / sm89 (A10, RTX 3090 / 4090, A6000, L4, L40S; 101376 B shared memory): Inductor's default
-# flex tiles at 128 < head_dim <= 256 need 114688-151552 B and fail to compile, so Gemma 3 went to
-# eager. These fit and were the fastest that compiled on an L4. "fwd_" / "bwd_" keys need torch 2.10+.
+# Inductor default flex tiles overflow sm86/sm89 shared memory (101376 B) at 128 < head_dim <= 256;
+# the fwd_ and bwd_ kernel option keys need torch 2.10 or newer
 _FLEX_SMALL_SMEM_KERNEL_OPTIONS = {
     "fwd_BLOCK_M": 64,
     "fwd_BLOCK_N": 64,
@@ -1193,9 +1187,8 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and small_smem_device_ok
             and hasattr(query, "dim")
             and query.dim() == 4
-            # Short no-grad queries go to flex_decoding, whose own tiles are left alone, unless the
-            # caller (the block compile hook, also for no-grad checkpoint forwards) forces the main
-            # kernel. Shape last, so training calls add no seq >= 128 guard.
+            # Short no-grad queries use flex_decoding unless the main kernel is forced; the shape
+            # guard is last.
             and (
                 _flex_call_needs_backward(query, key, value)
                 or _flex_main_kernel_forced(kwargs)
@@ -5531,8 +5524,7 @@ def config_return_dict(config):
 
 
 def is_bfloat16_supported():
-    # XPU: ask again, so a torch.xpu.set_device after import is seen, as the trainer's live
-    # unsloth_zoo probe sees it. Cheap (device properties only).
+    # XPU is re-checked each call so a torch.xpu.set_device after import is seen.
     if DEVICE_TYPE == "xpu" and zoo_shares_xpu_bf16():
         return xpu_supports_native_bf16()
     if _BF16_BY_DEVICE is None:
@@ -6397,8 +6389,7 @@ def patch_gradient_accumulation_fix(Trainer):
 
         @functools.wraps(_original_call_model_init)
         def _unsloth_call_model_init(self, *args, **kwargs):
-            # model_init rebuilds the model when training starts: the new instance needs the same
-            # DDP exclusions as the one __init__ marked.
+            # model_init builds a new model, which needs the same DDP exclusions as __init__.
             model = _original_call_model_init(self, *args, **kwargs)
             _refuse_tensor_parallel_for_trainer(model)
             _tensor_subclass_weights_for_ddp(self, model)
@@ -9575,9 +9566,8 @@ def _nvfp4_any_rank_forward(self, x):
     # torchao's NVFP4FakeQuantizedLinear flattens only rank-3 inputs (vision layers see rank 4+), and
     # its quantizer asserts contiguous bfloat16 / float32 activations (nvfp4_quantize).
     out_dtype = None
-    # float16 autocast hands over float16 activations (an earlier Linear / SDPA); prepare only
-    # admits bfloat16 / float32 weights, so quantize from the weight dtype and return what an
-    # autocast Linear would: the autocast dtype, not the input's.
+    # Float16 autocast: cast input to the weight dtype (prepare admits only bfloat16 or float32
+    # weights); return the autocast dtype rather than the input dtype
     if x.dtype == torch.float16 and torch.is_autocast_enabled(x.device.type):
         out_dtype = torch.get_autocast_dtype(x.device.type)
         x = x.to(self.weight.dtype)
@@ -9953,9 +9943,7 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     torchao_config = getattr(model, "torchao_config", None)
     if torchao_config is not None and torchao_config.qat_scheme is None:
         return torch.no_grad()
-    # FSDP keeps the parameters it all-gathers for one forward and reuses them in the next, so a
-    # gather under inference mode poisons the training step: "Inference tensors cannot be saved
-    # for backward" (unsloth#3551). TRL generates under no_grad for the same reason.
+    # FSDP reuses gathered params, so a gather under inference mode breaks backward (unsloth 3551).
     import os, sys
 
     if os.environ.get("ACCELERATE_USE_FSDP", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -10602,8 +10590,7 @@ class _AutoCheckpointSkip:
             for p in trainable
             if p.device == device and not self._has_optimizer_state(p)
         )
-        # foreach AdamW allocates about one fp32 copy of the params (sqrt of exp_avg_sq) every step,
-        # on each param's own card.
+        # foreach AdamW allocates a float32 copy of each param every step, on its own device.
         optimizer += sum(p.numel() * 4 for p in trainable if p.device == device)
         self.optimizers = []
         headroom = usable_cuda_bytes(device) - activation_peak - optimizer

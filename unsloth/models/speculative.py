@@ -72,11 +72,8 @@ def get_mtp_head(
     random_init = False,
     dtype = None,
 ):
-    """Load the model's native MTP head, attach it to `model`, and return it.
-
-    source: repo id / folder with the `mtp.*` tensors (default: the loaded checkpoint).
-    random_init: random weights, for checkpoints without a head. dtype: default float32.
-    """
+    """Attach the native MTP head to model from source (default: loaded checkpoint) or from random
+    weights with random_init; dtype defaults to float32."""
     import torch
 
     if source is None and not random_init:

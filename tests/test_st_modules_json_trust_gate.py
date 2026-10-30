@@ -1411,9 +1411,8 @@ def test_an_unparseable_manifest_is_tolerated_where_upstream_gates_it(tmp_path, 
 
 
 def test_a_manifest_that_is_not_a_list_is_not_a_refusal(tmp_path, monkeypatch):
-    """A modules.json that is not a list names no modules, and the loader iterates it too,
-    so it cannot build a module from this either. Refusing would only break a load that
-    upstream fails on its own."""
+    """A non-list modules.json names no modules and the loader iterates it too, so the gate cannot
+    build a module from it; refusing would only break a load upstream fails on its own."""
     _simulate_pre_six(monkeypatch)
 
     odd = tmp_path / "models--acme--embedder" / "snapshots" / ("c" * 40)

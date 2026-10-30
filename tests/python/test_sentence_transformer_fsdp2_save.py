@@ -20,8 +20,7 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "two gloo rank
 
 
 def _failed(results):
-    """A rank that raised (in backward, in the save) can leave its peer blocked in a collective:
-    once one has, wait only briefly for the other."""
+    """A raising rank can strand its peer in a collective, so wait only briefly for the other."""
     return any(
         out.get("error") or any(isinstance(c, dict) and c.get("error") for c in out.values())
         for out in results.values()

@@ -33,8 +33,7 @@ __all__ = [
     "end_generation",
 ]
 
-# The graph-mode statics of the step this thread is warming up / capturing (static()); per thread,
-# so another thread's (or model's) eager decode never reads them.
+# Graph-mode statics are per thread, so another thread's eager decode never reads them.
 _TLS = threading.local()
 # Bumped whenever a persistent decode buffer is (re)allocated or resized.
 BUFFER_EPOCH = 0
@@ -533,8 +532,7 @@ def decode_step(
         or paged.shape[2] != bsz
         or input_ids.shape[1] != 1
     ):
-        # First decode step after a prefill (allocates / fills the cache), or a cache this path
-        # did not size.
+        # Eager on the first decode step after prefill, or on a cache this path did not size.
         state.eager_steps += 1
         return None
     seq_len = past_key_values[0][0].shape[-2]
@@ -680,12 +678,10 @@ def _capture(
         stream.synchronize()
 
         def split(fn):
-            # Close the segment, run the attention core once (its output address is what the next
-            # segment reads), open the next segment.
+            # Core output address is read by the next segment; run it once between segments.
             _end(step.segments[-1])
-            # Two calls with the first result alive: the same address means the core writes into a
-            # persistent buffer (bsz == 1 writes the query buffer); else (SDPA allocates) its
-            # result is copied into a fixed buffer.
+            # Two calls with the first result alive: same address means a persistent buffer, else
+            # copy into one.
             out = fn()
             fixed = out if fn().data_ptr() == out.data_ptr() else torch.empty_like(out)
             step.cores.append(fn if fixed is out else (lambda: fixed.copy_(fn())))

@@ -63,14 +63,9 @@ def test_the_full_suite_runs_on_the_ceiling():
 
 
 def test_the_pre_312_branches_are_still_executed_somewhere():
-    """What the dropped legs actually took away, and where it went.
-
-    Seven backend files carry a sys.version_info branch. The 3.10 ones were never
-    straddled even by the old matrix, whose oldest leg was 3.10, so every leg took the
-    same side of them. 3.14 is above every leg there has ever been. The pre-3.12 side is
-    the only thing a 3.13-only matrix stops executing, so it keeps a leg of its own,
-    running those files and nothing else.
-    """
+    """Seven backend files carry sys.version_info branches; the 3.10 ones were never straddled, and
+    a 3.13-only matrix stops running the pre-3.12 side, so the floor-spot-check leg runs those
+    files alone."""
     legs = _legs()
     spot = legs.get("floor-spot-check")
     assert spot, (

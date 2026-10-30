@@ -996,11 +996,10 @@ def _legacy_and_mismatched_loads(rank, model, saved, out):
 
 
 def _case_dcp_quant_state_missing(rank, world_size, m):
-    """A full DCP state dict holding a packed 4-bit weight but none of its QuantState entries loads
-    only when the bytes are the live ones (older checkpoints of a frozen base); other bytes would be
-    paired with the live scales and must not load. One without the packed weight still loads.
-    The broadcast_from_rank0 presence check must not send a CPU tensor through the process group
-    (NCCL rejects those): with tensor broadcasts of CPU tensors refused, the restore still works."""
+    """A full DCP state dict with a packed 4-bit weight but no QuantState entries loads only with
+    the live bytes (older frozen-base checkpoints); one without the packed weight still loads;
+    the broadcast_from_rank0 presence check must not send CPU tensors through NCCL, which rejects
+    them."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions
     import torch.distributed as dist
     import torch.distributed.checkpoint.state_dict as dcp
@@ -1326,10 +1325,9 @@ def test_merge_offload_keeps_4bit_adapters_after_an_eval_forward():
 
 
 def test_packed_4bit_save_stages_bytes_and_quant_state_on_the_cpu():
-    """A full save of a sharded NF4 model kept every gathered packed weight on rank 0's accelerator,
-    so the whole quantized base had to fit on one GPU. Saves that only write the bytes now get them
-    on the CPU, with a CPU copy of the QuantState; the merge path is unchanged and the written state
-    dict is byte for byte the same."""
+    """A full save of a sharded NF4 model kept all gathered packed weights on rank 0's accelerator;
+    bytes-only saves now stage them on the CPU with a CPU copy of the QuantState, and the merge
+    path writes a byte-for-byte identical state dict."""
     pytest.importorskip("bitsandbytes")
     r0 = _run("gather_4bit_offload")[0]
     kept, staged = r0[False], r0[True]
@@ -1384,11 +1382,9 @@ def test_full_dcp_broadcast_load_restores_quant_state_over_nccl():
 
 
 def test_merged_4bit_save_streams_the_packed_base_one_layer_at_a_time():
-    """merged_4bit of a sharded NF4 QLoRA kept every gathered packed weight on rank 0's accelerator
-    until PEFT merged them all, so the whole quantized base had to fit on one GPU next to its shards.
-    The gather now stages each packed weight on the CPU right after gathering it, and the merge
-    brings one layer back at a time (restage, merge, restage), writing the same bytes as an unsharded
-    merge and as the previous placement."""
+    """merged_4bit of sharded NF4 QLoRA stages each packed weight on the CPU and merges one layer at
+    a time (restage, merge, restage), so the whole base need not fit on one GPU; bytes match an
+    unsharded merge."""
     pytest.importorskip("bitsandbytes")
     pytest.importorskip("peft")
     r0 = _run("merged_4bit_streamed")[0]

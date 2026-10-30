@@ -293,9 +293,8 @@ def test_the_entrypoint_syncs_the_notebooks_before_every_exec():
 
 
 def test_the_publisher_passes_every_build_arg_the_final_stage_declares():
-    """Each ARG after the final FROM is a ref a RUN layer is keyed on. One the
-    publisher leaves at its default bakes a mutable 'main' that docker matches on
-    the next run, so the published image would carry the first build's bits."""
+    """Every ARG after the final FROM keys a RUN layer; one left at its default bakes a mutable main
+    ref that docker matches on the next run, so the image would carry old bits."""
     import yaml
 
     text = _read(ROCM_STUDIO)

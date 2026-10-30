@@ -48,10 +48,9 @@ except ValueError:
     _CUDAGRAPH_MAX_SHAPES = 2
 
 
-# Process wide: every block class shares one cudagraph tree (one pool per device).
-# off: why graphs went off (None = on); release: None, "done" or "kept"; ours: compile ids of the
-# tree functions block calls created; built: compile ids the graphs-on block backend compiled;
-# managers: CUDA index -> the tree manager block graphs ran on.
+# Process-wide cudagraph state (one tree, one pool per device): off = why graphs went off, None =
+# on; release = None, done or kept; ours = compile ids of tree functions block calls made; built =
+# compile ids the graphs-on backend compiled; managers = CUDA index to tree manager
 def _new_cudagraph_state():
     return {
         "off": None,
@@ -146,9 +145,7 @@ def _block_backend(options):
 
 
 def _graphed_call(compiled, device, *args, **kwargs):
-    """Call the graphs-on region; note the compile ids of tree functions it created (forward here,
-    the backward of the same compile later) that the block backend built, so the release can tell
-    its pool is only ours."""
+    """Records the compile ids of tree functions this block built, so release knows the pool is ours."""
     managers = _CUDAGRAPH_STATE["managers"]
     manager = managers.get(device)
     if manager is None:
@@ -286,9 +283,7 @@ def _watch_hidden_states(model):
 
 
 def _pool_outputs_stay_valid(layer, hidden_states):
-    """A grad-mode call outside backward leaves a forward pending, so cudagraph trees start no new
-    generation (can_start_new_generation) and its outputs need no copy out of the pool. Checkpointed
-    calls (no-grad forward, recompute in backward, and the trial standing in for it) may start one."""
+    """Grad-mode calls outside backward leave a forward pending, so their outputs stay valid in the pool."""
     return (
         not _IN_TRIAL[0]
         and not _HIDDEN_STATES_EXPOSED[0]
@@ -340,8 +335,7 @@ def _input_grad_must_leave_pool(hidden_states):
 _ADDITIVE_BACKWARD = ("AddmmBackward", "BaddbmmBackward")
 
 
-# Backward nodes that write their input gradient to new storage (a view, add, clone or cat passes
-# on the incoming gradient or a narrowed view of it).
+# Backward ops that allocate fresh storage for the input gradient (not a view, add or cat).
 _ALLOCATING_BACKWARD = (
     "MmBackward",
     "AddmmBackward",
@@ -450,10 +444,7 @@ def _flex_block_mask_call(
     return False
 
 
-# Auto mode. Graphs remove launch overhead only: they pay off when the host takes longer to launch a
-# block than the GPU takes to run it, and cost a recording per batch shape. Forward passes 1-2 run
-# without graphs (compile); pass 3 times a few block calls; graphs start at the next pass when every
-# call so far had one batch shape and launching was slower than running by _AUTO_RATIO.
+# Auto: graphs start when launch time exceeds GPU time by _AUTO_RATIO and all calls had one shape.
 _AUTO_WARMUP_PASSES = 2
 _AUTO_MEASURE_CALLS = 4
 _AUTO_SLEEP_CYCLES = 20_000_000  # ~10-15 ms: the block's launches queue behind it
@@ -591,11 +582,8 @@ def _auto_decide(auto, device):
 
 
 def _auto_time(call, device):
-    """(output, host seconds to launch one block call, GPU seconds to run it). The launches queue
-    behind a GPU sleep, so the event pair after the sleep sees the block's kernels back to back; if
-    launching outlasts the sleep the GPU time includes gaps, which can only understate the ratio.
-    Sleep and events run on the block's device (cuda:1 or a device_map shard need not be current).
-    Host / GPU are None when timing is unavailable."""
+    """Sleep and events run on the block device (cuda:1 or a device_map shard need not be current);
+    the sleep lets launches queue behind it; host and GPU are None when timing is unavailable"""
     try:
         guard = torch.cuda.device(device)
     except Exception:
@@ -667,11 +655,9 @@ except Exception:
 
 
 def _no_ddp_graph_split():
-    """Inside DDP.forward dynamo hands a block's graph to DDPOptimizer, which splits it at gradient
-    bucket boundaries. A checkpoint recompute runs from backward, outside DDP.forward, so a block
-    graph compiled there is not split and saves a different number of tensors than the forward
-    (CheckpointError under DDP's non-reentrant checkpointing, DeepSeek-OCR). Each block is its own
-    region already, so its gradients still reach DDP's buckets block by block."""
+    """Stop DDPOptimizer splitting block graphs so checkpoint recomputes save the same tensors as
+    the forward (CheckpointError under DDP non-reentrant checkpointing); gradients still reach
+    DDP buckets block by block"""
     try:
         if _DDP is None or _DDP._get_active_ddp_module() is None or not _ddp_optimizer_mode():
             return contextlib.nullcontext()
@@ -746,11 +732,9 @@ def _writes_globals(code):
 
 
 def _rebind_globals(fn):
-    """dynamo resolves a function's globals through sys.modules[__globals__["__name__"]]; Unsloth's
-    generated modules exec code into a dict that module does not own (Gemma-4: `module
-    'transformers...modeling_gemma4' has no attribute 'Gemma4RMSNorm_forward'`). Rebuild such a
-    function on a registered module holding a copy of that dict. A copy cannot follow later
-    writes, so functions that assign globals are left alone."""
+    """Dynamo resolves globals via sys.modules; exec-generated code is rebuilt on a registered
+    module holding a copy of its dict; functions that assign globals are left alone since a copy
+    cannot follow later writes"""
     g = getattr(fn, "__globals__", None)
     if g is None or _writes_globals(fn.__code__):
         return fn
@@ -775,10 +759,9 @@ def _rebind_globals(fn):
 
 
 def _inline_compiled(fn):
-    """A method that is itself torch.compile'd (zoo's patch_function): inside a block, call the
-    original so dynamo inlines it. Inlining through the compiled wrapper guards on the wrapper's
-    closure as if it were the original's (torch 2.13 / 2.14, Gemma-4 fp16 MLP: `Unexpected type
-    CatchErrorsWrapper`). Outside a block the compiled wrapper runs as before."""
+    """Inside a block, call the original of a compiled method so dynamo inlines it: inlining the
+    wrapper guards on its closure and hits Unexpected type CatchErrorsWrapper on torch 2.13 and
+    2.14 (Gemma-4 fp16 MLP); outside a block the wrapper runs as before"""
     original = getattr(fn, "_torchdynamo_orig_callable", None)
     if (
         not isinstance(original, types.FunctionType)
@@ -909,16 +892,12 @@ def _gdn_chunk_adapter(original):
 
 
 def _route_fla_kernel():
-    """Point modeling code's references to fla's chunk_gated_delta_rule at the adapter. Callers
-    reach it through module globals, transformers' hub-kernel wrapper (a closure over it) and
-    Unsloth's compiled-module copies, so callers are found from the function object (gc
-    referrers), not by name. Closures are left alone: only namespace entries are swapped."""
+    """Repoint namespace refs to fla chunk_gated_delta_rule at the adapter; callers are found by gc
+    referrers, not by name (they reach it via globals, closures and compiled copies); closures
+    are left alone"""
     import gc
 
-    # gc.get_referrers skips the permanent generation, and Trainer.train() freezes the setup-time
-    # heap (_gc_train_scope) before the first GatedDeltaNet forward gets here: the walk found no
-    # caller and the op never engaged. Thaw for the walk; refreezing also freezes what train()
-    # allocated so far, which train()'s exit unfreezes with the rest.
+    # gc.get_referrers skips frozen objects, so thaw before the walk or the op never engages.
     frozen = gc.get_freeze_count() > 0
     if frozen:
         gc.unfreeze()
@@ -1137,11 +1116,9 @@ _BAND_CHECK = [None]
 
 
 def _gemma4_router_hook():
-    """Inside a block, a sliding layer whose mask is a plain causal band no longer than the
-    window runs is_causal SDPA, as the stock router does; longer bands run masked SDPA. The
-    router itself is not traced: its engagement counters drive a log-once branch dynamo guards
-    on, and its banded kernel traced in a checkpointed block recomputes different saved tensors
-    than its forward (CheckpointError)."""
+    """Sliding layers: a plain causal band within the window runs is_causal SDPA, longer bands run
+    masked SDPA. Router stays untraced: its counters drive a branch dynamo guards on; traced
+    banded kernel breaks checkpoints"""
     try:
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
     except Exception:

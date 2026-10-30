@@ -47,11 +47,9 @@ def _run(
     return result.stdout.strip()
 
 
-# The shared preamble: the two host helpers the functions under test call, stubbed so the
-# decision is driven by the case rather than by the machine running the suite. Neither stub
-# stands in for logic under test here: Get-HostMachineArch is exercised against real
-# hardware on the windows-11-arm leg, and Get-PythonPlatformTag asks an interpreter for
-# sysconfig.get_platform(), which needs a Windows interpreter to answer win-arm64.
+# Stubs the two host helpers so each case, not the test machine, drives the decision;
+# Get-HostMachineArch runs on real windows-11-arm hardware, and Get-PythonPlatformTag needs a
+# Windows interpreter for sysconfig.get_platform() to return win-arm64.
 def _preamble(host_arch: str, venv_tag: str) -> str:
     # Verbatim from install.ps1, not a stub: both the fresh-selection path and the venv
     # re-check call it, so a change to what the opt-out accepts has to move these cases too.
@@ -119,13 +117,8 @@ Write-Host ("MISMATCH=" + $mismatch)
 def test_the_opt_out_also_protects_an_existing_arm64_environment(
     tmp_path: Path, shell: str, value: str
 ):
-    """The opt-out has to be read HERE, not only where a fresh interpreter is chosen.
-
-    Resolve-WindowsOnArmX64Python never runs when the ordinary probe already found x64, so
-    on an ARM64 box with both interpreters the variable was never consulted and this branch
-    moved aside the very environment the user asked to keep. The rebuild is not a migration:
-    nothing installed into the old venv carries over.
-    """
+    """The opt-out is read here too, since Resolve-WindowsOnArmX64Python is skipped when x64 is
+    already found; a rebuild carries nothing over from the old venv."""
     venv_python = tmp_path / "python.exe"
     venv_python.write_text("", encoding = "utf-8")
     selected = '@{ Version = "3.13"; Path = "C:\\p\\python.exe"; Arch = "x86_64" }'
@@ -165,9 +158,8 @@ Write-Host ("MISMATCH=" + $mismatch)
 
 
 def test_both_arm64_opt_out_readers_go_through_one_helper():
-    """Two spellings of the same question drift. The fresh-selection path and the reuse
-    re-check must read it the same way, or an accepted value works in one and not the
-    other."""
+    """The fresh-selection path and the reuse re-check must read the opt-out the same way, or an
+    accepted value works in one and not the other."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     assert source.count("function Test-Arm64PythonOptOut") == 1
     assert (
@@ -271,11 +263,8 @@ Write-Host ("PRESERVE=" + $script:StudioVenvRollbackPreserve)
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_an_ordinary_rollback_is_still_deleted_on_success(tmp_path: Path, shell: str):
-    """The preserve flag is opt-in, and every other rollback keeps the old behaviour.
-
-    Without this the fix trades one bug for a slow leak: a full environment left behind by
-    every reinstall, on the machine of every user who never asked for one.
-    """
+    """The preserve flag is opt-in and other rollbacks keep deleting; otherwise every reinstall
+    would leak a full environment for users who never asked to keep one."""
     home = tmp_path / "studio"
     backup = home / "unsloth_studio.rollback.20260101000000.4242"
     backup.mkdir(parents = True)

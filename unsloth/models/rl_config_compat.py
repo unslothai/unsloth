@@ -120,11 +120,7 @@ _ACCEPTED_CACHE = {}
 
 
 def _accepted_parameters(config_class):
-    """Names `config_class.__init__` accepts, and whether it takes `**kwargs`.
-
-    A config with its own `**kwargs` may forward anywhere, so it is reported as
-    accepting everything and the caller forwards unfiltered.
-    """
+    """Names `config_class.__init__` accepts; a `**kwargs` config is reported as accepting everything."""
     try:
         cached = _ACCEPTED_CACHE.get(config_class)
     except TypeError:  # unhashable, so uncacheable; fall through and recompute
@@ -229,14 +225,7 @@ def _is_untouched(
 
 
 def rename_value_is_unset(config_class, renamed, value):
-    """True if `value` carries no information and must not overwrite `renamed`.
-
-    The legacy spellings are `Optional` and default to `None` (`per_gpu_*_batch_size`
-    in transformers 4.x), so a wrapper mirroring an old signature forwards `None`
-    for an argument nobody set. Writing that onto a target whose own default is a
-    number replaces a working value with one the trainer cannot do arithmetic on.
-    A target that defaults to `None` itself loses nothing, so it still migrates.
-    """
+    """True if `value` is an unset None that must not overwrite `renamed`'s non-None default."""
     if value is not None:
         return False
     default = _field_default(config_class, renamed)
@@ -258,10 +247,9 @@ def removal_source(key):
 
 
 def classify_config_kwarg(config_class, key):
-    """Verdict on `key`: accepted / rename / retired / unknown, or opaque when the
-    config declares nothing to judge by. A trailing `**kwargs` is deliberately not
-    acceptance: the generated `Unsloth<X>Config.__init__` has one, so trusting it
-    would put every retired field back to being swallowed."""
+    """Verdict on key: accepted, rename, retired, unknown or opaque; a trailing **kwargs is not
+    acceptance, since generated Unsloth configs have one and trusting it would swallow retired
+    fields."""
     accepted, takes_var_keyword = _accepted_parameters(config_class)
     if key in accepted:
         return "accepted", key
@@ -288,16 +276,7 @@ def filter_config_init_kwargs(
     notify = None,
     mirrored_from = None,
 ):
-    """Return `kwargs` reduced to what `config_class.__init__` will accept.
-
-    Renames are applied where TRL or transformers documented one; everything else
-    the config rejects is dropped. Each decision is reported through `notify`
-    (`print` by default, which shows up reliably in a notebook).
-
-    `mirrored_from` is the generated config class whose `__init__` built `kwargs`.
-    It is what tells an untouched mirrored parameter apart from a real one, so
-    omitting it only costs a rename that loses to its own target's default.
-    """
+    """Reduces kwargs to what `config_class.__init__` accepts, applying documented renames."""
     if not kwargs:
         return kwargs
 

@@ -52,9 +52,8 @@ else:
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
 
-# DEVICE_COUNT == 0 = no visible accelerator (e.g. CPU-only CI runner). The consumer functions below only index
-# these arrays during real GPU work, so empty containers are safe -- they just need to be defined so the module
-# imports cleanly.
+# DEVICE_COUNT == 0 means no visible accelerator (e.g. a CPU-only CI runner); consumers only index
+# these arrays during GPU work, so empty containers only need to exist for the module to import.
 if DEVICE_TYPE == "xpu":
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
@@ -178,10 +177,9 @@ HAS_CUDA_STREAM = False
 try:
     import bitsandbytes as bnb
 
-    # If an earlier `import bitsandbytes` died inside __init__, CPython evicts only the parent from
-    # sys.modules and keeps its submodules, so this retry re-executes __init__ without rebinding
-    # bnb.functional. `import x.y as z` reads sys.modules directly and survives that, plain attribute
-    # access does not.
+    # If an earlier import bitsandbytes died in __init__, CPython evicts only the parent from
+    # sys.modules, so this retry re-runs __init__ without rebinding bnb.functional; import x.y as z
+    # survives that, plain attribute access does not.
     import bitsandbytes.functional as bnb_functional
 except Exception:
     # device_type.py already degrades to 16bit/full finetuning when bnb is missing (gfx906, whose
@@ -474,10 +472,9 @@ def _is_packed_state(quant_state):
 
 
 def get_lora_parameters(proj):
-    """Return (weight, weight quant_state, lora A, lora B, lora scale).
-    With QAT enabled, also fake-quantizes the base layer and lora weights.
-    Tensor parallel projections (models/tp_native.py) return local shards of their DTensors.
-    """
+    """Return (weight, weight quant_state, lora A, lora B, lora scale); with QAT the base layer and
+    lora weights are also fake-quantized; tensor parallel projections (models/tp_native.py)
+    return local shards of their DTensors."""
     localize = proj.__dict__.get("_unsloth_tp_local")
     if localize is not None:
         return localize(proj)
@@ -711,12 +708,9 @@ _FSDP2_GATHERED = "_unsloth_fsdp2_gathered"
 
 
 def _gathered_plan_hit(plan, W):
-    """FSDP2 frees an all-gathered weight's storage after use and re-allocates it for the next
-    all-gather: the same tensor at a new address, so a plan keyed on the address it was built at
-    never hits again. The planned launch reads the address of the tensor it was built with at
-    launch time, so it still applies while that tensor and W (the weight, or a view of it such as
-    the backward's `W.t()`) are at the same address with the 16 byte alignment it was specialized
-    on. A tensor given a new storage object instead of a resized one has another address: rebuilt."""
+    """FSDP2 re-allocates an all-gathered weight at a new address, so a plan is reused only while
+    its tensor and W (or a view like W.t()) keep the address and 16 byte alignment it was built
+    for; else rebuilt."""
     address = W.data_ptr()
     if plan[6].data_ptr() != address or (address & 15) != (plan[0] & 15):
         return False
@@ -1811,8 +1805,7 @@ def fast_linear_forward(
         out = torch_matmul(X, W, out = out)
 
     if out.dtype != X.dtype:
-        # torch.matmul under a different autocast dtype returns that dtype; the LoRA update, decode
-        # buffers and every other branch here work in X.dtype.
+        # Matmul under another autocast returns that dtype; LoRA and buffers need X.dtype.
         out = out.to(X.dtype)
 
     if lora_A is not None:

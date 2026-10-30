@@ -533,8 +533,7 @@ def run_gates(
     injected_stall_ms: float = INJECTED_STALL_MS,
     injected_input_delay_ms: float = INJECTED_INPUT_DELAY_MS,
 ) -> SelfCheckReport:
-    """Judges already-collected readings without driving the browser, so failing cases can be unit-
-    tested."""
+    """Judges collected readings without a browser, so failing cases can be unit-tested."""
 
     report = SelfCheckReport()
     report.gates.append(evaluate_stall_gate(stall_observed_ms, injected_ms = injected_stall_ms))

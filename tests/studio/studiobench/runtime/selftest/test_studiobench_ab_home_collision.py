@@ -24,8 +24,7 @@ def test_a_shared_home_under_ab_is_refused_rather_than_warned():
 
 
 def test_the_refusal_says_what_to_do_instead():
-    """A refusal a reader cannot act on gets worked around. Naming the replacement is the
-    difference between a guard and an obstacle."""
+    """A refusal must name what to do instead, or it becomes an obstacle people work around."""
     source = _source()
     guard = source[source.index("--home cannot be used with --ab") :][:700]
     assert "Drop --home" in guard
@@ -33,8 +32,7 @@ def test_the_refusal_says_what_to_do_instead():
 
 
 def test_the_guard_sits_before_any_install_runs():
-    """Refusing AFTER the first install has already run costs the caller the slow half of the
-    mistake and leaves a half-built home behind."""
+    """The guard must sit before any install, or a refusal leaves a half-built home behind."""
     source = _source()
     assert source.index("if not args.attach and args.home:") < source.index(
         "side_install = install_studio(ref, home)"
@@ -56,9 +54,7 @@ def test_the_guard_sits_before_the_payload_is_archived():
 
 
 def test_a_single_arm_run_still_accepts_home():
-    """`--home` is legitimate on its own: there is only one build to install, so there is no
-    collision. The guard is on the COMBINATION, and narrowing it wrongly would break the
-    single-arm path that people use to pin an install."""
+    """`--home` alone is legitimate (one build, no collision); the guard covers only the combination."""
     source = _source()
     guard_line = next(
         line for line in source.split("\n") if "if not args.attach and args.home:" in line

@@ -60,8 +60,7 @@ def test_both_staging_branches_skip_what_pypi_publishes(source):
 
 
 def test_the_guard_is_version_aware(source):
-    """Published is not enough: upstream behind the wheelhouse means dropping ours
-    downgrades the install, so the floor is the staged wheel's own version."""
+    """Floor PyPI at the staged version; if it lags, dropping ours would downgrade the install."""
     body = _function_body(source, "Test-WoaWheelhouseWheelIsRedundant")
     assert "-Floor $fields[1]" in body, "the guard must floor PyPI at the staged version"
     probe = _function_body(source, "Test-WoaPyPIWheel")
@@ -75,8 +74,7 @@ def test_the_guard_only_judges_wheels_this_venv_could_use(source):
 
 
 def test_interpreter_agnostic_wheels_still_count(source):
-    """hf_transfer ships cp38-abi3 and sqlite_vec py3-none, both usable on cp313: an
-    exact-tag test would call them foreign and go on shipping ours forever."""
+    """abi3/none wheels (hf_transfer, sqlite_vec) are usable; exact-tag tests would miss them."""
     body = _function_body(source, "Test-WoaWheelTagsUsable")
     assert '"abi3"' in body and '"none"' in body
     assert '$AbiTag -like "*t"' in body
@@ -119,9 +117,8 @@ def test_the_default_is_a_release_download_url_on_this_repo(source):
 
 
 def test_the_release_tag_is_the_one_the_workflow_publishes(source):
-    """Two places name the tag and nothing joins them: the workflow that uploads the assets
-    and the installer that downloads them. A rename on one side is a 404 on the other, and
-    the installer reads that as 'no wheelhouse' and falls back to the emulated x64 stack."""
+    """The workflow that uploads the assets and the installer that downloads them name the tag
+    separately; a rename is a 404 the installer reads as no wheelhouse."""
     workflow = (REPO_ROOT / ".github" / "workflows" / "woa-wheelhouse.yml").read_text(
         encoding = "utf-8"
     )

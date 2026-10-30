@@ -446,8 +446,7 @@ def _grouped_experts(block):
         cached is None or _grouped_experts_live(block, cached, every = False)
     ):
         return cached
-    # One thread stacks and re-points the weights; a concurrent first generate waits instead of capturing a
-    # graph over half re-pointed experts.
+    # A concurrent first generate waits, so no graph is captured over half re-pointed experts.
     with _STACK_LOCK:
         cached = block.__dict__.get("_unsloth_grouped_experts", _MISSING)
         if cached is not _MISSING and (

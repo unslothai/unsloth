@@ -85,9 +85,8 @@ def test_every_leg_the_nightly_names_exists():
 
 
 def test_the_nightly_set_fits_in_one_kernel():
-    """`--legs` builds ONE kernel, and MAX_LEGS_PER_KERNEL is what the driver's
-    scheduling was measured against. A list longer than that silently packs a
-    kernel nobody has run."""
+    """--legs builds one kernel, and MAX_LEGS_PER_KERNEL is what the driver's scheduling was
+    measured against; a longer list silently packs a kernel nobody has run."""
     assert len(_nightly_legs()) <= legs.MAX_LEGS_PER_KERNEL
 
 
@@ -102,9 +101,8 @@ def test_no_nightly_leg_is_ALSO_in_the_per_pr_set():
 
 
 def test_a_leg_list_replaces_all_kernels_rather_than_filtering_after_it():
-    """``--all-kernels`` derives BOTH the kernel plan and the payload count the
-    launcher waits on. A filter applied afterwards leaves it expecting payloads
-    that were never built, which times out rather than failing."""
+    """--all-kernels derives both the kernel plan and the payload count the launcher waits on; a
+    filter applied afterwards leaves it expecting payloads never built, which times out."""
     assert 'KERNEL_SELECT="--legs $LEG_LIST"' in TEXT
     assert 'KERNEL_SELECT="--all-kernels"' in TEXT
     assert "$KERNEL_SELECT \\" in TEXT
@@ -241,9 +239,8 @@ def test_the_per_pr_command_line_is_one_the_builder_accepts(tmp_path):
 
 
 def test_studio_rides_the_wired_set_and_only_the_wired_set(tmp_path):
-    """The pair that was mutually exclusive, asserted in BOTH directions:
-    dropping Studio from the nightly is only a fix if the per-PR kernel still
-    carries it, else the payload is covered by nothing."""
+    """Studio and the leg list were mutually exclusive, so this asserts both directions: dropping
+    Studio from the nightly is only a fix if the per-PR kernel still carries it."""
     nightly, _, _ = _compose_argv("schedule", tmp_path)
     assert "--with-studio" not in nightly, (
         "the nightly still asks for Studio alongside a leg list, which "
@@ -257,9 +254,8 @@ def test_studio_rides_the_wired_set_and_only_the_wired_set(tmp_path):
 
 
 def test_studio_concurrent_still_reaches_the_builder_on_the_per_pr_run(tmp_path):
-    """The flag moved inside the Studio branch. One that stops being passed is
-    the failure run 32674263571 shipped: the variant of an A/B ran the
-    control's schedule and nothing was red."""
+    """The --studio-concurrent flag moved inside the Studio branch; if it stops being passed, the
+    A/B variant runs the control's schedule and nothing turns red, as in run 32674263571."""
     argv, _, _ = _compose_argv("push", tmp_path)
     assert "--studio-concurrent" in argv, (
         "the default per-PR build no longer shares a card, so Studio waits for "

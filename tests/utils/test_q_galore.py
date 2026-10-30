@@ -77,12 +77,8 @@ def requires_bnb_optimizer(device):
 
 @pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
 def test_optimizer_constructs_against_the_installed_bitsandbytes():
-    """Runs on every version in the CI matrix, unlike the tests that need a step.
-
-    Construction needs no optimizer kernels, so this is the only check the 0.45.x-0.49.x
-    matrix jobs can actually execute. It has to assert on the bound arguments because the
-    0.50.x misbinding left the arity intact and raised nothing.
-    """
+    """Construction needs no kernels, so it also runs in the 0.45.x-0.49.x jobs; it must assert
+    bound arguments, since 0.50.x misbinding kept the arity and raised nothing."""
     signature = inspect.signature(_adamw_mod.Optimizer2State.__init__)
     captured = {}
     original = _adamw_mod.Optimizer2State.__init__

@@ -21,9 +21,8 @@ def _read(path: Path) -> str:
 
 
 def test_the_repair_reads_its_own_messages_as_late_as_it_can():
-    """Not the sidebar's map. That map takes its empty-backend entries from
-    listStoredChatMessages, which merges Dexie rows the backend has pruned, and
-    it is fetched at load time rather than at write time."""
+    """The repair reads its own messages as late as it can, not the sidebar map: that map merges
+    pruned Dexie rows via listStoredChatMessages and is fetched at load time."""
     hook = _read(HOOK)
     assert "void repairLegacyChatTitles(threads).catch(() => undefined);" in hook
 
@@ -47,9 +46,8 @@ def test_the_repair_reads_only_stored_messages():
 
 
 def test_an_emptied_chat_is_not_retried_for_the_session():
-    """A chat the user deleted every message from reads back the same as one
-    still importing. Retrying it would re-read it on every refresh, since its
-    title stays clipped and keeps matching the pre-filter."""
+    """An emptied chat must not be retried for the session: it reads back like one still importing,
+    and its clipped title keeps matching the pre-filter on every refresh."""
     repair = _read(REPAIR)
     assert "const withoutMessages = threadsMissingMessages(ids, messages);" in repair
     assert "if (withoutMessages.length > 0) {" in repair
@@ -61,9 +59,8 @@ def test_an_emptied_chat_is_not_retried_for_the_session():
 
 
 def test_the_repair_never_creates_anything():
-    """updateStoredChatThread ensures the thread first, which re-imports one
-    deleted on another client from the Dexie rows still sitting here. A
-    migration patching a row that is gone has to 404, not resurrect it."""
+    """The repair must never create threads: updateStoredChatThread ensures the thread first and
+    would re-import one deleted elsewhere, so a patch to a gone row must 404."""
     repair = _read(REPAIR)
     assert 'from "./chat-history-storage"' not in repair
     assert "await updateChatThread( repair.threadId, { title: repair.title }," in repair
@@ -88,9 +85,8 @@ def test_only_one_repair_pass_runs_at_a_time():
 
 
 def test_a_rename_is_left_to_the_backend_guard():
-    """The pass only runs where the guard is enforced, so re-listing the whole
-    history per page to check titles client side was both redundant and
-    quadratic: every page of 100 pulled every thread the account has."""
+    """Renames are left to the backend guard: the pass runs only where it is enforced, and
+    re-listing all threads per page client side would be redundant and quadratic."""
     repair = _read(REPAIR)
     assert "listChatThreads" not in repair
     assert "repairsStillValid" not in repair

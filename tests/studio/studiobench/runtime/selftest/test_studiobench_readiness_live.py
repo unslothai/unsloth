@@ -557,11 +557,8 @@ def _windowed_probe(**changes) -> dict:
 
 
 def test_evaluate_refuses_ordinals_that_are_not_positions():
-    """The three malformed shapes, on the decision function itself.
-
-    The live tests above put each of these in a real browser; this pins the rule they are being
-    judged by, including which of the two conditions each one trips.
-    """
+    """Pins the decision function on the three malformed shapes the live browser tests cover,
+    including which of the two conditions each trips."""
     good = _windowed_probe()
     assert evaluate(good, good, 18, MODE_WINDOWED)["posinset_ordinals_valid"] is True
     zeros = _windowed_probe(posinset_distinct = 1, min_posinset = 0, max_posinset = 0)
@@ -645,8 +642,7 @@ def test_ordinal_coverage_reports_a_hole_inside_one_mounted_window_whatever_the_
 
 
 def test_ordinal_coverage_is_unmeasured_when_the_traversal_never_reached_the_top():
-    """Even a completely covered union proves nothing if the gesture stopped short: the rows it
-    did not reach are rows it did not look at."""
+    """Full coverage proves nothing if the gesture stopped short; unreached rows went unseen."""
     stopped = {
         "reached_target": False,
         "ordinals_seen": list(range(1, 19)),

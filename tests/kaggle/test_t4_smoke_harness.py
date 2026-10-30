@@ -1145,9 +1145,8 @@ def test_a_moved_scaler_skip_pattern_is_out_of_band(tmp_path, swap):
 
 
 def test_matching_infinite_grad_norms_are_within_band(tmp_path):
-    """An fp16 overflow logs infinity as readily as NaN, and the same sign on
-    both sides is the unchanged case. abs(inf - inf) is NaN, so this has to be
-    decided before the division rather than by it."""
+    """Matching infinite grad norms (same sign) must be decided before the division, since abs(inf -
+    inf) is NaN after an fp16 overflow."""
     from run_t4_smoke import check_reference
 
     inf = float("inf")
@@ -1549,9 +1548,8 @@ def test_every_registered_leg_is_either_carried_or_explicitly_unwired():
 
 
 def test_an_unwired_leg_still_builds():
-    """It is unwired because its INSTALL does not work on the image, not because
-    the payload rots: a leg that stopped building would be rediscovered only by
-    whoever next tries to switch it on."""
+    """An unwired leg is unwired because its INSTALL fails on the image, not because the payload
+    rots, so it must still build when someone switches it on."""
     from legs import UNWIRED
     for name in UNWIRED:
         assert name in LEG_NAMES, (
@@ -1922,9 +1920,8 @@ def test_the_grpo_vllm_pin_does_not_replace_the_images_torch():
 
 
 def test_the_grpo_leg_shares_the_image_now_that_it_keeps_the_images_torch():
-    """The isolated venv existed only to survive replacing torch. Probe 3 spent
-    about an hour of quota resolving a CUDA stack from scratch and never
-    produced payload output; with nothing to replace, nothing to isolate."""
+    """The grpo leg shares system site-packages and keeps the image torch, so nothing needs
+    replacing and no isolated venv is needed."""
     from legs import LEGS
     assert LEGS["grpo"].system_site_packages is True
 
@@ -2071,9 +2068,8 @@ def test_the_grpo_leg_keeps_the_config_that_actually_fit():
 
 
 def test_the_grpo_leg_still_pins_the_vllm_that_matches_the_image():
-    """The pin is chosen to match the image's torch to the patch, not to be
-    old. Any other release replaces torch, which is what killed three probe
-    sessions."""
+    """The vLLM pin must match the image's torch to the patch release rather than be old; any other
+    release replaces torch, which killed three probe sessions."""
     from legs import LEGS
 
     install = " ".join(part for group in LEGS["grpo"].install for part in group)
@@ -2218,12 +2214,9 @@ def test_a_dispatched_ref_is_resolved_to_one_commit():
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "the step is a bash script")
 def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
-    """EXECUTE the step, with git stubbed, rather than reading it.
-
-    Pattern-matching a shell script passes on one that runs and writes the wrong
-    thing, and this one has four branches: no input, a mutable branch or tag, a
-    commit needing no resolution, and a ref that resolves to nothing.
-    """
+    """Executes the resolve step with git stubbed, since pattern matching passes a script that
+    writes the wrong thing; its four branches are no input, a mutable branch or tag, a commit,
+    and a ref resolving to nothing."""
     steps = _workflow()["jobs"]["gate"]["steps"]
     script = next(s for s in steps if s.get("id") == "ref")["run"]
 
@@ -3350,9 +3343,8 @@ def test_the_log_fallback_reads_kaggles_own_json_record_shape(tmp_path):
 
 
 def test_a_report_split_across_log_records_is_still_read(tmp_path):
-    """Kaggle chunks stdout by write, not by line, so the prefix and its
-    payload can land in different records. Flattening has to join them back
-    before any line splitting happens."""
+    """Kaggle chunks stdout by write, not by line, so the prefix and payload can land in different
+    records; flattening must join them before splitting lines."""
     import launch
 
     records = [
@@ -3365,8 +3357,7 @@ def test_a_report_split_across_log_records_is_still_read(tmp_path):
 
 
 def test_a_kernel_that_could_not_be_pushed_does_not_lose_the_other(tmp_path):
-    """Half a run is a warning, not a failure: half a comparison is not
-    evidence of a regression."""
+    """Half a run is a warning, not a failure, since half a comparison is not evidence of a regression."""
     sys.path.insert(0, str(CI_DIR))
     evidence = tmp_path / "evidence"
     evidence.mkdir()

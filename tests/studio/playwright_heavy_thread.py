@@ -456,9 +456,8 @@ async (timeoutMs) => {
 }
 """
 
-# Delete is a button on the reply's action bar again since #13615 (#12735 had moved it into the More
-# menu). The button is found before the clock starts, so the window holds only what Delete costs: the
-# message leaving the thread.
+# Delete is an action-bar button again since 13615 (12735 had moved it to the More menu); it is
+# found before the clock starts, so the window holds only the message leaving.
 DELETE_JS = """
 async (timeoutMs) => {
   const api = window.__heavyThread;
@@ -907,8 +906,7 @@ def run() -> dict:
     return results
 
 
-# Every recorded metric must appear here; test_heavy_thread_harness_contract.py enforces it.
-# CHROMIUM-ONLY rows say so in their name so `-` does not read as zero.
+# CHROMIUM-ONLY rows name it so `-` never reads as zero; all metrics must be listed here.
 def _action(action: str, key: str):
     return lambda r: r["actions"][action][key]
 
@@ -1240,8 +1238,7 @@ def print_growth(results: dict, report: dict) -> None:
             )
 
 
-# Declared double-rAF count vs what the action reports paying; a lower bound, since extra waits on a
-# progressive mount are real application commits.
+# Declared double-rAF floor vs reported waits; a lower bound, as extra waits are real commits.
 FLOOR_COUNTERS = {"reopen ms": ("reopen", "paintWaits")}
 
 
@@ -1286,8 +1283,7 @@ def floor_declaration_problems(results: dict) -> list[str]:
 
 
 def harness_failures(results: dict, report: dict) -> list[str]:
-    """Only the ways this harness can be measuring nothing. No performance budgets: see the
-    module docstring."""
+    """Only ways this harness can measure nothing; no performance budgets here."""
     failures: list[str] = list(floor_declaration_problems(results))
     for engine in results["engines"]:
         for size in results["sizes"]:
@@ -1340,8 +1336,7 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                     f"{where} rendered {counts['messages']} of {plan['messages']} messages; the "
                     "seed did not land"
                 )
-            # The renderer silently drops some content (e.g. non-PNG/JPEG/GIF/WebP data URLs), so check every
-            # kind against the per-cycle expectation.
+            # Renderer silently drops some data URLs (non-PNG/JPEG/GIF/WebP); check every kind.
             for key, per_cycle in plan["expectedPerCycle"].items():
                 want = per_cycle * plan["cycles"]
                 if counts.get(key, 0) < want:

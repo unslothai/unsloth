@@ -223,9 +223,8 @@ def test_a_marker_that_matched_nothing_is_refused_rather_than_answered_no():
 
 
 def test_adapter_sum_finds_the_capital_b_peft_names():
-    """Drives the REAL function, because every rule above is fed a dict written
-    by hand and none of them execute the code that produces it. That is exactly
-    how the capital-B bug reached hardware."""
+    """Drives the real adapter_sum, since the other rules feed hand-written dicts; that gap is how
+    the capital-B PEFT name bug reached hardware."""
     import torch
 
     from run_vision_t4 import adapter_sum
@@ -266,9 +265,8 @@ def test_the_leg_actually_DRIVES_the_vision_run():
 
 
 def test_the_parent_spawns_the_vision_run_after_the_cycles():
-    """Two 4bit models resident at once on a 14.56GB card is how a leg becomes
-    an OOM blamed on the thing it was testing. It is also what keeps a vision
-    failure from reading as a text-training one."""
+    """The vision run is spawned after the text cycles so two 4bit models are never resident on the
+    14.56GB T4, which avoids an OOM and keeps vision failures separate."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert '"run_vision_t4.py"' in src
     cycles_at = src.index("runs.append(json.loads(report_file.read_text")
@@ -285,9 +283,8 @@ def test_a_vision_run_that_wrote_no_report_is_a_failure_not_a_silence():
 
 
 def test_the_vision_step_count_is_pinned_low_rather_than_inherited():
-    """A vision step on a T4 is ~100s (317.9s for three, measured on
-    unsloth-probe-vision-train-r3). Inheriting the text side's --max-steps
-    would quietly add half an hour to the leg."""
+    """The vision step count is pinned low rather than inherited from the text --max-steps, which
+    would quietly add about half an hour to the T4 leg."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     spawn = src[src.index('"run_vision_t4.py"') :]
     spawn = spawn[: spawn.index("subprocess.run(vision_cmd)")]

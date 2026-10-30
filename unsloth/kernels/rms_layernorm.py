@@ -143,12 +143,9 @@ def _rms_layernorm_backward(
     TRAIN_W: tl.constexpr,
     FROM_Y: tl.constexpr,
 ):
-    """
-    Fast RMS Layernorm kernel for the backward pass
-    Inspiration from a Triton tutorial:
-    https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
-    TRAIN_W: per-program fp32 dW partials (fla-org/flash-linear-attention layer_norm_bwd_kernel_row).
-    """
+    """Fast RMS layernorm backward kernel, inspired by the Triton layer-norm tutorial; TRAIN_W
+    writes per-program fp32 dW partials, as in fla-org/flash-linear-attention
+    layer_norm_bwd_kernel_row."""
     pid = tl.program_id(0)
     if LONG_INDEXING:
         pid = pid.to(tl.int64)
@@ -509,11 +506,10 @@ def _cdiv(a, b):
     return (a + b - 1) // b
 
 
-# num_warps per (compute capability, n_cols), replacing calculate_settings' where a sweep (fp16 + bf16 on
-# sm_80+, fp16 on T4; 2k and 16k rows) found a width faster outside the run's A/A band in some cell and never
-# slower in any, at least 3% on the geometric mean, with max error vs fp64 no worse than the default's; every
-# entry then won again against main on torch 2.14.1 (same GPU tier, interleaved, outside A/A, never slower).
-# _NUM_WARPS: one-row forward + frozen-W backward; _DW_NUM_WARPS: the dW backward.
+# num_warps per (compute capability, n_cols) replacing calculate_settings; a sweep on sm_80+ and T4
+# found these widths faster in some cells and never slower, with error no worse; rechecked against
+# main on torch 2.14.1; _NUM_WARPS is for one-row forward and frozen-W backward, _DW_NUM_WARPS for
+# dW.
 _NUM_WARPS = {
     ((7, 5), 1024): 8,
     ((7, 5), 2048): 16,

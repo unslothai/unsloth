@@ -170,10 +170,9 @@ def _active_lora_requires_grad(projs):
 
 
 def _autocast_dtype_mismatch(X):
-    # Under autocast the fused matmuls return the autocast dtype but the in-place LoRA accumulation runs
-    # in X's dtype (in-place ops are not autocast), so a different autocast dtype cannot be fused.
-    # Mode flags only, no tensor work. Eager first asks whether any autocast is on (a private query, so not
-    # under Dynamo, which traces the public calls below as constants).
+    # Under autocast fused matmuls return the autocast dtype but in-place LoRA accumulation keeps
+    # X's dtype, so a mismatched autocast dtype cannot be fused; the check reads mode flags only,
+    # eager-only since Dynamo would trace the public calls as constants.
     if (
         _is_any_autocast_enabled is not None
         and not _is_compiling()

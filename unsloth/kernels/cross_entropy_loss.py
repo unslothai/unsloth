@@ -66,26 +66,8 @@ def _cross_entropy_forward(
     DO_LOGIT_SCALING: tl.constexpr,
     LOGIT_SCALE: tl.constexpr,
 ):
-    """
-    Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
-    Pi = exp(xi) / sum(exp(xi))
-    CE_i = -y log(p) = -y log[ exp(x) / sum(exp(x)) ]
-         = -y [ x - log[sum(exp(x))] ]
-         = y * (log[sum(exp(x))] - x)
-    If y == 0: CE_i = 0
-    If y == 1: CE_i = logsumexp - x
-
-    logsumexp is also stable
-    Take    y =         log[sum(exp(x))]
-       exp(y) =             sum(exp(x))
-       exp(y) =             sum(exp(x - c)*exp(c)) Since e^(x-c)*e^c = e^x
-       exp(y) =      exp(c)*sum(exp(x - c))
-           y  = log(exp(c)*sum(exp(x - c)))
-           y  = c + log[sum(exp(x - c))]
-    This means we can set c = max(x) to make sure
-    exp(x - c) always is exp(x - max(x)).
-    This ensures exp(x - max(x))'s maximum is 1 as exp(0) = 1.
-    """
+    """Cross entropy is logsumexp(x) - x for the label; logsumexp is kept stable by shifting with c
+    = max(x), so exp(x - c) never exceeds 1."""
     row_idx = tl.program_id(0)
     logits_ptr += row_idx * triton_cast(logits_row_stride, tl.int64)
     loss_ptr += row_idx
@@ -154,11 +136,9 @@ def _chunked_evict_policy(device):
     return _chunked_evict_at(device.type, index)
 
 
-# (BLOCK_SIZE, num_warps, max vocab) for the chunked forward, measured faster on T4 / A100 / B200 / sm120.
-# A100 at Gemma 262144 was mixed across torch versions, so larger vocabs keep the default.
-# B200: 8192-wide chunks at 4 warps run 1.5-1.9x faster than one 65536-wide chunk at 32 warps
-# (128256 / 151936 / 262144 vocabs, bf16), since each program then needs a fraction of the registers.
-# sm120 (RTX PRO 6000): the same 8192 / 4 config is 1.09-1.41x faster; 16K and 32K chunks tie with it.
+# Tuples are (BLOCK_SIZE, num_warps, max vocab) for the chunked forward; B200 and sm120 use
+# 8192-wide chunks at 4 warps (B200 beats one 65536-wide chunk for 128K-262K vocabs); A100 at Gemma
+# 262144 was mixed across torch versions, so larger vocabs keep the default.
 _CHUNKED_FORWARD_CONFIGS = {
     (7, 5): (16384, 8, None),
     (8, 0): (16384, 8, 163840),
@@ -200,33 +180,8 @@ def _chunked_cross_entropy_forward(
     LOGIT_SCALE: tl.constexpr,
     EVICT: tl.constexpr,
 ):
-    """
-    256K vocab divided in 4 chunks
-
-    |-65536-| |-65536-| |-65536-| |-65536-|
-    |-------| |-------| |-------| |-------|
-    |-------| |-------| |-------| |-------|
-
-    If y == 0: CE_i = 0
-    If y == 1: CE_i = logsumexp - x
-
-    Notice we can do logsumexp for each chunk and then
-    logsumexp[chunk_sum(logsumexp)] == logsumexp
-
-    chunk_sum = log[chunk_sum(logsumexp)]
-              = log[exp(logsumexp(a)) + ... + exp(logsumexp(z))]
-              = log[exp(log[sum(exp(a))]) + ... + exp(log[sum(exp(z))])]
-              = log[sum(exp(a)) + ... + sum(exp(z))]
-              = logsumexp(x)
-
-    This means we can perform a logsumexp for each chunk, then do a
-    final logsumexp reduction!
-
-    Ie do: logsumexp(chunked_logsumexp) - x
-
-    The loss itself is softplus(logsumexp(chunked_logsumexp_others) - x), where
-    the others skip the label, so it does not round to 0 for confident labels.
-    """
+    """Each vocab chunk computes its own logsumexp, combined by a final logsumexp; the label loss is
+    softplus(logsumexp of non-label entries - x), so confident labels do not round to 0."""
     row_idx = tl.program_id(0)
     chunk_idx = tl.program_id(1)
     logits_ptr += row_idx * triton_cast(logits_row_stride, tl.int64)
@@ -312,24 +267,8 @@ def _cross_entropy_backward(
     DO_LOGIT_SCALING: tl.constexpr,
     LOGIT_SCALE: tl.constexpr,
 ):
-    """
-    CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
-    dC/dx = d/dx (y * log[sum(exp(x))] - x * y)
-
-    From https://en.wikipedia.org/wiki/LogSumExp
-    d/dx logsumexp = exp(x) / sum(exp(x)) = softmax(x)
-
-    dC/dx = y * exp(x) / sum(exp(x)) - d/dx (x * y)
-    dC/dx = y * exp[ log[exp(x) / sum(exp(x))] ] using x = exp(log(x)) trick
-    dC/dx = y * exp[x - logsumexp] - d/dx (x * y)
-
-    If y == 0: dC/dx = 0
-    If y == 1 and x == label: dC/dlabel = exp[x - logsumexp] - 1
-    If y == 1 and x != label: dC/dx     = exp[x - logsumexp]
-
-    exp[x - logsumexp] - 1 rounds to 0 for confident labels, so the label
-    uses exp[-loss] - 1 = expm1(-loss) with the accurate forward loss.
-    """
+    """The gradient is softmax(x) minus 1 at the label; for confident labels exp(x - logsumexp) - 1
+    rounds to 0, so the label term uses expm1(-loss) from the accurate forward loss."""
     row_idx = tl.program_id(0)
     block_idx = tl.program_id(1)
 

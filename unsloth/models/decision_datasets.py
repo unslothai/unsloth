@@ -675,12 +675,7 @@ def build_decision_mixture(
     decontaminate_against: Optional[Iterable] = None,
     token = None,
 ) -> list:
-    """A shuffled mix of decision rows from several sources.
-
-    `sources`: names from SOURCES, {name: weight}, or {name: [converted rows]} (weights equal).
-    Each source contributes n_rows * weight / total rows, sampled with replacement only when it
-    has fewer rows than its share (each repeat gets a fresh augmentation).
-    """
+    """Sources sample with replacement only when short of their share; repeats get fresh augmentation."""
     rng = random.Random(seed)
     if isinstance(sources, (list, tuple)):
         sources = {name: 1.0 for name in sources}

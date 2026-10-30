@@ -137,8 +137,7 @@ def _lean_lora_forward(self, x, *args, **kwargs):
         )
     ):
         return self._unsloth_peft_forward(x, *args, **kwargs)
-    # PEFT's maths without its per-call checks, its round trip of x through the fp32 adapter
-    # dtype, and the multiply when scaling is 1.
+    # PEFT math without per-call checks, the fp32 round trip of x, and the scale-1 multiply.
     lora = self.lora_B[adapter](self.lora_A[adapter](x))
     scaling = self.scaling[adapter]
     return self.base_layer(x) + (lora if scaling == 1 else lora * scaling)
@@ -714,9 +713,8 @@ def _load_clef(
         if load_in_4bit and not full_finetuning and kwargs.get("quantization_config") is None:
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
         _pin_device_map(kwargs)
-        # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path:
-        # float16 linear weights, float32 activations, no autocast (the gated delta net NaNs in pure float16).
-        # An adapter folder loads its base and the adapters through Unsloth's own PEFT path.
+        # float16 or no bfloat16 sends Qwen3.5 to a float32 path (float16 linear weights, float32
+        # activations, no autocast): pure float16 NaNs in its gated delta net
         backbone, processor = FastModel.from_pretrained(
             str(folder),
             max_seq_length = max_len,
@@ -848,8 +846,7 @@ def _staging(output: Path):
 
 
 def _fold_temperature(state: dict, temperature: float) -> bool:
-    # logits / T == prior / T + gate * (joint_scale / T * cosine + residual / T): exact while the
-    # rescaled log-scales stay under the head's clamp(max = log 100).
+    # Folding T is exact while the rescaled log scales stay under the clamp at log 100.
     cap = math.log(100.0)
     scales = {}
     for name in ("prior_logit_scale", "joint_logit_scale"):
@@ -896,8 +893,7 @@ def _clef_head_weights(self, exact = False) -> tuple:
             config["head_temperature"] = temperature
     weights = {}
     for name, value in state.items():
-        # The logit scales stay float32: a folded temperature moves them, and bfloat16's 8 bit
-        # mantissa would turn that into a few percent on every logit.
+        # Logit scales stay float32: bfloat16 would blur a folded temperature in every logit.
         value = value.to(torch.float32 if value.dim() == 0 else torch.bfloat16).contiguous()
         if not torch.isfinite(value).all():
             raise ValueError(

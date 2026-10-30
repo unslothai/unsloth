@@ -211,11 +211,9 @@ def _dw_slots(device):
         return 128, 32
 
 
-# num_warps per (compute capability, n_cols), replacing calculate_settings' where a sweep (fp16 + bf16 on
-# sm_80+, fp16 on T4; 2k and 16k rows) found a width faster outside the run's A/A band in some cell and never
-# slower in any, at least 3% on the geometric mean, with max error vs fp64 no worse than the default's; every
-# entry then won again against main on torch 2.14.1 (same GPU tier, interleaved, outside A/A, never slower).
-# _NUM_WARPS: forward + frozen-W backward; _DW_NUM_WARPS: the dW / dB backward.
+# num_warps per (compute capability, n_cols) replacing calculate_settings; a sweep found faster
+# widths, never slower, with max error vs fp64 no worse, re-verified on torch 2.14.1; _NUM_WARPS:
+# forward and frozen-W backward; _DW_NUM_WARPS: dW / dB backward.
 _NUM_WARPS = {
     ((7, 5), 2560): 16,
     ((7, 5), 4096): 16,

@@ -1156,9 +1156,8 @@ def test_mlx_trl_star_import_exports_public_shims():
 
 
 def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
-    """GRPO/DPO/ORPO trainers have no MLX path, so the shim retargets the ones trl
-    exposes to a clear NotImplementedError instead of a confusing CUDA crash, and
-    never invents trainers trl does not have."""
+    """GRPO/DPO/ORPO trainers have no MLX path, so the shim stubs the ones trl exposes with a clear
+    NotImplementedError instead of a CUDA crash, and invents no trainers trl lacks."""
     unsloth = _import_mlx_unsloth()
     trl = types.ModuleType("trl")
     trl.__path__ = ["real-trainer-package"]
@@ -1237,9 +1236,8 @@ def test_mlx_preserve_dataset_order_is_accepted():
 
 
 def test_mlx_sftconfig_alias_keeps_trl_epoch_default(monkeypatch):
-    """`trl.SFTConfig` (aliased on MLX) keeps TRL's default training length: with
-    no explicit max_steps/num_train_epochs it runs TRL's 3 epochs, not the native
-    MLX 60-step default. An explicit length is authoritative and untouched."""
+    """On MLX, trl.SFTConfig keeps TRL's default of 3 epochs when no max_steps or num_train_epochs
+    is given, not the native 60-step default; an explicit length is untouched."""
     unsloth = _import_mlx_unsloth()
     trl = types.ModuleType("trl")
     trl.__path__ = ["real-trainer-package"]

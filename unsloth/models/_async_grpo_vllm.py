@@ -294,9 +294,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class _Server(ThreadingHTTPServer):
-    # socketserver listens with a backlog of 5. Each in-flight completion is its
-    # own connection, so a burst of them can overflow the accept queue and have
-    # connections reset before a handler thread picks them up.
+    # Backlog of 5 is too small: each in-flight completion is its own connection, reset on overflow.
     request_queue_size = 1024
     daemon_threads = True
 

@@ -666,9 +666,8 @@ def test_clef_backbone_stays_on_one_device_unless_the_caller_places_it(tmp_path,
 
 
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
-    # On CPU everywhere: the toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but
-    # only after ~100 steps on a GPU (same curve otherwise, any precision), so 80 steps is a threshold
-    # tuned to CPU arithmetic, not a GPU defect.
+    # The toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but only after ~100
+    # steps on GPU, so 80 steps is tuned to CPU arithmetic, not a GPU defect.
     monkeypatch.setattr(decision, "_device", lambda: torch.device("cpu"))
     # Eager too: a compiled encoder draws the same accuracy from a different 45-decision RNG stream.
     monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "0")

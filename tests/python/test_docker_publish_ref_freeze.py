@@ -428,10 +428,8 @@ def test_the_digest_export_refuses_another_runs_manifest(manifest_digest_step: s
 def test_the_digest_export_accepts_the_flattened_per_arch_indexes(
     manifest_digest_step: str, tmp_path: Path
 ):
-    """The real shape: each build leg pushed an index (image + attestation), and the
-    merged index carries those CHILDREN, never the per-arch index digests the
-    artifact files are named after. Runs 33935929946 and 33936467156 published a
-    correct :core and then failed here, which skipped the Studio build."""
+    """The merged index carries the children of each per-arch index, not the index digests the
+    artifact files are named after; rejecting that shape skipped the Studio build."""
     bin_dir = tmp_path / "bin"
     _docker_stub(
         bin_dir,

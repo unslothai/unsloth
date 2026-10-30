@@ -637,9 +637,8 @@ class TestRocmEntrypoint:
         )
 
     def test_dxg_torch_failure_gives_bridge_advice_not_amdgpu_advice(self, tmp_path):
-        """WSL has no host amdgpu stack, so the rocm-smi / dkms / rebuild-against-the-host
-        advice is wrong there; the bridge has its own two causes (measured: the libdxcore
-        mount, and the Windows driver)."""
+        """WSL has no host amdgpu stack, so rocm-smi, dkms and rebuild advice is wrong there; the
+        librocdxg bridge has its own two causes: the libdxcore mount and the Windows driver."""
         rc, ran, err = self._dxg_with_torch(
             tmp_path,
             ["librocprofiler-register.so"],

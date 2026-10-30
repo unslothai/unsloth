@@ -123,9 +123,8 @@ def native_cp314(ips, monkeypatch):
 
 @pytest.fixture
 def soxr_published(ips, monkeypatch):
-    """Answer the index for soxr, which publishes no win_arm64 wheel in any release, so it
-    alone would decide tests that are about something else. test_librosa_still_needs_soxr
-    covers soxr itself."""
+    """Answers the index for soxr, which publishes no win_arm64 wheel in any release, so it would
+    otherwise decide unrelated tests; test_librosa_still_needs_soxr covers soxr itself."""
     real = ips._public_index_win_arm64_versions
     monkeypatch.setattr(
         ips,
@@ -640,9 +639,8 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
 
 
 class TestAPrereleaseWheelDoesNotSatisfyAFinalPin:
-    """A wheelhouse holding 0.13.0rc1 must not unskip a package pinned to ==0.13.0: the
-    numeric comparison reduced both to (0, 13, 0), so the skip was dropped and uv -- which
-    applies PEP 440 properly -- fell to the ARM64 sdist the skip list exists to avoid."""
+    """A 0.13.0rc1 wheel must not unskip a package pinned to ==0.13.0: numeric comparison reduced
+    both to (0, 13, 0), so uv (which applies PEP 440) fell to the ARM64 sdist."""
 
     @pytest.mark.parametrize(
         "version, specifier, expected, why",
@@ -773,9 +771,8 @@ class TestAnExplicitPinIsNotOverriddenByThePreservationShortcut:
 
 
 class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
-    """The skip list was decided from the local wheelhouse alone, so a native CPython 3.14
-    ARM64 host -- where llvmlite and numba both publish a win_arm64 wheel, cp314 being the
-    only tag either publishes one for -- had librosa dropped with its chain resolvable."""
+    """The skip list used only the local wheelhouse, so a native CPython 3.14 ARM64 host dropped
+    librosa with its chain resolvable, as llvmlite and numba publish cp314 win_arm64 wheels."""
 
     def test_the_recorded_versions_clear_the_blocker_floors(self, ips):
         """A recorded version below the floor would unblock nothing but this table."""
@@ -827,9 +824,8 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
 
 
 class TestThePublicIndexClaimNeedsTheIndex:
-    """What PyPI publishes is only availability if the resolve will look at PyPI: offline, or
-    pointed at an exclusive corporate index, unblocking librosa drops the skip and then fails
-    the whole extras pass on a numba chain nothing serves."""
+    """What PyPI publishes counts only if the resolve reaches PyPI; offline or on an exclusive
+    index, unblocking librosa fails on a numba chain nothing serves."""
 
     @pytest.fixture(autouse = True)
     def _native(self, ips, monkeypatch, native_cp314):
@@ -1295,9 +1291,8 @@ class TestInstallPs1HandsOverWhatPyPIProvides:
 
 
 class TestAHostedTorchcodecIsInstalledByItsStep:
-    """The requirement filter kept a hosted torchcodec's row, but no requirements file has one,
-    and the dedicated step skipped every platform without a published wheel. Hosting the wheel
-    therefore re-enabled nothing, against what the drop list in install.ps1 promises."""
+    """Hosting torchcodec re-enabled nothing, against install.ps1's drop list: no requirements file
+    has its row, and the dedicated step skips platforms without a published wheel."""
 
     @pytest.fixture
     def native(self, ips, monkeypatch, wheelhouse):

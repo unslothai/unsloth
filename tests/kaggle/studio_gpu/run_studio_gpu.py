@@ -2301,9 +2301,8 @@ class Payload:
         failures: list[str] = []
         detail: dict = {"driver": str(driver)}
 
-        # Re-seed: the UI driver needs the forced password change pending, which the API
-        # already completed.
-        # start_server() removes $STUDIO_HOME/auth, re-seeding the bootstrap password.
+        # Re-seed: the UI driver needs the forced password change pending, which the API already
+        # completed; start_server() removes $STUDIO_HOME/auth, re-seeding the bootstrap password.
         self.stop_server()
         if not self.start_server():
             failures.append("Unsloth did not come back after the restart that re-seeds the account")

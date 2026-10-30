@@ -45,9 +45,8 @@ def test_the_rule_is_inert_when_completions_only_was_not_requested():
 
 
 def test_the_leg_asks_for_completions_and_for_mxfp4():
-    """Asserted through the REGISTRY, because a payload flag nobody passes is
-    coverage that does nothing. The default is on, so the check is that the leg
-    does not turn it off."""
+    """Asserted through the registry, since a payload flag nobody passes is coverage that does
+    nothing; the default is on, so the leg must not pass --no-train-on-completions."""
     from kaggle_t4_ci.legs import LEGS
 
     leg = LEGS["gptoss"]
@@ -231,9 +230,8 @@ def test_the_text_leg_exports_once_per_leg_and_not_once_per_cycle():
 
 
 def test_skipping_every_cycle_is_still_a_failure():
-    """The saving must not be able to become missing coverage. A leg that asked
-    for an export and produced no file anywhere has to say so, and a per-cycle
-    excuse that fires on cycle 0 too would be silent."""
+    """Skipping the GGUF export per cycle must not become missing coverage: a leg that asked for an
+    export and produced no file must fail, and the excuse must not fire on cycle 0."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert "every cycle skipped the GGUF export" in src
     assert (

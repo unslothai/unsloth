@@ -193,8 +193,7 @@ def test_a_lost_conversation_is_still_a_finding_while_a_reply_runs(browser):
     assert "DIFFERENT MESSAGES on screen" in got["reason"]
 
 
-# User rows and rows whose role changed do not depend on stream progress, so they must still
-# be reported instead of being swallowed by the blind-probe refusal.
+# User rows and role changes ignore stream progress, so the blind refusal must not hide them.
 
 
 def test_a_changed_user_row_survives_the_blind_refusal(browser):
@@ -253,17 +252,15 @@ def test_a_windowed_arm_that_unmounted_the_live_row_is_not_read_as_blind(browser
 
 
 def test_a_windowed_arm_is_still_caught_when_the_hook_itself_is_gone(browser):
-    """The narrowing is not a hole. A missing ROW explains a quiet scan; a missing ATTRIBUTE does
-    not, because the settled rows would still be publishing it."""
+    """No hole: a missing row explains a quiet scan; settled rows still publish the attribute."""
     cap = _capture(browser, **dict(_BLIND_ATTR, drop_tail = True))
     assert cap["status_hook_present"] is False
     assert cap["in_flight_unplaced"] is True, cap
 
 
 def test_a_full_mount_is_still_caught_when_only_the_STATUS_VALUE_changed(browser):
-    """And the reverse: on a full mount the row cannot be missing, so a quiet scan is blindness
-    even though the attribute is still there. This is the case a hook-presence test alone would
-    have lost, and it is the likelier build change of the two."""
+    """On a full mount no row can be missing, so a quiet scan is blindness even with the attribute
+    present; a hook-presence test alone would miss this likelier change."""
     cap = _capture(browser, **_BLIND)
     assert cap["status_hook_present"] is True
     assert cap["in_flight_unplaced"] is True, cap

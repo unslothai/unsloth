@@ -1402,9 +1402,8 @@ def sft_trainer_compute_loss(function_name, function):
         return_outputs = False,
         num_items_in_batch = None,
     ):
-        # TRL >= 1.15 computes loss_type="dft" only in the compute_loss this replaces (else it trains as NLL):
-        # run it on TRL's fused LM head. Older TRL routes DFT through compute_loss_func.
-        # TRL label smoothing applies only to "nll", so label_smoother must not opt dft out.
+        # Runs DFT on the TRL fused LM head (TRL >= 1.15 computes it only in compute_loss; older TRL
+        # routes it via compute_loss_func); label smoothing must not opt dft out.
         if getattr(self.args, "loss_type", None) == "dft" and self.compute_loss_func is None:
             import trl.trainer.utils as _trl_utils
             if hasattr(_trl_utils, "add_fused_lm_head"):
@@ -3143,8 +3142,7 @@ def _unsloth_vllm_peft_unsupported(model):
             problems.append(f"LoRA on MultiheadAttention at {module_name}")
             break
     for module_name, module in model.named_modules():
-        # A custom tuner layer on a composite base: its weights live in child modules the copy
-        # merge does not see, so the merged weights would never be sent.
+        # Custom tuner on a composite base: weights sit in child modules the merge never sees.
         if getattr(module, "base_layer", None) is None or not hasattr(module, "get_base_layer"):
             continue
         base = module.get_base_layer()
@@ -3259,11 +3257,9 @@ def _unsloth_vllm_sync_kind(trainer):
     problems.extend(
         f"one base weight shared by {names}" for names in _unsloth_vllm_shared_targets(model)
     )
-    # Unsharded: every mergeable PEFT setup is merged out of place, so the frozen base never moves.
-    # ZeRO-3: TRL merges inside GatheredParameters(modifier_rank = None), which discards in-place edits
-    # of the gathered copy on exit, so its merge / unmerge cannot drift the stored base either.
-    # FSDP: TRL calls merge_adapter before it gathers the sharded parameters, so PEFT's full-size
-    # deltas meet sharded base weights (and the in-place round trip would drift a 16-bit base).
+    # Unsharded merges out of place so the frozen base never moves; ZeRO-3 merges inside
+    # GatheredParameters, which discards in-place edits on exit; FSDP is refused since TRL merges
+    # before gathering shards.
     kind = "peft_merged" if not sharded else "trl"
     if getattr(trainer, "is_fsdp_enabled", False):
         problems.append(
@@ -3749,8 +3745,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             def chunked_hidden_states_selective_log_softmax(
                 hidden_states, _lm_head, *args, **kwargs
             ):
-                # FSDP2's forward hooks replace Parameters. Read the current head
-                # at projection time, including the bias, instead of retaining a shard.
+                # FSDP2 replaces Parameters; read the head at projection, not a saved shard.
                 if _zero3_head is not None:
                     head_weight, head_bias = _zero3_head
                 else:

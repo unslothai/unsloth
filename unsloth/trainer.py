@@ -255,11 +255,7 @@ def _should_skip_auto_packing_error(exc: Exception) -> bool:
 
 
 def _should_skip_auto_padding_free_error(exc: Exception) -> bool:
-    """Net for a TRL that words the padding-free / `max_length` guard differently.
-
-    rl.py already handles the known wording; both terms must appear here so an
-    unrelated ValueError still propagates.
-    """
+    """Matches a reworded TRL padding_free + max_length error; both terms, so other errors propagate."""
     message = str(exc).lower()
     return "padding_free" in message and "max_length" in message
 
@@ -669,11 +665,7 @@ def _forward_accepts_packing_kwargs(model, name = "packed_seq_lengths") -> bool:
 
 
 def _forward_signature_accepts_packing(forward, name = "packed_seq_lengths") -> bool:
-    """The signature question alone, so a class can be asked it as well as an instance.
-
-    Shared, not duplicated: a disagreement would turn padding-free on for one
-    spelling of a checkpoint and off for the other.
-    """
+    """Signature check for a class or instance; shared so the two never disagree on padding-free."""
     if forward is None:
         return True
     try:
@@ -780,11 +772,8 @@ def _string_model_trust_remote_code(config_arg):
 
 
 def _is_hybrid_linear_attention_model(model) -> bool:
-    """Detect models mixing linear-attention / state-space mixers (gated-delta,
-    Mamba-style) with a causal conv1d, e.g. Qwen3.5 / Qwen3-Next. Packing and
-    padding-free flatten the batch, and those recurrent + conv ops leak state
-    across sequence boundaries, so they must not be packed. Uses composite
-    structural evidence rather than a model-name match."""
+    """Hybrid linear-attention/state-space models with causal conv1d leak state across packed
+    sequences, so they must not be packed; detected by structural evidence, not model name."""
     if model is None:
         return False
 
@@ -834,9 +823,7 @@ def _config_has_stateful_mixer(config, trust_remote_code = False) -> bool:
 
 
 def _resolve_string_model_config(model_name, config_arg):
-    """TRL materializes a string ``model=`` inside ``__init__``; resolve its config
-    up front so the packing guards run before the dataset is packed. Best-effort:
-    returns None if the config cannot be loaded."""
+    """Config of a string `model=`, resolved early so packing guards run first; None if unloadable."""
     try:
         from transformers import AutoConfig
 
@@ -1297,9 +1284,7 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
             base.load_state_dict(self, state_dict)
             self._last_lr = [group["lr"] for group in self.optimizer.param_groups]
             return
-        # Gated on the optimizer having just migrated: length alone cannot tell a legacy
-        # [ordinary, embedding] pair from two current non-embedding groups, and remapping
-        # the latter collapses distinct per-group min_lr floors onto the first.
+        # Remap only when the optimizer just migrated; length alone cannot tell legacy pairs apart.
         if not getattr(built, "_unsloth_loaded_legacy", False):
             return base.load_state_dict(self, state_dict)
         for key in ("base_lrs", "_last_lr", "min_lrs"):
@@ -1467,10 +1452,8 @@ class UnslothTrainer(SFTTrainer):
         )
 
         if not any("rank" in group for group in param_groups):
-            # make_q_galore_param_groups selects on param.dim() == 2, and FSDP1 hands us 1-D
-            # views: FlatParameter with use_orig_params=False, and a 1-D sharded view even
-            # with use_orig_params=True. Nothing matches, so a requested Q-GaLore run would
-            # quietly become ordinary 8-bit AdamW. Say so instead.
+            # FSDP1 gives 1-D views that Q-GaLore's 2-D selection never matches, so raise, not run
+            # plain AdamW.
             raise ValueError(
                 "Unsloth: Q-GaLore was requested but no parameter matched, so the run would "
                 "silently be ordinary AdamW 8bit. Projection needs 2-D parameters; under FSDP "
