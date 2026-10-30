@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MiniMap, Panel, useReactFlow } from "@xyflow/react";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { newId, useDocStore } from "../stores/doc-store";
 import type { RerouteDir } from "../stores/reroute-graph";
@@ -123,7 +123,13 @@ function rerouteTarget(
   if (!wire || !(graph.wires[wire] || graph.edges[wire]?.kind === "data"))
     return null;
   const at = snapToWire(wire, toFlow({ x: clientX, y: clientY }));
-  return at ? { wire, at, dir: dirAlong(at.tangent) } : null;
+  if (!at) return null;
+  const { rerouteDir, rerouteDirPicked } = usePlacement.getState();
+  return {
+    wire,
+    at,
+    dir: rerouteDirPicked ? rerouteDir : dirAlong(at.tangent),
+  };
 }
 
 /** While a Nodes panel item or a toolbar Group, Note or Reroute is armed: each click on empty canvas, a group or a note places one;
@@ -140,6 +146,8 @@ function ArmedPlacement() {
     dir?: RerouteDir;
   } | null>(null);
   const rerouteDir = usePlacement((s) => s.rerouteDir);
+  const pointerRef = useRef(pointer);
+  pointerRef.current = pointer;
 
   useEffect(() => stopPlacement, []);
 
@@ -196,9 +204,11 @@ function ArmedPlacement() {
         !(e.metaKey || e.ctrlKey || e.altKey)
       ) {
         e.preventDefault();
-        usePlacement.setState((s) => ({
-          rerouteDir: nextRerouteDir(s.rerouteDir),
-        }));
+        // Turns from what the ghost shows now, which on a wire is the wire's direction.
+        const shown = pointerRef.current?.dir ?? usePlacement.getState().rerouteDir;
+        const next = nextRerouteDir(shown);
+        usePlacement.setState({ rerouteDir: next, rerouteDirPicked: true });
+        setPointer((p) => (p?.dir ? { ...p, dir: next } : p));
       }
     };
     const move = (e: PointerEvent) => {

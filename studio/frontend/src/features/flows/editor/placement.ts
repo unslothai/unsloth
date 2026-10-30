@@ -9,19 +9,26 @@ import type { RerouteDir } from "../stores/reroute-graph";
 export const usePlacement = create<{
   armed: string | null;
   rerouteDir: RerouteDir;
+  /** R was pressed while armed: the turn holds on a wire too, instead of following the wire. */
+  rerouteDirPicked: boolean;
 }>(() => ({
   armed: null,
   rerouteDir: "right",
+  rerouteDirPicked: false,
 }));
 
 /** Clicking the armed item again disarms it; another item switches to that one. */
 export function togglePlacement(type: string): void {
   const { armed } = usePlacement.getState();
-  usePlacement.setState({ armed: armed === type ? null : type });
+  usePlacement.setState({
+    armed: armed === type ? null : type,
+    rerouteDirPicked: false,
+  });
 }
 
 export function stopPlacement(): void {
-  if (usePlacement.getState().armed) usePlacement.setState({ armed: null });
+  if (usePlacement.getState().armed)
+    usePlacement.setState({ armed: null, rerouteDirPicked: false });
 }
 
 /** The snap step, equal to the canvas dot gap so snapped cards sit on the dots. */
