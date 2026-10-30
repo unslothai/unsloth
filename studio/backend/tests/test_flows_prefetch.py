@@ -722,7 +722,12 @@ async def test_a_load_ahead_asks_for_the_cards_own_and_saved_load_settings(studi
     seen: dict = {}
     fake = _common.ensure_model
 
-    async def ensure_model(ctx, kind, choice, options = None):
+    async def ensure_model(
+        ctx,
+        kind,
+        choice,
+        options = None,
+    ):
         seen.setdefault(choice["repo"], options)
         return await fake(ctx, kind, choice, options)
 
