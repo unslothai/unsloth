@@ -168,6 +168,11 @@ test("a quoted stateDiagram state label is text, not a style statement", () => {
     // Only a stateDiagram lexes it that way.
     [`erDiagram\n  state "y classDef x fill:${url}"`, 'erDiagram\n  state "y '],
     [`erDiagram\n  A ||--o{ B : x\nstateDiagram-v2\n  state "y classDef x fill:${url}"`, 'erDiagram\n  A ||--o{ B : x\nstateDiagram-v2\n  state "y '],
+    // `.*<<fork>>` and its kin are lexed before the quote and end the statement, so what follows is real.
+    ...["<<fork>>", "<<JOIN>>", "<<choice>>", "[[fork]]", "[[join]]", "[[Choice]]"].map((marker) => [
+      `stateDiagram-v2\nA --> B\nstate "foo ${marker} style A fill:${url};stroke:red" as C`,
+      `stateDiagram-v2\nA --> B\nstate "foo ${marker} `,
+    ]),
   ]) {
     const out = stripRemoteDiagramImages(source);
     assert.equal(out, kept);

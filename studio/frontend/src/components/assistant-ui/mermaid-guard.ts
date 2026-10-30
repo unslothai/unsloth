@@ -29,6 +29,9 @@ const MIDLINE_STYLE = /^[^\S\n]*(?:stateDiagram|erDiagram|block(?:-beta)?|requir
 // to its newline or `{`, where no style keyword is lexed, and its closed quote is label text.
 const STATE_DIAGRAM = /^\s*stateDiagram/;
 const STATE_LABEL = /^[^\S\n]*state[^\S\n]+"[^"\n{}]*"/;
+// Lexed ahead of that quote: `.*<<fork>>` and the rest end the state statement, so a line holding one
+// is not a label and a style statement after it is real.
+const STATE_EXIT = /<<(?:fork|join|choice)>>|\[\[(?:fork|join|choice)\]\]/i;
 
 // An HTML label tag with a style attribute; its CSS can fetch (background-image and the like).
 const STYLED_TAG = /<([a-z][^<>]*\bstyle\s*=[^<>]*)/gi;
@@ -219,7 +222,8 @@ export function stripRemoteDiagramImages(source: string): string {
       return CSS_FETCH.test(decoded) ? `#lt;${tag}` : whole;
     })
     .replace(/^.*$/gm, (line) => {
-      const label = stateLabels && quoteFree ? (STATE_LABEL.exec(line)?.[0].length ?? 0) : 0;
+      const label =
+        stateLabels && quoteFree && !STATE_EXIT.test(line) ? (STATE_LABEL.exec(line)?.[0].length ?? 0) : 0;
       if (/"|accDescr\s*\{/i.test(line.slice(label))) quoteFree = false;
       return withoutFetchingStyle(line, midLine, label);
     })
