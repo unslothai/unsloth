@@ -24293,7 +24293,11 @@ async def openai_audio_speech(
         max_tokens = body.max_new_tokens or AUDIO_GENERATION_MAX_TOKENS,
         audio_instructions = body.instructions,
         audio_language = body.language,
-        audio_options = body.audio_options,
+        audio_options = (
+            {"speed": body.speed, **(body.audio_options or {})}
+            if body.speed is not None
+            else body.audio_options
+        ),
         seed = body.seed,
     )
     # Redact up front: a failure before relabel would leave a host path on a tunneled row.
