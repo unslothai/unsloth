@@ -7,7 +7,9 @@ own) unless the owner started the run and approved them for the flow; see ``core
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
+import socket
 import threading
 import time
 from datetime import datetime, timezone
@@ -69,6 +71,20 @@ class _NoRedirect:
         return NoRedirect()
 
 
+def _raw_socket(response: Any) -> Any:
+    """The socket under an http.client response (or the HTTPError wrapping one), or None."""
+    fp = response
+    for _ in range(4):
+        inner = getattr(fp, "fp", None)
+        sock = getattr(getattr(inner, "raw", None), "_sock", None)
+        if isinstance(sock, socket.socket):
+            return sock
+        fp = inner
+        if fp is None:
+            return None
+    return None
+
+
 def guarded_request(
     method: str,
     url: str,
@@ -107,21 +123,57 @@ def guarded_request(
         response = exc
     except (urllib.error.URLError, OSError) as exc:
         raise FlowNodeError(f"The request failed: {getattr(exc, 'reason', exc)}") from None
+    # read(n) waits for all n bytes, so a peer trickling bytes outlasts the deadline and Stop. read1 returns per
+    # receive, and the watcher shuts the socket down so a blocked receive returns too.
+    read = getattr(response, "read1", None) or response.read
+    finished = threading.Event()
+    sock = _raw_socket(response)
+
+    def _overdue() -> bool:
+        return time.monotonic() > deadline or (stop is not None and stop.is_set())
+
+    def _watch() -> None:
+        while not finished.wait(0.05):
+            if _overdue():
+                try:
+                    socket.socket.shutdown(sock, socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                return
+
+    if sock is not None:
+        threading.Thread(target = _watch, name = "flows-http-watch", daemon = True).start()
     with response:
-        chunks, size = [], 0
-        while True:
-            if time.monotonic() > deadline:
-                raise FlowNodeError(f"The response took longer than {int(timeout)} seconds")
-            if stop is not None and stop.is_set():
-                raise FlowNodeError("Stopped")
-            chunk = response.read(64 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > HTTP_MAX_BYTES:
-                raise FlowNodeError(f"The response is over {HTTP_MAX_BYTES // (1024 * 1024)} MB")
-            chunks.append(chunk)
-        return int(response.status), response.headers.get("content-type") or "", b"".join(chunks)
+        try:
+            chunks, size = [], 0
+            while True:
+                if time.monotonic() > deadline:
+                    raise FlowNodeError(f"The response took longer than {int(timeout)} seconds")
+                if stop is not None and stop.is_set():
+                    raise FlowNodeError("Stopped")
+                try:
+                    chunk = read(64 * 1024)
+                except (OSError, ValueError, http.client.HTTPException) as exc:
+                    if _overdue():
+                        continue
+                    raise FlowNodeError(f"The request failed: {exc}") from None
+                if not chunk:
+                    if _overdue():
+                        continue
+                    break
+                size += len(chunk)
+                if size > HTTP_MAX_BYTES:
+                    raise FlowNodeError(
+                        f"The response is over {HTTP_MAX_BYTES // (1024 * 1024)} MB"
+                    )
+                chunks.append(chunk)
+            return (
+                int(response.status),
+                response.headers.get("content-type") or "",
+                b"".join(chunks),
+            )
+        finally:
+            finished.set()
 
 
 @handler("http.request")
