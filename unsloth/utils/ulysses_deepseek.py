@@ -37,7 +37,11 @@ def _apply_rotary_fn(mod):
     return module.apply_rotary_pos_emb
 
 
-def _gather_seq(x, group, dim = 1):
+def _gather_seq(
+    x,
+    group,
+    dim = 1,
+):
     """All-gather sequence shards along ``dim``; backward reduce-scatters the summed gradient.
 
     torch.distributed.nn.all_gather's gloo backward scatters from group ranks as if they were global

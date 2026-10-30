@@ -68,7 +68,9 @@ def _model(kind):
 
 
 def _per_expert_modules(model):
-    return any(isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules())
+    return any(
+        isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules()
+    )
 
 
 def _manager(size, rank):

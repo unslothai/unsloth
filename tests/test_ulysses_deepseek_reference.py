@@ -28,7 +28,9 @@ transformers = pytest.importorskip("transformers")
 # Each arm must import the unsloth tree that holds this test file.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 assert os.path.abspath(unsloth.__file__).startswith(_ROOT + os.sep), unsloth.__file__
-if not all(hasattr(transformers, n) for n in ("DeepseekV3Config", "DeepseekV32Config", "DeepseekV4Config")):
+if not all(
+    hasattr(transformers, n) for n in ("DeepseekV3Config", "DeepseekV32Config", "DeepseekV4Config")
+):
     pytest.skip("transformers without DeepSeek V3 / V3.2 / V4", allow_module_level = True)
 
 VOCAB = 96
@@ -144,7 +146,9 @@ def _scale_worker(rank, world, scaling, packed, control):
     (out * grad_out[:, sl]).sum().backward()
     torch.testing.assert_close(out, ref[:, sl], rtol = 1e-10, atol = 1e-10, msg = _named("output"))
     for name, part, leaf in zip("qkv", parts, leaves):
-        torch.testing.assert_close(part.grad, leaf.grad[:, :, sl], rtol = 1e-10, atol = 1e-10, msg = _named(name))
+        torch.testing.assert_close(
+            part.grad, leaf.grad[:, :, sl], rtol = 1e-10, atol = 1e-10, msg = _named(name)
+        )
 
 
 SCALES = {"yarn_v3_release": _yarn_scale(24), "far_from_default": 0.03, "default": 24**-0.5}
@@ -198,9 +202,7 @@ def _build(kind, v4_topk):
         return t.DeepseekV3ForCausalLM(t.DeepseekV3Config(**_mla()))
     if kind == "v32":
         # 8 indexer heads keep exact zero-score ties (all ReLUs zero) improbable; top-6 of up to 24 keys.
-        config = t.DeepseekV32Config(
-            **_mla(index_topk = 6, index_head_dim = 16, index_n_heads = 8)
-        )
+        config = t.DeepseekV32Config(**_mla(index_topk = 6, index_head_dim = 16, index_n_heads = 8))
         return t.DeepseekV32ForCausalLM(config)
     # Release ratios: CSA 4, HCA 128, sliding window 128 (DeepSeek-V4 config defaults).
     config = t.DeepseekV4Config(
@@ -239,7 +241,9 @@ def _build(kind, v4_topk):
             if hasattr(module, "sinks"):
                 module.sinks.copy_(0.5 * torch.randn(module.sinks.shape, generator = g))
             if hasattr(module, "position_bias"):
-                module.position_bias.copy_(0.3 * torch.randn(module.position_bias.shape, generator = g))
+                module.position_bias.copy_(
+                    0.3 * torch.randn(module.position_bias.shape, generator = g)
+                )
             if hasattr(module, "tid2eid"):
                 ids = torch.arange(VOCAB)
                 module.tid2eid[:, 0] = ids % 4
@@ -247,7 +251,11 @@ def _build(kind, v4_topk):
     return model
 
 
-def _model(kind, v4_topk = 16, lora = False):
+def _model(
+    kind,
+    v4_topk = 16,
+    lora = False,
+):
     torch.manual_seed(0)
     model = _build(kind, v4_topk).double().train()
     model.config._attn_implementation = "eager" if kind in ("v32", "v4") else "sdpa"
@@ -315,8 +323,16 @@ def _controls(model, kind, control, monkey):
     elif control == "wrong_offset":
         real = ud.ulysses_deepseek_v4_forward
 
-        def shard_positions(module, *args, position_ids = None, group = None, **kw):
-            return real(module, *args, position_ids = position_ids - position_ids[:, :1], group = group, **kw)
+        def shard_positions(
+            module,
+            *args,
+            position_ids = None,
+            group = None,
+            **kw,
+        ):
+            return real(
+                module, *args, position_ids = position_ids - position_ids[:, :1], group = group, **kw
+            )
 
         monkey(ud, "ulysses_deepseek_v4_forward", shard_positions)
     elif control == "local_topk":
@@ -418,9 +434,7 @@ def _parity_body(rank, world, case, kind, cp_size, dp, group, monkey):
         torch.testing.assert_close(logits[i, :n], alone[0], msg = _named("unpadded"), **tol)
     total = local_ce.detach().clone()
     dist.all_reduce(total)
-    torch.testing.assert_close(
-        total / count, _sum_ce(ref_logits.detach(), shift) / count, **tol
-    )
+    torch.testing.assert_close(total / count, _sum_ce(ref_logits.detach(), shift) / count, **tol)
     # Same fp32 ops; chunked attention also accumulates full-sequence gradients in fp32.
     gtol = dict(rtol = 1e-5, atol = 1e-8)
 
@@ -536,7 +550,9 @@ def _topk_worker(rank, world, seq):
     local = seq // world
     sl = slice(rank * local, (rank + 1) * local)
     pe_local = tuple(t[:, sl] for t in pe)
-    got = ud._v32_global_topk(idx, hidden[:, sl], q_resid[:, sl], pe_local, dist.group.WORLD, modeling)
+    got = ud._v32_global_topk(
+        idx, hidden[:, sl], q_resid[:, sl], pe_local, dist.group.WORLD, modeling
+    )
     assert got.shape == ref.shape
     topk = idx.index_topk
     short = 0
@@ -601,7 +617,9 @@ def _sink_case(chunk, monkeypatch):
     exact = dict(rtol = 1e-12, atol = 1e-12)
     tol = exact if int(chunk) >= seq else dict(rtol = 1e-6, atol = 1e-7)
     for name, x, y in zip(("q", "kv", "sinks"), a, b):
-        torch.testing.assert_close(x.grad, y.grad, msg = _named(name), **(exact if name == "q" else tol))
+        torch.testing.assert_close(
+            x.grad, y.grad, msg = _named(name), **(exact if name == "q" else tol)
+        )
 
 
 # 1 and 7 run the chunked autograd op (7 leaves a partial last chunk); 40 = the sequence and 4096
