@@ -186,9 +186,11 @@ def _case_train(
     ids = torch.randint(0, 1000, (steps * ga * bs * data_dp, SEQ), generator = g)
     import datasets
 
-    data = datasets.Dataset.from_dict({"input_ids": ids.tolist()})
+    data = datasets.Dataset.from_dict({"input_ids": ids.tolist(), "row": list(range(len(ids)))})
+    rows_read = []  # dataset row ids per micro-batch, in order: parity needs the same rows on both sides
 
     def collate(rows):
+        rows_read.append([int(r["row"]) for r in rows])
         input_ids = torch.tensor([r["input_ids"] for r in rows])
         batch = {"input_ids": input_ids, "labels": input_ids.clone()}
         batch["labels"][batch["labels"] % 5 == 0] = -100  # uneven token counts per row and per shard
@@ -292,6 +294,10 @@ def _case_train(
         "seen_lengths": sorted(seen_lengths),
         "ulysses_calls": None if compile else len(ulysses_calls),
         "cp_backend": None if manager is None else manager.backend,
+        "epoch": float(trainer.state.epoch or 0.0),
+        "rows_read": rows_read,
+        "dataset_rows": len(data),
+        "ga": ga,
         "compiled_classes": [getattr(c, "__name__", c) for c in compiled],
         "native_fsdp2": __import__("unsloth.models.fsdp2_native", fromlist = ["x"]).is_native_fsdp2(trainer.model),
         "banner": trainer.__dict__.get("_unsloth_parallel_announced"),
@@ -377,8 +383,32 @@ def _ref(bs, compile = False, arch = "llama", **kwargs):
     return _REF[key]
 
 
+def _rows_per_step(res):
+    """The dataset rows each optimizer step trained on (one rank's view)."""
+    ga, read = res["ga"], res["rows_read"]
+    return [sorted(r for mb in read[i : i + ga] for r in mb) for i in range(0, len(read) - len(read) % ga, ga)]
+
+
+def _same_rows(results, want, what = ""):
+    """Every step of the composed run trains on exactly the rows one process trains on (data parallel replicas
+    split them, cp / tp / pp peers share theirs), and no side read a row twice (no second epoch)."""
+    expected = _rows_per_step(want)
+    flat = [r for step in expected for r in step]
+    assert len(flat) == len(set(flat)), (what, "one process read a row twice", want["rows_read"])
+    union = [set() for _ in expected]
+    for res in results:
+        for i, step in enumerate(_rows_per_step(res)[: len(expected)]):
+            union[i] |= set(step)
+    assert [sorted(u) for u in union] == expected, (what, "the composed run read other rows", union, expected)
+
+
 def _close(got, want, rel = 1e-4, what = "", state_atol = 1e-6):
     assert "error" not in got, (what, got.get("error"), got.get("trace"))
+    # The run must read every row once and no row twice: too few rows for the data parallel replicas wrap the
+    # dataloader into a second epoch, and the later steps then train on other rows than one process.
+    for side in (got, want):
+        if "epoch" in side:
+            assert side["epoch"] <= 1.0 + 1e-6, (what, "the dataloader wrapped", side["epoch"])
     assert got["losses"] == pytest.approx(want["losses"], rel = rel), (what, got["losses"], want["losses"])
     assert got["grad_norms"] == pytest.approx(want["grad_norms"], rel = rel), (
         what,
@@ -523,7 +553,9 @@ def test_moe_under_data_and_context_parallel_matches_one_process(mode, world, en
     (ParamWrapper), or full finetuning, under DDP / native FSDP2 / Ulysses cp, trains like one process."""
     ref = _ref(2 * world // cp, arch = "qwen3_moe", mode = mode)
     assert not ref["output_router_logits"]
-    for rank, res in enumerate(_spawn("train", world, env, bs = 2, cp = cp, arch = "qwen3_moe", mode = mode)):
+    results = _spawn("train", world, env, bs = 2, cp = cp, arch = "qwen3_moe", mode = mode)
+    _same_rows(results, ref, what = (mode, world, env, cp))
+    for rank, res in enumerate(results):
         assert "error" not in res, (rank, res.get("trace"))
         assert not res["output_router_logits"]
         experts = [k for k in res["grads"] if ".experts." in k]
@@ -543,7 +575,9 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
     one rank, so dp 2 x accumulation 2 equals one process accumulating the same 4 micro-batches."""
     (ref,) = _spawn("train", 1, bs = 2, ga = 4, arch = "qwen3_moe", router_aux = True)
     assert ref["output_router_logits"]
-    for rank, res in enumerate(_spawn("train", 2, env, bs = 2, ga = 2, arch = "qwen3_moe", router_aux = True)):
+    results = _spawn("train", 2, env, bs = 2, ga = 2, arch = "qwen3_moe", router_aux = True)
+    _same_rows(results, ref, what = env)
+    for rank, res in enumerate(results):
         assert "error" not in res, (rank, res.get("trace"))
         assert res["output_router_logits"]
         _close(res, ref, what = (env, rank))
@@ -558,7 +592,9 @@ def test_moe_block_compile_under_cp_is_compile_clean(mode):
     single = _ref(2, compile = True, arch = "qwen3_moe", mode = mode)
     assert single["compiled_classes"] and single["compile"]["unique_graphs"] > 0
     _close(single, ref, what = "qwen3_moe one process compiled", state_atol = atol)
-    for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", mode = mode, compile = True)):
+    results = _spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", mode = mode, compile = True)
+    _same_rows(results, ref, what = ("compiled", mode))
+    for rank, res in enumerate(results):
         assert "error" not in res, (rank, res.get("trace"))
         assert res["compiled_classes"] and res["seen_lengths"] == [SEQ // 2]
         assert not not_above(res["compile"], single["compile"]), (res["compile"], single["compile"])
