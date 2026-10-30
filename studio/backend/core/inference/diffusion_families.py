@@ -281,6 +281,9 @@ _QWENIMAGE_TEXT_STREAM_INT8 = (
     "to_add_out",
     "txt_mlp",
 )
+# Per-block AdaLN modulations (M = batch, 13.6 GB bf16 on 2512, the largest dense bytes a streamed step uploads):
+# int8 weight-only on STREAMED qwen-image t2i builds; W8A8 would also round the timestep row per row.
+_QWENIMAGE_MOD_WEIGHT_ONLY = ("img_mod", "txt_mod")
 # Families whose activation ranges break specific schemes at the MODEL level (the smoke probe only proves the GEMM
 # runs). Measured with the 28-pair prequant accuracy gate on B200: qwen-image + mxfp8 does semantic damage at 1024px,
 # + nvfp4 is unusable (LPIPS 0.51). Neither has a known fix, so both stay denied and auto falls through to int8
@@ -873,6 +876,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         profile = FamilyProfile(
             int8_exclude_tokens = _QWENIMAGE_INT8_EXCLUDES,
             int8_runtime_quant_tokens = _QWENIMAGE_TEXT_STREAM_INT8,
+            int8_streamed_weight_only_tokens = _QWENIMAGE_MOD_WEIGHT_ONLY,
             scheme_deny = _QWENIMAGE_SCHEME_DENY,
             train_scheme_deny = _QWENIMAGE_TRAIN_SCHEME_DENY,
             auto_prefer = _GATED_AUTO_PREFER,
