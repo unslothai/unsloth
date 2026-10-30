@@ -525,6 +525,8 @@ def wrap_ulysses_mixer_forward(module, get_cp_manager) -> None:
     return wrap_gated_delta_forward(module, get_cp_manager)
 
 
+# flash-attn 2's forward / backward stop at head_dim 256.
+_FLASH_ATTN_MAX_HEAD_DIM = 256
 _SLIDING_BLOCK_MASKS = {}
 _FLEX = {}
 # Flex outcome per call class: True once it ran (with its backward when training), False once it
@@ -605,6 +607,8 @@ def _flex_or_dense(*, config, context, Q, K, V, window, scale):
 
 def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, **kwargs):
     from .attention_dispatch import (
+        FLASH_DENSE,
+        FLASH_VARLEN,
         SDPA,
         AttentionConfig,
         AttentionContext,
@@ -632,12 +636,22 @@ def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, *
         # MLA (Kimi-Linear, DeepSeek): pad value heads to the query width like HF's flash path.
         value = F.pad(value, (0, head_dim - v_dim))
     n_kv_heads = key.shape[1]
+    backend = select_attention_backend(use_varlen = seq_info is not None)
+    if backend in (FLASH_DENSE, FLASH_VARLEN) and head_dim > _FLASH_ATTN_MAX_HEAD_DIM:
+        # Gemma 4's global layers (head_dim 512): flash-attn raises, SDPA runs them.
+        backend = SDPA
+    window = kwargs.get("sliding_window")
+    if window is not None and window <= 0:
+        window = None
+    # flash-attn takes the window as kwargs (the dispatcher passes them through as given): keys in
+    # [i - (window - 1), i], the same keys as `q - k < window`.
+    flash_window = {} if window is None else {"window_size": (window - 1, 0)}
     config = AttentionConfig(
-        backend = select_attention_backend(use_varlen = seq_info is not None),
+        backend = backend,
         n_kv_heads = n_kv_heads,
         n_groups = n_heads // n_kv_heads,
-        flash_dense_kwargs = {"causal": True, **scale_kwargs},
-        flash_varlen_kwargs = {"dropout_p": 0.0, "causal": True, **scale_kwargs},
+        flash_dense_kwargs = {"causal": True, **scale_kwargs, **flash_window},
+        flash_varlen_kwargs = {"dropout_p": 0.0, "causal": True, **scale_kwargs, **flash_window},
         sdpa_kwargs = {"scale": scaling} if custom_scale else None,
         xformers_kwargs = {"scale": scaling} if custom_scale else None,
     )
@@ -652,7 +666,7 @@ def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, *
         attention_mask = None,
         causal_mask = None,
         # After the exchange each rank holds the full sequence, so the window applies unchanged.
-        sliding_window = kwargs.get("sliding_window"),
+        sliding_window = window,
         # Keeps training SDPA off cuDNN attention on SM100 (#15019) on the Ulysses path too.
         training = module.training,
     )

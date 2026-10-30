@@ -783,3 +783,52 @@ def test_gemma4_window_exemption_stays_narrow(monkeypatch):
     text = _config("e2b")
     text.layer_types = ["chunked_attention"] * 4
     assert cp._unsupported_attention(text, "ulysses") == "chunked_attention layers"
+
+
+def _capture_ulysses_config(monkeypatch, backend):
+    from unsloth.utils import ulysses_hybrid as uh
+
+    seen = {}
+
+    def capture(run, config, context, q, k, v, group):
+        seen["config"], seen["context"] = config, context
+        return q.transpose(1, 2)
+
+    monkeypatch.setattr(uh, "ulysses_attention", capture)
+    monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False, dropout_p = 0.0: backend)
+    return uh, seen
+
+
+@pytest.mark.parametrize("backend", ["flash_dense", "flash_varlen"])
+def test_ulysses_flash_backends_get_the_layer_window(monkeypatch, backend):
+    """With flash-attn installed the Ulysses wrapper picks flash, whose kwargs carried no window: Gemma 4
+    sliding layers attended the whole causal prefix (Colab L4, flash-attn 2.8.3: 10% off fp64)."""
+    uh, seen = _capture_ulysses_config(monkeypatch, getattr(ad, backend.upper()))
+    q = torch.randn(1, 4, 16, 256)
+    k = v = torch.randn(1, 2, 16, 256)
+    module = types.SimpleNamespace(training = True)
+    key = f"{backend}_kwargs"
+    uh._ulysses_hf_attention(module, q, k, v, None, group = None, scaling = 1.0, sliding_window = 5)
+    kwargs = getattr(seen["config"], key)
+    # flash keeps keys in [i - left, i]: left = window - 1 is the window `q - k < window`.
+    assert kwargs["window_size"] == (4, 0) and kwargs["causal"] is True
+    assert kwargs["softmax_scale"] == 1.0
+    # Global layers keep full causal attention.
+    uh._ulysses_hf_attention(module, q, k, v, None, group = None, scaling = 1.0, sliding_window = None)
+    assert "window_size" not in getattr(seen["config"], key)
+
+
+@pytest.mark.parametrize("backend", ["flash_dense", "flash_varlen"])
+def test_ulysses_flash_backends_skip_head_dims_flash_cannot_run(monkeypatch, backend):
+    """Gemma 4 global layers have head_dim 512; flash-attn raised 'FlashAttention forward only supports
+    head dimension at most 256' on the first Ulysses step (Colab L4)."""
+    uh, seen = _capture_ulysses_config(monkeypatch, getattr(ad, backend.upper()))
+    module = types.SimpleNamespace(training = True)
+    q = torch.randn(1, 4, 16, 512)
+    k = v = torch.randn(1, 2, 16, 512)
+    uh._ulysses_hf_attention(module, q, k, v, None, group = None, scaling = 1.0, sliding_window = None)
+    assert seen["config"].backend not in (ad.FLASH_DENSE, ad.FLASH_VARLEN)
+    q = torch.randn(1, 4, 16, 256)
+    k = v = torch.randn(1, 2, 16, 256)
+    uh._ulysses_hf_attention(module, q, k, v, None, group = None, scaling = 1.0, sliding_window = None)
+    assert seen["config"].backend == getattr(ad, backend.upper())
