@@ -540,3 +540,39 @@ test("a wire into a different input still hops the fan-in it crosses", () => {
     "the unrelated crossing still gets a hop",
   );
 });
+
+test("unrelated wires never meet end to end on one line, so neither reads as the other's start", () => {
+  // Dataset Forge: Checkpoint fans out to Chat and Export Model, and a Text card under Fine-tune
+  // feeds Chat's prompt from the same height as Export Model's input.
+  const rects = [
+    card("tune", 1280, 190, 260, 200),
+    card("ask", 1280, 418, 260, 120),
+    card("test", 1600, 190, 260, 180),
+    card("gguf", 1920, 418, 260, 160),
+  ];
+  const at = (source: string, target: string, sourceOffset: number, targetOffset: number): EdgeIn => ({
+    ...wire(source, target),
+    sourceOffset,
+    targetOffset,
+    net: `${source}:out`,
+    sink: `${target}:${targetOffset}`,
+  });
+  const edges = [at("tune", "test", 60, 50), at("tune", "gguf", 60, 60), at("ask", "test", 60, 80)];
+  const { routes } = routeWires(rects, edges);
+  assert.ok([...routes.values()].every((route) => !route.blocked));
+  const runs = (id: string) => {
+    const points = (routes.get(id) as Route).points;
+    return points.slice(1).flatMap((b, k) => {
+      const a = points[k];
+      return Math.abs(a.y - b.y) < 0.01 && Math.abs(a.x - b.x) > 0.01
+        ? [{ y: a.y, lo: Math.min(a.x, b.x), hi: Math.max(a.x, b.x) }]
+        : [];
+    });
+  };
+  for (const a of runs("ask->test"))
+    for (const b of runs("tune->gguf"))
+      assert.ok(
+        Math.abs(a.y - b.y) > 0.5 || Math.max(a.lo, b.lo) - Math.min(a.hi, b.hi) > 27,
+        `runs meet on y=${a.y}: ${JSON.stringify([a, b])}`,
+      );
+});

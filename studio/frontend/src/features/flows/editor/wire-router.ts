@@ -897,12 +897,16 @@ function assignLanes(
   const groups = byLine(collectSegments(paths, owners));
 
   const offsets = new Map<Segment, number>();
+  // Runs on one line that end this close together read as one wire, so they cluster like overlaps.
+  const endGap = laneGap * 3;
+  const near = (sa: Segment, sb: Segment): boolean =>
+    Math.min(sa.hi, sb.hi) - Math.max(sa.lo, sb.lo) > -endGap;
   for (const group of groups.values()) {
     if (group.length < 2) {
       continue;
     }
     group.sort((a, b) => a.lo - b.lo);
-    // Clusters of segments whose spans overlap.
+    // Clusters of segments whose spans overlap or nearly meet.
     let cluster: Segment[] = [];
     let clusterHi = Number.NEGATIVE_INFINITY;
     const flush = (): void => {
@@ -938,8 +942,7 @@ function assignLanes(
         for (let b = a + 1; b < cluster.length; b += 1) {
           const sa = cluster[a];
           const sb = cluster[b];
-          const touch = Math.min(sa.hi, sb.hi) - Math.max(sa.lo, sb.lo) > EPS;
-          if (touch && sa.net === sb.net) {
+          if (near(sa, sb) && sa.net === sb.net) {
             join(a, b);
           }
         }
@@ -948,28 +951,38 @@ function assignLanes(
         for (let b = a + 1; b < cluster.length; b += 1) {
           const sa = cluster[a];
           const sb = cluster[b];
-          const touch = Math.min(sa.hi, sb.hi) - Math.max(sa.lo, sb.lo) > EPS;
-          if (touch && sa.sink === sb.sink) {
+          if (near(sa, sb) && sa.sink === sb.sink) {
             join(a, b);
           }
         }
       }
       const order: number[] = [];
       const fixedBundles = new Set<number>();
-      cluster.forEach((segment, index) => {
+      cluster.forEach((_, index) => {
         const root = find(index);
         if (!order.includes(root)) {
           order.push(root);
         }
-        if (segment.fixed) {
-          fixedBundles.add(root);
+      });
+      // A port leg pins its bundle to the line only where another bundle runs beside it; a wire
+      // whose own stub sits apart from the clash can still leave the line before its port.
+      cluster.forEach((segment, index) => {
+        if (
+          segment.fixed &&
+          cluster.some((other, k) => find(k) !== find(index) && near(segment, other))
+        ) {
+          fixedBundles.add(find(index));
         }
       });
       if (order.length < 2) {
         return;
       }
       const movable = order.filter((root) => !fixedBundles.has(root));
-      const maxOffset = Math.max(0, Math.min(...cluster.map(roomFor)));
+      // Fixed port legs never move, so only the runs that do bound the spread.
+      const maxOffset = Math.max(
+        0,
+        Math.min(...cluster.filter((segment) => !segment.fixed).map(roomFor)),
+      );
       const slots = fixedBundles.size > 0 ? movable.length + 1 : movable.length;
       const gap = Math.min(laneGap, slots > 1 ? (maxOffset * 2) / (slots - 1) : laneGap);
       const bundleOffset = new Map<number, number>();
@@ -993,7 +1006,7 @@ function assignLanes(
       });
     };
     for (const segment of group) {
-      if (cluster.length > 0 && segment.lo >= clusterHi - EPS) {
+      if (cluster.length > 0 && segment.lo >= clusterHi + endGap) {
         flush();
         cluster = [];
         clusterHi = Number.NEGATIVE_INFINITY;
