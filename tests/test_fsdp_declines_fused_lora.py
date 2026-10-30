@@ -150,7 +150,6 @@ def test_the_trainer_init_wrapper_calls_the_decline():
 
 
 class _GroupedMLP(__import__("torch").nn.Module):
-
     def __init__(self):
         import torch
         super().__init__()
