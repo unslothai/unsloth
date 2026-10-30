@@ -7586,6 +7586,45 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
     $script:SkipPythonDeps = $SkipPythonDeps
 }
 
+# AMD ROCm: triton-windows paired with torch. The stack resolves unsloth's unpinned triton-windows. 3.9 removed the
+# block pointers that torch 2.11 / 2.12's flex_decoding template builds: the first decode fails to compile and flex
+# attention then runs unfused for the rest of the process (gpt-oss 4k prefill 0.1 -> 6.7 GB on gfx1151). 3.6 has no
+# HIP headers; 3.8 is the verified build. Used by the fast-path escape and the post-stack repair.
+function Get-TritonWindowsRocmSpec {
+    param([string]$TorchVersion)
+    if ($TorchVersion -match '^2\.(\d+)\.' -and @(11, 12) -contains [int]$Matches[1]) { return "triton-windows>=3.8,<3.9" }
+    return $null
+}
+
+function Get-RocmTritonPairing {
+    # No double quotes: Invoke-BoundedPythonProbe wraps $Code in them.
+    $code = "import importlib.metadata as m; " +
+        "print('TORCH=' + m.version('torch')); " +
+        "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
+        "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
+    $torch = if ($probe.Ok -and $probe.Output -match '(?m)^TORCH=(\S+)\s*$') { $Matches[1] } else { "" }
+    $triton = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
+    $spec = Get-TritonWindowsRocmSpec -TorchVersion $torch
+    return @{ Torch = $torch; Triton = $triton; Spec = $spec; Stale = [bool]($spec -and ($triton -notmatch '^3\.8(\.|$)')) }
+}
+
+function Test-RocmTritonPairingNeedsPass {
+    # A stale pair, or one whose repair failed with a warning last run, needs the dependency pass. Only for a ROCm
+    # torch, which the pass repairs, or it would re-fire every run.
+    param([string]$InstalledTorchTag)
+    $pair = Get-RocmTritonPairing
+    $isRocm = ($pair.Torch -match '\+rocm') -or ($InstalledTorchTag -match '^(rocm|gfx)')
+    if (-not ($isRocm -and $pair.Stale)) { return $false }
+    if ($script:OfflineFastPath -or (Test-UvOfflineRequested)) {
+        substep "triton-windows does not pair with torch $($pair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
+        return $false
+    }
+    substep "triton-windows does not pair with torch $($pair.Torch) -- forcing dependency pass to repair..." "Cyan"
+    return $true
+}
+# End of the AMD ROCm triton-windows pairing helpers.
+
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
 $SkipPythonDeps = $false
 
@@ -7656,6 +7695,10 @@ sys.exit(2 if conflict else (0 if version else 1))
                         $SkipPythonDeps = $false
                     }
                 } catch {}
+            }
+            # A verified install skips the post-stack pairing.
+            if ($SkipPythonDeps -and -not $NoTorchMode -and (Test-RocmTritonPairingNeedsPass -InstalledTorchTag $installedTorchTag)) {
+                $SkipPythonDeps = $false
             }
         }
     }
@@ -8422,32 +8465,16 @@ python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
 $script:SetupVenvChanged = $true
 
-# ── AMD ROCm: pair triton-windows with torch ──
-# The stack resolves unsloth's unpinned triton-windows. 3.9 removed the block pointers that torch 2.11 / 2.12's
-# flex_decoding template builds: the first decode fails to compile and flex attention then runs unfused for the rest
-# of the process (gpt-oss 4k prefill 0.1 -> 6.7 GB on gfx1151). 3.6 has no HIP headers; 3.8 is the verified build.
-function Get-TritonWindowsRocmSpec {
-    param([string]$TorchVersion)
-    if ($TorchVersion -match '^2\.(\d+)\.' -and @(11, 12) -contains [int]$Matches[1]) { return "triton-windows>=3.8,<3.9" }
-    return $null
-}
-if ($stackExit -eq 0 -and $ROCmIndexUrl) {
-    # No double quotes: Invoke-BoundedPythonProbe wraps $Code in them.
-    $_rocmTritonCode = "import importlib.metadata as m; " +
-        "print('TORCH=' + m.version('torch')); " +
-        "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
-        "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
-    $_rocmTritonProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_rocmTritonCode
-    $_rocmTorchVer = if ($_rocmTritonProbe.Ok -and $_rocmTritonProbe.Output -match '(?m)^TORCH=(\S+)\s*$') { $Matches[1] } else { "" }
-    $_rocmTritonVer = if ($_rocmTritonProbe.Ok -and $_rocmTritonProbe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
-    $_rocmTritonSpec = Get-TritonWindowsRocmSpec -TorchVersion $_rocmTorchVer
-    $_rocmTritonOk = $_rocmTritonVer -match '^3\.8(\.|$)'
-    if ($_rocmTritonSpec -and -not $_rocmTritonOk) {
-        $_rocmTritonFrom = if ($_rocmTritonVer) { "triton-windows $_rocmTritonVer" } else { "no triton-windows" }
-        substep "pairing Triton for Windows with torch $_rocmTorchVer ($_rocmTritonFrom -> $_rocmTritonSpec)..." "Cyan"
-        $_rocmTritonOut = Fast-Install $_rocmTritonSpec | Out-String
+# AMD ROCm: pair triton-windows with torch (Get-RocmTritonPairing, defined before the fast path).
+if ($stackExit -eq 0 -and $ROCmIndexUrl -and -not $NoTorchMode) {
+    $_rocmPair = Get-RocmTritonPairing
+    if ($_rocmPair.Stale) {
+        $_rocmTritonFrom = if ($_rocmPair.Triton) { "triton-windows $($_rocmPair.Triton)" } else { "no triton-windows" }
+        substep "pairing Triton for Windows with torch $($_rocmPair.Torch) ($_rocmTritonFrom -> $($_rocmPair.Spec))..." "Cyan"
+        $_rocmTritonOut = Fast-Install $_rocmPair.Spec | Out-String
         if ($LASTEXITCODE -ne 0) {
-            substep "[WARN] could not install $_rocmTritonSpec; flex attention decode may run unfused" "Yellow"
+            # The fast-path escape retries this on the next setup run.
+            substep "[WARN] could not install $($_rocmPair.Spec); flex attention decode may run unfused" "Yellow"
             Write-StudioLine (Redact-InstallOutput $_rocmTritonOut) -ForegroundColor Yellow
         }
     }
