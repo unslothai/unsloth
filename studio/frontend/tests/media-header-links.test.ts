@@ -39,7 +39,7 @@ test("API, Library, then the other media page with an arrow, at the chat header'
   );
   assert.match(
     LINK,
-    /icon=\{to === "\/images" \? Image03Icon : FlimSlateIcon\}/,
+    /icon=\{to === "\/images" \? Image01Icon : FlimSlateIcon\}/,
   );
 });
 
@@ -73,13 +73,29 @@ test("the sibling link keeps its icon where the square button puts it and trails
   );
   assert.match(
     LINK,
-    /\{iconArrow && \(\s*<>[\s\S]{0,200}<span className="hidden min-w-0 truncate text-ui-13 font-medium @\[50rem\]:inline">\s*\{label\}\s*<\/span>\s*<ArrowRightIcon className="size-3\.5 shrink-0 opacity-60" \/>/,
+    /\{iconArrow && \(\s*<>[\s\S]{0,200}<span className="hidden min-w-0 truncate text-ui-13 font-medium @\[50rem\]:inline \[\[data-media-header-tight\]_&\]:hidden">\s*\{label\}\s*<\/span>\s*<ArrowRightIcon className="size-3\.5 shrink-0 opacity-60" \/>/,
   );
   for (const page of [IMAGES, VIDEO]) {
     assert.match(
       page,
-      /justify-end pr-\[calc\(var\(--thread-scrollbar-gutter,10px\)\+0\.5rem\*var\(--ui-space-scale,1\)\+var\(--studio-chat-header-right-inset,var\(--studio-window-control-inset,0px\)\)\)\]/,
+      /<MediaHeaderActions className="pr-\[calc\(var\(--thread-scrollbar-gutter,10px\)\+0\.5rem\*var\(--ui-space-scale,1\)\+var\(--studio-chat-header-right-inset,var\(--studio-window-control-inset,0px\)\)\)\]/,
     );
+  }
+});
+
+test("media headers keep their links beside Create / Train, hiding them only when both cannot fit or on a tablet", () => {
+  const actions = readSrc("components/media-header-actions.tsx");
+  assert.match(actions, /grid\.toggleAttribute\(MEDIA_HEADER_TIGHT_ATTR, step > 0\)/);
+  assert.match(actions, /if \(width === undefined \|\| width <= room\)/);
+  assert.match(actions, /step === 2 && "hidden"/);
+  assert.match(actions, /@max-\[40rem\]:hidden/);
+  for (const page of [IMAGES, VIDEO, readSrc("features/audio/audio-page.tsx")]) {
+    assert.match(
+      page,
+      /<div className="grid h-full min-w-0 grid-cols-\[minmax\(0,1fr\)_auto_minmax\(max-content,1fr\)\]">/,
+    );
+    assert.match(page, /<div data-media-header-centre className="pointer-events-auto col-start-2/);
+    assert.match(page, /<MediaHeaderActions /);
   }
 });
 

@@ -2443,6 +2443,96 @@ def _refuse_tp_trainer_args(args, cpu_shards = False):
         )
 
 
+def _tp_fix_train_sampler(sampler, args, dp_size, dp_rank):
+    """Make a Trainer train sampler identical on the tp ranks of one data parallel replica."""
+    from transformers import trainer_pt_utils
+
+    rebalance = getattr(trainer_pt_utils, "BatchRebalanceSampler", None)
+    if rebalance is not None and type(sampler) is rebalance:
+        # Built from the global world size / rank, so tp peers would draw different rows: rebuild over dp.
+        grad_accum = sampler.grad_accum
+        return rebalance(
+            lengths = sampler.lengths,
+            effective_batch_size = args.train_batch_size * grad_accum * dp_size,
+            dp_size = dp_size,
+            grad_accum = grad_accum,
+            shuffle = sampler.shuffle,
+            seed = sampler.seed,
+            rank = dp_rank,
+            drop_last = sampler.drop_last,
+        )
+    if (
+        type(sampler) is trainer_pt_utils.LengthGroupedSampler
+        and getattr(sampler, "generator", None) is None
+    ):
+        # Global torch RNG desyncs across tp peers; own generator seeded seed + epoch keeps resume exact.
+        sampler.__class__ = _tp_length_grouped_sampler_class(type(sampler))
+        sampler.seed = args.data_seed if getattr(args, "data_seed", None) is not None else args.seed
+        sampler.epoch = 0
+        sampler.generator = torch.Generator().manual_seed(sampler.seed)
+    return sampler
+
+
+_TP_LENGTH_GROUPED = {}
+
+
+def _tp_length_grouped_sampler_class(base):
+    cls = _TP_LENGTH_GROUPED.get(base)
+    if cls is None:
+
+        def set_epoch(self, epoch):
+            self.epoch = int(epoch)
+
+        def __iter__(self):
+            self.generator = torch.Generator().manual_seed(self.seed + self.epoch)
+            return base.__iter__(self)
+
+        cls = type(
+            "UnslothTensorParallelLengthGroupedSampler",
+            (base,),
+            {"set_epoch": set_epoch, "__iter__": __iter__, "_unsloth_tp_epoch_seeded": True},
+        )
+        _TP_LENGTH_GROUPED[base] = cls
+    return cls
+
+
+def _tp_forward_set_epoch(data_loader):
+    """BatchSamplerShard has no set_epoch, so on resume the inner sampler would replay epoch 0: forward it."""
+    shard = getattr(data_loader, "batch_sampler", None)
+    inner = getattr(shard, "batch_sampler", None)
+    if shard is None or inner is None or hasattr(shard, "set_epoch"):
+        return
+    from transformers import trainer_pt_utils
+
+    rebalance = getattr(trainer_pt_utils, "BatchRebalanceSampler", None)
+    targets = [
+        x
+        for x in (inner, getattr(inner, "sampler", None))
+        if getattr(type(x), "_unsloth_tp_epoch_seeded", False)
+        or (rebalance is not None and type(x) is rebalance)
+    ]
+    if not targets:
+        return
+
+    def set_epoch(epoch):
+        for target in targets:
+            target.set_epoch(epoch)
+
+    shard.set_epoch = set_epoch
+
+
+def _tp_train_sampler(trainer, dp_size, dp_rank):
+    get_sampler = getattr(trainer, "_get_train_sampler", None)
+    if get_sampler is None:
+        return
+
+    @functools.wraps(get_sampler)
+    def _get_train_sampler(*args, **kwargs):
+        return _tp_fix_train_sampler(get_sampler(*args, **kwargs), trainer.args, dp_size, dp_rank)
+
+    trainer.__dict__["_get_train_sampler"] = _get_train_sampler
+
+
 def tp_trainer_setup(
     model = None,
     phase = "pre",
@@ -2477,6 +2567,7 @@ def tp_trainer_setup(
     ddp_mesh = _ddp_mesh(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
     trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
+    _tp_train_sampler(trainer, dp_size, dp_rank)
     trainer.__dict__["_unsloth_tensor_parallel"] = (
         True  # the generated TRL trainers skip for_inference()
     )
@@ -2872,9 +2963,11 @@ def _install_tp_accelerate_hooks():
             },
         )
         try:
-            return original_data_loader(self, data_loader, *args, **kwargs)
+            prepared = original_data_loader(self, data_loader, *args, **kwargs)
         finally:
             self.__class__ = cls
+        _tp_forward_set_epoch(prepared)
+        return prepared
 
     def clip_grad_norm_(
         self,

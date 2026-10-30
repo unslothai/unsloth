@@ -15,7 +15,7 @@ import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import {
   ArrowUpDownIcon,
-  CancelCircleIcon,
+  Cancel01Icon,
   Delete02Icon,
   FolderSearchIcon,
   Search01Icon,
@@ -401,7 +401,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             className="absolute right-2.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground"
           >
             <HugeiconsIcon
-              icon={CancelCircleIcon}
+              icon={Cancel01Icon}
               strokeWidth={1.75}
               className="size-[calc(18px*var(--ui-space-scale,1))]"
             />

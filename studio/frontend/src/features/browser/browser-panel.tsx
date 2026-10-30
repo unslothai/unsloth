@@ -60,14 +60,13 @@ import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { asPng, copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { openExternalLink } from "@/lib/open-link";
-import { RefreshGlyph } from "@/lib/refresh-icon";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { SquareDashedMousePointerIcon } from "@/lib/annotate-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Add01Icon,
+  Refresh01Icon,
   Search01Icon,
   Settings02Icon,
   Delete02Icon,
@@ -88,6 +87,7 @@ import {
   StarIcon,
   Tablet01Icon,
   TextWrapIcon,
+  UndoIcon,
   ViewIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
@@ -96,7 +96,6 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   ArrowLeft,
   ArrowRight,
-  RotateCw,
   ShieldCheck,
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
@@ -743,7 +742,7 @@ function TabStrip({
       </div>
       <IconButton
         label={t("browser.newTab")}
-        icon={Add01Icon}
+        icon={PlusSignIcon}
         onClick={newTab}
         className="size-8"
       />
@@ -1166,7 +1165,7 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
         onClick={() => setZoom(resetZoom)}
         className={cn(step, "rounded-full")}
       >
-        <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
+        <HugeiconsIcon icon={UndoIcon} strokeWidth={1.75} className="size-3.5" />
       </button>
     </div>
   );
@@ -1483,7 +1482,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
           }}
           className={NAV_BUTTON}
         >
-          <RotateCw strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
+          <HugeiconsIcon icon={Refresh01Icon} strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
         </IconButton>
       </div>
       <AddressBar
@@ -1598,7 +1597,7 @@ function BrowserFileToolbar({
           onClick={runAgain}
           className={NAV_BUTTON}
         >
-          <RotateCw strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
+          <HugeiconsIcon icon={Refresh01Icon} strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
         </IconButton>
       </div>
       <AddressBar

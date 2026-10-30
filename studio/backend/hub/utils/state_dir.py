@@ -1,18 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Filesystem layout for Hub download state.
-
-State sits beside HF's cache (under Unsloth's own cache root) so it survives ``huggingface-cli delete-cache`` and any other HF-side lifecycle:
-
-    <studio cache>/hub-state/
-        manifests/cache-<digest>/<key>.json   expected-files manifest
-        cancelled/cache-<digest>/<key>.json   cancel marker
-
-The cache digest isolates state for the same repo across selectable Hub caches. The ``<key>`` mirrors HF's cache dir naming (models--<owner>--<name>, plus ``--variant--<variant>`` for a GGUF variant, datasets--<owner>--<name>) while keeping manifest, cancel-marker and atomic-write temp filenames inside common filesystem basename limits; very long repo IDs use a stable hash instead.
-
-Path accessors are read-only unless a writer passes ``create=True``, and all return ``Optional[Path]``, yielding ``None`` when directory creation fails so callers fall through to existing on-disk-only behavior.
-"""
+"""Hub download state beside HF cache; paths read-only unless create=True; None when dir creation
+fails, so callers fall back to on-disk-only behavior."""
 
 from __future__ import annotations
 
@@ -23,6 +13,7 @@ from pathlib import Path
 from typing import Literal, Optional, get_args
 
 from loggers import get_logger
+from utils.scan_memo import memoized
 
 from hub.utils.paths import cache_root
 
@@ -223,6 +214,13 @@ def _entry_key(
 
 def normalize_hub_cache(hub_cache: str | Path) -> str:
     """Resolves, then applies normcase, so manifest writers and readers derive the same state key."""
+    return memoized(
+        ("normalize_hub_cache", os.fspath(hub_cache)),
+        lambda: _normalize_hub_cache_uncached(hub_cache),
+    )
+
+
+def _normalize_hub_cache_uncached(hub_cache: str | Path) -> str:
     try:
         resolved = str(Path(hub_cache).expanduser().resolve(strict = False))
     except (OSError, RuntimeError, ValueError):

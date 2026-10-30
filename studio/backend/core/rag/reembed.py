@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Re-embed documents indexed under a different embedder than the current one.
-
-Dense search skips such documents, so after an embedding model switch they are reachable by
-keyword search only. This re-encodes each one's stored chunk text and swaps its vectors in place,
-keeping document and chunk ids (citations keep resolving) and needing no source file, OCR or
-captioning. One job per account; it follows the current model, so a switch mid-job is absorbed.
-"""
+"""Re-embeds docs indexed under a different embedder (dense search skips them) from stored chunk
+text, keeping ids; one job per account; follows current model, so a mid-job switch is absorbed."""
 
 from __future__ import annotations
 

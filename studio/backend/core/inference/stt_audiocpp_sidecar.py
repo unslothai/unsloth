@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""audio.cpp speech-to-text sidecar for Unsloth dictation.
-
-Serves any audio.cpp ASR GGUF (Qwen3-ASR, Parakeet, Canary, Moonshine, Nemotron and
-whatever else audio.cpp transcribes) through one ``audiocpp_server`` child, with the same lifecycle as the
-whisper.cpp sidecar: loads on demand, stays warm for the keep-alive window, yields
-to training, and is paused while the managed runtime is being replaced. Audio is
-decoded with PyAV like every other engine and handed to the server as a 16 kHz mono
-WAV file it reads by path (``/v1/audio/transcriptions/details``), which also returns
-the timestamps and speakers a model produces.
-"""
+"""audio.cpp ASR sidecar, whisper.cpp lifecycle: yields to training and pauses during runtime
+replacement; 16 kHz mono WAV by path to /v1/audio/transcriptions/details"""
 
 from __future__ import annotations
 

@@ -280,6 +280,7 @@ import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import type { ChatSearch } from "./chat-search";
 import {
   type ComparePairReadState,
   checkpointCompareClass,
@@ -1281,9 +1282,6 @@ function CompareShell({
   children: ReactElement;
   composer: ReactElement;
 }): ReactElement {
-  const showModelDisclaimer = useChatPreferencesStore(
-    (s) => s.showModelDisclaimer,
-  );
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
@@ -1296,11 +1294,6 @@ function CompareShell({
         <div className="shrink-0 bg-background pl-5 pr-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
           {/* unsloth-composer-shell: the size container the single composer's narrow layout queries. */}
           <div className="unsloth-composer-shell mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
-          {showModelDisclaimer && (
-            <p className="composer-footer-note">
-              LLMs can make mistakes. Double-check responses.
-            </p>
-          )}
         </div>
       </div>
     </CompareHandlesProvider>
@@ -2600,22 +2593,6 @@ function ProjectLanding({
       </AlertDialog>
     </>
   );
-}
-
-export type ChatSearch = {
-  thread?: string;
-  compare?: string;
-  new?: string;
-  project?: string;
-};
-
-export function validateChatSearch(search: Record<string, unknown>): ChatSearch {
-  return {
-    thread: typeof search.thread === "string" ? search.thread : undefined,
-    compare: typeof search.compare === "string" ? search.compare : undefined,
-    new: typeof search.new === "string" ? search.new : undefined,
-    project: typeof search.project === "string" ? search.project : undefined,
-  };
 }
 
 type PendingHubAutoLoad = {

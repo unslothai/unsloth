@@ -14,6 +14,7 @@ import importlib
 import importlib.util
 import inspect
 import pathlib
+import sys
 import threading
 import warnings
 
@@ -36,12 +37,17 @@ _FIX = _ROOT / "unsloth" / "models" / "_mamba_lora.py"
 
 
 def _patch_fn():
-    # Loaded by path (torch + peft only); a no-op on trees without the fix.
+    # Loaded by path (torch + peft only), once, like a real import; a no-op on trees without the fix.
     if not _FIX.is_file():
         return lambda model: model
-    spec = importlib.util.spec_from_file_location("_unsloth_mamba_lora_under_test", _FIX)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    name = "_unsloth_mamba_lora_under_test"
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(name, _FIX)
+        module = importlib.util.module_from_spec(spec)
+        # torch.compile resolves classes through sys.modules.
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
     return module.patch_mamba_fused_lora
 
 
@@ -142,6 +148,7 @@ def _build(
 
     monkeypatch.setattr(modeling, "mamba_inner_fn", mamba_inner_fn)
     monkeypatch.setattr(mixer_cls, "forward", mixer_cls.forward)  # undo what the fix installs
+    monkeypatch.setattr(mixer_cls, "__setattr__", mixer_cls.__setattr__)
     if hasattr(mixer_cls, "cuda_kernels_forward"):
         # transformers 4.x dispatches to cuda_kernels_forward only on CUDA with mamba_ssm; force it,
         # or its torch path for the non-fused reference.
@@ -402,18 +409,20 @@ def test_unmergeable_dt_proj_routes_only_where_the_slow_path_calls_it(monkeypatc
     assert trained != warned, (trained, warned)
 
 
-def test_dt_proj_lora_without_kernel_on_transformers_5_warns(monkeypatch):
+def test_dt_proj_lora_without_kernel_on_transformers_5_trains(monkeypatch):
     # No fused kernel (the entry point returns None): transformers 5 falls through to its torch path,
-    # which reads dt_proj.weight raw, so even plain LoRA there cannot train.
+    # which reads dt_proj.weight raw; the effective-weight property makes that read W + delta.
     if _legacy("mamba"):
         pytest.skip("transformers 4.x slow_forward calls dt_proj as a module")
     model, calls = _build(monkeypatch, "mamba", ["in_proj", "x_proj", "dt_proj"], fused = False)
-    with pytest.warns(UserWarning, match = r"MambaMixer\.dt_proj") as caught:
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
         _loss(model, torch.randint(0, 64, (2, 8))).backward()
-    assert not any("x_proj" in str(w.message) for w in caught)
+    assert not any("not applied" in str(w.message) for w in caught)
     assert len(calls) == 2
-    grads = [p.grad for p in _lora_param(model, "x_proj", "B")]
-    assert grads and all(g is not None and g.abs().sum() > 0 for g in grads)
+    for leaf in ("x_proj", "dt_proj"):
+        grads = [p.grad for p in _lora_param(model, leaf, "B")]
+        assert grads and all(g is not None and g.abs().sum() > 0 for g in grads), leaf
 
 
 @pytest.mark.parametrize("arch", list(ARCHS))
@@ -461,7 +470,7 @@ def test_disabled_adapter_keeps_raw_weights(monkeypatch, arch):
 
 def test_post_patch_model_installs_the_routing():
     # FastModel.from_pretrained and get_peft_model both end in FastBaseModel.post_patch_model.
-    tree = ast.parse((_ROOT / "unsloth" / "models" / "vision.py").read_text())
+    tree = ast.parse((_ROOT / "unsloth" / "models" / "vision.py").read_text(encoding = "utf-8"))
     post = next(
         node
         for node in ast.walk(tree)

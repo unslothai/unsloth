@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GPU arbiter for Unsloth's heavy GPU consumers.
-
-The chat backends, diffusion, and video share the GPUs. Before taking them each calls
-``acquire_for(owner)``. Under the default policy that evicts every other resident, so two large
-models never sit in VRAM at once. Under "always" (Keep multiple models loaded set to Always) it
-refuses instead of evicting a chat, image or video model. The arbiter only sequences residency
-(freeing is each backend's teardown); eviction runs under the lock, so a transfer is atomic vs
-other acquires.
-
-Residents are tracked in ``_residents`` with the physical GPU ids each one uses (None when not
-known). ``_owner`` stays the last claimant, and tests may still set it directly: while it
-disagrees with ``_residents``, ``_owner`` wins.
-"""
+"""GPU arbiter: default evicts other residents, 'always' refuses instead; eviction runs under lock"""
 
 from __future__ import annotations
 
@@ -856,6 +844,9 @@ def would_evict(
             in_flight = getattr(gpu_residency, "chat_load_in_flight", None)
             if callable(in_flight) and in_flight():
                 return True  # coreside_locked evicts a chat that is still loading
+            unpriced = getattr(gpu_residency, "chat_growth_unpriced", None)
+            if callable(unpriced) and unpriced():
+                return True
             answer = fits(owner, need_mib)
             ok, info = answer if isinstance(answer, tuple) else (answer, {})
             return not (ok or _idle_media_frees_room(gpu_residency, owner, info))
