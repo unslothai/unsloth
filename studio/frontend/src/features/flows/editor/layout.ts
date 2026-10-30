@@ -146,6 +146,7 @@ export async function autoLayout(
   };
   const sizes = fitCards(graph, measured);
   const ctx: TidyContext = {
+    direction,
     graph,
     wireStyle: useUiStore.getState().wireStyle,
     size: (id) => {
@@ -161,7 +162,7 @@ export async function autoLayout(
       return handle ? handle.y + handle.height / 2 : undefined;
     },
   };
-  const result = await runLayout(tidyRequest(ctx, direction));
+  const result = await runLayout(tidyRequest(ctx));
   const patch = tidyPatch(ctx, result, sizes);
   for (const [id, height] of Object.entries(fitNotes(graph))) {
     const rect = patch.notes[id] ?? graph.notes[id].rect;

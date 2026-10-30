@@ -35,6 +35,7 @@ export interface TidyContext {
   /** A port's height from the top of its card. */
   portY: (id: string, port: string, side: "in" | "out") => number | undefined;
   wireStyle: "bus" | "curved";
+  direction?: "LR" | "TB";
 }
 
 function members(graph: DocGraph): Map<string, string[]> {
@@ -62,10 +63,8 @@ function gap(a: Rect, b: Rect): number {
   return Math.hypot(dx, dy);
 }
 
-export function tidyRequest(
-  ctx: TidyContext,
-  direction: "LR" | "TB" = "LR",
-): LayoutRequest {
+export function tidyRequest(ctx: TidyContext): LayoutRequest {
+  const direction = ctx.direction ?? "LR";
   const { graph } = ctx;
   const grouped = members(graph);
   const owner = new Map<string, string>();
@@ -221,10 +220,11 @@ function placeReroutes(
     const reroute = graph.reroutes[id];
     const upright = reroute.dir === "down" || reroute.dir === "up";
     const cx = sx + (tx - sx) * t;
-    // A bus wire runs level out of its port and turns after the reroute; a curve goes straight across.
+    // Left to right, a bus wire runs level out of its port and turns after the reroute; a curve, or
+    // a wire down to the next row, goes straight across.
     const cy = upright
       ? (sy + ty) / 2
-      : ctx.wireStyle === "bus" || ends.length > 1
+      : ctx.direction !== "TB" && (ctx.wireStyle === "bus" || ends.length > 1)
         ? sy
         : sy + (ty - sy) * t;
     const size = rerouteSizeOf(reroute.dir);

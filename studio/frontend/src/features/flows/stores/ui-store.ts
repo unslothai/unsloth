@@ -52,6 +52,20 @@ export function storedWireStyle(): WireStyle {
   }
 }
 
+/** Which way Tidy up lays the flow out: left to right, or top to bottom. */
+export type TidyDirection = "LR" | "TB";
+export const TIDY_DIRECTION_STORAGE_KEY = "unsloth_flows_tidy_direction";
+
+function storedTidyDirection(): TidyDirection {
+  try {
+    return globalThis.localStorage?.getItem(TIDY_DIRECTION_STORAGE_KEY) === "TB"
+      ? "TB"
+      : "LR";
+  } catch {
+    return "LR";
+  }
+}
+
 export type SaveState = "saved" | "dirty" | "saving" | "error" | "conflict";
 
 export interface PendingRun {
@@ -70,6 +84,7 @@ export interface UiState {
   paletteOpen: boolean;
   snapToGrid: boolean;
   wireStyle: WireStyle;
+  tidyDirection: TidyDirection;
   saveState: SaveState;
   pendingRun: PendingRun | null;
   setSelection: (nodes: string[], edges: string[]) => void;
@@ -81,6 +96,7 @@ export interface UiState {
   togglePalette: () => void;
   toggleSnap: () => void;
   setWireStyle: (style: WireStyle) => void;
+  setTidyDirection: (direction: TidyDirection) => void;
   setSaveState: (state: SaveState) => void;
   setPendingRun: (pending: PendingRun | null) => void;
   reset: () => void;
@@ -100,6 +116,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   paletteOpen: storedPaletteOpen(),
   snapToGrid: false,
   wireStyle: storedWireStyle(),
+  tidyDirection: storedTidyDirection(),
   saveState: "saved",
   pendingRun: null,
   setSelection: (nodes, edges) => {
@@ -141,6 +158,14 @@ export const useUiStore = create<UiState>((set, get) => ({
     }
   },
   toggleSnap: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
+  setTidyDirection: (tidyDirection) => {
+    set({ tidyDirection });
+    try {
+      globalThis.localStorage?.setItem(TIDY_DIRECTION_STORAGE_KEY, tidyDirection);
+    } catch {
+      // No storage: the choice lasts until reload.
+    }
+  },
   setWireStyle: (wireStyle) => {
     set({ wireStyle });
     try {

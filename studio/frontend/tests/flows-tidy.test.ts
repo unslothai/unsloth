@@ -100,3 +100,12 @@ test("cards fit their output without growing past the cap", () => {
   assert.ok(big && big[0] === 340 && big[1] === CARD_FIT_MAX.height, JSON.stringify(big));
   assert.deepEqual(fittedCardSize({ width: 300, height: 400 }, 0, 120, 220), [300, 288], "spare room shrinks");
 });
+
+test("Tidy up lays out top to bottom when asked", () => {
+  load();
+  const request = tidyRequest({ ...ctx(), direction: "TB" });
+  assert.equal(request.direction, "TB");
+  useDocStore.getState().applyTidy(tidyPatch({ ...ctx(), direction: "TB" }, computeLayout(request)));
+  const g = graph();
+  assert.ok(g.nodes.src.pos[1] < g.groups.g1.rect[1] && g.groups.g1.rect[1] + 560 < g.nodes.out.pos[1], "rows go down");
+});

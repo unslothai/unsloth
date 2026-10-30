@@ -162,7 +162,10 @@ test("a read-only flow's toolbar cannot edit the document", () => {
   assert.match(page, /<Toolbar readOnly=\{readOnly\} \/>/);
   const bar = readSrc("features/flows/editor/toolbar.tsx");
   assert.match(bar, /<input\s+value=\{name\}\s+readOnly=\{readOnly\}/);
-  for (const label of ["Undo", "Redo", "Tidy up layout", "Add group", "Add note", "Add reroute"]) {
+  assert.match(bar, /<TidyButton disabled=\{readOnly\} \/>/);
+  const tidy = bar.slice(bar.indexOf("function TidyButton"), bar.indexOf("function IconButton"));
+  assert.equal((tidy.match(/disabled=\{disabled\}/g) ?? []).length, 2, "both halves of the Tidy button");
+  for (const label of ["Undo", "Redo", "Add group", "Add note", "Add reroute"]) {
     const at = bar.indexOf(`label="${label}`);
     assert.ok(at > 0, label);
     assert.match(bar.slice(at, bar.indexOf("/>", at)), /disabled=\{readOnly( \|\||\})/, label);
