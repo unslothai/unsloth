@@ -65,9 +65,14 @@ function find(node: unknown, match: (element: Element) => boolean): Element[] {
   if (Array.isArray(node)) return node.flatMap((child) => find(child, match));
   if (!node || typeof node !== "object" || !("children" in node)) return [];
   const element = node as Element;
+  // Elements passed through props (a card's header action or title) are rendered too.
+  const fromProps = Object.values(element.props ?? {}).filter(
+    (value) => value && typeof value === "object" && "children" in value,
+  );
   return [
     ...(match(element) ? [element] : []),
     ...find(element.children, match),
+    ...find(fromProps, match),
   ];
 }
 

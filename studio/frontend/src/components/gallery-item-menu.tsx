@@ -92,6 +92,7 @@ export function GalleryItemMenu({
         <Button
           size={overlay || row ? "icon-xs" : "icon-sm"}
           variant="ghost"
+          title="More"
           aria-label={`More actions for this ${noun}`}
           className={cn(
             // Circular hover, no border: focus returning on close would draw one. Keyboard focus tints instead.
@@ -191,6 +192,7 @@ export function GalleryPinBadge({
       <TooltipTrigger asChild={true}>
         <button
           type="button"
+          title="Unpin"
           aria-label={`Unpin this ${noun}`}
           onClick={onUnpin}
           className={cn(

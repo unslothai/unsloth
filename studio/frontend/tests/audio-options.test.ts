@@ -202,8 +202,8 @@ test("each workflow reads its own option list, else the primary one", () => {
   }
   // Clone and Edit rails show the list their requests are validated against.
   const page = readSrc("features/audio/audio-page.tsx");
-  assert.match(page, /audioOptionSpecs=\{clone\.audioOptionSpecs\}/);
-  assert.match(page, /audioOptionSpecs=\{edit\.audioOptionSpecs\}/);
+  assert.match(page, /audioOptionSpecs=\{(?:pageModelLoaded \? )?clone\.audioOptionSpecs(?: : \[\])?\}/);
+  assert.match(page, /audioOptionSpecs=\{(?:pageModelLoaded \? )?edit\.audioOptionSpecs(?: : \[\])?\}/);
 });
 
 test("a slider only shows for a bounded number with a default", () => {

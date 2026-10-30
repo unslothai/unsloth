@@ -19,7 +19,10 @@ export function AdvancedDisclosure({
     </>
   ),
   children,
+  flush = false,
 }: {
+  /** Icon and chevron line up with the divider's ends; the hover pill extends past them. */
+  flush?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   description?: ReactNode;
@@ -31,7 +34,10 @@ export function AdvancedDisclosure({
         type="button"
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
-        className="flex items-center gap-2 rounded-full px-3 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={cn(
+          "flex items-center gap-2 rounded-full px-3 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          flush && "-mx-3",
+        )}
       >
         <HugeiconsIcon
           icon={Settings02Icon}

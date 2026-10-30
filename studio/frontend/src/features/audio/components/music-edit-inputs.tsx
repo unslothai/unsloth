@@ -150,7 +150,7 @@ export function MusicEditInputs({
       ) : null}
 
       {actions.length > 0 ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           <span className="text-ui-13 font-medium text-foreground">
             What to do
           </span>
@@ -177,7 +177,7 @@ export function MusicEditInputs({
             }))}
           />
           {action ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-12 leading-normal text-muted-foreground">
               {MUSIC_EDIT_ACTION_HINT[action]}
             </p>
           ) : null}
@@ -188,7 +188,7 @@ export function MusicEditInputs({
                 : rangeProblem}
             </p>
           ) : extendedBy > 0 ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-12 leading-normal text-muted-foreground">
               Extends the clip by{" "}
               <span className="font-mono tabular-nums">
                 {extendedBy.toFixed(1)}
@@ -232,7 +232,7 @@ export function MusicEditInputs({
       ) : null}
 
       {action ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           <FieldLabel
             htmlFor={PROMPT_ID}
             className="text-ui-13 font-medium text-foreground"

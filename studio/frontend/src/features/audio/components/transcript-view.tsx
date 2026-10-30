@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ClosedCaptionIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { PlayIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -36,6 +40,7 @@ import {
   sanitizeSpeakerName,
   speakerLabel,
 } from "../transcript-model";
+import { CLIP_ICON_COLUMN, CLIPS_TITLE_INSET, ClipsIconTile } from "./clips-card";
 import { FieldLabel } from "./field";
 import { Waveform, type WaveformControl } from "./waveform";
 import { decodePeaks } from "./waveform-decode";
@@ -120,6 +125,7 @@ function SpeakerChip({
       <PopoverTrigger asChild={true}>
         <button
           type="button"
+          title="Rename speaker"
           aria-label={`Rename ${label}`}
           className="inline-flex max-w-full shrink-0 items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-ui-11p5 font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
@@ -149,7 +155,7 @@ function SpeakerChip({
             }
           }}
         />
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           Renames every line by this speaker.
         </p>
         <div className="flex justify-end gap-2">
@@ -176,14 +182,19 @@ export function TranscriptView({
   names,
   onRename,
   durationS,
-  children,
+  title,
+  meta,
+  actions,
 }: {
   text: string;
   details: TranscriptDetails;
   names: Readonly<Record<string, string>>;
   onRename: (id: string, name: string) => void;
   durationS: number | null;
-  children: ReactNode;
+  /** Laid out as a results-card top row: play (or icon), title over meta, actions; the rest on the title edge. */
+  title: ReactNode;
+  meta: ReactNode;
+  actions: ReactNode;
 }) {
   const { segments, speakers, source } = details;
   const view = useAudioTranscribeStore((state) => state.view);
@@ -211,9 +222,11 @@ export function TranscriptView({
     "shrink-0 px-1 font-mono text-ui-11p5 tabular-nums text-muted-foreground",
     stampWidth,
   );
-  const tabsHint = !hasSegments
-    ? "No timestamps in this transcript. Turn on Timestamps with a model that supports them and transcribe again."
-    : shown === "segments" && player
+  // Without segments the tabs explain themselves on hover, so the note doesn't sit between them and the text.
+  const noSegmentsHint =
+    "No timestamps in this transcript. Turn on Timestamps with a model that supports them and transcribe again.";
+  const tabsHint =
+    hasSegments && shown === "segments" && player
       ? "Select a time to play from there."
       : null;
   const activeRow = useRef<HTMLLIElement | null>(null);
@@ -236,10 +249,41 @@ export function TranscriptView({
     />
   );
 
+  const playable = Boolean(source) && audio.status !== "missing";
   return (
     <>
+      <div className="flex items-center gap-3">
+        {playable ? (
+          <Button
+            type="button"
+            variant="dark"
+            size="icon"
+            className={cn("shrink-0 rounded-full", CLIP_ICON_COLUMN)}
+            title={playing ? "Pause" : "Play"}
+            aria-label={playing ? "Pause the audio" : "Play the audio"}
+            disabled={!ready}
+            onClick={() => control.current?.toggle()}
+          >
+            {playing ? (
+              <HugeiconsIcon icon={PauseIcon} className="size-4" />
+            ) : (
+              <PlayIcon className="size-4" />
+            )}
+          </Button>
+        ) : (
+          <ClipsIconTile icon={ClosedCaptionIcon} />
+        )}
+        <div className="grid min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 content-between">
+          <p className="truncate text-ui-15 font-medium leading-snug text-foreground">
+            {title}
+          </p>
+          <div className="truncate text-ui-12 text-muted-foreground">{meta}</div>
+        </div>
+        {actions}
+      </div>
+      <div className={cn("flex flex-col gap-3", CLIPS_TITLE_INSET)}>
       {!source ? null : audio.status === "missing" ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           The audio for this transcript is no longer available. Timestamps still
           export.
         </p>
@@ -249,13 +293,18 @@ export function TranscriptView({
           durationS={ready?.durationS ?? durationS}
           src={ready?.url ?? null}
           label={source.name || "Transcript audio"}
+          size="lg"
+          hidePlay={true}
           controlRef={control}
           onPositionChange={handlePosition}
         />
       )}
-      {children}
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-1.5">
+          <span
+            className="self-start"
+            title={hasSegments ? undefined : noSegmentsHint}
+          >
           <PillTabs
             ariaLabel="Transcript view"
             tabs={VIEW_TABS}
@@ -270,8 +319,9 @@ export function TranscriptView({
             fit={true}
             className="[&>button]:px-3"
           />
+          </span>
           {tabsHint ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-12 leading-normal text-muted-foreground">
               {tabsHint}
             </p>
           ) : null}
@@ -297,6 +347,7 @@ export function TranscriptView({
                   {player ? (
                     <button
                       type="button"
+                      title={`Play from ${stamp}`}
                       aria-label={`Play from ${stamp}`}
                       onClick={() => player.current?.seek(segment.start, true)}
                       className={cn(
@@ -341,6 +392,7 @@ export function TranscriptView({
             {text}
           </p>
         )}
+      </div>
       </div>
     </>
   );

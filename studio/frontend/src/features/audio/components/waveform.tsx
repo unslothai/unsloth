@@ -22,9 +22,26 @@ import { PlayIcon } from "lucide-react";
 
 const SEEK_STEP_SECONDS = 5;
 const BAR_GAP_PX = 2;
-const BAR_PITCH_PX = 2 + BAR_GAP_PX;
 // Fraction of the track height above the baseline.
 const BASELINE = 0.7;
+
+/** Bar levels for drawing: lightly smoothed, then spread between the clip's quiet floor and its peak,
+ *  so loud, compressed audio (music) still shows its shape instead of a flat comb. */
+function shapeLevels(levels: readonly number[]): number[] {
+  if (levels.length === 0) return [];
+  const smoothed = levels.map((value, index) => {
+    const before = levels[index - 1] ?? value;
+    const after = levels[index + 1] ?? value;
+    return 0.25 * before + 0.5 * value + 0.25 * after;
+  });
+  const sorted = [...smoothed].sort((a, b) => a - b);
+  const floor = sorted[Math.floor(sorted.length * 0.05)] ?? 0;
+  const top = sorted[sorted.length - 1] ?? 1;
+  const span = top - floor;
+  // A near-flat clip keeps its absolute levels rather than amplifying noise.
+  if (span < 0.08) return smoothed;
+  return smoothed.map((value) => Math.min(1, Math.max(0, (value - floor) / span)));
+}
 
 export interface WaveformControl {
   seek: (seconds: number, play?: boolean) => void;
@@ -43,6 +60,8 @@ export function Waveform({
   controlRef,
   onPositionChange,
   onError,
+  size = "default",
+  hidePlay = false,
 }: {
   /** 0..1; null draws a flat placeholder while decoding. */
   peaks: readonly number[] | null;
@@ -55,7 +74,12 @@ export function Waveform({
   controlRef?: Ref<WaveformControl>;
   onPositionChange?: (seconds: number, playing: boolean) => void;
   onError?: () => void;
+  /** `lg` is a taller track with a larger play button. */
+  size?: "default" | "lg";
+  /** The host draws its own play button through `controlRef` (the clip card's header). */
+  hidePlay?: boolean;
 }) {
+  const large = size === "lg";
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
@@ -118,6 +142,8 @@ export function Waveform({
       peaks={peaks}
       fraction={fraction}
       label={label}
+      className={large ? "h-[calc(56px*var(--ui-space-scale,1))]" : undefined}
+      barWidth={large ? 3 : 2}
       valueNow={position}
       valueMax={duration}
       disabled={!src}
@@ -142,24 +168,39 @@ export function Waveform({
   );
 
   return (
-    <div className={cn("flex items-center gap-2", className)}>
-      <Button
-        type="button"
-        variant="muted"
-        size="icon"
-        className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0"
-        aria-label={playing ? `Pause ${label}` : `Play ${label}`}
-        disabled={!src}
-        onClick={toggle}
-      >
-        {playing ? (
-          <HugeiconsIcon icon={PauseIcon} className="size-3.5" />
-        ) : (
-          <PlayIcon className="size-3.5" />
-        )}
-      </Button>
+    <div className={cn("flex items-center", large ? "gap-3" : "gap-2", className)}>
+      {hidePlay ? null : (
+        <Button
+          type="button"
+          variant="muted"
+          size="icon"
+          className={cn(
+            "shrink-0",
+            large
+              ? "size-[calc(44px*var(--ui-space-scale,1))]"
+              : "size-[calc(32px*var(--ui-space-scale,1))]",
+          )}
+          title={playing ? "Pause" : "Play"}
+          aria-label={playing ? `Pause ${label}` : `Play ${label}`}
+          disabled={!src}
+          onClick={toggle}
+        >
+          {playing ? (
+            <HugeiconsIcon icon={PauseIcon} className={large ? "size-4.5" : "size-3.5"} />
+          ) : (
+            <PlayIcon className={large ? "size-4.5" : "size-3.5"} />
+          )}
+        </Button>
+      )}
       {overlay !== undefined || tailS > 0 ? (
-        <div className="relative flex h-[calc(32px*var(--ui-space-scale,1))] min-w-0 flex-1">
+        <div
+          className={cn(
+            "relative flex min-w-0 flex-1",
+            large
+              ? "h-[calc(56px*var(--ui-space-scale,1))]"
+              : "h-[calc(32px*var(--ui-space-scale,1))]",
+          )}
+        >
           {slider}
           {tailS > 0 ? (
             <div
@@ -210,7 +251,10 @@ export function WaveformBars({
   onKeyDown,
   className,
   style,
+  barWidth = 2,
 }: {
+  /** 3px on the larger players. */
+  barWidth?: number;
   peaks: readonly number[] | null;
   fraction: number;
   label: string;
@@ -223,6 +267,8 @@ export function WaveformBars({
   style?: CSSProperties;
 }) {
   const bars = peaks && peaks.length > 0 ? peaks : null;
+  // Where the pointer is, as a 0..1 fraction: bars up to it light softly to preview the seek.
+  const [hover, setHover] = useState<number | null>(null);
   return (
     <div
       role="slider"
@@ -239,6 +285,13 @@ export function WaveformBars({
         className,
       )}
       onKeyDown={onKeyDown}
+      onPointerMove={(event) => {
+        if (disabled || !onSeek || event.pointerType === "touch") return;
+        const box = event.currentTarget.getBoundingClientRect();
+        if (box.width > 0)
+          setHover(Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)));
+      }}
+      onPointerLeave={() => setHover(null)}
       onClick={(event) => {
         if (disabled || !onSeek) return;
         const box = event.currentTarget.getBoundingClientRect();
@@ -250,13 +303,15 @@ export function WaveformBars({
     >
       <WaveformBarGlyphs
         peaks={bars}
+        barWidth={barWidth}
         isPlayed={(at) => fraction > 0 && at <= fraction}
+        isHovered={(at) => hover !== null && at <= hover}
       />
     </div>
   );
 }
 
-/** Holds the width of "duration / duration", so starting playback never narrows the bars beside it. */
+/** Holds the width of "duration / duration", so starting playback never narrows the bars beside it; start-aligned so the time hugs the bars. */
 export function PlaybackTime({
   position,
   duration,
@@ -265,7 +320,7 @@ export function PlaybackTime({
   duration: number;
 }) {
   return (
-    <span className="grid shrink-0 justify-items-end font-mono text-ui-11 tabular-nums text-muted-foreground">
+    <span className="grid shrink-0 justify-items-start font-mono text-ui-11 tabular-nums text-muted-foreground">
       <span aria-hidden="true" className="invisible col-start-1 row-start-1">
         {formatSeconds(duration)}
         <span className="px-0.5">/</span>
@@ -288,10 +343,15 @@ export function PlaybackTime({
 export function WaveformBarGlyphs({
   peaks,
   isPlayed,
+  isHovered,
+  barWidth = 2,
 }: {
   peaks: readonly number[] | null;
   /** `at` is the bar's centre as a 0..1 fraction of the track. */
   isPlayed: (at: number) => boolean;
+  /** Bars a click would play up to; drawn between played and unplayed. */
+  isHovered?: (at: number) => boolean;
+  barWidth?: number;
 }) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(0);
@@ -305,30 +365,35 @@ export function WaveformBarGlyphs({
   }, []);
   const count =
     width > 0
-      ? Math.max(1, Math.floor((width + BAR_GAP_PX) / BAR_PITCH_PX))
+      ? Math.max(1, Math.floor((width + BAR_GAP_PX) / (barWidth + BAR_GAP_PX)))
       : 0;
-  const levels = peaks ? resamplePeaks(peaks, count) : null;
+  const levels = peaks ? shapeLevels(resamplePeaks(peaks, count)) : null;
   return (
     <div
       ref={boxRef}
       aria-hidden="true"
-      className="flex size-full justify-center gap-[2px]"
+      className="flex size-full justify-between"
     >
       {Array.from({ length: count }, (_, index) => {
         const peak = levels ? (levels[index] ?? 0) : 0;
-        const height = 10 + peak ** 0.8 * 90;
+        // Quiet passages keep a visible stub; loud ones reach the top.
+        const height = 12 + peak ** 0.9 * 88;
+        const at = (index + 0.5) / count;
         return (
           <span
             // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
             key={index}
+            style={{ width: barWidth }}
             className={cn(
-              "relative h-full w-[2px] shrink-0",
-              isPlayed((index + 0.5) / count)
+              "relative h-full shrink-0",
+              isPlayed(at)
                 ? "text-foreground"
-                : cn(
-                    "text-muted-foreground",
-                    peaks ? "opacity-50" : "opacity-25",
-                  ),
+                : isHovered?.(at)
+                  ? "text-foreground opacity-70"
+                  : cn(
+                      "text-muted-foreground",
+                      peaks ? "opacity-50" : "opacity-25",
+                    ),
             )}
           >
             <span

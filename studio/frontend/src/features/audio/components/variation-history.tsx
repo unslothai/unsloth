@@ -27,7 +27,7 @@ export function VariationGroupRow({
       aria-expanded={open}
       onClick={onToggle}
       className={cn(
-        "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui-13 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "flex w-full min-w-0 items-center gap-2 rounded-md px-3 py-2 text-left text-ui-13 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         selected && !open && "bg-muted",
       )}
     >
@@ -77,6 +77,7 @@ export function VariationChips({
             key={clip.id}
             type="button"
             aria-pressed={current}
+            title={`Variation ${index + 1}`}
             aria-label={`Variation ${index + 1} of ${siblings.length}`}
             onClick={() => onSelect(clip.id)}
             className={cn(
