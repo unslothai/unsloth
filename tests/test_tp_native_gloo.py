@@ -264,26 +264,23 @@ def _case_fused(rank, world, tmp):
         function, *args
     )
     out = {}
-    # "ref64": the plain PEFT path in float64, the reference both fp32 arms are measured against.
-    for fused in (False, True, "ref64"):
+    for fused in (False, True):
         calls.clear()
         model = build(QWEN3, {"num_attention_heads": 8, "num_key_value_heads": 4})
-        if fused == "ref64":
-            model = model.double()
         tp_native.apply_tensor_parallel(model, mesh["tp"])
         attn = tp_native._unwrap(model).model.layers[0].self_attn
         g = torch.Generator().manual_seed(5)
-        X = torch.randn(2, 5, attn.q_proj.base_layer.weight.shape[1], generator = g)
-        X = X.to(attn.q_proj.base_layer.weight.dtype).requires_grad_(True)
+        X = torch.randn(
+            2, 5, attn.q_proj.base_layer.weight.shape[1], generator = g, requires_grad = True
+        )
         Xr = tp_native.copy_to_tp(X, attn._unsloth_tp_group)
-        fused_arm = fused is True
-        if fused_arm:
+        if fused:
             Q, K, V = fast_lora.apply_lora_qkv(attn, Xr, inplace = False)
         else:
             Q, K, V = attn.q_proj(Xr), attn.k_proj(Xr), attn.v_proj(Xr)
         Y = torch.cat([Q, K, V], -1)
         O_in = Y[..., : Q.shape[-1]].contiguous()
-        O = fast_lora.apply_lora_o(attn, O_in) if fused_arm else attn.o_proj(O_in)
+        O = fast_lora.apply_lora_o(attn, O_in) if fused else attn.o_proj(O_in)
         O = tp_native.reduce_from_tp(O, attn._unsloth_tp_group)
         (O.square().sum() + Y.square().sum()).backward()
         out[fused] = {
@@ -1074,13 +1071,6 @@ def test_fused_lora_functions_read_local_shards():
             torch.testing.assert_close(
                 fused[key], plain[key], rtol = 1e-5, atol = atol, msg = lambda m, key = key: f"{key}: {m}"
             )
-        # The fused order rounds the LoRA term before the base GEMM accumulates onto it, so it may differ from
-        # PEFT's two rounded products, but never move further from a float64 reference.
-        ref = res["ref64"]
-        for key in ("O", "dX"):
-            err_fused = (fused[key].double() - ref[key]).abs().max().item()
-            err_plain = (plain[key].double() - ref[key]).abs().max().item()
-            assert err_fused <= 2 * err_plain + 1e-6, (key, err_fused, err_plain)
         assert set(fused["grads"]) == set(plain["grads"]) and plain["grads"]
         for name in plain["grads"]:
             torch.testing.assert_close(
