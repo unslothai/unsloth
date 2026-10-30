@@ -7924,6 +7924,20 @@ class CountAborted(Exception):
     __slots__ = ()
 
 
+# Single-threaded render + tokenize ran ~600K chars/s on the #15800 reporter's CPU;
+# a sixth of that still catches a hang while leaving a slow CPU room to finish.
+_COUNT_TIMEOUT_FLOOR_S = 10.0
+_COUNT_TIMEOUT_CHARS_PER_S = 100_000
+
+
+def _count_timeout(messages, system_text, tools) -> float:
+    try:
+        chars = len(json.dumps([system_text, messages, tools], ensure_ascii = False, default = str))
+    except Exception:  # noqa: BLE001 -- an unmeasurable prompt keeps the floor
+        chars = 0
+    return _COUNT_TIMEOUT_FLOOR_S + chars / _COUNT_TIMEOUT_CHARS_PER_S
+
+
 # Module level so tests can point the orphan sweep at a fixture tree.
 _PROC_ROOT = "/proc"
 
@@ -40742,7 +40756,9 @@ class LlamaCppBackend:
 
         try:
             with httpx.Client(
-                timeout = 10,
+                timeout = httpx.Timeout(
+                    _COUNT_TIMEOUT_FLOOR_S, read = _count_timeout(messages, system_text, tools)
+                ),
                 headers = self._auth_headers,
                 trust_env = False,
                 verify = _local_ssl_context(),
@@ -40776,6 +40792,20 @@ class LlamaCppBackend:
                     template_messages = [
                         {"role": "system", "content": system_text}
                     ] + template_messages
+
+                # Guard against oversized payloads: /apply-template times out (503)
+                # or errors (500) when the JSON body is too large.  Estimate the
+                # token count with the dense heuristic (4 chars/tok ASCII, 1
+                # char/tok non-ASCII: exact for English, where it matches the
+                # per-message estimator the truncation uses, CJK-corrected) and
+                # bail out with the estimate if it exceeds the context limit.  The
+                # fit loop's keep_ratio then lands the first cut at the trim
+                # target, and the re-count goes through the exact path below.
+                _cap_nctx = self._effective_context_length or self._max_context_length
+                if _cap_nctx:
+                    _est = estimate_messages_tokens_dense(template_messages)
+                    if _est > _cap_nctx:
+                        return _est
 
                 def _render_count(render_messages) -> tuple[Optional[int], bool]:
                     """(count or None, refused). Only a 500 is a template refusal; 503 = loading or no slot."""
@@ -40824,6 +40854,11 @@ class LlamaCppBackend:
                     except CountAborted:
                         # Not a template failure. Must precede the generic except.
                         raise
+                    except httpx.TimeoutException:
+                        if strict:
+                            raise RuntimeError(
+                                "llama-server timed out counting the prompt"
+                            ) from None
                     except Exception:
                         pass
                     return None, False
