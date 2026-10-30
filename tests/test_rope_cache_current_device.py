@@ -612,3 +612,55 @@ def test_longrope_long_rebuild_keeps_short_marked_for_training(monkeypatch):
     cos, sin = rope.get_cached(4, 1)
     _assert_trainable(cos, sin)
     _assert_trainable(rope.multi_gpu_long_cos_cached[1], rope.multi_gpu_long_sin_cached[1])
+
+
+def test_stock_call_compiles_as_one_graph():
+    # A plain transformers model built after the class patch calls rotary_emb(x, position_ids).
+    rope = _llama(1 << 17)
+    x = torch.zeros(1, 4, DIM)
+    position_ids = torch.tensor([[3, 4, 5, 6]])
+    eager_cos, eager_sin = rope(x, position_ids)
+    torch._dynamo.reset()
+    explained = torch._dynamo.explain(lambda x, p: rope(x, p))(x, position_ids)
+    assert explained.graph_break_count == 0, explained.break_reasons
+    cos, sin = torch.compile(rope, backend = "eager", fullgraph = True)(x, position_ids + 1)
+    ref_cos, ref_sin = _reference(8)
+    assert torch.equal(eager_cos[0], ref_cos[3:7]) and torch.equal(eager_sin[0], ref_sin[3:7])
+    assert torch.equal(cos[0], ref_cos[4:8]) and torch.equal(sin[0], ref_sin[4:8])
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+def test_compiled_stock_call_serves_every_position_below_max_position(backend):
+    # max_position_embeddings above the 32768-row starting cache, compiled before any eager long
+    # call: positions at or past 32768 must still index valid rows rather than past the cache.
+    max_position = 1 << 16
+    rope = _llama(max_position)
+    torch._dynamo.reset()
+    compiled = torch.compile(rope, backend = backend, fullgraph = True)
+    ref_cos, ref_sin = _reference(max_position)
+    x = torch.zeros(1, 4, DIM)
+    # A short prompt first, then decode steps crossing the 32768 boundary, then the last position.
+    for start in (0, 32766, 32768, max_position - 4):
+        position_ids = torch.arange(start, start + 4)[None]
+        cos, sin = compiled(x, position_ids)
+        assert torch.equal(cos[0], ref_cos[start : start + 4])
+        assert torch.equal(sin[0], ref_sin[start : start + 4])
+    explained = torch._dynamo.explain(lambda x, p: rope(x, p))(x, torch.tensor([[40000, 40001]]))
+    assert explained.graph_break_count == 0, explained.break_reasons
+
+
+def test_compiled_preallocation_keeps_the_cache_dtype():
+    # A short bf16 call compiled first grows the cache only to preallocate rows: it must not round a
+    # float32 cache to bf16 for later float32 calls.
+    max_position = 1 << 16
+    rope = _llama(max_position)
+    torch._dynamo.reset()
+    compiled = torch.compile(rope, backend = "eager", fullgraph = True)
+    position_ids = torch.arange(3, 7)[None]
+    compiled(torch.zeros(1, 4, DIM, dtype = torch.bfloat16), position_ids)
+    torch._dynamo.reset()
+    cos, sin = rope(torch.zeros(1, 4, DIM), position_ids)
+    ref_cos, ref_sin = _reference(max_position)
+    assert cos.dtype == torch.float32
+    assert torch.equal(cos[0], ref_cos[3:7])
+    assert torch.equal(sin[0], ref_sin[3:7])
