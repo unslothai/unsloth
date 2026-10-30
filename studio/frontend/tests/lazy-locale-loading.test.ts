@@ -803,7 +803,6 @@ test("the language menu lists Auto detect first, then languages alphabetically b
   const names = entries.slice(1).map((item) => (item.props.keywords as string[])[1]);
   assert.deepEqual(names, [...names].sort((a, b) => a.localeCompare(b, "en")));
   assert.equal(names.length, Object.keys(messagesModule.LOCALES).length);
-  // Search matches the English name as well as the native one.
   const japanese = entries.find((item) => item.props.value === "ja");
   assert.deepEqual(japanese?.props.keywords, ["日本語", "Japanese"]);
 });

@@ -59,12 +59,33 @@ export function LanguageSelect() {
   const close = (next: boolean) => {
     setOpen(next);
     if (next) {
-      // Open on the language in effect, not the pinned Auto detect row.
       setHighlighted(checked || locale);
     } else {
       setQuery("");
       setScrolled(false);
     }
+  };
+  // Not cmdk's filter: its sort throws on rows inside the scroll div.
+  const needle = query.trim().toLowerCase();
+  const matches = (...names: string[]) =>
+    !needle || names.some((name) => name.toLowerCase().includes(needle));
+  const showAuto = matches(AUTO_LOCALE, autoLabel);
+  const shownLocales = SORTED_LOCALES.filter(([value, metadata]) =>
+    matches(value, metadata.nativeLabel, metadata.label),
+  );
+  const search = (next: string) => {
+    setQuery(next);
+    const term = next.trim().toLowerCase();
+    const first = SORTED_LOCALES.find(([value, metadata]) =>
+      [value, metadata.nativeLabel, metadata.label].some((name) =>
+        name.toLowerCase().includes(term),
+      ),
+    );
+    setHighlighted(
+      term && !autoLabel.toLowerCase().includes(term)
+        ? (first?.[0] ?? "")
+        : AUTO_LOCALE,
+    );
   };
   const pick = (value: string) => {
     close(false);
@@ -74,7 +95,7 @@ export function LanguageSelect() {
   };
 
   return (
-    // Modal: inside the modal Settings dialog a non-modal popover gets no wheel scrolling.
+    // Non-modal gets no wheel scrolling inside the Settings dialog.
     <Popover open={open} onOpenChange={close} modal={true}>
       <PopoverTrigger asChild={true}>
         <button
@@ -106,40 +127,41 @@ export function LanguageSelect() {
         <Command
           value={highlighted}
           onValueChange={setHighlighted}
+          shouldFilter={false}
           className="rounded-none bg-transparent p-0"
         >
           <CommandInput
             value={query}
-            onValueChange={setQuery}
+            onValueChange={search}
             aria-label={t("settings.appearance.language.search")}
             placeholder={t("settings.appearance.language.search")}
           />
-          {/* Not the scroll container: Auto detect stays fixed above the scrolling languages. */}
           <CommandList className="max-h-none overflow-visible">
             <CommandEmpty>
               {t("settings.appearance.language.noResults")}
             </CommandEmpty>
-            <CommandItem
-              value={AUTO_LOCALE}
-              keywords={[autoLabel]}
-              data-checked={checked === AUTO_LOCALE}
-              onSelect={pick}
-              className="cursor-pointer"
-            >
-              {autoLabel}
-            </CommandItem>
+            {showAuto ? (
+              <CommandItem
+                value={AUTO_LOCALE}
+                keywords={[autoLabel]}
+                data-checked={checked === AUTO_LOCALE}
+                onSelect={pick}
+                className="cursor-pointer"
+              >
+                {autoLabel}
+              </CommandItem>
+            ) : null}
             <div
               onScroll={(event) =>
                 setScrolled(event.currentTarget.scrollTop > 0)
               }
               className={cn(
                 "hover-scrollbar max-h-64 overflow-y-auto overscroll-contain",
-                // A clipped row right under Auto detect reads as sliding behind it.
                 scrolled &&
                   "[mask-image:linear-gradient(to_bottom,transparent_0,#000_14px)]",
               )}
             >
-              {SORTED_LOCALES.map(([value, metadata]) => (
+              {shownLocales.map(([value, metadata]) => (
                 <CommandItem
                   key={value}
                   value={value}
