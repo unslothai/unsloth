@@ -13692,8 +13692,8 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     if not found:
         return "No earlier turns of this conversation matched that query."
 
-    # Halve until the rendered result fits: chunk size is a target, not a weight (overlap, other
-    # tokenizer, markup). A single chunk that still does not fit is refused.
+    # One fewer until the text the model reads fits: chunk size is a target, not a weight (overlap,
+    # other tokenizer, markup). A single chunk that still does not fit is refused.
     if budget is not None:
         counter = scope.get("token_counter")
         attempt = max(1, int(top_k or 1))
@@ -13702,7 +13702,7 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
                 return _rendered_conversation_search(found)
             if attempt <= 1:
                 return "There is no room left in this context to search earlier conversation."
-            attempt = max(1, attempt // 2)
+            attempt -= 1
             found = _recall(attempt)
             if not found:
                 return "No earlier turns of this conversation matched that query."

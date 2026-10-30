@@ -944,7 +944,7 @@ def test_conversation_search_refuses_a_result_the_budget_cannot_hold(archived, m
         {"thread_id": THREAD, "budget_tokens": rag_config.CHUNK_TOKENS * 4},
     )
 
-    assert asked == [4, 2, 1]
+    assert asked == [4, 3, 2, 1]
     assert "no room" in answer.lower()
 
 
@@ -996,10 +996,14 @@ def test_conversation_search_prices_only_what_the_model_reads(archived, monkeypa
             {"query": "pelicans", "top_k": top_k},
             {"thread_id": THREAD, "budget_tokens": budget, "token_counter": lambda t: len(t) // 4},
         )
+        # The source card still receives the citation data the model does not read.
+        assert tools_mod.RAG_SOURCES_SENTINEL in answer
         return strip_result_for_model(answer, "search_conversation").count("<chunk ")
 
     assert model_chunks(rag_config.CHUNK_TOKENS * 5, 4) == 4
     assert model_chunks(rag_config.CHUNK_TOKENS * 3 // 2, 1) == 1
+    # Markup pushes four full chunks past four chunks of room; three still fit.
+    assert model_chunks(rag_config.CHUNK_TOKENS * 4, 8) == 3
 
 
 def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):
