@@ -5022,6 +5022,8 @@ export const it = {
       weight: "Peso",
       bundled: "Inclusa",
       user: "Tua",
+      kindRule: "Regola",
+      kindPython: "Python",
       invalid: "Non valida",
       pythonLocked: "Le ricompense Python arriveranno in una versione successiva.",
       tryTitle: "Provalo",
@@ -5055,6 +5057,7 @@ export const it = {
     prompt: {
       title: "Formato del prompt",
       description: "Cosa si chiede di scrivere al modello",
+      presetHint: "Inviato prima di ogni prompt. Le tue ricompense leggono i tag che richiede, quindi mantienili allineati.",
       presetLabel: "Preimpostazione del prompt di sistema",
       presets: {
         notebook: "Tag ragionamento + risposta",

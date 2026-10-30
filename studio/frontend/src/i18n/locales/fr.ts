@@ -5032,6 +5032,8 @@ export const fr = {
       weight: "Poids",
       bundled: "Fournie",
       user: "La vôtre",
+      kindRule: "Règle",
+      kindPython: "Python",
       invalid: "Invalide",
       pythonLocked: "Les récompenses Python arriveront dans une version ultérieure.",
       tryTitle: "Essayer",
@@ -5065,6 +5067,7 @@ export const fr = {
     prompt: {
       title: "Format du prompt",
       description: "Ce que le modèle doit écrire",
+      presetHint: "Envoyé avant chaque prompt. Vos récompenses lisent les balises qu'il demande, gardez donc les deux alignés.",
       presetLabel: "Préréglage du prompt système",
       presets: {
         notebook: "Balises raisonnement + réponse",
