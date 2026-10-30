@@ -215,3 +215,20 @@ def test_declining_a_plain_module_still_restores_the_class_forward(tiled):
         assert "forward" not in mlp.__dict__
     x = torch.randn(2, 3, 4)
     torch.testing.assert_close(mlp(x), mlp.up(x))
+
+
+def test_tile_fuse_untile_decline_leaves_a_callable_module():
+    """Tiling stores the class forward in the inner slot; after untile the kernel sits in `forward`, and the decline
+    must not put the unbound class function there."""
+    import torch
+    from unsloth.models import llama
+
+    registry = pytest.importorskip("unsloth_zoo.tiling_registry")
+    mlp = _GroupedMLP()
+    registry.install_module(mlp, "rows:2")
+    llama._install_fused_lora_mlp(mlp, llama.apply_lora_mlp_swiglu)
+    registry.uninstall(mlp)
+    assert llama._decline_fused_lora_for_fsdp(mlp) == 1
+    assert "forward" not in mlp.__dict__
+    x = torch.randn(2, 3, 4)
+    torch.testing.assert_close(mlp(x), mlp.up(x))

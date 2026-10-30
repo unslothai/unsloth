@@ -3410,7 +3410,9 @@ def _install_fused_lora_mlp(mlp_module, kernel):
     if _PRE_FUSED_FORWARD not in d and getattr(func, "func", func) not in _FUSED_LORA_MLPS:
         # What ran before the kernel (an adopted grouped MoE / mxfp4 / accelerate-hook forward, or None for the
         # class forward); _decline_fused_lora_for_fsdp puts it back.
-        d[_PRE_FUSED_FORWARD] = current
+        # The class forward (what tiling stores when nothing was adopted) is recorded as None: restoring it into the
+        # instance `forward` slot unbound would drop `self`.
+        d[_PRE_FUSED_FORWARD] = None if current is type(mlp_module).forward else current
     setattr(mlp_module, slot, types.MethodType(kernel, mlp_module))
 
 
@@ -3438,6 +3440,8 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
             # Tiling may have moved the kernel from forward into _unsloth_forward after the install, so the record
             # is read whichever slot holds it.
             previous = module.__dict__.pop(_PRE_FUSED_FORWARD, None)
+            if previous is type(module).forward:
+                previous = None
             if name == "forward":
                 if previous is None:
                     delattr(module, "forward")
