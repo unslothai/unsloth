@@ -1584,6 +1584,15 @@ _PREFERRED_SCOPES = ("turbo", "english", "tiny")
 _SKIP_FILE_RE = re.compile(
     r"(^|/)(readme[^/]*|license[^/]*|\.gitattributes|[^/]*\.(md|mp4|mp3|wav|png|jpe?g|gif))$", re.I
 )
+# q4-ios stores a rank-3 ConvTranspose weight as 2-D Q4_K: "quantized tensor byte size mismatch".
+_UNLOADABLE_FILES = {
+    "vibevoice-1.5b-q4-ios.gguf": "This VibeVoice Q4 build cannot be loaded by audio.cpp. "
+    "Use the Q8_0 or BF16 variant.",
+}
+
+
+def _unloadable_reason(path: str) -> Optional[str]:
+    return _UNLOADABLE_FILES.get(Path(path).name.lower())
 
 
 def _is_quant(word: str) -> bool:
@@ -1626,7 +1635,12 @@ class AudioCppVariant:
         return max(ggufs, key = lambda f: f.size).path if ggufs else self.files[0].path
 
 
-def _single_file_variants(files: Sequence[RepoFile], folder: str) -> list[AudioCppVariant]:
+def _single_file_variants(
+    files: Sequence[RepoFile],
+    folder: str,
+    *,
+    unloadable: bool = False,
+) -> list[AudioCppVariant]:
     prefix = f"{folder}/" if folder else ""
     ggufs = [
         f
@@ -1634,6 +1648,7 @@ def _single_file_variants(files: Sequence[RepoFile], folder: str) -> list[AudioC
         if f.path.lower().endswith(".gguf")
         and "mmproj" not in f.path.lower()
         and "imatrix" not in f.path.lower()
+        and (unloadable or _unloadable_reason(f.path) is None)
     ]
     rows = []
     for gguf in ggufs:
@@ -2108,10 +2123,16 @@ class AudioCppModel:
     # A strict spec (``schema_version``) makes the runtime refuse any undeclared option.
     request_keys: Optional[frozenset[str]] = field(default = None, hash = False, compare = False)
     from_hub: bool = field(default = False, hash = False, compare = False)
+    # Listed files audio.cpp cannot load: never in ``variants``, still the cache's to delete.
+    unloadable: tuple[AudioCppVariant, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.spec_options and self.options:
             object.__setattr__(self, "spec_options", tuple(self.options))
+
+    @property
+    def cache_variants(self) -> tuple[AudioCppVariant, ...]:
+        return self.variants + self.unloadable
 
     @property
     def is_package(self) -> bool:
@@ -2610,11 +2631,12 @@ def _resolve_uncached(
     runtime_first = release is not None and release >= SPEC_FIRST_RUNTIME
     contract = None if release is not None and not runtime_first else spec
     policy = family_policy(family, contract or embedded, names, ref.display_name)
+    unloadable: list[AudioCppVariant] = []
     if policy.package:
         # In the package's own order: its first mix is the one the runtime defaults to.
         variants = _package_variants(policy, files, ref.folder)
     else:
-        variants = _single_file_variants(files, ref.folder)
+        variants = _single_file_variants(files, ref.folder, unloadable = True)
         if ref.local_path:
             variants = [
                 AudioCppVariant(v.key, v.files, ref.local_path, label = v.label) for v in variants
@@ -2624,13 +2646,20 @@ def _resolve_uncached(
         recommended = {f.lower() for f in recommended_gguf_files(spec or embedded)}
         if len(recommended) == 1:
             variants.sort(key = lambda v: Path(v.main_file).name.lower() not in recommended)
+        unloadable = [v for v in variants if _unloadable_reason(v.primary)]
+        variants = [v for v in variants if not _unloadable_reason(v.primary)]
     unsupported = policy.unsupported
-    if not variants:
-        unsupported = (
-            unsupported or "This repository does not publish every file this model package needs."
-        )
-        variants = [AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)]
-    default = variants[0]
+    if not variants and unloadable:
+        unsupported = unsupported or _unloadable_reason(unloadable[0].primary)
+        default = unloadable[0]
+    else:
+        if not variants:
+            unsupported = (
+                unsupported
+                or "This repository does not publish every file this model package needs."
+            )
+            variants = [AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)]
+        default = variants[0]
     chosen = match_variant(variants, wanted, ref.folder) if wanted else default
     if (
         chosen is not None
@@ -2698,6 +2727,7 @@ def _resolve_uncached(
         music = music_with_spec_bounds(policy.music, _raw_request_options(contract, embedded)),
         request_keys = _request_keys(contract, embedded, runtime_first = runtime_first),
         from_hub = from_hub,
+        unloadable = tuple(unloadable),
     )
     return model.with_variant(chosen)
 
@@ -3046,7 +3076,7 @@ def folder_row_for_download(repo_id: str, variant: Optional[str]) -> Optional[tu
         model = None
     if model is not None:
         from hub.utils.gguf import gguf_variant_key
-        for candidate in model.variants:
+        for candidate in model.cache_variants:
             if candidate.primary and gguf_variant_key(candidate.primary).lower() == variant.lower():
                 return row_id, candidate.key
     return row_id, "/".join([*parts[1:-1], quant_label(f"{parts[-1]}.gguf")])
@@ -3076,12 +3106,12 @@ def cached_folder_target(
     chosen: list[AudioCppVariant] = []
     if model is not None and model.repo_id:
         if wanted:
-            chosen = _cached_variants_named(model.variants, wanted, ref.folder)
+            chosen = _cached_variants_named(model.cache_variants, wanted, ref.folder)
         else:
             snapshots = snapshot_dirs(model.repo_id)
             chosen = [
                 v
-                for v in model.variants
+                for v in model.cache_variants
                 if v.primary
                 and any((s / v.primary).exists() or (s / v.primary).is_symlink() for s in snapshots)
             ]
@@ -3090,7 +3120,11 @@ def cached_folder_target(
     keys = [gguf_variant_key(v.primary) for v in chosen if v.primary]
     if wanted and keys:
         return AUDIO_CPP_REPO, keys
-    if wanted and model is not None and _on_disk_quant_named(model.variants, wanted, ref.folder):
+    if (
+        wanted
+        and model is not None
+        and _on_disk_quant_named(model.cache_variants, wanted, ref.folder)
+    ):
         return AUDIO_CPP_REPO, []
     # A quant cancelled before any file finished has only download state; the variant delete clears it.
     partial = _folder_state_keys(ref.folder)
@@ -3222,7 +3256,7 @@ def folder_snapshot_dir(identifier: Optional[str]) -> Optional[Path]:
     from core.inference.audio_cpp_files import _file_complete
 
     model = resolve(ref.id, network = False)
-    variants = [v for v in (model.variants if model is not None else ()) if v.files]
+    variants = [v for v in (model.cache_variants if model is not None else ()) if v.files]
     for snapshot in snapshots:
         if any(all(_file_complete(snapshot / f.path, f.size) for f in v.files) for v in variants):
             return snapshot / ref.folder
@@ -3335,10 +3369,19 @@ def _scan_downloaded(task: Optional[str]) -> list[AudioCppModel]:
                 continue
             if task is not None and model.task != task:
                 continue
-            ready = next(
-                (v for v in model.variants if audio_cpp_files.cached_files(model.with_variant(v))),
+            cached = next(
+                (
+                    v
+                    for v in model.cache_variants
+                    if audio_cpp_files.cached_files(model.with_variant(v))
+                ),
                 None,
             )
-            if ready is not None:
-                out.append(model.with_variant(ready))
+            if cached is None:
+                continue
+            row = model.with_variant(cached)
+            if cached in model.unloadable:
+                reason = model.unsupported or _unloadable_reason(cached.primary)
+                row = replace(row, unsupported = reason)
+            out.append(row)
     return out

@@ -14,6 +14,12 @@ test("a Deep research domain list is one field, not a pill inside a pill", () =>
   assert.match(list, /<input\b/);
 });
 
+test("Save limits stores the time limit only when it was edited", () => {
+  const save = RESEARCH.slice(RESEARCH.indexOf("setMcpSources(mcpDraft);"), RESEARCH.indexOf("Save limits"));
+  assert.match(save, /if \(timeoutEdited\) \{\s*setModelTimeoutSeconds\(/);
+  assert.equal(save.match(/setModelTimeoutSeconds\(/g)?.length, 1);
+});
+
 test("Deep research's time limit is a switch, and its header carries the tool's icon", () => {
   assert.match(RESEARCH, /<Switch\s+id="research-no-time-limit"\s+checked=\{unlimited\}/);
   assert.match(RESEARCH, /\{unlimited \? null : \(/);

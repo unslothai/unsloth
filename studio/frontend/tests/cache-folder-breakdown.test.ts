@@ -80,6 +80,7 @@ test("only verified model-copy rows expose Clear and retain individual locations
       "@/i18n": { useT: () => (key: string) => key },
       "@/lib/toast": {},
       "@hugeicons/core-free-icons": {},
+      "@/lib/folder-icons": {},
       "@hugeicons/react": {},
       "../api/caches": { loadCacheBreakdown: async () => copies },
       "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
@@ -172,6 +173,7 @@ test("HF folders are requested only on expansion and stale walks cannot replace 
       "@/i18n": { useT: () => (key: string) => key },
       "@/lib/toast": {},
       "@hugeicons/core-free-icons": {},
+      "@/lib/folder-icons": {},
       "@hugeicons/react": {},
       "../api/caches": {
         loadCacheBreakdown: () =>

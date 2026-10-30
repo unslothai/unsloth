@@ -1256,7 +1256,7 @@ class AnthropicPassthroughEmitter:
             events.extend(self._emit_text_delta("</think>"))
         if self._healer is not None:
             # Last-chance heal of any held residue (e.g. an unclosed tool block).
-            for kind, value in self._healer.finalize():
+            for kind, value in self._healer.finalize(promote = self._stop_reason != "max_tokens"):
                 if kind == "text" and value:
                     events.extend(self._emit_text_delta(value))
                 elif kind == "tool_call":
