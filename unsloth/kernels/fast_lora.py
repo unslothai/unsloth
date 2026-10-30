@@ -14,6 +14,7 @@ import sys
 import torch
 from unsloth_zoo.utils import Version
 from .utils import (
+    _LORA_DTENSOR,
     _has_active_dora_adapter,
     _has_active_lora_bias,
     _has_multiple_active_adapters,
@@ -390,7 +391,11 @@ def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
     return d_As, d_Bs, dX
 
 
-def _lora_traced_ok(*lora_weights):
+def _lora_traced_ok(*lora_weights, X = None):
+    # A DTensor X or LoRA weight keeps the base-then-LoRA order: matmul_lora falls back for it, and the
+    # recorded decision must match so the backward does not take the shared / fused path either.
+    if any(isinstance(t, _LORA_DTENSOR) for t in (X, *lora_weights)):
+        return False
     # Traced, the fused order needs nn.Parameter LoRA weights (static shapes under Dynamo). With plain
     # tensors of dynamic shape, torch 2.14 can bind the output width from the expanded tangent's zero
     # stride on a recompile (backward: shape '[-1, 0]' is invalid); the base-then-LoRA order traces fine.
@@ -503,7 +508,7 @@ class LoRA_MLP(torch.autograd.Function):
         if plain:
             fused = _mlp_fused_ok(
                 gateW, gateW_quant, upW, upW_quant, downW, downW_quant, dtype
-            ) and _lora_traced_ok(gateA, gateB, upA, upB, downA, downB)
+            ) and _lora_traced_ok(gateA, gateB, upA, upB, downA, downB, X = X)
             gateXA = upXA = None
             # Eager only: traced, the shared intermediate fails the block compile (saved output aliasing).
             if fused and not _is_compiling() and gateA is not None and upA is not None:
@@ -958,7 +963,7 @@ class LoRA_QKV(torch.autograd.Function):
         if dropout_p is None and QBias is None and KBias is None and VBias is None:
             fused = _qkv_fused_ok(
                 QW, QW_quant, KW, KW_quant, VW, VW_quant, dtype
-            ) and _lora_traced_ok(QA, QB, KA, KB, VA, VB)
+            ) and _lora_traced_ok(QA, QB, KA, KB, VA, VB, X = X)
             QXA = KXA = VXA = None
             # Eager only, as in LoRA_MLP.
             if (
@@ -1263,7 +1268,7 @@ class LoRA_W(torch.autograd.Function):
         dtype = X.dtype
         fused = False
         if dropout_p is None and bias is None:
-            fused = _lora_traced_ok(A, B)
+            fused = _lora_traced_ok(A, B, X = X)
             XW = matmul_lora(X, W, W_quant, A, B, S, fused = fused)
             mask = None
         else:

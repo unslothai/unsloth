@@ -733,6 +733,107 @@ def test_dtensor_activation_keeps_the_base_then_lora_order(placement, one_rank_m
     torch.testing.assert_close(out[True].full_tensor(), out[False].full_tensor())
 
 
+def _dtensor_lora_inputs(mesh, which, placement):
+    from torch.distributed.tensor import Replicate, Shard, distribute_tensor
+
+    g = torch.Generator().manual_seed(0)
+    X, W = torch.randn(2, 4, 4, generator = g), torch.randn(4, 4, generator = g)
+    A, B = torch.randn(2, 4, generator = g), torch.randn(4, 2, generator = g)
+    pl = {"replicate": Replicate(), "shard0": Shard(0), "shard1": Shard(1)}[placement]
+    # Mixed plain / DTensor LoRA weights fail on main as well (in-place gradient writes), so the adapters
+    # are either both plain or both DTensor.
+    X = distribute_tensor(X, mesh, [pl])
+    if which == "XAB":
+        A, B = (distribute_tensor(t, mesh, [Replicate()]) for t in (A, B))
+    return X.requires_grad_(), W, A.requires_grad_(), B.requires_grad_()
+
+
+def _apply_lora_function(name, X, W, A, B):
+    from unsloth.kernels.swiglu import _DWf_DW_dfg_traced
+
+    if name == "W":
+        return (fast_lora.LoRA_W.apply(X, W, None, A, B, 1.0),)
+    if name == "QKV":
+        return fast_lora.LoRA_QKV.apply(
+            X, W, None, A, B, 1.0, W, None, A, B, 1.0, W, None, A, B, 1.0
+        )
+    silu_mul = lambda e, g: torch.nn.functional.silu(e) * g
+    return (
+        fast_lora.LoRA_MLP.apply(
+            X,
+            W,
+            None,
+            A,
+            B,
+            1.0,
+            W,
+            None,
+            A,
+            B,
+            1.0,
+            W,
+            None,
+            A,
+            B,
+            1.0,
+            silu_mul,
+            _DWf_DW_dfg_traced,
+            False,
+        ),
+    )
+
+
+def _run_dtensor_lora(name, which, placement, mesh, monkeypatch, on):
+    # Main's order is the reference: where this torch's DTensor cannot run it (older releases lack the
+    # sharding rules for views of a sharded dim / in-place addmm), there is nothing to compare against.
+    from torch.distributed.tensor.experimental import implicit_replication
+
+    _set(monkeypatch, on)
+    X, W, A, B = _dtensor_lora_inputs(mesh, which, placement)
+    try:
+        with implicit_replication():
+            out = _apply_lora_function(name, X, W, A, B)
+            sum(o.sum() for o in out).backward()
+    except Exception as e:  # noqa: BLE001
+        if on:
+            raise
+        pytest.skip(f"main's order needs DTensor ops this torch lacks: {e}"[:200])
+    return out, X.grad
+
+
+@pytest.mark.parametrize("name", ["W", "QKV", "MLP"])
+@pytest.mark.parametrize("placement", ["replicate", "shard0", "shard1"])
+def test_dtensor_operands_keep_the_base_then_lora_order(
+    name, placement, one_rank_mesh, monkeypatch
+):
+    # matmul_lora falls back for a DTensor X / A / B, so the decision the backward reads must agree: the
+    # shared and fused backward paths would otherwise redistribute the input gradient.
+    _, ref = _run_dtensor_lora(name, "XAB", placement, one_rank_mesh, monkeypatch, False)
+    out, got = _run_dtensor_lora(name, "XAB", placement, one_rank_mesh, monkeypatch, True)
+    assert out[0].grad_fn.fused is False
+    assert got.placements == ref.placements
+    torch.testing.assert_close(got.full_tensor(), ref.full_tensor())
+
+
+@pytest.mark.parametrize("name", ["W", "QKV", "MLP"])
+def test_a_dtensor_activation_records_the_base_then_lora_order(name, one_rank_mesh, monkeypatch):
+    # With plain adapters the backward cannot run under DTensor on main either, so only the recorded
+    # forward decision is checked here.
+    from torch.distributed.tensor.experimental import implicit_replication
+
+    X, W, A, B = _dtensor_lora_inputs(one_rank_mesh, "X", "replicate")
+    for on in (False, True):
+        _set(monkeypatch, on)
+        try:
+            with implicit_replication():
+                out = _apply_lora_function(name, X, W, A, B)
+        except Exception as e:  # noqa: BLE001
+            if on:
+                raise
+            pytest.skip(f"main's order needs DTensor ops this torch lacks: {e}"[:200])
+    assert out[0].grad_fn.fused is False
+
+
 def test_a_wrapper_subclass_base_keeps_the_base_then_lora_order(monkeypatch):
     # TorchAO's NF4Tensor reports bf16 over packed storage and implements mm but not addmm_: with no quant
     # state it must not qualify for the in-place accumulate.
