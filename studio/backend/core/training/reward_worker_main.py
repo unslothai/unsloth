@@ -269,17 +269,24 @@ def main():
     with open(setup_path, encoding = "utf-8") as f:
         setup = json.load(f)
     specs = setup["specs"]
+    limit = setup.get("memory_limit_bytes")
     try:
-        capped = _cap_own_memory(setup.get("memory_limit_bytes"))
-    except Exception:  # noqa: BLE001 - reported below
+        capped = _cap_own_memory(limit)
+    except Exception:  # noqa: BLE001 - refused below
         capped = False
-    if os.name == "nt" and setup.get("memory_limit_bytes") and not capped:
-        print("Could not set the reward memory limit on this worker.")
+    if os.name == "nt" and limit and not capped:
+        # Under MXC the host's job may hold only the launcher, so nothing else caps this worker:
+        # no reward code runs, and each reward reports why.
+        refusal = "could not apply the Sandbox memory limit to the reward worker"
+        specs, refused = [], {spec["name"]: refusal for spec in specs}
+    else:
+        refused = {}
     try:
         _install_unsloth_helpers(setup.get("unsloth_helpers"))
     except Exception as exc:  # noqa: BLE001 - only rewards that use them will fail, by name
         print("Could not load the unsloth notebook helpers:", _error_line(exc))
     funcs, errors = _load(specs)
+    errors.update(refused)
     put(os.path.join(workdir, "ready.json"), {"loaded": sorted(funcs), "errors": errors})
     seq = 0
     alive_path = os.path.join(workdir, "alive")
