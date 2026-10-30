@@ -20,7 +20,9 @@ LOADED = {
 FLAT = dict(model_dense_mib = 30603, companion_dense_mib = 9151, text_encoder_dense_mib = 8864)
 WINDOW = 1620  # "streams 60 offload groups with event-fenced prefetch (2 ahead, 1620 MiB window)"
 RESIDENT_HEADROOM = 7168  # seed x 1.15, rounded up to 256 MiB
-STREAMED_HEADROOM = 3072  # Qwen-Image t2i's own streamed figure (2560) x 1.15, rounded up to 256 MiB
+STREAMED_HEADROOM = (
+    3072  # Qwen-Image t2i's own streamed figure (2560) x 1.15, rounded up to 256 MiB
+)
 EDIT_STREAMED_HEADROOM = 4608  # the Qwen-Image-Edit figure (3824), which t2i borrowed before
 BUDGETS = [(9550, 12288), (13638, 16376)]
 ENVS = (
@@ -200,9 +202,9 @@ def test_t2i_figure_keeps_more_resident_than_the_borrowed_one(pipe, monkeypatch,
     gained = new.resident_transformer_mib - old.resident_transformer_mib
     assert gained == EDIT_STREAMED_HEADROOM - STREAMED_HEADROOM
     # the slack and the window are still reserved; only the activation figure shrank
-    assert new.resident_transformer_mib + STREAMED_HEADROOM + WINDOW + LOADED["vae"][0] + dm._resident_dit_slack_mib(
-        memory
-    ) == int(memory.free_mib)
+    assert new.resident_transformer_mib + STREAMED_HEADROOM + WINDOW + LOADED["vae"][
+        0
+    ] + dm._resident_dit_slack_mib(memory) == int(memory.free_mib)
     assert new.estimates["encode_resident_transformer_mib"] == 0
 
 
@@ -212,5 +214,10 @@ def test_learned_peak_above_the_t2i_figure_still_raises_it(monkeypatch):
 
     monkeypatch.setattr(mp, "lookup", lambda **kw: 4000)
     assert dm.measured_image_runtime_mib("qwen-image", "default", quant = "q", streamed = True) == 4608
-    monkeypatch.setattr(mp, "lookup", lambda **kw: 1907)  # the learned 16 GiB render: never lowers the figure
-    assert dm.measured_image_runtime_mib("qwen-image", "default", quant = "q", streamed = True) == STREAMED_HEADROOM
+    monkeypatch.setattr(
+        mp, "lookup", lambda **kw: 1907
+    )  # the learned 16 GiB render: never lowers the figure
+    assert (
+        dm.measured_image_runtime_mib("qwen-image", "default", quant = "q", streamed = True)
+        == STREAMED_HEADROOM
+    )
