@@ -19,6 +19,7 @@ from contextlib import ExitStack, closing, contextmanager, nullcontext
 from typing import Optional, Generator
 from core.inference.worker import RowRefused
 from core.inference import context_refusal
+from core.inference.incremental_decode import IncrementalDecode
 from core.inference.native_tool_tokens import (
     NativeToolTokenDecoder,
     closes_an_open_envelope,
@@ -2279,17 +2280,60 @@ def _require_row_detokenizer(streamed):
         raise RowRefused("no independent detokenizer to decode this row's ids")
 
 
-def _native_reply_text(decoder, token_ids, stop_ids, prefix) -> str:
-    """A native-protocol reply re-decoded from its ids. A runtime may stop on an allowlisted
-    control (<|end_message|>): the trailing stop id stays only when it closes an open envelope,
-    judged with the prefill, since a restored <think> lives in the prompt."""
-    ids = list(token_ids)
-    if ids and ids[-1] in stop_ids:
-        whole = decoder.decode(ids)
-        closer = whole[len(decoder.decode(ids[:-1])) :]
-        if not closes_an_open_envelope(prefix + whole, closer):
-            ids = ids[:-1]
-    return decoder.decode(ids)
+class _ReplyText:
+    """A reply re-decoded from its ids after each sampled id, without re-decoding every id.
+
+    Fed one id per step through ``feed``, or called with the caller's append-only id list, so it
+    stands in for a ``decode(ids)`` callable. With a native ``decoder``, a runtime may stop on an
+    allowlisted control (<|end_message|>): the trailing stop id stays only when it closes an open
+    envelope, judged with the prefill, since a restored <think> lives in the prompt."""
+
+    def __init__(
+        self,
+        tokenizer = None,
+        decode_kwargs = None,
+        *,
+        decoder = None,
+        stop_ids = (),
+        prefix = "",
+    ):
+        self._tokenizer = tokenizer
+        self._decode_kwargs = decode_kwargs
+        self._decoder = decoder
+        self._stop_ids = stop_ids
+        self._prefix = prefix
+        self._reset()
+
+    def _reset(self):
+        decoder = self._decoder
+        if decoder is None:
+            self._text = IncrementalDecode(self._tokenizer, self._decode_kwargs)
+        elif callable(getattr(decoder, "incremental", None)):
+            self._text = decoder.incremental()
+        else:
+            self._text = IncrementalDecode(None, fallback = decoder.decode)
+        self._count = 0
+        self.text = ""
+
+    def feed(self, token_id) -> str:
+        self._count += 1
+        before = self._text.text
+        whole = self._text.feed(token_id)
+        if self._decoder is not None and token_id in self._stop_ids:
+            if not closes_an_open_envelope(self._prefix + whole, whole[len(before) :]):
+                whole = before
+        self.text = whole
+        return whole
+
+    def __call__(self, ids) -> str:
+        if len(ids) == self._count + 1:
+            return self.feed(ids[-1])
+        if len(ids) != self._count:
+            # Not a list that grew by one id: replay it whole.
+            self._reset()
+            for token_id in ids:
+                self.feed(token_id)
+        return self.text
 
 
 def _mlx_stop_cut(text: str, stops) -> tuple[int, bool]:
@@ -6971,6 +7015,27 @@ class MLXInferenceBackend:
             else None
         )
         token_ids = []
+        # The decode of token_ids per step, without re-decoding every id each step.
+        if preserve_native_channels:
+            reply_text = None
+        elif native_token_decoder is not None:
+            reply_text = _ReplyText(
+                decoder = native_token_decoder, stop_ids = stop_token_ids, prefix = think_prefix
+            )
+        else:
+            reply_text = _ReplyText(
+                self._tokenizer,
+                dict(
+                    skip_special_tokens = True,
+                    # Cleanup would rewrite " ." inside a grammar-approved string,
+                    # and llama-server returns a raw completion's pieces as is.
+                    **(
+                        {"clean_up_tokenization_spaces": False}
+                        if constraint is not None or prompt_ids is not None
+                        else {}
+                    ),
+                ),
+            )
         normalizer = (
             make_reasoning_normalizer(
                 reasoning_channel_markers,
@@ -7070,22 +7135,7 @@ class MLXInferenceBackend:
                     else:
                         # Re-decoding every id rebuilds rather than extends, so an invalid byte sequence can revise
                         # characters already shown. Predates stop handling and affects plain replies too.
-                        if native_token_decoder is not None:
-                            sampled = _native_reply_text(
-                                native_token_decoder, token_ids, stop_token_ids, think_prefix
-                            )
-                        else:
-                            sampled = self._tokenizer.decode(
-                                token_ids,
-                                skip_special_tokens = True,
-                                # Cleanup would rewrite " ." inside a grammar-approved string,
-                                # and llama-server returns a raw completion's pieces as is.
-                                **(
-                                    {"clean_up_tokenization_spaces": False}
-                                    if constraint is not None or prompt_ids is not None
-                                    else {}
-                                ),
-                            )
+                        sampled = reply_text.feed(response.token)
                         if not sequences:
                             # A character whose bytes span tokens decodes to U+FFFD until its last token lands, and
                             # consumers diff snapshots by length, so yielding that would replace it for good (#8594).
@@ -7299,17 +7349,19 @@ class MLXInferenceBackend:
         if streamed is not None:
             decode = None
         elif native_token_decoder is not None:
-            decode = lambda ids: _native_reply_text(
-                native_token_decoder, ids, stop_token_ids, think_prefix
+            decode = _ReplyText(
+                decoder = native_token_decoder, stop_ids = stop_token_ids, prefix = think_prefix
             )
         else:
-            decode = lambda ids: self._tokenizer.decode(
-                ids,
-                skip_special_tokens = True,
-                **(
-                    {"clean_up_tokenization_spaces": False}
-                    if constraint is not None or prompt_ids is not None
-                    else {}
+            decode = _ReplyText(
+                self._tokenizer,
+                dict(
+                    skip_special_tokens = True,
+                    **(
+                        {"clean_up_tokenization_spaces": False}
+                        if constraint is not None or prompt_ids is not None
+                        else {}
+                    ),
                 ),
             )
         row = _RowStream(
@@ -7996,6 +8048,14 @@ class MLXInferenceBackend:
                         )
                     ) as responses:
                         raw_ids = [] if prompt_ids is not None else None
+                        raw_text = (
+                            _ReplyText(
+                                self._tokenizer,
+                                dict(skip_special_tokens = True, clean_up_tokenization_spaces = False),
+                            )
+                            if raw_ids is not None
+                            else None
+                        )
                         for response in responses:
                             final_response = response
                             raw_id = (
@@ -8016,11 +8076,7 @@ class MLXInferenceBackend:
                                             self._tokenizer,
                                         )
                                     )
-                                decoded = self._tokenizer.decode(
-                                    raw_ids,
-                                    skip_special_tokens = True,
-                                    clean_up_tokenization_spaces = False,
-                                ).rstrip("\ufffd")
+                                decoded = raw_text.feed(raw_ids[-1]).rstrip("\ufffd")
                                 token_text = (
                                     decoded[len(sampled) :] if decoded.startswith(sampled) else ""
                                 )
