@@ -3575,8 +3575,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const effectiveGpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
     const effectiveNCpuMoe = config.nCpuMoe ?? 0;
     // Warm the device cache first: on a cold cache the reconcile passes a stale cross-host pick through unvalidated,
-    // and Automatic loses its default pick (an iGPU beside a discrete card stays out only once devices are known).
-    await ensureGpuDeviceCache();
+    // and a GGUF's Automatic loses its default pick (an iGPU beside a discrete card stays out only once devices are known).
+    if (candidate.kind === "gguf" || config.selectedGpuIds != null) {
+      await ensureGpuDeviceCache();
+    }
     let isDiffusion = false;
     // Automatic pins a default pick on a mixed iGPU host, and /load rejects gpu_ids for DiffusionGemma on
     // some hosts, so classify the GGUF first in that case too.

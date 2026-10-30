@@ -1563,7 +1563,9 @@ export function SharedComposer({
 
       // Warm the device cache first: on a cold cache the reconcile passes a stale GPU pick.
       try {
-        await ensureGpuDeviceCache();
+        if (store.selectedGpuIds != null) {
+          await ensureGpuDeviceCache();
+        }
       } catch (error) {
         releaseCompareModelLifecycle();
         resetPromptQueue();
@@ -1724,7 +1726,14 @@ export function SharedComposer({
           : ownRemembered
             ? ownConfig.disableVision
             : DEFAULT_PER_MODEL_CONFIG.disableVision;
-        await ensureGpuDeviceCache();
+        // A GGUF pane needs devices for its Automatic default; any pane needs them to validate a pick.
+        if (
+          targetIsGguf ||
+          ownConfig.selectedGpuIds != null ||
+          compareLoadKnobs.selectedGpuIds != null
+        ) {
+          await ensureGpuDeviceCache();
+        }
         // A pane's own split is sent; the shared snapshot is not, as it is bounded by another GGUF.
         const {
           gpuMemoryMode: effectiveGpuMemoryMode,

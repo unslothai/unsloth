@@ -1505,8 +1505,12 @@ export function useChatModelRuntime() {
         const readPickStatus = () =>
           getInferenceStatus(undefined, modelId).catch(() => null);
         const residentStatus = await readPickStatus();
-        // Warm the GPU cache first: a cold cache passes the pick through unvalidated, or drops Automatic's default.
-        if (residentStatus) {
+        // Warm the GPU cache first: a cold cache passes the pick through unvalidated, or drops a GGUF's Automatic default.
+        if (
+          residentStatus &&
+          (residentStatus.is_gguf === true ||
+            pendingConfig?.selectedGpuIds !== undefined)
+        ) {
           await ensureGpuDeviceCache().catch(() => {});
         }
         // Mirror what /load would send for an unconfigured pick; performLoad clears per-model fields.
@@ -2114,8 +2118,14 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.tensorSplit !== undefined
               ? pendingLoadConfig.tensorSplit
               : stateBeforeUnload.splitRatio;
-          // Drop stale cross-host GPU picks before /load; warm the device cache first, which Automatic's default pick also needs.
-          await ensureGpuDeviceCache();
+          // Drop stale cross-host GPU picks before /load; warm the device cache first, which a GGUF's Automatic default also needs.
+          if (
+            isGguf ||
+            pendingLoadConfig?.selectedGpuIds !== undefined ||
+            stateBeforeUnload.selectedGpuIds != null
+          ) {
+            await ensureGpuDeviceCache();
+          }
           const stagedGpuIds =
             pendingLoadConfig?.selectedGpuIds !== undefined
               ? reconcilePersistedGpuIds(

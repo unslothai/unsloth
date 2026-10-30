@@ -207,18 +207,30 @@ test("a device cache warm that left no devices is retried once", async () => {
   assert.equal(fetchResults.length, 1);
 });
 
-test("chat load paths warm the device cache even for an Automatic pick", () => {
-  // A warm gated on an explicit pick leaves Automatic on a cold cache, so /load omits gpu_ids.
-  const gated =
-    /if \([^{]*selectedGpuIds[^{]*\)\s*\{\s*await ensureGpuDeviceCache\(/;
-  for (const file of [
-    "../src/features/chat/api/chat-adapter.ts",
-    "../src/features/chat/shared-composer.tsx",
-    "../src/features/chat/hooks/use-chat-model-runtime.ts",
-  ]) {
+test("GGUF load paths warm the device cache even for an Automatic pick", () => {
+  // A warm gated only on an explicit pick leaves a GGUF's Automatic on a cold cache, so /load omits gpu_ids.
+  // Other engines get no default, so an unpinned non-GGUF load skips the wait.
+  const gates: [string, RegExp][] = [
+    [
+      "../src/features/chat/api/chat-adapter.ts",
+      /if \(candidate\.kind === "gguf" \|\| config\.selectedGpuIds != null\) \{\s*await ensureGpuDeviceCache\(/,
+    ],
+    [
+      "../src/features/chat/hooks/use-chat-model-runtime.ts",
+      /isGguf \|\|\s*pendingLoadConfig\?\.selectedGpuIds !== undefined \|\|\s*stateBeforeUnload\.selectedGpuIds != null\s*\) \{\s*await ensureGpuDeviceCache\(/,
+    ],
+    [
+      "../src/features/chat/hooks/use-chat-model-runtime.ts",
+      /residentStatus\.is_gguf === true \|\|\s*pendingConfig\?\.selectedGpuIds !== undefined\)\s*\) \{\s*await ensureGpuDeviceCache\(/,
+    ],
+    [
+      "../src/features/chat/shared-composer.tsx",
+      /targetIsGguf \|\|\s*ownConfig\.selectedGpuIds != null \|\|\s*compareLoadKnobs\.selectedGpuIds != null\s*\) \{\s*await ensureGpuDeviceCache\(/,
+    ],
+  ];
+  for (const [file, gate] of gates) {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
-    assert.match(source, /await ensureGpuDeviceCache\(/, file);
-    assert.doesNotMatch(source, gated, file);
+    assert.match(source, gate, file);
   }
 });
 
