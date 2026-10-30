@@ -106,3 +106,29 @@ def test_resaving_a_truncated_checkpoint_drops_leaked_max_length(tmp_path):
     config = json.loads((fixed / "tokenizer_config.json").read_text(encoding = "utf-8"))
     assert config.get("max_length") is None
     assert len(PreTrainedTokenizerFast.from_pretrained(str(fixed))("a b c d e f g h")["input_ids"]) == 8
+
+
+class _PaddingClearFails:
+    def __init__(self, tokenizer):
+        self._inner = tokenizer._tokenizer
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def no_padding(self):
+        raise RuntimeError("no_padding failed")
+
+
+def test_partial_clear_failure_still_restores_truncation(tmp_path):
+    save = _load_save_helpers()
+    tokenizer = _trained_tokenizer()
+    inner = tokenizer._tokenizer
+    processor = types.SimpleNamespace(
+        tokenizer = types.SimpleNamespace(_tokenizer = _PaddingClearFails(tokenizer)),
+        original_save_pretrained = lambda path, **kwargs: None,
+    )
+
+    save(processor, str(tmp_path))
+
+    assert inner.truncation["max_length"] == 3
+    assert inner.padding["length"] == 3

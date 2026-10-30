@@ -996,13 +996,11 @@ def _without_runtime_truncation(tokenizer, save_directory = None, filename_prefi
         yield
         return
     try:
-        backend.no_truncation()
-        backend.no_padding()
-    except Exception as error:
-        logger.warning_once(f"Unsloth: Could not clear tokenizer truncation before saving: {error}")
-        yield
-        return
-    try:
+        try:
+            backend.no_truncation()
+            backend.no_padding()
+        except Exception as error:
+            logger.warning_once(f"Unsloth: Could not clear tokenizer truncation before saving: {error}")
         yield
     finally:
         try:
