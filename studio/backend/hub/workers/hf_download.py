@@ -73,6 +73,15 @@ def _on_signal(signum, frame):
     sys.exit(130)
 
 
+def _lift_http_ceiling_on_modelscope() -> None:
+    """The hub refuses large HTTP transfers on the client side, for Hugging Face's storage; ModelScope's CDN serves them."""
+    from huggingface_hub import constants
+    from utils.hub_settings import MODELSCOPE, active_source
+
+    if active_source() == MODELSCOPE:
+        constants.MAX_HTTP_DOWNLOAD_SIZE = sys.maxsize
+
+
 def _install_signal_handlers() -> None:
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
@@ -1109,6 +1118,7 @@ def main() -> None:
     _install_parent_death_watchdog(args.parent_pid, args.heartbeat)
 
     hf_token = os.environ.get("HF_TOKEN") or None
+    _lift_http_ceiling_on_modelscope()
 
     if args.transport == "xet" and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
         _force_stall_for_tests(args.repo_id, "dataset" if args.dataset else "model")
