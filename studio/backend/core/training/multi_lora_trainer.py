@@ -389,7 +389,11 @@ def _tokenize_member(
     """(tokenizer to save, [(input_ids, labels)]) with the single SFT path's tokenization and masking."""
     from datasets import Dataset
 
-    from utils.datasets.completion_masking import apply_completion_masking
+    from utils.datasets.completion_masking import (
+        apply_completion_masking,
+        count_truncated_drops,
+        truncated_drop_cause,
+    )
     from utils.datasets.online_tokenization import (
         build_tokenizing_transform,
         first_sample_text,
@@ -461,12 +465,16 @@ def _tokenize_member(
             dropped = len(labels) - len(kept)
             drop_pct = round(100 * dropped / len(labels), 1) if labels else 0
             if not kept or drop_pct > 30:
+                cut = count_truncated_drops(input_ids, [input_ids[i] for i in kept], max_length)
+                cause = truncated_drop_cause(cut, dropped, max_length) or (
+                    "The usual cause is that this model's response template was not found in the "
+                    "formatted samples, so 'Train on completions' should be turned off for this "
+                    "dataset."
+                )
                 raise ValueError(
                     f"{dropped}/{len(labels)} samples ({drop_pct}%) were dropped after applying "
                     f"'Train on completions': after masking, those rows had no trainable response "
-                    f"tokens left. The usual cause is that this model's response template was not "
-                    f"found in the formatted samples, so 'Train on completions' should be turned "
-                    f"off for this dataset."
+                    f"tokens left. {cause}"
                 )
             input_ids = [input_ids[i] for i in kept]
             labels = [labels[i] for i in kept]

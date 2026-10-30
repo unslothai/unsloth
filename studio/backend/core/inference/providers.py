@@ -286,6 +286,48 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Z.ai API key. China mainland: use base URL https://open.bigmodel.cn/api/paas/v4",
         "body_omit": ("presence_penalty",),
     },
+    # Zen is pay as you go, Go a subscription; both translate every text model to /chat/completions.
+    "opencode": {
+        "display_name": "OpenCode Zen",
+        "base_url": "https://opencode.ai/inference/v1",
+        "default_models": [
+            "kimi-k3",
+            "glm-5.3",
+            "minimax-m3",
+            "qwen3.8-max",
+            "deepseek-v4-pro",
+            "kimi-k2.7-code",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "extra_headers": {"User-Agent": "unsloth-studio"},
+        # Free tier ids only work from the OpenCode client; jev is a decision model.
+        "model_id_denylist": re.compile(r"-free$|^big-pickle$|^jev-"),
+    },
+    "opencode_go": {
+        "display_name": "OpenCode Go",
+        # _chat_headers adds the x-opencode-session header Go requires.
+        "base_url": "https://opencode.ai/inference/go/v1",
+        "default_models": [
+            "kimi-k3",
+            "glm-5.3",
+            "minimax-m3",
+            "qwen3.8-max",
+            "deepseek-v4-pro",
+            "kimi-k2.7-code",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "model_id_denylist": re.compile(r"-free$"),
+    },
     "qwen": {
         "display_name": "Qwen",
         "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",

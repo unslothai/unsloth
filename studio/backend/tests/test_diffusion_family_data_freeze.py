@@ -84,6 +84,9 @@ def _snapshot() -> dict:
             row[scheme] = {
                 "exclude": list(tq.exclude_tokens_for_scheme(scheme, name, baked = True)),
                 "runtime_quant": _streamed(tq.runtime_quant_tokens_for_scheme, scheme, name),
+                "streamed_weight_only": _streamed(
+                    tq.streamed_weight_only_tokens_for_scheme, scheme, name
+                ),
                 "pad": list(tq.pad_tokens_for_scheme(scheme, name)),
                 "zero_row": list(tq.zero_row_tokens_for_scheme(scheme, name)),
                 "convrot_spec": _jsonable(tq.convrot_spec_for_scheme(scheme, name)),
@@ -190,6 +193,7 @@ def _clean_env(monkeypatch):
     for var in (
         "UNSLOTH_DIFFUSION_INT8_CONVROT",
         "UNSLOTH_DIFFUSION_INT8_TEXT_STREAM",
+        "UNSLOTH_DIFFUSION_INT8_MODULATION",
         "UNSLOTH_DIFFUSION_NVFP4",
         "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP",
         "UNSLOTH_VIDEO_VAE_UNTILED",
