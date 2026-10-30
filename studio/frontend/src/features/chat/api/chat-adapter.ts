@@ -3578,8 +3578,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       config.gpuMemoryMode ?? currentStore.gpuMemoryMode;
     const effectiveGpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
     const effectiveNCpuMoe = config.nCpuMoe ?? 0;
-    // Warm the device cache first: on a cold cache the reconcile passes a stale cross-host pick through unvalidated,
-    // and a GGUF's Automatic loses its default pick (an iGPU beside a discrete card stays out only once devices are known).
+    // Warm first: a cold cache passes a stale pick through and loses a GGUF's Automatic default.
     if (candidate.kind === "gguf" || config.selectedGpuIds != null) {
       await ensureGpuDeviceCache();
     }
