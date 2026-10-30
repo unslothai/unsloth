@@ -22,8 +22,8 @@ _mcp_reads: set[str] = set()
 # A tool result carrying one of these tags is blocked until the user acts, so a reply that tells
 # the user what to do is the answer, not a stall to push past.
 AWAITS_USER = ("[needs_user_load",)
-# Blocked on the user only when the hint says so: an agent with load_model can act on it itself.
-AWAITS_USER_WHEN_ASKED = ("[not_loaded",)
+# Blocked on the user only when the hint says so: an agent with load_model or unload_model can act on it itself.
+AWAITS_USER_WHEN_ASKED = ("[not_loaded", "[multi_model_always")
 ASKS_THE_USER = "Ask the user to "
 
 
