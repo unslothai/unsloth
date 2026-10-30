@@ -411,6 +411,26 @@ def test_vllm_shared_weights_are_refused():
     assert "vLLM" in D._build(model, torch.zeros(1, 1, 8))
 
 
+def test_refusal_after_rehoming_drops_captured_graphs(monkeypatch):
+    # A late refusal (e.g. biased MLP after attention moved) has still replaced weight storage.
+    D = _driver()
+    dropped = []
+    monkeypatch.setattr(D._decode_graphs, "invalidate", lambda model: dropped.append(model))
+
+    def build(model, X, moved):
+        D.STATS["rehomed_sites"] += moved
+        return "bias"
+
+    layer = types.SimpleNamespace(self_attn = types.SimpleNamespace())
+    for moved, expected in ((0, 0), (1, 1)):
+        model = types.SimpleNamespace(model = types.SimpleNamespace(layers = [layer]))
+        monkeypatch.setattr(D, "_build", lambda m, X: build(m, X, moved))
+        with torch.no_grad():
+            assert D._decode_forward(model, torch.zeros(1, 1, 8), *([None] * 6)) is None
+        assert len(dropped) == expected
+        assert isinstance(model.__dict__[D._PLAN], D._Refused)
+
+
 class _Lora:
     def __init__(self):
         self.disable_adapters, self.merged = False, False
