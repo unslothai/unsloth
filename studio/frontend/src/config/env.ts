@@ -44,8 +44,7 @@ interface PlatformState {
   // Developer mode's CPU video opt-in, from authed /api/health; keeps the Video row navigable
   // on a no-GPU host that opted in.
   videoCpuOptIn: boolean;
-  // authed /api/health cpu_training: no GPU, so training runs on the CPU backend ("no_gpu"), or
-  // would after the full install ("no_torch").
+  // authed /api/health cpu_training: training runs (or would, on "no_torch") on the CPU backend.
   cpuTraining: boolean;
   // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;

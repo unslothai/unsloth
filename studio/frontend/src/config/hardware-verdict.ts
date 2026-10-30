@@ -42,8 +42,7 @@ export function videoNavHint(
   // Developer mode's CPU video opt-in (/api/health video_cpu_opt_in). Waives only the plain
   // no-GPU host; VideoPage still answers from the backend's own video verdict.
   videoCpuOptIn = false,
-  // /api/health cpu_training: on "no_torch" it marks a Chat only install with no GPU, which the
-  // full install does not give video either.
+  // On "no_torch": a GPU-less Chat only install, which the full install does not give video either.
   cpuTraining = false,
 ): string | undefined {
   if (!chatOnlyMeasured) return undefined;

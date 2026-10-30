@@ -359,7 +359,6 @@ function waitsOutUnknownVerdict(pathname: string): boolean {
 
 function isChatOnlyAllowed(pathname: string, trainAvailable: boolean): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
-  // A CPU-only host trains on the CPU backend; chat stays GGUF-only there.
   if (trainAvailable && (pathname === "/studio" || pathname.startsWith("/studio/")))
     return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))

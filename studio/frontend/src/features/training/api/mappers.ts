@@ -340,7 +340,6 @@ export function sendsDrafter(
     config.drafterEnabled &&
     drafterEligible(config) &&
     system?.device_backend !== "mlx" &&
-    // Neither has a drafter phase, and the section that would untick it is hidden there.
     !cpuTrainingHost &&
     system?.device_backend !== "cpu" &&
     !refused

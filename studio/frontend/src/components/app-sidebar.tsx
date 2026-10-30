@@ -1405,7 +1405,6 @@ export function AppSidebar() {
   // rows on a measured verdict and let them spin until it lands.
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
   const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
-  // A CPU-only host with PyTorch trains on the CPU backend while chat stays GGUF-only.
   const trainBlocked = trainUnavailable && !capabilitiesUnknown;
   const trainDisabledHint: string | undefined = !trainBlocked
     ? undefined

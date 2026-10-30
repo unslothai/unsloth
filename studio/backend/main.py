@@ -2261,8 +2261,7 @@ async def health_check(request: Request):
                 authed["video_cpu_opt_in"] = bool(video_cpu_enabled())
             except Exception:
                 pass
-        # Train runs on the CPU backend here ("no_gpu"), or would after the full install ("no_torch"); chat_only
-        # stays set because chat stays GGUF-only and Export and Video keep their own verdicts.
+        # chat_only stays set: chat stays GGUF-only and Export and Video keep their own verdicts.
         authed["cpu_training"] = bool(snapshot[0]) and _hw_module.trains_on_cpu(snapshot[1])
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio

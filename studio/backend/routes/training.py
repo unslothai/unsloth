@@ -1319,8 +1319,7 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
     if hardware.DEVICE == hardware.DeviceType.CPU and hardware.trains_on_cpu(
         hardware.current_chat_only_verdict()[0]
     ):
-        # The CPU backend (unsloth/_cpu_init.py) trains text models with SFTTrainer only; refuse the rest
-        # here rather than minutes into a run.
+        # The CPU backend (unsloth/_cpu_init.py) trains text models with SFTTrainer only.
         if request.is_dataset_image or request.is_dataset_audio:
             unsupported = "Vision and audio training"
         elif request.is_embedding:

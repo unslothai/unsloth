@@ -1863,8 +1863,7 @@ def _detect_hardware_locked() -> DeviceType:
                     os.environ.get("CUDA_VISIBLE_DEVICES"),
                 )
         elif _installed_without_torch():
-            # GGUF-only by request, and the full install the Desktop offers on no_torch trains here: on the GPU,
-            # or on the CPU backend when the inventory shows no card a GPU build could use.
+            # GGUF-only by request; the full install trains on the GPU, or on the CPU backend without one.
             CHAT_ONLY_REASON = "no_torch"
             _CPU_TRAINING_HOST = not _a_gpu_build_would_train_here()
             _record_chat_only_hint("no_torch", None)

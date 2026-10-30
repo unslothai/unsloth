@@ -4109,9 +4109,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     _hw.detect_hardware()
     if _hw.trains_on_cpu(_hw.CHAT_ONLY_REASON):
-        # Studio's verdict decides where training runs. Without this, the UNSLOTH_DISABLE_CPU_FALLBACK=1 every
-        # Studio process inherits (and zoo's own rules, which refuse e.g. a chosen CPU wheel on an NVIDIA host)
-        # would make `import unsloth` refuse a host Studio enabled Train on.
+        # Studio's verdict wins over the inherited UNSLOTH_DISABLE_CPU_FALLBACK=1 and zoo's own CPU refusals.
         os.environ["UNSLOTH_FORCE_CPU"] = "1"
     if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
         diffusion_error = _mlx_diffusion_lm_error(config, model_load_target)
