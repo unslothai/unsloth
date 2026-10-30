@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama-server spawns ffprobe and ffmpeg per clip, so video is only offered when it can find them."""
+"""Studio pins llama-server to the ffmpeg it checked and names FFmpeg when a video model has none."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from core.inference.llama_video_input import video_tools  # noqa: E402
 from test_llama_flag_catalog import _probe_with_help  # noqa: E402
 from test_llama_video_frame_budget import _video_backend  # noqa: E402
 from test_mmproj_placement_policy import _launch  # noqa: E402
+from test_video_needs_ffmpeg import _load_with_video_props, _tools_dir as _bin  # noqa: E402
 
 _CAPS = {"supports_video_ffmpeg_dir": True}
 _EXE = ".exe" if os.name == "nt" else ""
@@ -47,69 +48,6 @@ def _tools_at(monkeypatch, ffmpeg, ffprobe):
 
 def _no_tools(monkeypatch):
     monkeypatch.setattr(llama_mod, "video_tools", lambda _dir = None: None)
-
-
-def _props_backend(video, ffmpeg_dir = None, search_path = None):
-    b = LlamaCppBackend.__new__(LlamaCppBackend)
-    b._has_video_input = False
-    b._video_needs_ffmpeg = False
-    b._video_ffmpeg_dir = ffmpeg_dir
-    b._video_search_path = search_path
-    b._query_server_props = lambda: {
-        "modalities": {"video": video},
-        "default_generation_settings": {"n_ctx": 4096},
-    }
-    return b
-
-
-def test_a_video_model_on_a_machine_without_ffmpeg_does_not_offer_video(monkeypatch):
-    _no_tools(monkeypatch)
-    b = _props_backend(True)
-    b._query_server_n_ctx()
-    assert b._has_video_input is False
-    assert b._video_needs_ffmpeg is True
-
-
-def test_a_video_model_with_ffmpeg_offers_video(monkeypatch):
-    _tools_at(monkeypatch, "/opt/bin/ffmpeg", "/opt/bin/ffprobe")
-    b = _props_backend(True)
-    b._query_server_n_ctx()
-    assert b._has_video_input is True
-    assert b._video_needs_ffmpeg is False
-
-
-def test_a_model_without_video_never_blames_ffmpeg(monkeypatch):
-    _no_tools(monkeypatch)
-    b = _props_backend(False)
-    b._query_server_n_ctx()
-    assert b._has_video_input is False
-    assert b._video_needs_ffmpeg is False
-
-
-def test_the_gate_looks_where_llama_server_was_told_to(monkeypatch):
-    asked = []
-    monkeypatch.setattr(llama_mod, "video_tools", lambda d = None: asked.append(d))
-    _props_backend(True, ffmpeg_dir = "/custom/ffmpeg")._query_server_n_ctx()
-    assert asked == ["/custom/ffmpeg"]
-
-
-def test_the_gate_searches_the_path_llama_server_was_given(monkeypatch, tmp_path):
-    # e.g. ffmpeg.exe beside llama-server.exe on Windows, where only the child's PATH has it.
-    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-    folder = _tool_dir(tmp_path, "ffmpeg", "ffprobe")
-    b = _props_backend(True, search_path = os.pathsep.join([str(tmp_path / "none"), str(folder)]))
-    b._query_server_n_ctx()
-    assert b._has_video_input is True
-    assert b._video_needs_ffmpeg is False
-
-
-def test_a_launch_pins_the_ffmpeg_on_the_child_path(monkeypatch, tmp_path):
-    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-    folder = _tool_dir(tmp_path, "ffmpeg", "ffprobe")
-    assert _video_ffmpeg_dir_flags(_CAPS, env = {}, search_path = str(folder)) == (
-        ["--video-ffmpeg-dir", str(folder)],
-        str(folder),
-    )
 
 
 def test_a_launch_pins_the_ffmpeg_studio_found(monkeypatch):
@@ -179,3 +117,23 @@ def test_the_shrink_uses_the_same_folder(tmp_path, monkeypatch):
     monkeypatch.setattr(llama_video_input, "video_tools", lambda d = None: seen.append(d))
     llama_video_input.shrink_video_for_llama("AAAA", 1024, ffmpeg_dir = "/custom/ffmpeg")
     assert seen == ["/custom/ffmpeg"]
+
+
+def test_an_older_build_ignores_the_ffmpeg_dir_env_after_load(tmp_path):
+    good = _bin(tmp_path / "good", "ffmpeg", "ffprobe")
+    stale = _bin(tmp_path / "stale")
+    env = {"PATH": str(good), "LLAMA_ARG_VIDEO_FFMPEG_DIR": str(stale)}
+    assert llama_mod._video_tools_reachable(["llama-server"], env, supports_ffmpeg_dir = False)
+    assert not llama_mod._video_tools_reachable(["llama-server"], env)
+
+
+def test_a_load_without_ffprobe_flags_the_missing_tools(tmp_path, monkeypatch):
+    backend = _load_with_video_props(tmp_path, monkeypatch, _bin(tmp_path / "bin", "ffmpeg"))
+    assert backend._has_video_input is False
+    assert backend._video_needs_ffmpeg is True
+
+
+def test_a_load_with_both_tools_does_not_blame_ffmpeg(tmp_path, monkeypatch):
+    backend = _load_with_video_props(tmp_path, monkeypatch, _bin(tmp_path / "bin", "ffmpeg", "ffprobe"))
+    assert backend._has_video_input is True
+    assert backend._video_needs_ffmpeg is False

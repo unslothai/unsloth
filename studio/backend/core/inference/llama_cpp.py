@@ -5653,11 +5653,9 @@ def _video_ffmpeg_dir_flags(
     server_caps: Mapping[str, object],
     env: Optional[Mapping[str, str]] = None,
     extra_args: Optional[Sequence[str]] = None,
-    search_path: Optional[str] = None,
 ) -> tuple[list[str], Optional[str]]:
     """Flags pinning llama-server to the ffmpeg/ffprobe Studio checked, and the directory the
-    child will search (None for PATH). A user's own --video-ffmpeg-dir or env value is kept.
-    ``search_path`` is the child's PATH, which can differ from Studio's."""
+    child will search (None for PATH). A user's own --video-ffmpeg-dir or env value is kept."""
     # A build without the option ignores its env twin too, and searches PATH.
     if not server_caps.get("supports_video_ffmpeg_dir"):
         return [], None
@@ -5669,7 +5667,7 @@ def _video_ffmpeg_dir_flags(
     chosen = chosen or source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) or None
     if chosen:
         return [], chosen
-    tools = video_tools(search_path)
+    tools = video_tools()
     if tools is None:
         return [], None
     ffmpeg_dir = os.path.dirname(tools[0])
@@ -5707,6 +5705,7 @@ def _video_tools_reachable(
     cmd: Sequence[str],
     env: Optional[Mapping[str, str]] = None,
     cwd: Optional[str] = None,
+    supports_ffmpeg_dir: bool = True,
 ) -> bool:
     """Whether the child can launch ffmpeg and ffprobe, which /props' video modality never checks (#16065)."""
     source = os.environ if env is None else env
@@ -5714,7 +5713,8 @@ def _video_tools_reachable(
         bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}))
     except Exception:
         return True
-    search = bin_dir or source.get("LLAMA_ARG_VIDEO_FFMPEG_DIR")
+    # A build without --video-ffmpeg-dir ignores its env twin and searches PATH.
+    search = bin_dir or (source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) if supports_ffmpeg_dir else None)
     names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
     if not search:
         search = source.get("PATH", os.defpath)
@@ -8400,8 +8400,6 @@ class LlamaCppBackend:
         # /props said video but llama-server would find no ffmpeg/ffprobe to decode it.
         self._video_needs_ffmpeg: bool = False
         self._video_ffmpeg_dir: Optional[str] = None
-        # The PATH llama-server was launched with: the Windows launch prepends its own folder.
-        self._video_search_path: Optional[str] = None
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
         # clip.projector_type set at load; the family whose image-token ceiling KV admission sizes images against.
         self._mmproj_projector_type: Optional[str] = None
@@ -28307,9 +28305,8 @@ class LlamaCppBackend:
                 # On every launch, not only where Studio emits --mmproj: a projector
                 # from the extras or LLAMA_ARG_MMPROJ takes video too.
                 cmd.extend(_video_fps_flags(server_caps, extra_args = extra_args))
-                self._video_search_path = env.get("PATH")
                 _ffmpeg_flags, self._video_ffmpeg_dir = _video_ffmpeg_dir_flags(
-                    server_caps, extra_args = extra_args, search_path = self._video_search_path
+                    server_caps, extra_args = extra_args
                 )
                 cmd.extend(_ffmpeg_flags)
 
@@ -32472,7 +32469,13 @@ class LlamaCppBackend:
                 # Use _extra_args_as_requested: the drafter-drop snapshot would restore the Metal zero-context strip.
                 self._reconcile_effective_ctx_with_server(ctx_override or 0)
                 if self._has_video_input:
-                    self._has_video_input = _video_tools_reachable(_last_spawn_cmd, env, _spawn_cwd)
+                    self._has_video_input = _video_tools_reachable(
+                        _last_spawn_cmd,
+                        env,
+                        _spawn_cwd,
+                        supports_ffmpeg_dir = bool(server_caps.get("supports_video_ffmpeg_dir")),
+                    )
+                    self._video_needs_ffmpeg = not self._has_video_input
                     if not self._has_video_input:
                         logger.warning(
                             "Video input disabled: llama-server decodes video with ffmpeg and "
@@ -35732,20 +35735,7 @@ class LlamaCppBackend:
             return None
         modalities = props.get("modalities")
         if isinstance(modalities, dict):
-            video = bool(modalities.get("video"))
-            # /props covers the mmproj and build; llama-server also spawns ffprobe and ffmpeg per clip.
-            ffmpeg_dir = getattr(self, "_video_ffmpeg_dir", None)
-            needs_ffmpeg = (
-                video
-                and video_tools(ffmpeg_dir or getattr(self, "_video_search_path", None)) is None
-            )
-            if needs_ffmpeg and not getattr(self, "_video_needs_ffmpeg", False):
-                logger.warning(
-                    "The model takes video, but ffmpeg and ffprobe were not found %s; video input is off.",
-                    f"in {ffmpeg_dir}" if ffmpeg_dir else "on PATH",
-                )
-            self._video_needs_ffmpeg = needs_ffmpeg
-            self._has_video_input = video and not needs_ffmpeg
+            self._has_video_input = bool(modalities.get("video"))
         settings = props.get("default_generation_settings") or {}
         n_ctx = settings.get("n_ctx")
         return int(n_ctx) if n_ctx else None
