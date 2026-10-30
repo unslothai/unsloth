@@ -781,6 +781,11 @@ def marker_coverage(content: str) -> list[tuple[int, int]]:
     return _marker_coverage(content, _build_markers(content))
 
 
+def _relaxed_object_end(content: str, start: int):
+    from core.inference.relaxed_json import relaxed_object_end  # noqa: PLC0415 -- cycle at import time
+    return relaxed_object_end(content, start)
+
+
 def _loads_wrapped_call(text: str, *, relaxed: bool = True) -> dict:
     """A wrapped call's JSON object; near-JSON a model sampled (single quotes, a trailing comma, True/None,
     unquoted keys) is read only after strict JSON fails and only when healing is on. Raises ValueError
@@ -834,11 +839,23 @@ def parse_tool_calls_from_text(
     ]
     coverage = _marker_coverage(content, markers)
     covered_until = -1
+    relaxed = allow_incomplete
     for idx, (start, brace_end, kind, m) in enumerate(markers):
         covered_by_earlier_marker = start < covered_until
         covered_until = max(covered_until, coverage[idx][1])
         if covered_by_earlier_marker:
             continue
+        relaxed_end = None
+        if relaxed and kind == "json":
+            # JSON brace matching ends a single-quoted argument at a brace inside it; markers in that
+            # argument are data. An object that never closes this way leaves the rest strict.
+            relaxed_end = _relaxed_object_end(content, m.end() - 1)
+            if relaxed_end is None:
+                relaxed = False
+            elif relaxed_end != brace_end:
+                brace_end = relaxed_end
+            else:
+                relaxed_end = None
         if brace_end < 0:
             continue
         if not allow_incomplete:
@@ -848,9 +865,14 @@ def parse_tool_calls_from_text(
                 continue
         try:
             if kind == "json":
-                obj = _loads_wrapped_call(
-                    content[m.end() - 1 : brace_end + 1], relaxed = allow_incomplete
-                )
+                try:
+                    obj = _loads_wrapped_call(content[m.end() - 1 : brace_end + 1], relaxed = relaxed)
+                except ValueError:
+                    if relaxed_end is not None:
+                        relaxed = False
+                    raise
+                if relaxed_end is not None:
+                    covered_until = max(covered_until, relaxed_end + 1)
                 name = obj.get("name", "")
                 # Accept "parameters" (Llama-3.2) and "args" (TML Inkling) as aliases.
                 arguments = obj.get("arguments")

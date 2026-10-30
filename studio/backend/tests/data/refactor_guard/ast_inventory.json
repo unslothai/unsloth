@@ -2411,6 +2411,11 @@
         "kind": "def",
         "signature": "m, pat, text, spans, enabled_tool_names"
       },
+      "_relaxed_object_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, start: int"
+      },
       "_split_top_level_commas": {
         "decorators": [],
         "kind": "def",
