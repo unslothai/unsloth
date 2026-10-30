@@ -16,11 +16,9 @@ import {
 } from "@/features/training";
 import { useLocale, useT } from "@/i18n";
 import {
-  browserTimeZone,
   formatClock,
   localDateKey,
   timeChoices,
-  zoneLabel,
 } from "@/lib/schedule-time";
 import type { ReactElement } from "react";
 import { useState } from "react";
@@ -46,7 +44,6 @@ export function ScheduleStartControl({
     );
 
   const [now] = useState(() => new Date());
-  const timezone = browserTimeZone();
   const valid = trainingScheduleDraftValid(date, time, now);
 
   return (
@@ -97,11 +94,6 @@ export function ScheduleStartControl({
               </SelectContent>
             </Select>
           </div>
-          <p className="text-ui-10p5 text-muted-foreground">
-            {t("studio.schedule.timezone", {
-              zone: zoneLabel(timezone, locale, now.getTime()),
-            })}
-          </p>
           {!valid && (
             <p role="status" className="text-ui-10p5 text-status-warning">
               {t("studio.schedule.pickDateTime")}

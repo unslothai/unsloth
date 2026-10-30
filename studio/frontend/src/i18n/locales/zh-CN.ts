@@ -4255,10 +4255,9 @@ export const zhCN = {
       },
     },
     schedule: {
-      startAt: "开始时间",
+      startAt: "稍后开始",
       date: "日期",
       time: "时间",
-      timezone: "时区：{zone}",
       scheduleTraining: "预约训练",
       scheduling: "正在预约...",
       scheduled: "已预约",

@@ -4344,10 +4344,9 @@ export const ko = {
       },
     },
     schedule: {
-      startAt: "시작 시간",
+      startAt: "나중에 시작",
       date: "날짜",
       time: "시간",
-      timezone: "시간대: {zone}",
       scheduleTraining: "학습 예약",
       scheduling: "예약 중...",
       scheduled: "예약됨",

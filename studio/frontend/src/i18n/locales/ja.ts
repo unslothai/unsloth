@@ -4304,10 +4304,9 @@ export const ja = {
       },
     },
     schedule: {
-      startAt: "開始日時",
+      startAt: "後で開始",
       date: "日付",
       time: "時刻",
-      timezone: "タイムゾーン: {zone}",
       scheduleTraining: "トレーニングを予約",
       scheduling: "予約中...",
       scheduled: "予約済み",

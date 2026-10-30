@@ -4365,10 +4365,9 @@ export const hi = {
       },
     },
     schedule: {
-      startAt: "इस समय शुरू करें",
+      startAt: "बाद में शुरू करें",
       date: "तारीख़",
       time: "समय",
-      timezone: "समय क्षेत्र: {zone}",
       scheduleTraining: "ट्रेनिंग शेड्यूल करें",
       scheduling: "शेड्यूल हो रहा है...",
       scheduled: "शेड्यूल्ड",

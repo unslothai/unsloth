@@ -4554,10 +4554,9 @@ export const sv = {
       },
     },
     schedule: {
-      startAt: "Starta vid",
+      startAt: "Starta senare",
       date: "Datum",
       time: "Tid",
-      timezone: "Tidszon: {zone}",
       scheduleTraining: "Schemalägg träning",
       scheduling: "Schemalägger ...",
       scheduled: "Schemalagd",

@@ -4384,10 +4384,9 @@ export const ptBR = {
       },
     },
     schedule: {
-      startAt: "Iniciar às",
+      startAt: "Iniciar mais tarde",
       date: "Data",
       time: "Hora",
-      timezone: "Fuso horário: {zone}",
       scheduleTraining: "Agendar treinamento",
       scheduling: "Agendando...",
       scheduled: "Agendado",

@@ -4429,10 +4429,9 @@ export const de = {
       },
     },
     schedule: {
-      startAt: "Start um",
+      startAt: "Später starten",
       date: "Datum",
       time: "Uhrzeit",
-      timezone: "Zeitzone: {zone}",
       scheduleTraining: "Training planen",
       scheduling: "Wird geplant...",
       scheduled: "Geplant",

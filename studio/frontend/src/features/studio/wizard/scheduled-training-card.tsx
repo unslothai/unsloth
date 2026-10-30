@@ -7,21 +7,11 @@ import {
   useScheduledTrainingStore,
 } from "@/features/training";
 import { useLocale, useT } from "@/i18n";
-import { formatLocalMinute, zoneLabel } from "@/lib/schedule-time";
+import { formatLocalMinute } from "@/lib/schedule-time";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon, Clock01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
-
-function scheduleMoment(
-  schedule: TrainingSchedule,
-  locale: string,
-): { when: string; zone: string } {
-  return {
-    when: formatLocalMinute(schedule.startAtLocal, locale),
-    zone: zoneLabel(schedule.timezone, locale, schedule.startAt),
-  };
-}
 
 export function PendingScheduleCard({
   schedule,
@@ -35,7 +25,7 @@ export function PendingScheduleCard({
   );
   const error = useScheduledTrainingStore((state) => state.error);
   const cancel = useScheduledTrainingStore((state) => state.cancel);
-  const { when, zone } = scheduleMoment(schedule, locale);
+  const when = formatLocalMinute(schedule.startAtLocal, locale);
 
   return (
     <section className="flex flex-col gap-2 rounded-lg border border-border/60 bg-muted/40 px-3 py-2.5 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
@@ -51,7 +41,7 @@ export function PendingScheduleCard({
               {t("studio.schedule.pendingTitle")}
             </p>
             <p className="text-ui-10p5 leading-relaxed text-foreground/80">
-              {when} · {zone}
+              {when}
             </p>
             <p className="truncate text-ui-10p5 text-muted-foreground">
               {schedule.modelName}
@@ -90,7 +80,7 @@ export function ScheduledTrainingProblemCard({
   const locale = useLocale();
   const dismiss = useScheduledTrainingStore((state) => state.dismiss);
   const missed = schedule.status === "missed";
-  const { when, zone } = scheduleMoment(schedule, locale);
+  const when = formatLocalMinute(schedule.startAtLocal, locale);
 
   return (
     <section
@@ -119,7 +109,7 @@ export function ScheduledTrainingProblemCard({
           : (schedule.error ?? t("studio.schedule.failedDescription"))}
       </p>
       <p className="text-ui-10p5 text-muted-foreground">
-        {when} · {zone}
+        {when}
       </p>
     </section>
   );

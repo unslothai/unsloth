@@ -4354,10 +4354,9 @@ export const ar = {
       },
     },
     schedule: {
-      startAt: "البدء عند",
+      startAt: "ابدأ لاحقًا",
       date: "التاريخ",
       time: "الوقت",
-      timezone: "المنطقة الزمنية: {zone}",
       scheduleTraining: "جدولة التدريب",
       scheduling: "جارٍ الجدولة...",
       scheduled: "مجدول",

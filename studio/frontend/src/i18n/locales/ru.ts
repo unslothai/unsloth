@@ -4382,10 +4382,9 @@ export const ru = {
       },
     },
     schedule: {
-      startAt: "Начать в",
+      startAt: "Начать позже",
       date: "Дата",
       time: "Время",
-      timezone: "Часовой пояс: {zone}",
       scheduleTraining: "Запланировать обучение",
       scheduling: "Планирование...",
       scheduled: "Запланировано",

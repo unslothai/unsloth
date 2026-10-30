@@ -4359,10 +4359,9 @@ export const en = {
       },
     },
     schedule: {
-      startAt: "Start at",
+      startAt: "Start later",
       date: "Date",
       time: "Time",
-      timezone: "Time zone: {zone}",
       scheduleTraining: "Schedule Training",
       scheduling: "Scheduling...",
       scheduled: "Scheduled",

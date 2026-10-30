@@ -4423,10 +4423,9 @@ export const he = {
       },
     },
     schedule: {
-      startAt: "התחלה ב־",
+      startAt: "התחלה מאוחרת יותר",
       date: "תאריך",
       time: "שעה",
-      timezone: "אזור זמן: {zone}",
       scheduleTraining: "תזמן אימון",
       scheduling: "מתזמן...",
       scheduled: "מתוזמן",

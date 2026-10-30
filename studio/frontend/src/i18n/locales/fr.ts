@@ -4439,10 +4439,9 @@ export const fr = {
       },
     },
     schedule: {
-      startAt: "Démarrer à",
+      startAt: "Démarrer plus tard",
       date: "Date",
       time: "Heure",
-      timezone: "Fuseau horaire : {zone}",
       scheduleTraining: "Planifier l'entraînement",
       scheduling: "Planification...",
       scheduled: "Planifié",
