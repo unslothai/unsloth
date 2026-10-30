@@ -416,6 +416,73 @@ def test_compiled_call_reads_policy_at_call_time(cpu_dq_nan):
         assert not cuda.math_sdp_enabled() and cuda.cudnn_sdp_enabled()
 
 
+_PROBE = []
+
+
+def _probe_op():
+    """A CompositeImplicitAutograd op that, like aten SDPA, picks its kernel from the live cuDNN
+    flag when it is decomposed: per call in eager, once while tracing under AOTAutograd."""
+    if not _PROBE:
+        lib = torch.library.Library("unsloth_cudnn_sdpa_probe", "FRAGMENT")
+        lib.define("probe(Tensor q, Tensor k, Tensor v) -> Tensor")
+        lib.impl(
+            "probe",
+            lambda q, k, v: q * (2.0 if torch._C._get_cudnn_sdp_enabled() else 3.0),
+            "CompositeImplicitAutograd",
+        )
+        _PROBE.append((lib, torch.ops.unsloth_cudnn_sdpa_probe.probe))
+    return _PROBE[0][1]
+
+
+@pytest.fixture
+def probe_dq_nan(cpu_dq_nan, monkeypatch):
+    """cpu_dq_nan over the probe op: an output of 2 * q ran the cuDNN kernel, 3 * q a fallback."""
+    import torch.nn.functional as F
+
+    probe = _probe_op()
+    monkeypatch.setattr(F, "scaled_dot_product_attention", lambda q, k, v, *a, **kw: probe(q, k, v))
+    fixes.fix_cudnn_sdpa_known_bad_shapes()
+    torch._dynamo.reset()
+    yield F.scaled_dot_product_attention
+    torch._dynamo.reset()
+
+
+CUDNN_ONLY = [SDPBackend.CUDNN_ATTENTION]
+CUDNN_MATH = [SDPBackend.MATH, SDPBackend.CUDNN_ATTENTION]
+
+
+def _sdp_flags():
+    cuda = torch.backends.cuda
+    return (cuda.cudnn_sdp_enabled(), cuda.flash_sdp_enabled(), cuda.mem_efficient_sdp_enabled(),
+            cuda.math_sdp_enabled())  # fmt: skip
+
+
+@pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+@pytest.mark.parametrize("first", ["cudnn_only", "fallback"])
+def test_aot_compiled_call_follows_a_later_policy(probe_dq_nan, backend, first):
+    # AOTAutograd fixes SDPA's backend while tracing and Dynamo does not guard the backend flags:
+    # a call compiled under one policy and invoked under another must not keep the first one's
+    # kernel (a cuDNN-only compile must not leave cuDNN in place once a fallback is enabled).
+    wrapped = probe_dq_nan
+    # Static shapes: a symbolic key length takes the conservative branch (cuDNN off) instead.
+    fn = torch.compile(lambda q, k, v: wrapped(q, k, v), backend = backend, fullgraph = True,
+                       dynamic = False)  # fmt: skip
+    policies = [CUDNN_ONLY, CUDNN_MATH] if first == "cudnn_only" else [CUDNN_MATH, CUDNN_ONLY]
+    for s_kv, hit in ((192, True), (256, False)):
+        q, k, v = _qkv(s_kv)
+        for policy in policies * 2:
+            with sdpa_kernel(policy):
+                before = _sdp_flags()
+                ratio = (fn(q, k, v) / q).detach().flatten()[0].item()
+                expected = 3.0 if hit and policy is CUDNN_MATH else 2.0
+                assert ratio == pytest.approx(expected, rel = 0.01), (s_kv, policy)  # fp16 2q / 3q
+                # Matches an uncompiled call, and leaves the caller's policy exactly in place.
+                eager = (wrapped(q, k, v) / q).detach().flatten()[0].item()
+                assert eager == pytest.approx(expected, rel = 0.01)
+                assert _sdp_flags() == before
+    assert torch.backends.cuda.cudnn_sdp_enabled()
+
+
 def test_opt_out_and_unaffected_host(monkeypatch):
     import torch.nn.functional as F
 

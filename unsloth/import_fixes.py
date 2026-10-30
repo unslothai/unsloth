@@ -7936,20 +7936,37 @@ def _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal):
     return None
 
 
-def _sdpa_cudnn_off(key_length = None):
-    """Turn cuDNN SDPA off unless it is the only enabled backend (or key_length, when given, is not
-    64 mod 128), saving the caller's flag. Runs at call time, also inside a compiled graph
-    (allow_in_graph), so a later caller's policy is used. A symbolic length (tracing) counts as hit."""
-    import torch
+class _SdpaCudnnPolicy(types.ModuleType):
+    """The caller's SDPA backend policy, readable so torch.compile guards on it. A compiled graph
+    keeps the SDPA backend it was traced with (AOTAutograd decomposes the call into one backend's
+    op) and Dynamo folds backend flag reads to constants without a guard. An attribute read off a
+    module object is guarded by value and re-read on every call, as torch.backends.cudnn.enabled is,
+    so a policy change that flips this decision recompiles instead of reusing the old backend."""
 
-    cuda = torch.backends.cuda
-    switch = (
-        (key_length is None or isinstance(key_length, torch.SymInt) or key_length % 128 == 64)
-        and cuda.cudnn_sdp_enabled()
-        and (
+    @property
+    def cudnn_off(self):
+        """cuDNN SDPA is on, and a fallback (flash / efficient / math) is on to run instead."""
+        import torch
+
+        cuda = torch.backends.cuda
+        return cuda.cudnn_sdp_enabled() and (
             cuda.flash_sdp_enabled() or cuda.mem_efficient_sdp_enabled() or cuda.math_sdp_enabled()
         )
-    )
+
+
+_SDPA_CUDNN_POLICY = _SdpaCudnnPolicy("unsloth_sdpa_cudnn_policy")
+
+
+def _sdpa_cudnn_off(key_length = None):
+    """Turn cuDNN SDPA off unless it is the only enabled backend (or key_length, when given, is not
+    64 mod 128), saving the caller's flag. A graph call (allow_in_graph): eager graphs run it per
+    call; AOTAutograd runs it while tracing, so the traced SDPA avoids cuDNN, and the wrapper's
+    guarded _SDPA_CUDNN_POLICY read recompiles on a policy change. A symbolic length counts as hit."""
+    import torch
+
+    switch = (
+        key_length is None or isinstance(key_length, torch.SymInt) or key_length % 128 == 64
+    ) and _SDPA_CUDNN_POLICY.cudnn_off
     _SDPA_CUDNN_SWITCHED.append(switch)
     if switch:
         torch._C._set_sdp_use_cudnn(False)
@@ -7982,8 +7999,8 @@ def fix_cudnn_sdpa_known_bad_shapes():
     if getattr(F.scaled_dot_product_attention, _SDPA_CUDNN_KNOWN_BAD_FLAG, False):
         return
 
-    # Dynamo folds the backend flags at trace time and bakes sdpa_kernel's restore: keep the flag
-    # read and restore as graph calls, so each call honours and restores the caller's policy.
+    # Dynamo folds the backend flags at trace time and bakes sdpa_kernel's restore: keep the switch
+    # and restore as graph calls, so an eager graph honours and restores the caller's policy.
     for helper in (_sdpa_cudnn_off, _sdpa_cudnn_restore):
         torch._dynamo.allow_in_graph(helper)
     messages = {
@@ -8006,7 +8023,9 @@ def fix_cudnn_sdpa_known_bad_shapes():
         **kwargs,
     ):
         bug = _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal)
-        if bug is not None:
+        # Compiled, this read is a guard: a graph traced under one policy decision (and so with
+        # or without cuDNN in it) is not reused under the other.
+        if bug is not None and _SDPA_CUDNN_POLICY.cudnn_off:
             _sdpa_cudnn_off(key.shape[-2] if bug == _SDPA_CUDNN_DQ_NAN else None)
             try:
                 if (
