@@ -7597,32 +7597,35 @@ function Get-TritonWindowsRocmSpec {
 }
 
 function Get-RocmTritonPairing {
-    # No double quotes: Invoke-BoundedPythonProbe wraps $Code in them. The name lookup skips the ~riton_windows-*
-    # backup an interrupted pip replacement leaves, which still declares Name: triton-windows.
-    $code = "import importlib.metadata as m; " +
+    # Reads the venv as it is now; nothing cached from before the install decides. No double quotes:
+    # Invoke-BoundedPythonProbe wraps $Code in them. ROCm = torch.version.hip, read from torch/version.py without
+    # importing torch (an untagged ROCm build has no +rocm). The name lookup skips the ~riton_windows-* backup an
+    # interrupted pip replacement leaves; a dist-info without Version reads as missing.
+    $code = "import importlib.metadata as m, importlib.util as u, os, re; " +
         "print('TORCH=' + m.version('torch')); " +
-        "print('TRITONWIN=' + next((d.version for d in m.distributions(name='triton-windows')), ''))"
+        "print('TRITONWIN=' + (next((d.version for d in m.distributions(name='triton-windows')), '') or '')); " +
+        "s = u.find_spec('torch'); p = os.path.join(os.path.dirname(s.origin), 'version.py') if s and s.origin else ''; " +
+        "t = open(p, encoding='utf-8').read() if p and os.path.isfile(p) else ''; " +
+        "h = re.search(r'^hip\b[^=\n]*=\s*.([0-9][^\x27\x22\n]*)', t, re.M); " +
+        "print('HIP=' + (h.group(1) if h else ''))"
     $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
     $torch = if ($probe.Ok -and $probe.Output -match '(?m)^TORCH=(\S+)\s*$') { $Matches[1] } else { "" }
     $triton = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
-    $spec = Get-TritonWindowsRocmSpec -TorchVersion $torch
-    return @{ Torch = $torch; Triton = $triton; Spec = $spec; Stale = [bool]($spec -and ($triton -notmatch '^3\.8(\.|$)')) }
-}
-
-function Test-RocmTorchInstalled {
-    # One rule for the fast-path escape and the post-stack repair, so every pass the escape forces is repaired.
-    param([string]$Torch, [string]$InstalledTorchTag)
-    if ($Torch -match '\+rocm') { return $true }
-    return [bool](($InstalledTorchTag -match '^(rocm|gfx)') -and ($Torch -notmatch '\+(cu\d*|xpu|cpu)'))
+    $hip = if ($probe.Ok -and $probe.Output -match '(?m)^HIP=(\S+)\s*$') { $Matches[1] } else { "" }
+    $spec = if ($hip -or $torch -match '\+rocm') { Get-TritonWindowsRocmSpec -TorchVersion $torch } else { $null }
+    # A 3.8 whose replacement half-failed keeps its metadata but no longer imports.
+    $usable = $false
+    if ($spec -and $triton -match '^3\.8(\.|$)') {
+        $usable = (Invoke-BoundedPythonProbe -PythonExe "python" -Code "import triton.language").Ok
+    }
+    return @{ Torch = $torch; Triton = $triton; Spec = $spec; Stale = [bool]($spec -and -not $usable) }
 }
 
 function Test-RocmTritonPairingNeedsPass {
-    # A stale pair, or one whose repair failed with a warning last run, needs the dependency pass. Only for a ROCm
-    # torch, which the pass repairs, or it would re-fire every run.
-    param([string]$InstalledTorchTag)
+    # The same probe as the post-stack repair, so the two never disagree. Only a ROCm torch 2.11 / 2.12 is stale,
+    # which the pass repairs, so the check cannot re-fire on CUDA, CPU or XPU.
     $pair = Get-RocmTritonPairing
-    $isRocm = Test-RocmTorchInstalled -Torch $pair.Torch -InstalledTorchTag $InstalledTorchTag
-    if (-not ($isRocm -and $pair.Stale)) { return $false }
+    if (-not $pair.Stale) { return $false }
     if ($script:OfflineFastPath -or (Test-UvOfflineRequested)) {
         substep "triton-windows does not pair with torch $($pair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
         return $false
@@ -7705,8 +7708,8 @@ sys.exit(2 if conflict else (0 if version else 1))
             }
         }
         # A verified install skips the post-stack pairing. Outside the gfx checks: a pinned ROCm index or a hybrid host
-        # can hold a ROCm torch with no detected gfx. Only a ROCm torch is probed.
-        if ($SkipPythonDeps -and -not $NoTorchMode -and ($installedTorchTag -match '^(rocm|gfx)') -and (Test-RocmTritonPairingNeedsPass -InstalledTorchTag $installedTorchTag)) {
+        # can hold a ROCm torch with no detected gfx.
+        if ($SkipPythonDeps -and -not $NoTorchMode -and (Test-RocmTritonPairingNeedsPass)) {
             $SkipPythonDeps = $false
         }
     }
@@ -8473,27 +8476,52 @@ python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
 $script:SetupVenvChanged = $true
 
-# AMD ROCm: pair triton-windows with torch (Get-RocmTritonPairing, defined before the fast path). A custom pinned index
-# installs ROCm torch verbatim without setting $ROCmIndexUrl; the escape forces the pass there too, so repair it here.
-if ($stackExit -eq 0 -and -not $NoTorchMode -and ($ROCmIndexUrl -or ($installedTorchTag -match '^(rocm|gfx)'))) {
+# AMD ROCm: pair triton-windows with torch (Get-RocmTritonPairing, defined before the fast path). Decided from the
+# venv the stack left, whatever index or earlier tag produced it.
+if ($stackExit -eq 0 -and -not $NoTorchMode) {
     $_rocmPair = Get-RocmTritonPairing
-    $_rocmTorch = $ROCmIndexUrl -or (Test-RocmTorchInstalled -Torch $_rocmPair.Torch -InstalledTorchTag $installedTorchTag)
-    if ($_rocmTorch -and $_rocmPair.Stale) {
+    if ($_rocmPair.Stale) {
         $_rocmTritonFrom = if ($_rocmPair.Triton) { "triton-windows $($_rocmPair.Triton)" } else { "no triton-windows" }
         substep "pairing Triton for Windows with torch $($_rocmPair.Torch) ($_rocmTritonFrom -> $($_rocmPair.Spec))..." "Cyan"
-        # An inherited UV_OVERRIDE would replace the pin and uv would still report success.
-        $_rocmSavedOverride = $env:UV_OVERRIDE
+        $_rocmImportedBefore = (Invoke-BoundedPythonProbe -PythonExe "python" -Code "import triton.language").Ok
+        # Set the install manifest aside until the pair is verified, so a failed replacement is never certified
+        # complete and the next update re-runs the dependency pass.
+        $_rocmManifest = Join-Path $VenvDir "unsloth_install_manifest.json"
+        $_rocmHeld = "$_rocmManifest.triton-pending"
+        $_rocmHasHeld = $false
+        if (Test-Path -LiteralPath $_rocmManifest -PathType Leaf) {
+            try {
+                Move-Item -LiteralPath $_rocmManifest -Destination $_rocmHeld -Force -ErrorAction Stop
+                $_rocmHasHeld = $true
+            } catch {}
+        }
+        # Inherited uv / pip inputs that would drop or replace the pin while still reporting success.
+        $_rocmSavedEnv = @{}
+        foreach ($_n in 'UV_OVERRIDE', 'UV_EXCLUDE', 'UV_CONSTRAINT', 'PIP_CONSTRAINT') {
+            $_rocmSavedEnv[$_n] = [Environment]::GetEnvironmentVariable($_n)
+            Remove-Item "Env:$_n" -ErrorAction SilentlyContinue
+        }
         try {
-            Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
             $_rocmTritonOut = Fast-Install $_rocmPair.Spec | Out-String
             $_rocmTritonExit = $LASTEXITCODE
         } finally {
-            if ($null -ne $_rocmSavedOverride) { $env:UV_OVERRIDE = $_rocmSavedOverride }
+            foreach ($_n in $_rocmSavedEnv.Keys) { if ($null -ne $_rocmSavedEnv[$_n]) { Set-Item "Env:$_n" $_rocmSavedEnv[$_n] } }
         }
-        if ($_rocmTritonExit -ne 0) {
-            # The fast-path escape retries this on the next setup run.
-            substep "[WARN] could not install $($_rocmPair.Spec); flex attention decode may run unfused" "Yellow"
+        # Exit 0 is not enough: an override-dependencies entry in a uv config keeps the old version.
+        $_rocmAfter = Get-RocmTritonPairing
+        if (-not $_rocmAfter.Stale) {
+            if ($_rocmHasHeld) { try { Move-Item -LiteralPath $_rocmHeld -Destination $_rocmManifest -Force -ErrorAction Stop } catch {} }
+        } else {
+            $_rocmHave = if ($_rocmAfter.Triton) { "triton-windows $($_rocmAfter.Triton)" } else { "no triton-windows" }
+            substep "[WARN] could not pair $($_rocmPair.Spec) (exit $_rocmTritonExit, $_rocmHave installed); flex attention decode may run unfused. Check uv override-dependencies / constraints if this repeats." "Yellow"
             Write-StudioLine (Redact-InstallOutput $_rocmTritonOut) -ForegroundColor Yellow
+            if ($_rocmImportedBefore -and -not (Invoke-BoundedPythonProbe -PythonExe "python" -Code "import triton.language").Ok) {
+                Write-StudioLine "[ERROR] the Triton replacement failed part way and triton no longer imports -- torch.compile is broken." -ForegroundColor Red
+                Write-StudioLine "        Repair with: python -m pip install --force-reinstall $($_rocmPair.Spec)" -ForegroundColor Red
+                # Fail, or install.ps1 commits this venv over its rollback copy.
+                $stackExit = if ($_rocmTritonExit -ne 0) { $_rocmTritonExit } else { 1 }
+            }
+            if ($_rocmHasHeld) { Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue }
         }
     }
 }
