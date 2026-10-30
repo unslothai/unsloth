@@ -1863,8 +1863,17 @@ def fast_linear_forward(
     return out
 
 
+def _lora_first_addmm(X, Wt, XA, Bt, alpha):
+    # alpha * XA @ Bt into a fresh buffer (beta 0 never reads it), then the base GEMM accumulates onto it.
+    out = torch.empty((X.shape[0], Wt.shape[1]), dtype = X.dtype, device = X.device)
+    out.addmm_(XA, Bt, alpha = alpha, beta = 0)
+    out.addmm_(X, Wt)
+    return out
+
+
 # Traced, x.addmm_ copies x first; this op stays in place. No derivative: grad off only.
 _HAS_ADDMM_OP = hasattr(torch.library, "custom_op")
+_HAS_LORA_FIRST_OP = False
 if _HAS_ADDMM_OP:
 
     @torch.library.custom_op("unsloth::addmm_", mutates_args = ["out"])
@@ -1872,6 +1881,26 @@ if _HAS_ADDMM_OP:
         out: torch.Tensor, A: torch.Tensor, B: torch.Tensor, alpha: float, beta: float
     ) -> None:
         out.addmm_(A, B, alpha = alpha, beta = beta)
+
+    # Traced fused LoRA order as one opaque op: the rank-r term goes into a fresh buffer and the base GEMM
+    # accumulates onto it in place. As two functional addmms, Inductor first copies the rank-r term into a
+    # new output for the base GEMM to read. Returns a new tensor, so a saved output aliases nothing.
+    try:
+
+        @torch.library.custom_op("unsloth::lora_first_addmm", mutates_args = ())
+        def _lora_first_addmm_op(
+            X: torch.Tensor, Wt: torch.Tensor, XA: torch.Tensor, Bt: torch.Tensor, alpha: float
+        ) -> torch.Tensor:
+            return _lora_first_addmm(X, Wt, XA, Bt, alpha)
+
+        @_lora_first_addmm_op.register_fake
+        def _(X, Wt, XA, Bt, alpha):
+            return X.new_empty((X.shape[0], Wt.shape[1]))
+
+        _HAS_LORA_FIRST_OP = True
+    except Exception:
+        # Already registered (module re-executed) or an older torch.library: the functional path below.
+        _HAS_LORA_FIRST_OP = hasattr(getattr(torch.ops, "unsloth", None), "lora_first_addmm")
 
 
 def addmm_(
@@ -1991,19 +2020,22 @@ def matmul_lora(
         if XA is None:
             XA = torch_matmul(X, A.t().to(dtype))
         B = B.t().to(dtype)
-        caller_out = out is not None
-        if caller_out:
+        if out is not None:
+            # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage).
             addmm_(out, XA, B, alpha = s, beta = 0)
-        else:
-            # Functional with beta = 0: an empty buffer mutated in place breaks block compiles (aliasing).
-            out = torch.addmm(XA.new_zeros(1), XA, B, beta = 0, alpha = s)
-        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
-        if _is_compiling() and not caller_out:
-            # Traced, an in-place accumulate onto a buffer the region saves for backward breaks the block
-            # compile (the saved tensor aliases a mutated intermediate); Inductor plans the buffer itself.
-            out = torch.addmm(out, X, W.t())
-        else:
+            W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
             out.addmm_(X, W.t())
+        else:
+            W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+            if not _is_compiling():
+                out = _lora_first_addmm(X, W.t(), XA, B, s)
+            elif _HAS_LORA_FIRST_OP and type(s) in (int, float):
+                out = torch.ops.unsloth.lora_first_addmm(X, W.t(), XA, B, s)
+            else:
+                # Traced without the op: functional, since an in-place accumulate onto a buffer the region
+                # saves for backward breaks the block compile (the saved tensor aliases a mutated intermediate).
+                out = torch.addmm(XA.new_zeros(1), XA, B, beta = 0, alpha = s)
+                out = torch.addmm(out, X, W.t())
         A = None
     else:
         if XA is not None and out is not None and _shares_storage(out, XA):
