@@ -3,6 +3,7 @@
 
 import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -29,6 +30,7 @@ export function GuidedTour({
   celebrate = false,
 }: GuidedTourProps) {
   const maskId = `${useId()}-tour-mask`;
+  const t = useT();
   const [idx, setIdx] = useState(0);
   const [vw, setVw] = useState(0);
   const [vh, setVh] = useState(0);
@@ -323,16 +325,16 @@ export function GuidedTour({
                         <div className="inline-flex items-center gap-2 rounded-full bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-2.5 py-1 text-ui-10 font-mono text-foreground/60 ring-1 ring-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:text-zinc-200/75 dark:ring-[rgb(255_255_255_/_calc(0.14*var(--contrast-edge-gain,1)))]">
                           {idx + 1}/{total}
                           <span className="size-1 rounded-full bg-control-accent/70" />
-                          guided tour
+                          {t("tour.badge")}
                         </div>
                         <DialogPrimitive.Title
                           className="mt-2 text-ui-18 leading-tight"
                           style={{ fontFamily: "var(--font-serif)" }}
                         >
-                          {step?.title ?? "Quick tour"}
+                          {step?.title ?? t("tour.defaultTitle")}
                         </DialogPrimitive.Title>
                         <DialogPrimitive.Description className="mt-1.5 text-sm leading-relaxed text-foreground/70 dark:text-zinc-200/75">
-                          {step?.body ?? "Let’s get you oriented."}
+                          {step?.body ?? t("tour.defaultBody")}
                         </DialogPrimitive.Description>
                       </div>
 
@@ -341,7 +343,7 @@ export function GuidedTour({
                         size="icon-sm"
                         className="text-foreground/60 hover:text-foreground hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                         onClick={() => requestClose("skip")}
-                        aria-label="Skip tour"
+                        aria-label={t("tour.skipTour")}
                       >
                         <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
                       </Button>
@@ -353,7 +355,7 @@ export function GuidedTour({
                         className="text-foreground/60 hover:text-foreground hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                         onClick={() => requestClose("skip")}
                       >
-                        Skip
+                        {t("tour.skip")}
                       </Button>
 
                       <div className="flex items-center gap-2">
@@ -364,7 +366,7 @@ export function GuidedTour({
                           onClick={() => setIdx((i) => Math.max(0, i - 1))}
                         >
                           <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4" />
-                          Back
+                          {t("tour.back")}
                         </Button>
                         {isLast ? (
                           <Button
@@ -373,7 +375,7 @@ export function GuidedTour({
                             onClick={() => requestClose("complete")}
                           >
                             <HugeiconsIcon icon={CheckmarkCircle02Icon} className="size-4" />
-                            Done
+                            {t("common.done")}
                           </Button>
                         ) : (
                           <Button
@@ -381,7 +383,7 @@ export function GuidedTour({
                             className="bg-control-accent text-control-accent-foreground hover:bg-control-accent/90"
                             onClick={() => setIdx((i) => Math.min(total - 1, i + 1))}
                           >
-                            Next
+                            {t("tour.next")}
                             <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4" />
                           </Button>
                         )}
@@ -391,7 +393,7 @@ export function GuidedTour({
 
                   <div className="h-px bg-gradient-to-r from-transparent via-black/10 to-transparent dark:via-white/14" />
                   <div className="px-5 py-3 text-ui-11 text-foreground/55 dark:text-zinc-300/65">
-                    Tip: `Esc` skips. Tour blocks clicks so you can read.
+                    {t("tour.tip")}
                   </div>
                 </motion.div>
               </DialogPrimitive.Content>
