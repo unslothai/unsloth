@@ -45,6 +45,9 @@ function Invoke-BoundedPythonProbe {
         if (-not $py) { $py = Get-Command python3 }
         $savedPath = $env:PYTHONPATH
         $env:PYTHONPATH = $script:RealProbeDir
+        # Continue: under Stop, Windows PowerShell 5.1 turns the failing import's redirected stderr into a
+        # terminating error before the exit code is read (the probe helper in setup.ps1 reads stderr itself).
+        $ErrorActionPreference = "Continue"
         try { $out = & $py.Source -S -c $Code 2>&1 | Out-String } finally { $env:PYTHONPATH = $savedPath }
         return @{ Ok = ($LASTEXITCODE -eq 0); Output = $out }
     }
@@ -58,11 +61,20 @@ function Fast-Install {
     if ($script:InstallLeaves) {
         $script:State.Triton = $script:InstallLeaves.Triton
         $script:State.Imports = $script:InstallLeaves.Imports
+        if ($script:InstallLeaves.ContainsKey('Readable')) { $script:State.Readable = $script:InstallLeaves.Readable }
     }
     $global:LASTEXITCODE = $script:InstallExit
     return ""
 }
 function Test-UvOfflineRequested { return $script:Offline }
+# "fail": the move throws; "stays": it reports success but the original remains (cross-volume copy).
+$script:MoveMode = ""
+function Move-Item {
+    param([string]$LiteralPath, [string]$Destination, [switch]$Force, $ErrorAction)
+    if ($script:MoveMode -eq "fail") { throw "the manifest is locked" }
+    if ($script:MoveMode -eq "stays") { Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force; return }
+    Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination -Force -ErrorAction Stop
+}
 function substep { param($Text, $Color) }
 function Write-StudioLine { param($Text, $ForegroundColor) }
 function Redact-InstallOutput { param($Text) return $Text }
@@ -80,12 +92,13 @@ $manifestFile = Join-Path $venvRoot "unsloth_install_manifest.json"
 # Runs the post-stack block. $IndexUrl and $Tag are what earlier code left behind; the block must not read them.
 function Invoke-Block([string]$Torch, [string]$Triton, [string]$Hip = "", [bool]$Imports = $true, [int]$StackExit = 0,
                       [bool]$NoTorch = $false, $IndexUrl = $null, $Tag = $null, [int]$InstallExit = 0,
-                      $Leaves = @{ Triton = "3.8.0.post29"; Imports = $true }, [bool]$Manifest = $true) {
+                      $Leaves = @{ Triton = "3.8.0.post29"; Imports = $true }, [bool]$Manifest = $true, [string]$Move = "") {
     Set-Venv $Torch $Triton $Hip $Imports
     $script:Installs = @()
     $script:EnvSeen = @()
     $script:InstallExit = $InstallExit
     $script:InstallLeaves = $Leaves
+    $script:MoveMode = $Move
     Remove-Item -LiteralPath $manifestFile -Force -ErrorAction SilentlyContinue
     if ($Manifest) { Set-Content -LiteralPath $manifestFile -Value '{"complete": true}' -Encoding ascii }
     $stackExit = $StackExit
@@ -93,7 +106,7 @@ function Invoke-Block([string]$Torch, [string]$Triton, [string]$Hip = "", [bool]
     $installedTorchTag = $Tag
     $NoTorchMode = $NoTorch
     $VenvDir = $venvRoot
-    Invoke-Expression $block
+    try { Invoke-Expression $block } finally { $script:MoveMode = "" }
     return @{ Installs = $script:Installs; StackExit = $stackExit; Manifest = (Test-Path -LiteralPath $manifestFile -PathType Leaf);
               Pending = @(Get-ChildItem -LiteralPath $venvRoot -Filter "*.triton-pending" -ErrorAction SilentlyContinue).Count }
 }
@@ -119,7 +132,18 @@ Check "a missing triton-windows is installed" ((Repaired $r) -and $r.Manifest)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29"
 Check "a 3.8 that imports is kept" (Untouched $r)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Imports $false
-Check "a 3.8 that no longer imports (half-failed replacement) is repaired" (Repaired $r)
+# A 3.8 already satisfies the pin, so a plain install is a no-op: only a forced reinstall restores the files.
+Check "a 3.8 that no longer imports is force-reinstalled" ($r.Installs.Count -eq 1 -and $r.Installs[0] -eq "--force-reinstall --no-deps $pin" -and $r.Manifest)
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Imports $false -Leaves @{ Triton = "3.8.0.post29"; Imports = $false }
+Check "a forced reinstall that still does not import is not certified" (-not $r.Manifest -and $r.Pending -eq 0)
+# Finding 2: a post-install probe that could not read the venv verifies nothing.
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Readable = $false }
+Check "an unreadable post-install probe is not certified" ((Repaired $r) -and -not $r.Manifest -and $r.Pending -eq 0)
+# Findings 3 to 5: a manifest that cannot be set aside stays valid, so nothing is replaced.
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Move "fail"
+Check "a manifest that cannot be moved blocks the replacement" ($r.Installs.Count -eq 0 -and $r.Manifest -and $r.StackExit -eq 0 -and $r.Pending -eq 0)
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Move "stays"
+Check "a move that leaves the original behind blocks it too" ($r.Installs.Count -eq 0 -and $r.Manifest -and $r.Pending -eq 0)
 $r = Invoke-Block -Torch "2.13.0+rocm7.14.0" -Triton "3.9.0.post30"
 Check "torch 2.13 keeps what the stack resolved" (Untouched $r)
 $r = Invoke-Block -Torch "2.11.0" -Triton "3.9.0.post30" -Hip "7.2.26015"

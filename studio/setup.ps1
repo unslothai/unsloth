@@ -7618,7 +7618,8 @@ function Get-RocmTritonPairing {
     if ($spec -and $triton -match '^3\.8(\.|$)') {
         $usable = (Invoke-BoundedPythonProbe -PythonExe "python" -Code "import triton.language").Ok
     }
-    return @{ Torch = $torch; Triton = $triton; Spec = $spec; Stale = [bool]($spec -and -not $usable) }
+    # Known is false when the probe itself failed: nothing about the venv was read, so nothing is verified.
+    return @{ Torch = $torch; Triton = $triton; Spec = $spec; Stale = [bool]($spec -and -not $usable); Known = [bool]$probe.Ok }
 }
 
 function Test-RocmTritonPairingNeedsPass {
@@ -8485,43 +8486,68 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
         substep "pairing Triton for Windows with torch $($_rocmPair.Torch) ($_rocmTritonFrom -> $($_rocmPair.Spec))..." "Cyan"
         $_rocmImportedBefore = (Invoke-BoundedPythonProbe -PythonExe "python" -Code "import triton.language").Ok
         # Set the install manifest aside until the pair is verified, so a failed replacement is never certified
-        # complete and the next update re-runs the dependency pass.
+        # complete and the next update re-runs the dependency pass. As in the XPU swap: a manifest that cannot be
+        # moved stays valid through the replacement, so nothing is installed then.
         $_rocmManifest = Join-Path $VenvDir "unsloth_install_manifest.json"
         $_rocmHeld = "$_rocmManifest.triton-pending"
         $_rocmHasHeld = $false
+        $_rocmBlocked = $false
         if (Test-Path -LiteralPath $_rocmManifest -PathType Leaf) {
             try {
                 Move-Item -LiteralPath $_rocmManifest -Destination $_rocmHeld -Force -ErrorAction Stop
                 $_rocmHasHeld = $true
-            } catch {}
-        }
-        # Inherited uv / pip inputs that would drop or replace the pin while still reporting success.
-        $_rocmSavedEnv = @{}
-        foreach ($_n in 'UV_OVERRIDE', 'UV_EXCLUDE', 'UV_CONSTRAINT', 'PIP_CONSTRAINT') {
-            $_rocmSavedEnv[$_n] = [Environment]::GetEnvironmentVariable($_n)
-            Remove-Item "Env:$_n" -ErrorAction SilentlyContinue
-        }
-        try {
-            $_rocmTritonOut = Fast-Install $_rocmPair.Spec | Out-String
-            $_rocmTritonExit = $LASTEXITCODE
-        } finally {
-            foreach ($_n in $_rocmSavedEnv.Keys) { if ($null -ne $_rocmSavedEnv[$_n]) { Set-Item "Env:$_n" $_rocmSavedEnv[$_n] } }
-        }
-        # Exit 0 is not enough: an override-dependencies entry in a uv config keeps the old version.
-        $_rocmAfter = Get-RocmTritonPairing
-        if (-not $_rocmAfter.Stale) {
-            if ($_rocmHasHeld) { try { Move-Item -LiteralPath $_rocmHeld -Destination $_rocmManifest -Force -ErrorAction Stop } catch {} }
-        } else {
-            $_rocmHave = if ($_rocmAfter.Triton) { "triton-windows $($_rocmAfter.Triton)" } else { "no triton-windows" }
-            substep "[WARN] could not pair $($_rocmPair.Spec) (exit $_rocmTritonExit, $_rocmHave installed); flex attention decode may run unfused. Check uv override-dependencies / constraints if this repeats." "Yellow"
-            Write-StudioLine (Redact-InstallOutput $_rocmTritonOut) -ForegroundColor Yellow
-            if ($_rocmImportedBefore -and -not (Invoke-BoundedPythonProbe -PythonExe "python" -Code "import triton.language").Ok) {
-                Write-StudioLine "[ERROR] the Triton replacement failed part way and triton no longer imports -- torch.compile is broken." -ForegroundColor Red
-                Write-StudioLine "        Repair with: python -m pip install --force-reinstall $($_rocmPair.Spec)" -ForegroundColor Red
-                # Fail, or install.ps1 commits this venv over its rollback copy.
-                $stackExit = if ($_rocmTritonExit -ne 0) { $_rocmTritonExit } else { 1 }
+            } catch {
+                $_rocmBlocked = $true
             }
-            if ($_rocmHasHeld) { Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue }
+            # A move can report success while the original remains; confirm it is gone.
+            if (Test-Path -LiteralPath $_rocmManifest -PathType Leaf) {
+                if ($_rocmHasHeld) { Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue }
+                $_rocmHasHeld = $false
+                $_rocmBlocked = $true
+            }
+        }
+        if ($_rocmBlocked) {
+            substep "[WARN] could not set the install manifest aside; $_rocmTritonFrom left in place -- flex attention decode may run unfused." "Yellow"
+        } else {
+            # Inherited uv / pip inputs that would drop or replace the pin while still reporting success.
+            $_rocmSavedEnv = @{}
+            foreach ($_n in 'UV_OVERRIDE', 'UV_EXCLUDE', 'UV_CONSTRAINT', 'PIP_CONSTRAINT') {
+                $_rocmSavedEnv[$_n] = [Environment]::GetEnvironmentVariable($_n)
+                Remove-Item "Env:$_n" -ErrorAction SilentlyContinue
+            }
+            # A 3.8 that no longer imports already satisfies the pin, so only a forced reinstall restores its files.
+            $_rocmArgs = @($_rocmPair.Spec)
+            if ($_rocmPair.Triton -match '^3\.8(\.|$)') { $_rocmArgs = @('--force-reinstall', '--no-deps') + $_rocmArgs }
+            try {
+                $_rocmTritonOut = Fast-Install @_rocmArgs | Out-String
+                $_rocmTritonExit = $LASTEXITCODE
+            } finally {
+                foreach ($_n in $_rocmSavedEnv.Keys) { if ($null -ne $_rocmSavedEnv[$_n]) { Set-Item "Env:$_n" $_rocmSavedEnv[$_n] } }
+            }
+            # Exit 0 is not enough: an override-dependencies entry in a uv config keeps the old version, and a
+            # probe that could not read the venv verifies nothing.
+            $_rocmAfter = Get-RocmTritonPairing
+            if ($_rocmAfter.Known -and $_rocmAfter.Spec -and -not $_rocmAfter.Stale) {
+                if ($_rocmHasHeld) {
+                    try {
+                        Move-Item -LiteralPath $_rocmHeld -Destination $_rocmManifest -Force -ErrorAction Stop
+                    } catch {
+                        # Without the manifest the next update re-runs the dependency pass; nothing is lost.
+                        substep "[WARN] could not restore the install manifest ($($_.Exception.Message)); the next update re-runs the dependency pass." "Yellow"
+                    }
+                }
+            } else {
+                $_rocmHave = if (-not $_rocmAfter.Known) { "the venv could not be read" } elseif ($_rocmAfter.Triton) { "triton-windows $($_rocmAfter.Triton) installed" } else { "no triton-windows installed" }
+                substep "[WARN] could not pair $($_rocmPair.Spec) (exit $_rocmTritonExit, $_rocmHave); flex attention decode may run unfused. Check uv override-dependencies / constraints if this repeats." "Yellow"
+                Write-StudioLine (Redact-InstallOutput $_rocmTritonOut) -ForegroundColor Yellow
+                if ($_rocmImportedBefore -and -not (Invoke-BoundedPythonProbe -PythonExe "python" -Code "import triton.language").Ok) {
+                    Write-StudioLine "[ERROR] the Triton replacement failed part way and triton no longer imports -- torch.compile is broken." -ForegroundColor Red
+                    Write-StudioLine "        Repair with: python -m pip install --force-reinstall --no-deps $($_rocmPair.Spec)" -ForegroundColor Red
+                    # Fail, or install.ps1 commits this venv over its rollback copy.
+                    $stackExit = if ($_rocmTritonExit -ne 0) { $_rocmTritonExit } else { 1 }
+                }
+                if ($_rocmHasHeld) { Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue }
+            }
         }
     }
 }
