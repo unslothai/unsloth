@@ -709,11 +709,18 @@ def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
 
 def _processor_takes_text_first(processor) -> bool:
     """LFM3-Omni's processor is (text, audio, ..., images); the usual VLM order is (images, text)."""
-    try:
-        params = list(inspect.signature(processor.__call__).parameters)
-    except (TypeError, ValueError):
-        return False
-    return bool(params) and params[0] == "text"
+    # unsloth_zoo wraps __call__ as (*args, **kwargs); read the first class that names its arguments.
+    for cls in type(processor).__mro__:
+        call = cls.__dict__.get("__call__")
+        if call is None:
+            continue
+        try:
+            params = list(inspect.signature(call).parameters.values())[1:]
+        except (TypeError, ValueError):
+            return False
+        if params and params[0].kind is not inspect.Parameter.VAR_POSITIONAL:
+            return params[0].name == "text"
+    return False
 
 
 # LlamaModel_fast_forward cuts input_ids at max_seq_length, so decoding past it crashes; FastModel's stock forward does not.

@@ -36,3 +36,13 @@ def test_text_first_processor_detected():
 
     assert _processor_takes_text_first(_TextFirst()) is True
     assert _processor_takes_text_first(_ImagesFirst()) is False
+
+
+def test_zoo_wrapped_call_still_reads_original_signature():
+    from core.inference.inference import _processor_takes_text_first
+
+    class _Patched(_TextFirst):
+        def __call__(self, *args, **kwargs):
+            return super().__call__(*args, **kwargs)
+
+    assert _processor_takes_text_first(_Patched()) is True
