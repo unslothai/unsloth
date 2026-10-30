@@ -249,11 +249,17 @@ def _restore_one(rec: list) -> None:
 def restore_storage(token: list) -> None:
     """Put back the original dtype: a kept host tensor itself, a device tensor by an exact cast back; one since moved
     or changed is cast back to its load dtype, as the stock cast does."""
-    for rec in token:
-        try:
-            _restore_one(rec)
-        except Exception:  # noqa: BLE001 - best effort; leaves that tensor as the cast made it
-            pass
+    pending = list(token)
+    while pending:
+        failed = []
+        for rec in pending:
+            try:
+                _restore_one(rec)
+            except Exception:  # noqa: BLE001 - retried below; a later cast back can free the room it needs
+                failed.append(rec)
+        if len(failed) == len(pending):
+            break  # no progress: best effort, leaves those tensors as the cast made them
+        pending = failed
     token.clear()
 
 
