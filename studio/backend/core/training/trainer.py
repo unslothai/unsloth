@@ -4667,7 +4667,9 @@ class UnslothTrainer:
                         if image_col_name:
                             row = example[image_col_name]
                             row = row if isinstance(row, list) else [row]
-                            images.append([i.convert("RGB") if hasattr(i, "convert") else i for i in row])
+                            images.append(
+                                [i.convert("RGB") if hasattr(i, "convert") else i for i in row]
+                            )
 
                     image_kwargs = {"images": images} if image_col_name else {}
                     batch = processor(

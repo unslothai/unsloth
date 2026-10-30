@@ -167,7 +167,6 @@ class _RecordingProcessor:
 
     def __call__(self, text, audio, return_tensors, padding, **kwargs):
         import torch
-
         self.calls.append(kwargs)
         return {"input_ids": torch.ones((len(text), 2), dtype = torch.long)}
 
