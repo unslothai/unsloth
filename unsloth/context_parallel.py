@@ -210,8 +210,7 @@ def _positions_restart(position_ids, attention_mask) -> bool:
 
 def _hybrid_config_blocker(model) -> Optional[str]:
     config = getattr(model, "config", None)
-    # A vision_config alone is not refused: shipped Qwen3.5 checkpoints carry one even for text-only
-    # training. Batches with image / video inputs are refused per step in _prepare_inputs.
+    # vision_config is allowed (Qwen3.5 ships one); image / video batches are refused in _prepare_inputs.
     text_config = getattr(config, "text_config", None) or config
     if getattr(text_config, "output_router_logits", False):
         # The load balancing loss is a product of per-sequence means, not a sum over shards.
@@ -774,8 +773,7 @@ def _check_cp_trainer(
         distributed_type.startswith("MULTI_")
         and (getattr(accelerator, "num_processes", 2) or 2) > 1
     ):
-        # Image / video batches are refused per step, so a trainable vision tower never gets a gradient,
-        # and DDP (find_unused_parameters = False, which reentrant checkpointing needs) fails at step 2.
+        # Unused trainable towers break DDP (find_unused_parameters = False for reentrant checkpointing).
         for model in models:
             unused = _trainable_media_tower_parameters(model)
             if unused:

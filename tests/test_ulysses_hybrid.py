@@ -57,8 +57,7 @@ def _config(kind, **overrides):
 
 
 def _vlm(**overrides):
-    # Shipped Qwen3.5 checkpoints are Qwen3_5ForConditionalGeneration with a vision_config, even when
-    # the training data is text-only.
+    # Shipped Qwen3.5 checkpoints carry a vision_config even for text-only training.
     torch.manual_seed(0)
     text_config, _ = _config("qwen3_5", **overrides)
     config = transformers.Qwen3_5Config(
@@ -124,7 +123,6 @@ def _parity_worker(rank, world, kind, control):
     model = _vlm() if kind == "qwen3_5_vlm" else _model(kind)
     if kind == "qwen3_5_vlm":
         assert model.config.vision_config is not None
-        # The trainer-side gate every rank runs before any collective.
         cp._check_cp_model(model, world, "ulysses")
     _force_torch_kernels(model)
     calls = []
@@ -159,7 +157,6 @@ def _parity_worker(rank, world, kind, control):
         loss = _loss(out.logits, inputs["shift_labels"], count)
         loss.backward()
     if not control:
-        # One exchange per linear attention layer on this shard.
         config_kind = "qwen3_5" if kind == "qwen3_5_vlm" else kind
         assert len(calls) == sum(
             t == "linear_attention" for t in _config(config_kind)[0].layer_types
@@ -223,7 +220,6 @@ def test_qwen3_5_checkpoint_with_a_vision_config_passes_the_gate():
 
 
 def _ddp_text_only_worker(rank, world, freeze_vision):
-    # What _install_accelerator_state sets up under DDP: find_unused_parameters = False.
     from torch.nn.parallel import DistributedDataParallel
 
     ad.HAS_FLASH_ATTENTION = False
@@ -254,7 +250,7 @@ def _ddp_text_only_worker(rank, world, freeze_vision):
     not hasattr(transformers, "Qwen3_5Config"), reason = "transformers without Qwen3.5"
 )
 def test_ddp_text_only_fails_at_step_two_with_a_trainable_vision_tower():
-    # Why the trainer refuses this setup: the vision tower is unused, so DDP's reduction never finishes.
+    # The unused vision tower means DDP's reduction never finishes.
     with pytest.raises(Exception, match = "finished reduction in the prior iteration"):
         _spawn(_ddp_text_only_worker, 2, False)
     _spawn(_ddp_text_only_worker, 2, True)
@@ -290,7 +286,6 @@ def test_ddp_refuses_a_trainable_vision_tower_but_not_fsdp2_frozen_or_one_proces
     assert cp._check_cp_trainer(fsdp2, 2, "ulysses", [model], allow_fsdp2 = True)
     for single in (_cp_trainer(model, "NO"), _cp_trainer(model, "MULTI_CPU", num_processes = 1)):
         cp._check_cp_trainer(single, 2, "ulysses", [model], allow_fsdp2 = True)
-    # A frozen vision tower (finetune_vision_layers = False) is fine under DDP.
     model.model.visual.requires_grad_(False)
     cp._check_cp_trainer(trainer, 2, "ulysses", [model], allow_fsdp2 = True)
 
@@ -302,7 +297,6 @@ def test_batches_with_image_or_video_inputs_are_refused(key):
     inputs = {"input_ids": torch.ones(1, 6, dtype = torch.long), key: torch.ones(1, 3)}
     with pytest.raises(ValueError, match = key):
         _manager(2, 0)._prepare_inputs(inputs)
-    # Through apply() as well, which every CP train / eval step enters.
     with pytest.raises(ValueError, match = "image / video"):
         with _manager(2, 0).apply(dict(inputs)):
             pass
@@ -394,7 +388,6 @@ def test_hybrid_refuses_router_aux_loss_but_not_a_vision_config():
     assert "output_router_logits" in cp._hybrid_config_blocker(model)
     assert not cp._supports_context_parallel(model, "ulysses")
     model.config.output_router_logits = False
-    # A vision_config alone is allowed: image / video batches are refused per step instead.
     model.config.vision_config = {"model_type": "qwen3_5_vision"}
     assert cp._hybrid_config_blocker(model) is None
     assert cp._supports_context_parallel(model, "ulysses")
