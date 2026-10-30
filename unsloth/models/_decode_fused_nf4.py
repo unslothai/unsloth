@@ -74,6 +74,64 @@ def _norm_eps(norm):
     return getattr(norm, "eps", None) if eps is None else eps
 
 
+def _adapter_key(module):
+    # What the regular path reads per call from a PEFT layer: enabled, merged, active adapters, scale.
+    active = getattr(module, "active_adapters", None)
+    if active is None:
+        active = getattr(module, "active_adapter", None)
+    if isinstance(active, list):
+        active = tuple(active)
+    scaling = getattr(module, "scaling", None)
+    if isinstance(scaling, dict) and isinstance(active, tuple):
+        scaling = tuple(
+            id(v) if isinstance(v, torch.Tensor) else v for v in (scaling.get(a) for a in active)
+        )
+    else:
+        scaling = None
+    return (
+        getattr(module, "disable_adapters", None),
+        getattr(module, "merged", None),
+        active,
+        scaling,
+    )
+
+
+def _adapter_state(modules):
+    return tuple(_adapter_key(m) for m in modules)
+
+
+def _plan_stale(plan):
+    """Adapters toggled, switched, merged or rescaled since the plan was built (also mid-sequence)."""
+    return bool(plan.watch) and _adapter_state(plan.watch) != plan.adapter_state
+
+
+def _signature(plan):
+    # What a captured step bakes in: rebuilding to an equal signature keeps the old plan (and its buffers).
+    return (
+        (
+            plan.device,
+            plan.dtype,
+            plan.hidden,
+            plan.intermediate,
+            plan.eps,
+            plan.final_norm.data_ptr(),
+        )
+        + tuple((entry.ln1.data_ptr(), entry.ln2.data_ptr()) for entry in plan.layers)
+        + tuple(
+            (
+                site.packed.data_ptr(),
+                site.absmax.data_ptr(),
+                site.absmax2.data_ptr(),
+                site.lora and tuple(t.data_ptr() for t in site.A3 + site.B3),
+                site.lora and (site.rank, site.scaling),
+                tuple(site.bounds),
+            )
+            for entry in plan.layers
+            for site in entry.sites.values()
+        )
+    )
+
+
 def _proj_parts(proj, K):
     """(W, quant_state, (A, B, S) or None) of a 4bit NF4 projection the kernel can read, else a str."""
     if (
@@ -239,6 +297,10 @@ def _build(model, X):
     config = model.config
     if getattr(config, "model_type", None) != "llama":
         return "model type"
+    if getattr(model, "vllm_engine", None) is not None:
+        # fast_inference: the base weights are views of vLLM's, re-homing would copy them and move
+        # quant buffers vLLM's CUDA graphs captured.
+        return "weights shared with vLLM (fast_inference)"
     device = X.device
     if device.type != "cuda" or torch.version.hip is not None:
         return "not NVIDIA CUDA"
@@ -261,6 +323,7 @@ def _build(model, X):
     plan.device = device
     plan.dtype = X.dtype
     plan.capability = capability
+    watch = []
     norm = model.model.norm
     eps = _norm_eps(norm)
     for idx, layer in enumerate(layers):
@@ -285,6 +348,9 @@ def _build(model, X):
         n_kv_heads = config.num_key_value_heads
         if head_dim % 2:
             return "head dim"
+        for module in (layer.input_layernorm, layer.post_attention_layernorm):
+            if hasattr(module, "modules_to_save"):  # a norm in modules_to_save
+                watch.append(module)
         entry = _Layer()
         entry.attn = attn
         entry.ln1 = layer.input_layernorm.weight
@@ -304,6 +370,8 @@ def _build(model, X):
             site = _site(model, (idx, kind), kind, projs, K)
             if isinstance(site, str):
                 return f"{kind}: {site}"
+            # One PEFT layer per site: adapter toggles / switches apply model-wide.
+            watch.extend(p for p in projs[:1] if hasattr(p, "lora_A"))
             if site.packed.device != device:
                 return "several devices"
             sites[kind] = site
@@ -322,9 +390,14 @@ def _build(model, X):
         plan.layers.append(entry)
     if norm.weight.device != device or norm.weight.shape != (hidden,):
         return "final norm"
+    if hasattr(norm, "modules_to_save"):
+        watch.append(norm)
+    plan.watch = watch
+    plan.adapter_state = _adapter_state(watch)
     plan.eps = float(eps)
     plan.final_norm = norm.weight
     plan.hidden = hidden
+    plan.intermediate = config.intermediate_size
     with _decode_graphs._no_inference_tensors():
         plan.residual = torch.empty(hidden, dtype = torch.float32, device = device)
         # Unnormalized h * g: fp16 can overflow it before the consuming site applies rstd.
@@ -337,19 +410,7 @@ def _build(model, X):
         plan.pos = torch.zeros(1, dtype = torch.long, device = device)
         plan.slot = torch.zeros(1, dtype = torch.long, device = device)
     plan.rehomed = STATS["rehomed_sites"] != rehomed
-    # What a captured step bakes in: rebuilding to an equal signature keeps the old plan (and its buffers).
-    plan.signature = (device, X.dtype, hidden, config.intermediate_size) + tuple(
-        (
-            site.packed.data_ptr(),
-            site.absmax.data_ptr(),
-            site.absmax2.data_ptr(),
-            site.lora and tuple(t.data_ptr() for t in site.A3 + site.B3),
-            site.lora and (site.rank, site.scaling),
-            tuple(site.bounds),
-        )
-        for entry in plan.layers
-        for site in entry.sites.values()
-    )
+    plan.signature = _signature(plan)
     STATS["plans"] += 1
     return plan
 
@@ -379,13 +440,14 @@ def _decode_forward(
     layers = model.model.layers
     new_sequence = not hasattr(layers[0].self_attn, "paged_attention")
     plan = model.__dict__.get(_PLAN)
-    if new_sequence or plan is None:
+    if new_sequence or plan is None or (isinstance(plan, _Plan) and _plan_stale(plan)):
         built = _build(model, X)
         if isinstance(built, str):
             STATS["refused"] = built
             built = _Refused(built)
         if isinstance(plan, _Plan) and isinstance(built, _Plan) and not built.rehomed:
             if built.signature == plan.signature:
+                plan.watch, plan.adapter_state = built.watch, built.adapter_state
                 built = plan
         if built is not plan:
             if plan is not None or getattr(built, "rehomed", False):
