@@ -18,6 +18,7 @@
 thread, which must see Unsloth's cache_key_tag and readback-barrier pass. CPU only."""
 
 import importlib.util
+import inspect
 import os
 import threading
 import uuid
@@ -75,14 +76,17 @@ def _restore_torch_config():
         entry = module._config[name]
         override = entry.user_override
         current = override.get() if isinstance(override, ContextVar) else override
-        saved.append((module, entry, current, entry.env_value_default, entry.env_value_force))
+        saved.append(
+            (module, entry, current, entry.default, entry.env_value_default, entry.env_value_force)
+        )
     torch._dynamo.reset()
     yield
-    for module, entry, current, env_default, env_force in saved:
+    for module, entry, current, default, env_default, env_force in saved:
         if isinstance(entry.user_override, ContextVar):
             entry.user_override.set(current)
         else:
             entry.user_override = current
+        entry.default = default
         entry.env_value_default = env_default
         entry.env_value_force = env_force
         _invalidate(module)
@@ -159,3 +163,32 @@ def test_readback_barrier_cache_key_reaches_other_threads():
     assert getattr(inductor_config.post_grad_custom_post_pass, "_unsloth_readback_barrier", False)
     on_device = _in_thread(lambda: inductor_config.post_grad_custom_post_pass)
     assert getattr(on_device, "_unsloth_readback_barrier", False), on_device
+
+
+def test_later_assignment_reaches_other_threads(monkeypatch):
+    # After Unsloth publishes the barrier pass, a pass the user assigns later must still reach
+    # compile threads (Unsloth's config mirror replaces the published value too).
+    from torch.utils._config_module import ConfigModule
+
+    for attr in ("__setattr__", "patch", "load_config"):
+        if attr in ConfigModule.__dict__:
+            monkeypatch.setattr(ConfigModule, attr, inspect.unwrap(ConfigModule.__dict__[attr]))
+    import_fixes = _load("unsloth/import_fixes.py", "unsloth_import_fixes_under_test")
+    import_fixes.fix_dynamo_config_thread_visibility()
+    torch_config.set_torch_config(inductor_config, "post_grad_custom_post_pass", None)
+    import_fixes._key_inductor_caches_on_readback_barrier(inductor_config, CustomGraphPass)
+
+    class AddTwo(CustomGraphPass):
+        def __call__(self, graph):
+            for node in graph.nodes:
+                if node.target is torch.ops.aten.add.Tensor and node.args[1] == 1:
+                    node.args = (node.args[0], 2)
+
+        def uuid(self):
+            return f"unsloth-test-add-two-{uuid.uuid4()}"
+
+    later = AddTwo()
+    inductor_config.post_grad_custom_post_pass = later
+    assert _in_thread(lambda: inductor_config.post_grad_custom_post_pass) is later
+    compiled = torch.compile(lambda x: x + 1, fullgraph = True)
+    assert _in_thread(lambda: compiled(torch.tensor([1.0])).item()) == 3.0

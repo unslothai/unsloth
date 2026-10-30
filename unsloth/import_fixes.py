@@ -7279,6 +7279,10 @@ def fix_dynamo_config_thread_visibility():
         from contextvars import ContextVar
     except Exception:
         return
+    try:
+        from torch.utils._config_module import _UNSET_SENTINEL as _unset
+    except Exception:
+        _unset = None
 
     try:
         probe = getattr(_dynamo_config, "_config", {}).get("recompile_limit", None)
@@ -7371,6 +7375,10 @@ def fix_dynamo_config_thread_visibility():
                 entry = self.__dict__["_config"].get(name, None)
                 if entry is not None and entry.alias is None:
                     entry.default = value
+                    # A process-wide value (unsloth_zoo set_torch_config, TORCHINDUCTOR_* env) shadows the
+                    # default for threads without their own assignment: a later assignment replaces it too.
+                    if _unset is not None and entry.env_value_default is not _unset:
+                        entry.env_value_default = value
             except Exception:
                 pass
 
