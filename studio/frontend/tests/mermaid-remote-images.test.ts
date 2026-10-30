@@ -148,6 +148,33 @@ test("a style statement after a semicolon cannot fetch either", () => {
   }
 });
 
+test("a quoted stateDiagram state label is text, not a style statement", () => {
+  const url = "url(https://attacker.example/x)";
+  // Kept as written: the lexer reads `state "..."` as a label, so these never fetch.
+  for (const source of [
+    'stateDiagram-v2\n  state "Use style C:\\temp" as A\n  A --> B',
+    'stateDiagram-v2\n  state "Apply style url(parameter)" as A\n  A --> B',
+    'stateDiagram-v2\n  state Outer {\n    state "a classDef b" as A\n  }',
+  ]) {
+    assert.equal(stripRemoteDiagramImages(source), source);
+  }
+  // A real statement around such a label is still cut.
+  for (const [source, kept] of [
+    [`stateDiagram-v2\n  state "a style b" as A classDef x fill:${url}`, 'stateDiagram-v2\n  state "a style b" as A '],
+    [`stateDiagram-v2\n  state "a" as A\n  A --> B classDef x fill:${url}`, 'stateDiagram-v2\n  state "a" as A\n  A --> B '],
+    // An earlier `"` or `accDescr {` could end inside the label, so it is not trusted after one.
+    [`stateDiagram-v2\n  A --> B "x\n  state "y classDef x fill:${url}"`, 'stateDiagram-v2\n  A --> B "x\n  state "y '],
+    [`stateDiagram-v2\n  accDescr {\n  state "y classDef x fill:${url}"`, 'stateDiagram-v2\n  accDescr {\n  state "y '],
+    // Only a stateDiagram lexes it that way.
+    [`erDiagram\n  state "y classDef x fill:${url}"`, 'erDiagram\n  state "y '],
+    [`erDiagram\n  A ||--o{ B : x\nstateDiagram-v2\n  state "y classDef x fill:${url}"`, 'erDiagram\n  A ||--o{ B : x\nstateDiagram-v2\n  state "y '],
+  ]) {
+    const out = stripRemoteDiagramImages(source);
+    assert.equal(out, kept);
+    assert.equal(stripRemoteDiagramImages(out), out);
+  }
+});
+
 test("many unclosed `@{` markers are scanned in linear time", () => {
   const source = `sequenceDiagram\n  Alice->>Bob: ${"@{ ".repeat(16000)}`;
   const started = performance.now();

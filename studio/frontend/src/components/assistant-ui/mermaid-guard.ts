@@ -25,6 +25,10 @@ const STYLE_FETCH = /\\|url\s*\(|image(?:-set)?\s*\(|cross-fade\s*\(|element\s*\
 const STYLE_FETCHES = new RegExp(STYLE_FETCH.source, "gi");
 // These lexers take a style statement mid-line after a space and allow brackets in ids: every keyword counts.
 const MIDLINE_STYLE = /^[^\S\n]*(?:stateDiagram|erDiagram|block(?:-beta)?|requirementDiagram)\b/im;
+// Mermaid's own type check. In a stateDiagram a line opening `state "` is in the lexer's STATE state up
+// to its newline or `{`, where no style keyword is lexed, and its closed quote is label text.
+const STATE_DIAGRAM = /^\s*stateDiagram/;
+const STATE_LABEL = /^[^\S\n]*state[^\S\n]+"[^"\n{}]*"/;
 
 // An HTML label tag with a style attribute; its CSS can fetch (background-image and the like).
 const STYLED_TAG = /<([a-z][^<>]*\bstyle\s*=[^<>]*)/gi;
@@ -170,7 +174,7 @@ function withoutRemoteIcon(json: string): string | null {
 }
 
 /** Outside `midLine` diagrams a statement starts a line or follows `;`; one inside a quoted or bracketed label is text. */
-function withoutFetchingStyle(line: string, midLine: boolean): string {
+function withoutFetchingStyle(line: string, midLine: boolean, label = 0): string {
   let lastFetch = -1;
   for (const found of line.matchAll(STYLE_FETCHES)) lastFetch = found.index;
   if (lastFetch < 0) return line;
@@ -180,6 +184,7 @@ function withoutFetchingStyle(line: string, midLine: boolean): string {
   for (const match of line.matchAll(STYLE_START)) {
     const start = match.index + match[1].length;
     if (start > lastFetch) break;
+    if (start < label) continue;
     if (midLine) return line.slice(0, start);
     for (; at < start; at++) {
       const ch = line[at];
@@ -199,6 +204,9 @@ export function stripRemoteDiagramImages(source: string): string {
   if (SEQUENCE.test(scanned)) out = out.replace(DETAILS_LINE, "");
   // Mermaid reads the diagram type after dropping directives: `%%{init}%%stateDiagram` counts.
   const midLine = MIDLINE_STYLE.test(scanned.replace(DIRECTIVE, ""));
+  const stateLabels = STATE_DIAGRAM.test(scanned.replace(FRONT_MATTER, "").replace(DIRECTIVE, ""));
+  // Only while no other `"` came first: an open string or `accDescr {` there could end inside the label.
+  let quoteFree = true;
   return out
     .replace(DIRECTIVE, (block) => (STYLE_FETCH.test(block) ? "" : block))
     .replace(FRONT_MATTER, (block) => (STYLE_FETCH.test(block) ? "" : block))
@@ -210,7 +218,11 @@ export function stripRemoteDiagramImages(source: string): string {
       });
       return CSS_FETCH.test(decoded) ? `#lt;${tag}` : whole;
     })
-    .replace(/^.*$/gm, (line) => withoutFetchingStyle(line, midLine))
+    .replace(/^.*$/gm, (line) => {
+      const label = stateLabels && quoteFree ? (STATE_LABEL.exec(line)?.[0].length ?? 0) : 0;
+      if (/"|accDescr\s*\{/i.test(line.slice(label))) quoteFree = false;
+      return withoutFetchingStyle(line, midLine, label);
+    })
     .replace(ACTOR_PROPERTIES, (whole, lead: string, head: string, json: string) => {
       const replaced = withoutRemoteIcon(json);
       return replaced === null ? whole : `${lead}${head}${replaced}`;
