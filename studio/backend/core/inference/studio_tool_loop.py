@@ -1430,6 +1430,38 @@ async def stream_with_studio_tools(
     cancel_event: threading.Event,
     mcp_image = None,
 ) -> AsyncIterator[str]:
+    # URL reads started ahead of their turn; a stream closed or failing mid-batch stops them, as closing a
+    # running tool stream does, instead of leaving them to finish against a turn that is gone.
+    started_fetches: dict[int, _StartedToolStream] = {}
+    inner = _stream_with_studio_tools(
+        transport,
+        run = run,
+        policy = policy,
+        cancel_event = cancel_event,
+        mcp_image = mcp_image,
+        started_fetches = started_fetches,
+    )
+    try:
+        async for line in inner:
+            yield line
+    finally:
+        try:
+            await inner.aclose()
+        finally:
+            for started in list(started_fetches.values()):
+                started.close()
+            started_fetches.clear()
+
+
+async def _stream_with_studio_tools(
+    transport: ToolLoopTransport,
+    *,
+    run: ToolLoopRun,
+    policy: ToolLoopPolicy,
+    cancel_event: threading.Event,
+    mcp_image,
+    started_fetches: "dict[int, _StartedToolStream]",
+) -> AsyncIterator[str]:
     # Off the loop: restoring may parse an envelope.
     restored = await asyncio.to_thread(restore_replayed_tool_results, run.messages)
     conversation = [dict(message) for message in restored]
@@ -1846,7 +1878,7 @@ async def stream_with_studio_tools(
         turn_executed_real_tool = False
 
         # URL reads already running for calls later in this batch, by index.
-        started_fetches: dict[int, _StartedToolStream] = {}
+        started_fetches.clear()
         for call_index, call in enumerate(calls):
             if cancel_event.is_set():
                 break
