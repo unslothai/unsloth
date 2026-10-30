@@ -17,10 +17,10 @@ use tauri::{
 const HUD_LABEL: &str = "voice-hud";
 /// The pill itself is compact, while the transparent window gives CSS shadows and
 /// live transcript ticker text breathing room without clipping.
-const HUD_WIDTH: f64 = 360.0;
-const HUD_HEIGHT: f64 = 72.0;
+const HUD_WIDTH: f64 = 248.0;
+const HUD_HEIGHT: f64 = 96.0;
 /// Distance from the top or bottom of the monitor work area to the window edge.
-const WORK_AREA_MARGIN: f64 = 16.0;
+const WORK_AREA_MARGIN: f64 = 4.0;
 
 #[derive(Clone, Default, Serialize)]
 pub struct HudEvent {

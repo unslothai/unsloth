@@ -6,6 +6,11 @@
 
 import { Button } from "@/components/ui/button";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
   Select,
   SelectContent,
   SelectGroup,
@@ -23,6 +28,7 @@ import {
   useChatRuntimeStore,
   useExternalProvidersStore,
 } from "@/features/chat";
+import { useHubInventory } from "@/features/hub";
 import {
   DEFAULT_LLM_POST_PROCESS_PROMPT,
   DEFAULT_VOICE_TYPING_SHORTCUT,
@@ -42,6 +48,7 @@ import {
 } from "@/features/voice-typing";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
@@ -83,6 +90,12 @@ export function VoiceTypingSettingsSection() {
   const setShortcut = useVoiceTypingStore((state) => state.setShortcut);
   const mode = useVoiceTypingStore((state) => state.mode);
   const setMode = useVoiceTypingStore((state) => state.setMode);
+  const grammarFixerEnabled = useVoiceTypingStore(
+    (state) => state.grammarFixerEnabled,
+  );
+  const setGrammarFixerEnabled = useVoiceTypingStore(
+    (state) => state.setGrammarFixerEnabled,
+  );
   const soundEnabled = useVoiceTypingStore((state) => state.soundEnabled);
   const setSoundEnabled = useVoiceTypingStore((state) => state.setSoundEnabled);
   const soundTheme = useVoiceTypingStore((state) => state.soundTheme);
@@ -108,12 +121,6 @@ export function VoiceTypingSettingsSection() {
   const autoStopDelayMs = useVoiceTypingStore((state) => state.autoStopDelayMs);
   const setAutoStopDelayMs = useVoiceTypingStore(
     (state) => state.setAutoStopDelayMs,
-  );
-  const removeFillerWords = useVoiceTypingStore(
-    (state) => state.removeFillerWords,
-  );
-  const setRemoveFillerWords = useVoiceTypingStore(
-    (state) => state.setRemoveFillerWords,
   );
   const spokenPunctuation = useVoiceTypingStore(
     (state) => state.spokenPunctuation,
@@ -149,6 +156,12 @@ export function VoiceTypingSettingsSection() {
   const setLlmPostProcessEnabled = useVoiceTypingStore(
     (state) => state.setLlmPostProcessEnabled,
   );
+  const llmThinkingEnabled = useVoiceTypingStore(
+    (state) => state.llmThinkingEnabled,
+  );
+  const setLlmThinkingEnabled = useVoiceTypingStore(
+    (state) => state.setLlmThinkingEnabled,
+  );
   const llmPostProcessModel = useVoiceTypingStore(
     (state) => state.llmPostProcessModel,
   );
@@ -165,11 +178,12 @@ export function VoiceTypingSettingsSection() {
     (state) => state.resetLlmPostProcessPrompt,
   );
 
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
   const checkpoint = useChatRuntimeStore((state) => state.params.checkpoint);
-  const localModels = useChatRuntimeStore((state) => state.models);
   const externalProviders = useExternalProvidersStore(
     (state) => state.providers,
   );
@@ -178,20 +192,31 @@ export function VoiceTypingSettingsSection() {
   );
 
   const activeChatModelLabel = useMemo(() => {
-    const activeId = (residentCheckpoint || checkpoint || "").trim();
-    if (!activeId) return "";
-    const match = localModels.find((m) => m.id === activeId);
-    if (match?.name) return match.name;
-    return activeId;
-  }, [residentCheckpoint, checkpoint, localModels]);
+    return (residentCheckpoint || checkpoint || "").trim();
+  }, [residentCheckpoint, checkpoint]);
+
+  const hubInventory = useHubInventory();
 
   const llmModelOptions = useMemo(() => {
-    const local = localModels
-      .filter((m) => m.id && !m.isAudio)
-      .map((m) => ({
-        id: m.id,
-        label: m.name || m.id,
-      }));
+    const local: { id: string; label: string }[] = [];
+    const seen = new Set<string>();
+
+    for (const r of hubInventory.cachedRows ?? []) {
+      if (r.liveDownload || r.isAudio) continue;
+      const id = r.loadId || r.repoId;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      local.push({ id, label: r.repoId || id });
+    }
+
+    for (const r of hubInventory.localRows ?? []) {
+      if (r.isAudio || !r.capabilities?.canChat) continue;
+      const id = r.modelId || r.path;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      local.push({ id, label: r.name || r.modelId || id });
+    }
+
     const external: { id: string; label: string; group: string }[] = [];
     if (connectionsEnabled) {
       for (const provider of externalProviders) {
@@ -209,7 +234,7 @@ export function VoiceTypingSettingsSection() {
       }
     }
     return { local, external };
-  }, [localModels, externalProviders, connectionsEnabled]);
+  }, [hubInventory.cachedRows, hubInventory.localRows, externalProviders, connectionsEnabled]);
 
   const [info, setInfo] = useState<VoiceTypingInfo | null>(null);
   const [capturing, setCapturing] = useState(false);
@@ -389,160 +414,14 @@ export function VoiceTypingSettingsSection() {
           </SettingsRow>
 
           <SettingsRow
-            label={t("settings.voice.voiceTyping.hudPositionLabel")}
-            description={t("settings.voice.voiceTyping.hudPositionDescription")}
-          >
-            <Select
-              value={hudPosition}
-              onValueChange={(value) =>
-                setHudPosition(value as VoiceTypingHudPosition)
-              }
-            >
-              <SelectTrigger
-                size="sm"
-                className="w-56"
-                data-testid="voice-typing-hud-position"
-                aria-label={t("settings.voice.voiceTyping.hudPositionLabel")}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {VOICE_TYPING_HUD_POSITIONS.map((pos) => (
-                  <SelectItem key={pos} value={pos}>
-                    {t(HUD_POSITION_LABEL[pos])}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </SettingsRow>
-
-          <SettingsRow
-            label={t("settings.voice.voiceTyping.muteAudioLabel")}
-            description={t("settings.voice.voiceTyping.muteAudioDescription")}
+            label="Advanced Grammar Fixer"
+            description="Ultra-fast on-device correction for casing, repeated words, a/an articles, contractions, and punctuation"
           >
             <Switch
-              checked={muteWhileRecording}
-              onCheckedChange={setMuteWhileRecording}
-              data-testid="voice-typing-mute-audio"
-              aria-label={t("settings.voice.voiceTyping.muteAudioLabel")}
-            />
-          </SettingsRow>
-
-          <SettingsRow
-            label={t("settings.voice.voiceTyping.pasteLabel")}
-            description={t("settings.voice.voiceTyping.pasteDescription")}
-          >
-            <Switch
-              checked={pasteAutomatically}
-              onCheckedChange={setPasteAutomatically}
-              data-testid="voice-typing-paste"
-              aria-label={t("settings.voice.voiceTyping.pasteLabel")}
-            />
-          </SettingsRow>
-
-          {pasteAutomatically ? (
-            <>
-              <SettingsRow
-                label={t("settings.voice.voiceTyping.pasteMethodLabel")}
-                description={t(
-                  "settings.voice.voiceTyping.pasteMethodDescription",
-                )}
-              >
-                <Select
-                  value={pasteMethod}
-                  onValueChange={(value) =>
-                    setPasteMethod(value as VoiceTypingPasteMethod)
-                  }
-                >
-                  <SelectTrigger
-                    size="sm"
-                    className="w-56"
-                    data-testid="voice-typing-paste-method"
-                    aria-label={t(
-                      "settings.voice.voiceTyping.pasteMethodLabel",
-                    )}
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {VOICE_TYPING_PASTE_METHODS.map((method) => (
-                      <SelectItem key={method} value={method}>
-                        {t(PASTE_METHOD_LABEL[method])}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </SettingsRow>
-
-              <SettingsRow
-                label={t("settings.voice.voiceTyping.submitLabel")}
-                description={t("settings.voice.voiceTyping.submitDescription")}
-              >
-                <Switch
-                  checked={submitAfterInsert}
-                  onCheckedChange={setSubmitAfterInsert}
-                  data-testid="voice-typing-submit"
-                  aria-label={t("settings.voice.voiceTyping.submitLabel")}
-                />
-              </SettingsRow>
-            </>
-          ) : null}
-
-          <SettingsRow
-            label={t("settings.voice.voiceTyping.trailingSpaceLabel")}
-            description={t(
-              "settings.voice.voiceTyping.trailingSpaceDescription",
-            )}
-          >
-            <Switch
-              checked={appendTrailingSpace}
-              onCheckedChange={setAppendTrailingSpace}
-              data-testid="voice-typing-trailing-space"
-              aria-label={t("settings.voice.voiceTyping.trailingSpaceLabel")}
-            />
-          </SettingsRow>
-
-          {pasteAutomatically ? (
-            <SettingsRow
-              label={t("settings.voice.voiceTyping.copyTranscriptLabel")}
-              description={t(
-                "settings.voice.voiceTyping.copyTranscriptDescription",
-              )}
-            >
-              <Switch
-                checked={copyLastTranscript}
-                onCheckedChange={setCopyLastTranscript}
-                data-testid="voice-typing-copy-transcript"
-                aria-label={t("settings.voice.voiceTyping.copyTranscriptLabel")}
-              />
-            </SettingsRow>
-          ) : null}
-
-          <SettingsRow
-            label={t("settings.voice.voiceTyping.fillerWordsLabel")}
-            description={t("settings.voice.voiceTyping.fillerWordsDescription")}
-          >
-            <Switch
-              checked={removeFillerWords}
-              onCheckedChange={setRemoveFillerWords}
-              data-testid="voice-typing-filler-words"
-              aria-label={t("settings.voice.voiceTyping.fillerWordsLabel")}
-            />
-          </SettingsRow>
-
-          <SettingsRow
-            label={t("settings.voice.voiceTyping.spokenPunctuationLabel")}
-            description={t(
-              "settings.voice.voiceTyping.spokenPunctuationDescription",
-            )}
-          >
-            <Switch
-              checked={spokenPunctuation}
-              onCheckedChange={setSpokenPunctuation}
-              data-testid="voice-typing-spoken-punctuation"
-              aria-label={t(
-                "settings.voice.voiceTyping.spokenPunctuationLabel",
-              )}
+              checked={grammarFixerEnabled}
+              onCheckedChange={setGrammarFixerEnabled}
+              data-testid="voice-typing-grammar-fixer"
+              aria-label="Advanced Grammar Fixer"
             />
           </SettingsRow>
 
@@ -599,7 +478,11 @@ export function VoiceTypingSettingsSection() {
                           </SelectItem>
                         ))}
                       </SelectGroup>
-                    ) : null}
+                    ) : (
+                      <SelectItem value="__no_local__" disabled className="text-xs text-muted-foreground italic">
+                        No downloaded models found on this device
+                      </SelectItem>
+                    )}
                     {llmModelOptions.external.length > 0 ? (
                       <SelectGroup>
                         <SelectLabel>
@@ -618,6 +501,18 @@ export function VoiceTypingSettingsSection() {
                 </Select>
               </SettingsRow>
 
+              <SettingsRow
+                label="Model Thinking"
+                description="Allow model reasoning tokens (disabled by default for lightning-fast dictation)"
+              >
+                <Switch
+                  checked={llmThinkingEnabled}
+                  onCheckedChange={setLlmThinkingEnabled}
+                  data-testid="voice-typing-llm-thinking"
+                  aria-label="Model Thinking"
+                />
+              </SettingsRow>
+
               <div className="flex flex-col gap-2 py-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <div>
@@ -628,16 +523,15 @@ export function VoiceTypingSettingsSection() {
                       {t("settings.voice.voiceTyping.llmPromptDescription")}
                     </div>
                   </div>
-                  {promptModified ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      data-testid="voice-typing-llm-prompt-reset"
-                      onClick={resetLlmPostProcessPrompt}
-                    >
-                      {t("settings.voice.voiceTyping.llmPromptReset")}
-                    </Button>
-                  ) : null}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={!promptModified}
+                    data-testid="voice-typing-llm-prompt-reset"
+                    onClick={resetLlmPostProcessPrompt}
+                  >
+                    {t("settings.voice.voiceTyping.llmPromptReset")}
+                  </Button>
                 </div>
                 <Textarea
                   value={llmPostProcessPrompt}
@@ -653,158 +547,389 @@ export function VoiceTypingSettingsSection() {
             </>
           ) : null}
 
-          <SettingsRow
-            label={t("settings.voice.voiceTyping.autoStopLabel")}
-            description={t("settings.voice.voiceTyping.autoStopDescription")}
+          {/* Collapsible Advanced Settings */}
+          <Collapsible
+            open={showAdvanced}
+            onOpenChange={setShowAdvanced}
+            className="w-full pt-2"
           >
-            <Switch
-              checked={autoStopSilence}
-              onCheckedChange={setAutoStopSilence}
-              data-testid="voice-typing-auto-stop"
-              aria-label={t("settings.voice.voiceTyping.autoStopLabel")}
-            />
-          </SettingsRow>
+            <div className="flex items-center justify-between border-t border-border/40 py-2.5">
+              <span className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                More / Advanced Settings
+              </span>
+              <CollapsibleTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-7 text-xs">
+                  {showAdvanced ? "Hide Advanced" : "Show Advanced"}
+                  <HugeiconsIcon
+                    icon={ChevronDownStandardIcon}
+                    className={`ml-1 size-3.5 transition-transform duration-200 ${
+                      showAdvanced ? "rotate-180" : ""
+                    }`}
+                  />
+                </Button>
+              </CollapsibleTrigger>
+            </div>
 
-          {autoStopSilence ? (
-            <SettingsRow
-              label={t("settings.voice.voiceTyping.autoStopDelayLabel")}
-              description={t(
-                "settings.voice.voiceTyping.autoStopDelayDescription",
-              )}
-            >
-              <Select
-                value={String(autoStopDelayMs)}
-                onValueChange={(value) => setAutoStopDelayMs(Number(value))}
-              >
-                <SelectTrigger
-                  size="sm"
-                  className="w-56"
-                  data-testid="voice-typing-auto-stop-delay"
-                  aria-label={t(
-                    "settings.voice.voiceTyping.autoStopDelayLabel",
-                  )}
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="1500">
-                    {t("settings.voice.voiceTyping.seconds", {
-                      seconds: "1.5",
-                    })}
-                  </SelectItem>
-                  <SelectItem value="2500">
-                    {t("settings.voice.voiceTyping.seconds", {
-                      seconds: "2.5",
-                    })}
-                  </SelectItem>
-                  <SelectItem value="4000">
-                    {t("settings.voice.voiceTyping.seconds", { seconds: 4 })}
-                  </SelectItem>
-                  <SelectItem value="6000">
-                    {t("settings.voice.voiceTyping.seconds", { seconds: 6 })}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </SettingsRow>
-          ) : null}
-
-          <SettingsRow
-            label={t("settings.voice.voiceTyping.soundsLabel")}
-            description={t("settings.voice.voiceTyping.soundsDescription")}
-          >
-            <Switch
-              checked={soundEnabled}
-              onCheckedChange={setSoundEnabled}
-              data-testid="voice-typing-sounds"
-              aria-label={t("settings.voice.voiceTyping.soundsLabel")}
-            />
-          </SettingsRow>
-
-          {soundEnabled ? (
-            <>
+            <CollapsibleContent className="flex flex-col gap-0">
               <SettingsRow
-                label={t("settings.voice.voiceTyping.soundsThemeLabel")}
+                label={t("settings.voice.voiceTyping.hudPositionLabel")}
                 description={t(
-                  "settings.voice.voiceTyping.soundsThemeDescription",
+                  "settings.voice.voiceTyping.hudPositionDescription",
                 )}
               >
-                <div className="flex items-center gap-2">
+                <Select
+                  value={hudPosition}
+                  onValueChange={(value) =>
+                    setHudPosition(value as VoiceTypingHudPosition)
+                  }
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="w-56"
+                    data-testid="voice-typing-hud-position"
+                    aria-label={t(
+                      "settings.voice.voiceTyping.hudPositionLabel",
+                    )}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {VOICE_TYPING_HUD_POSITIONS.map((pos) => (
+                      <SelectItem key={pos} value={pos}>
+                        {t(HUD_POSITION_LABEL[pos])}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingsRow>
+
+              <SettingsRow
+                label={t("settings.voice.voiceTyping.muteAudioLabel")}
+                description={t(
+                  "settings.voice.voiceTyping.muteAudioDescription",
+                )}
+              >
+                <Switch
+                  checked={muteWhileRecording}
+                  onCheckedChange={setMuteWhileRecording}
+                  data-testid="voice-typing-mute-audio"
+                  aria-label={t("settings.voice.voiceTyping.muteAudioLabel")}
+                />
+              </SettingsRow>
+
+              <SettingsRow
+                label={t("settings.voice.voiceTyping.pasteLabel")}
+                description={t("settings.voice.voiceTyping.pasteDescription")}
+              >
+                <Switch
+                  checked={pasteAutomatically}
+                  onCheckedChange={setPasteAutomatically}
+                  data-testid="voice-typing-paste"
+                  aria-label={t("settings.voice.voiceTyping.pasteLabel")}
+                />
+              </SettingsRow>
+
+              {pasteAutomatically ? (
+                <>
+                  <SettingsRow
+                    label={t("settings.voice.voiceTyping.pasteMethodLabel")}
+                    description={t(
+                      "settings.voice.voiceTyping.pasteMethodDescription",
+                    )}
+                  >
+                    <Select
+                      value={pasteMethod}
+                      onValueChange={(value) =>
+                        setPasteMethod(value as VoiceTypingPasteMethod)
+                      }
+                    >
+                      <SelectTrigger
+                        size="sm"
+                        className="w-56"
+                        data-testid="voice-typing-paste-method"
+                        aria-label={t(
+                          "settings.voice.voiceTyping.pasteMethodLabel",
+                        )}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {VOICE_TYPING_PASTE_METHODS.map((method) => (
+                          <SelectItem key={method} value={method}>
+                            {t(PASTE_METHOD_LABEL[method])}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </SettingsRow>
+
+                  <SettingsRow
+                    label={t("settings.voice.voiceTyping.submitLabel")}
+                    description={t(
+                      "settings.voice.voiceTyping.submitDescription",
+                    )}
+                  >
+                    <Switch
+                      checked={submitAfterInsert}
+                      onCheckedChange={setSubmitAfterInsert}
+                      data-testid="voice-typing-submit"
+                      aria-label={t("settings.voice.voiceTyping.submitLabel")}
+                    />
+                  </SettingsRow>
+                </>
+              ) : null}
+
+              <SettingsRow
+                label={t("settings.voice.voiceTyping.trailingSpaceLabel")}
+                description={t(
+                  "settings.voice.voiceTyping.trailingSpaceDescription",
+                )}
+              >
+                <Switch
+                  checked={appendTrailingSpace}
+                  onCheckedChange={setAppendTrailingSpace}
+                  data-testid="voice-typing-trailing-space"
+                  aria-label={t(
+                    "settings.voice.voiceTyping.trailingSpaceLabel",
+                  )}
+                />
+              </SettingsRow>
+
+              {pasteAutomatically ? (
+                <SettingsRow
+                  label={t("settings.voice.voiceTyping.copyTranscriptLabel")}
+                  description={t(
+                    "settings.voice.voiceTyping.copyTranscriptDescription",
+                  )}
+                >
+                  <Switch
+                    checked={copyLastTranscript}
+                    onCheckedChange={setCopyLastTranscript}
+                    data-testid="voice-typing-copy-transcript"
+                    aria-label={t(
+                      "settings.voice.voiceTyping.copyTranscriptLabel",
+                    )}
+                  />
+                </SettingsRow>
+              ) : null}
+
+              <SettingsRow
+                label={t("settings.voice.voiceTyping.spokenPunctuationLabel")}
+                description={t(
+                  "settings.voice.voiceTyping.spokenPunctuationDescription",
+                )}
+              >
+                <Switch
+                  checked={spokenPunctuation}
+                  onCheckedChange={setSpokenPunctuation}
+                  data-testid="voice-typing-spoken-punctuation"
+                  aria-label={t(
+                    "settings.voice.voiceTyping.spokenPunctuationLabel",
+                  )}
+                />
+              </SettingsRow>
+
+              <SettingsRow
+                label={t("settings.voice.voiceTyping.autoStopLabel")}
+                description={t(
+                  "settings.voice.voiceTyping.autoStopDescription",
+                )}
+              >
+                <Switch
+                  checked={autoStopSilence}
+                  onCheckedChange={setAutoStopSilence}
+                  data-testid="voice-typing-auto-stop"
+                  aria-label={t("settings.voice.voiceTyping.autoStopLabel")}
+                />
+              </SettingsRow>
+
+              {autoStopSilence ? (
+                <SettingsRow
+                  label={t("settings.voice.voiceTyping.autoStopDelayLabel")}
+                  description={t(
+                    "settings.voice.voiceTyping.autoStopDelayDescription",
+                  )}
+                >
                   <Select
-                    value={soundTheme}
-                    onValueChange={(value) =>
-                      setSoundTheme(value as VoiceTypingSoundTheme)
-                    }
+                    value={String(autoStopDelayMs)}
+                    onValueChange={(value) => setAutoStopDelayMs(Number(value))}
                   >
                     <SelectTrigger
                       size="sm"
-                      className="w-44"
-                      data-testid="voice-typing-sound-theme"
+                      className="w-56"
+                      data-testid="voice-typing-auto-stop-delay"
                       aria-label={t(
-                        "settings.voice.voiceTyping.soundsThemeLabel",
+                        "settings.voice.voiceTyping.autoStopDelayLabel",
                       )}
                     >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {VOICE_TYPING_SOUND_THEMES.map((theme) => (
-                        <SelectItem key={theme} value={theme}>
-                          {t(SOUND_THEME_LABEL[theme])}
-                        </SelectItem>
-                      ))}
+                      <SelectItem value="1500">
+                        {t("settings.voice.voiceTyping.seconds", {
+                          seconds: "1.5",
+                        })}
+                      </SelectItem>
+                      <SelectItem value="2500">
+                        {t("settings.voice.voiceTyping.seconds", {
+                          seconds: "2.5",
+                        })}
+                      </SelectItem>
+                      <SelectItem value="4000">
+                        {t("settings.voice.voiceTyping.seconds", {
+                          seconds: 4,
+                        })}
+                      </SelectItem>
+                      <SelectItem value="6000">
+                        {t("settings.voice.voiceTyping.seconds", {
+                          seconds: 6,
+                        })}
+                      </SelectItem>
                     </SelectContent>
                   </Select>
-                  <Button
-                    variant="outline"
-                    size="icon-sm"
-                    className="size-8 aspect-square shrink-0 rounded-md p-0"
-                    data-testid="voice-typing-sound-preview"
-                    aria-label={t("settings.voice.voiceTyping.soundsPreview")}
-                    onClick={() =>
-                      previewVoiceTypingSound(soundTheme, effectiveVolume)
-                    }
-                  >
-                    <HugeiconsIcon icon={Volume02Icon} className="size-3.5" />
-                  </Button>
-                </div>
-              </SettingsRow>
+                </SettingsRow>
+              ) : null}
 
               <SettingsRow
-                label={t("settings.voice.voiceTyping.soundsVolumeLabel")}
-                description={t(
-                  "settings.voice.voiceTyping.soundsVolumeDescription",
-                )}
+                label={t("settings.voice.voiceTyping.soundsLabel")}
+                description={t("settings.voice.voiceTyping.soundsDescription")}
               >
-                <div className="flex items-center gap-3">
-                  <Slider
-                    value={[effectiveVolume]}
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    onValueChange={([value]) => {
-                      if (value !== undefined) {
-                        const snapped = Math.round(value * 20) / 20;
-                        setDraftVolume(snapped);
-                      }
-                    }}
-                    onValueCommit={([value]) => {
-                      if (value !== undefined) {
-                        const snapped = Math.round(value * 20) / 20;
-                        setSoundVolume(snapped);
-                      }
-                      setDraftVolume(null);
-                    }}
-                    className="w-44"
-                    aria-label={t(
-                      "settings.voice.voiceTyping.soundsVolumeLabel",
-                    )}
-                  />
-                  <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">
-                    {Math.round(effectiveVolume * 100)}%
-                  </span>
-                </div>
+                <Switch
+                  checked={soundEnabled}
+                  onCheckedChange={setSoundEnabled}
+                  data-testid="voice-typing-sounds"
+                  aria-label={t("settings.voice.voiceTyping.soundsLabel")}
+                />
               </SettingsRow>
-            </>
-          ) : null}
+
+              {soundEnabled ? (
+                <>
+                  <SettingsRow
+                    label={t("settings.voice.voiceTyping.soundsThemeLabel")}
+                    description={t(
+                      "settings.voice.voiceTyping.soundsThemeDescription",
+                    )}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Select
+                        value={soundTheme}
+                        onValueChange={(value) =>
+                          setSoundTheme(value as VoiceTypingSoundTheme)
+                        }
+                      >
+                        <SelectTrigger
+                          size="sm"
+                          className="w-44"
+                          data-testid="voice-typing-sound-theme"
+                          aria-label={t(
+                            "settings.voice.voiceTyping.soundsThemeLabel",
+                          )}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {VOICE_TYPING_SOUND_THEMES.map((theme) => (
+                            <SelectItem
+                              key={theme}
+                              value={theme}
+                              className="group flex w-full items-center justify-between pr-2"
+                              onMouseEnter={() =>
+                                previewVoiceTypingSound(theme, effectiveVolume)
+                              }
+                            >
+                              <span>{t(SOUND_THEME_LABEL[theme])}</span>
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                className="ml-2 inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:text-foreground opacity-60 hover:opacity-100"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  previewVoiceTypingSound(
+                                    theme,
+                                    effectiveVolume,
+                                  );
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    previewVoiceTypingSound(
+                                      theme,
+                                      effectiveVolume,
+                                    );
+                                  }
+                                }}
+                                title="Play sound preview"
+                              >
+                                <HugeiconsIcon
+                                  icon={Volume02Icon}
+                                  className="size-3"
+                                />
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        className="size-8 aspect-square shrink-0 rounded-md p-0"
+                        data-testid="voice-typing-sound-preview"
+                        aria-label={t(
+                          "settings.voice.voiceTyping.soundsPreview",
+                        )}
+                        onClick={() =>
+                          previewVoiceTypingSound(soundTheme, effectiveVolume)
+                        }
+                      >
+                        <HugeiconsIcon
+                          icon={Volume02Icon}
+                          className="size-3.5"
+                        />
+                      </Button>
+                    </div>
+                  </SettingsRow>
+
+                  <SettingsRow
+                    label={t("settings.voice.voiceTyping.soundsVolumeLabel")}
+                    description={t(
+                      "settings.voice.voiceTyping.soundsVolumeDescription",
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <Slider
+                        value={[effectiveVolume]}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        onValueChange={([value]) => {
+                          if (value !== undefined) {
+                            const snapped = Math.round(value * 20) / 20;
+                            setDraftVolume(snapped);
+                          }
+                        }}
+                        onValueCommit={([value]) => {
+                          if (value !== undefined) {
+                            const snapped = Math.round(value * 20) / 20;
+                            setSoundVolume(snapped);
+                          }
+                          setDraftVolume(null);
+                        }}
+                        className="w-44"
+                        aria-label={t(
+                          "settings.voice.voiceTyping.soundsVolumeLabel",
+                        )}
+                      />
+                      <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">
+                        {Math.round(effectiveVolume * 100)}%
+                      </span>
+                    </div>
+                  </SettingsRow>
+                </>
+              ) : null}
+            </CollapsibleContent>
+          </Collapsible>
         </>
       ) : null}
     </SettingsSection>

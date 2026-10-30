@@ -19,6 +19,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   audioCppSizeLabel,
   isAudioCppFolderId,
@@ -324,11 +325,13 @@ function SttModelPicker({
         <span className="min-w-0 flex-1 truncate">
           <span className="flex items-center gap-1.5 truncate text-xs">
             {isDownloaded ? (
-              <span
-                role="img"
-                aria-label={t("picker.onDevice")}
-                className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success"
-              />
+              <Tooltip content={t("picker.onDevice")}>
+                <span
+                  role="img"
+                  aria-label={t("picker.onDevice")}
+                  className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success inline-block"
+                />
+              </Tooltip>
             ) : null}
             <span className="truncate" title={sttModelName(model)}>
               {sttModelName(model)}
@@ -431,24 +434,12 @@ function SttModelPicker({
             </div>
           ) : (
             <>
-              {groupedItems.downloaded.length > 0 ? (
-                <div className="mb-1">
-                  <div className="px-2.5 py-1 text-ui-10 font-semibold tracking-wider text-muted-foreground uppercase">
-                    {t("settings.voice.dictation.sttGroupDownloaded")}
-                  </div>
-                  {groupedItems.downloaded.map(renderModelRow)}
-                </div>
+              {groupedItems.downloaded.map(renderModelRow)}
+              {groupedItems.downloaded.length > 0 &&
+              groupedItems.available.length > 0 ? (
+                <div className="my-1.5 border-t border-border/50" />
               ) : null}
-              {groupedItems.available.length > 0 ? (
-                <div>
-                  {groupedItems.downloaded.length > 0 ? (
-                    <div className="px-2.5 py-1 text-ui-10 font-semibold tracking-wider text-muted-foreground uppercase">
-                      {t("settings.voice.dictation.sttGroupAvailable")}
-                    </div>
-                  ) : null}
-                  {groupedItems.available.map(renderModelRow)}
-                </div>
-              ) : null}
+              {groupedItems.available.map(renderModelRow)}
             </>
           )}
         </div>
@@ -855,9 +846,12 @@ export function VoiceTab() {
     state: SttDownloadAvailability;
   }>({ repoId: "", state: "checking" });
   const rowSttDownloadAvailability =
-    sttDownloadAvailability.repoId === sttRepoId
-      ? sttDownloadAvailability.state
-      : "checking";
+    downloadedSttModels.has(sttModel) ||
+    (sttRepoId && downloadedSttModels.has(sttRepoId))
+      ? "downloaded"
+      : sttDownloadAvailability.repoId === sttRepoId
+        ? sttDownloadAvailability.state
+        : "checking";
   // Status knows rows, not quants: a pinned quant of a row with another one cached is missing, or
   // failed when its download did, as a row's would.
   const effectiveSttDownloadAvailability =
@@ -896,38 +890,61 @@ export function VoiceTab() {
           status.mtmd,
           status.audiocpp,
         ];
-        setDownloadedSttModels(
-          new Set(engines.flatMap((engine) => engine?.downloaded_models ?? [])),
+        const allDownloaded = new Set(
+          engines.flatMap((engine) => engine?.downloaded_models ?? []),
         );
-        setLoadedSttModels(
-          new Set(
-            engines
-              .map((engine) => engine?.loaded_model)
-              .filter((m): m is string => typeof m === "string" && !!m),
-          ),
+        const allLoaded = new Set(
+          engines
+            .map((engine) => engine?.loaded_model)
+            .filter((m): m is string => typeof m === "string" && !!m),
         );
-        // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
-        // backend serves it through Transformers instead of failing. Fall back to the Transformers
-        // status here too, or the model shows as unavailable and download is blocked even though it
-        // works. mtmd and audio.cpp models run nowhere else, so they never fall back.
+        setDownloadedSttModels(allDownloaded);
+        setLoadedSttModels(allLoaded);
+
         const engineStatus = sttEngineStatusFor(status, sttModel);
-        if (!engineStatus?.available) {
+        if (
+          !engineStatus?.available &&
+          !allLoaded.has(sttModel) &&
+          !(sttRepoId && allLoaded.has(sttRepoId))
+        ) {
           setSttPhase("unavailable");
           return;
         }
-        const rowLoaded = engineStatus.loaded_model === sttModel;
+
+        const loadedEngine = engines.find(
+          (e) =>
+            e?.loaded_model === sttModel ||
+            (sttRepoId && e?.loaded_model === sttRepoId),
+        );
+        const rowLoaded = loadedEngine !== undefined;
         setSttLoadedVariant(
-          rowLoaded ? (engineStatus.loaded_variant ?? null) : null,
+          rowLoaded ? (loadedEngine.loaded_variant ?? null) : null,
         );
         // A pinned quant is ready only when that quant is the resident one.
         const loaded =
           rowLoaded &&
-          (!sttVariant || engineStatus.loaded_variant === sttVariant);
-        const download = engineStatus.download;
+          (!sttVariant || loadedEngine.loaded_variant === sttVariant);
+
+        const isModelDownloaded =
+          allDownloaded.has(sttModel) ||
+          (sttRepoId ? allDownloaded.has(sttRepoId) : false) ||
+          engines.some(
+            (e) =>
+              e?.downloaded_models?.includes(sttModel) ||
+              (sttRepoId && e?.downloaded_models?.includes(sttRepoId)),
+          );
+
+        const download = engineStatus?.download ?? {
+          downloading: false,
+          model: null,
+          bytes_done: 0,
+          bytes_total: 0,
+          error: null,
+        };
         setSttDownload(download);
         setSttDownloadAvailability({
           repoId: sttRepoId,
-          state: engineStatus.downloaded_models.includes(sttModel)
+          state: isModelDownloaded
             ? "downloaded"
             : download.error
               ? "error"
@@ -1529,6 +1546,22 @@ export function VoiceTab() {
                   loadedModels={loadedSttModels}
                   onChange={(next) => {
                     setSttModel(next);
+                    const nextRepo = getSttModelRepo(next);
+                    if (
+                      loadedSttModels.has(next) ||
+                      (nextRepo && loadedSttModels.has(nextRepo))
+                    ) {
+                      setSttPhase("ready");
+                    } else if (
+                      downloadedSttModels.has(next) ||
+                      (nextRepo && downloadedSttModels.has(nextRepo))
+                    ) {
+                      setSttPhase("on-demand");
+                      setSttDownloadAvailability({
+                        repoId: nextRepo,
+                        state: "downloaded",
+                      });
+                    }
                   }}
                 />
                 {/* A saved key names its own quant, so only package folder rows offer one. */}

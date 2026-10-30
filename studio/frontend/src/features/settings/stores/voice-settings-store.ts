@@ -35,7 +35,7 @@ export const MAX_DICTIONARY_ENTRIES = 300;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 
 export const RECENT_DICTATION_LIMIT_OPTIONS = [0, 5, 10, 25, 50] as const;
-export const DEFAULT_MAX_RECENT_DICTATIONS = 0;
+export const DEFAULT_MAX_RECENT_DICTATIONS = 5;
 
 export const STT_KEEP_ALIVE_OPTIONS = [300, 900, 1800, 3600, 0] as const;
 export const DEFAULT_STT_KEEP_ALIVE_SECONDS = 300;
@@ -199,6 +199,124 @@ export function buildDefaultDictationDictionary(
   return result.slice(0, MAX_DICTIONARY_ENTRIES);
 }
 
+export interface DictionaryCollection {
+  id: string;
+  name: string;
+  isDefault?: boolean;
+  words: string[];
+}
+
+export function buildDefaultCollections(
+  displayName?: string,
+  nickname?: string,
+): DictionaryCollection[] {
+  return [
+    {
+      id: "default",
+      name: "Default Vocabulary",
+      isDefault: true,
+      words: buildDefaultDictationDictionary(displayName, nickname),
+    },
+    {
+      id: "custom",
+      name: "My Words",
+      words: [],
+    },
+  ];
+}
+
+export function aggregateCollectionsWords(
+  collections: DictionaryCollection[],
+): string[] {
+  const seen = new Set<string>();
+  const words: string[] = [];
+  for (const col of collections) {
+    for (const word of col.words) {
+      const lower = word.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        words.push(word);
+      }
+    }
+  }
+  return words;
+}
+
+export function normalizeSavedCollections(
+  savedCollections: unknown,
+  savedDictionary: unknown,
+): { collections: DictionaryCollection[]; activeCollectionId: string } {
+  const defaultCollectionWords = buildDefaultDictationDictionary();
+  const defaultCollection: DictionaryCollection = {
+    id: "default",
+    name: "Default Vocabulary",
+    isDefault: true,
+    words: defaultCollectionWords,
+  };
+
+  if (Array.isArray(savedCollections) && savedCollections.length > 0) {
+    const valid: DictionaryCollection[] = [];
+    let hasDefault = false;
+    for (const c of savedCollections) {
+      if (!c || typeof c !== "object") continue;
+      const candidate = c as Partial<DictionaryCollection>;
+      const id =
+        typeof candidate.id === "string" && candidate.id
+          ? candidate.id
+          : `col-${Math.random().toString(36).slice(2, 8)}`;
+      const name =
+        typeof candidate.name === "string" && candidate.name
+          ? candidate.name
+          : "Custom";
+      const words = Array.isArray(candidate.words)
+        ? candidate.words
+            .filter((w): w is string => typeof w === "string" && !!w.trim())
+            .map((w) => w.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH))
+        : [];
+      if (candidate.isDefault || id === "default") {
+        hasDefault = true;
+        valid.push({
+          id: "default",
+          name: "Default Vocabulary",
+          isDefault: true,
+          words: Array.from(new Set([...words, ...defaultCollectionWords])),
+        });
+      } else {
+        valid.push({ id, name, words });
+      }
+    }
+    if (!hasDefault) {
+      valid.unshift(defaultCollection);
+    }
+    return {
+      collections: valid,
+      activeCollectionId: valid[1]?.id || valid[0]?.id || "default",
+    };
+  }
+
+  // Migrate from flat dictionary array
+  const flatWords = Array.isArray(savedDictionary)
+    ? savedDictionary.filter(
+        (w): w is string => typeof w === "string" && !!w.trim(),
+      )
+    : [];
+  const defaultSet = new Set(defaultCollectionWords.map((w) => w.toLowerCase()));
+  const customWords = flatWords.filter((w) => !defaultSet.has(w.toLowerCase()));
+
+  const collections: DictionaryCollection[] = [
+    defaultCollection,
+    {
+      id: "custom",
+      name: "My Words",
+      words: customWords,
+    },
+  ];
+  return {
+    collections,
+    activeCollectionId: customWords.length > 0 ? "custom" : "default",
+  };
+}
+
 const HF_REPO_ID =
   /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
 
@@ -288,7 +406,32 @@ export interface VoiceSettingsState {
   dictationLanguage: string;
   setDictationLanguage: (value: string) => void;
 
-  /** exact spellings applied to matching transcript words and phrases. */
+  /** Collections of vocabulary words and snippets. */
+  collections: DictionaryCollection[];
+  activeCollectionId: string;
+  setActiveCollectionId: (id: string) => void;
+  addCollection: (name: string) => void;
+  removeCollection: (id: string) => void;
+  renameCollection: (id: string, name: string) => void;
+  addWordToCollection: (collectionId: string, word: string) => void;
+  updateWordInCollection: (
+    collectionId: string,
+    index: number,
+    word: string,
+  ) => void;
+  commitWordInCollection: (collectionId: string, index: number) => void;
+  removeWordFromCollection: (collectionId: string, index: number) => void;
+  batchRemoveWordsFromCollection: (
+    collectionId: string,
+    indices: number[],
+  ) => void;
+  batchMoveWordsToCollection: (
+    sourceId: string,
+    targetId: string,
+    indices: number[],
+  ) => void;
+
+  /** exact spellings applied to matching transcript words and phrases (aggregated). */
   dictionary: string[];
   dictionarySeeded: boolean;
   addDictionaryEntry: (value: string) => void;
@@ -436,22 +579,200 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
               },
         ),
 
+      collections: buildDefaultCollections(),
+      activeCollectionId: "custom",
+      setActiveCollectionId: (activeCollectionId) =>
+        set({ activeCollectionId }),
+
+      addCollection: (name) =>
+        set((state) => {
+          const trimmed = name.trim();
+          if (!trimmed) return state;
+          const id = `col-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          const newCol: DictionaryCollection = {
+            id,
+            name: trimmed,
+            words: [],
+          };
+          const collections = [...state.collections, newCol];
+          return {
+            collections,
+            activeCollectionId: id,
+            dictionary: aggregateCollectionsWords(collections),
+          };
+        }),
+
+      removeCollection: (id) =>
+        set((state) => {
+          const collections = state.collections.filter(
+            (c) => c.id !== id || c.isDefault,
+          );
+          const activeCollectionId =
+            state.activeCollectionId === id
+              ? collections[0]?.id ?? "default"
+              : state.activeCollectionId;
+          return {
+            collections,
+            activeCollectionId,
+            dictionary: aggregateCollectionsWords(collections),
+          };
+        }),
+
+      renameCollection: (id, name) =>
+        set((state) => {
+          const trimmed = name.trim();
+          if (!trimmed) return state;
+          const collections = state.collections.map((c) =>
+            c.id === id && !c.isDefault ? { ...c, name: trimmed } : c,
+          );
+          return { collections };
+        }),
+
+      addWordToCollection: (collectionId, word) =>
+        set((state) => {
+          const trimmed = word.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH);
+          if (!trimmed) return state;
+          const collections = state.collections.map((col) => {
+            if (col.id !== collectionId) return col;
+            if (
+              col.words.some(
+                (w) => w.toLowerCase() === trimmed.toLowerCase(),
+              )
+            ) {
+              return col;
+            }
+            return { ...col, words: [...col.words, trimmed] };
+          });
+          return {
+            collections,
+            dictionary: aggregateCollectionsWords(collections),
+            dictionarySeeded: true,
+          };
+        }),
+
+      updateWordInCollection: (collectionId, index, word) =>
+        set((state) => {
+          const collections = state.collections.map((col) => {
+            if (col.id !== collectionId) return col;
+            const words = [...col.words];
+            if (index < 0 || index >= words.length) return col;
+            words[index] = word.slice(0, MAX_DICTIONARY_ENTRY_LENGTH);
+            return { ...col, words };
+          });
+          return {
+            collections,
+            dictionary: aggregateCollectionsWords(collections),
+            dictionarySeeded: true,
+          };
+        }),
+
+      commitWordInCollection: (collectionId, index) =>
+        set((state) => {
+          const collections = state.collections.map((col) => {
+            if (col.id !== collectionId) return col;
+            const words = [...col.words];
+            if (index < 0 || index >= words.length) return col;
+            const trimmed = words[index]?.trim();
+            if (trimmed) {
+              words[index] = trimmed;
+            } else {
+              words.splice(index, 1);
+            }
+            return { ...col, words };
+          });
+          return {
+            collections,
+            dictionary: aggregateCollectionsWords(collections),
+            dictionarySeeded: true,
+          };
+        }),
+
+      removeWordFromCollection: (collectionId, index) =>
+        set((state) => {
+          const collections = state.collections.map((col) => {
+            if (col.id !== collectionId) return col;
+            return {
+              ...col,
+              words: col.words.filter((_, i) => i !== index),
+            };
+          });
+          return {
+            collections,
+            dictionary: aggregateCollectionsWords(collections),
+            dictionarySeeded: true,
+          };
+        }),
+
+      batchRemoveWordsFromCollection: (collectionId, indices) =>
+        set((state) => {
+          const toRemove = new Set(indices);
+          const collections = state.collections.map((col) => {
+            if (col.id !== collectionId) return col;
+            return {
+              ...col,
+              words: col.words.filter((_, i) => !toRemove.has(i)),
+            };
+          });
+          return {
+            collections,
+            dictionary: aggregateCollectionsWords(collections),
+            dictionarySeeded: true,
+          };
+        }),
+
+      batchMoveWordsToCollection: (sourceId, targetId, indices) =>
+        set((state) => {
+          const sourceCol = state.collections.find((c) => c.id === sourceId);
+          if (!sourceCol || sourceId === targetId) return state;
+          const movingWords = indices
+            .map((i) => sourceCol.words[i])
+            .filter((w): w is string => typeof w === "string" && !!w);
+          const toRemove = new Set(indices);
+          const collections = state.collections.map((col) => {
+            if (col.id === sourceId) {
+              return {
+                ...col,
+                words: col.words.filter((_, i) => !toRemove.has(i)),
+              };
+            }
+            if (col.id === targetId) {
+              const existing = new Set(col.words.map((w) => w.toLowerCase()));
+              const additions = movingWords.filter(
+                (w) => !existing.has(w.toLowerCase()),
+              );
+              return { ...col, words: [...col.words, ...additions] };
+            }
+            return col;
+          });
+          return {
+            collections,
+            dictionary: aggregateCollectionsWords(collections),
+            dictionarySeeded: true,
+          };
+        }),
+
       dictionary: buildDefaultDictationDictionary(),
       dictionarySeeded: true,
       addDictionaryEntry: (value) =>
         set((state) => {
           const trimmed = value.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH);
           if (!trimmed) return state;
-          if (state.dictionary.length >= MAX_DICTIONARY_ENTRIES) return state;
-          if (
-            state.dictionary.some(
-              (entry) => entry.toLowerCase() === trimmed.toLowerCase(),
-            )
-          ) {
-            return state;
-          }
+          const targetColId =
+            state.activeCollectionId ||
+            state.collections.find((c) => !c.isDefault)?.id ||
+            "custom";
+          const collections = state.collections.map((col) => {
+            if (col.id !== targetColId) return col;
+            if (
+              col.words.some((w) => w.toLowerCase() === trimmed.toLowerCase())
+            ) {
+              return col;
+            }
+            return { ...col, words: [...col.words, trimmed] };
+          });
           return {
-            dictionary: [...state.dictionary, trimmed],
+            collections,
+            dictionary: aggregateCollectionsWords(collections),
             dictionarySeeded: true,
           };
         }),
@@ -476,31 +797,43 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           return { dictionary, dictionarySeeded: true };
         }),
       removeDictionaryEntry: (index) =>
-        set((state) => ({
-          dictionary: state.dictionary.filter((_, i) => i !== index),
-          dictionarySeeded: true,
-        })),
+        set((state) => {
+          const entryToRemove = state.dictionary[index]?.toLowerCase();
+          const collections = state.collections.map((col) => ({
+            ...col,
+            words: col.words.filter((w) => w.toLowerCase() !== entryToRemove),
+          }));
+          return {
+            collections,
+            dictionary: aggregateCollectionsWords(collections),
+            dictionarySeeded: true,
+          };
+        }),
       syncUserNameToDictionary: (displayName, nickname) =>
         set((state) => {
           const userWords = extractUserNameWords(displayName, nickname);
           if (userWords.length === 0) return state;
-          const existingLower = new Set(
-            state.dictionary.map((entry) => entry.toLowerCase()),
-          );
-          const additions = userWords.filter(
-            (word) => !existingLower.has(word.toLowerCase()),
-          );
-          if (additions.length === 0) return state;
+          const collections = state.collections.map((col) => {
+            if (!col.isDefault) return col;
+            const existingLower = new Set(
+              col.words.map((entry) => entry.toLowerCase()),
+            );
+            const additions = userWords.filter(
+              (word) => !existingLower.has(word.toLowerCase()),
+            );
+            if (additions.length === 0) return col;
+            return { ...col, words: [...additions, ...col.words] };
+          });
           return {
-            dictionary: [...additions, ...state.dictionary].slice(
-              0,
-              MAX_DICTIONARY_ENTRIES,
-            ),
+            collections,
+            dictionary: aggregateCollectionsWords(collections),
             dictionarySeeded: true,
           };
         }),
       resetDictionaryToDefaults: () =>
         set({
+          collections: buildDefaultCollections(),
+          activeCollectionId: "custom",
           dictionary: buildDefaultDictationDictionary(),
           dictionarySeeded: true,
         }),
@@ -607,6 +940,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         )
           ? savedSttModel
           : DEFAULT_STT_MODEL;
+        const normalizedCols = normalizeSavedCollections(
+          saved?.collections,
+          saved?.dictionary,
+        );
         return {
           ...current,
           micDeviceId: asString(saved?.micDeviceId, "default"),
@@ -620,10 +957,9 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           sttProviderId: asString(saved?.sttProviderId, ""),
           sttProviderModel: asString(saved?.sttProviderModel, ""),
           dictationLanguage,
-          dictionary: normalizeSavedDictionary(
-            saved?.dictionary,
-            saved?.dictionarySeeded === true,
-          ),
+          collections: normalizedCols.collections,
+          activeCollectionId: normalizedCols.activeCollectionId,
+          dictionary: aggregateCollectionsWords(normalizedCols.collections),
           dictionarySeeded: true,
           sttKeepAliveSeconds: normalizeSttKeepAliveSeconds(
             saved?.sttKeepAliveSeconds,

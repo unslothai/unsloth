@@ -38,6 +38,7 @@ import {
 } from "@/features/settings";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { fixGrammar } from "./grammar-fixer";
 import { invoke } from "@tauri-apps/api/core";
 import { type UnlistenFn, listen } from "@tauri-apps/api/event";
 import {
@@ -453,8 +454,7 @@ export class VoiceTypingController {
     this.lastVoiceAt = 0;
     this.noiseFloorLevel = 0.025;
     this.recordingStartedAt = 0;
-    const { removeFillerWords, spokenPunctuation } =
-      useVoiceTypingStore.getState();
+    const { spokenPunctuation } = useVoiceTypingStore.getState();
     const warm = this.takeWarmStream();
     this.sessionStream = warm;
     let session: StudioDictationSession;
@@ -462,7 +462,7 @@ export class VoiceTypingController {
       session = new StudioModelDictationAdapter({
         chatId: null,
         microphone: warm,
-        removeFillerWords,
+        removeFillerWords: true,
         spokenPunctuation,
         // Use a single JSON response per cut segment so system/UI resources are not
         // spent streaming partial tokens and HTTP disconnect aborts the backend immediately.
@@ -637,6 +637,7 @@ export class VoiceTypingController {
   ): Promise<string> {
     const {
       llmPostProcessEnabled,
+      llmThinkingEnabled,
       llmPostProcessModel,
       llmPostProcessPrompt,
     } = useVoiceTypingStore.getState();
@@ -668,7 +669,10 @@ export class VoiceTypingController {
           stream: false,
           temperature: 0.1,
           max_tokens: Math.max(256, Math.min(2048, rawText.length * 2)),
-          enable_thinking: false,
+          enable_thinking: llmThinkingEnabled,
+          ...(llmThinkingEnabled
+            ? {}
+            : { thinking: { type: "disabled" }, reasoning_effort: "low" }),
           enable_tools: false,
         }),
         signal: controller.signal,
@@ -714,7 +718,11 @@ export class VoiceTypingController {
       }
       return;
     }
-    const text = await this.postProcessTranscript(rawText, token);
+    let text = await this.postProcessTranscript(rawText, token);
+    const { grammarFixerEnabled } = useVoiceTypingStore.getState();
+    if (grammarFixerEnabled) {
+      text = fixGrammar(text);
+    }
     if (this.disposed || token !== this.cancelToken) return;
     if (!text.trim()) {
       this.setPhase("idle");

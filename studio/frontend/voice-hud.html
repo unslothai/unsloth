@@ -29,149 +29,111 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        font-family:
-          system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
-          sans-serif;
         pointer-events: none;
       }
-      /* 336x52 inside a 400x128 window: the side and vertical margins clear the
-         blur radius, so the shadow is never clipped by the transparent bounds. */
+      /* 176x44 pill centred in a 248x96 window: the 26px vertical and 36px side
+         margins clear the shadow, so it is never clipped by the window bounds. */
       .vt-pill {
         box-sizing: border-box;
         display: flex;
         align-items: center;
-        gap: 10px;
-        width: 336px;
-        height: 52px;
-        padding: 0 14px 0 16px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        justify-content: space-between;
+        width: 176px;
+        height: 44px;
+        padding: 0 16px 0 8px;
+        border: 1px solid rgba(255, 255, 255, 0.09);
         border-radius: 999px;
-        background: rgba(15, 17, 21, 0.92);
+        background: rgba(17, 19, 24, 0.94);
         box-shadow:
-          0 10px 26px rgba(0, 0, 0, 0.5),
-          0 2px 6px rgba(0, 0, 0, 0.35),
-          inset 0 1px 0 rgba(255, 255, 255, 0.07);
+          0 6px 16px rgba(0, 0, 0, 0.42),
+          0 1px 3px rgba(0, 0, 0, 0.3),
+          inset 0 1px 0 rgba(255, 255, 255, 0.06);
         color: #e8eaee;
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        animation: vt-in 150ms ease-out;
+        animation: vt-in 140ms ease-out;
       }
-      .vt-dot {
+      .vt-logo {
+        position: relative;
         flex: 0 0 auto;
-        width: 8px;
-        height: 8px;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
         border-radius: 999px;
-        background: var(--vt-accent);
-        box-shadow: 0 0 0 4px
-          color-mix(in srgb, var(--vt-accent) 18%, transparent);
+        background: transparent;
+        cursor: pointer;
+        pointer-events: auto;
+        outline: none;
       }
-      .vt-recording .vt-dot,
-      .vt-preparing .vt-dot {
-        animation: vt-pulse 1.4s ease-in-out infinite;
+      .vt-logo img,
+      .vt-stop {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        border-radius: 999px;
+        transition:
+          opacity 140ms ease,
+          transform 140ms ease;
+      }
+      .vt-logo img {
+        object-fit: cover;
+        -webkit-user-drag: none;
+      }
+      .vt-stop {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #ef4444;
+        color: #fff;
+        opacity: 0;
+        transform: scale(0.7);
+        box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.22);
+      }
+      .vt-stop svg {
+        width: 10px;
+        height: 10px;
+        display: block;
+      }
+      .vt-logo:hover img,
+      .vt-logo:focus-visible img {
+        opacity: 0;
+        transform: scale(0.7);
+      }
+      .vt-logo:hover .vt-stop,
+      .vt-logo:focus-visible .vt-stop {
+        opacity: 1;
+        transform: scale(1);
+      }
+      .vt-logo:active .vt-stop {
+        background: #dc2626;
       }
       .vt-wave {
         display: flex;
         flex: 0 0 auto;
         align-items: center;
         justify-content: center;
-        gap: 2.5px;
-        height: 24px;
-        color: var(--vt-accent);
+        gap: 3px;
+        height: 28px;
       }
       .vt-bar {
-        width: 2.5px;
+        width: 3px;
+        height: 4px;
         border-radius: 999px;
-        background: currentColor;
-        transition: height 65ms ease-out;
-      }
-      .vt-preparing .vt-bar,
-      .vt-transcribing .vt-bar {
-        animation: vt-idle 1.05s ease-in-out infinite;
-      }
-      .vt-done .vt-bar {
-        opacity: 0.75;
-      }
-      .vt-copy {
-        flex: 1 1 auto;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: #9ca3af;
-        font-size: 12px;
-        font-weight: 500;
-        letter-spacing: 0.01em;
-      }
-      .vt-copy-live {
-        color: #f3f4f6;
-      }
-      .vt-done .vt-copy {
-        color: #a7f3d0;
+        background: var(--vt-accent);
+        will-change: height, opacity;
       }
       .vt-time {
-        display: flex;
         flex: 0 0 auto;
-        align-items: center;
-        justify-content: flex-end;
-        min-width: 34px;
+        min-width: 38px;
+        text-align: right;
         color: #cbd0d8;
+        font-family:
+          "JetBrains Mono", "Cascadia Mono", "SF Mono", ui-monospace, Menlo,
+          Consolas, "Liberation Mono", monospace;
         font-size: 12px;
         font-variant-numeric: tabular-nums;
-        font-weight: 600;
-        letter-spacing: 0.02em;
-      }
-      .vt-check {
-        display: block;
-        width: 16px;
-        height: 16px;
-        color: var(--vt-accent);
-      }
-      .vt-esc {
-        display: flex;
-        flex: 0 0 auto;
-        align-items: center;
-      }
-      .vt-cancel-btn {
-        pointer-events: auto;
-        display: inline-flex;
-        flex: 0 0 auto;
-        align-items: center;
-        gap: 5px;
-        margin: 0 -4px 0 2px;
-        padding: 4px 7px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.06);
-        color: #cbd0d8;
-        font: 600 10px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
-        letter-spacing: 0.02em;
-        cursor: pointer;
-        transition:
-          background 120ms ease,
-          border-color 120ms ease,
-          color 120ms ease;
-      }
-      .vt-cancel-btn:hover {
-        border-color: rgba(248, 113, 113, 0.45);
-        background: rgba(248, 113, 113, 0.2);
-        color: #fecaca;
-      }
-      .vt-cancel-btn:active {
-        background: rgba(248, 113, 113, 0.3);
-      }
-      .vt-cancel-icon {
-        width: 10px;
-        height: 10px;
-        display: block;
-      }
-      .vt-esc kbd {
-        padding: 3px 5px;
-        border: 1px solid rgba(255, 255, 255, 0.09);
-        border-radius: 5px;
-        background: rgba(255, 255, 255, 0.06);
-        color: #8f96a3;
-        font: 600 9.5px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
-        letter-spacing: 0.02em;
+        font-weight: 500;
+        letter-spacing: -0.01em;
       }
       @keyframes vt-in {
         from {
@@ -183,32 +145,9 @@
           transform: translateY(0) scale(1);
         }
       }
-      @keyframes vt-pulse {
-        0%,
-        100% {
-          opacity: 1;
-        }
-        50% {
-          opacity: 0.35;
-        }
-      }
-      @keyframes vt-idle {
-        0%,
-        100% {
-          transform: scaleY(0.35);
-        }
-        50% {
-          transform: scaleY(1);
-        }
-      }
       @media (prefers-reduced-motion: reduce) {
         .vt-pill {
           animation: none;
-        }
-        .vt-dot,
-        .vt-bar {
-          animation: none !important;
-          transition: none !important;
         }
       }
     </style>

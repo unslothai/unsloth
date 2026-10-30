@@ -1,70 +1,45 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The overlay that sits at the bottom of the screen while dictating from another
-// app. It renders in its own tiny window (voice-hud.html) and is styled inline so
-// it stays independent of the main app's theme. The pill is deliberately compact:
-// state dot, waveform, elapsed time and the Esc hint, with no transcript text.
+// The overlay shown while dictating from another app. It renders in its own tiny
+// transparent window (voice-hud.html). Fixed size: logo (hover to stop) on the
+// left, a live voice animation in the centre and an MM:SS timer on the right.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 
-const BAR_COUNT = 9;
-const BAR_IDS = ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9"] as const;
-const BAR_WEIGHTS = [0.42, 0.62, 0.82, 0.95, 1.0, 0.92, 0.78, 0.58, 0.4] as const;
+// Per-bar periods (ms) taken from the reference animation, so bars never move in lockstep.
+const BAR_PERIODS = [474, 433, 407, 458, 400, 427, 441, 419, 487, 442] as const;
+const BAR_IDS = ["b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9"] as const;
+const BAR_WEIGHTS = [0.55, 0.7, 0.85, 0.95, 1, 1, 0.92, 0.82, 0.68, 0.52] as const;
+const MIN_H = 4;
+const MAX_H = 24;
 
 interface HudPayload {
   state?: string;
   level?: number;
-  label?: string;
-  sublabel?: string;
 }
 
 const ACCENTS: Record<string, string> = {
   preparing: "#93c5fd",
   recording: "#f87171",
   transcribing: "#fcd34d",
-  done: "#6ee7b7",
 };
-
-const FALLBACK_LABELS: Record<string, string> = {
-  preparing: "Getting ready…",
-  recording: "Listening",
-  transcribing: "Transcribing…",
-  done: "Inserted",
-};
-
-/** Center-weighted bars so the meter reads like a natural voice waveform. */
-function barHeights(level: number, state: string): number[] {
-  if (state === "done") return Array.from({ length: BAR_COUNT }, () => 4);
-  if (state !== "recording") {
-    return Array.from({ length: BAR_COUNT }, (_, index) =>
-      index % 2 === 0 ? 13 : 7,
-    );
-  }
-  const clamped = Math.max(0.03, Math.min(1, level));
-  return BAR_WEIGHTS.map((weight) => 4 + Math.pow(clamped, 0.75) * weight * 20);
-}
 
 function formatElapsed(milliseconds: number): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-/** Keep the tail of long live transcripts visible inside the compact pill. */
-function tailPreview(text: string, maxChars = 34): string {
-  const clean = text.replace(/\s+/g, " ").trim();
-  if (clean.length <= maxChars) return clean;
-  return `…${clean.slice(clean.length - maxChars + 1).trimStart()}`;
+  const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
+  return `${mm}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 export function VoiceTypingHud() {
   const [state, setState] = useState("");
-  const [level, setLevel] = useState(0);
-  const [customLabel, setCustomLabel] = useState("");
-  const [sublabel, setSublabel] = useState("");
   const [elapsedMs, setElapsedMs] = useState(0);
+  const stateRef = useRef("");
+  const levelRef = useRef(0);
+  const targetLevelRef = useRef(0);
+  const barRefs = useRef<(HTMLSpanElement | null)[]>([]);
   const startedAt = useRef<number | null>(null);
   const frozenMs = useRef(0);
 
@@ -72,30 +47,55 @@ export function VoiceTypingHud() {
     const subscribing = listen<HudPayload>("voice-typing:hud", (event) => {
       const payload = event.payload;
       if (payload.state) {
+        stateRef.current = payload.state;
         setState(payload.state);
-        if (payload.state !== "recording") setLevel(0);
-        if (payload.state === "preparing" || payload.state === "idle") {
-          setSublabel("");
-        }
-      }
-      if (typeof payload.label === "string") {
-        setCustomLabel(payload.label);
-      }
-      if (payload.sublabel !== undefined) {
-        setSublabel(payload.sublabel ?? "");
+        if (payload.state !== "recording") targetLevelRef.current = 0;
       }
       if (typeof payload.level === "number") {
-        setLevel((prev) =>
-          payload.level! > prev
-            ? prev * 0.25 + payload.level! * 0.75
-            : prev * 0.6 + payload.level! * 0.4,
-        );
+        targetLevelRef.current = payload.level;
       }
     });
     return () => {
       void subscribing.then((unlisten) => unlisten());
     };
   }, []);
+
+  // Real-time animation: bars follow the live microphone level while recording,
+  // and travel as a wave while the model loads or the transcript is produced.
+  useEffect(() => {
+    if (!state) return;
+    let frame = 0;
+    const draw = (now: number) => {
+      const current = stateRef.current;
+      const target = targetLevelRef.current;
+      // Fast attack, slower release: the meter reads as a natural voice.
+      levelRef.current +=
+        (target - levelRef.current) * (target > levelRef.current ? 0.45 : 0.12);
+      const level = Math.pow(Math.min(1, levelRef.current * 1.4), 0.7);
+      for (let i = 0; i < BAR_IDS.length; i += 1) {
+        const bar = barRefs.current[i];
+        if (!bar) continue;
+        const phase = (now / BAR_PERIODS[i]) * Math.PI;
+        let height: number;
+        let opacity: number;
+        if (current === "recording") {
+          const wobble = 0.55 + 0.45 * Math.sin(phase);
+          height = MIN_H + (MAX_H - MIN_H) * level * BAR_WEIGHTS[i] * wobble;
+          opacity = 0.45 + 0.55 * Math.min(1, level * 1.5 + 0.1);
+        } else {
+          const speed = current === "transcribing" ? 260 : 380;
+          const wave = 0.5 + 0.5 * Math.sin(now / speed - i * 0.62);
+          height = MIN_H + (MAX_H * 0.6 - MIN_H) * wave * BAR_WEIGHTS[i];
+          opacity = 0.4 + 0.6 * wave;
+        }
+        bar.style.height = `${height.toFixed(1)}px`;
+        bar.style.opacity = opacity.toFixed(2);
+      }
+      frame = requestAnimationFrame(draw);
+    };
+    frame = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(frame);
+  }, [state]);
 
   useEffect(() => {
     if (state === "recording") {
@@ -106,7 +106,7 @@ export function VoiceTypingHud() {
         }
       };
       tick();
-      const timer = window.setInterval(tick, 200);
+      const timer = window.setInterval(tick, 250);
       return () => window.clearInterval(timer);
     }
     if (state === "transcribing") {
@@ -116,8 +116,10 @@ export function VoiceTypingHud() {
       }
       return;
     }
-    if (state === "done") {
-      setElapsedMs(frozenMs.current);
+    if (state === "preparing") {
+      startedAt.current = null;
+      frozenMs.current = 0;
+      setElapsedMs(0);
       return;
     }
     startedAt.current = null;
@@ -125,21 +127,13 @@ export function VoiceTypingHud() {
     setElapsedMs(0);
   }, [state]);
 
-  const fallback = FALLBACK_LABELS[state] ?? "";
-  const label = customLabel || fallback;
-
-  if (!fallback) {
-    // Nothing recorded yet: keep the (transparent) window empty.
+  if (!ACCENTS[state]) {
+    // Nothing active: keep the (transparent) window empty.
     return null;
   }
 
-  const accent = ACCENTS[state] ?? "#8b93a1";
-  const heights = barHeights(level, state);
-  const cancellable =
-    state === "preparing" || state === "recording" || state === "transcribing";
-  const displayCopy = sublabel ? tailPreview(sublabel) : label;
-
   const handleCancel = () => {
+    stateRef.current = "";
     setState("");
     void invoke("voice_typing_cancel").catch(() => {});
   };
@@ -148,72 +142,37 @@ export function VoiceTypingHud() {
     <div className="vt-stage">
       <output
         className={`vt-pill vt-${state}`}
-        style={{ "--vt-accent": accent } as CSSProperties}
-        aria-label={label}
+        style={{ "--vt-accent": ACCENTS[state] } as CSSProperties}
+        aria-label={state}
       >
-        <span className="vt-dot" aria-hidden="true" />
+        <button
+          type="button"
+          className="vt-logo"
+          onClick={handleCancel}
+          title="Stop (Esc)"
+          aria-label="Stop dictation"
+        >
+          <img src="/circle-logo-small.png" alt="" draggable={false} />
+          <span className="vt-stop" aria-hidden="true">
+            <svg viewBox="0 0 10 10" fill="currentColor">
+              <rect x="1" y="1" width="8" height="8" rx="1.6" />
+            </svg>
+          </span>
+        </button>
         <span className="vt-wave" aria-hidden="true">
           {BAR_IDS.map((id, index) => (
             <span
               key={id}
               className="vt-bar"
-              style={{
-                height: `${heights[index]}px`,
-                animationDelay: `${index * 60}ms`,
+              ref={(node) => {
+                barRefs.current[index] = node;
               }}
             />
           ))}
         </span>
-        <span
-          className={`vt-copy ${sublabel ? "vt-copy-live" : ""}`}
-          aria-hidden="true"
-        >
-          {displayCopy}
-        </span>
         <span className="vt-time" aria-hidden="true">
-          {state === "done" ? (
-            <svg
-              viewBox="0 0 16 16"
-              className="vt-check"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M3.5 8.5 6.5 11.5 12.5 4.5"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          ) : (
-            formatElapsed(elapsedMs)
-          )}
+          {formatElapsed(elapsedMs)}
         </span>
-        {cancellable ? (
-          <button
-            type="button"
-            className="vt-cancel-btn"
-            onClick={handleCancel}
-            title="Cancel dictation (Esc)"
-            aria-label="Cancel dictation"
-          >
-            <span>Esc</span>
-            <svg
-              viewBox="0 0 12 12"
-              className="vt-cancel-icon"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M2.5 2.5 9.5 9.5M9.5 2.5 2.5 9.5"
-                stroke="currentColor"
-                strokeWidth="1.6"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-        ) : null}
       </output>
     </div>
   );

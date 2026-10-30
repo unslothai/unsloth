@@ -1721,7 +1721,7 @@ export const en = {
           "Keep recent dictations and voice recordings",
         manageLabel: "Dictation history",
         manage: "Manage",
-        limitOff: "0 (Off)",
+        limitOff: "Off",
         limitCount: "Last {count}",
         playAudio: "Play recording",
         pageDescription:

@@ -266,7 +266,7 @@ pub async fn voice_typing_hud_state(
         "preparing" | "recording" | "transcribing" => {
             SESSION_ACTIVE.store(true, Ordering::SeqCst);
             if state == "recording" && mute_enabled {
-                audio_mute::set_recording_mute(true);
+                audio_mute::mute_after_cue();
             } else if state != "recording" {
                 audio_mute::set_recording_mute(false);
             }
@@ -476,7 +476,29 @@ mod audio_mute {
 
     static WE_MUTED_SYSTEM_AUDIO: AtomicBool = AtomicBool::new(false);
 
+    /// Generation counter: any later mute/unmute request cancels a pending delayed mute.
+    static MUTE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// How long the start cue needs to finish before the system is muted, so the
+    /// interaction sound itself is never silenced.
+    const START_CUE_GRACE: std::time::Duration = std::time::Duration::from_millis(450);
+
+    pub fn mute_after_cue() {
+        let generation = MUTE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        std::thread::spawn(move || {
+            std::thread::sleep(START_CUE_GRACE);
+            if MUTE_GENERATION.load(Ordering::SeqCst) == generation {
+                set_recording_mute_now(true);
+            }
+        });
+    }
+
     pub fn set_recording_mute(mute: bool) {
+        MUTE_GENERATION.fetch_add(1, Ordering::SeqCst);
+        set_recording_mute_now(mute);
+    }
+
+    fn set_recording_mute_now(mute: bool) {
         if mute {
             if !WE_MUTED_SYSTEM_AUDIO.load(Ordering::SeqCst) && platform_set_mute(true) {
                 WE_MUTED_SYSTEM_AUDIO.store(true, Ordering::SeqCst);
