@@ -47,8 +47,7 @@ export function MediaRailResizeHandle({
           ? block.clientWidth
           : block.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-      // The chrome provider supplies px values. A present 0px header inset takes
-      // precedence over the window-control fallback, just as the CSS var() does.
+      // A present 0px header inset wins over the window-control fallback, as in the CSS var().
       const rightInset = parseFloat(
         style.getPropertyValue("--studio-chat-header-right-inset").trim() ||
           style.getPropertyValue("--studio-window-control-inset").trim(),

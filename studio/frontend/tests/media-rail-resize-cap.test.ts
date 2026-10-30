@@ -6,8 +6,7 @@ import test from "node:test";
 import ts from "@typescript/typescript6";
 import { readSrc } from "./helpers/kit.ts";
 
-// Execute the real layout effect with measured DOM sizes. This checks the cap
-// passed to the drag/keyboard control without importing the page or React tree.
+// Runs the real layout effect on stubbed DOM sizes, without React.
 const source = ts.createSourceFile(
   "media-rail-resize-handle.tsx",
   readSrc("components/media-rail-resize-handle.tsx"),
