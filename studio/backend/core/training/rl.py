@@ -470,9 +470,9 @@ def render_grpo_prompts(
         }
         if prefills:
             out[PREFILL_COLUMN] = (prompt[-1].get("content") or "") if prefill else ""
-        if keep_turns:
+        if keep_turns and PROMPT_TURNS_COLUMN not in row:
             # Python rewards read roles and the last user turn, as Try it gives them. JSON, since
-            # Arrow would pad the cleaned turns again.
+            # Arrow would pad the cleaned turns again. Already set when the system turn was folded.
             out[PROMPT_TURNS_COLUMN] = json.dumps(messages, default = str)
         if keep_tools:
             out[TOOLS_COLUMN] = json.dumps(row_tools)
@@ -774,20 +774,26 @@ def _template_takes_system(tokenizer) -> bool:
         return False
 
 
-def fold_system_into_user(dataset):
+def fold_system_into_user(dataset, keep_turns: bool = False):
     """For templates that reject a system turn (Gemma 2: "System role not supported"), put the
-    system text at the top of the first user message instead, as the Gemma notebooks do."""
+    system text at the top of the first user message instead, as the Gemma notebooks do.
+    ``keep_turns``: Python rewards still get the unfolded turns, as Try it gives them."""
 
     def fold(row: dict) -> dict:
         prompt = row["prompt"]
+        out = {}
+        if keep_turns and isinstance(prompt, list):
+            from core.training.rewards import PROMPT_TURNS_COLUMN
+            turns = _without_padded_arguments(_without_nulls(prompt), _row_tools(row))
+            out[PROMPT_TURNS_COLUMN] = json.dumps(turns, default = str)
         if not isinstance(prompt, list) or not prompt or prompt[0].get("role") != "system":
-            return {}
+            return out
         system, rest = prompt[0], list(prompt[1:])
         for i, message in enumerate(rest):
             if message.get("role") == "user":
                 rest[i] = {**message, "content": f"{system['content']}\n\n{message['content']}"}
-                return {"prompt": rest}
-        return {"prompt": [{"role": "user", "content": system["content"]}] + rest}
+                return {**out, "prompt": rest}
+        return {**out, "prompt": [{"role": "user", "content": system["content"]}] + rest}
 
     return dataset.map(fold)
 
@@ -901,14 +907,17 @@ def build_rl_trainer(
         if k not in ("dataset_text_field", "packing", "max_seq_length", "dataset_kwargs")
     }
 
+    python_turns = objective == "grpo" and any(
+        s.get("kind") == "python" for s in reward_specs or []
+    )
     if (
         tokenizer is not None
         and train_dataset is not None
         and not _template_takes_system(tokenizer)
     ):
-        train_dataset = fold_system_into_user(train_dataset)
+        train_dataset = fold_system_into_user(train_dataset, keep_turns = python_turns)
         if eval_dataset is not None:
-            eval_dataset = fold_system_into_user(eval_dataset)
+            eval_dataset = fold_system_into_user(eval_dataset, keep_turns = python_turns)
 
     if objective in PREFERENCE_OBJECTIVES:
         try:
@@ -964,13 +973,12 @@ def build_rl_trainer(
             raise ValueError("GRPO needs at least one reward selected.")
         if tokenizer is not None:
             thinking = settings.get("enable_thinking")
-            keep_turns = any(s.get("kind") == "python" for s in reward_specs)
             train_dataset, _ = render_grpo_prompts(
-                train_dataset, tokenizer, thinking, keep_turns = keep_turns
+                train_dataset, tokenizer, thinking, keep_turns = python_turns
             )
             if eval_dataset is not None:
                 eval_dataset, _ = render_grpo_prompts(
-                    eval_dataset, tokenizer, thinking, keep_turns = keep_turns
+                    eval_dataset, tokenizer, thinking, keep_turns = python_turns
                 )
         loss_type, sampling_level = GRPO_VARIANTS.get(
             settings.get("variant") or "dapo", GRPO_VARIANTS["dapo"]
