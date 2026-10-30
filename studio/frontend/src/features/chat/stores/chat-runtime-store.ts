@@ -223,7 +223,7 @@ export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
   allowedDomains: [],
   blockedDomains: [],
 };
-export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 900;
+export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 0;
 
 /** The patch and run routes reject anything other than 0 or a finite budget with 400. */
 function isSupportedResearchModelTimeout(value: number): boolean {
@@ -2482,6 +2482,8 @@ type ChatRuntimeStore = {
   mlxKvQuantNote: string | null;
   mlxInt8Prefill: boolean;
   loadedMlxInt8PrefillRequested: boolean;
+  mlxAnePrefill: boolean;
+  loadedMlxAnePrefillRequested: boolean;
   /** MLX offload knobs as chosen (null = Auto), as the resident load asked for them, the
    *  fraction it applied (null = none), and why a request was not applied. */
   mlxPleOffload: MlxOffload;
@@ -4268,6 +4270,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   mlxKvQuantNote: null,
   mlxInt8Prefill: false,
   loadedMlxInt8PrefillRequested: false,
+  mlxAnePrefill: false,
+  loadedMlxAnePrefillRequested: false,
   mlxPleOffload: null,
   mlxExpertOffload: null,
   loadedMlxPleOffloadRequested: null,
@@ -5203,6 +5207,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       mlxKvQuantNote: null,
       mlxInt8Prefill: false,
       loadedMlxInt8PrefillRequested: false,
+      mlxAnePrefill: false,
+      loadedMlxAnePrefillRequested: false,
       mlxPleOffload: null,
       mlxExpertOffload: null,
       loadedMlxPleOffloadRequested: null,

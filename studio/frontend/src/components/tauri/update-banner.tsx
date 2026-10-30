@@ -92,8 +92,7 @@ export function UpdateBanner({
       } else {
         setManualReport(result.report);
         setManualMessage(
-          result.error ??
-            "Clipboard copy failed. Select and copy the diagnostics below.",
+          result.error ?? t("desktopStartup.diagnostics.clipboardFailed"),
         );
       }
     } catch (error) {
@@ -129,7 +128,7 @@ export function UpdateBanner({
               type="button"
               onClick={onDismiss}
               className="absolute top-2.5 right-3 flex size-6 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-              aria-label="Dismiss app update notification"
+              aria-label={t("desktopUpdate.banner.dismiss")}
             >
               <svg
                 aria-hidden="true"
@@ -157,7 +156,7 @@ export function UpdateBanner({
               />
               <div className="min-w-0">
                 <p className="font-heading text-base font-medium text-foreground">
-                  {showFailure ? "App update failed" : "New Unsloth version"}
+                  {showFailure ? t("desktopUpdate.banner.failedTitle") : t("desktopUpdate.banner.newVersion")}
                 </p>
                 {showFailure ? null : (
                   <p className="mt-0.5 text-xs text-muted-foreground">
@@ -169,12 +168,12 @@ export function UpdateBanner({
                 )}
                 <p className="mt-1 text-ui-11 text-muted-foreground/70">
                   {showFailure
-                    ? "Backend recovered. Diagnostics are still available."
+                    ? t("desktopUpdate.banner.backendRecovered")
                     : isManualLinuxPackage
-                      ? "Open the GitHub release page to install the Linux package"
+                      ? t("desktopUpdate.banner.linuxManual")
                       : isExternalServer
                         ? t("settings.about.update.desktopExternalServer")
-                        : "A new app update is available"}
+                        : t("desktopUpdate.banner.available")}
                 </p>
               </div>
             </div>
@@ -212,7 +211,7 @@ export function UpdateBanner({
                   aria-expanded={notesOpen}
                   data-testid="tauri-update-release-notes-toggle"
                 >
-                  {notesOpen ? "Hide release notes" : "Show release notes"}
+                  {notesOpen ? t("desktopUpdate.banner.hideNotes") : t("desktopUpdate.banner.showNotes")}
                 </Button>
               ) : null}
               {showFailure ? (
@@ -225,7 +224,7 @@ export function UpdateBanner({
                       handleCopyDiagnostics().catch(console.error);
                     }}
                   >
-                    {copying ? "Copying..." : "Copy diagnostics"}
+                    {copying ? t("desktopStartup.diagnostics.copying") : t("desktopUpdate.banner.copyDiagnostics")}
                   </Button>
                   <Button
                     size="sm"
@@ -233,7 +232,7 @@ export function UpdateBanner({
                     className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
-                    Later
+                    {t("desktopUpdate.banner.later")}
                   </Button>
                   <Button
                     size="sm"
@@ -243,8 +242,8 @@ export function UpdateBanner({
                     disabled={installDisabled}
                   >
                     {isManualLinuxPackage
-                      ? "Open release page"
-                      : "Retry update"}
+                      ? t("desktopUpdate.banner.openReleasePage")
+                      : t("desktopUpdate.banner.retry")}
                   </Button>
                 </>
               ) : (
@@ -255,7 +254,7 @@ export function UpdateBanner({
                     className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
-                    Remind me later
+                    {t("desktopUpdate.banner.remindLater")}
                   </Button>
                   <Button
                     size="sm"
@@ -265,7 +264,7 @@ export function UpdateBanner({
                     disabled={installDisabled}
                     data-testid="tauri-update-install"
                   >
-                    {isManualLinuxPackage ? "Open release page" : "Update"}
+                    {isManualLinuxPackage ? t("desktopUpdate.banner.openReleasePage") : t("desktopUpdate.banner.update")}
                   </Button>
                 </div>
               )}

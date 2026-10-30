@@ -9105,15 +9105,16 @@ def test_mlx_kv_quant_survives_the_whole_override_projection():
         assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_quant == "tq-4"
 
 
-def test_mlx_int8_prefill_is_stored_only_when_on_and_reaches_the_load(monkeypatch):
+@pytest.mark.parametrize("knob", ["mlx_int8_prefill", "mlx_ane_prefill"])
+def test_mlx_prefill_options_are_stored_only_when_on_and_reach_the_load(monkeypatch, knob):
     _mock_override_store(monkeypatch)
-    assert settings.normalize_model_override({"mlx_int8_prefill": False}) == {}
-    _put("org/m", mlx_int8_prefill = True)
+    assert settings.normalize_model_override({knob: False}) == {}
+    _put("org/m", **{knob: True})
     stored = settings.get_model_overrides()["org/m"]
-    assert stored == {"mlx_int8_prefill": True}
+    assert stored == {knob: True}
     kwargs = settings.model_override_load_kwargs(stored, is_gguf = False)
-    assert LoadRequest(model_path = "org/m", **kwargs).mlx_int8_prefill is True
-    _put("org/m", mlx_int8_prefill = False)
+    assert getattr(LoadRequest(model_path = "org/m", **kwargs), knob) is True
+    _put("org/m", **{knob: False})
     assert "org/m" not in settings.get_model_overrides()
 
 
@@ -10383,13 +10384,114 @@ def test_an_audio_request_probes_audio_capability_on_a_non_gguf_target(monkeypat
     assert seen.get("vision") == "/srv/models/A.gguf"
 
 
-def test_a_custom_code_checkpoint_is_not_switchable(tmp_path):
-    path = _local_checkpoint(tmp_path, "CustomCode")
+_CUSTOM_CODE = "class MyModel: pass\n"
+
+
+def _custom_code_checkpoint(root):
+    path = _local_checkpoint(root, "CustomCode")
     (path / "config.json").write_text(
         '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "auto_map": {"AutoModel": "modeling.MyModel"}}'
     )
-    info = SimpleNamespace(id = str(path), path = str(path))
+    # Bytes: write_text turns \n into \r\n on Windows.
+    (path / "modeling.py").write_bytes(_CUSTOM_CODE.encode())
+    (path / "layers").mkdir()
+    (path / "layers" / "helper.py").write_bytes(_CUSTOM_CODE.encode())
+    return path
+
+
+def _approve_custom_code(subject, code = _CUSTOM_CODE):
+    """What the UI's consent dialog stores for org/CustomCode: keyed and fingerprinted by repo id."""
+    from utils.security import remote_code_approvals as approvals
+    from utils.security.remote_code_scan import remote_code_fingerprint
+
+    approvals.record(
+        subject,
+        "org/customcode",
+        commit_sha = None,
+        # Hub keys use "/" on every OS.
+        fingerprint = remote_code_fingerprint(
+            {"org/customcode\0modeling.py": code, "org/customcode\0layers/helper.py": _CUSTOM_CODE}
+        ),
+        max_severity = None,
+    )
+
+
+def test_a_custom_code_checkpoint_is_switchable_only_with_its_approval(tmp_path):
+    info = SimpleNamespace(id = "org/CustomCode", path = str(_custom_code_checkpoint(tmp_path)))
     assert resolver.local_servable_model(info) is None
+    _approve_custom_code("someone-else")
+    assert resolver.local_servable_model(info) is None
+    _approve_custom_code("unsloth", code = "class Older: pass\n")
+    assert resolver.local_servable_model(info) is None
+    _approve_custom_code("unsloth")
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_path_approved_folder_checkpoint_lists_and_switches_alike(tmp_path):
+    """A ./models or LM Studio folder is approved by its path; the index keys it by alias."""
+    from utils.security import remote_code_approvals as approvals
+    from utils.security.consent import _fingerprint_target_key
+    from utils.security.remote_code_scan import remote_code_fingerprint, repo_remote_code_files
+
+    path = str(_custom_code_checkpoint(tmp_path))
+    key = _fingerprint_target_key(path)
+    files = repo_remote_code_files(path)
+    approvals.record(
+        "unsloth",
+        approvals.approval_target_key([path]),
+        commit_sha = None,
+        fingerprint = remote_code_fingerprint({f"{key}\0{n}": b for n, b in files.items()}),
+        max_severity = None,
+    )
+    info = SimpleNamespace(id = path, path = path, model_id = None, display_name = "CustomCode")
+    assert resolver.local_servable_model(info) == (False, ())
+    assert resolver._local_servable_entry("CustomCode", info) is not None
+
+
+@pytest.mark.parametrize("via_stash", [False, True])
+@pytest.mark.parametrize("approved", [True, False])
+def test_an_approved_custom_code_target_loads_with_its_approval(
+    monkeypatch, tmp_path, approved, via_stash
+):
+    from utils.security.consent import evaluate_remote_code_consent_for_targets
+
+    path = str(_custom_code_checkpoint(tmp_path))
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+
+    _wire_on(
+        monkeypatch,
+        resolves_to = None if via_stash else (path, None, "org/CustomCode"),
+        backend = _FakeBackend(None),
+        recorder = _load,
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None, models = {}),
+    )
+    if approved:
+        _approve_custom_code("tester")
+    if via_stash:
+        # An idle unload of the API-loaded model, restored by a request that names no model.
+        monkeypatch.setattr(kw, "_inflight", 0)
+        monkeypatch.setattr(kw, "_last_unloaded_model", (path, None, "org/CustomCode"))
+        monkeypatch.setattr(kw, "_last_unloaded_mlx", True)
+        _run_hook(inference_route._RELOAD_ONLY_MODEL)
+    else:
+        _run_hook("org/CustomCode")
+
+    assert [c.model_path for c in calls] == [path]
+    assert calls[0].trust_remote_code is approved
+    # The worker's own consent check must accept what the switch passes.
+    decision = evaluate_remote_code_consent_for_targets(
+        [path],
+        trust_remote_code = True,
+        approved_fingerprint = calls[0].approved_remote_code_fingerprint,
+    )
+    assert (decision.reason == "approved by fingerprint") is approved
 
 
 def test_an_embedding_checkpoint_is_not_switchable(tmp_path):

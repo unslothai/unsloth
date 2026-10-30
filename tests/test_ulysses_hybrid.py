@@ -56,6 +56,22 @@ def _config(kind, **overrides):
     return transformers.Qwen3_5TextConfig(**common), transformers.Qwen3_5ForCausalLM
 
 
+def _vlm(**overrides):
+    # Shipped Qwen3.5 checkpoints carry a vision_config even for text-only training.
+    torch.manual_seed(0)
+    text_config, _ = _config("qwen3_5", **overrides)
+    config = transformers.Qwen3_5Config(
+        text_config = text_config.to_dict(),
+        vision_config = dict(
+            depth = 1, hidden_size = 16, intermediate_size = 32, num_heads = 2, out_hidden_size = 32
+        ),
+        tie_word_embeddings = False,
+    )
+    model = transformers.Qwen3_5ForConditionalGeneration(config).train()
+    model.config._attn_implementation = "sdpa"
+    return model
+
+
 def _model(kind, **overrides):
     torch.manual_seed(0)
     config, cls = _config(kind, **overrides)
@@ -104,14 +120,27 @@ def _loss(logits, shift_labels, count):
 def _parity_worker(rank, world, kind, control):
     ad.HAS_FLASH_ATTENTION = False
     ad.HAS_XFORMERS = False
-    model = _model(kind)
+    model = _vlm() if kind == "qwen3_5_vlm" else _model(kind)
+    if kind == "qwen3_5_vlm":
+        assert model.config.vision_config is not None
+        cp._check_cp_model(model, world, "ulysses")
     _force_torch_kernels(model)
+    calls = []
+    exchange = uh.ulysses_gated_delta_forward
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return exchange(*args, **kwargs)
+
+    uh.ulysses_gated_delta_forward = counted
     ids = torch.randint(0, 64, (2, 13), generator = torch.Generator().manual_seed(1))
     shift = F.pad(ids, (0, 1), value = -100)[:, 1:]
     count = shift.ne(-100).sum()
-    _loss(model(input_ids = ids, use_cache = False).logits, shift, count).backward()
-    reference = {n: p.grad.clone() for n, p in model.named_parameters()}
+    reference_loss = _loss(model(input_ids = ids, use_cache = False).logits, shift, count)
+    reference_loss.backward()
+    reference = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
     model.zero_grad(set_to_none = True)
+    assert not calls
 
     manager = _manager(world, rank)
     manager.attach_attention_hooks(model)
@@ -125,10 +154,23 @@ def _parity_worker(rank, world, kind, control):
         out = model(
             input_ids = inputs["input_ids"], position_ids = inputs["position_ids"], use_cache = False
         )
-        _loss(out.logits, inputs["shift_labels"], count).backward()
+        loss = _loss(out.logits, inputs["shift_labels"], count)
+        loss.backward()
+    if not control:
+        config_kind = "qwen3_5" if kind == "qwen3_5_vlm" else kind
+        assert len(calls) == sum(
+            t == "linear_attention" for t in _config(config_kind)[0].layer_types
+        )
+    total = loss.detach().clone()
+    dist.all_reduce(total)
+    torch.testing.assert_close(total, reference_loss.detach(), rtol = 1e-5, atol = 1e-6)
     for name, param in model.named_parameters():
         grad = torch.zeros_like(param) if param.grad is None else param.grad
         dist.all_reduce(grad)
+        if name not in reference:
+            # The vision tower gets no gradient from text-only batches, on either side.
+            assert not grad.any(), name
+            continue
         torch.testing.assert_close(grad, reference[name], rtol = 1e-4, atol = 1e-6, msg = name)
 
 
@@ -158,6 +200,109 @@ def _entry(rank, world, init_file, fn, args):
 @pytest.mark.parametrize("kind", KINDS)
 def test_ulysses_hybrid_gradients_match_one_rank(kind):
     _spawn(_parity_worker, 2, kind, False)
+
+
+@pytest.mark.skipif(
+    not hasattr(transformers, "Qwen3_5Config"), reason = "transformers without Qwen3.5"
+)
+def test_text_only_qwen3_5_checkpoint_with_a_vision_config_matches_one_rank():
+    _spawn(_parity_worker, 2, "qwen3_5_vlm", False)
+
+
+@pytest.mark.skipif(
+    not hasattr(transformers, "Qwen3_5Config"), reason = "transformers without Qwen3.5"
+)
+def test_qwen3_5_checkpoint_with_a_vision_config_passes_the_gate():
+    model = _vlm()
+    assert cp._hybrid_config_blocker(model) is None
+    assert cp._supports_context_parallel(model, "ulysses")
+    cp._check_cp_model(model, 2, "ulysses")
+
+
+def _ddp_text_only_worker(rank, world, freeze_vision):
+    from torch.nn.parallel import DistributedDataParallel
+
+    ad.HAS_FLASH_ATTENTION = False
+    ad.HAS_XFORMERS = False
+    model = _vlm()
+    _force_torch_kernels(model)
+    if freeze_vision:
+        model.model.visual.requires_grad_(False)
+    manager = _manager(world, rank)
+    manager.mesh = types.SimpleNamespace(
+        get_group = lambda: dist.group.WORLD, get_local_rank = lambda: rank
+    )
+    manager.attach_attention_hooks(model)
+    ddp = DistributedDataParallel(model, find_unused_parameters = False)
+    for step in range(2):
+        ids = torch.randint(0, 64, (2, 13), generator = torch.Generator().manual_seed(step))
+        shift = F.pad(ids, (0, 1), value = -100)[:, 1:]
+        inputs = {"input_ids": ids, "shift_labels": shift}
+        manager._prepare_inputs(inputs)
+        with manager.apply(inputs):
+            out = ddp(
+                input_ids = inputs["input_ids"], position_ids = inputs["position_ids"], use_cache = False
+            )
+            _loss(out.logits, inputs["shift_labels"], shift.ne(-100).sum()).backward()
+
+
+@pytest.mark.skipif(
+    not hasattr(transformers, "Qwen3_5Config"), reason = "transformers without Qwen3.5"
+)
+def test_ddp_text_only_fails_at_step_two_with_a_trainable_vision_tower():
+    # The unused vision tower means DDP's reduction never finishes.
+    with pytest.raises(Exception, match = "finished reduction in the prior iteration"):
+        _spawn(_ddp_text_only_worker, 2, False)
+    _spawn(_ddp_text_only_worker, 2, True)
+
+
+def _cp_trainer(
+    model,
+    distributed_type,
+    num_processes = 2,
+    fsdp_version = None,
+):
+    plugin = None if fsdp_version is None else types.SimpleNamespace(fsdp_version = fsdp_version)
+    accelerator = types.SimpleNamespace(
+        distributed_type = types.SimpleNamespace(name = distributed_type),
+        num_processes = num_processes,
+        state = types.SimpleNamespace(fsdp_plugin = plugin, parallelism_config = None),
+        dispatch_batches = None,
+    )
+    return types.SimpleNamespace(accelerator = accelerator, model = model)
+
+
+@pytest.mark.skipif(
+    not hasattr(transformers, "Qwen3_5Config"), reason = "transformers without Qwen3.5"
+)
+def test_ddp_refuses_a_trainable_vision_tower_but_not_fsdp2_frozen_or_one_process():
+    pytest.importorskip("accelerate", minversion = "1.10.0")
+    model = _vlm()
+    trainer = _cp_trainer(model, "MULTI_CPU")
+    with pytest.raises(NotImplementedError, match = "finetune_vision_layers = False"):
+        cp._check_cp_trainer(trainer, 2, "ulysses", [model], allow_fsdp2 = True)
+    # FSDP2 reduces unused parameters as zeros; no DDP reducer runs without several processes.
+    fsdp2 = _cp_trainer(model, "FSDP", fsdp_version = 2)
+    assert cp._check_cp_trainer(fsdp2, 2, "ulysses", [model], allow_fsdp2 = True)
+    for single in (_cp_trainer(model, "NO"), _cp_trainer(model, "MULTI_CPU", num_processes = 1)):
+        cp._check_cp_trainer(single, 2, "ulysses", [model], allow_fsdp2 = True)
+    model.model.visual.requires_grad_(False)
+    cp._check_cp_trainer(trainer, 2, "ulysses", [model], allow_fsdp2 = True)
+
+
+@pytest.mark.parametrize(
+    "key", ["pixel_values", "pixel_values_videos", "image_grid_thw", "video_grid_thw"]
+)
+def test_batches_with_image_or_video_inputs_are_refused(key):
+    inputs = {"input_ids": torch.ones(1, 6, dtype = torch.long), key: torch.ones(1, 3)}
+    with pytest.raises(ValueError, match = key):
+        _manager(2, 0)._prepare_inputs(inputs)
+    with pytest.raises(ValueError, match = "image / video"):
+        with _manager(2, 0).apply(dict(inputs)):
+            pass
+    # A collator's None placeholder is a text-only batch.
+    inputs[key] = None
+    _manager(2, 0)._prepare_inputs(inputs)
 
 
 def test_shard_local_gated_delta_is_wrong():
@@ -236,7 +381,7 @@ def test_ulysses_accepts_right_padding_with_mask_derived_positions():
         _manager(2, 0)._prepare_inputs(inputs)
 
 
-def test_hybrid_refuses_multimodal_and_router_aux_loss():
+def test_hybrid_refuses_router_aux_loss_but_not_a_vision_config():
     model = _model(KINDS[0])
     assert cp._supports_context_parallel(model, "ulysses")
     model.config.output_router_logits = True
@@ -244,8 +389,8 @@ def test_hybrid_refuses_multimodal_and_router_aux_loss():
     assert not cp._supports_context_parallel(model, "ulysses")
     model.config.output_router_logits = False
     model.config.vision_config = {"model_type": "qwen3_5_vision"}
-    assert cp._hybrid_config_blocker(model) == "multimodal models"
-    assert not cp._supports_context_parallel(model, "ulysses")
+    assert cp._hybrid_config_blocker(model) is None
+    assert cp._supports_context_parallel(model, "ulysses")
     model.config.vision_config = None
     # transformers 4.x Qwen3-Next: per-expert modules, each run only when routed on that rank.
     model.mlp_holder = torch.nn.Module()
