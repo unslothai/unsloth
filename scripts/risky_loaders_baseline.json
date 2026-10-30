@@ -331,6 +331,14 @@
       "reason": "Iterates two fixed module:attr strings for the active diffusion and video engines."
     },
     {
+      "file": "studio/backend/routes/inference.py",
+      "rule": "trust-remote-code",
+      "sink": "item",
+      "digest": "c47fdb9c09e7e0a3",
+      "count": 1,
+      "reason": "Auto-switch sets it only with a fingerprint of code this account approved, recomputed from disk; the worker consent gate rescans and enforces it."
+    },
+    {
       "file": "studio/backend/routes/training.py",
       "rule": "trust-remote-code",
       "sink": "item",
