@@ -74,5 +74,5 @@ def test_forwards_the_checkpoint_locator_options():
         _config(), "repo", "tok", "rev", subfolder = "sub", cache_dir = "/c", variant = "fp8"
     )
     # subfolder / cache_dir / variant pick which index and shards are probed.
-    (args, kwargs), = calls
+    ((args, kwargs),) = calls
     assert args == ("repo", False, "tok", "rev", "sub", "/c") and kwargs == {"variant": "fp8"}
