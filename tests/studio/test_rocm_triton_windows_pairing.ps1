@@ -33,8 +33,22 @@ $script:ProbeOk = $true
 $script:Installs = @()
 $script:Offline = $false
 $script:OfflineFastPath = $false
-function Invoke-BoundedPythonProbe { param($PythonExe, $Code, $TimeoutSec) return @{ Ok = $script:ProbeOk; Output = $script:ProbeOutput } }
-function Fast-Install { $script:Installs += ,($args -join " "); $global:LASTEXITCODE = 0; return "" }
+$script:RealProbeDir = $null
+$script:OverrideSeen = @()
+function Invoke-BoundedPythonProbe {
+    param($PythonExe, $Code, $TimeoutSec)
+    if ($script:RealProbeDir) {
+        # The real probe code, against a site directory of hand-made dist-info folders only (-S: no site-packages).
+        $py = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $py) { $py = Get-Command python3 }
+        $savedPath = $env:PYTHONPATH
+        $env:PYTHONPATH = $script:RealProbeDir
+        try { $out = & $py.Source -S -c $Code 2>&1 | Out-String } finally { $env:PYTHONPATH = $savedPath }
+        return @{ Ok = ($LASTEXITCODE -eq 0); Output = $out }
+    }
+    return @{ Ok = $script:ProbeOk; Output = $script:ProbeOutput }
+}
+function Fast-Install { $script:Installs += ,($args -join " "); $script:OverrideSeen += ,"$env:UV_OVERRIDE"; $global:LASTEXITCODE = 0; return "" }
 function Test-UvOfflineRequested { return $script:Offline }
 function substep { param($Text, $Color) }
 function Write-StudioLine { param($Text, $ForegroundColor) }
@@ -47,12 +61,14 @@ function Set-Probe([string]$Torch, [string]$Triton, [bool]$Ok = $true) {
 }
 
 function Invoke-Block([string]$Torch, [string]$Triton, [int]$StackExit = 0,
-                      $IndexUrl = "https://repo.amd.com/rocm/whl/gfx1151/", [bool]$NoTorch = $false) {
+                      $IndexUrl = "https://repo.amd.com/rocm/whl/gfx1151/", [bool]$NoTorch = $false, $Tag = $null) {
     Set-Probe $Torch $Triton
     $script:Installs = @()
+    $script:OverrideSeen = @()
     $stackExit = $StackExit
     $ROCmIndexUrl = $IndexUrl
     $NoTorchMode = $NoTorch
+    $installedTorchTag = $Tag
     Invoke-Expression $block
     return ,$script:Installs
 }
@@ -75,8 +91,19 @@ $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29"
 Check "3.8 is kept" ($r.Count -eq 0)
 $r = Invoke-Block -Torch "2.13.0+rocm7.14.0" -Triton "3.9.0.post30"
 Check "torch 2.13 keeps what the stack resolved" ($r.Count -eq 0)
-$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -IndexUrl $null
+$r = Invoke-Block -Torch "2.11.0+cu128" -Triton "3.9.0.post30" -IndexUrl $null -Tag "cu128"
 Check "not the ROCm path: nothing is touched" ($r.Count -eq 0)
+$r = Invoke-Block -Torch "2.11.0+rocm7.2.0" -Triton "3.9.0.post30" -IndexUrl $null -Tag "rocm"
+Check "a custom pinned ROCm index (no ROCm index URL) is repaired too" ($r.Count -eq 1 -and $r[0] -eq "triton-windows>=3.8,<3.9")
+$r = Invoke-Block -Torch "2.11.0+cu128" -Triton "3.9.0.post30" -IndexUrl $null -Tag "rocm"
+Check "a ROCm venv the stack moved to CUDA torch is not touched" ($r.Count -eq 0)
+$env:UV_OVERRIDE = "inherited-overrides.txt"
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30"
+Check "an inherited UV_OVERRIDE is cleared for the pairing install" ($r.Count -eq 1 -and $script:OverrideSeen[0] -eq "")
+Check "and restored afterwards" ($env:UV_OVERRIDE -eq "inherited-overrides.txt")
+Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30"
+Check "no UV_OVERRIDE stays unset" ($null -eq $env:UV_OVERRIDE)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -StackExit 1
 Check "a failed stack is not touched" ($r.Count -eq 0)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -NoTorch $true
@@ -104,17 +131,50 @@ Set-Probe "2.11.0+rocm7.14.0" "3.9.0.post30"
 Check "UV_OFFLINE keeps the fast path" (-not (Test-RocmTritonPairingNeedsPass -InstalledTorchTag "rocm"))
 $script:Offline = $false
 
+Write-Host "=== ROCm torch rule (escape and repair) ==="
+Check "+rocm torch is ROCm" (Test-RocmTorchInstalled -Torch "2.11.0+rocm7.2.0" -InstalledTorchTag "cpu")
+Check "a ROCm venv tag with a plain version is ROCm" (Test-RocmTorchInstalled -Torch "2.11.0" -InstalledTorchTag "rocm")
+Check "a ROCm venv tag with a CUDA torch is not" (-not (Test-RocmTorchInstalled -Torch "2.11.0+cu128" -InstalledTorchTag "rocm"))
+Check "a CPU torch is not" (-not (Test-RocmTorchInstalled -Torch "2.11.0+cpu" -InstalledTorchTag "cpu"))
+Check "nothing known is not" (-not (Test-RocmTorchInstalled -Torch "" -InstalledTorchTag $null))
+
+Write-Host "=== metadata probe (real Python) ==="
+$site = Join-Path ([System.IO.Path]::GetTempPath()) ("rocm_triton_probe_" + [guid]::NewGuid().ToString("N"))
+function New-DistInfo([string]$Folder, [string]$Name, [string]$Version) {
+    $dir = Join-Path $site $Folder
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $dir "METADATA") -Value "Metadata-Version: 2.1`nName: $Name`nVersion: $Version`n" -Encoding ascii
+}
+try {
+    New-DistInfo "torch-2.11.0+rocm7.14.0.dist-info" "torch" "2.11.0+rocm7.14.0"
+    New-DistInfo "~riton_windows-3.9.0.post30.dist-info" "triton-windows" "3.9.0.post30"
+    $script:RealProbeDir = $site
+    $pair = Get-RocmTritonPairing
+    Check "a pip backup alone is not an installed triton-windows" ($pair.Torch -eq "2.11.0+rocm7.14.0" -and $pair.Triton -eq "" -and $pair.Stale)
+    New-DistInfo "triton_windows-3.8.0.post29.dist-info" "triton-windows" "3.8.0.post29"
+    $pair = Get-RocmTritonPairing
+    Check "the active 3.8 wins over a 3.9 pip backup" ($pair.Triton -eq "3.8.0.post29" -and -not $pair.Stale)
+} finally {
+    $script:RealProbeDir = $null
+    Remove-Item -LiteralPath $site -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "=== wiring ==="
 $stackAt = $setup.IndexOf('python "$PSScriptRoot\install_python_stack.py"')
 Check "the repair runs after the dependency stack" ($stackAt -ge 0 -and $setup.IndexOf($block) -gt $stackAt)
-$escape = 'if ($SkipPythonDeps -and -not $NoTorchMode -and (Test-RocmTritonPairingNeedsPass -InstalledTorchTag $installedTorchTag)) {'
+$escape = 'if ($SkipPythonDeps -and -not $NoTorchMode -and ($installedTorchTag -match ''^(rocm|gfx)'') -and (Test-RocmTritonPairingNeedsPass -InstalledTorchTag $installedTorchTag)) {'
 $escapeAt = $setup.IndexOf($escape)
 $gateAt = $setup.IndexOf('if (-not $SkipPythonDeps) {')
 Check "the fast path asks for the pairing (outside no-torch mode)" ($escapeAt -ge 0)
 Check "the helpers are defined before the fast-path escape" ($setup.IndexOf($helpers) -lt $escapeAt)
 Check "the escape runs before the dependency gate" ($escapeAt -lt $gateAt)
 $chainAt = if ($escapeAt -ge 0) { $setup.LastIndexOf('# After the chain', $escapeAt) } else { -1 }
-Check "the escape sits in the AMD-GPU checks after the fast-path chain" ($chainAt -gt 0 -and $setup.IndexOf('if ($script:ROCmGfxArch) {', $chainAt) -lt $escapeAt -and $setup.IndexOf('if ($script:ROCmGfxArch) {', $chainAt) -gt $chainAt)
+$skipAt = if ($chainAt -gt 0) { $setup.IndexOf('if ($SkipPythonDeps) {', $chainAt) } else { -1 }
+$gfxAt = if ($chainAt -gt 0) { $setup.IndexOf('if ($script:ROCmGfxArch) {', $chainAt) } else { -1 }
+function Get-Depth([string]$Text) { return ($Text.ToCharArray() | Where-Object { $_ -eq '{' }).Count - ($Text.ToCharArray() | Where-Object { $_ -eq '}' }).Count }
+Check "the escape sits in the fast-path checks after the chain" ($skipAt -gt $chainAt -and $skipAt -lt $escapeAt -and (Get-Depth $setup.Substring($skipAt, $escapeAt - $skipAt)) -eq 1)
+# Outside the gfx checks: a pinned ROCm index or a hybrid host has a ROCm torch with no detected gfx.
+Check "the escape is not inside the gfx-detection block" ($gfxAt -gt $skipAt -and $gfxAt -lt $escapeAt -and (Get-Depth $setup.Substring($gfxAt, $escapeAt - $gfxAt)) -eq 0)
 
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed" -ForegroundColor Red
