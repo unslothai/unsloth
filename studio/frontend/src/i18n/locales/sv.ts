@@ -539,8 +539,7 @@ export const sv = {
     dataHelp:
       "Fördela förfrågningar mellan GPU:er. Täta modeller måste rymmas på varje GPU; MoE-modeller kan dela experter.",
     tensorParallel: "Dela upp lagerberäkningar mellan {count} GPU:er.",
-    inUse:
-      "Avlasta modellen innan du reparerar, återställer eller tar bort dess motor.",
+    inUse: "Mata ut modellen innan du reparerar, återställer eller tar bort dess motor.",
     title: "Inferensmotorer",
     description:
       "Valfria motorer för lokala text- och visionsmodeller som stöds. Välj en installerad motor i modellens körningsinställningar. Experimentellt.",
@@ -3529,6 +3528,16 @@ export const sv = {
         placeholderModel: "Modellen som visas är ett exempel. Läs in en modell på sidan Bilder eller Video och öppna det här från dess API-knapp för att fylla i den.",
         autoSwitchOff: "Automatiskt mediabyte är av, så förfrågningar körs på modellen som sidan har läst in, oavsett vilken de anger.",
       },
+      trainingApi: {
+        title: "Tränings-API",
+        description: "Finjustera modeller från din egen kod med de OpenAI-kompatibla slutpunkterna för finjustering: ladda upp en JSONL-fil, skapa ett jobb, följ dess händelser och chatta sedan med den tränade modellen.",
+        placeholder: "Modellen och inställningarna som visas är ett exempel. Öppna det här från API-knappen på sidan Träna för att fylla i din nuvarande konfiguration.",
+        hubDataset: "Sidan Träna använder en datauppsättning från Hugging Face eller S3. API:et tränar på uppladdade filer, så spara datauppsättningen som JSONL och ladda upp den.",
+        batching: "Kompatibla jobb som väntar i kön tränas tillsammans automatiskt.",
+        chatNote: "För att chatta med den tränade modellen via namn måste automatiskt modellbyte vara på, annars läser du in den på sidan Chatt först.",
+        cancelTitle: "Avbryt ett jobb",
+        cancelDescription: "Stoppar ett köat eller pågående jobb. Ingår inte i exemplet ovan.",
+      },
       decisionApi: {
         title: "Decision API",
         docs: "Dokumentation",
@@ -3751,7 +3760,7 @@ export const sv = {
       datasetTooltip: "Träningsdata som används för att finjustera modellen.",
       hfTokenDescription:
         "Krävs för begränsade eller privata modeller och datauppsättningar.",
-      uploadLocalLabel: "Eller ladda upp en lokal fil",
+      uploadLocalLabel: "Ladda upp en lokal fil",
       sourceBrowse: "Bläddra",
       releaseToUpload: "Släpp för att ladda upp",
       loadYaml: "Läs in YAML",
@@ -5182,7 +5191,7 @@ export const sv = {
   },
   decisions: {
     title: "Testa ett beslut",
-    description: "Ställ en fråga till Laya om valfri text.",
+    description: "Ställ en fråga till beslutsmodellen om valfri text.",
     tryIt: "Testa",
     tryItOff: "Slå på Hantera begäranden för att testa.",
     typeNoul: "Ja / nej",

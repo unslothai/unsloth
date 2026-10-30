@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import { en } from "./en.ts";
+import type { en } from "./en.ts";
 
 export const ko = {
   linkMenu: {
@@ -501,7 +501,56 @@ export const ko = {
       clearDataFailed: "사이트 데이터를 삭제하지 못했습니다. 다시 시도하세요.",
     },
   },
-  managedEngines: en.managedEngines,
+  managedEngines: {
+    gpu: "GPU",
+    gpuHelp: "사용할 GPU를 선택하세요.",
+    parallelism: "멀티 GPU 모드",
+    tensor: "텐서 병렬",
+    pipeline: "파이프라인 병렬",
+    data: "복제본(데이터 병렬)",
+    pipelineHelp: "모델 레이어를 여러 GPU에 나눕니다. 각 GPU에 해당 레이어와 캐시가 들어가야 합니다.",
+    dataHelp: "요청을 여러 GPU에 분산합니다. 밀집(Dense) 모델은 각 GPU에 들어가야 하며, MoE 모델은 전문가를 공유할 수 있습니다.",
+    tensorParallel: "레이어 연산을 GPU {count}개에 나눕니다.",
+    inUse: "엔진을 복구, 복원 또는 제거하기 전에 모델을 해제하세요.",
+    title: "추가 엔진",
+    description: "GPU용 추가 엔진(베타)입니다. 특히 배치 추론에서 모델을 더 빠르게 실행할 수 있습니다. 여기에서 설치한 뒤 모델의 실행 설정에서 선택하세요.",
+    picker: "추론 엔진",
+    precision: "정밀도",
+    precisionAuto: "모델 기본값",
+    precisionHelp: "모델 기본값은 저장된 정밀도를 유지합니다. 다른 옵션은 로드할 때 양자화되지 않은 가중치를 변환합니다.",
+    kvCache: "KV 캐시",
+    kvCacheFp8: "FP8(메모리 절반)",
+    kvCacheHelp: "FP8은 컨텍스트 캐시를 8비트로 저장하여 같은 메모리에 약 두 배의 컨텍스트를 담습니다. 체크포인트에 보정된 스케일이 없으면 답변의 정확도가 약간 떨어질 수 있습니다.",
+    gpuMemory: "GPU 메모리 한도",
+    gpuMemoryAuto: "자동",
+    gpuMemoryHelp: "선택한 각 GPU에서 엔진이 사용할 수 있는 최대량입니다. 자동은 여유 메모리를 사용합니다. 다른 프로그램을 위한 여유를 남기려면 낮추세요.",
+    seed: "시드",
+    seedPlaceholder: "엔진 기본값",
+    seedHelp: "엔진의 난수 시드를 설정합니다. 동시에 진행되는 채팅 때문에 샘플링된 답변이 달라질 수 있습니다.",
+    default: "기본값",
+    installRequired: "설치 필요",
+    ownerRequired: "Unsloth 소유자에게 이 엔진 설치를 요청하세요.",
+    cancelInstall: "설치 취소",
+    installed: "{version} 설치됨",
+    repair: "복구",
+    update: "엔진 업데이트",
+    install: "엔진 설치",
+    installing: "엔진을 설치하는 중입니다. 진행 상황은 다운로드에서 확인하세요.",
+    remove: "엔진 제거",
+    rollback: "이전 설치 복원",
+    installTitle: "{engine} 설치",
+    installAndLoad: "설치 후 로드",
+    confirm: "{engine} {version}을(를) 설치할까요? 몇 GB를 다운로드할 수 있습니다.",
+    confirmSized: "{engine} {version}을(를) 설치할까요? 다운로드 크기는 약 {size}입니다.",
+    wslSetup: "Windows에서 {engine}은(는) Unsloth가 설정하는 전용 WSL2 환경에서 실행됩니다. 관리자 확인 창이 한 번 나타나며 다시 시작해야 할 수도 있습니다.",
+    wslReady: "Windows에서 {engine}은(는) Unsloth의 전용 WSL2 환경 안에서 실행됩니다.",
+    wslRestart: "Windows를 다시 시작해 WSL2 켜기를 마친 뒤 설치를 다시 클릭하세요.",
+    background: "백그라운드에서 설치합니다.",
+    failed: "엔진 설치에 실패했습니다. 다시 시도하거나 기본 엔진을 사용하세요.",
+    details: "기술 세부 정보",
+    cancelled: "설치가 취소되었습니다. 다시 시도할 수 있습니다.",
+    scope: "NVIDIA GPU에서 텍스트 및 이미지 채팅을 지원합니다. 첫 로드는 시간이 더 걸릴 수 있습니다.",
+  },
   sandboxSetup: {
     levelTitle: "OS 샌드박스를 사용할 수 없습니다",
     levelDescription: "높음을 사용하려면 설치하거나 낮음(소프트웨어 샌드박스)을 유지하세요.",
@@ -1774,14 +1823,14 @@ export const ko = {
       autoTitleNewChatsDescription:
         "첫 메시지를 기반으로 짧은 제목을 생성합니다.",
       helperLlm: {
-        sectionTitle: "Helper LLM",
-        preloadOnStartup: "시작 시 Helper LLM 미리 캐시",
+        sectionTitle: "보조 LLM",
+        preloadOnStartup: "시작 시 보조 LLM 미리 캐시",
         preloadOnStartupDescription:
           "시작 시 백그라운드에서 AI Assist 헬퍼 모델을 다운로드합니다. 기본값은 비활성화이며, AI Assist는 필요할 때 언제든 가져올 수 있습니다.",
         disabledByEnv:
           "백엔드 환경의 UNSLOTH_HELPER_MODEL_DISABLE에 의해 비활성화되었습니다.",
-        loadError: "Helper LLM 설정을 불러오지 못했습니다.",
-        saveError: "Helper LLM 설정을 저장하지 못했습니다.",
+        loadError: "보조 LLM 설정을 불러오지 못했습니다.",
+        saveError: "보조 LLM 설정을 저장하지 못했습니다.",
       },
       developerMode: {
         sectionTitle: "개발자 모드",
@@ -2760,7 +2809,7 @@ export const ko = {
       rememberParamsPerModelHint: "끄면 모든 모델에 같은 설정을 사용합니다.",
       autoCompactHint: "로컬 GGUF 및 MLX 채팅: 밀려난 턴은 색인되어 모델이 다시 검색할 수 있고, 초기화 시에는 들어갈 수 있는 만큼의 계속 적용되는 지침이 원문 그대로 이어지며, 중간 것보다 가장 오래된 것과 가장 최근 것이 우선됩니다. 보관하려면 저장된 채팅과 벡터 색인이 필요하며, 없으면 오래된 턴은 그냥 삭제됩니다. 남은 VRAM이 아닌 설정한 컨텍스트 길이를 기준으로 합니다. API 모델: 제공자가 지원하면 오래된 턴을 요약하고, 그렇지 않으면 채팅이 모델의 공개된 컨텍스트 창에 가까워질 때 가장 오래된 턴이 삭제됩니다.",
       pastedTextShortDescription:
-        "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
+        "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다.",
       pastedTextOffDescription:
         "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
       title: "채팅",
@@ -2769,7 +2818,7 @@ export const ko = {
         title: "모델 선택 설정",
         expandQuantizations: "양자화 펼치기",
         expandQuantizationsDescription:
-          "켬: ‘On Device’의 GGUF 모델 양자화 옵션을 즉시 표시합니다. 끔: 모델을 클릭하면 양자화 옵션이 표시됩니다.",
+          "각 모델을 열지 않고도 ‘기기’에서 GGUF 양자화를 표시합니다.",
         showAllQuantizations: "모든 양자화 표시",
         showAllQuantizationsDescription:
           "켬: 아직 다운로드하지 않은 항목을 포함해 ‘On Device’의 모든 양자화를 표시합니다. 끔: 다운로드한 양자화만 표시합니다.",
@@ -3283,6 +3332,16 @@ export const ko = {
         placeholderModel: "표시된 모델은 예시입니다. 이미지 또는 동영상 페이지에서 모델을 로드한 뒤 그 페이지의 API 버튼으로 여기를 열면 채워집니다.",
         autoSwitchOff: "미디어 자동 전환이 꺼져 있어 요청은 이름과 관계없이 페이지에 로드된 모델에서 실행됩니다.",
       },
+      trainingApi: {
+        title: "학습 API",
+        description: "OpenAI 호환 파인튜닝 엔드포인트로 직접 작성한 코드에서 모델을 파인튜닝하세요. JSONL 파일을 업로드하고 작업을 만든 뒤 이벤트를 확인하고, 학습된 모델과 채팅합니다.",
+        placeholder: "표시된 모델과 설정은 예시입니다. 학습 페이지의 API 버튼으로 여기를 열면 현재 설정이 채워집니다.",
+        hubDataset: "학습 페이지에서 Hugging Face 또는 S3 데이터셋을 사용하고 있습니다. API는 업로드한 파일로 학습하므로 데이터셋을 JSONL로 저장해 업로드하세요.",
+        batching: "대기열에서 기다리는 호환 작업은 자동으로 함께 학습됩니다.",
+        chatNote: "학습된 모델과 이름으로 채팅하려면 모델 자동 전환을 켜거나 먼저 채팅 페이지에서 모델을 불러오세요.",
+        cancelTitle: "작업 취소",
+        cancelDescription: "대기 중이거나 실행 중인 작업을 중지합니다. 위 예제에는 포함되지 않습니다.",
+      },
       decisionApi: {
         title: "판단 API",
         docs: "문서",
@@ -3502,7 +3561,7 @@ export const ko = {
       datasetTooltip: "모델을 파인튜닝하는 데 사용하는 학습 데이터입니다.",
       hfTokenDescription:
         "액세스가 제한되거나 비공개인 모델 및 데이터 세트에 필요합니다.",
-      uploadLocalLabel: "또는 로컬 파일 업로드",
+      uploadLocalLabel: "로컬 파일 업로드",
       sourceBrowse: "찾아보기",
       releaseToUpload: "놓으면 업로드됩니다",
       loadYaml: "YAML 불러오기",
@@ -4878,7 +4937,7 @@ export const ko = {
   },
   decisions: {
     title: "판단 사용해 보기",
-    description: "어떤 텍스트든 Laya에게 질문하세요.",
+    description: "어떤 텍스트든 판단 모델에게 질문하세요.",
     tryIt: "사용해 보기",
     tryItOff: "사용해 보려면 요청 처리를 켜세요.",
     typeNoul: "예 / 아니오",

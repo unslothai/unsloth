@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import { en } from "./en.ts";
+import type { en } from "./en.ts";
 
 export const de = {
   linkMenu: {
@@ -501,7 +501,56 @@ export const de = {
       clearDataFailed: "Websitedaten konnten nicht gelöscht werden. Versuche es erneut.",
     },
   },
-  managedEngines: en.managedEngines,
+  managedEngines: {
+    gpu: "GPUs",
+    gpuHelp: "Wählen Sie, welche GPUs verwendet werden.",
+    parallelism: "Multi-GPU-Modus",
+    tensor: "Tensor-Parallelität",
+    pipeline: "Pipeline-Parallelität",
+    data: "Replikate (Datenparallelität)",
+    pipelineHelp: "Verteilt die Modellschichten auf die GPUs. Jede GPU muss ihre Schichten und ihren Cache aufnehmen können.",
+    dataHelp: "Verteilt Anfragen auf die GPUs. Dichte Modelle müssen auf jede GPU passen; MoE-Modelle können Experten teilen.",
+    tensorParallel: "Verteilt die Schichtberechnungen auf {count} GPUs.",
+    inUse: "Entladen Sie das Modell, bevor Sie seine Engine reparieren, wiederherstellen oder entfernen.",
+    title: "Weitere Engines",
+    description: "Zusätzliche Engines für GPUs (Beta). Sie können Modelle schneller ausführen, besonders bei Batch-Inferenz. Hier installieren, dann in den Ausführungseinstellungen des Modells auswählen.",
+    picker: "Inferenz-Engine",
+    precision: "Präzision",
+    precisionAuto: "Modellstandard",
+    precisionHelp: "Der Modellstandard behält die gespeicherte Präzision bei. Andere Optionen konvertieren nicht quantisierte Gewichte beim Laden.",
+    kvCache: "KV-Cache",
+    kvCacheFp8: "FP8 (halber Speicher)",
+    kvCacheHelp: "FP8 speichert den Kontext-Cache in 8 Bit und passt so etwa doppelt so viel Kontext in denselben Speicher. Ohne kalibrierte Skalen im Checkpoint können Antworten etwas ungenauer sein.",
+    gpuMemory: "GPU-Speicherlimit",
+    gpuMemoryAuto: "Automatisch",
+    gpuMemoryHelp: "Der größte Anteil jeder ausgewählten GPU, den die Engine nutzen darf. Automatisch nutzt den freien Speicher; senken Sie den Wert, um Platz für andere Programme zu lassen.",
+    seed: "Seed",
+    seedPlaceholder: "Engine-Standard",
+    seedHelp: "Legt den Zufalls-Seed der Engine fest. Gleichzeitige Chats können gesampelte Antworten trotzdem verändern.",
+    default: "Standard",
+    installRequired: "Installation erforderlich",
+    ownerRequired: "Bitten Sie den Besitzer von Unsloth, diese Engine zu installieren.",
+    cancelInstall: "Installation abbrechen",
+    installed: "Installiert: {version}",
+    repair: "Reparieren",
+    update: "Engine aktualisieren",
+    install: "Engine installieren",
+    installing: "Engine wird installiert. Den Fortschritt sehen Sie unter Downloads.",
+    remove: "Engine entfernen",
+    rollback: "Vorherige Installation wiederherstellen",
+    installTitle: "{engine} installieren",
+    installAndLoad: "Installieren und laden",
+    confirm: "{engine} {version} installieren? Dabei können mehrere GB heruntergeladen werden.",
+    confirmSized: "{engine} {version} installieren? Etwa {size} zum Herunterladen.",
+    wslSetup: "Unter Windows läuft {engine} in einer privaten WSL2-Umgebung, die Unsloth einrichtet. Rechnen Sie mit einer Administratorabfrage und eventuell einem Neustart.",
+    wslReady: "Unter Windows läuft {engine} in der privaten WSL2-Umgebung von Unsloth.",
+    wslRestart: "Starten Sie Windows neu, um die Aktivierung von WSL2 abzuschließen, und klicken Sie dann erneut auf Installieren.",
+    background: "Wird im Hintergrund installiert.",
+    failed: "Installation der Engine fehlgeschlagen. Versuchen Sie es erneut oder verwenden Sie die Standard-Engine.",
+    details: "Technische Details",
+    cancelled: "Installation abgebrochen. Sie können es erneut versuchen.",
+    scope: "Text- und Bild-Chat auf NVIDIA-GPUs. Das erste Laden kann länger dauern.",
+  },
   sandboxSetup: {
     levelTitle: "OS-Sandbox ist nicht verfügbar",
     levelDescription: "Installiere sie, um Hoch zu nutzen, oder bleib bei Niedrig (Software-Sandbox).",
@@ -2704,11 +2753,11 @@ export const de = {
       agentDocs: "Einrichtungsdokumentation zu {agent} öffnen",
       copyGeneratedCommand: "Generierten Befehl kopieren",
       automaticSettingsNote:
-        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+        "Unsloth wendet automatisch die empfohlenen Einstellungen des Modells an, wenn Sie keine Flags gesetzt haben.",
       configurationNote:
-        "You can also adjust any configuration. See further below or",
-      configurationDocs: "docs",
-      configurationFlagsSuffix: "for flags.",
+        "Sie können auch jede Konfiguration anpassen. Siehe weiter unten oder die",
+      configurationDocs: "Dokumentation",
+      configurationFlagsSuffix: "zu den Flags.",
       modelNote:
         "Codex benötigt ein GGUF-Modell, das von llama-server bereitgestellt wird. Andere Agenten können auch Transformer-basierte Modelle verwenden; lassen Sie --model weg, um das bereits in Unsloth geladene Modell zu nutzen.",
       subagent: {
@@ -2810,7 +2859,7 @@ export const de = {
       autoCompactHint:
         "Lokale GGUF- und MLX-Chats: Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit Vorrang für die ältesten und neuesten vor allem dazwischen. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM. API-Modelle: Der Anbieter fasst ältere Runden zusammen, wo er das unterstützt, sonst werden die ältesten Runden verworfen, sobald der Chat das veröffentlichte Kontextfenster des Modells erreicht.",
       pastedTextShortDescription:
-        "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
+        "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt.",
       pastedTextOffDescription:
         "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
       title: "Chat",
@@ -2819,10 +2868,10 @@ export const de = {
         title: "Einstellungen für die Modellauswahl",
         expandQuantizations: "Quantisierungen ausklappen",
         expandQuantizationsDescription:
-          "Ein: Bei GGUF-Modellen unter „On Device“ werden die Quantisierungen sofort angezeigt. Aus: Klicken Sie auf ein Modell, um seine Quantisierungen anzuzeigen.",
+          "GGUF-Quantisierungen unter „Auf dem Gerät“ anzeigen, ohne jedes Modell zu öffnen.",
         showAllQuantizations: "Alle Quantisierungen anzeigen",
         showAllQuantizationsDescription:
-          "Ein: Alle Quantisierungen unter „On Device“ auflisten, auch nicht heruntergeladene. Aus: Nur heruntergeladene Quantisierungen anzeigen.",
+          "Ein: Alle Quantisierungen unter „Auf dem Gerät“ auflisten, auch nicht heruntergeladene. Aus: Nur heruntergeladene Quantisierungen anzeigen.",
         showMemoryBar: "VRAM-Auslastungsbalken anzeigen",
         showMemoryBarDescription:
           "Zeigt unter jeder Zeile eines heruntergeladenen Modells den geschätzten VRAM-Bedarf: Gewichte, KV-Cache bei der Kontextlänge, mit der das Modell geladen wird, und eine eventuelle Reserve für spekulatives Decoding.",
@@ -3342,6 +3391,16 @@ export const de = {
         placeholderModel: "Das gezeigte Modell ist ein Beispiel. Lade ein Modell auf der Bilder- oder Video-Seite und öffne dies über deren API-Schaltfläche, um es einzusetzen.",
         autoSwitchOff: "Der automatische Medienwechsel ist aus, daher laufen Anfragen auf dem Modell, das die Seite geladen hat, egal welches sie nennen.",
       },
+      trainingApi: {
+        title: "Trainings-API",
+        description: "Führen Sie Fine-Tuning aus Ihrem eigenen Code über die OpenAI-kompatiblen Fine-Tuning-Endpunkte aus: Laden Sie eine JSONL-Datei hoch, erstellen Sie einen Job, verfolgen Sie seine Ereignisse und chatten Sie dann mit dem trainierten Modell.",
+        placeholder: "Das gezeigte Modell und die Einstellungen sind ein Beispiel. Öffnen Sie dies über die API-Schaltfläche im Tab „Trainieren“, um Ihre aktuelle Konfiguration einzutragen.",
+        hubDataset: "Ihr Tab „Trainieren“ verwendet einen Hugging-Face- oder S3-Datensatz. Die API trainiert mit hochgeladenen Dateien. Speichern Sie den Datensatz daher als JSONL und laden Sie diese Datei hoch.",
+        batching: "Kompatible Jobs in der Warteschlange werden automatisch gemeinsam trainiert.",
+        chatNote: "Um per Name mit dem trainierten Modell zu chatten, muss der automatische Modellwechsel aktiviert sein. Alternativ laden Sie es zuerst auf der Chat-Seite.",
+        cancelTitle: "Job abbrechen",
+        cancelDescription: "Stoppt einen wartenden oder laufenden Job. Nicht Teil des obigen Beispiels.",
+      },
       decisionApi: {
         title: "Entscheidungs-API",
         docs: "Dokumentation",
@@ -3563,7 +3622,7 @@ export const de = {
       datasetTooltip: "Die Trainingsdaten für die Feinabstimmung des Modells.",
       hfTokenDescription:
         "Erforderlich für zugriffsbeschränkte oder private Modelle und Datensätze.",
-      uploadLocalLabel: "Oder eine lokale Datei hochladen",
+      uploadLocalLabel: "Lokale Datei hochladen",
       sourceBrowse: "Durchsuchen",
       releaseToUpload: "Zum Hochladen loslassen",
       loadYaml: "YAML laden",
@@ -4029,7 +4088,7 @@ export const de = {
       gradAccum: "Grad-Akkumulation",
       gradAccumTooltip:
         "Simuliert größere Batch-Größen ohne zusätzlichen VRAM.",
-      weightDecay: "Weight Decay",
+      weightDecay: "Gewichtszerfall (Weight Decay)",
       weightDecayTooltip: "L2-Regularisierung zur Vermeidung von Overfitting.",
       warmupSteps: "Warmup-Schritte",
       warmupStepsTooltip:
@@ -4963,7 +5022,7 @@ export const de = {
   },
   decisions: {
     title: "Eine Entscheidung testen",
-    description: "Stelle Laya eine Frage zu einem beliebigen Text.",
+    description: "Stellen Sie dem Entscheidungsmodell eine Frage zu einem beliebigen Text.",
     tryIt: "Ausprobieren",
     tryItOff: "Schalte „Anfragen beantworten“ ein, um es auszuprobieren.",
     typeNoul: "Ja / Nein",

@@ -1083,7 +1083,7 @@ export const he = {
       setupFor: "קוד הגדרה עבור {username}",
       shownOnce:
         "העתק קוד זה כעת ושתף אותו עם בעל החשבון. הוא מוצג כאן בלבד ותקף לשימוש חד-פעמי תוך 60 דקות.",
-      expires: "פג תוקף ב-{expiry}",
+      expires: "יפוג ב-{expiry}",
       copy: "העתק קוד הגדרה",
       copied: "הועתק",
       copyFailed: "ההעתקה נכשלה. בחר והעתק את קוד ההגדרה למעלה.",
@@ -2613,7 +2613,7 @@ export const he = {
         noRamReserveDescription:
           "הפחת את זיכרון ה-RAM המארח המוחזק עבור משקולות המודל.",
         noRamReserveHint:
-          "מדלג על טעינה ממופת זיכרון (Memory-mapped) בגרסאות Windows נתמכות כאשר המודל נפרק במלואו ל-GPU, כך שדפי הזיכרון שלו אינם נשמרים כתושבים. במקרים אחרים שומר על טעינה ממופת זיכרון. חוצצי CPU נדרשים עדיין יכולים להשתמש ב-RAM. מבטל את --no-mmap ו---mlock.",
+          "מדלג על טעינה ממופת זיכרון (Memory-mapped) בגרסאות Windows נתמכות כאשר המודל מועבר במלואו ל-GPU, כך שדפי הזיכרון שלו אינם נשמרים כתושבים. במקרים אחרים שומר על טעינה ממופת זיכרון. חוצצי CPU נדרשים עדיין יכולים להשתמש ב-RAM. מבטל את --no-mmap ו---mlock.",
         multiModel: "השאר מספר מודלים טעונים",
         openSystemSettings: "הגדרות מערכת",
         multiModelOff: "כבוי",
@@ -3084,7 +3084,7 @@ export const he = {
         errorLine: "שורה {line}",
         consoleTitle: "קונסולה",
         reloadCanvas: "הרץ שוב",
-        consoleMessageCount: "הודעה {count}",
+        consoleMessageCount: "{count} הודעה",
         consoleMessageCountPlural: "{count} הודעות",
         consoleClear: "נקה קונסולה",
         consoleClose: "סגור קונסולה",
@@ -3427,6 +3427,16 @@ export const he = {
         placeholderModel: "המודל המוצג הוא דוגמה. טענו מודל בדף התמונות או הווידאו ופתחו את זה מכפתור ה-API שלו כדי למלא אותו.",
         autoSwitchOff: "המעבר האוטומטי למדיה כבוי, ולכן הבקשות רצות על המודל שהדף טען, לא משנה איזה שם הן נותנות.",
       },
+      trainingApi: {
+        title: "API לאימון",
+        description: "כווננו מודלים מהקוד שלכם דרך נקודות הקצה לכוונון עדין התואמות ל-OpenAI: העלו קובץ JSONL, צרו משימה, עקבו אחר האירועים שלה ואז שוחחו עם המודל המאומן.",
+        placeholder: "המודל וההגדרות המוצגים הם דוגמה. פתחו את זה מכפתור ה-API בדף האימון כדי למלא את ההגדרה הנוכחית שלכם.",
+        hubDataset: "דף האימון שלכם משתמש במערך נתונים מ-Hugging Face או מ-S3. ה-API מתאמן על קבצים שהועלו, לכן שמרו את מערך הנתונים כ-JSONL והעלו אותו.",
+        batching: "משימות תואמות שממתינות בתור מתאמנות יחד באופן אוטומטי.",
+        chatNote: "צ'אט עם המודל המאומן לפי שם דורש שהחלפת מודל אוטומטית תפעל, או טענו אותו קודם בדף הצ'אט.",
+        cancelTitle: "ביטול משימה",
+        cancelDescription: "עוצר משימה שממתינה בתור או רצה. לא חלק מהדוגמה שלמעלה.",
+      },
       decisionApi: {
         title: "ממשק API להחלטות",
         docs: "תיעוד",
@@ -3642,7 +3652,7 @@ export const he = {
       datasetLabel: "מערך נתונים",
       datasetTooltip: "נתוני האימון המשמשים לכוונון עדין של המודל.",
       hfTokenDescription: "נדרש עבור מודלים ומערכי נתונים פרטיים או מוגבלים.",
-      uploadLocalLabel: "או העלה קובץ מקומי",
+      uploadLocalLabel: "העלה קובץ מקומי",
       sourceBrowse: "עיון",
       releaseToUpload: "שחרר כדי להעלות",
       loadYaml: "טען YAML",
@@ -5034,7 +5044,7 @@ export const he = {
   },
   decisions: {
     title: "נסו החלטה",
-    description: "שאלו את Laya שאלה על כל טקסט.",
+    description: "שאלו את מודל ההחלטות שאלה על כל טקסט.",
     tryIt: "נסו",
     tryItOff: "הפעילו את 'הגש בקשות' כדי לנסות.",
     typeNoul: "כן / לא",

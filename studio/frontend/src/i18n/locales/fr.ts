@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import { en } from "./en.ts";
+import type { en } from "./en.ts";
 
 export const fr = {
   linkMenu: {
@@ -295,8 +295,8 @@ export const fr = {
     clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent les cookies et les données de site que jusqu’au rechargement de Unsloth.",
     manage: "Gérer",
     fullView: {
-      enter: "Plein écran",
-      exit: "Quitter le plein écran",
+      enter: "Vue complète",
+      exit: "Quitter la vue complète",
       minimize: "Réduire le chat",
       showChat: "Afficher le chat",
       showConversation: "Afficher la conversation",
@@ -501,7 +501,56 @@ export const fr = {
       clearDataFailed: "Impossible d'effacer les données des sites. Réessayez.",
     },
   },
-  managedEngines: en.managedEngines,
+  managedEngines: {
+    gpu: "GPU",
+    gpuHelp: "Choisissez les GPU à utiliser.",
+    parallelism: "Mode multi-GPU",
+    tensor: "Parallélisme de tenseurs",
+    pipeline: "Parallélisme de pipeline",
+    data: "Répliques (parallélisme de données)",
+    pipelineHelp: "Répartit les couches du modèle entre les GPU. Chaque GPU doit pouvoir contenir ses couches et son cache.",
+    dataHelp: "Répartit les requêtes entre les GPU. Les modèles denses doivent tenir sur chaque GPU ; les modèles MoE peuvent partager les experts.",
+    tensorParallel: "Répartit les calculs des couches sur {count} GPU.",
+    inUse: "Déchargez le modèle avant de réparer, restaurer ou supprimer son moteur.",
+    title: "Autres moteurs",
+    description: "Moteurs supplémentaires pour GPU (bêta). Ils peuvent exécuter les modèles plus rapidement, surtout en inférence par lots. Installez-les ici, puis choisissez-les dans les paramètres d’exécution du modèle.",
+    picker: "Moteur d’inférence",
+    precision: "Précision",
+    precisionAuto: "Valeur par défaut du modèle",
+    precisionHelp: "La valeur par défaut du modèle conserve la précision stockée. Les autres options convertissent les poids non quantifiés au chargement.",
+    kvCache: "Cache KV",
+    kvCacheFp8: "FP8 (moitié moins de mémoire)",
+    kvCacheHelp: "FP8 stocke le cache de contexte sur 8 bits, ce qui permet de loger environ deux fois plus de contexte dans la même mémoire. Sans échelles calibrées dans le checkpoint, les réponses peuvent être légèrement moins précises.",
+    gpuMemory: "Limite de mémoire GPU",
+    gpuMemoryAuto: "Automatique",
+    gpuMemoryHelp: "La part maximale de chaque GPU sélectionné que le moteur peut utiliser. Automatique utilise la mémoire libre ; réduisez-la pour laisser de la place à d’autres programmes.",
+    seed: "Graine",
+    seedPlaceholder: "Valeur par défaut du moteur",
+    seedHelp: "Définit la graine aléatoire du moteur. Des chats simultanés peuvent quand même modifier les réponses échantillonnées.",
+    default: "Par défaut",
+    installRequired: "installation requise",
+    ownerRequired: "Demandez au propriétaire d’Unsloth d’installer ce moteur.",
+    cancelInstall: "Annuler l’installation",
+    installed: "Installé : {version}",
+    repair: "Réparer",
+    update: "Mettre à jour le moteur",
+    install: "Installer le moteur",
+    installing: "Installation du moteur. Suivez la progression dans Téléchargements.",
+    remove: "Supprimer le moteur",
+    rollback: "Restaurer l’installation précédente",
+    installTitle: "Installer {engine}",
+    installAndLoad: "Installer et charger",
+    confirm: "Installer {engine} {version} ? Le téléchargement peut atteindre plusieurs Go.",
+    confirmSized: "Installer {engine} {version} ? Environ {size} à télécharger.",
+    wslSetup: "Sous Windows, {engine} s’exécute dans un environnement WSL2 privé configuré par Unsloth. Prévoyez une invite administrateur et peut-être un redémarrage.",
+    wslReady: "Sous Windows, {engine} s’exécute dans l’environnement WSL2 privé d’Unsloth.",
+    wslRestart: "Redémarrez Windows pour terminer l’activation de WSL2, puis cliquez à nouveau sur Installer.",
+    background: "S’installe en arrière-plan.",
+    failed: "L’installation du moteur a échoué. Réessayez ou utilisez le moteur par défaut.",
+    details: "Détails techniques",
+    cancelled: "Installation annulée. Vous pouvez réessayer.",
+    scope: "Chat texte et image sur les GPU NVIDIA. Le premier chargement peut être plus long.",
+  },
   sandboxSetup: {
     levelTitle: "Le bac à sable du système n'est pas disponible",
     levelDescription: "Installez-le pour utiliser Élevé, ou restez sur Faible (bac à sable logiciel).",
@@ -2701,11 +2750,11 @@ export const fr = {
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
       automaticSettingsNote:
-        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+        "Unsloth applique automatiquement les paramètres recommandés du modèle si vous n’avez défini aucun flag.",
       configurationNote:
-        "You can also adjust any configuration. See further below or",
-      configurationDocs: "docs",
-      configurationFlagsSuffix: "for flags.",
+        "Vous pouvez aussi ajuster n’importe quelle configuration. Consultez la suite ci-dessous ou la",
+      configurationDocs: "documentation",
+      configurationFlagsSuffix: "pour les flags.",
       modelNote:
         "Codex nécessite un modèle GGUF servi par llama-server. Les autres agents peuvent aussi utiliser des modèles basés sur transformers ; retirez --model pour utiliser le modèle déjà chargé dans Unsloth.",
       subagent: {
@@ -2806,7 +2855,7 @@ export const fr = {
       autoCompactHint:
         "Chats GGUF et MLX locaux : Les échanges évincés sont indexés pour que le modèle puisse les retrouver, et une réinitialisation cite mot pour mot les instructions permanentes qui tiennent, en gardant les plus anciennes et les plus récentes plutôt que celles du milieu. L’archivage nécessite un chat enregistré et l’index vectoriel ; sans eux, les anciens échanges sont supprimés. Utilise la longueur de contexte définie, pas la VRAM disponible. Modèles d’API : le fournisseur résume les anciens échanges quand il le permet ; sinon, les plus anciens sont supprimés lorsque le chat approche de la fenêtre de contexte publiée du modèle.",
       pastedTextShortDescription:
-        "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
+        "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
       title: "Discussion",
@@ -2815,10 +2864,10 @@ export const fr = {
         title: "Paramètres de sélection du modèle",
         expandQuantizations: "Développer les quantifications",
         expandQuantizationsDescription:
-          "Activé : les modèles GGUF de « On Device » affichent immédiatement leurs quantifications. Désactivé : cliquez sur un modèle pour afficher ses quantifications.",
+          "Affiche les quantifications GGUF dans « Sur l'appareil » sans ouvrir chaque modèle.",
         showAllQuantizations: "Afficher toutes les quantifications",
         showAllQuantizationsDescription:
-          "Activé : affiche toutes les quantifications de « On Device », y compris celles qui ne sont pas téléchargées. Désactivé : affiche uniquement les quantifications téléchargées.",
+          "Activé : affiche toutes les quantifications de « Sur l'appareil », y compris celles qui ne sont pas téléchargées. Désactivé : affiche uniquement les quantifications téléchargées.",
         showMemoryBar: "Afficher la barre d’utilisation de la VRAM",
         showMemoryBarDescription:
           "Affiche sous la ligne de chaque modèle téléchargé son utilisation estimée de la VRAM : poids, cache KV à la longueur de contexte avec laquelle il sera chargé, et toute réserve de brouillon spéculatif.",
@@ -3342,6 +3391,16 @@ export const fr = {
         placeholderModel: "Le modèle affiché est un exemple. Chargez un modèle sur la page Images ou Vidéo et ouvrez ceci depuis son bouton API pour le renseigner.",
         autoSwitchOff: "Le changement automatique de média est désactivé : les requêtes utilisent le modèle chargé par la page, quel que soit celui qu'elles nomment.",
       },
+      trainingApi: {
+        title: "API d’entraînement",
+        description: "Effectuez le réglage fin de modèles depuis votre propre code avec les points de terminaison de réglage fin compatibles OpenAI : téléversez un fichier JSONL, créez une tâche, suivez ses événements, puis discutez avec le modèle entraîné.",
+        placeholder: "Le modèle et les paramètres affichés sont un exemple. Ouvrez ceci depuis le bouton API de la page Entraîner pour renseigner votre configuration actuelle.",
+        hubDataset: "Votre page Entraîner utilise un jeu de données Hugging Face ou S3. L’API s’entraîne sur des fichiers téléversés : enregistrez le jeu de données au format JSONL et téléversez ce fichier.",
+        batching: "Les tâches compatibles en attente dans la file s’entraînent ensemble automatiquement.",
+        chatNote: "Pour discuter avec le modèle entraîné par son nom, activez le changement automatique de modèle, ou chargez-le d’abord sur la page Chat.",
+        cancelTitle: "Annuler une tâche",
+        cancelDescription: "Arrête une tâche en file d’attente ou en cours. Ne fait pas partie de l’exemple ci-dessus.",
+      },
       decisionApi: {
         title: "API de décision",
         docs: "Documentation",
@@ -3566,7 +3625,7 @@ export const fr = {
       datasetTooltip: "Les données d'entraînement utilisées pour affiner le modèle.",
       hfTokenDescription:
         "Nécessaire pour les modèles et jeux de données restreints ou privés.",
-      uploadLocalLabel: "Ou téléverser un fichier local",
+      uploadLocalLabel: "Téléverser un fichier local",
       sourceBrowse: "Parcourir",
       releaseToUpload: "Relâchez pour téléverser",
       loadYaml: "Charger le YAML",
@@ -4973,7 +5032,7 @@ export const fr = {
   },
   decisions: {
     title: "Essayer une décision",
-    description: "Posez à Laya une question sur n’importe quel texte.",
+    description: "Posez une question au modèle de décision sur n’importe quel texte.",
     tryIt: "Essayer",
     tryItOff: "Activez Répondre aux requêtes pour l’essayer.",
     typeNoul: "Oui / non",

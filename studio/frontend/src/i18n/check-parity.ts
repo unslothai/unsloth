@@ -75,6 +75,11 @@ function checkOverlay(
         errors.push(`${subPath} should be an object, got ${typeof overlaySub}`);
         continue;
       }
+      // `section: en.section` passes the key check but ships English.
+      if (overlaySub === v) {
+        errors.push(`${subPath} reuses the English subtree; translate it`);
+        continue;
+      }
       checkOverlay(v, overlaySub, subPath, errors, missing);
     }
   }

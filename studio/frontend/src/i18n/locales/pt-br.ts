@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import { en } from "./en.ts";
+import type { en } from "./en.ts";
 
 export const ptBR = {
   linkMenu: {
@@ -501,7 +501,56 @@ export const ptBR = {
       clearDataFailed: "Não foi possível limpar os dados de sites. Tente novamente.",
     },
   },
-  managedEngines: en.managedEngines,
+  managedEngines: {
+    gpu: "GPUs",
+    gpuHelp: "Escolha quais GPUs usar.",
+    parallelism: "Modo multi-GPU",
+    tensor: "Paralelismo de tensor",
+    pipeline: "Paralelismo de pipeline",
+    data: "Réplicas (paralelismo de dados)",
+    pipelineHelp: "Divide as camadas do modelo entre as GPUs. Cada GPU precisa comportar suas camadas e o cache.",
+    dataHelp: "Distribui as requisições entre as GPUs. Modelos densos precisam caber em cada GPU; modelos MoE podem compartilhar especialistas.",
+    tensorParallel: "Divide os cálculos das camadas entre {count} GPUs.",
+    inUse: "Descarregue o modelo antes de reparar, restaurar ou remover o mecanismo dele.",
+    title: "Mais mecanismos",
+    description: "Mecanismos extras para GPUs (Beta). Eles podem executar modelos mais rápido, principalmente em inferência em lote. Instale aqui e depois escolha nas configurações de execução do modelo.",
+    picker: "Mecanismo de inferência",
+    precision: "Precisão",
+    precisionAuto: "Padrão do modelo",
+    precisionHelp: "Padrão do modelo preserva a precisão armazenada. As outras opções convertem pesos não quantizados ao carregar.",
+    kvCache: "Cache KV",
+    kvCacheFp8: "FP8 (metade da memória)",
+    kvCacheHelp: "FP8 armazena o cache de contexto em 8 bits, o que cabe cerca do dobro de contexto na mesma memória. Sem escalas calibradas no checkpoint, as respostas podem ficar um pouco menos precisas.",
+    gpuMemory: "Limite de memória da GPU",
+    gpuMemoryAuto: "Automático",
+    gpuMemoryHelp: "O máximo de cada GPU selecionada que o mecanismo pode usar. Automático usa o que estiver livre; reduza para deixar espaço para outros programas.",
+    seed: "Seed",
+    seedPlaceholder: "Padrão do mecanismo",
+    seedHelp: "Define a seed aleatória do mecanismo. Conversas simultâneas ainda podem alterar as respostas amostradas.",
+    default: "Padrão",
+    installRequired: "instalação necessária",
+    ownerRequired: "Peça ao proprietário do Unsloth para instalar este mecanismo.",
+    cancelInstall: "Cancelar instalação",
+    installed: "Instalado {version}",
+    repair: "Reparar",
+    update: "Atualizar mecanismo",
+    install: "Instalar mecanismo",
+    installing: "Instalando o mecanismo. Veja o progresso em Downloads.",
+    remove: "Remover mecanismo",
+    rollback: "Restaurar instalação anterior",
+    installTitle: "Instalar {engine}",
+    installAndLoad: "Instalar e carregar",
+    confirm: "Instalar {engine} {version}? Isso pode baixar vários GB.",
+    confirmSized: "Instalar {engine} {version}? Cerca de {size} para baixar.",
+    wslSetup: "No Windows, {engine} roda em um ambiente WSL2 privado configurado pelo Unsloth. Espere um pedido de permissão de administrador e possivelmente uma reinicialização.",
+    wslReady: "No Windows, {engine} roda dentro do ambiente WSL2 privado do Unsloth.",
+    wslRestart: "Reinicie o Windows para terminar de ativar o WSL2 e clique em Instalar novamente.",
+    background: "Instala em segundo plano.",
+    failed: "A instalação do mecanismo falhou. Tente novamente ou use o mecanismo padrão.",
+    details: "Detalhes técnicos",
+    cancelled: "Instalação cancelada. Você pode tentar novamente.",
+    scope: "Chat de texto e imagem em GPUs NVIDIA. O primeiro carregamento pode demorar mais.",
+  },
   sandboxSetup: {
     levelTitle: "O sandbox do sistema não está disponível",
     levelDescription: "Instale-o para usar Alto ou continue em Baixo (sandbox de software).",
@@ -1009,7 +1058,7 @@ export const ptBR = {
       inactive: "Desativada",
       regenerate: "Gerar novo código de configuração",
       resetTitle: "Redefinir a senha de {username}?",
-      resetDescription: "Gerar um novo código de configuração substitui a senha de {username}, encerra as sessões dela e revoga suas chaves de API. Entregue o novo código para que ela escolha outra senha.",
+      resetDescription: "Gerar um novo código de configuração substitui a senha de {username}, encerra as sessões e revoga as chaves de API dessa pessoa. Entregue o novo código para que essa pessoa escolha outra senha.",
       deactivate: "Desativar",
       reactivate: "Ativar",
       delete: "Excluir conta",
@@ -2228,8 +2277,7 @@ export const ptBR = {
         on: "Ativado",
         off: "Desativado",
         oldWebkitWarning: "WebKitGTK {version} no Wayland: a renderização por GPU pode travar ao iniciar em NVIDIA com escala fracionária (WebKit bug 280210). Se isso acontecer, o Unsloth volta sozinho para a renderização por CPU. No WebKitGTK 2.50.4 não houve ganho de velocidade mensurável (8 fps nos dois casos), então Ativado não é recomendado aqui.",
-        oldDriverWarning:
-          "NVIDIA driver {version} on X11: Unsloth keeps GPU rendering off until the driver is 610 or newer. Older drivers leak a file descriptor per frame, and the window stops drawing within minutes.",
+        oldDriverWarning: "Driver NVIDIA {version} no X11: o Unsloth mantém a renderização por GPU desativada até o driver ser 610 ou mais recente. Drivers mais antigos vazam um descritor de arquivo por quadro, e a janela para de ser desenhada em poucos minutos.",
         fallbackNote: "A renderização por GPU travou ao iniciar neste sistema, então o Unsloth está usando renderização por CPU.",
         tryAgain: "Tentar a GPU de novo",
         envOverride: "Definido pela variável de ambiente {name}. Esta configuração não tem efeito até que ela seja removida.",
@@ -2455,20 +2503,20 @@ export const ptBR = {
         segmentAvailable: "Disponível",
       },
       llamaBackend: {
-        title: "GGUF inference engine",
-        label: "Compute backend",
-        description: "The backend llama.cpp uses to run GGUF models.",
-        runningOn: "llama.cpp currently runs on {backend}.",
-        hint: "Installs the llama.cpp build for this backend and keeps it across updates. Useful when the automatic choice crashes or your GPU driver does not support it. Only backends with a build for this machine are listed; training is unaffected.",
-        autoWith: "Automatic ({backend})",
-        apply: "Apply",
-        applying: "Installing...",
-        applyHint: "Downloads the new build and restarts llama.cpp. A loaded model is unloaded.",
-        applyHintWithSize: "Downloads {size} and restarts llama.cpp. A loaded model is unloaded.",
-        switchedTo: "llama.cpp now runs on {backend}.",
-        switchFailed: "Could not change the llama.cpp backend.",
-        switchInterrupted: "The switch was interrupted before completion.",
-        envLocked: "Set to {backend} by the UNSLOTH_LLAMA_CPP_BACKEND environment variable, which overrides this setting.",
+        title: "Mecanismo de inferência GGUF",
+        label: "Backend de computação",
+        description: "O backend que o llama.cpp usa para executar modelos GGUF.",
+        runningOn: "No momento, o llama.cpp roda em {backend}.",
+        hint: "Instala a compilação do llama.cpp para este backend e a mantém entre atualizações. Útil quando a escolha automática trava ou o driver da sua GPU não oferece suporte a ela. Só aparecem backends com compilação para esta máquina; o treinamento não é afetado.",
+        autoWith: "Automático ({backend})",
+        apply: "Aplicar",
+        applying: "Instalando...",
+        applyHint: "Baixa a nova compilação e reinicia o llama.cpp. Um modelo carregado é descarregado.",
+        applyHintWithSize: "Baixa {size} e reinicia o llama.cpp. Um modelo carregado é descarregado.",
+        switchedTo: "Agora o llama.cpp roda em {backend}.",
+        switchFailed: "Não foi possível alterar o backend do llama.cpp.",
+        switchInterrupted: "A troca foi interrompida antes de terminar.",
+        envLocked: "Definido como {backend} pela variável de ambiente UNSLOTH_LLAMA_CPP_BACKEND, que tem prioridade sobre esta configuração.",
         customPath: {
           label: "Pasta personalizada do llama.cpp",
           description: "Use sua própria compilação do llama-server.",
@@ -2488,7 +2536,7 @@ export const ptBR = {
           saveError: "Não foi possível atualizar a pasta do llama.cpp",
         },
         backends: {
-          auto: "Automatic",
+          auto: "Automático",
           cpu: "CPU",
           cuda: "CUDA",
           rocm: "ROCm",
@@ -2496,11 +2544,11 @@ export const ptBR = {
           metal: "Metal",
         },
         unsupported: {
-          notInstalled: "No managed llama.cpp install was found, so there is no backend to switch.",
-          localLink: "llama.cpp is a local directory you linked yourself, so Unsloth will not replace it.",
-          sourceBuild: "This llama.cpp was built from source, so its backend cannot be switched from here.",
+          notInstalled: "Nenhuma instalação gerenciada do llama.cpp foi encontrada, então não há backend para trocar.",
+          localLink: "O llama.cpp é um diretório local que você mesmo vinculou, então o Unsloth não vai substituí-lo.",
+          sourceBuild: "Este llama.cpp foi compilado a partir do código-fonte, então o backend dele não pode ser trocado aqui.",
           customPath: "Uma pasta personalizada do llama.cpp está selecionada. A compilação dela determina o backend de computação.",
-          unresolved: "The available backends could not be checked. Check your connection and try again.",
+          unresolved: "Não foi possível verificar os backends disponíveis. Verifique sua conexão e tente novamente.",
           updateChecksDisabled:
             "As verificações de atualização estão desativadas (UNSLOTH_DISABLE_UPDATE_CHECK=1), então os backends disponíveis não são consultados.",
         },
@@ -2685,12 +2733,10 @@ export const ptBR = {
       docsLabel: "Abrir a documentação do unsloth start",
       agentDocs: "Abrir a documentação de configuração do {agent}",
       copyGeneratedCommand: "Copiar comando gerado",
-      automaticSettingsNote:
-        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
-      configurationNote:
-        "You can also adjust any configuration. See further below or",
-      configurationDocs: "docs",
-      configurationFlagsSuffix: "for flags.",
+      automaticSettingsNote: "O Unsloth aplica automaticamente as configurações recomendadas do modelo se você não tiver definido nenhuma flag.",
+      configurationNote: "Você também pode ajustar qualquer configuração. Veja mais abaixo ou consulte a",
+      configurationDocs: "documentação",
+      configurationFlagsSuffix: "para ver as flags.",
       modelNote:
         "O Codex exige um modelo GGUF servido pelo llama-server. Outros agentes também podem usar modelos baseados em transformers; remova --model para usar o modelo já carregado no Unsloth.",
       subagent: {
@@ -2787,8 +2833,7 @@ export const ptBR = {
       rememberParamsPerModelHint:
         "Quando desativado, todos os modelos usam as mesmas configurações.",
       autoCompactHint: "Chats GGUF e MLX locais: Os turnos removidos são indexados para que o modelo possa buscá-los de volta, e uma reinicialização cita palavra por palavra as instruções permanentes que couberem, priorizando as mais antigas e as mais recentes em vez das intermediárias. Arquivar exige um chat salvo e o índice vetorial; sem eles, os turnos antigos são descartados. Usa o tamanho de contexto definido, não a VRAM disponível. Modelos de API: o provedor resume os turnos antigos quando oferece suporte; caso contrário, os mais antigos são descartados quando o chat se aproxima da janela de contexto publicada do modelo.",
-      pastedTextShortDescription:
-        "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
+      pastedTextShortDescription: "Textos colados com {count} caracteres ou mais viram anexos .txt.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
       title: "Chat",
@@ -2796,8 +2841,7 @@ export const ptBR = {
       modelSelection: {
         title: "Configurações de seleção de modelo",
         expandQuantizations: "Expandir quantizações",
-        expandQuantizationsDescription:
-          "Ativado: os modelos GGUF em “On Device” exibem imediatamente suas quantizações. Desativado: clique em um modelo para ver suas quantizações.",
+        expandQuantizationsDescription: "Mostra as quantizações GGUF em “No dispositivo” sem abrir cada modelo.",
         showAllQuantizations: "Mostrar todas as quantizações",
         showAllQuantizationsDescription:
           "Ativado: lista todas as quantizações em “On Device”, inclusive as que não foram baixadas. Desativado: mostra apenas as quantizações baixadas.",
@@ -3314,6 +3358,16 @@ export const ptBR = {
         placeholderModel: "O modelo mostrado é um exemplo. Carregue um modelo na página Imagens ou Vídeo e abra isto pelo botão de API dela para preenchê-lo.",
         autoSwitchOff: "A troca automática de mídia está desligada, então as solicitações usam o modelo carregado na página, seja qual for o nome enviado.",
       },
+      trainingApi: {
+        title: "API de treinamento",
+        description: "Faça fine-tune de modelos no seu próprio código com os endpoints de fine-tuning compatíveis com a OpenAI: envie um arquivo JSONL, crie um job, acompanhe os eventos dele e depois converse com o modelo treinado.",
+        placeholder: "O modelo e as configurações mostrados são um exemplo. Abra isto pelo botão de API na página Treinar para preencher com a sua configuração atual.",
+        hubDataset: "Sua página Treinar usa um conjunto de dados do Hugging Face ou S3. A API treina com arquivos enviados, então salve o conjunto de dados como JSONL e envie esse arquivo.",
+        batching: "Jobs compatíveis aguardando na fila são treinados juntos automaticamente.",
+        chatNote: "Para conversar com o modelo treinado pelo nome, a troca automática de modelo precisa estar ativada; ou carregue-o antes na página Chat.",
+        cancelTitle: "Cancelar um job",
+        cancelDescription: "Interrompe um job na fila ou em execução. Não faz parte do exemplo acima.",
+      },
       decisionApi: {
         title: "API de decisões",
         docs: "Documentação",
@@ -3537,7 +3591,7 @@ export const ptBR = {
       datasetTooltip: "Os dados de treinamento usados para ajustar o modelo.",
       hfTokenDescription:
         "Necessário para modelos e conjuntos de dados restritos ou privados.",
-      uploadLocalLabel: "Ou envie um arquivo local",
+      uploadLocalLabel: "Envie um arquivo local",
       sourceBrowse: "Procurar",
       releaseToUpload: "Solte para enviar",
       loadYaml: "Carregar YAML",
@@ -4923,7 +4977,7 @@ export const ptBR = {
   },
   decisions: {
     title: "Testar uma decisão",
-    description: "Faça à Laya uma pergunta sobre qualquer texto.",
+    description: "Faça uma pergunta ao modelo de decisão sobre qualquer texto.",
     tryIt: "Testar",
     tryItOff: "Ative Atender solicitações para testar.",
     typeNoul: "Sim / não",

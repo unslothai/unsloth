@@ -3,7 +3,7 @@
 // See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import { en } from "./en.ts";
+import type { en } from "./en.ts";
 
 export const ja = {
   linkMenu: {
@@ -502,7 +502,56 @@ export const ja = {
       clearDataFailed: "サイトデータを消去できませんでした。もう一度お試しください。",
     },
   },
-  managedEngines: en.managedEngines,
+  managedEngines: {
+    gpu: "GPU",
+    gpuHelp: "使用する GPU を選択します。",
+    parallelism: "マルチ GPU モード",
+    tensor: "テンソル並列",
+    pipeline: "パイプライン並列",
+    data: "レプリカ（データ並列）",
+    pipelineHelp: "モデルのレイヤーを複数の GPU に分割します。各 GPU に担当するレイヤーとキャッシュが収まる必要があります。",
+    dataHelp: "リクエストを複数の GPU に分散します。Dense モデルは各 GPU に収まる必要があります。MoE モデルはエキスパートを共有できます。",
+    tensorParallel: "レイヤーの計算を {count} 個の GPU に分割します。",
+    inUse: "エンジンを修復、復元、削除する前に、モデルをアンロードしてください。",
+    title: "その他のエンジン",
+    description: "GPU 向けの追加エンジン（ベータ）。特にバッチ推論で、モデルをより高速に実行できる場合があります。ここでインストールし、モデルの実行設定で選択してください。",
+    picker: "推論エンジン",
+    precision: "精度",
+    precisionAuto: "モデルのデフォルト",
+    precisionHelp: "モデルのデフォルトでは保存されている精度を維持します。その他のオプションでは、読み込み時に量子化されていない重みを変換します。",
+    kvCache: "KV キャッシュ",
+    kvCacheFp8: "FP8（メモリ半分）",
+    kvCacheHelp: "FP8 はコンテキストキャッシュを 8 ビットで保存し、同じメモリで約 2 倍のコンテキストを扱えます。チェックポイントに較正済みのスケールがない場合、回答の精度がわずかに下がることがあります。",
+    gpuMemory: "GPU メモリの上限",
+    gpuMemoryAuto: "自動",
+    gpuMemoryHelp: "選択した各 GPU のうち、エンジンが使用できる最大量です。「自動」では空いている分を使用します。他のプログラム用に余裕を残すには下げてください。",
+    seed: "シード値",
+    seedPlaceholder: "エンジンのデフォルト",
+    seedHelp: "エンジンの乱数シードを設定します。同時に行われるチャットにより、サンプリングされる応答が変わることがあります。",
+    default: "デフォルト",
+    installRequired: "インストールが必要",
+    ownerRequired: "このエンジンのインストールを Unsloth の所有者に依頼してください。",
+    cancelInstall: "インストールをキャンセル",
+    installed: "{version} をインストール済み",
+    repair: "修復",
+    update: "エンジンを更新",
+    install: "エンジンをインストール",
+    installing: "エンジンをインストールしています。進行状況はダウンロードで確認できます。",
+    remove: "エンジンを削除",
+    rollback: "以前のインストールを復元",
+    installTitle: "{engine} をインストール",
+    installAndLoad: "インストールして読み込む",
+    confirm: "{engine} {version} をインストールしますか？数 GB のダウンロードが必要になる場合があります。",
+    confirmSized: "{engine} {version} をインストールしますか？ダウンロードサイズは約 {size} です。",
+    wslSetup: "Windows では、{engine} は Unsloth が設定する専用の WSL2 環境で動作します。管理者の確認が 1 回表示され、再起動が必要になる場合があります。",
+    wslReady: "Windows では、{engine} は Unsloth の専用 WSL2 環境内で動作します。",
+    wslRestart: "Windows を再起動して WSL2 の有効化を完了してから、もう一度「インストール」をクリックしてください。",
+    background: "バックグラウンドでインストールします。",
+    failed: "エンジンのインストールに失敗しました。再試行するか、デフォルトのエンジンを使用してください。",
+    details: "技術的な詳細",
+    cancelled: "インストールをキャンセルしました。再試行できます。",
+    scope: "NVIDIA GPU でのテキストと画像のチャット。初回の読み込みには時間がかかる場合があります。",
+  },
   sandboxSetup: {
     levelTitle: "OS サンドボックスを利用できません",
     levelDescription: "高を使うにはインストールしてください。低 (ソフトウェア サンドボックス) のままでもかまいません。",
@@ -1772,12 +1821,12 @@ export const ja = {
       autoTitleNewChats: "新規チャットのタイトル自動生成",
       autoTitleNewChatsDescription: "最初のメッセージから短いタイトルを自動生成します。",
       helperLlm: {
-        sectionTitle: "Helper LLM",
-        preloadOnStartup: "起動時に Helper LLM をプリキャッシュする",
+        sectionTitle: "ヘルパー LLM",
+        preloadOnStartup: "起動時に ヘルパー LLM をプリキャッシュする",
         preloadOnStartupDescription: "起動時にバックグラウンドで AI アシスト用の Helper モデルをダウンロードします。デフォルトはオフですが、AI アシストが必要に応じてオンデマンドで取得できます。",
         disabledByEnv: "バックエンド環境の UNSLOTH_HELPER_MODEL_DISABLE によって無効化されています。",
-        loadError: "Helper LLM 設定の読み込みに失敗しました。",
-        saveError: "Helper LLM 設定の保存に失敗しました。",
+        loadError: "ヘルパー LLM 設定の読み込みに失敗しました。",
+        saveError: "ヘルパー LLM 設定の保存に失敗しました。",
       },
       developerMode: {
         sectionTitle: "開発者モード",
@@ -2650,11 +2699,11 @@ export const ja = {
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
       automaticSettingsNote:
-        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+        "フラグを何も設定していない場合、Unsloth はモデルの推奨設定を自動的に適用します。",
       configurationNote:
-        "You can also adjust any configuration. See further below or",
-      configurationDocs: "docs",
-      configurationFlagsSuffix: "for flags.",
+        "任意の設定を調整することもできます。フラグについては、下記または",
+      configurationDocs: "ドキュメント",
+      configurationFlagsSuffix: "を参照してください。",
       modelNote:
         "Codex には llama-server が提供する GGUF モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
       subagent: {
@@ -2753,7 +2802,7 @@ export const ja = {
         "オフの場合、すべてのモデルで同じ設定を使います。",
       autoCompactHint: "ローカルの GGUF と MLX チャット：文脈から外れたターンは索引化され、モデルが検索して取り出せます。リセットでは、収まる範囲の継続的な指示がそのままの文言で引き継がれ、途中のものより最も古いものと最も新しいものが優先されます。アーカイブには保存済みのチャットとベクトル索引が必要で、それらがない場合、古いターンは破棄されます。空きVRAMではなく、設定したコンテキスト長を基準にします。API モデル：対応していればプロバイダーが古いターンを要約し、そうでなければチャットがモデルの公開コンテキスト長に近づいたときに最も古いターンが破棄されます。",
       pastedTextShortDescription:
-        "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。短いテキストは入力欄に残ります。",
+        "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。",
       pastedTextOffDescription:
         "長さに関係なく、貼り付けたテキストはすべて入力欄に残ります。",
       title: "チャット",
@@ -2762,7 +2811,7 @@ export const ja = {
         title: "モデル選択の設定",
         expandQuantizations: "量子化オプションを展開",
         expandQuantizationsDescription:
-          "オン: 「On Device」の GGUF モデルで量子化オプションをすぐに表示します。オフ: モデルをクリックすると、その量子化オプションを表示します。",
+          "各モデルを開かなくても、「デバイス上」に GGUF の量子化を表示します。",
         showAllQuantizations: "すべての量子化オプションを表示",
         showAllQuantizationsDescription:
           "オン: 「On Device」にあるすべての量子化オプションを、未ダウンロードのものも含めて一覧表示します。オフ: ダウンロード済みの量子化オプションのみを表示します。",
@@ -3266,6 +3315,16 @@ export const ja = {
         placeholderModel: "表示中のモデルは例です。画像または動画ページでモデルを読み込み、そのページの API ボタンからここを開くと入力されます。",
         autoSwitchOff: "メディアの自動切り替えがオフのため、リクエストは指定した名前にかかわらず、ページで読み込まれているモデルで実行されます。",
       },
+      trainingApi: {
+        title: "トレーニング API",
+        description: "OpenAI 互換のファインチューニング用エンドポイントで、自分のコードからモデルをファインチューニングできます。JSONL ファイルをアップロードしてジョブを作成し、イベントを追跡したら、トレーニング済みモデルとチャットします。",
+        placeholder: "表示中のモデルと設定は例です。トレーニングページの API ボタンからここを開くと、現在の設定が入力されます。",
+        hubDataset: "トレーニングページでは Hugging Face または S3 のデータセットを使用しています。API はアップロードされたファイルでトレーニングするため、データセットを JSONL として保存してアップロードしてください。",
+        batching: "キューで待機中の互換性のあるジョブは、自動的にまとめてトレーニングされます。",
+        chatNote: "トレーニング済みモデルと名前でチャットするには、モデルの自動切り替えをオンにするか、先にチャットページでモデルを読み込んでください。",
+        cancelTitle: "ジョブをキャンセル",
+        cancelDescription: "キュー内または実行中のジョブを停止します。上の例には含まれません。",
+      },
       decisionApi: {
         title: "判定 API",
         docs: "ドキュメント",
@@ -3481,7 +3540,7 @@ export const ja = {
       datasetTooltip: "モデルのファインチューニングに使う学習データです。",
       hfTokenDescription:
         "アクセス制限付きまたは非公開のモデルとデータセットに必要です。",
-      uploadLocalLabel: "またはローカルファイルをアップロード",
+      uploadLocalLabel: "ローカルファイルをアップロード",
       sourceBrowse: "参照",
       releaseToUpload: "ドロップしてアップロード",
       loadYaml: "YAML を読み込む",
@@ -3893,7 +3952,7 @@ export const ja = {
       languageLayers: "言語レイヤー",
       attentionModules: "Attention モジュール",
       mlpModules: "MLP モジュール",
-      targetModules: "Target Modules",
+      targetModules: "ターゲットモジュール",
       enableLora: "LoRA を有効化",
       trainWithLora: "LoRA でトレーニング",
       stableRank: "Stable Rank",
@@ -3925,7 +3984,7 @@ export const ja = {
       batchSizeTooltip: "ステップごとに処理されるサンプル数。高いほど多くの VRAM を使用します。",
       gradAccum: "勾配累積",
       gradAccumTooltip: "VRAM を追加消費せずに、疑似的に大きなバッチサイズをシミュレートします。",
-      weightDecay: "Weight Decay",
+      weightDecay: "重み減衰",
       weightDecayTooltip: "過学習を防ぐための L2 正則化。",
       warmupSteps: "ウォームアップステップ数",
       warmupStepsTooltip: "安定性の向上を目的として、トレーニング開始時に学習率を徐々に増加させます。",
@@ -4140,7 +4199,7 @@ export const ja = {
       evalLoss: "評価 Loss",
       learningRate: "学習率",
       lr: "LR",
-      gradNorm: "Grad Norm",
+      gradNorm: "勾配ノルム",
       gradientNorm: "勾配ノルム",
       step: "ステップ {step}",
       averageValue: "平均 {value}",
@@ -4175,7 +4234,7 @@ export const ja = {
       stepProgress: "ステップ {current} / {total}",
       loss: "Loss",
       lr: "LR",
-      gradNorm: "Grad Norm",
+      gradNorm: "勾配ノルム",
       project: "プロジェクト",
       model: "モデル",
       method: "手法",
@@ -4838,7 +4897,7 @@ export const ja = {
   },
   decisions: {
     title: "判定を試す",
-    description: "任意のテキストについて Laya に質問します。",
+    description: "任意のテキストについて判定モデルに質問します。",
     tryIt: "試す",
     tryItOff: "試すには「リクエストに応答」をオンにしてください。",
     typeNoul: "はい / いいえ",

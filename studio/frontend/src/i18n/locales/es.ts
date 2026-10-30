@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import { en } from "./en.ts";
+import type { en } from "./en.ts";
 
 export const es = {
   linkMenu: {
@@ -501,7 +501,56 @@ export const es = {
       clearDataFailed: "No se pudieron borrar los datos de sitios. Inténtalo de nuevo.",
     },
   },
-  managedEngines: en.managedEngines,
+  managedEngines: {
+    gpu: "GPU",
+    gpuHelp: "Elige qué GPU usar.",
+    parallelism: "Modo multi-GPU",
+    tensor: "Paralelismo de tensores",
+    pipeline: "Paralelismo de pipeline",
+    data: "Réplicas (paralelismo de datos)",
+    pipelineHelp: "Divide las capas del modelo entre las GPU. Cada GPU debe poder alojar sus capas y su caché.",
+    dataHelp: "Reparte las solicitudes entre las GPU. Los modelos densos deben caber en cada GPU; los modelos MoE pueden compartir expertos.",
+    tensorParallel: "Divide los cálculos de las capas entre {count} GPU.",
+    inUse: "Descarga el modelo antes de reparar, restaurar o quitar su motor.",
+    title: "Más motores",
+    description: "Motores adicionales para GPU (beta). Pueden ejecutar modelos más rápido, sobre todo en inferencia por lotes. Instálalos aquí y luego elígelos en la configuración de ejecución del modelo.",
+    picker: "Motor de inferencia",
+    precision: "Precisión",
+    precisionAuto: "Predeterminado del modelo",
+    precisionHelp: "El predeterminado del modelo conserva la precisión almacenada. Las demás opciones convierten los pesos sin cuantizar al cargar.",
+    kvCache: "Caché KV",
+    kvCacheFp8: "FP8 (la mitad de memoria)",
+    kvCacheHelp: "FP8 guarda la caché de contexto en 8 bits, así que cabe aproximadamente el doble de contexto en la misma memoria. Sin escalas calibradas en el checkpoint, las respuestas pueden ser algo menos precisas.",
+    gpuMemory: "Límite de memoria de GPU",
+    gpuMemoryAuto: "Automático",
+    gpuMemoryHelp: "Lo máximo de cada GPU seleccionada que puede usar el motor. Automático usa lo que esté libre; bájalo para dejar espacio a otros programas.",
+    seed: "Semilla",
+    seedPlaceholder: "Predeterminado del motor",
+    seedHelp: "Establece la semilla aleatoria del motor. Los chats simultáneos aún pueden cambiar las respuestas muestreadas.",
+    default: "Predeterminado",
+    installRequired: "requiere instalación",
+    ownerRequired: "Pide al propietario de Unsloth que instale este motor.",
+    cancelInstall: "Cancelar instalación",
+    installed: "Instalado: {version}",
+    repair: "Reparar",
+    update: "Actualizar motor",
+    install: "Instalar motor",
+    installing: "Instalando el motor. Consulta el progreso en Descargas.",
+    remove: "Quitar motor",
+    rollback: "Restaurar la instalación anterior",
+    installTitle: "Instalar {engine}",
+    installAndLoad: "Instalar y cargar",
+    confirm: "¿Instalar {engine} {version}? Puede descargar varios GB.",
+    confirmSized: "¿Instalar {engine} {version}? Unos {size} de descarga.",
+    wslSetup: "En Windows, {engine} se ejecuta en un entorno WSL2 privado que configura Unsloth. Verás una solicitud de administrador y quizá tengas que reiniciar.",
+    wslReady: "En Windows, {engine} se ejecuta dentro del entorno WSL2 privado de Unsloth.",
+    wslRestart: "Reinicia Windows para terminar de activar WSL2 y luego vuelve a hacer clic en Instalar.",
+    background: "Se instala en segundo plano.",
+    failed: "No se pudo instalar el motor. Vuelve a intentarlo o usa el motor predeterminado.",
+    details: "Detalles técnicos",
+    cancelled: "Instalación cancelada. Puedes volver a intentarlo.",
+    scope: "Chat de texto e imagen en GPU NVIDIA. La primera carga puede tardar más.",
+  },
   sandboxSetup: {
     levelTitle: "El sandbox del sistema no está disponible",
     levelDescription: "Instálalo para usar Alto o quédate en Bajo (sandbox de software).",
@@ -2698,11 +2747,11 @@ export const es = {
       agentDocs: "Abrir la documentación de configuración de {agent}",
       copyGeneratedCommand: "Copiar el comando generado",
       automaticSettingsNote:
-        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+        "Unsloth aplica automáticamente la configuración recomendada del modelo si no has definido ningún flag.",
       configurationNote:
-        "You can also adjust any configuration. See further below or",
-      configurationDocs: "docs",
-      configurationFlagsSuffix: "for flags.",
+        "También puedes ajustar cualquier configuración. Consulta más abajo o la",
+      configurationDocs: "documentación",
+      configurationFlagsSuffix: "para ver los flags.",
       modelNote:
         "Codex requiere un modelo GGUF servido por llama-server. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo ya cargado en Unsloth.",
       subagent: {
@@ -2801,7 +2850,7 @@ export const es = {
       autoCompactHint:
         "Chats GGUF y MLX locales: Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes frente a las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible. Modelos de API: el proveedor resume los turnos antiguos cuando lo admite; si no, se descartan los más antiguos cuando el chat se acerca a la ventana de contexto publicada del modelo.",
       pastedTextShortDescription:
-        "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
+        "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt.",
       pastedTextOffDescription:
         "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
       title: "Chat",
@@ -2810,10 +2859,10 @@ export const es = {
         title: "Configuración de selección del modelo",
         expandQuantizations: "Expandir las cuantizaciones",
         expandQuantizationsDescription:
-          "Activado: los modelos GGUF de «On Device» muestran sus cuantizaciones de inmediato. Desactivado: haz clic en un modelo para ver sus cuantizaciones.",
+          "Muestra las cuantizaciones GGUF en «En el dispositivo» sin abrir cada modelo.",
         showAllQuantizations: "Mostrar todas las cuantizaciones",
         showAllQuantizationsDescription:
-          "Activado: muestra todas las cuantizaciones de «On Device», incluidas las que no están descargadas. Desactivado: muestra solo las cuantizaciones descargadas.",
+          "Activado: muestra todas las cuantizaciones de «En el dispositivo», incluidas las que no están descargadas. Desactivado: muestra solo las cuantizaciones descargadas.",
         showMemoryBar: "Mostrar barra de uso de VRAM",
         showMemoryBarDescription:
           "Muestra debajo de la fila de cada modelo descargado su uso estimado de VRAM: pesos, caché KV con la longitud de contexto con la que se cargará y cualquier reserva de borrador especulativo.",
@@ -3335,6 +3384,16 @@ export const es = {
         placeholderModel: "El modelo mostrado es un ejemplo. Carga un modelo en la página de Imágenes o Video y abre esto desde su botón de API para completarlo.",
         autoSwitchOff: "El cambio automático de medios está desactivado, así que las solicitudes usan el modelo cargado en la página, sin importar cuál nombren.",
       },
+      trainingApi: {
+        title: "API de entrenamiento",
+        description: "Haz ajuste fino de modelos desde tu propio código con los endpoints de ajuste fino compatibles con OpenAI: sube un archivo JSONL, crea un trabajo, sigue sus eventos y luego chatea con el modelo entrenado.",
+        placeholder: "El modelo y la configuración mostrados son un ejemplo. Abre esto desde el botón de API de la página Entrenar para completar tu configuración actual.",
+        hubDataset: "Tu página Entrenar usa un conjunto de datos de Hugging Face o S3. La API entrena con archivos subidos, así que guarda el conjunto de datos como JSONL y súbelo.",
+        batching: "Los trabajos compatibles que esperan en la cola se entrenan juntos automáticamente.",
+        chatNote: "Para chatear con el modelo entrenado por su nombre, activa el cambio automático de modelo o cárgalo antes en la página Chat.",
+        cancelTitle: "Cancelar un trabajo",
+        cancelDescription: "Detiene un trabajo en cola o en ejecución. No forma parte del ejemplo anterior.",
+      },
       decisionApi: {
         title: "API de decisiones",
         docs: "Documentación",
@@ -3557,7 +3616,7 @@ export const es = {
       datasetTooltip: "Los datos de entrenamiento usados para ajustar el modelo.",
       hfTokenDescription:
         "Necesario para modelos y conjuntos de datos restringidos o privados.",
-      uploadLocalLabel: "O sube un archivo local",
+      uploadLocalLabel: "Sube un archivo local",
       sourceBrowse: "Explorar",
       releaseToUpload: "Suelta para subir",
       loadYaml: "Cargar YAML",
@@ -4962,7 +5021,7 @@ export const es = {
   },
   decisions: {
     title: "Probar una decisión",
-    description: "Hazle a Laya una pregunta sobre cualquier texto.",
+    description: "Hazle una pregunta al modelo de decisiones sobre cualquier texto.",
     tryIt: "Probar",
     tryItOff: "Activa Atender solicitudes para probarlo.",
     typeNoul: "Sí / no",

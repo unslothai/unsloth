@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import { en } from "./en.ts";
+import type { en } from "./en.ts";
 
 export const zhCN = {
   linkMenu: {
@@ -501,7 +501,56 @@ export const zhCN = {
       clearDataFailed: "无法清除网站数据。请重试。",
     },
   },
-  managedEngines: en.managedEngines,
+  managedEngines: {
+    gpu: "GPU",
+    gpuHelp: "选择要使用的 GPU。",
+    parallelism: "多 GPU 模式",
+    tensor: "张量并行",
+    pipeline: "流水线并行",
+    data: "副本（数据并行）",
+    pipelineHelp: "将模型层拆分到多个 GPU 上。每个 GPU 都必须容纳分配给它的层和缓存。",
+    dataHelp: "将请求分散到多个 GPU 上。稠密模型必须能装入每个 GPU；MoE 模型可以共享专家。",
+    tensorParallel: "将层计算拆分到 {count} 个 GPU 上。",
+    inUse: "修复、恢复或移除引擎前，请先卸载模型。",
+    title: "更多引擎",
+    description: "适用于 GPU 的额外引擎（Beta）。它们可能让模型运行得更快，尤其是批量推理。在此安装，然后在模型的运行设置中选择。",
+    picker: "推理引擎",
+    precision: "精度",
+    precisionAuto: "模型默认",
+    precisionHelp: "模型默认会保留存储的精度。其他选项会在加载时转换未量化的权重。",
+    kvCache: "KV 缓存",
+    kvCacheFp8: "FP8（内存减半）",
+    kvCacheHelp: "FP8 以 8 位存储上下文缓存，相同内存可容纳约两倍的上下文。如果检查点中没有校准过的缩放因子，回答的准确性可能略有下降。",
+    gpuMemory: "GPU 内存上限",
+    gpuMemoryAuto: "自动",
+    gpuMemoryHelp: "引擎最多可使用每个所选 GPU 的多少内存。“自动”会使用空闲的部分；调低可为其他程序留出空间。",
+    seed: "随机种子",
+    seedPlaceholder: "引擎默认",
+    seedHelp: "设置引擎的随机种子。并发聊天仍可能改变采样得到的回复。",
+    default: "默认",
+    installRequired: "需要安装",
+    ownerRequired: "请让 Unsloth 所有者安装此引擎。",
+    cancelInstall: "取消安装",
+    installed: "已安装 {version}",
+    repair: "修复",
+    update: "更新引擎",
+    install: "安装引擎",
+    installing: "正在安装引擎。可在“下载”中查看进度。",
+    remove: "移除引擎",
+    rollback: "恢复之前的安装",
+    installTitle: "安装 {engine}",
+    installAndLoad: "安装并加载",
+    confirm: "安装 {engine} {version}？这可能需要下载数 GB 数据。",
+    confirmSized: "安装 {engine} {version}？需要下载约 {size}。",
+    wslSetup: "在 Windows 上，{engine} 运行在 Unsloth 设置的专用 WSL2 环境中。预计会出现一次管理员提示，并可能需要重启。",
+    wslReady: "在 Windows 上，{engine} 运行在 Unsloth 的专用 WSL2 环境中。",
+    wslRestart: "请重启 Windows 以完成 WSL2 的启用，然后再次点击“安装”。",
+    background: "在后台安装。",
+    failed: "引擎安装失败。请重试或使用默认引擎。",
+    details: "技术详情",
+    cancelled: "安装已取消。你可以重试。",
+    scope: "在 NVIDIA GPU 上进行文本和图像聊天。首次加载可能需要更长时间。",
+  },
   sandboxSetup: {
     levelTitle: "操作系统沙盒不可用",
     levelDescription: "安装后即可使用高，或保持低（软件沙盒）。",
@@ -1723,7 +1772,7 @@ export const zhCN = {
       title: "通用",
       description: "Unsloth 的全局偏好设置。",
       account: "账号",
-      huggingFaceToken: "Hugging Face token",
+      huggingFaceToken: "Hugging Face 令牌",
       huggingFaceTokenDescription: "用于加载受限模型和推送产物。",
       hideToken: "隐藏 token",
       showToken: "显示 token",
@@ -2631,11 +2680,11 @@ export const zhCN = {
       agentDocs: "打开 {agent} 的配置文档",
       copyGeneratedCommand: "复制生成的命令",
       automaticSettingsNote:
-        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+        "如果你没有设置任何标志，Unsloth 会自动应用模型的推荐设置。",
       configurationNote:
-        "You can also adjust any configuration. See further below or",
-      configurationDocs: "docs",
-      configurationFlagsSuffix: "for flags.",
+        "你也可以调整任何配置。请参阅下文或",
+      configurationDocs: "文档",
+      configurationFlagsSuffix: "了解标志。",
       modelNote:
         "Codex 需要通过 llama-server 提供服务的 GGUF 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
       subagent: {
@@ -2725,7 +2774,7 @@ export const zhCN = {
       rememberParamsPerModelHint: "关闭后，所有模型使用同一套设置。",
       autoCompactHint: "本地 GGUF 和 MLX 聊天：被移出的轮次会建立索引，模型可以再检索回来；重置时会原文保留放得下的长期指令，优先保留最早和最新的，而不是中间的。归档需要已保存的聊天和向量索引，两者缺一时较早的轮次会被直接丢弃。依据你设置的上下文长度，而不是可用显存。API 模型：提供商支持时会对较早的轮次生成摘要，否则在聊天接近模型公布的上下文窗口时丢弃最早的轮次。",
       pastedTextShortDescription:
-        "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
+        "粘贴的文本达到 {count} 个字符或以上时会转为 .txt 附件。",
       pastedTextOffDescription:
         "无论长度如何，粘贴的文本都会保留在消息输入框中。",
       title: "聊天",
@@ -2734,7 +2783,7 @@ export const zhCN = {
         title: "模型选择设置",
         expandQuantizations: "展开量化版本",
         expandQuantizationsDescription:
-          "开启：“On Device”中的 GGUF 模型会直接显示其量化版本。关闭：点击模型即可查看其量化版本。",
+          "无需逐个打开模型，即可在“本机”中显示 GGUF 量化版本。",
         showAllQuantizations: "显示所有量化版本",
         showAllQuantizationsDescription:
           "开启：列出“On Device”中的所有量化版本，包括尚未下载的版本。关闭：仅显示已下载的量化版本。",
@@ -3239,6 +3288,16 @@ export const zhCN = {
         placeholderModel: "显示的模型只是示例。在图像或视频页面加载模型，再从该页面的 API 按钮打开此处即可填入。",
         autoSwitchOff: "媒体自动切换已关闭，因此请求无论指定哪个模型，都会在页面已加载的模型上运行。",
       },
+      trainingApi: {
+        title: "训练 API",
+        description: "通过兼容 OpenAI 的微调端点，在你自己的代码中微调模型：上传 JSONL 文件、创建任务、跟踪其事件，然后与训练好的模型聊天。",
+        placeholder: "显示的模型和设置只是示例。从训练页面的 API 按钮打开此处，即可填入你当前的设置。",
+        hubDataset: "你的训练页面使用的是 Hugging Face 或 S3 数据集。API 使用上传的文件进行训练，因此请将数据集保存为 JSONL 并上传。",
+        batching: "队列中等待的兼容任务会自动一起训练。",
+        chatNote: "要按名称与训练好的模型聊天，需要开启模型自动切换，或先在聊天页面加载该模型。",
+        cancelTitle: "取消任务",
+        cancelDescription: "停止排队中或运行中的任务。不属于上面的示例。",
+      },
       decisionApi: {
         title: "决策 API",
         docs: "文档",
@@ -3450,7 +3509,7 @@ export const zhCN = {
       checkpointTooltip: "要微调的 Laya 检查点。多语言版本适合大多数数据集。",
       datasetTooltip: "用于微调模型的训练数据。",
       hfTokenDescription: "访问受限或私有模型和数据集时需要。",
-      uploadLocalLabel: "或上传本地文件",
+      uploadLocalLabel: "上传本地文件",
       sourceBrowse: "浏览",
       releaseToUpload: "松开以上传",
       loadYaml: "加载 YAML",
@@ -4789,7 +4848,7 @@ export const zhCN = {
   },
   decisions: {
     title: "试一个判断",
-    description: "就任意文本向 Laya 提一个问题。",
+    description: "就任意文本向决策模型提一个问题。",
     tryIt: "试一试",
     tryItOff: "打开“处理请求”后即可试用。",
     typeNoul: "是 / 否",

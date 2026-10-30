@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { en } from "./en.ts";
-
 export const it = {
   linkMenu: {
     openInBrowser: "Apri nel browser di Unsloth",
@@ -371,7 +369,7 @@ export const it = {
       speed: "Velocità di riproduzione",
       normalSpeed: "Normale",
       loop: "Ripeti",
-      pictureInPicture: "Picture in picture",
+      pictureInPicture: "Immagine nell'immagine",
       fullscreen: "Schermo intero",
       exitFullscreen: "Esci da schermo intero",
       copyFrame: "Copia fotogramma",
@@ -500,7 +498,56 @@ export const it = {
       clearDataFailed: "Impossibile cancellare i dati dei siti. Riprova.",
     },
   },
-  managedEngines: en.managedEngines,
+  managedEngines: {
+    gpu: "GPU",
+    gpuHelp: "Scegli quali GPU usare.",
+    parallelism: "Modalità multi-GPU",
+    tensor: "Parallelismo tensoriale",
+    pipeline: "Parallelismo a pipeline",
+    data: "Repliche (parallelismo dei dati)",
+    pipelineHelp: "Divide i layer del modello tra le GPU. Ogni GPU deve contenere i propri layer e la cache.",
+    dataHelp: "Distribuisce le richieste tra le GPU. I modelli densi devono stare in ogni GPU; i modelli MoE possono condividere gli esperti.",
+    tensorParallel: "Divide i calcoli dei layer tra {count} GPU.",
+    inUse: "Espelli il modello prima di riparare, ripristinare o rimuovere il suo motore.",
+    title: "Altri motori",
+    description: "Motori aggiuntivi per GPU (Beta). Possono eseguire i modelli più velocemente, soprattutto nell'inferenza in batch. Installali qui, poi sceglili nelle impostazioni del run del modello.",
+    picker: "Motore di inferenza",
+    precision: "Precisione",
+    precisionAuto: "Predefinito del modello",
+    precisionHelp: "Predefinito del modello mantiene la precisione salvata. Le altre opzioni convertono i pesi non quantizzati durante il caricamento.",
+    kvCache: "Cache KV",
+    kvCacheFp8: "FP8 (metà della memoria)",
+    kvCacheHelp: "FP8 salva la cache del contesto a 8 bit, così nella stessa memoria sta circa il doppio del contesto. Senza scale calibrate nel checkpoint, le risposte possono essere leggermente meno accurate.",
+    gpuMemory: "Limite di memoria GPU",
+    gpuMemoryAuto: "Automatico",
+    gpuMemoryHelp: "La quota massima di ogni GPU selezionata che il motore può usare. Automatico usa quella libera; abbassalo per lasciare spazio ad altri programmi.",
+    seed: "Seed",
+    seedPlaceholder: "Predefinito del motore",
+    seedHelp: "Imposta il seed casuale del motore. Le chat simultanee possono comunque cambiare le risposte campionate.",
+    default: "Predefinito",
+    installRequired: "installazione richiesta",
+    ownerRequired: "Chiedi al proprietario di Unsloth di installare questo motore.",
+    cancelInstall: "Annulla installazione",
+    installed: "Installato {version}",
+    repair: "Ripara",
+    update: "Aggiorna motore",
+    install: "Installa motore",
+    installing: "Installazione del motore in corso. Vedi Download per l'avanzamento.",
+    remove: "Rimuovi motore",
+    rollback: "Ripristina l'installazione precedente",
+    installTitle: "Installa {engine}",
+    installAndLoad: "Installa e carica",
+    confirm: "Installare {engine} {version}? Potrebbe scaricare diversi GB.",
+    confirmSized: "Installare {engine} {version}? Circa {size} da scaricare.",
+    wslSetup: "Su Windows, {engine} viene eseguito in un ambiente WSL2 privato configurato da Unsloth. Prevedi una richiesta di autorizzazione da amministratore ed eventualmente un riavvio.",
+    wslReady: "Su Windows, {engine} viene eseguito nell'ambiente WSL2 privato di Unsloth.",
+    wslRestart: "Riavvia Windows per completare l'attivazione di WSL2, poi fai di nuovo clic su Installa.",
+    background: "L'installazione avviene in background.",
+    failed: "Installazione del motore non riuscita. Riprova o usa il motore predefinito.",
+    details: "Dettagli tecnici",
+    cancelled: "Installazione annullata. Puoi riprovare.",
+    scope: "Chat di testo e immagini su GPU NVIDIA. Il primo caricamento può richiedere più tempo.",
+  },
   sandboxSetup: {
     levelTitle: "La sandbox del sistema non è disponibile",
     levelDescription: "Installala per usare Alto, oppure resta su Basso (sandbox software).",
@@ -880,7 +927,7 @@ export const it = {
       inactive: "Disattivato",
       regenerate: "Rigenera codice di configurazione",
       resetTitle: "Reimpostare la password di {username}?",
-      resetDescription: "Rigenerare il codice di configurazione sostituisce la password di {username}, chiude le sue sessioni e revoca le sue chiavi API. Consegnagli il nuovo codice per scegliere di nuovo una password.",
+      resetDescription: "Rigenerare il codice di configurazione sostituisce la password di {username}, chiude le sue sessioni e revoca le sue chiavi API. Consegnagli il nuovo codice perché possa scegliere di nuovo una password.",
       deactivate: "Disattiva",
       reactivate: "Attiva",
       delete: "Elimina account",
@@ -2574,12 +2621,10 @@ export const it = {
       docsLabel: "Apri la documentazione di unsloth start",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
-      automaticSettingsNote:
-        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
-      configurationNote:
-        "You can also adjust any configuration. See further below or",
-      configurationDocs: "docs",
-      configurationFlagsSuffix: "for flags.",
+      automaticSettingsNote: "Unsloth applica automaticamente le impostazioni consigliate del modello se non hai impostato alcun flag.",
+      configurationNote: "Puoi anche modificare qualsiasi configurazione. Consulta più sotto o la",
+      configurationDocs: "documentazione",
+      configurationFlagsSuffix: "per i flag.",
       modelNote:
         "Codex richiede un modello GGUF servito da llama-server. Gli altri agenti possono usare anche modelli basati su transformer; rimuovi --model per usare il modello già caricato in Unsloth.",
       subagent: {
@@ -2678,8 +2723,7 @@ export const it = {
         "Quando è disattivata, tutti i modelli usano le stesse impostazioni.",
       autoCompactHint:
         "Chat GGUF e MLX locali: I turni rimossi vengono indicizzati perché il modello possa recuperarli, e un ripristino cita parola per parola le istruzioni permanenti che rientrano, privilegiando le più vecchie e le più recenti rispetto a quelle intermedie. L’archiviazione richiede una chat salvata e l’indice vettoriale; senza di essi i turni più vecchi vengono eliminati. Usa la lunghezza del contesto impostata, non la VRAM disponibile. Modelli API: il provider riassume i turni più vecchi quando lo supporta, altrimenti i più vecchi vengono eliminati quando la chat si avvicina alla finestra di contesto pubblicata del modello.",
-      pastedTextShortDescription:
-        "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
+      pastedTextShortDescription: "Il testo incollato di almeno {count} caratteri diventa un allegato .txt.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
       title: "Chat",
@@ -2688,8 +2732,7 @@ export const it = {
       modelSelection: {
         title: "Impostazioni di selezione del modello",
         expandQuantizations: "Espandi le quantizzazioni",
-        expandQuantizationsDescription:
-          "Attivata: i modelli GGUF in «On Device» mostrano subito le relative quantizzazioni. Disattivata: fai clic su un modello per visualizzarne le quantizzazioni.",
+        expandQuantizationsDescription: "Mostra le quantizzazioni GGUF in «Sul dispositivo» senza aprire ogni modello.",
         showAllQuantizations: "Mostra tutte le quantizzazioni",
         showAllQuantizationsDescription:
           "Attivata: elenca tutte le quantizzazioni in «On Device», incluse quelle non scaricate. Disattivata: mostra solo le quantizzazioni scaricate.",
@@ -3213,6 +3256,16 @@ export const it = {
         placeholderModel: "Il modello mostrato è un esempio. Carica un modello nella pagina Immagini o Video e apri questa sezione dal suo pulsante API per compilarlo.",
         autoSwitchOff: "Il cambio automatico dei media è disattivato, quindi le richieste usano il modello caricato nella pagina, qualunque nome indichino.",
       },
+      trainingApi: {
+        title: "API di addestramento",
+        description: "Esegui il fine-tuning dei modelli dal tuo codice con gli endpoint di fine-tuning compatibili con OpenAI: carica un file JSONL, crea un job, seguine gli eventi, poi chatta con il modello addestrato.",
+        placeholder: "Il modello e le impostazioni mostrati sono un esempio. Apri questa sezione dal pulsante API nella pagina Addestra per compilarla con la configurazione attuale.",
+        hubDataset: "La pagina Addestra usa un dataset di Hugging Face o S3. L'API addestra sui file caricati, quindi salva il dataset come JSONL e carica quel file.",
+        batching: "I job compatibili in attesa nella coda vengono addestrati insieme automaticamente.",
+        chatNote: "Per chattare con il modello addestrato tramite il nome serve il cambio automatico del modello attivo; in alternativa, caricalo prima nella pagina Chat.",
+        cancelTitle: "Annulla un job",
+        cancelDescription: "Interrompe un job in coda o in esecuzione. Non fa parte dell'esempio sopra.",
+      },
       decisionApi: {
         title: "API decisionale",
         docs: "Documentazione",
@@ -3566,7 +3619,7 @@ export const it = {
         "I dati di addestramento usati per il fine-tuning del modello.",
       hfTokenDescription:
         "Necessario per modelli e dataset privati o con accesso limitato.",
-      uploadLocalLabel: "Oppure carica un file locale",
+      uploadLocalLabel: "Carica un file locale",
       sourceBrowse: "Sfoglia",
       releaseToUpload: "Rilascia per caricare",
       loadYaml: "Carica YAML",
@@ -3963,7 +4016,7 @@ export const it = {
       drafterDataSourceRegenerate: "Risposte del modello stesso (più lento, migliore)",
       drafterMaxExamples: "Esempi",
       drafterEpochs: "Epoche",
-      drafterLearningRate: "Learning rate",
+      drafterLearningRate: "Tasso di apprendimento",
       drafterLearningRateDefault: "Predefinito",
       drafterDraftSteps: "Token di bozza",
       maxSteps: "Step massimi",
@@ -4964,7 +5017,7 @@ export const it = {
   },
   decisions: {
     title: "Prova una decisione",
-    description: "Fai a Laya una domanda su qualsiasi testo.",
+    description: "Fai una domanda al modello decisionale su qualsiasi testo.",
     tryIt: "Prova",
     tryItOff: "Attiva Rispondi alle richieste per provarlo.",
     typeNoul: "Sì / no",
@@ -5074,7 +5127,7 @@ export const it = {
     exportAllProjects: "Esporta tutti i progetti",
     exportProjectsAndRecents: "Esporta progetti + recenti",
     combined: "Combinato",
-    perChat: "Per chat",
+    perChat: "Per singola chat",
     newProject: "Nuovo progetto",
     name: "Nome",
     updated: "Aggiornato",
