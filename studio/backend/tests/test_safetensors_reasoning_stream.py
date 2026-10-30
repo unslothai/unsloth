@@ -120,6 +120,15 @@ _STRICT_HISTORY_TPL = (
     "{% endif %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n\n</think>\n\n{% endif %}"
 )
+# LFM3-Omni: an assistant {% generation %} block, thinking off by default via an empty think block.
+_GENERATION_TAG_TPL = (
+    "{% set enable_thinking = enable_thinking | default(false) %}"
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n"
+    "{% if m['role'] == 'assistant' %}{% generation %}{{ m['content'] }}{% endgeneration %}"
+    "{% else %}{{ m['content'] }}{% endif %}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n"
+    "{% if enable_thinking %}<think>{% else %}<think></think>{% endif %}{% endif %}"
+)
 _TINY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAE0lEQVR4nGM8ISfHAANMcBZeDgA0dgEMydTl/QAAAABJRU5ErkJggg=="
 _ETHINK = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
 _ETHINK_EFFORT = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
@@ -156,6 +165,20 @@ def test_prefill_mode_renders_with_the_requested_reasoning_effort():
 
 def test_a_template_that_stamps_a_date_still_renders():
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _STRFTIME_TPL) is False
+
+
+def test_a_generation_tag_template_is_not_read_as_an_open_think():
+    # Before: the probe could not compile {% generation %}, failed open, and "Four" became reasoning_content.
+    assert _sf_reasoning_prefill_mode(_ETHINK, None, _GENERATION_TAG_TPL) is False
+    assert _sf_reasoning_prefill_mode(_ETHINK, False, _GENERATION_TAG_TPL) is False
+    assert _sf_reasoning_prefill_mode(_ETHINK, True, _GENERATION_TAG_TPL) is True
+    extractor = _ResponsesReasoningExtractor(
+        parse_think_markers = _sf_parse_think_markers(_ETHINK),
+        reasoning_prefilled = _sf_reasoning_prefill_mode(_ETHINK, None, _GENERATION_TAG_TPL),
+    )
+    reasoning, visible = extractor.feed("Four")
+    tail_reasoning, tail_visible = extractor.finish()
+    assert (reasoning + tail_reasoning, visible + tail_visible) == ("", "Four")
 
 
 def test_prefill_mode_off_without_think_markers():

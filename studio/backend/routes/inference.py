@@ -4367,13 +4367,16 @@ def _compile_generation_prompt_probe(template: str):
 
         from jinja2.sandbox import ImmutableSandboxedEnvironment
 
+        from core.inference.template_capabilities import _Generation
+
         def _raise_exception(message: str):
             raise RuntimeError(message)
 
+        # Without {% generation %} (LFM3, SmolLM3) the compile fails and the probe reports an open <think>.
         env = ImmutableSandboxedEnvironment(
             trim_blocks = True,
             lstrip_blocks = True,
-            extensions = ["jinja2.ext.loopcontrols"],
+            extensions = ["jinja2.ext.loopcontrols", _Generation],
         )
         env.filters["tojson"] = lambda value, **kwargs: json.dumps(value, ensure_ascii = False)
         env.globals["raise_exception"] = _raise_exception
