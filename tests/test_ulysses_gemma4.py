@@ -89,7 +89,10 @@ def _manager(size, rank):
 def _loss(logits, shift_labels, count):
     return (
         F.cross_entropy(
-            logits.to(torch.promote_types(logits.dtype, torch.float32)).flatten(0, 1), shift_labels.flatten(), ignore_index = -100, reduction = "sum"
+            logits.to(torch.promote_types(logits.dtype, torch.float32)).flatten(0, 1),
+            shift_labels.flatten(),
+            ignore_index = -100,
+            reduction = "sum",
         )
         / count
     )
@@ -192,7 +195,11 @@ def test_flex_sliding_attention_matches_windowed_sdpa():
     out = uh._flex_sliding_attention(
         config = types.SimpleNamespace(n_groups = heads // kv_heads),
         context = types.SimpleNamespace(q_len = seq),
-        Q = q, K = k, V = v, window = window, scale = 1.0,
+        Q = q,
+        K = k,
+        V = v,
+        window = window,
+        scale = 1.0,
     )
     torch.testing.assert_close(out, ref.transpose(1, 2), rtol = 1e-4, atol = 1e-4)
     for grad, expected in zip(torch.autograd.grad(out.pow(2).sum(), (q, k, v)), ref_grads):
@@ -203,7 +210,14 @@ def test_flex_sliding_attention_matches_windowed_sdpa():
 # Sliding window across the shard seam, against an fp64 reference with the window written out.
 
 
-def _windowed_reference(q, k, v, window, scale, lengths = None):
+def _windowed_reference(
+    q,
+    k,
+    v,
+    window,
+    scale,
+    lengths = None,
+):
     """fp64 causal (optionally windowed, optionally block-diagonal per document) attention."""
     seq = q.shape[2]
     idx = torch.arange(seq)
@@ -223,11 +237,33 @@ def _windowed_reference(q, k, v, window, scale, lengths = None):
 
 SEQ = 16
 # (window, packed lengths): smaller than a shard, the shard edge, spanning shards, covering the sequence.
-WINDOW_CASES = [(1, None), (3, None), (4, None), (5, None), (8, None), (9, None), (12, None),
-                (16, None), (40, None), (None, None), (3, [5, 7, 4]), (6, [5, 7, 4])]
+WINDOW_CASES = [
+    (1, None),
+    (3, None),
+    (4, None),
+    (5, None),
+    (8, None),
+    (9, None),
+    (12, None),
+    (16, None),
+    (40, None),
+    (None, None),
+    (3, [5, 7, 4]),
+    (6, [5, 7, 4]),
+]
 
 
-def _attention_call(rank, world, q, k, v, *, window, scaling, lengths = None):
+def _attention_call(
+    rank,
+    world,
+    q,
+    k,
+    v,
+    *,
+    window,
+    scaling,
+    lengths = None,
+):
     from unsloth.utils import ulysses_hybrid as uh
 
     local = SEQ // world
@@ -299,31 +335,59 @@ def test_ulysses_sliding_window_negative_controls_differ():
 # call class; a backward-only failure is caught before loss.backward().
 
 
-def _flex_inputs(dtype, requires_grad, seq = 24):
+def _flex_inputs(
+    dtype,
+    requires_grad,
+    seq = 24,
+):
     g = torch.Generator().manual_seed(1)
     shapes = ((1, 4, seq, 16), (1, 2, seq, 16), (1, 2, seq, 16))
     return [torch.randn(*s, generator = g).to(dtype).requires_grad_(requires_grad) for s in shapes]
 
 
-def _flex_attend(q, k, v, *, training, window = 5, sdpa_scale = 1.0):
+def _flex_attend(
+    q,
+    k,
+    v,
+    *,
+    training,
+    window = 5,
+    sdpa_scale = 1.0,
+):
     from unsloth.utils import ulysses_hybrid as uh
 
     seq = q.shape[2]
     config = ad.AttentionConfig(
-        backend = ad.SDPA, n_kv_heads = 2, n_groups = 2,
+        backend = ad.SDPA,
+        n_kv_heads = 2,
+        n_groups = 2,
         sdpa_kwargs = None if sdpa_scale is None else {"scale": sdpa_scale},
     )
     context = ad.AttentionContext(
-        bsz = 1, q_len = seq, kv_seq_len = seq, n_heads = 4, head_dim = 16,
-        requires_grad = q.requires_grad, seq_info = None, attention_mask = None, causal_mask = None,
-        sliding_window = window, training = training,
+        bsz = 1,
+        q_len = seq,
+        kv_seq_len = seq,
+        n_heads = 4,
+        head_dim = 16,
+        requires_grad = q.requires_grad,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+        sliding_window = window,
+        training = training,
     )
-    out = uh._flex_or_dense(config = config, context = context, Q = q, K = k, V = v,
-                            window = window, scale = 1.0)
+    out = uh._flex_or_dense(config = config, context = context, Q = q, K = k, V = v, window = window, scale = 1.0)
     return out.reshape(1, seq, 4, 16)
 
 
-def _flex_call(dtype, *, training, requires_grad, window = 5, sdpa_scale = 1.0):
+def _flex_call(
+    dtype,
+    *,
+    training,
+    requires_grad,
+    window = 5,
+    sdpa_scale = 1.0,
+):
     q, k, v = _flex_inputs(dtype, requires_grad)
     out = _flex_attend(q, k, v, training = training, window = window, sdpa_scale = sdpa_scale)
     ref_inputs = [t.detach().double().requires_grad_() for t in (q, k, v)]
@@ -412,7 +476,6 @@ def test_flex_backward_only_failure_falls_back_before_backward(flex_state, monke
         out = attend(*inputs)
     else:
         from torch.utils.checkpoint import checkpoint as ckpt
-
         out = ckpt(attend, *inputs, use_reentrant = checkpoint == "reentrant")
     ref_inputs = [t.detach().clone().requires_grad_() for t in inputs]
     ref = _windowed_reference(*ref_inputs, 5, 1.0)
@@ -462,7 +525,9 @@ def _flex_gate_worker(rank, world):
     v = torch.randn(1, 2, SEQ, 16, generator = g, dtype = torch.float64)
     for window in (3, 9):
         full, _, _ = _attention_call(rank, world, q, k, v, window = window, scaling = 1.0)
-        torch.testing.assert_close(full, _windowed_reference(q, k, v, window, 1.0), rtol = 1e-10, atol = 1e-10)
+        torch.testing.assert_close(
+            full, _windowed_reference(q, k, v, window, 1.0), rtol = 1e-10, atol = 1e-10
+        )
     # Covering the whole sequence (or global layers) never goes to flex.
     _attention_call(rank, world, q, k, v, window = SEQ, scaling = 1.0)
     _attention_call(rank, world, q, k, v, window = None, scaling = 1.0)
@@ -496,7 +561,17 @@ def _grad_status(grad):
     return 0 if grad is None else (1 if not grad.any() else 2)
 
 
-def _model_case(rank, world, cp, kind, window, mode, *, lora = False, control = None):
+def _model_case(
+    rank,
+    world,
+    cp,
+    kind,
+    window,
+    mode,
+    *,
+    lora = False,
+    control = None,
+):
     import copy
 
     ad.HAS_FLASH_ATTENTION = False
@@ -512,21 +587,37 @@ def _model_case(rank, world, cp, kind, window, mode, *, lora = False, control = 
     model.config.use_cache = False
     if lora:
         from peft import LoraConfig, get_peft_model
-
-        model = get_peft_model(model, LoraConfig(
-            r = 4, lora_alpha = 8, init_lora_weights = False,  # random nonzero B
-            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        ))
+        model = get_peft_model(
+            model,
+            LoraConfig(
+                r = 4,
+                lora_alpha = 8,
+                init_lora_weights = False,  # random nonzero B
+                target_modules = [
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "o_proj",
+                    "gate_proj",
+                    "up_proj",
+                    "down_proj",
+                ],
+            ),
+        )
         assert all(p.abs().sum() > 0 for n, p in model.named_parameters() if "lora_B" in n)
     reference = copy.deepcopy(model)
     ids, mask, labels = _batch(mode)
     shift = F.pad(labels, (0, 1), value = -100)[:, 1:]
     count = shift.ne(-100).sum()
-    _loss(reference(input_ids = ids, attention_mask = mask, use_cache = False).logits, shift, count).backward()
+    _loss(
+        reference(input_ids = ids, attention_mask = mask, use_cache = False).logits, shift, count
+    ).backward()
 
     rows = slice(dp_rank * (2 // dp), (dp_rank + 1) * (2 // dp))
     manager = _manager(cp, cp_rank)
-    manager.mesh = types.SimpleNamespace(get_group = lambda: groups[dp_rank], get_local_rank = lambda: cp_rank)
+    manager.mesh = types.SimpleNamespace(
+        get_group = lambda: groups[dp_rank], get_local_rank = lambda: cp_rank
+    )
     manager.attach_attention_hooks(model)
     attention = [m for n, m in model.named_modules() if n.endswith("self_attn")]
     if control == "shard_local":
@@ -541,13 +632,21 @@ def _model_case(rank, world, cp, kind, window, mode, *, lora = False, control = 
     elif control == "default_scale":
         for module in attention:
             module.scaling = None
-    inputs = {"input_ids": ids[rows].clone(), "attention_mask": mask[rows].clone(), "labels": labels[rows].clone()}
+    inputs = {
+        "input_ids": ids[rows].clone(),
+        "attention_mask": mask[rows].clone(),
+        "labels": labels[rows].clone(),
+    }
     with manager.apply(inputs):
         positions = inputs["position_ids"]
         if control == "position_offset":
             positions = positions - positions[:, :1]
-        out = model(input_ids = inputs["input_ids"], attention_mask = inputs["attention_mask"],
-                    position_ids = positions, use_cache = False)
+        out = model(
+            input_ids = inputs["input_ids"],
+            attention_mask = inputs["attention_mask"],
+            position_ids = positions,
+            use_cache = False,
+        )
         _loss(out.logits, inputs["shift_labels"], count).backward()
 
     ref_params = dict(reference.named_parameters())
@@ -585,8 +684,13 @@ def _model_worker(rank, world, cp, cases):
 
 def _controls_worker(rank, world):
     passed = []
-    for control in ("shard_local", "global_layers_windowed", "dropped_window", "default_scale",
-                    "position_offset"):
+    for control in (
+        "shard_local",
+        "global_layers_windowed",
+        "dropped_window",
+        "default_scale",
+        "position_offset",
+    ):
         try:
             _model_case(rank, world, 2, "e2b", 3, "pad", control = control)
             passed.append(control)
@@ -602,7 +706,12 @@ def test_gemma4_cp2_windows_padding_adamw_fp64(kind):
 
 
 def test_gemma4_cp2_lora_nonzero_b_fp64():
-    _spawn(_model_worker, 2, 2, [("e2b", 3, "pad", {"lora": True}), ("moe_k_eq_v", 9, "pad", {"lora": True})])
+    _spawn(
+        _model_worker,
+        2,
+        2,
+        [("e2b", 3, "pad", {"lora": True}), ("moe_k_eq_v", 9, "pad", {"lora": True})],
+    )
 
 
 def test_gemma4_cp4_and_dp2_cp2_fp64():
@@ -618,7 +727,11 @@ def test_gemma4_negative_controls_fail():
 # The lifted refusal stays narrow.
 
 
-def _check(model, backend = "ulysses", allow_hybrids = True):
+def _check(
+    model,
+    backend = "ulysses",
+    allow_hybrids = True,
+):
     try:
         cp._check_cp_model(model, 2, backend, allow_hybrids)
     except NotImplementedError as error:
@@ -641,17 +754,27 @@ def test_gemma4_window_exemption_stays_narrow(monkeypatch):
     monkeypatch.undo()
     # Multimodal Gemma 4: image features would stay whole on every rank.
     vision = gemma4.Gemma4VisionConfig(
-        hidden_size = 16, intermediate_size = 32, num_hidden_layers = 1, num_attention_heads = 2,
-        num_key_value_heads = 2, head_dim = 8,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        head_dim = 8,
     )
-    multimodal = gemma4.Gemma4ForConditionalGeneration(gemma4.Gemma4Config(
-        text_config = _config("e2b").to_dict(), vision_config = vision.to_dict(), audio_config = None,
-    ))
+    multimodal = gemma4.Gemma4ForConditionalGeneration(
+        gemma4.Gemma4Config(
+            text_config = _config("e2b").to_dict(),
+            vision_config = vision.to_dict(),
+            audio_config = None,
+        )
+    )
     assert "multimodal" in _check(multimodal)
     # Other windowed model types, and Gemma 4 with softcapping or chunked layers, stay refused.
     for model_type in ("gemma3_text", "mistral", "qwen2"):
         other = types.SimpleNamespace(
-            model_type = model_type, sliding_window = 4, layer_types = ["sliding_attention", "full_attention"]
+            model_type = model_type,
+            sliding_window = 4,
+            layer_types = ["sliding_attention", "full_attention"],
         )
         assert cp._unsupported_attention(other, "ulysses") == "sliding_attention layers"
     text = _config("e2b")

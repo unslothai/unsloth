@@ -555,9 +555,7 @@ def _flex_sliding_attention(*, config, context, Q, K, V, window, scale):
             _SLIDING_BLOCK_MASKS.clear()
         block_mask = create_block_mask(keep, None, None, seq, seq, device = Q.device)
         _SLIDING_BLOCK_MASKS[cache_key] = block_mask
-    out = _FLEX["fn"](
-        Q, K, V, block_mask = block_mask, scale = scale, enable_gqa = config.n_groups != 1
-    )
+    out = _FLEX["fn"](Q, K, V, block_mask = block_mask, scale = scale, enable_gqa = config.n_groups != 1)
     return out.transpose(1, 2)
 
 
@@ -572,8 +570,13 @@ def _flex_or_dense(*, config, context, Q, K, V, window, scale):
 
     needs_backward = bool(context.training) and not torch.is_inference_mode_enabled()
     key = (
-        Q.device.type, Q.dtype, Q.shape[-1], config.n_groups != 1, window,
-        context.q_len % _FLEX_BLOCK == 0, needs_backward,
+        Q.device.type,
+        Q.dtype,
+        Q.shape[-1],
+        config.n_groups != 1,
+        window,
+        context.q_len % _FLEX_BLOCK == 0,
+        needs_backward,
     )
     if _FLEX_STATUS.get(key) is not False:
         flex = functools.partial(
