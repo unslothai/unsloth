@@ -393,3 +393,32 @@ def test_note_eager_render_keeps_the_fastest_eager_render():
     assert state.pipe._unsloth_eager_render_s == pytest.approx(2.8)
     d._note_eager_render(compiled, True, 2.0)  # eager beside a pending compile
     assert state.pipe._unsloth_eager_render_s == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------- compile worker warm-up on the 2nd image
+
+
+@pytest.fixture
+def _fake_pool(monkeypatch):
+    from torch._inductor import async_compile
+
+    calls: list = []
+    monkeypatch.setattr(async_compile.AsyncCompile, "warm_pool", classmethod(lambda cls: calls.append("warm")))
+    monkeypatch.setattr(async_compile.AsyncCompile, "wakeup", classmethod(lambda cls: calls.append("wakeup")))
+    monkeypatch.setattr(bg, "_POOL_WARMED", False)
+    monkeypatch.delenv(bg.WARM_POOL_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
+    return calls
+
+
+def test_warm_compile_pool_starts_the_workers_once(_fake_pool):
+    assert bg.warm_compile_pool(LOG) is True
+    assert bg.warm_compile_pool(LOG) is False
+    assert _fake_pool == ["warm", "wakeup"]
+
+
+@pytest.mark.parametrize("env", ["UNSLOTH_DIFFUSION_BG_COMPILE_WARM_POOL", "UNSLOTH_DIFFUSION_BG_COMPILE"])
+def test_warm_compile_pool_switches(monkeypatch, _fake_pool, env):
+    monkeypatch.setenv(env, "0")
+    assert bg.warm_compile_pool(LOG) is False
+    assert _fake_pool == []

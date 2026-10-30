@@ -13354,6 +13354,15 @@ class DiffusionBackend:
                 loras_attached = bool(getattr(state.pipe, "_unsloth_loras", ()))
                 if (
                     state.speed_deferred
+                    and state.generation_count == 1
+                    and not aux_pass
+                    and str(getattr(state, "device", "")).startswith("cuda")
+                ):
+                    # The 2nd image: start inductor's compile workers now, so the deferred compile after the 3rd
+                    # does not spend its first block graph waiting for them. Non-blocking, once per process.
+                    bg_compile.warm_compile_pool(logger)
+                if (
+                    state.speed_deferred
                     and state.generation_count >= 2
                     and not aux_pass
                     and not lora_requested

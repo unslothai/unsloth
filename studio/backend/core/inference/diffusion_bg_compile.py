@@ -68,6 +68,38 @@ def yield_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+WARM_POOL_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_WARM_POOL"
+_POOL_WARMED = False
+
+
+def warm_compile_pool(logger: Any = None) -> bool:
+    """Start inductor's compile worker pool ahead of the deferred compile (``AsyncCompile.warm_pool`` + ``wakeup``:
+    the workers spawn in the background, nothing here waits for them). Until the pool is ready inductor compiles
+    kernels in-process, which made the first block graph 2-3x the others. Once per process; ``WARM_POOL_ENV=0``
+    disables. Returns whether a warm-up was started."""
+    global _POOL_WARMED
+    if _POOL_WARMED or not enabled():
+        return False
+    raw = (os.environ.get(WARM_POOL_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    _POOL_WARMED = True
+    try:
+        from . import diffusion_compile_config
+        from torch._inductor.async_compile import AsyncCompile
+
+        diffusion_compile_config.apply()
+        AsyncCompile.warm_pool()
+        AsyncCompile.wakeup()
+    except Exception as exc:  # noqa: BLE001 - the compile warms its own pool as before
+        if logger is not None:
+            logger.debug("diffusion.bg_compile: compile pool warm-up skipped: %s", exc)
+        return False
+    if logger is not None:
+        logger.info("diffusion.bg_compile: inductor compile workers starting ahead of the deferred compile")
+    return True
+
+
 def slice_seconds(eager_render_s: Optional[float]) -> float:
     """Compile seconds a render lets run before it pauses the compile: ``SLICE_ENV`` when set, else the load's
     fastest eager render (0 when none was timed), clamped to [0, 30]."""
