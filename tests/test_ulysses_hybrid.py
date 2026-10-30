@@ -160,7 +160,10 @@ def _parity_worker(rank, world, kind, control):
         loss.backward()
     if not control:
         # One exchange per linear attention layer on this shard.
-        assert len(calls) == sum(t == "linear_attention" for t in _config("qwen3_5")[0].layer_types)
+        config_kind = "qwen3_5" if kind == "qwen3_5_vlm" else kind
+        assert len(calls) == sum(
+            t == "linear_attention" for t in _config(config_kind)[0].layer_types
+        )
     total = loss.detach().clone()
     dist.all_reduce(total)
     torch.testing.assert_close(total, reference_loss.detach(), rtol = 1e-5, atol = 1e-6)
