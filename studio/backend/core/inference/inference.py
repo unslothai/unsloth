@@ -714,6 +714,17 @@ def _refuse_without_generate(model, model_name: str) -> None:
         )
 
 
+def _audio_chat_auto_model(config):
+    """AutoModelForMultimodalLM for an audio-input chat model with no vision (LFM3-Audio), else None."""
+    if not getattr(config, "has_audio_input", False) or getattr(config, "is_vision", False):
+        return None
+    if getattr(config, "audio_type", None) != "audio_vlm":
+        return None
+    import transformers
+
+    return getattr(transformers, "AutoModelForMultimodalLM", None)
+
+
 def _processor_takes_text_first(processor) -> bool:
     """LFM3-Omni's processor is (text, audio, ..., images); the usual VLM order is (images, text)."""
     # unsloth_zoo wraps __call__ as (*args, **kwargs); read the first class that names its arguments.
@@ -1296,6 +1307,36 @@ class InferenceBackend:
                     )
                     logger.info(f"Loaded {type(processor).__name__} from {processor_source}")
 
+                self.models[model_name]["model"] = model
+                self.models[model_name]["tokenizer"] = processor
+                self.models[model_name]["processor"] = processor
+
+            elif _audio_chat_auto_model(config) is not None:
+                # Its text load builds the bare backbone; the multimodal class carries generate().
+                from unsloth import FastModel
+
+                model, processor = _load_with_offload_fallback(
+                    FastModel.from_pretrained,
+                    model_name = load_path,
+                    auto_model = _audio_chat_auto_model(config),
+                    max_seq_length = max_seq_length,
+                    dtype = dtype,
+                    **_load_in_4bit_kwargs(load_in_4bit),
+                    device_map = device_map,
+                    token = _hf_token_for_loader(hf_token),
+                    trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
+                    **offload_kwargs,
+                )
+                FastModel.for_inference(model)
+                if not hasattr(processor, "feature_extractor"):
+                    from transformers import AutoProcessor
+                    processor = AutoProcessor.from_pretrained(
+                        config.base_model if config.is_lora else load_path,
+                        token = _hf_token_for_loader(hf_token),
+                        trust_remote_code = trust_remote_code,
+                    )
+                _refuse_without_generate(model, model_name)
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = processor
                 self.models[model_name]["processor"] = processor
