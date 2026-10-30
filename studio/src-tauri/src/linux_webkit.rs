@@ -244,7 +244,7 @@ fn rendering_plan(
             .as_deref()
             .is_some_and(force_dmabuf_requested);
 
-    let is_appimage = env(APPIMAGE).is_some();
+    let is_appimage = crate::appimage_webkit::bundled_runtime(&env);
     let wayland_session = session_is_wayland(&env, wayland_socket, x11_open);
     let nvidia_x11 = nvidia_driver_loaded
         && !force_dmabuf
@@ -580,7 +580,8 @@ pub fn configure_renderer(
     setting: GpuRendering,
     unsafe_flag: impl FnOnce((u32, u32, u32), bool) -> bool,
 ) -> RendererDecision {
-    let gles_usable = std::env::var_os(APPIMAGE).is_none() || gles_is_usable();
+    let gles_usable =
+        !crate::appimage_webkit::bundled_runtime(|name| std::env::var_os(name)) || gles_is_usable();
     let env = |name: &str| std::env::var_os(name);
     let webkit_version = runtime_webkit_version();
     let nvidia = nvidia_driver_branch();
@@ -2271,5 +2272,52 @@ mod tests {
         assert!(decision(Some(GPU_ON_REASON), true).wants_supervision());
         assert!(!decision(Some(GPU_ON_REASON), false).wants_supervision());
         assert!(!decision(None, true).wants_supervision());
+    }
+
+    const HOST_MODE: (&str, &str) = (crate::appimage_webkit::MODE_ENV, "host");
+
+    #[test]
+    fn a_host_mode_appimage_on_wayland_gets_the_native_plan() {
+        let vars = [
+            (WAYLAND_DISPLAY, "wayland-0"),
+            (APPIMAGE, "/tmp/Unsloth.AppImage"),
+            HOST_MODE,
+        ];
+        assert_eq!(
+            plan(&vars),
+            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
+        );
+        // Bundled keeps the AppImage switch.
+        assert_eq!(
+            plan(&vars[..2]),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, WAYLAND_REASON)
+        );
+    }
+
+    #[test]
+    fn a_host_mode_appimage_on_nvidia_x11_reports_the_native_reason() {
+        assert_eq!(
+            plan_on_nvidia(&[
+                (APPIMAGE, "/tmp/Unsloth.AppImage"),
+                HOST_MODE,
+                (GDK_BACKEND, "x11")
+            ]),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_REASON
+            )
+        );
+    }
+
+    #[test]
+    fn a_host_mode_appimage_is_not_held_to_the_bundled_gles_check() {
+        assert_eq!(
+            plan_with_version_and_gles(
+                &[(APPIMAGE, "/tmp/Unsloth.AppImage"), HOST_MODE],
+                MODERN_WEBKIT,
+                false
+            ),
+            RenderingPlan::PreserveEnvironment
+        );
     }
 }
