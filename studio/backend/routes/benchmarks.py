@@ -1,0 +1,303 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Benchmark run storage, backed by studio.db. The frontend runs the sweep and posts
+the run here as it goes, so a run survives a reload and shows up on every device."""
+
+import threading
+import time
+from typing import Any, Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
+
+from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.utils.host_paths import host_paths_visible, redact_host_paths
+from routes.llama_bench import router as llama_bench_router
+from storage.benchmark_runs_db import delete_run, get_run, list_runs, upsert_run
+
+router = APIRouter()
+router.include_router(llama_bench_router, prefix = "/llama-bench")
+
+MAX_RESULTS = 20_000
+MAX_RUNS_LISTED = 200
+# Renewed every 15 s, but a backgrounded Chrome tab throttles timers to about once a minute,
+# so this outlasts a throttled renewal; a closed tab still frees the GPU within a few minutes.
+LEASE_TTL_SECONDS = 150
+
+_lease_lock = threading.Lock()
+_lease: Optional[dict[str, Any]] = None
+# Admitted loads still running, by lease header: a new lease waits them out.
+_loads_in_flight: dict[Optional[str], int] = {}
+
+
+def _redact_run(run: dict[str, Any], *, via_api_key: bool) -> dict[str, Any]:
+    """`model` and `config.tuneModel` hold the resolved absolute path of a local GGUF, the same
+    host identity the inference status route hides from API-key callers. The path redactor keys
+    on field name and neither is one it knows, so route them through identity keys it does and
+    map the references back."""
+    if host_paths_visible(via_api_key):
+        return run
+    config = run.get("config")
+    tune = config.get("tuneModel") if isinstance(config, dict) else None
+    ids = redact_host_paths(
+        {"active_model": run.get("model"), "model_name": tune},
+        via_api_key = via_api_key,
+    )
+    out = dict(run)
+    out["model"] = ids["active_model"]
+    if isinstance(config, dict) and "tuneModel" in config:
+        out["config"] = {**config, "tuneModel": ids["model_name"]}
+    return out
+
+
+class BenchmarkResult(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    variant: str = Field(max_length = 500)
+    rep: int = Field(ge = 0)
+    warmup: bool = False
+    promptIndex: int = Field(default = 0, ge = 0)
+    tps: Optional[float] = None
+    promptTps: Optional[float] = None
+    promptTokens: Optional[int] = None
+    genTokens: Optional[int] = None
+    ttftMs: Optional[float] = None
+    wallMs: float
+    clientTps: Optional[float] = None
+    draftN: Optional[int] = None
+    draftAccepted: Optional[int] = None
+    loadMs: Optional[float] = None
+    at: int
+
+
+class BenchmarkRun(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    id: str = Field(max_length = 128)
+    kind: Literal["sweep"] = "sweep"
+    sweep: str = Field(max_length = 64)
+    model: str = Field(max_length = 1000)
+    ggufVariant: Optional[str] = Field(default = None, max_length = 200)
+    kv: Optional[str] = Field(default = None, max_length = 64)
+    context: Optional[int] = None
+    config: dict[str, Any]
+    meta: dict[str, Any] = Field(default_factory = dict)
+    base: list[dict[str, Any]] = Field(default_factory = list, max_length = 200)
+    outcomes: list[dict[str, Any]] = Field(default_factory = list, max_length = 2_000)
+    results: list[BenchmarkResult] = Field(default_factory = list, max_length = MAX_RESULTS)
+    createdAt: int
+    finishedAt: Optional[int] = None
+
+
+@router.get("/runs")
+def get_runs(
+    kind: str = Query(default = "sweep", max_length = 32),
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    return {
+        "runs": [
+            _redact_run(run, via_api_key = via_api_key)
+            for run in list_runs(limit = MAX_RUNS_LISTED, kind = kind)
+        ]
+    }
+
+
+@router.get("/runs/{run_id}")
+def get_one(
+    run_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    run = get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code = 404, detail = "Benchmark run not found")
+    return _redact_run(run, via_api_key = via_api_key)
+
+
+@router.put("/runs/{run_id}")
+def put_run(
+    run_id: str,
+    run: BenchmarkRun,
+    current_subject: str = Depends(get_current_subject),
+):
+    if run.id != run_id:
+        raise HTTPException(status_code = 400, detail = "ID mismatch")
+    return upsert_run(run.model_dump())
+
+
+@router.delete("/runs/{run_id}", status_code = 204)
+def remove_run(run_id: str, current_subject: str = Depends(get_current_subject)):
+    if not delete_run(run_id):
+        raise HTTPException(status_code = 404, detail = "Benchmark run not found")
+
+
+class BenchmarkLease(BaseModel):
+    holder: str = Field(min_length = 8, max_length = 64, pattern = r"^[A-Za-z0-9_-]+$")
+    kind: Literal["sweep", "llama-bench", "evals"] = "sweep"
+
+
+@router.post("/lease")
+def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current_subject)):
+    """One benchmark at a time across tabs and devices: each reloads the one llama-server, so a
+    second runner would swap settings under the first and credit its rows to the wrong row."""
+    global _lease
+    now = time.monotonic()
+    with _lease_lock:
+        if _lease and _lease["holder"] != lease.holder and _lease["expires"] > now:
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "error": "benchmark_running",
+                    "kind": _lease["kind"],
+                    "message": "Another benchmark is running in another tab or on another device. "
+                    "Stop it or let it finish first.",
+                },
+            )
+        if _loads_pending(lease.holder) and not (_lease and _lease["holder"] == lease.holder):
+            # It passed the fence before this lease existed and would land after the run's first load.
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "error": "model_loading",
+                    "message": "A model is loading. Start the run once it finishes.",
+                },
+            )
+        outside = _lease["outside"] if _lease and _lease["holder"] == lease.holder else 0
+        _lease = {
+            "holder": lease.holder,
+            "kind": lease.kind,
+            "expires": now + LEASE_TTL_SECONDS,
+            "outside": outside,
+        }
+    return {"ttl": LEASE_TTL_SECONDS, "outside": outside}
+
+
+@router.delete("/lease", status_code = 204)
+def release_lease(
+    holder: str = Query(max_length = 64), current_subject: str = Depends(get_current_subject)
+):
+    global _lease
+    with _lease_lock:
+        if _lease and _lease["holder"] == holder:
+            _lease = None
+
+
+LEASE_HEADER = b"x-unsloth-bench-lease"
+# Compared without a trailing slash; /models/* are the llama-server-compatible root routes.
+LOAD_PATHS = ("/api/inference/load", "/api/inference/unload", "/models/load", "/models/unload")
+# Matched by _is_inference_path but never generate on the server.
+_NOT_GENERATIONS = ("/count_tokens", "/embeddings")
+
+
+def _lease_holds_against(holder: Optional[str]) -> bool:
+    return bool(_lease and _lease["expires"] > time.monotonic() and holder != _lease["holder"])
+
+
+def _sweep_holds_against(holder: Optional[str]) -> bool:
+    return _lease_holds_against(holder) and _lease["kind"] == "sweep"
+
+
+def _loads_pending(holder: Optional[str]) -> bool:
+    return any(n > 0 for h, n in _loads_in_flight.items() if h != holder)
+
+
+def _admit_load(holder: Optional[str]) -> bool:
+    """A load reloads the one llama-server: mid-sweep it would run the next rows under other
+    settings, and mid llama-bench it would take back the GPU the run unloaded it for. Checked
+    and counted under one lock, so a lease can't slip in between."""
+    with _lease_lock:
+        if _lease_holds_against(holder):
+            return False
+        _loads_in_flight[holder] = _loads_in_flight.get(holder, 0) + 1
+        return True
+
+
+def _load_done(holder: Optional[str]) -> None:
+    with _lease_lock:
+        n = _loads_in_flight.get(holder, 0) - 1
+        if n > 0:
+            _loads_in_flight[holder] = n
+        else:
+            _loads_in_flight.pop(holder, None)
+
+
+def note_inference_request(holder: Optional[str]) -> None:
+    """Count a generation that is not the sweep's own while a sweep holds the server."""
+    with _lease_lock:
+        if _sweep_holds_against(holder):
+            _lease["outside"] += 1
+
+
+class BenchmarkTrafficMiddleware:
+    """Pure ASGI: a sweep shares the one llama-server. Other generations during it are counted and
+    shown with the run; other loads, which would swap the server under its rows, are refused."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path") or ""
+        if (
+            scope.get("type") == "http"
+            and scope.get("method") == "POST"
+            and (_lease is not None or path.rstrip("/") in LOAD_PATHS)
+        ):
+            from core.inference.llama_keepwarm import (
+                _carries_bearer_credentials,
+                _is_inference_path,
+            )
+
+            holder = next(
+                (
+                    v.decode("latin-1")
+                    for k, v in scope.get("headers") or ()
+                    if k.lower() == LEASE_HEADER
+                ),
+                None,
+            )
+            # Uncredentialed calls go on to the route's own 401.
+            if path.rstrip("/") in LOAD_PATHS and _carries_bearer_credentials(scope, path):
+                if not _admit_load(holder):
+                    from starlette.responses import JSONResponse
+                    await JSONResponse(
+                        {
+                            "detail": "A benchmark is running on this model. Stop it on the "
+                            "Benchmarks page or let it finish, then try again."
+                        },
+                        status_code = 409,
+                    )(scope, receive, send)
+                    return
+                # A load still running after its client left (inference's padded answer) keeps
+                # counting until it ends, not until the response does.
+                from core.inference.llama_keepwarm import detached_work_hold
+
+                refs = [1]
+
+                def release() -> None:
+                    with _lease_lock:
+                        refs[0] -= 1
+                        last = refs[0] == 0
+                    if last:
+                        _load_done(holder)
+
+                def hold():
+                    with _lease_lock:
+                        refs[0] += 1
+                    return release
+
+                token = detached_work_hold.set(hold)
+                try:
+                    await self.app(scope, receive, send)
+                finally:
+                    detached_work_hold.reset(token)
+                    release()
+                return
+            if (
+                _lease is not None
+                and _is_inference_path(path)
+                and not path.endswith(_NOT_GENERATIONS)
+            ):
+                note_inference_request(holder)
+        await self.app(scope, receive, send)

@@ -886,6 +886,7 @@ export const sv = {
       runOptions: "Körningsalternativ",
     },
     navigation: {
+      benchmarks: "Benchmarks",
       newChat: "Ny chatt",
       returnToChat: "Tillbaka till chatten",
       returnToChats: "Tillbaka till {count} chattar",
