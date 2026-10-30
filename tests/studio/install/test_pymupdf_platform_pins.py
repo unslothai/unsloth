@@ -29,7 +29,14 @@ def _requirement_files():
     for name in ("studio.txt", "no-torch-runtime.txt"):
         path = REQ_ROOT / name
         lines = path.read_text(encoding = "utf-8").splitlines()
-        yield name, [line.split(" #")[0].strip() for line in lines if line.strip() and not line.startswith("#")]
+        yield (
+            name,
+            [
+                line.split(" #")[0].strip()
+                for line in lines
+                if line.strip() and not line.startswith("#")
+            ],
+        )
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))["project"]
     yield "pyproject.toml [studio]", list(project["optional-dependencies"]["studio"])
 
