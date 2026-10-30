@@ -331,6 +331,54 @@ class _HostPackagesFinder:
         )
 
 
+# pip --prefix with --ignore-installed never uninstalls, so an upgrade leaves the old dist-info beside
+# the new one and importlib.metadata can report the old version. RECORD is written last, so the
+# newest RECORD per project is the finished install.
+def _prune_stale_dist_info():
+    try:
+        prefix = os.environ.get("PIP_PREFIX")
+        if not prefix:
+            return
+        root = os.path.join(os.path.normcase(os.path.abspath(prefix)), "")
+        for entry in sys.path:
+            if not entry or not os.path.normcase(os.path.abspath(entry)).startswith(root):
+                continue
+            try:
+                names = os.listdir(entry)
+            except OSError:
+                continue
+            projects = {}
+            for name in names:
+                if name.endswith(".dist-info"):
+                    project = (
+                        name[:-10].rpartition("-")[0].lower().replace("-", "_").replace(".", "_")
+                    )
+                    projects.setdefault(project, []).append(name)
+            for found in projects.values():
+                if len(found) < 2:
+                    continue
+                stamped = []
+                for name in found:
+                    try:
+                        stamped.append(
+                            (os.stat(os.path.join(entry, name, "RECORD")).st_mtime_ns, name)
+                        )
+                    except OSError:
+                        pass
+                import shutil
+
+                for _, name in sorted(stamped)[:-1]:
+                    shutil.rmtree(os.path.join(entry, name), ignore_errors = True)
+    except Exception:  # noqa: BLE001 - a broken shim must never break user code
+        pass
+
+
+if os.environ.get("PIP_PREFIX"):
+    import atexit
+    _prune_stale_dist_info()
+    atexit.register(_prune_stale_dist_info)
+
+
 _host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
 if _host_packages and not any(isinstance(f, _HostPackagesFinder) for f in sys.meta_path):
     sys.meta_path.append(_HostPackagesFinder(_host_packages))

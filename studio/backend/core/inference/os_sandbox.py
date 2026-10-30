@@ -39,6 +39,9 @@ SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 def _pip_prefix_lib_dirs() -> tuple[str, ...]:
     if sys.version_info >= (3, 10):
         scheme = sysconfig.get_preferred_scheme("prefix")
+        # pip's own remap: the framework scheme's purelib is absolute, never under a --prefix.
+        if scheme == "osx_framework_library":
+            scheme = "posix_prefix"
     else:
         scheme = "nt" if os.name == "nt" else "posix_prefix"
     # A bare separator base turns nt's "{base}/Lib" into a UNC path that relpath rejects.

@@ -315,6 +315,63 @@ def test_a_second_pip_install_keeps_its_commands_and_namespace_modules(tmp_path)
     assert imported.returncode == 0, imported.stderr
 
 
+def test_reinstalling_another_version_leaves_one_version_installed(tmp_path):
+    if subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output = True).returncode:
+        pytest.skip(
+            reason = "pip is not installed in this interpreter, so there is no install to run"
+        )
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    for version in ("1.0", "2.0"):
+        info = f"vpkg-{version}.dist-info"
+        files = {
+            "vpkg.py": f"VERSION = {version!r}\n",
+            f"{info}/METADATA": f"Metadata-Version: 2.1\nName: vpkg\nVersion: {version}\n",
+            f"{info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        }
+        with zipfile.ZipFile(wheels / f"vpkg-{version}-py3-none-any.whl", "w") as wheel:
+            for path, text in files.items():
+                wheel.writestr(path, text)
+            wheel.writestr(
+                f"{info}/RECORD", "".join(f"{p},,\n" for p in [*files, f"{info}/RECORD"])
+            )
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    shim = Path(backend.__file__).with_name("sandbox_site")
+    env = backend._sandbox_environment(
+        {
+            "PATH": os.environ["PATH"],
+            "PYTHONPATH": str(shim),
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        },
+        str(workdir),
+        str(tmp_path),
+    )
+    probe = "import vpkg, importlib.metadata as m; print(vpkg.VERSION, m.version('vpkg'))"
+    for version in ("1.0", "2.0", "1.0"):
+        installed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                str(wheels),
+                f"vpkg=={version}",
+            ],
+            env = env,
+            capture_output = True,
+            text = True,
+        )
+        assert installed.returncode == 0, installed.stdout + installed.stderr
+        seen = subprocess.run(
+            [sys.executable, "-c", probe], env = env, capture_output = True, text = True
+        )
+        assert seen.stdout.split() == [version, version], seen.stdout + seen.stderr
+    assert len(list(workdir.glob(f"{backend.SESSION_PACKAGES_RELPATH}/**/vpkg-*.dist-info"))) == 1
+
+
 def test_openmp_can_write_its_registration_segment(profile):
     kmp = next(
         block for block in profile.split("(allow ipc-posix-shm") if "__KMP_REGISTERED_LIB_" in block
