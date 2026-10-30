@@ -397,3 +397,32 @@ def test_ulysses_deepseek_forward_runs_eager_inside_compiled_layers(name, monkey
     out = torch.compile(layer, backend = "eager")(torch.ones(2, 3))
     torch.testing.assert_close(out, torch.full((2, 3), 3.0))
     assert seen == [False], seen
+
+
+def _ddp_worker(rank, world, kind):
+    ad.HAS_FLASH_ATTENTION = False
+    ad.HAS_XFORMERS = False
+    model = _model(kind)
+    seq = 16
+    ids = torch.randint(0, VOCAB, (2, seq), generator = torch.Generator().manual_seed(1))
+    count = F.pad(ids, (0, 1), value = -100)[:, 1:].ne(-100).sum()
+    manager = _manager(world, rank)
+    manager.attach_attention_hooks(model)
+    # The CP trainer turns DDP's find_unused_parameters off (reentrant checkpointing).
+    ddp = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters = False)
+    for _ in range(2):
+        inputs = {"input_ids": ids.clone(), "labels": ids.clone()}
+        manager._prepare_inputs(inputs)
+        with manager.apply(inputs):
+            out = ddp(input_ids = inputs["input_ids"], position_ids = inputs["position_ids"], use_cache = False)
+            _loss(out.logits, inputs["shift_labels"], count).backward()
+    indexer = [n for n, p in model.named_parameters() if ".indexer." in n]
+    assert indexer and all(model.get_parameter(n).grad is None for n in indexer), indexer
+
+
+@pytest.mark.parametrize("kind", [k for k in KINDS if k in ("v32", "v4")])
+def test_ulysses_deepseek_ddp_steps_with_trainable_indexer(kind):
+    """The DSA indexer only picks keys (a discrete top-k), so its weights never get a gradient. With
+    LoRA on them (V3.2 indexer.wq_b, V4 compressor.indexer.q_b_proj) and DDP's find_unused_parameters
+    off under CP, the second CP=2 SFT step on L4 failed with "Expected to have finished reduction"."""
+    _spawn(_ddp_worker, 2, kind)
