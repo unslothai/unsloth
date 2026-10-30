@@ -176,6 +176,8 @@ def _check_expansion(pattern: str) -> None:
         size = _expanded_size(_sre_parse.parse(pattern, re.DOTALL | re.MULTILINE))
     except re.error as exc:
         raise RewardError(f"Invalid regex: {exc}") from exc
+    except RecursionError as exc:  # deep nesting, well under the length limit
+        raise RewardError("Invalid regex: groups are nested too deeply.") from exc
     if size > MAX_PATTERN_EXPANSION:
         raise RewardError("Regex repeat counts are too large; use * or + for long runs.")
 
