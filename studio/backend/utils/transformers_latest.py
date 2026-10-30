@@ -23,6 +23,9 @@ from utils.transformers_version import (
     _tier_from_config_mapping,
     _config_model_types,
     _NESTED_CONFIG_KEYS,
+    _release_tuple,
+    _remote_code_min_version,
+    _remote_code_tier,
     _TIER_RANK,
     _model_types_from_config,
     _TRANSFORMERS_510_MODEL_TYPES,
@@ -389,6 +392,35 @@ def _hardcoded_tier_ships(model_type: str) -> bool:
     return True
 
 
+def _remote_code_upgrade(model_name: str, cfg: dict) -> dict | None:
+    """Custom-code configs (LFM3) never have a model_type in any mapping; offer latest PyPI when
+    it is at least the saving version and no installed tier is."""
+    required = _remote_code_min_version(cfg)
+    if required is None or _remote_code_tier(cfg) is not None:
+        return None
+    snapshot = _get_snapshot()
+    if snapshot is None:
+        return None
+    pypi = _release_tuple(snapshot["pypi_version"])
+    if pypi is None or pypi < required:
+        return None
+    logger.info(
+        "Model %s has custom code saved by transformers %s, newer than every installed tier "
+        "(latest PyPI %s)",
+        model_name,
+        cfg.get("transformers_version"),
+        snapshot["pypi_version"],
+    )
+    types = _model_types_from_config(cfg)
+    return {
+        "model_type": types[0] if types else str(cfg.get("model_type") or ""),
+        "pypi_version": snapshot["pypi_version"],
+        "supported_in_pypi": True,
+        "supported_in_main": True,
+        "main_version": snapshot.get("main_version"),
+    }
+
+
 def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dict | None:
     """Fires only when model_type is in no installed overlay or tier table, i.e. the load would fail."""
     try:
@@ -399,6 +431,9 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
             return None
         if _architecture_cannot_come_from_transformers(model_name, cfg):
             return None
+        # Custom code loads from the repo, so only the saving version matters, not the mapping.
+        if _remote_code_min_version(cfg) is not None:
+            return _remote_code_upgrade(model_name, cfg)
         candidates = _model_types_from_config(cfg)
         if not candidates:
             return None

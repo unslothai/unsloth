@@ -1614,3 +1614,58 @@ def test_fetch_main_version_requires_dev_string(monkeypatch):
     assert tl._fetch_main_version() is None
     monkeypatch.setattr(tl, "_fetch_text", lambda url: '__version__ = "5.19.0.dev0"\n')
     assert tl._fetch_main_version() == "5.19.0.dev0"
+
+
+def _custom_code_model(tmp_path: Path, saved_by: str) -> str:
+    """LFM3-shaped checkpoint: model_type no transformers ships, config class in repo code."""
+    d = tmp_path / f"custom_{saved_by}"
+    d.mkdir()
+    cfg = {
+        "model_type": "lfm3_omni",
+        "architectures": ["Lfm3OmniForConditionalGeneration"],
+        "auto_map": {"AutoConfig": "configuration_lfm3_omni.Lfm3OmniConfig"},
+        "transformers_version": saved_by,
+    }
+    (d / "config.json").write_text(json.dumps(cfg))
+    return str(d)
+
+
+class TestCustomCodeRouting:
+    """The tier probe parses with trust_remote_code=False, so custom code fails every tier and
+    used to land on the 5.3.0 floor (LFM3: "Lfm3Config must be a dataclass before @strict")."""
+
+    @pytest.fixture(autouse = True)
+    def _no_probe(self, monkeypatch):
+        _fake_overlays(monkeypatch)
+        monkeypatch.setattr(tv, "_probe_tier", lambda *a, floor = "530", **k: floor)
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: None)
+        monkeypatch.setattr(tv, "TRANSFORMERS_DEFAULT_VERSION", "5.5.0")
+
+    def test_newer_than_every_tier_routes_to_newest_fixed_tier(self, tmp_path: Path):
+        assert get_transformers_tier(_custom_code_model(tmp_path, "5.19.0.dev0")) == "510"
+
+    def test_routes_to_pinned_latest_when_new_enough(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.22.0")
+        assert get_transformers_tier(_custom_code_model(tmp_path, "5.19.0.dev0")) == "latest"
+
+    def test_oldest_sidecar_at_or_above_saving_version(self, tmp_path: Path):
+        assert get_transformers_tier(_custom_code_model(tmp_path, "5.8.0")) == "510"
+
+    def test_default_kept_when_new_enough(self, tmp_path: Path):
+        assert get_transformers_tier(_custom_code_model(tmp_path, "5.3.0")) == "default"
+
+    def test_upgrade_offered_when_pypi_is_new_enough(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        result = check_upgrade_for_model(_custom_code_model(tmp_path, "5.12.0.dev0"))
+        assert result is not None
+        assert result["model_type"] == "lfm3_omni" and result["pypi_version"] == "5.13.0"
+        assert result["supported_in_pypi"] is True
+
+    def test_no_offer_when_pypi_too_old(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        assert check_upgrade_for_model(_custom_code_model(tmp_path, "5.19.0.dev0")) is None
+
+    def test_no_offer_when_installed_tier_fits(self, tmp_path: Path, monkeypatch):
+        calls = _no_network(monkeypatch)
+        assert check_upgrade_for_model(_custom_code_model(tmp_path, "5.8.0")) is None
+        assert calls["n"] == 0
