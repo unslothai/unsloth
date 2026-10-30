@@ -28,8 +28,16 @@ def hosted_int8_offload_eligible(fam: Any, scheme: Optional[str], target: Any) -
         name = getattr(fam, "name", None)
         if name not in HOSTED_INT8_OFFLOAD_FAMILIES or getattr(fam, "modular_workflow", None):
             return False
-        from .diffusion_transformer_quant import TQ_INT8, native_int8_act, native_quant_scheme
+        from .diffusion_transformer_quant import (
+            TQ_INT8,
+            native_int8_act,
+            native_offload_host,
+            native_quant_scheme,
+        )
 
+        # native_quant_scheme also admits ROCm / stubbed torchao hosts (UNSLOTH_NATIVE_INT8_ACT=1 makes them W8A8).
+        if not native_offload_host(target):
+            return False
         # W8A8 only: the file's activations are int8, a weight-only native layer would compute something else.
         return native_quant_scheme(target, TQ_INT8, family = name, offload = True) == TQ_INT8 and bool(
             native_int8_act(target)

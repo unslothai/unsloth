@@ -402,10 +402,18 @@ def test_eligibility(nvidia, monkeypatch, family, scheme, target, env, act, expe
     assert hn.hosted_int8_offload_eligible(fam, scheme, target) is expect
 
 
-def test_rocm_is_not_eligible(monkeypatch):
-    monkeypatch.setattr(tq, "torch_is_rocm", lambda: True)
-    monkeypatch.setattr(tq, "is_stubbed", lambda name: False)
-    monkeypatch.setattr(tq, "native_quant_host", lambda target: False)
+@pytest.mark.parametrize("rocm, stubbed", [(True, False), (False, True)])
+@pytest.mark.parametrize("act", [None, "1"])
+def test_rocm_and_stubbed_torchao_are_not_eligible(monkeypatch, rocm, stubbed, act):
+    # The real native_quant_host: it accepts these hosts, and UNSLOTH_NATIVE_INT8_ACT=1 makes them W8A8.
+    monkeypatch.setattr(tq, "torch_is_rocm", lambda: rocm)
+    monkeypatch.setattr(tq, "is_stubbed", lambda name: stubbed)
+    monkeypatch.delenv(hn.HOSTED_INT8_OFFLOAD_ENV, raising = False)
+    if act is None:
+        monkeypatch.delenv("UNSLOTH_NATIVE_INT8_ACT", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_NATIVE_INT8_ACT", act)
+    assert tq.native_quant_host(CUDA_BF16)
     assert not hn.hosted_int8_offload_eligible(_family(), "int8", CUDA_BF16)
 
 
