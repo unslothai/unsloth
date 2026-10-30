@@ -63,8 +63,16 @@ def test_a_profile_withholds_by_the_facts_tools_declare():
         ("Load <<load_model: with it | on the Image page>>.", {"load_model"}, "Load with it."),
         ("Load <<load_model: with it | on the Image page>>.", set(), "Load on the Image page."),
         ("Done.<<cancel: Stop it with cancel(kind='video').>>", set(), "Done."),
-        ("Save a .csv, .json or .parquet file<<datasets: here>>.", set(), "Save a .csv, .json or .parquet file."),
-        ("Not known yet<<load_model: , so pass the kind>>.", {"load_model"}, "Not known yet, so pass the kind."),
+        (
+            "Save a .csv, .json or .parquet file<<datasets: here>>.",
+            set(),
+            "Save a .csv, .json or .parquet file.",
+        ),
+        (
+            "Not known yet<<load_model: , so pass the kind>>.",
+            {"load_model"},
+            "Not known yet, so pass the kind.",
+        ),
         ("Not known yet<<load_model: , so pass the kind>>.", set(), "Not known yet."),
     ],
 )
