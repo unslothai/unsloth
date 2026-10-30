@@ -38,3 +38,14 @@ test("copy buttons sit on card outputs, inspector outputs, long inputs and error
   assert.match(button, /copyToClipboard\(text\)/);
   assert.match(button, /event\.stopPropagation\(\)/);
 });
+
+test("a card's text output leaves room on the right for its copy button", () => {
+  const src = readSrc("features/flows/editor/flow-node.tsx");
+  assert.match(src, /\$\{copyText \? " pr-9" : ""\}/);
+});
+
+test("number and toggle fields a doc never stored show the default the run uses", () => {
+  const src = readSrc("features/flows/editor/param-fields.tsx");
+  assert.match(src, /\(value === undefined \|\| value === null \? spec\.default : value\) \?\? ""/);
+  assert.match(src, /checked=\{value === undefined \|\| value === null \? !!spec\.default : !!value\}/);
+});

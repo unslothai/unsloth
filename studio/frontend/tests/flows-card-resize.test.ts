@@ -135,5 +135,5 @@ test("the resize handles and a saved size both respect the measured floor", () =
   assert.match(view, /minHeight=\{Math\.max\(cardMinHeight\(spec\), contentMin\)\}/);
   assert.match(view, /style=\{node\.size && !collapsed && contentMin \? \{ minHeight: contentMin \} : undefined\}/);
   assert.match(view, /data-card-body=\{true\}/);
-  assert.match(view, /data-card-grow=\{true\}\s*className="flow-detail/);
+  assert.match(view, /data-card-grow=\{true\}\s*className=\{?[`"]flow-detail/);
 });

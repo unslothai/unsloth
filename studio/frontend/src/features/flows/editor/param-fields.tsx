@@ -383,7 +383,10 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
       return (
         <Input
           type="number"
-          value={value === null || value === undefined ? "" : String(value)}
+          // Unset shows the default the run will use; null stays empty only where the default is null.
+          value={String(
+            (value === undefined || value === null ? spec.default : value) ?? "",
+          )}
           min={spec.min}
           max={spec.max}
           step={spec.step ?? (spec.kind === "int" ? 1 : "any")}
@@ -402,7 +405,10 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
       );
     case "bool":
       return (
-        <Switch checked={!!value} onCheckedChange={() => onChange(!value)} />
+        <Switch
+          checked={value === undefined || value === null ? !!spec.default : !!value}
+          onCheckedChange={(checked) => onChange(checked)}
+        />
       );
     case "select":
       return (
