@@ -1567,3 +1567,58 @@ def test_batch_probe_unchanged_for_the_owner(batch_queue, monkeypatch):
 
     _run(flow())
     assert touched and len(calls["batch"]) == 1
+
+
+@pytest.mark.parametrize("weight", [0, 0.5])
+def test_a_file_excluding_an_assistant_message_by_weight_is_refused(studio, weight):
+    client, calls, _live = studio
+    rows = (
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "Question"},
+                    {"role": "assistant", "content": "CONTEXT_ONLY", "weight": weight},
+                    {"role": "user", "content": "Question"},
+                    {"role": "assistant", "content": "TARGET", "weight": 1},
+                ]
+            }
+        ).encode()
+        + b"\n"
+    )
+
+    async def flow():
+        weighted = await client.files.create(
+            file = ("weighted.jsonl", CHATS + rows), purpose = "fine-tune"
+        )
+        plain = await client.files.create(file = ("plain.jsonl", CHATS), purpose = "fine-tune")
+        errors = []
+        for kwargs in (
+            {"training_file": weighted.id},
+            {"training_file": plain.id, "validation_file": weighted.id},
+        ):
+            try:
+                await client.fine_tuning.jobs.create(model = "unsloth/Qwen3-0.6B", **kwargs)
+            except openai.BadRequestError as exc:
+                errors.append(str(exc))
+        return errors
+
+    errors = _run(flow())
+    assert len(errors) == 2
+    assert "training_file line 3" in errors[0] and "validation_file line 3" in errors[1]
+    assert calls["start"] == []
+
+
+def test_a_file_with_only_weight_one_messages_still_trains(studio):
+    client, calls, _live = studio
+    rows = (
+        b'{"messages": [{"role": "user", "content": "Hi"}, '
+        b'{"role": "assistant", "content": "Hello!", "weight": 1}]}\n'
+    )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", rows), purpose = "fine-tune")
+        return await _create(client, uploaded.id)
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
