@@ -69,6 +69,7 @@ def graphs(monkeypatch):
     spec.loader.exec_module(module)
     module.ENABLED = None
     module._DEFAULT_OK = True
+    module._STUDIO_DEFAULT_OK = True  # Linux default (native Windows stays eager)
     unsloth = types.ModuleType("unsloth")
     models = types.ModuleType("unsloth.models")
     unsloth.models = models

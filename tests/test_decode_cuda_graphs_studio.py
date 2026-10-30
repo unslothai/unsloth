@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 ENV = "UNSLOTH_DECODE_CUDA_GRAPHS"
 _SOURCE = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_decode_graphs.py"
@@ -24,6 +25,7 @@ def G(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.ENABLED = None
+    module._STUDIO_DEFAULT_OK = True  # the Linux default; the Windows test overrides it
     monkeypatch.delenv(ENV, raising = False)
     return module
 
@@ -78,7 +80,22 @@ def test_studio_scope_unwinds_on_error(G, monkeypatch):
     assert G.enabled() is False
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
+def test_studio_scope_is_off_on_native_windows(G, monkeypatch):
+    # Native Windows CUDA capture is unverified: the Studio default stays eager there, =1 still forces.
+    monkeypatch.setattr(G, "_DEFAULT_OK", True)
+    monkeypatch.setattr(G, "_STUDIO_DEFAULT_OK", False)
+    with G.studio_generation():
+        assert G.enabled() is False
+        with G.rl_generation():
+            assert G.enabled() is True
+        assert G.enabled() is False
+    assert G.enabled() is False
+    monkeypatch.setenv(ENV, "1")
+    with G.studio_generation():
+        assert G.enabled() is True
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA only")
 def test_studio_generate_graphed_plain_generate_eager():
     import unsloth  # noqa: F401
     from unsloth import FastLanguageModel

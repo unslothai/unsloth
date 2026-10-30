@@ -7,6 +7,7 @@ change."""
 
 import math
 import os
+import sys
 import threading
 
 import torch
@@ -93,12 +94,24 @@ class rl_generation:
         return False
 
 
+# Studio's default is Linux / WSL only: graph capture under native Windows CUDA drivers is unverified
+# there (=1 still forces graphs on).
+_STUDIO_DEFAULT_OK = sys.platform != "win32"
+
+
 class studio_generation(rl_generation):
     """Scope of a generate() call in Studio's inference worker (per thread): graphs default on inside
     it, as in RL rollouts. That process only serves inference, so graphs and buffers live until the
     model is unloaded (release()). Plain model.generate() elsewhere stays eager by default."""
 
-    __slots__ = ()
+    __slots__ = ("_entered",)
+
+    def __enter__(self):
+        self._entered = _STUDIO_DEFAULT_OK
+        return super().__enter__() if self._entered else self
+
+    def __exit__(self, *exc):
+        return super().__exit__(*exc) if self._entered else False
 
 
 def static():
@@ -277,6 +290,7 @@ class _ModelGraphs:
         self.optimizer_steps = -1
         self.buffer_epoch = -1
         self.disabled = None
+        self.ineligible_epoch = None
         self.rope_len = None
         self.captures = 0
         self.replays = 0
@@ -568,6 +582,9 @@ def decode_step(
         state.eager_steps += 1
         state.generation_epoch = -1
         return None
+    if state.ineligible_epoch == GENERATION_EPOCH:
+        state.eager_steps += 1
+        return None
     if (
         state.generation_epoch != GENERATION_EPOCH
         or state.optimizer_steps != K._OPTIMIZER_STEPS
@@ -580,7 +597,11 @@ def decode_step(
             return None
         fingerprint = _fingerprint(model, layers, rope_len)
         if fingerprint is None:
-            state.disabled = "parameters on several / non-CUDA devices or a non-LoRA adapter"
+            # Ineligible for this generation only (several / non-CUDA devices, or a DoRA / non-LoRA
+            # adapter, e.g. one side of a compare): free the captured steps and re-check next time.
+            state.clear()
+            state.ineligible_epoch = GENERATION_EPOCH
+            state.eager_steps += 1
             return None
         if (
             fingerprint != state.fingerprint
@@ -683,42 +704,45 @@ def _capture(
     no_cache = lambda: torch.autocast("cuda", dtype = dtype, enabled = enabled, cache_enabled = False)
     stream.wait_stream(torch.cuda.current_stream())
     step = _Step(st)
-    with torch.cuda.stream(stream), no_cache():
-        # Warmup: Triton JIT, cuBLAS workspaces, lazily built RoPE rows / LoRA casts. It writes this
-        # step's K / V into its cache slot, the same values the replay writes again.
-        _run_step(model, fast_forward_inference, logits_fn, s, st, past_key_values)
-        stream.synchronize()
+    try:
+        with torch.cuda.stream(stream), no_cache():
+            # Warmup: Triton JIT, cuBLAS workspaces, lazily built RoPE rows / LoRA casts. It writes this
+            # step's K / V into its cache slot, the same values the replay writes again.
+            _run_step(model, fast_forward_inference, logits_fn, s, st, past_key_values)
+            stream.synchronize()
 
-        def split(fn):
-            # Close the segment, run the attention core once (its output address is what the next
-            # segment reads), open the next segment.
-            _end(step.segments[-1])
-            # Two calls with the first result alive: the same address means the core writes into a
-            # persistent buffer (bsz == 1 writes the query buffer); else (SDPA allocates) its
-            # result is copied into a fixed buffer.
-            out = fn()
-            fixed = out if fn().data_ptr() == out.data_ptr() else torch.empty_like(out)
-            step.cores.append(fn if fixed is out else (lambda: fixed.copy_(fn())))
+            def split(fn):
+                # Close the segment, run the attention core once (its output address is what the next
+                # segment reads), open the next segment.
+                _end(step.segments[-1])
+                # Two calls with the first result alive: the same address means the core writes into a
+                # persistent buffer (bsz == 1 writes the query buffer); else (SDPA allocates) its
+                # result is copied into a fixed buffer.
+                out = fn()
+                fixed = out if fn().data_ptr() == out.data_ptr() else torch.empty_like(out)
+                step.cores.append(fn if fixed is out else (lambda: fixed.copy_(fn())))
+                graph = torch.cuda.CUDAGraph()
+                step.segments.append(graph)
+                _begin(graph, state.pool)
+                return fixed
+
             graph = torch.cuda.CUDAGraph()
             step.segments.append(graph)
+            st.attention = split
             _begin(graph, state.pool)
-            return fixed
-
-        graph = torch.cuda.CUDAGraph()
-        step.segments.append(graph)
-        st.attention = split
-        _begin(graph, state.pool)
-        try:
-            step.logits = _run_step(
-                model, fast_forward_inference, logits_fn, s, st, past_key_values
-            )
-        finally:
-            st.attention = _run_now
-            if torch.cuda.is_current_stream_capturing():
-                _end(step.segments[-1])
-    torch.cuda.current_stream().wait_stream(stream)
-    st.mask = None
-    return step
+            try:
+                step.logits = _run_step(
+                    model, fast_forward_inference, logits_fn, s, st, past_key_values
+                )
+            finally:
+                st.attention = _run_now
+                if torch.cuda.is_current_stream_capturing():
+                    _end(step.segments[-1])
+        return step
+    finally:
+        # Also after a failed warmup / capture: the eager fallback must not race the side stream.
+        torch.cuda.current_stream().wait_stream(stream)
+        st.mask = None
 
 
 def _begin(graph, pool):
