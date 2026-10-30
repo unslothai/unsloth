@@ -22,6 +22,7 @@ from .utils import (
     _base_quant_state,
     get_lora_parameters,
     get_lora_parameters_bias,
+    LORA_FUSED_PASSES,
     matmul_lora,
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,
@@ -327,6 +328,39 @@ def _add_lora_dX(dX, y_dB, A, S, mask, p):
         dX.add_(_dropout_replay(y_dB @ A.t(), mask, p, S))
 
 
+def _shared_XA(X, As, dtype):
+    # One X @ [A_1; A_2; ...].t() instead of one pass over X per projection; per-projection column views.
+    XA = torch.matmul(X, torch.cat([A.to(dtype) for A in As], 0).t())
+    views, start = [], 0
+    for A in As:
+        views.append(XA[:, start : start + A.shape[0]])
+        start += A.shape[0]
+    return views
+
+
+def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
+    # LoRA grads of projections reading the same X with the same scale S (As [K, r], Bs [r, N] after .t()):
+    # X is read once for every d_A and once for every A @ X.t(), and dX starts as S * dB @ A.t() so the
+    # base GEMMs accumulate onto it in their epilogue. Returns (d_As, d_Bs, dX).
+    dB = torch.cat([dY @ B.t() for dY, B in zip(dYs, Bs)], 1)
+    A_rows = torch.cat([A.t() for A in As], 0)
+    dA = torch.empty((X.shape[1], dB.shape[1]), dtype = dB.dtype, device = dB.device)
+    dA.addmm_(X.t(), dB, alpha = S, beta = 0)
+    AX = A_rows @ X.t()
+    d_As, d_Bs, start = [], [], 0
+    for dY, A, B in zip(dYs, As, Bs):
+        r = A.shape[1]
+        d_As.append(dA[:, start : start + r].contiguous())
+        d_B = torch.empty_like(B)
+        d_B.addmm_(AX[start : start + r], dY, alpha = S, beta = 0)
+        d_Bs.append(d_B)
+        start += r
+    del AX, dA
+    dX = torch.empty_like(X) if dX_out is None else dX_out
+    addmm_(dX, dB, A_rows, alpha = S, beta = 0)
+    return d_As, d_Bs, dX
+
+
 def _lora_bias_grad(dY, S):
     # Autograd casts it to the bias dtype.
     return dY.sum(0, dtype = torch.float32).mul_(S)
@@ -415,8 +449,12 @@ class LoRA_MLP(torch.autograd.Function):
 
         plain = dropout_p is None and gateBias is None and upBias is None and downBias is None
         if plain:
-            e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
-            g = matmul_lora(X, upW, upW_quant, upA, upB, upS)
+            gateXA = upXA = None
+            if LORA_FUSED_PASSES and gateA is not None and upA is not None:
+                gateXA, upXA = _shared_XA(X.view(-1, X.shape[-1]), (gateA, upA), dtype)
+            e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS, XA = gateXA)
+            g = matmul_lora(X, upW, upW_quant, upA, upB, upS, XA = upXA)
+            del gateXA, upXA
             h = _forward_function(e, g)
             i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
             masks = (None, None, None)
@@ -535,6 +573,56 @@ class LoRA_MLP(torch.autograd.Function):
         # d_downA = h.t() @ (dY @ downB.t()), d_downB = (downA.t() @ h.t()) @ dY, both scaled by downS.
         d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
         d_downB.addmm_(downA.t() @ h.t(), dY, alpha = downS, beta = 0)
+
+        if (
+            LORA_FUSED_PASSES
+            and up_mask is None
+            and gate_mask is None
+            and gateS == upS
+            and not ctx.biases[0]
+            and not ctx.biases[1]
+        ):
+            (d_gateA, d_upA), (d_gateB, d_upB), dX = _shared_lora_backward(
+                X,
+                (de, df),
+                (gateA, upA),
+                (gateB, upB),
+                gateS,
+                X if ctx.inplace and not _is_compiling() else None,
+            )
+            upW = fast_dequantize(upW.t(), upW_quant, dtype = df.dtype)
+            addmm_(dX, df, upW.t())
+            del upW
+            gateW = fast_dequantize(gateW.t(), gateW_quant, dtype = de.dtype)
+            addmm_(dX, de, gateW.t())
+            del gateW
+            d_gateBias = d_upBias = None
+            d_downBias = _lora_bias_grad(dY, downS) if ctx.biases[2] else None
+            return (
+                dX.view(batch, seq_len, hd),
+                None,
+                None,
+                d_gateA.t(),
+                d_gateB.t(),
+                None,
+                None,
+                None,
+                d_upA.t(),
+                d_upB.t(),
+                None,
+                None,
+                None,
+                d_downA.t(),
+                d_downB.t(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                d_gateBias,
+                d_upBias,
+                d_downBias,
+            )
 
         up_dB = df @ upB.t()
         gate_dB = de @ gateB.t()
@@ -811,9 +899,13 @@ class LoRA_QKV(torch.autograd.Function):
         if X.dim() == 3:
             X_for_matmul = X.view(-1, X.shape[-1])
         if dropout_p is None and QBias is None and KBias is None and VBias is None:
-            Q = matmul_lora(X_for_matmul, QW, QW_quant, QA, QB, QS)
-            K = matmul_lora(X_for_matmul, KW, KW_quant, KA, KB, KS)
-            V = matmul_lora(X_for_matmul, VW, VW_quant, VA, VB, VS)
+            QXA = KXA = VXA = None
+            if LORA_FUSED_PASSES and QA is not None and KA is not None and VA is not None:
+                QXA, KXA, VXA = _shared_XA(X_for_matmul, (QA, KA, VA), dtype)
+            Q = matmul_lora(X_for_matmul, QW, QW_quant, QA, QB, QS, XA = QXA)
+            K = matmul_lora(X_for_matmul, KW, KW_quant, KA, KB, KS, XA = KXA)
+            V = matmul_lora(X_for_matmul, VW, VW_quant, VA, VB, VS, XA = VXA)
+            del QXA, KXA, VXA
             masks = (None, None, None)
         else:
             Q_p, K_p, V_p = dropout_p or (0.0, 0.0, 0.0)
@@ -902,6 +994,50 @@ class LoRA_QKV(torch.autograd.Function):
         d_KB = torch.empty_like(KB)
         d_VA = torch.empty_like(VA)
         d_VB = torch.empty_like(VB)
+
+        if (
+            LORA_FUSED_PASSES
+            and Q_mask is None
+            and K_mask is None
+            and V_mask is None
+            and QS == KS == VS
+            and not any(ctx.biases)
+        ):
+            (d_QA, d_KA, d_VA), (d_QB, d_KB, d_VB), dX = _shared_lora_backward(
+                X,
+                (dQ, dK, dV),
+                (QA, KA, VA),
+                (QB, KB, VB),
+                QS,
+                X if ctx.inplace and not _is_compiling() else None,
+            )
+            for W_, W_quant_, dY_ in ((QW, QW_quant, dQ), (KW, KW_quant, dK), (VW, VW_quant, dV)):
+                W_ = fast_dequantize(W_.t(), W_quant_, dtype = dY_.dtype)
+                addmm_(dX, dY_, W_.t())
+                del W_
+            return (
+                dX.view(batch, seq_len, hd),
+                None,
+                None,
+                d_QA.t(),
+                d_QB.t(),
+                None,
+                None,
+                None,
+                d_KA.t(),
+                d_KB.t(),
+                None,
+                None,
+                None,
+                d_VA.t(),
+                d_VB.t(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
 
         q_dB = dQ @ QB.t()
         k_dB = dK @ KB.t()
@@ -1105,10 +1241,18 @@ class LoRA_W(torch.autograd.Function):
         del Xd
         d_bias = _lora_bias_grad(dY, S) if ctx.has_bias else None
 
-        W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
-        dX = dY @ W.t()
-        del W
-        _add_lora_dX(dX, y_dB, A, S, mask, ctx.dropout_p)
+        if LORA_FUSED_PASSES and mask is None:
+            # dX starts as the rank-r term; the base GEMM accumulates onto it in its epilogue.
+            dX = torch.empty((dY.shape[0], A.shape[0]), dtype = dY.dtype, device = dY.device)
+            addmm_(dX, y_dB, A.t(), alpha = S, beta = 0)
+            W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
+            addmm_(dX, dY, W.t())
+            del W
+        else:
+            W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
+            dX = dY @ W.t()
+            del W
+            _add_lora_dX(dX, y_dB, A, S, mask, ctx.dropout_p)
 
         return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None, None, d_bias
 

@@ -1,0 +1,162 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""UNSLOTH_LORA_FUSED_PASSES: the fused LoRA kernels write the rank-r term first and let the base GEMM
+accumulate onto it, share X @ A across projections reading the same X, and read X once for every
+projection's LoRA gradients. Outputs and gradients match the base-then-LoRA order and an fp64 PEFT
+oracle; the shared paths are taken only when they apply."""
+
+from __future__ import annotations
+
+import copy
+
+import pytest
+import torch
+import unsloth  # noqa: F401
+
+from real_accelerator import has_real_cuda
+from unsloth.kernels import fast_lora
+from unsloth.kernels import utils as kernel_utils
+
+H, I = 64, 96
+TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+DEVICES = ["cpu"] + (["cuda"] if has_real_cuda() else [])
+
+
+class _Block(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.q_proj = torch.nn.Linear(H, H, bias = False)
+        self.k_proj = torch.nn.Linear(H, H // 2, bias = False)
+        self.v_proj = torch.nn.Linear(H, H // 2, bias = False)
+        self.o_proj = torch.nn.Linear(H, H, bias = False)
+        self.gate_proj = torch.nn.Linear(H, I, bias = False)
+        self.up_proj = torch.nn.Linear(H, I, bias = False)
+        self.down_proj = torch.nn.Linear(I, H, bias = False)
+        self.act_fn = torch.nn.SiLU()
+
+
+def _model(
+    device,
+    dtype,
+    alpha_pattern = None,
+):
+    from peft import LoraConfig, get_peft_model
+
+    torch.manual_seed(3407)
+    cfg = LoraConfig(
+        r = 4,
+        lora_alpha = 8,
+        lora_dropout = 0.0,
+        target_modules = TARGETS,
+        init_lora_weights = False,
+        alpha_pattern = alpha_pattern or {},
+    )
+    model = get_peft_model(_Block(), cfg).to(device, dtype)
+    for name, p in model.named_parameters():
+        p.requires_grad_("lora_" in name)
+    model.train()
+    return model, model.base_model.model
+
+
+PATHS = {
+    "qkv": (
+        lambda b: (lambda X: fast_lora.apply_lora_qkv(b, X)),
+        lambda b: (lambda X: (b.q_proj(X), b.k_proj(X), b.v_proj(X))),
+    ),
+    "o": (lambda b: (lambda X: fast_lora.apply_lora_o(b, X)), lambda b: b.o_proj),
+    "mlp": (
+        lambda b: (lambda X: fast_lora.apply_lora_mlp_swiglu(b, X)),
+        lambda b: (lambda X: b.down_proj(b.act_fn(b.gate_proj(X)) * b.up_proj(X))),
+    ),
+}
+
+
+def _run(fn, model, X0):
+    X = X0.detach().clone().requires_grad_()
+    out = fn(X * 1)  # a non-leaf: the fused backward may write dX into its input buffer
+    outs = out if isinstance(out, tuple) else (out,)
+    gen = torch.Generator(device = "cpu").manual_seed(7)
+    loss = sum(
+        (o.double() * torch.randn(o.shape, generator = gen, dtype = torch.float64).to(o.device)).sum()
+        for o in outs
+    )
+    loss.backward()
+    grads = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+    model.zero_grad(set_to_none = True)
+    return [o.detach() for o in outs], X.grad.clone(), grads
+
+
+def _set(monkeypatch, on):
+    monkeypatch.setattr(kernel_utils, "LORA_FUSED_PASSES", on)
+    monkeypatch.setattr(fast_lora, "LORA_FUSED_PASSES", on)
+
+
+def _err(a, b):
+    return float((a.double() - b.double()).norm() / b.double().norm().clamp_min(1e-30))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("path", ["qkv", "o", "mlp"])
+@pytest.mark.parametrize("alphas", ["equal", "mixed"])
+def test_fused_passes_match_the_unfused_order_and_an_fp64_oracle(
+    device, dtype, path, alphas, monkeypatch
+):
+    if device == "cpu" and path == "mlp":
+        pytest.skip("the SwiGLU kernels are Triton")
+    if device == "cpu" and dtype is torch.bfloat16:
+        pytest.skip("bf16 GEMMs on CPU are slow and not what runs in training")
+    pattern = {"k_proj": 16, "up_proj": 16} if alphas == "mixed" else None
+    model, block = _model(device, dtype, pattern)
+    X0 = torch.randn(3, 5, H, device = device, dtype = dtype)
+    _set(monkeypatch, False)
+    ref_out, ref_dX, ref_g = _run(PATHS[path][0](block), model, X0)
+    _set(monkeypatch, True)
+    out, dX, g = _run(PATHS[path][0](block), model, X0)
+    oracle_model = copy.deepcopy(model).double()
+    o_out, o_dX, o_g = _run(
+        PATHS[path][1](oracle_model.base_model.model), oracle_model, X0.double()
+    )
+    tol = 1e-5 if dtype is torch.float32 else 2e-2
+    for a, b, o in zip(out, ref_out, o_out):
+        assert _err(a, o) <= max(tol, 1.5 * _err(b, o)), (_err(a, o), _err(b, o))
+    assert _err(dX, o_dX) <= max(tol, 1.5 * _err(ref_dX, o_dX)), (
+        _err(dX, o_dX),
+        _err(ref_dX, o_dX),
+    )
+    assert set(g) == set(ref_g) == set(o_g)
+    for n in g:
+        assert g[n].shape == ref_g[n].shape
+        assert _err(g[n], o_g[n]) <= max(tol, 1.5 * _err(ref_g[n], o_g[n])), (
+            n,
+            _err(g[n], o_g[n]),
+            _err(ref_g[n], o_g[n]),
+        )
+
+
+def test_shared_paths_engage_only_when_they_apply(monkeypatch):
+    calls = {"xa": 0, "bwd": 0}
+    real_xa, real_bwd = fast_lora._shared_XA, fast_lora._shared_lora_backward
+
+    def xa(*a, **k):
+        calls["xa"] += 1
+        return real_xa(*a, **k)
+
+    def bwd(*a, **k):
+        calls["bwd"] += 1
+        return real_bwd(*a, **k)
+
+    monkeypatch.setattr(fast_lora, "_shared_XA", xa)
+    monkeypatch.setattr(fast_lora, "_shared_lora_backward", bwd)
+    X0 = torch.randn(2, 3, H)
+    for alphas, on, want in (
+        ("equal", True, (1, 1)),
+        ("mixed", True, (1, 0)),
+        ("equal", False, (0, 0)),
+    ):
+        _set(monkeypatch, on)
+        calls.update(xa = 0, bwd = 0)
+        model, block = _model("cpu", torch.float32, {"k_proj": 16} if alphas == "mixed" else None)
+        _run(PATHS["qkv"][0](block), model, X0)
+        assert (calls["xa"], calls["bwd"]) == want, (alphas, on, calls)

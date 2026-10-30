@@ -1874,6 +1874,12 @@ def addmm_(
     return out.addmm_(A, B, alpha = alpha, beta = beta)
 
 
+# The rank-r product is written first and the base GEMM accumulates onto it (cuBLAS reads it in the
+# epilogue of a compute-bound GEMM), instead of a separate read-modify-write pass over the whole output.
+# UNSLOTH_LORA_FUSED_PASSES=0 restores the base-then-LoRA order everywhere.
+LORA_FUSED_PASSES = os.environ.get("UNSLOTH_LORA_FUSED_PASSES", "1") != "0"
+
+
 def matmul_lora(
     X,
     W,
@@ -1883,7 +1889,9 @@ def matmul_lora(
     s,
     out = None,
     use_global_buffer = True,
+    XA = None,
 ):
+    # XA: X @ A.t() already computed by the caller (shared across projections reading the same X).
     dtype = X.dtype
 
     if X.dim() == 3:
@@ -1908,6 +1916,16 @@ def matmul_lora(
         out = _int4_matmul(X, W, W_quant, out = out)
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
+    elif A is not None and LORA_FUSED_PASSES:
+        if XA is None:
+            XA = torch_matmul(X, A.t().to(dtype))
+        B = B.t().to(dtype)
+        if out is None:
+            out = torch.empty((X.shape[0], B.shape[1]), dtype = dtype, device = X.device)
+        addmm_(out, XA, B, alpha = s, beta = 0)
+        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+        addmm_(out, X, W.t())
+        A = None
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
         out = torch_matmul(X, W.t(), out = out)
@@ -1916,7 +1934,8 @@ def matmul_lora(
 
     if A is not None:
         A, B = A.t(), B.t()
-        XA = torch_matmul(X, A.to(dtype))
+        if XA is None:
+            XA = torch_matmul(X, A.to(dtype))
         addmm_(out, XA, B.to(dtype), alpha = s)
 
     return out.view(batch, seq_len, -1) if reshape else out
