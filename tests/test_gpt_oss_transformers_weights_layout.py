@@ -135,6 +135,9 @@ def test_absolute_explicit_name_inside_the_model_dir_decides_the_layout(tmp_path
     # Outside the model dir (+ subfolder) stays refused, absolute or not.
     _save(tmp_path / "outside.safetensors", FUSED)
     outside = str(tmp_path / "outside.safetensors")
-    assert loader_utils._checkpoint_tensor_dtypes(
-        path, subfolder = subfolder, transformers_weights = outside
-    ) is None
+    assert (
+        loader_utils._checkpoint_tensor_dtypes(
+            path, subfolder = subfolder, transformers_weights = outside
+        )
+        is None
+    )
