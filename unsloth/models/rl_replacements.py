@@ -2310,15 +2310,64 @@ def grpo_trainer__generate_single_turn(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_single_turn)
 
 
+def _unsloth_grpo_is_truncated(trainer, completion_ids, prompt_ids, eos_and_pad):
+    """Completions cut by a length limit, not ended by EOS or a stop string (no EOS either).
+    vLLM also caps prompt + completion at max_model_len (= max_seq_length), so that counts too."""
+    limit = getattr(trainer, "max_completion_length", None)
+    max_model_len = None
+    if getattr(trainer, "use_vllm", False):
+        llm = getattr(trainer, "llm", None)
+        if llm is None:
+            llm = getattr(getattr(trainer, "vllm_generation", None), "llm", None)
+        engine = getattr(llm, "llm_engine", None)
+        model_config = getattr(engine, "model_config", None)
+        if model_config is None:
+            model_config = getattr(getattr(engine, "vllm_config", None), "model_config", None)
+        max_model_len = getattr(model_config, "max_model_len", None)
+        if not isinstance(max_model_len, int):
+            max_model_len = None
+    if (
+        max_model_len is not None
+        and isinstance(prompt_ids, (list, tuple))
+        and len(prompt_ids) == len(completion_ids)
+    ):
+        prompt_lengths = [len(ids) for ids in prompt_ids]
+    else:
+        prompt_lengths = None
+    is_truncated = []
+    for i, ids in enumerate(completion_ids):
+        if ids[-1] in eos_and_pad:
+            is_truncated.append(False)
+        elif limit is None or len(ids) >= limit:
+            is_truncated.append(True)
+        else:
+            is_truncated.append(
+                prompt_lengths is not None and prompt_lengths[i] + len(ids) >= max_model_len
+            )
+    return is_truncated
+
+
+def _unsloth_patch_grpo_truncation_check(function):
+    # TRL 0.24+ marks any non-EOS / pad ending as truncated. `_generate` has `prompt_ids`,
+    # `_generate_and_score_completions` has `prompt_ids_list` (0.24.0 to 1.17).
+    def _replace(match):
+        completions = match.group(1)
+        prompts = "prompt_ids_list" if completions.endswith("_list") else "prompt_ids"
+        return f"_unsloth_grpo_is_truncated(self, {completions}, {prompts}, eos_and_pad)"
+
+    return re.sub(
+        r"\[ids\[-1\] not in eos_and_pad for ids in (completion_ids(?:_list)?)\]",
+        _replace,
+        function,
+    )
+
+
 def grpo_trainer__generate(function_name, function):
     if function_name != "_generate":
         return function
 
     # A stop string can terminate a completion before the limit without an EOS token.
-    function = function.replace(
-        "ids[-1] not in eos_and_pad",
-        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
-    )
+    function = _unsloth_patch_grpo_truncation_check(function)
     return _guard_vllm_sync_reload_for_shared_weights(function)
 
 
@@ -2330,10 +2379,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
         return function
 
-    function = function.replace(
-        "ids[-1] not in eos_and_pad",
-        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
-    )
+    function = _unsloth_patch_grpo_truncation_check(function)
     function = function.replace(
         "prompt_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False",
         "prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False",
@@ -4915,6 +4961,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_returns_hidd
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_states_signal))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_truncated))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))

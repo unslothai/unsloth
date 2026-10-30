@@ -19,6 +19,8 @@ from typing import Callable, Iterator, Optional
 from loggers import get_logger
 from storage import studio_db
 
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
+
 logger = get_logger(__name__)
 
 TITLE_MAX_CHARS = 120
@@ -170,7 +172,7 @@ def iso_ms(value) -> Optional[int]:
 
 
 def clean_text(text: str) -> str:
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+    return _BLANK_LINE_RUN.sub("\n\n", text).strip()
 
 
 def tool_call(tool_id: str, block: dict) -> dict:
