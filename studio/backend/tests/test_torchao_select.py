@@ -96,6 +96,7 @@ def test_an_old_torch_install_on_torchao_014_is_repinned(monkeypatch, installed)
     """An existing torch <= 2.8 install keeps torchao 0.14 until its next dependency pass, which
     must force 0.15.0 over it even when the pass has evidence to skip satisfied steps."""
     mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "IS_WINDOWS", False)
     monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: installed)
     monkeypatch.setattr(mod, "_may_skip_on_evidence", lambda: True)
     calls = []
