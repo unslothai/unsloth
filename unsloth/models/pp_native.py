@@ -1265,7 +1265,9 @@ class PipelineParallel:
                     scaler.__dict__.pop(name, None)
                 pp = pipeline()
                 if pp is not None and pp._step_scaler is scaler:
-                    pp._step_scaler = None  # this step's gradients were unscaled (update follows step)
+                    pp._step_scaler = (
+                        None  # this step's gradients were unscaled (update follows step)
+                    )
 
         scaler.unscale_ = unscale_
         scaler.update = update_
@@ -1281,7 +1283,9 @@ class PipelineParallel:
         except ImportError:
             return
         states = getattr(scaler, "_per_optimizer_states", {}) or {}
-        if any(state.get("stage") in (OptState.UNSCALED, OptState.STEPPED) for state in states.values()):
+        if any(
+            state.get("stage") in (OptState.UNSCALED, OptState.STEPPED) for state in states.values()
+        ):
             return  # scaler.step unscales first: STEPPED gradients are unscaled too
         raise ValueError(
             "Unsloth: PipelineParallel.clip_grad_norm_ got gradients still multiplied by the float16 "

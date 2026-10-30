@@ -99,7 +99,10 @@ def _clip_after_step(rank, world):
     opt = torch.optim.SGD(pp.parameters(), lr = 1.0)
     out = {}
     pp.step(ids, labels, scaler = scaler)
-    for where, action in (("after_step", lambda: scaler.step(opt)), ("after_update", scaler.update)):
+    for where, action in (
+        ("after_step", lambda: scaler.step(opt)),
+        ("after_update", scaler.update),
+    ):
         action()
         try:
             out[where] = float(pp.clip_grad_norm_(1e9))
