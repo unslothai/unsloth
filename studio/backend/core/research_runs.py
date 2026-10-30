@@ -210,7 +210,7 @@ def _auto_scrape_default() -> int:
 _MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
 _LIST_PREFIX = re.compile(r"^(?:[\*\-\+•]|\d+[.)])\s")
-_BLANK_RUN = re.compile(r"\n{3,}")
+_BLANK_RUN = re.compile(r"\n\n\n+")
 # Tracking URLs are single 80+ char tokens that small models echo.
 _LONG_TOKEN = re.compile(r"\S{80,}")
 

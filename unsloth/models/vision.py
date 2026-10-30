@@ -255,6 +255,8 @@ from ._utils import (
     attention_class_for_load,
     _REMOTE_CLASS_HUB_OPTIONS,
     resolve_attention_implementation,
+    requests_flex_attention,
+    _EXPLICIT_FLEX_ATTR,
     _get_text_only_config,
     _is_family_text_decoder,
     _config_get,
@@ -2829,17 +2831,17 @@ def _architecture_skip_modules(model_types):
         skip.append("proj_out")
     # WavLM's attention hands q/k/v/out_proj.weight to F.multi_head_attention_forward, which a packed Params4bit cannot be.
     if any(mt == "wavlm" for mt in model_types):
-        # Qualified so a composite's decoder (SpeechEncoderDecoderModel) stays quantized: transformers 5 matches
-        # "attention.q_proj" as a suffix; 4.x matches only bare leaf names or ancestors, hence "attention".
+        # Qualified so a composite's decoder stays quantized: 5.x matches "attention.q_proj" as a suffix; a bare
+        # "attention" on 4.x also caught a BERT decoder's (cross)attention, so name WavLM's own layers instead.
         skip.extend(
             (
-                "attention",
                 "attention.q_proj",
                 "attention.k_proj",
                 "attention.v_proj",
                 "attention.out_proj",
             )
         )
+        skip.extend(f"encoder.layers.{i}.attention" for i in range(48))
     # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
     # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
     # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.
@@ -3755,6 +3757,7 @@ class FastBaseModel:
             supports_sdpa = _attn_supports_sdpa,
             dtype = attn_dtype,
         )
+        _explicit_flex = requests_flex_attention(kwargs.get("attn_implementation", None))
 
         # FP8 models: get_model_name already redirected to the BF16 sibling if the model ships FP8 weights, so just update it here for sanity.
         auto_config.model_name = model_name
@@ -4902,6 +4905,8 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        if _explicit_flex:
+            setattr(model, _EXPLICIT_FLEX_ATTR, True)
         # Last, so the host copies carry the fp32 recasts the passes above make.
         finish_block_swap_load(
             model, _block_swap_state, planned_prefetch_depth(device_map_planner_kwargs)

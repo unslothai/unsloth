@@ -12,6 +12,7 @@ import * as transition from "../src/lib/account-transition.ts";
 import * as deadline from "../src/features/auth/bootstrap-deadline.ts";
 import type * as LoginClient from "../src/features/auth/login-client.ts";
 import type * as AccountSession from "../src/features/auth/account-session.ts";
+import { en } from "../src/i18n/locales/en.ts";
 
 const formUrl = new URL(
   "../src/features/auth/components/auth-form.tsx",
@@ -47,6 +48,12 @@ function textContent(node: unknown): string {
   return "";
 }
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+function translate(key: string, values: Record<string, string> = {}) {
+  const message = key
+    .split(".")
+    .reduce<unknown>((value, part) => (value as Record<string, unknown>)[part], en) as string;
+  return message.replace(/\{([^}]+)\}/g, (_match, name: string) => values[name] ?? "");
+}
 
 function mountForm(
   client: typeof LoginClient,
@@ -140,6 +147,7 @@ function mountForm(
       pickSpookySloth: () => ({ sloth: "", enlarge: false }),
     },
     "@/components/ui/input": { Input: "Input" },
+    "@/i18n": { useT: () => translate },
     "@/components/ui/label": { Label: "Label" },
     "@tanstack/react-router": {
       Link: "Link",
@@ -150,6 +158,7 @@ function mountForm(
         },
     },
     "@hugeicons/core-free-icons": { ViewIcon: "ViewIcon", ViewOffSlashIcon: "ViewOffSlashIcon" },
+    "@/lib/folder-icons": { ViewIcon: "ViewIcon", ViewOffSlashIcon: "ViewOffSlashIcon" },
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "../api": {
       refreshSession: async () => true,

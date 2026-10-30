@@ -229,3 +229,47 @@ def test_download_file_reconnects_after_a_real_trickle(monkeypatch, tmp_path, wh
         assert srv.requests == 2
         assert time.monotonic() - start < 5.0
     assert destination.read_bytes() == PAYLOAD
+
+
+def test_progress_on_a_real_response_lands_on_whole_chunks():
+    """read1 returns receive-sized pieces; progress is still reported at each 1 MiB boundary, so
+    the installers' percent lines match the whole-chunk reads they printed before."""
+    import urllib.request
+
+    class Recorder:
+        def __init__(self):
+            self.updates = []
+            self.finished = None
+
+        def update(self, n):
+            self.updates.append(n)
+
+        def finish(self, n):
+            self.finished = n
+
+    big = PAYLOAD * 4
+    with _Server(short = 0) as srv:
+        srv.httpd.RequestHandlerClass.do_GET = _serve_bytes(srv, big)
+        with urllib.request.urlopen(srv.url, timeout = 10) as response:
+            recorder = Recorder()
+            sink = bytearray()
+            n = CORE.copy_response_body(
+                response, sink.extend, total_bytes = len(big), progress = recorder
+            )
+    assert n == len(big) and bytes(sink) == big
+    assert recorder.updates == [(i + 1) << 20 for i in range(4)]
+    assert recorder.finished == len(big)
+
+
+def _serve_bytes(srv, body):
+    def do_GET(handler):  # noqa: N802
+        srv.requests += 1
+        handler.send_response(200)
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        for i in range(0, len(body), 48 * 1024):
+            handler.wfile.write(body[i : i + 48 * 1024])
+            handler.wfile.flush()
+        handler.close_connection = True
+
+    return do_GET
