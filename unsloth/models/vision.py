@@ -348,6 +348,10 @@ try:
     from unsloth_zoo.gradient_checkpointing import non_reentrant_offload_hooks
 except ImportError:  # older unsloth_zoo
     non_reentrant_offload_hooks = None
+try:
+    from unsloth_zoo.gradient_checkpointing import activation_offloader_for
+except ImportError:  # its non_reentrant_offload_hooks takes no owner
+    activation_offloader_for = None
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
@@ -379,6 +383,7 @@ from unsloth_zoo.utils import Version
 
 import types
 import functools
+import weakref
 import importlib.util
 import os
 import copy
@@ -3328,9 +3333,19 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
-def _offload_activation_hooks():
+def _gc_offload_owner(model):
+    # The owner's forward pre-hook marks each forward. PEFT 0.18 calls the top model's .forward()
+    # directly, skipping its hooks, so own by the backbone, which is always called as a module.
+    backbone = getattr(model, "model", None)
+    return backbone if isinstance(backbone, torch.nn.Module) else model
+
+
+def _offload_activation_hooks(owner = None):
     # The zoo hooks copy on a side stream; the fallback queues the copy on the compute stream.
     if non_reentrant_offload_hooks is not None:
+        # Per-model offloader: another model's backward never prefetches this one's inputs.
+        if owner is not None and activation_offloader_for is not None:
+            return non_reentrant_offload_hooks(owner)
         return non_reentrant_offload_hooks()
     return torch.autograd.graph.saved_tensors_hooks(
         _offload_activation_pack, _offload_activation_unpack
@@ -5501,12 +5516,14 @@ class FastBaseModel:
                 torch_checkpoint.checkpoint,
             )
             _offload = use_gradient_checkpointing == "unsloth"
+            # Weak: torch_checkpoint.checkpoint outlives the model.
+            _gc_owner = weakref.ref(_gc_offload_owner(model))
 
             def _nonre_checkpoint(function, *args, **kwargs):
                 kwargs["use_reentrant"] = False
                 if not _offload:
                     return _orig_checkpoint(function, *args, **kwargs)
-                with _offload_activation_hooks():
+                with _offload_activation_hooks(_gc_owner()):
                     return _orig_checkpoint(function, *args, **kwargs)
 
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
