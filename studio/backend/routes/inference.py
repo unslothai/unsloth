@@ -31311,6 +31311,8 @@ async def produce_openai_chat_completions(
             _speak_detail = "The loaded model cannot answer in speech."
         elif _speak and not payload.audio_base64:
             _speak_detail = "A spoken reply answers a spoken question: send it as audio_base64."
+        elif _speak and payload.extra_audio_base64:
+            _speak_detail = "A spoken reply answers one audio clip: drop extra_audio_base64."
         elif _speak and _normalize_stop_sequences(payload.stop):
             # The speech cannot be cut at a text marker, so the stop would not hold.
             _speak_detail = "Stop sequences do not apply to a spoken reply."

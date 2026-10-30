@@ -171,7 +171,9 @@ def test_spoken_reply_yields_text_then_one_wav():
     assert "Be brief." in str(conversation[0]["content"])
     assert conversation[-1] == {"role": "assistant", "content": "<|mixed_start|>"}
     assert kwargs["continue_final_message"] is True
-    assert model.kwargs["audio_top_k"] == 128 and model.kwargs["return_dict_in_generate"] is True
+    assert model.kwargs["return_dict_in_generate"] is True
+    # Each checkpoint's generation_config carries its own audio sampling (Audio and Omni differ).
+    assert not [k for k in model.kwargs if k.startswith("audio_")]
     assert b.last_generation_stats["usage"]["completion_tokens"] == 5
 
 

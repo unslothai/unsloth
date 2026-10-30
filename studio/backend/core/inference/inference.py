@@ -801,14 +801,9 @@ def _audio_chat_auto_model(config):
     return getattr(transformers, "AutoModelForMultimodalLM", None)
 
 
-# The model card's prompts and audio sampling for LFM3 speech output.
+# The model card's prompt for LFM3 speech chat. Audio sampling is left to each checkpoint's
+# generation_config: LFM3-Audio and LFM3-Omni recommend different settings.
 _SPEECH_REPLY_SYSTEM_PROMPT = "Respond with interleaved text and audio."
-_SPEECH_SAMPLING = {
-    "audio_temperature": 1.0,
-    "audio_top_k": 128,
-    "audio_repetition_penalty": 1.1,
-    "audio_repetition_window": 4096,
-}
 _TTS_LOCALES = {
     "ar": "Arabic",
     "da": "Danish",
@@ -2925,7 +2920,6 @@ class InferenceBackend:
             max_new_tokens = max_new_tokens,
             do_sample = False,
             return_dict_in_generate = True,
-            **_SPEECH_SAMPLING,
         )
         if cancel_event is not None:
             stopper = _speech_stop_streamer(cancel_event)
