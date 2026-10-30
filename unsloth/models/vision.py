@@ -3333,16 +3333,12 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
-# hf_modeling_utils.checkpoint is one function for every model in the process, so the offloader owner is
-# resolved per call from the layer being checkpointed: the module that calls it (ModuleList / ModuleDict are
-# iterated, never called). Llama -> LlamaModel, OPT -> OPTDecoder, each vision tower its own encoder.
+# hf_modeling_utils.checkpoint is shared by every model, so the owner is resolved per call from the layer.
 _GC_CONTAINERS = (torch.nn.ModuleList, torch.nn.ModuleDict)
-# Models post_patch_model prepared; weak, the checkpoint function outlives them.
 _GC_OFFLOAD_ROOTS = weakref.WeakSet()
-# Module -> weakref to its calling module. A strong value would keep its own key alive.
+# Weak values: a strong one would keep its own key alive.
 _GC_MODULE_PARENTS = weakref.WeakKeyDictionary()
 _GC_UNRESOLVED = weakref.WeakSet()
-# Owner -> its forwards in flight, from its own hooks.
 _GC_OWNER_DEPTH = weakref.WeakKeyDictionary()
 
 
@@ -3410,8 +3406,7 @@ def _register_gc_offload_root(model, offload = True):
 
 
 def _gc_checkpointed_module(function):
-    # transformers' GradientCheckpointingLayer passes partial(super().__call__, **kwargs); older stacks
-    # pass layer.__call__ or a create_custom_forward(layer) closure.
+    # GradientCheckpointingLayer passes partial(super().__call__, ...); older stacks a bound __call__ or closure.
     for _ in range(8):
         if not isinstance(function, functools.partial):
             break
@@ -3448,9 +3443,7 @@ def _gc_checkpoint_owner(function):
         owner = None if ref is None else ref()
         if owner is None:
             return None
-        # An owned offloader starts each forward from the owner's pre-hook, in place of the shared one's
-        # dead-record reset. An owner not called as a module (bypassed, or .forward() called directly)
-        # never fires it, and its records would pile up across discarded forwards: share instead.
+        # An owner whose hooks never fire (bypassed) would pile up records across discarded forwards: share.
         if _GC_OWNER_DEPTH.get(owner, 0) > 0:
             return owner
         _gc_track_owner(owner)
@@ -3462,7 +3455,6 @@ def _gc_checkpoint_owner(function):
 def _offload_activation_hooks(owner = None):
     # The zoo hooks copy on a side stream; the fallback queues the copy on the compute stream.
     if non_reentrant_offload_hooks is not None:
-        # Per-model offloader: another model's backward never prefetches this one's inputs.
         if owner is not None and activation_offloader_for is not None:
             return non_reentrant_offload_hooks(owner)
         return non_reentrant_offload_hooks()
