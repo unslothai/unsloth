@@ -329,8 +329,18 @@ def _add_lora_dX(dX, y_dB, A, S, mask, p):
         dX.add_(_dropout_replay(y_dB @ A.t(), mask, p, S))
 
 
+def _dense(t):
+    # Dynamo bans reading `layout` in a compiled backward, so traced code checks is_sparse / is_sparse_csr.
+    if t.is_sparse or t.is_sparse_csr:
+        return False
+    return torch.compiler.is_compiling() or t.layout == torch.strided
+
+
 def _shared_XA(X, As, dtype):
     # One X @ [A_1; A_2; ...].t() instead of one pass over X per projection; per-projection column views.
+    # Compressed sparse adapters cannot be concatenated: one product each, as before.
+    if not all(_dense(A) for A in As):
+        return [torch.matmul(X, A.to(dtype).t()) for A in As]
     XA = torch.matmul(X, torch.cat([A.to(dtype) for A in As], 0).t())
     views, start = [], 0
     for A in As:

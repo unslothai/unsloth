@@ -731,3 +731,69 @@ def test_dtensor_activation_keeps_the_base_then_lora_order(placement, one_rank_m
                 pytest.skip(f"main's order needs DTensor ops this torch lacks: {e}"[:200])
     assert out[True].placements == out[False].placements
     torch.testing.assert_close(out[True].full_tensor(), out[False].full_tensor())
+
+
+def test_a_wrapper_subclass_base_keeps_the_base_then_lora_order(monkeypatch):
+    # TorchAO's NF4Tensor reports bf16 over packed storage and implements mm but not addmm_: with no quant
+    # state it must not qualify for the in-place accumulate.
+    nf4 = pytest.importorskip("torchao.quantization.quantize_.workflows.nf4.nf4_tensor")
+    _set(monkeypatch, True)
+    g = torch.Generator().manual_seed(0)
+    W = nf4.to_nf4(torch.randn(128, 128, generator = g).to(torch.bfloat16))
+    X = torch.randn(8, 128, generator = g).to(torch.bfloat16)
+    A = (torch.randn(4, 128, generator = g) * 0.1).to(torch.bfloat16)
+    B = (torch.randn(128, 4, generator = g) * 0.1).to(torch.bfloat16)
+    assert not kernel_utils._lora_fused_ok(W, None, torch.bfloat16)
+    got = kernel_utils.matmul_lora(X, W, None, A, B, 0.5)
+    _set(monkeypatch, False)
+    torch.testing.assert_close(got, kernel_utils.matmul_lora(X, W, None, A, B, 0.5), rtol = 0, atol = 0)
+
+
+@pytest.mark.parametrize("layout", ["csr", "csc", "bsr"])
+def test_compressed_sparse_lora_a_takes_one_product_per_projection(layout):
+    # A compressed sparse A cannot be concatenated for the shared X @ [A_1; A_2].t(): one product each.
+    g = torch.Generator().manual_seed(0)
+    X = torch.randn(4, 6, generator = g)
+    dense = [torch.randn(3, 6, generator = g) for _ in range(2)]
+    to = {
+        "csr": lambda t: t.to_sparse_csr(),
+        "csc": lambda t: t.to_sparse_csc(),
+        "bsr": lambda t: t.to_sparse_bsr((3, 3)),
+    }[layout]
+    views = fast_lora._shared_XA(X, [to(t) for t in dense], torch.float32)
+    for v, t in zip(views, dense):
+        v = v.to_dense() if v.layout != torch.strided else v
+        torch.testing.assert_close(v, X @ t.t(), rtol = 1e-5, atol = 1e-5)
+
+
+def test_a_caller_out_sharing_the_quant_state_is_written_after_dequantizing(monkeypatch):
+    # The caller's buffer may share storage with the quant state (absmax): the weight is dequantized from
+    # it before the rank-r term is written into the buffer.
+    _set(monkeypatch, True)
+
+    class State:
+        pass
+
+    def dequant(
+        W,
+        W_quant,
+        use_global_buffer = True,
+        dtype = None,
+    ):
+        return (W * W_quant.absmax.sum()).to(dtype)
+
+    monkeypatch.setattr(kernel_utils, "fast_dequantize", dequant)
+    monkeypatch.setattr(kernel_utils, "_quant_state_dtype", lambda q: torch.float32)
+    g = torch.Generator().manual_seed(0)
+    X = torch.randn(2, 8, generator = g)
+    W = torch.randn(4, 8, generator = g)
+    A, B = torch.randn(2, 8, generator = g), torch.randn(4, 2, generator = g)
+
+    def run(shared):
+        state = State()
+        buf = torch.empty(2, 4)
+        state.absmax = buf.view(-1)[:3] if shared else torch.empty(3)
+        state.absmax.copy_(torch.tensor([0.5, 0.25, 0.25]))
+        return kernel_utils.matmul_lora(X, W, state, A, B, 0.5, out = buf).clone()
+
+    torch.testing.assert_close(run(True), run(False), rtol = 0, atol = 0)

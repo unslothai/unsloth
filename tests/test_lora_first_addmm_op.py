@@ -10,6 +10,8 @@ import unsloth  # noqa: F401
 from unsloth.kernels import utils as KU
 
 pytestmark = pytest.mark.skipif(not KU._HAS_LORA_FIRST_OP, reason = "needs torch.library.custom_op")
+# Compiled code uses the op only when torch.export's flag tells strict export apart (torch 2.7+).
+_OP_COMPILED = hasattr(torch.compiler, "_is_exporting_flag")
 
 
 def _mk(
@@ -64,7 +66,7 @@ def test_compiled_matmul_lora_uses_op_fullgraph(dtype):
         lambda X, W, A, B: KU.matmul_lora(X, W, None, A, B, 0.5), backend = backend, fullgraph = True
     )
     got = f(X, W, A, B)
-    assert any("lora_first_addmm" in s for s in seen), seen
+    assert any("lora_first_addmm" in s for s in seen) == _OP_COMPILED, seen
     assert torch.equal(got, eager)
     f2 = torch.compile(
         lambda X, W, A, B: KU.matmul_lora(X, W, None, A, B, 0.5),
@@ -148,7 +150,7 @@ def test_compiled_differentiable_matmul_lora_matches_eager_grads(dtype):
         return aot_autograd(fw_compiler = boxed, bw_compiler = boxed)(gm, inputs)
 
     compiled = run(torch.compile(f, backend = backend, fullgraph = True))
-    assert any("lora_first_addmm" in s for s in seen), seen
+    assert any("lora_first_addmm" in s for s in seen) == _OP_COMPILED, seen
     tol = dict(rtol = 1e-5, atol = 1e-5) if dtype == torch.float32 else dict(rtol = 2e-2, atol = 2e-2)
     assert torch.equal(compiled[0], eager[0])
     for c, e in zip(compiled[1:], eager[1:]):
@@ -251,19 +253,26 @@ def test_compiled_native_forward_ad_keeps_the_tangent(dtype, backend):
     torch.testing.assert_close(got, eager, **tol)
 
 
-def test_exported_program_stays_transformable():
-    # Export traces outside Dynamo and keeps the functional form: torch.func on the exported module has no
-    # rule for the opaque op (grad raised, jvp returned zeros).
+@pytest.mark.parametrize("strict", [False, True])
+def test_exported_program_stays_transformable(strict):
+    # Export (non-strict outside Dynamo, strict through it) keeps the functional form: torch.func on the
+    # exported module has no rule for the opaque op (grad raised, jvp returned zeros).
     if not hasattr(torch, "export"):
         pytest.skip("torch.export is not available")
-    W, A, B = torch.eye(3), torch.ones(1, 3), torch.ones(3, 1)
 
     class M(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            # Buffers, not closed-over tensors: strict export on older torch rejects free tensors.
+            self.register_buffer("W", torch.eye(3))
+            self.register_buffer("A", torch.ones(1, 3))
+            self.register_buffer("B", torch.ones(3, 1))
+
         def forward(self, x):
-            return KU.matmul_lora(x, W, None, A, B, 0.5)
+            return KU.matmul_lora(x, self.W, None, self.A, self.B, 0.5)
 
     x = torch.ones(2, 3)
-    ep = torch.export.export(M(), (x,), strict = False)
+    ep = torch.export.export(M(), (x,), strict = strict)
     assert not any("lora_first_addmm" in str(n.target) for n in ep.graph.nodes)
     m = ep.module()
     _, tangent = torch.func.jvp(m, (x,), (torch.ones_like(x),))
@@ -299,5 +308,64 @@ def test_compiled_lora_forward_and_backward_have_no_graph_break():
     x = X.clone().requires_grad_(True)
     out = torch.compile(f, backend = backend, fullgraph = True)(x)
     out.square().sum().backward()
-    assert any("lora_first_addmm" in s for s in seen), seen
+    assert any("lora_first_addmm" in s for s in seen) == _OP_COMPILED, seen
     assert x.grad is not None and a.grad is not None and b.grad is not None
+
+
+def test_exporting_reads_the_export_flag_not_the_folded_query(monkeypatch):
+    # torch 2.10 / 2.11 Dynamo folds is_exporting() to True in every compiled region, so plain compiles
+    # would lose the op; the flag torch.export sets is exact. Without the flag, assume export.
+    if hasattr(torch.compiler, "_is_exporting_flag"):
+        monkeypatch.setattr(torch.compiler, "_is_exporting_flag", False)
+        assert KU._exporting() is False
+        monkeypatch.setattr(torch.compiler, "_is_exporting_flag", True)
+        assert KU._exporting() is True
+        monkeypatch.delattr(torch.compiler, "_is_exporting_flag")
+    assert KU._exporting() is True
+
+
+_PARTIAL_REGISTRATION_CASE = """
+import torch
+from torch._library.custom_ops import CustomOpDef
+orig = CustomOpDef.register_autograd
+def boom(self, *a, **k):
+    if self._qualname == "unsloth::lora_first_addmm":
+        raise RuntimeError("injected registration failure")
+    return orig(self, *a, **k)
+CustomOpDef.register_autograd = boom
+import unsloth  # noqa: F401
+from unsloth.kernels import utils as KU
+assert hasattr(torch.ops.unsloth, "lora_first_addmm"), "the schema should still be registered"
+print("HAS_OP", KU._HAS_LORA_FIRST_OP)
+"""
+
+
+def test_a_partly_registered_op_is_not_used():
+    # Registration fails after the schema exists (autograd here): the op must stay disabled rather than be
+    # enabled because its name resolves. A fresh interpreter, since this process registered it already.
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    env = dict(
+        os.environ,
+        PYTHONPATH = os.pathsep.join([str(root), os.environ.get("PYTHONPATH", "")]),
+        UNSLOTH_DISABLE_CPU_FALLBACK = "0",
+    )
+    p = subprocess.run(
+        [sys.executable, "-c", _PARTIAL_REGISTRATION_CASE],
+        cwd = root,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
+    assert p.returncode == 0 and "HAS_OP False" in p.stdout, (p.stdout + p.stderr)[-3000:]
+
+
+def test_a_completely_registered_op_is_marked_ready():
+    # The marker a re-executed module reads is set only once every registration step succeeded.
+    assert torch.ops.unsloth.__dict__.get("_lora_first_addmm_ready") is True
+    assert KU._HAS_LORA_FIRST_OP is True

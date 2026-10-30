@@ -1931,10 +1931,13 @@ if _HAS_ADDMM_OP:
         _lora_first_addmm_op.register_autograd(
             _lora_first_addmm_backward, setup_context = _lora_first_addmm_setup
         )
+        # Marked only after the fake and autograd registrations succeeded, so a module re-executed in the
+        # same process can tell a complete op from one whose registration failed partway.
+        torch.ops.unsloth.__dict__["_lora_first_addmm_ready"] = True
         _HAS_LORA_FIRST_OP = True
     except Exception:
         # Already registered (module re-executed) or an older torch.library: the functional path below.
-        _HAS_LORA_FIRST_OP = hasattr(getattr(torch.ops, "unsloth", None), "lora_first_addmm")
+        _HAS_LORA_FIRST_OP = bool(torch.ops.unsloth.__dict__.get("_lora_first_addmm_ready", False))
 
 
 def addmm_(
@@ -1964,8 +1967,17 @@ try:
     from torch.distributed.tensor import DTensor as _LORA_DTENSOR
 except Exception:
     _LORA_DTENSOR = ()
+from torch.utils._python_dispatch import is_traceable_wrapper_subclass as _is_wrapper_subclass
+
 _functorch_active = getattr(torch._C, "_are_functorch_transforms_active", lambda: False)
 _is_dynamo_compiling = getattr(torch.compiler, "is_dynamo_compiling", lambda: False)
+
+
+def _exporting():
+    # torch.export sets this flag (torch 2.7+), strict export included. Read directly rather than through
+    # is_exporting(), which torch 2.10 / 2.11 Dynamo folds to True in every compiled region. Without the
+    # flag (torch 2.6) strict and plain compiles look the same, so assume export.
+    return getattr(torch.compiler, "_is_exporting_flag", True)
 
 
 def _forward_ad_active():
@@ -1996,6 +2008,10 @@ def _lora_fused_ok(W, W_quant, dtype):
     if type(W_quant) is Int4QuantState or _is_packed_state(W_quant):
         return False
     if W_quant is None:
+        # A wrapper subclass (TorchAO NF4Tensor, ...) can report a float dtype over packed storage and only
+        # implement its own mm.
+        if _is_wrapper_subclass(W):
+            return False
         return W.dtype == dtype
     return _quant_state_dtype(W_quant) == dtype
 
@@ -2083,21 +2099,27 @@ def matmul_lora(
             XA = torch_matmul(X, A.t().to(dtype))
         B = B.t().to(dtype)
         if out is not None:
-            # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage).
-            addmm_(out, XA, B, alpha = s, beta = 0)
+            # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
+            # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+            addmm_(out, XA, B, alpha = s, beta = 0)
             out.addmm_(X, W.t())
         else:
             W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
             if not _is_compiling():
                 out = _lora_first_addmm(X, W.t(), XA, B, s)
-            elif _HAS_LORA_FIRST_OP and type(s) in (int, float) and _is_dynamo_compiling():
+            elif (
+                _HAS_LORA_FIRST_OP
+                and type(s) in (int, float)
+                and _is_dynamo_compiling()
+                and not _exporting()
+            ):
                 out = torch.ops.unsloth.lora_first_addmm(X, W.t(), XA, B, s)
             else:
                 # Traced without the op: functional, since an in-place accumulate onto a buffer the region
                 # saves for backward breaks the block compile (the saved tensor aliases a mutated intermediate).
-                # Export also lands here (it traces outside Dynamo), so torch.func still applies to the
-                # exported program, which has no rule for the opaque op.
+                # Export (strict or not) also lands here, so torch.func still applies to the exported
+                # program, which has no rule for the opaque op.
                 out = torch.addmm(XA.new_zeros(1), XA, B, beta = 0, alpha = s)
                 out = torch.addmm(out, X, W.t())
         A = None
