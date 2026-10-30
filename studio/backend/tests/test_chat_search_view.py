@@ -174,3 +174,16 @@ def test_search_view_drops_parts_the_index_skips():
     for value in ("plain", None, {"type": "text", "text": "x"}):
         message["content"] = value
         assert chat_history._search_view_message(message)["content"] == value
+
+
+def test_search_view_leaves_absent_content_to_the_model_default():
+    """Without content the full view serialises [], and the index collapses pasted text only then."""
+    message = {
+        "id": "m",
+        "threadId": "t",
+        "role": "user",
+        "attachments": [{"content": [{"type": "text", "text": PASTED}]}],
+        "createdAt": 1,
+    }
+    view = chat_history.ChatMessage(**chat_history._search_view_message(message))
+    assert view.content == chat_history.ChatMessage(**message).content == []

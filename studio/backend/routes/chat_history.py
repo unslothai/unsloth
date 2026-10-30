@@ -1715,16 +1715,18 @@ def _search_view_message(message: dict) -> dict:
         for key in ("id", "threadId", "parentId", "role", "createdAt")
         if key in message
     }
-    content = message.get("content")
-    if isinstance(content, list):
-        content = [
-            part
-            for part in content
-            if isinstance(part, dict)
-            and isinstance(part.get("type"), str)
-            and part["type"] in _SEARCH_PART_TYPES
-        ]
-    out["content"] = content
+    # Absent stays absent, so ChatMessage fills [] exactly as it does for the full view.
+    if "content" in message:
+        content = message["content"]
+        if isinstance(content, list):
+            content = [
+                part
+                for part in content
+                if isinstance(part, dict)
+                and isinstance(part.get("type"), str)
+                and part["type"] in _SEARCH_PART_TYPES
+            ]
+        out["content"] = content
     attachments = message.get("attachments")
     if isinstance(attachments, list):
         kept = []
