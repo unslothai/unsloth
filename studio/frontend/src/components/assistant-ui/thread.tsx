@@ -328,13 +328,13 @@ import {
   snapshotQueuedChatRunSettings,
   adoptLegacyDraft,
   latestDraft,
+  latestPasteDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,
   composerPasteDraftKey,
   createPastedTextFile,
   pastedTextOf,
-  readPasteDraft,
   writePasteDraft,
   markThreadIncognito,
   markChatThreadDeleted,
@@ -3933,7 +3933,7 @@ const Composer: FC<{
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const draftScope = incognito ? INCOGNITO_DRAFT_SCOPE : referenceThreadId;
   const draftKey = composerDraftKey();
-  // Text that came from Compare or another tab, so saving it back can't overwrite a newer write.
+  // Text that came from Compare, so saving it back can't overwrite a newer write.
   const remoteDraftRef = useRef<string | null>(null);
   const [draftSource] = useState(() => Symbol("chat composer"));
   // Whose pastes are on screen: a temporary chat's never cross into the saved draft, nor back.
@@ -3971,7 +3971,7 @@ const Composer: FC<{
     }
     composer.setText(draft);
   }, [draftScope, draftKey, aui]);
-  // Compare's composer or another tab, so whichever is on screen shows the latest draft.
+  // Compare's composer, so whichever is on screen shows the latest draft.
   useEffect(() => {
     if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
     return subscribeDraft(draftSource, (text) => {
@@ -4028,7 +4028,7 @@ const Composer: FC<{
         const text = pastedTextOf((attachment as { file?: File }).file);
         return text === undefined ? [] : [text];
       });
-    const missing = readPasteDraft(pasteDraftKey).filter((text) => {
+    const missing = latestPasteDraft().filter((text) => {
       const at = shown.indexOf(text);
       if (at === -1) return true;
       shown.splice(at, 1);
