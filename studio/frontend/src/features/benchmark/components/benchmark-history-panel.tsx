@@ -101,6 +101,26 @@ function getDefaultScore(run: BenchmarkRunSummary): number | null {
   return m?.score ?? null;
 }
 
+// f1 / mc2 give partial credit per sample, so counting full-credit samples is not
+// accuracy: show the run's headline score under its own name instead.
+function runHeadline(
+  detail: BenchmarkRunDetail,
+  accuracyLabel: string,
+): { label: string; pct: number | null; detail?: string } {
+  if (detail.partial_credit) {
+    const score = getDefaultScore(detail);
+    return {
+      label: detail.default_metric,
+      pct: score == null ? null : score >= 0 && score <= 1 ? score * 100 : score,
+    };
+  }
+  return {
+    label: accuracyLabel,
+    pct: detail.total_count > 0 ? (detail.correct_count / detail.total_count) * 100 : null,
+    detail: `${detail.correct_count}/${detail.total_count}`,
+  };
+}
+
 function formatDate(iso: string): string {
   try {
     return new Date(iso).toLocaleDateString(undefined, {
@@ -349,10 +369,7 @@ function RunDetailView({
   onBack: () => void;
 }) {
   const t = useT();
-  const accuracy =
-    detail && detail.total_count > 0
-      ? ((detail.correct_count / detail.total_count) * 100).toFixed(1)
-      : null;
+  const headline = detail ? runHeadline(detail, t("benchmark.history.accuracy")) : null;
 
   return (
     <div className="space-y-4">
@@ -373,9 +390,9 @@ function RunDetailView({
         <div className="space-y-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <StatTile
-              label={t("benchmark.history.accuracy")}
-              value={accuracy != null ? `${accuracy}%` : "—"}
-              detail={`${detail.correct_count}/${detail.total_count}`}
+              label={headline?.label ?? ""}
+              value={headline?.pct != null ? `${headline.pct.toFixed(1)}%` : "—"}
+              detail={headline?.detail}
             />
             <StatTile
               label={t("benchmark.history.task")}
@@ -413,11 +430,7 @@ function RunDetailView({
           )}
 
           <Progress
-            value={
-              detail.total_count > 0
-                ? (detail.correct_count / detail.total_count) * 100
-                : 0
-            }
+            value={headline?.pct ?? 0}
             className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]"
           />
 
@@ -447,18 +460,15 @@ function RunDetailView({
 
 function CompareColumn({ detail }: { detail: BenchmarkRunDetail }) {
   const t = useT();
-  const accuracy =
-    detail.total_count > 0
-      ? ((detail.correct_count / detail.total_count) * 100).toFixed(1)
-      : null;
+  const headline = runHeadline(detail, t("benchmark.history.accuracy"));
 
   return (
     <div className={cn(BENCH_CARD, "flex min-w-[calc(640px*var(--ui-space-scale,1))] flex-1 flex-col gap-4 p-4")}>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatTile
-          label={t("benchmark.history.accuracy")}
-          value={accuracy != null ? `${accuracy}%` : "—"}
-          detail={`${detail.correct_count}/${detail.total_count}`}
+          label={headline.label}
+          value={headline.pct != null ? `${headline.pct.toFixed(1)}%` : "—"}
+          detail={headline.detail}
         />
         <StatTile
           label={t("benchmark.history.task")}
@@ -494,11 +504,7 @@ function CompareColumn({ detail }: { detail: BenchmarkRunDetail }) {
       )}
 
       <Progress
-        value={
-          detail.total_count > 0
-            ? (detail.correct_count / detail.total_count) * 100
-            : 0
-        }
+        value={headline.pct ?? 0}
         className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]"
       />
 

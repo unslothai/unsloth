@@ -164,12 +164,15 @@ export interface BenchmarkSampleResult {
   response?: string | null;
   raw_response?: string | null;
   correct: boolean;
+  score?: number | null;
 }
 
 export interface BenchmarkRunDetail extends BenchmarkRunSummary {
   samples: BenchmarkSampleResult[];
   correct_count: number;
   total_count: number;
+  /** Continuous per-sample metric (f1, mc2): correct_count is not accuracy. */
+  partial_credit?: boolean;
 }
 
 export async function listBenchmarkRuns(): Promise<BenchmarkRunListResponse> {

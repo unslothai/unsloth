@@ -148,6 +148,7 @@ class BenchmarkSampleResult(BaseModel):
     response: Optional[str] = Field(None, description = "Model response (filtered)")
     raw_response: Optional[str] = Field(None, description = "Raw model response")
     correct: bool = Field(False, description = "Whether the model answered correctly")
+    score: Optional[float] = Field(None, description = "Primary metric value for this sample")
 
 
 class BenchmarkRunDetail(BaseModel):
@@ -168,6 +169,10 @@ class BenchmarkRunDetail(BaseModel):
     )
     correct_count: int = Field(0, description = "Number of correct samples")
     total_count: int = Field(0, description = "Total number of samples")
+    partial_credit: bool = Field(
+        False,
+        description = "Per-sample scores are continuous (f1, mc2), so correct_count is not accuracy",
+    )
 
 
 class BenchmarkGraphRequest(BaseModel):

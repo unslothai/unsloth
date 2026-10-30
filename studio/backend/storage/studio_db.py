@@ -1047,10 +1047,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             response TEXT,
             raw_response TEXT,
             correct INTEGER NOT NULL DEFAULT 0,
+            score REAL,
             PRIMARY KEY(run_id, doc_id)
         ) WITHOUT ROWID
         """
     )
+    if "score" not in {row[1] for row in conn.execute("PRAGMA table_info(eval_samples)").fetchall()}:
+        conn.execute("ALTER TABLE eval_samples ADD COLUMN score REAL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_eval_runs_created_at ON eval_runs(created_at)")
     conn.execute(
         """
@@ -6145,8 +6148,8 @@ def insert_benchmark_samples(run_id: str, samples: list[dict]) -> None:
     try:
         conn.executemany(
             """
-            INSERT OR IGNORE INTO eval_samples (run_id, doc_id, question, target, response, raw_response, correct)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO eval_samples (run_id, doc_id, question, target, response, raw_response, correct, score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -6157,6 +6160,7 @@ def insert_benchmark_samples(run_id: str, samples: list[dict]) -> None:
                     s.get("response"),
                     s.get("raw_response"),
                     1 if s.get("correct") else 0,
+                    s.get("score"),
                 )
                 for s in samples
             ],
@@ -6220,6 +6224,10 @@ def get_benchmark_run_detail(run_id: str) -> Optional[dict]:
     correct_count = sum(1 for s in samples if s["correct"])
     run["samples"] = samples
     run["correct_count"] = correct_count
+    # A correct count only means accuracy when every sample scored 0 or 1.
+    run["partial_credit"] = any(
+        s.get("score") is not None and 0.0 < s["score"] < 1.0 for s in samples
+    )
     run["total_count"] = len(samples) if samples else run["n_samples"]
     return run
 

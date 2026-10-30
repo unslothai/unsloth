@@ -463,6 +463,7 @@ def test_concurrent_run_requests_get_one_slot(monkeypatch):
     monkeypatch.setattr(benchmark_routes, "get_benchmark_backend", lambda: backend)
     monkeypatch.setattr(benchmark_routes, "_lm_eval_available", True)
     monkeypatch.setattr(benchmark_routes, "_gguf_backend_supported", lambda: True)
+    monkeypatch.setattr(benchmark_routes, "_gguf_model_loaded", lambda: True)
     monkeypatch.setattr(
         benchmark_routes,
         "resolve_model_details",
@@ -582,3 +583,64 @@ def test_a_hub_run_is_named_with_its_loaded_quant(monkeypatch):
     )
     llama.is_loaded = False
     assert label(repo) == repo
+
+
+def test_a_run_without_a_gguf_loaded_is_refused_up_front(monkeypatch):
+    # MLX, safetensors and LoRA loads leave llama-server empty; /v1/tokenize would fail mid-run.
+    import asyncio
+
+    import routes.inference as inference_routes
+
+    backend = _orchestrator(monkeypatch, lambda params: {"results": {}})
+    monkeypatch.setattr(benchmark_routes, "get_benchmark_backend", lambda: backend)
+    monkeypatch.setattr(benchmark_routes, "_lm_eval_available", True)
+    monkeypatch.setattr(benchmark_routes, "_gguf_backend_supported", lambda: True)
+    monkeypatch.setattr(
+        benchmark_routes,
+        "resolve_model_details",
+        lambda *a, **k: ([], {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]}),
+    )
+    monkeypatch.setattr(benchmark_routes, "parse_run_summary", lambda *a, **k: None)
+    llama = SimpleNamespace(is_loaded = False)
+    monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: llama)
+    req = benchmark_routes.BenchmarkRunRequest(
+        checkpoint_path = "mlx-community/Qwen3-4B-4bit", model_source = "local", task = "arc_easy"
+    )
+    http = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    with pytest.raises(benchmark_routes.HTTPException) as exc:
+        asyncio.run(benchmark_routes.run_benchmark(req, http, current_subject = "u"))
+    assert exc.value.status_code == 400 and "GGUF" in exc.value.detail
+    assert not backend.is_active()
+    llama.is_loaded = True
+    asyncio.run(benchmark_routes.run_benchmark(req, http, current_subject = "u"))
+
+
+MC2_RESULTS = {
+    "results": {"truthfulqa_mc2": {"alias": "truthfulqa_mc2", "acc,none": 0.48}},
+    "samples": {
+        "truthfulqa_mc2": [
+            {"doc_id": 0, "doc": {"question": "q0"}, "target": 0, "filtered_resps": [], "acc": 0.73},
+            {"doc_id": 1, "doc": {"question": "q1"}, "target": 0, "filtered_resps": [], "acc": 0.23},
+        ]
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "results,task,partial", [(MC2_RESULTS, "truthfulqa_mc2", True), (ARC_RESULTS, "arc_easy", False)]
+)
+def test_partial_credit_runs_are_not_reported_as_accuracy(monkeypatch, tmp_path, results, task, partial):
+    # truthfulqa_mc2 scores each sample with a probability mass under "acc"; counting
+    # samples at 1.0 would report 0% accuracy for a 48% run.
+    from storage import studio_db
+
+    monkeypatch.setattr(studio_db, "studio_db_path", lambda: tmp_path / "studio.db")
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+    samples = extract_samples(results, task)
+    studio_db.insert_benchmark_run("r", task, "m.gguf", [], len(samples), str(tmp_path))
+    studio_db.insert_benchmark_samples("r", samples)
+    detail = studio_db.get_benchmark_run_detail("r")
+    assert detail["partial_credit"] is partial
+    assert [s["score"] for s in detail["samples"]] == [
+        s["acc_norm" if task == "arc_easy" else "acc"] for s in results["samples"][task]
+    ]

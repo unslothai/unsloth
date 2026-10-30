@@ -199,7 +199,7 @@ export function CompareDialog({
               {loadedDetails.map((detail) => {
                 const primary = pickPrimaryMetric(detail.metrics);
                 const accuracy =
-                  detail.total_count > 0
+                  !detail.partial_credit && detail.total_count > 0
                     ? (
                         (detail.correct_count / detail.total_count) *
                         100
@@ -260,7 +260,7 @@ export function CompareDialog({
                     </div>
 
                     {/* Sample results summary */}
-                    {detail.samples.length > 0 && (
+                    {detail.samples.length > 0 && !detail.partial_credit && (
                       <div className="space-y-1 border-t border-border/40 pt-2">
                         <div className="text-ui-10 uppercase tracking-wider font-medium text-muted-foreground">
                           {t("benchmark.compare.sampleSummary")}

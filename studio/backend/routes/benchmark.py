@@ -327,6 +327,17 @@ def _gguf_backend_supported() -> bool:
     return hasattr(GGUFLM, "_detect_total_slots") and hasattr(GGUFLM, "_post_with_retries")
 
 
+def _gguf_model_loaded() -> bool:
+    """StudioGGUFLM scores through llama-server's /tokenize, so MLX, safetensors and LoRA loads cannot run."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        return bool(get_llama_cpp_backend().is_loaded)
+    except Exception as e:
+        logger.debug("Could not read the llama.cpp backend: %s", e)
+        return False
+
+
 def _run_model_label(model: str) -> str:
     """A Hub repo holds every quant, so name the loaded one: two quants of a repo stay apart."""
     try:
@@ -377,6 +388,11 @@ async def run_benchmark(
             raise HTTPException(
                 status_code = 400,
                 detail = _LM_EVAL_INSTALL_HINT,
+            )
+        if not _gguf_model_loaded():
+            raise HTTPException(
+                status_code = 400,
+                detail = "Evals score GGUF models only. Load a GGUF model and try again.",
             )
 
         # Claimed before the first await: checking here and claiming later on

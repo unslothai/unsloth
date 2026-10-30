@@ -173,27 +173,30 @@ def parse_run_summary(
 # per-sample correctness stays consistent with the headline metric.
 
 
-def _sample_correct(s: dict) -> bool:
-    """Derive per-sample correctness from the task's primary scoring metric.
+def _sample_score(s: dict):
+    """The sample's value for the task's primary scoring metric, or None.
 
     Reuses the same priority ordering used to pick the headline metric in
-    ``parse_run_summary`` so per-sample correctness stays consistent with the
-    score shown in the UI. Every metric in ``_DEFAULT_METRIC_PRIORITY`` is
-    normalized to 0–1, where 1.0 means fully correct (this covers both
-    log_likelihood tasks that score with ``acc``/``acc_norm`` and generation
-    tasks that score with ``exact_match``/``pass@1``/``f1``).
+    ``parse_run_summary`` so per-sample scores stay consistent with the score
+    shown in the UI. Every metric in ``_DEFAULT_METRIC_PRIORITY`` is normalized
+    to 0–1, where 1.0 is full credit.
     """
     for candidate in _DEFAULT_METRIC_PRIORITY:
         val = s.get(candidate)
         if isinstance(val, (int, float)):
-            return val >= 1.0
+            return float(val)
     # Fallback: any exact_match/acc-style key present on the sample.
     for key, val in s.items():
         if key.endswith("_stderr,none") or key.endswith("_stderr"):
             continue
         if key.startswith(("exact_match", "acc", "mc2", "pass")) and isinstance(val, (int, float)):
-            return val >= 1.0
-    return False
+            return float(val)
+    return None
+
+
+def _sample_correct(s: dict) -> bool:
+    score = _sample_score(s)
+    return score is not None and score >= 1.0
 
 
 def _as_text(value):
@@ -237,7 +240,7 @@ def extract_samples(data: dict, task_name: str) -> list[dict]:
         raw_resp = s.get("resps", [])
         raw_response = raw_resp[0][0] if raw_resp and raw_resp[0] else None
 
-        correct = _sample_correct(s)
+        score = _sample_score(s)
 
         samples.append(
             {
@@ -246,7 +249,9 @@ def extract_samples(data: dict, task_name: str) -> list[dict]:
                 "target": _as_text(target),
                 "response": _as_text(response),
                 "raw_response": _as_text(raw_response),
-                "correct": correct,
+                "correct": score is not None and score >= 1.0,
+                # f1, mc2 (truthfulqa_mc2's "acc") and the like give partial credit.
+                "score": score,
             }
         )
     return samples
