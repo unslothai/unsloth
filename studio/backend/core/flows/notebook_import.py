@@ -167,13 +167,18 @@ class _Reader(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
             value = self.value(node.value)
+            # A reassignment replaces the earlier collection, so a stale list cannot outrank it.
+            self.collections.pop(name, None)
             if value is not None:
-                self.consts[node.targets[0].id] = value
-            elif isinstance(node.value, (ast.List, ast.Tuple, ast.Set)):
-                literal = _literal(node.value)
-                if literal is not _MISSING:
-                    self.collections[node.targets[0].id] = literal
+                self.consts[name] = value
+            else:
+                if isinstance(node.value, (ast.List, ast.Tuple, ast.Set)):
+                    literal = _literal(node.value)
+                    if literal is not _MISSING:
+                        self.consts.pop(name, None)
+                        self.collections[name] = literal
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:

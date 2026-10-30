@@ -568,6 +568,26 @@ def test_lora_targets_resolve_a_module_level_constant():
     assert doc is not None and _lora_lines(report) == []
 
 
+def test_lora_targets_follow_the_latest_assignment_of_a_constant():
+    def read(*assignments):
+        nb = _nb(
+            "\n".join(assignments) + "\n"
+            "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
+            "model = FastLanguageModel.get_peft_model(model, r = 16, target_modules = TARGETS)",
+            "dataset = load_dataset('mlabonne/FineTome-100k', split = 'train')",
+        )
+        doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+        assert doc is not None
+        return _lora_lines(report)
+
+    # The seven defaults reassigned to something else must be reported, not masked by the old list.
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = 'all-linear'")) == 1
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = ['q_proj']")) == 1
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = pick_targets()")) == 1
+    # And the reverse: a later default list wins over an earlier string.
+    assert read("TARGETS = 'all-linear'", f"TARGETS = {_SEVEN}") == []
+
+
 def test_embedding_lora_targets_compare_against_embedding_defaults():
     def read(targets):
         nb = _nb(
