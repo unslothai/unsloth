@@ -351,10 +351,8 @@ def _shared_XA(X, As, dtype):
 
 
 def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
-    # LoRA grads of projections reading the same X with the same scale S (As [K, r], Bs [r, N] after .t()):
-    # X is read once for every d_A and once for every A @ X.t(), and dX starts as S * dB @ A.t() so the
-    # base GEMMs accumulate onto it in their epilogue. Returns (d_As, d_Bs, dX); each d_A.t() is a
-    # contiguous [r, K] row block of one buffer. Intermediates are freed as soon as they are consumed.
+    # LoRA grads of projections sharing X and S: X is read once for all d_A and A @ X.t(), and dX starts
+    # as S * dB @ A.t() for the base GEMMs to accumulate onto. Each d_A.t() is a row block of one buffer.
     A_rows = torch.cat([A.t() for A in As], 0)
     AX = A_rows @ X.t()
     d_Bs, start = [], 0
@@ -396,9 +394,8 @@ def _lora_traced_ok(*lora_weights, X = None):
     # recorded decision must match so the backward does not take the shared / fused path either.
     if any(isinstance(t, _LORA_DTENSOR) for t in (X, *lora_weights)):
         return False
-    # Traced, the fused order needs nn.Parameter LoRA weights (static shapes under Dynamo). With plain
-    # tensors of dynamic shape, torch 2.14 can bind the output width from the expanded tangent's zero
-    # stride on a recompile (backward: shape '[-1, 0]' is invalid); the base-then-LoRA order traces fine.
+    # Traced, the fused order needs nn.Parameter LoRA weights: plain tensors of dynamic shape can
+    # recompile with a zero output width on torch 2.14.
     return not _is_compiling() or all(
         t is None or isinstance(t, torch.nn.Parameter) for t in lora_weights
     )

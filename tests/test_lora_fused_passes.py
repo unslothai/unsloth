@@ -303,9 +303,7 @@ def test_a_caller_buffer_that_is_not_the_output_keeps_main_behavior(monkeypatch)
 
 @pytest.mark.parametrize("device", DEVICES)
 def test_fp32_base_under_autocast_keeps_the_base_then_lora_order(device, monkeypatch):
-    # In-place accumulation is not autocast: an fp32 base weight with bf16 activations (fp32 weights under
-    # autocast, as in fast_linear_forward's multi-token path and LoRA_W) takes the old order instead of
-    # failing on the dtype mismatch. (main's LoRA_QKV / LoRA_MLP backward already needs matching dtypes.)
+    # addmm_ is not autocast: an fp32 base weight with bf16 activations takes the old order.
     _skip_without_native_bf16(device)
     half = torch.bfloat16
     g = torch.Generator(device = "cpu").manual_seed(0)
@@ -560,10 +558,8 @@ print("OK")
 
 @pytest.mark.parametrize("param", [False, True])
 def test_dynamic_compile_with_a_rank_equal_to_the_first_length(param):
-    # torch 2.14: plain-tensor LoRA weights of dynamic shape, a rank equal to the first traced sequence
-    # length (3), then a recompile made the fused forward's backward reshape dQ to width 0. Plain tensors
-    # keep the base-then-LoRA order when traced; nn.Parameter weights (static) keep the fused order.
-    # A fresh interpreter: the failure depends on Dynamo state a pytest session does not reproduce.
+    # torch 2.14: dynamic-shape plain-tensor LoRA weights once recompiled to a width-0 dQ; they keep the
+    # base-then-LoRA order when traced. Fresh interpreter: depends on Dynamo state.
     import os
     import subprocess
     import sys

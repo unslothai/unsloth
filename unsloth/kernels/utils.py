@@ -1891,10 +1891,8 @@ if _HAS_ADDMM_OP:
     ) -> None:
         out.addmm_(A, B, alpha = alpha, beta = beta)
 
-    # Traced fused LoRA order as one opaque op: the rank-r term goes into a fresh buffer and the base GEMM
-    # accumulates onto it in place. As two functional addmms, Inductor first copies the rank-r term into a
-    # new output for the base GEMM to read. Returns a new tensor, so a saved output aliases nothing.
-    # A module re-executed in the same process reuses a completed registration and never re-registers over it.
+    # Traced fused LoRA order as one opaque op, so Inductor does not copy the rank-r term into a new
+    # output before the base GEMM. Returns a new tensor, so a saved output aliases nothing.
     if torch.ops.unsloth.__dict__.get("_lora_first_addmm_ready", False):
         _HAS_LORA_FIRST_OP = True
     else:
@@ -1935,8 +1933,7 @@ if _HAS_ADDMM_OP:
             _lora_first_addmm_op.register_autograd(
                 _lora_first_addmm_backward, setup_context = _lora_first_addmm_setup
             )
-            # Marked only after the fake and autograd registrations succeeded, so a module re-executed in the
-            # same process can tell a complete op from one whose registration failed partway.
+            # Marked only after every registration succeeded, so a re-executed module can trust it.
             torch.ops.unsloth.__dict__["_lora_first_addmm_ready"] = True
             _HAS_LORA_FIRST_OP = True
         except Exception:
@@ -1978,9 +1975,8 @@ _is_dynamo_compiling = getattr(torch.compiler, "is_dynamo_compiling", lambda: Fa
 
 
 def _exporting():
-    # torch.export sets this flag (torch 2.7+), strict export included. Read directly rather than through
-    # is_exporting(), which torch 2.10 / 2.11 Dynamo folds to True in every compiled region. Without the
-    # flag (torch 2.6) strict and plain compiles look the same, so assume export.
+    # Set by torch.export (2.7+), strict included; is_exporting() folds to True under 2.10 / 2.11 Dynamo.
+    # Without the flag (torch 2.6) strict and plain compiles look the same, so assume export.
     return getattr(torch.compiler, "_is_exporting_flag", True)
 
 
@@ -1990,11 +1986,8 @@ def _forward_ad_active():
 
 
 def _lora_fused_ok(W, W_quant, dtype):
-    # One rule for every forward and backward call site. fp16 keeps the old order: a rank-r term or a
-    # summed LoRA dX rounded on its own can overflow before the base term cancels it. FP8, INT4 (either
-    # orientation) and packed weights have their own GEMMs. The base GEMM accumulates in place, which
-    # autocast does not cast, so the weight must dequantize to `dtype` (fast_dequantize returns a 4-bit
-    # state's own dtype, not the one asked for).
+    # fp16 keeps the old order: a rank-r term rounded on its own can overflow. FP8, INT4 and packed
+    # weights have their own GEMMs. addmm_ is not autocast, so the weight must dequantize to `dtype`.
     if not LORA_FUSED_PASSES or dtype not in (torch.bfloat16, torch.float32):
         return False
     if isinstance(W, Float8Tensor) or W.dtype == torch.float8_e4m3fn:
@@ -2002,9 +1995,7 @@ def _lora_fused_ok(W, W_quant, dtype):
     # A DTensor's placements would be lost in the plain accumulator.
     if isinstance(W, _LORA_DTENSOR):
         return False
-    # A sparse base cannot be the dense operand of the in-place accumulate. Dynamo bans reading `layout` (a
-    # graph break in the compiled backward), so traced code checks `is_sparse` / `is_sparse_csr`, which also
-    # cover export; eager checks every layout.
+    # A sparse base cannot be the dense operand of addmm_. Traced code avoids `layout` (Dynamo bans it).
     if W.is_sparse or W.is_sparse_csr:
         return False
     if not _is_compiling() and W.layout != torch.strided:
@@ -2088,8 +2079,7 @@ def matmul_lora(
         # A DTensor operand's placements would be lost in the plain accumulator (W is checked below).
         and not any(isinstance(t, _LORA_DTENSOR) for t in (X, A, B, XA))
         and _lora_fused_ok(W, W_quant, dtype)
-        # A caller's buffer is written before the base GEMM, so it must already be the output and must
-        # not share storage with an operand the base GEMM still reads.
+        # A caller's buffer must already be the output and must not share storage with a base operand.
         and (
             out is None
             or (
@@ -2120,10 +2110,8 @@ def matmul_lora(
             ):
                 out = torch.ops.unsloth.lora_first_addmm(X, W.t(), XA, B, s)
             else:
-                # Traced without the op: functional, since an in-place accumulate onto a buffer the region
-                # saves for backward breaks the block compile (the saved tensor aliases a mutated intermediate).
-                # Export (strict or not) also lands here, so torch.func still applies to the exported
-                # program, which has no rule for the opaque op.
+                # Traced without the op: functional, since an in-place accumulate onto a saved buffer breaks the
+                # block compile. Export lands here too, so torch.func works on the exported program.
                 out = torch.addmm(XA.new_zeros(1), XA, B, beta = 0, alpha = s)
                 out = torch.addmm(out, X, W.t())
         A = None
