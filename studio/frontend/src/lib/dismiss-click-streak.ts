@@ -48,23 +48,60 @@ function caretRangeAt(x: number, y: number): Range | null {
   return range;
 }
 
-function selectAt(event: MouseEvent, target: Element | null): void {
+type Extend = (x: number, y: number) => void;
+
+function unitRangeAt(
+  x: number,
+  y: number,
+  detail: number,
+  block: Element,
+): Range | null {
+  const range = caretRangeAt(x, y);
+  if (!range) return null;
+  const unit = shiftedSelection(detail);
+  if (unit === "word") expandToWord(range);
+  if (unit === "paragraph") expandToBlock(range, block);
+  return range;
+}
+
+/** Selects the press's unit and returns how a drag extends it, unit by unit like a native drag. */
+function selectAt(event: MouseEvent, target: Element | null): Extend | null {
   const selection = window.getSelection();
-  if (!selection) return;
-  const range = caretRangeAt(event.clientX, event.clientY);
+  if (!selection) return null;
   selection.removeAllRanges();
+  const anchor =
+    target && unitRangeAt(event.clientX, event.clientY, event.detail, target);
   // Native selection never starts in unselectable text or jumps to text outside the pressed element.
   if (
-    !range ||
-    !target?.contains(range.startContainer) ||
+    !anchor ||
+    !target?.contains(anchor.startContainer) ||
     getComputedStyle(target).userSelect === "none"
   ) {
-    return;
+    return null;
   }
-  const unit = shiftedSelection(event.detail);
-  if (unit === "word") expandToWord(range);
-  if (unit === "paragraph") expandToBlock(range, target);
-  selection.addRange(range);
+  selection.addRange(anchor);
+  return (x, y) => {
+    const focus = unitRangeAt(x, y, event.detail, document.body);
+    if (!focus) return;
+    if (focus.compareBoundaryPoints(Range.START_TO_START, anchor) < 0) {
+      selection.setBaseAndExtent(
+        anchor.endContainer,
+        anchor.endOffset,
+        focus.startContainer,
+        focus.startOffset,
+      );
+    } else if (focus.compareBoundaryPoints(Range.END_TO_END, anchor) > 0) {
+      selection.setBaseAndExtent(
+        anchor.startContainer,
+        anchor.startOffset,
+        focus.endContainer,
+        focus.endOffset,
+      );
+    } else {
+      selection.removeAllRanges();
+      selection.addRange(anchor);
+    }
+  };
 }
 
 /** `Selection.modify` word steps differ by platform (macOS stops at a word's end); segment instead. */
@@ -104,10 +141,14 @@ function expandToBlock(range: Range, target: Element): void {
 
 export function installDismissClickStreakGuard(
   doc: Doc = document,
-  select: (event: MouseEvent, target: Element | null) => void = selectAt,
+  select: (
+    event: MouseEvent,
+    target: Element | null,
+  ) => Extend | null = selectAt,
 ): () => void {
   let pressDismisses = false;
   let streakFromDismiss = false;
+  let extend: Extend | null = null;
 
   const onPointerDown = (event: PointerEvent): void => {
     // Capture: runs before Radix closes the menu on this press.
@@ -120,24 +161,35 @@ export function installDismissClickStreakGuard(
 
   const onMouseDown = (event: MouseEvent): void => {
     if (event.button !== 0) return;
+    extend = null;
     const target = asElement(event.target);
     if (event.detail <= 1) {
       streakFromDismiss = pressDismisses;
     } else if (streakFromDismiss && !target?.closest(TEXT_ENTRY)) {
       event.preventDefault();
-      select(event, target);
+      extend = select(event, target);
     }
     pressDismisses = false;
   };
 
-  doc.addEventListener("pointerdown", onPointerDown as EventListener, true);
-  doc.addEventListener("mousedown", onMouseDown as EventListener, true);
+  const onMouseMove = (event: MouseEvent): void => {
+    if (!extend) return;
+    if (event.buttons & 1) extend(event.clientX, event.clientY);
+    else extend = null;
+  };
+
+  const onMouseUp = (): void => {
+    extend = null;
+  };
+
+  const listeners: [string, EventListener][] = [
+    ["pointerdown", onPointerDown as EventListener],
+    ["mousedown", onMouseDown as EventListener],
+    ["mousemove", onMouseMove as EventListener],
+    ["mouseup", onMouseUp as EventListener],
+  ];
+  for (const [type, fn] of listeners) doc.addEventListener(type, fn, true);
   return () => {
-    doc.removeEventListener(
-      "pointerdown",
-      onPointerDown as EventListener,
-      true,
-    );
-    doc.removeEventListener("mousedown", onMouseDown as EventListener, true);
+    for (const [type, fn] of listeners) doc.removeEventListener(type, fn, true);
   };
 }

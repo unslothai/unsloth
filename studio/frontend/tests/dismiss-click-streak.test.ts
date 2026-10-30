@@ -34,8 +34,15 @@ function fakeDoc() {
       inside.some((s) => selector.includes(s)) ? {} : null,
   });
   const selected: number[] = [];
+  const extended: [number, number][] = [];
   const select = (event: MouseEvent) => {
     selected.push(event.detail);
+    return (x: number, y: number) => {
+      extended.push([x, y]);
+    };
+  };
+  const fire = (type: string, init: Record<string, unknown>) => {
+    for (const fn of listeners.get(type) ?? []) fn(init as unknown as Event);
   };
   const press = (detail: number, target = el(), button = 0): boolean => {
     let prevented = false;
@@ -58,6 +65,8 @@ function fakeDoc() {
     doc,
     select,
     selected,
+    extended,
+    fire,
     press,
     el,
     openMenu: () => {
@@ -90,6 +99,31 @@ test("the word under the pointer is found the same way on every platform", () =>
   assert.deepEqual(wordBounds(text, 13), [11, 16]);
   assert.deepEqual(wordBounds(text, text.length), [17, 22]);
   assert.deepEqual(wordBounds("", 0), [0, 0]);
+});
+
+test("a drag on a shifted press extends the selection until the button is released", () => {
+  const f = fakeDoc();
+  installDismissClickStreakGuard(f.doc, f.select);
+  f.openMenu();
+  f.press(1);
+  f.press(2);
+  f.fire("mousemove", { buttons: 1, clientX: 40, clientY: 10 });
+  f.fire("mousemove", { buttons: 1, clientX: 90, clientY: 30 });
+  f.fire("mouseup", { button: 0 });
+  f.fire("mousemove", { buttons: 0, clientX: 120, clientY: 30 });
+  assert.deepEqual(f.extended, [
+    [40, 10],
+    [90, 30],
+  ]);
+});
+
+test("pointer moves without a shifted press extend nothing", () => {
+  const f = fakeDoc();
+  installDismissClickStreakGuard(f.doc, f.select);
+  f.press(1);
+  f.press(2);
+  f.fire("mousemove", { buttons: 1, clientX: 40, clientY: 10 });
+  assert.deepEqual(f.extended, []);
 });
 
 test("double and triple clicks select as usual when no menu was dismissed", () => {
@@ -128,7 +162,7 @@ test("presses inside the menu and in text fields keep native selection", () => {
 test("the guard removes its listeners and is installed once for the app", () => {
   const f = fakeDoc();
   const stop = installDismissClickStreakGuard(f.doc, f.select);
-  assert.equal(f.count(), 2);
+  assert.equal(f.count(), 4);
   stop();
   assert.equal(f.count(), 0);
   assert.match(readSrc("app/provider.tsx"), INSTALL_ONCE);
