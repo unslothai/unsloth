@@ -52,8 +52,11 @@ test("the pane resizes by drag and keyboard and remembers its height", () => {
 });
 
 test("the pane repaints from the held text, so a poll cannot drop a selection", () => {
-  assert.match(tab, /if \(!holding && shownText !== text\) setShownText\(text\);/);
+  assert.match(tab, /if \(!holding && !pointerDownRef\.current && shownText !== text\)\s*setShownText\(text\);/);
   assert.match(pane, /\{shownText \|\|/);
   assert.doesNotMatch(pane, /\{text \|\|/);
   assert.match(tab, /document\.addEventListener\("selectionchange", update\)/);
+  assert.match(tab, /if \(pointerDownRef\.current && !held\) return;/);
+  // A render between mousedown and the first selected character stops Chromium extending the drag.
+  assert.doesNotMatch(pane, /onPointerDown=\{\(\) => \{[^}]*setHolding/);
 });

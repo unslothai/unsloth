@@ -424,21 +424,30 @@ export function DebuggingTab() {
   const text = useMemo(() => visibleLines.join("\n"), [visibleLines]);
 
   // Repainting the pane drops any selection in it, so hold the shown text while the user selects.
+  // Nothing re-renders between mousedown and the first selected character: a render there
+  // (even the badge) stops Chromium extending the drag.
   const [holding, setHolding] = useState(false);
   const pointerDownRef = useRef(false);
+  const textRef = useRef(text);
+  textRef.current = text;
   const [shownText, setShownText] = useState(text);
-  if (!holding && shownText !== text) setShownText(text);
+  if (!holding && !pointerDownRef.current && shownText !== text)
+    setShownText(text);
 
   useEffect(() => {
-    const update = () =>
-      setHolding(
-        pointerDownRef.current ||
-          selectionInside(document.getSelection(), paneRef.current),
-      );
+    const inside = () =>
+      selectionInside(document.getSelection(), paneRef.current);
+    const update = () => {
+      const held = inside();
+      if (pointerDownRef.current && !held) return;
+      setHolding(held);
+    };
     const release = () => {
       if (!pointerDownRef.current) return;
       pointerDownRef.current = false;
-      update();
+      const held = inside();
+      setHolding(held);
+      if (!held) setShownText(textRef.current);
     };
     document.addEventListener("selectionchange", update);
     window.addEventListener("pointerup", release);
@@ -823,7 +832,6 @@ export function DebuggingTab() {
               onScroll={onScroll}
               onPointerDown={() => {
                 pointerDownRef.current = true;
-                setHolding(true);
               }}
               data-testid="debug-log-pane"
               className={cn(
