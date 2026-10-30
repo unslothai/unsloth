@@ -75,7 +75,7 @@ function NumberField({
     <Input
       type="number"
       inputMode={integer ? "numeric" : "decimal"}
-      className="h-8 w-[calc(110px*var(--ui-space-scale,1))] text-right text-xs"
+      className="w-28 font-mono"
       value={draft ?? value ?? ""}
       min={min}
       max={max}
@@ -126,12 +126,12 @@ export function RlParamsSection({
     <div
       className={
         inTab
-          ? "flex flex-col gap-1"
-          : "flex flex-col gap-1 border-t border-border/70 pt-4"
+          ? "flex flex-col gap-3"
+          : "flex flex-col gap-3 border-t border-border/70 pt-5"
       }
     >
       {!inTab && (
-        <p className="mb-1 flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
+        <p className="flex items-center gap-1.5 text-xs font-medium text-foreground">
           {t("rl.params.title", { objective: objective.toUpperCase() })}
           <NewBadge />
         </p>
@@ -146,10 +146,7 @@ export function RlParamsSection({
               value={s.grpoVariant}
               onValueChange={(v) => s.setGrpoVariant(v as GrpoVariant)}
             >
-              <SelectTrigger
-                size="sm"
-                className="w-[calc(170px*var(--ui-space-scale,1))]"
-              >
+              <SelectTrigger className="w-48">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
