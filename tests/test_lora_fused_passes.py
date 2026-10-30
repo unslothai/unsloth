@@ -654,3 +654,47 @@ def test_a_3d_precomputed_xa_is_flattened_with_x(on, monkeypatch):
     got = kernel_utils.matmul_lora(X, W, None, A, B, 2.0, XA = X @ A.t())
     assert got.shape == ref.shape
     torch.testing.assert_close(got, ref, rtol = 1e-5, atol = 1e-5)
+
+
+def test_sparse_base_weight_keeps_the_base_then_lora_order_under_export(monkeypatch):
+    # torch.export traces with is_compiling() True: the layout check must still run there.
+    _set(monkeypatch, True)
+    if not hasattr(torch.compiler, "is_exporting") or not hasattr(torch, "export"):
+        pytest.skip("torch.export / torch.compiler.is_exporting is not available")
+
+    class M(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.W = torch.eye(2).to_sparse_coo()
+            self.A, self.B = torch.ones(1, 2), torch.ones(2, 1)
+
+        def forward(self, x):
+            return kernel_utils.matmul_lora(x, self.W, None, self.A, self.B, 1.0)
+
+    x = torch.ones(1, 2)
+    ep = torch.export.export(M(), (x,))
+    torch.testing.assert_close(ep.module()(x), torch.full((1, 2), 3.0))
+
+
+def test_dtensor_base_weight_keeps_the_base_then_lora_order(monkeypatch):
+    # A DTensor carries placements the plain accumulator would drop: keep main's order.
+    _set(monkeypatch, True)
+    if not isinstance(kernel_utils._LORA_DTENSOR, type):
+        pytest.skip("torch.distributed.tensor is not available")
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor import Replicate, distribute_tensor
+
+    if not dist.is_initialized():
+        import os
+        import socket
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+        os.environ["MASTER_PORT"] = str(port)
+        dist.init_process_group("gloo", rank = 0, world_size = 1)
+    mesh = init_device_mesh("cpu", (1,))
+    W = distribute_tensor(torch.randn(4, 3), mesh, [Replicate()])
+    assert not kernel_utils._lora_fused_ok(W, None, torch.float32)

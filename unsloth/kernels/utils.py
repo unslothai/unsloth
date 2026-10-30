@@ -1908,9 +1908,16 @@ if _HAS_ADDMM_OP:
 
         # out = alpha * XA @ Bt + X @ Wt, so a compiled differentiable caller gets the addmm gradients.
         def _lora_first_addmm_setup(ctx, inputs, output):
+            # Save only what the requested gradients read (a frozen inference-mode base cannot be saved).
             X, Wt, XA, Bt, alpha = inputs
             ctx.alpha = alpha
-            ctx.save_for_backward(X, Wt, XA, Bt)
+            need = ctx.needs_input_grad
+            ctx.save_for_backward(
+                X if need[1] else None,
+                Wt if need[0] else None,
+                XA if need[3] else None,
+                Bt if need[2] else None,
+            )
 
         def _lora_first_addmm_backward(ctx, grad):
             X, Wt, XA, Bt = ctx.saved_tensors
@@ -1953,6 +1960,13 @@ def addmm_(
 # UNSLOTH_LORA_FUSED_PASSES=0 restores the base-then-LoRA order everywhere.
 LORA_FUSED_PASSES = os.environ.get("UNSLOTH_LORA_FUSED_PASSES", "1") != "0"
 
+try:
+    from torch.distributed.tensor import DTensor as _LORA_DTENSOR
+except Exception:
+    _LORA_DTENSOR = ()
+_is_exporting = getattr(torch.compiler, "is_exporting", lambda: False)
+_functorch_active = getattr(torch._C, "_are_functorch_transforms_active", lambda: False)
+
 
 def _lora_fused_ok(W, W_quant, dtype):
     # One rule for every forward and backward call site. fp16 keeps the old order: a rank-r term or a
@@ -1964,9 +1978,12 @@ def _lora_fused_ok(W, W_quant, dtype):
         return False
     if isinstance(W, Float8Tensor) or W.dtype == torch.float8_e4m3fn:
         return False
-    # A sparse base cannot be the dense operand of the in-place accumulate (eager: a traced backward
-    # bans reading `layout`).
-    if not _is_compiling() and W.layout != torch.strided:
+    # A DTensor's placements would be lost in the plain accumulator.
+    if isinstance(W, _LORA_DTENSOR):
+        return False
+    # A sparse base cannot be the dense operand of the in-place accumulate (eager and export: a compiled
+    # backward bans reading `layout`).
+    if (not _is_compiling() or _is_exporting()) and W.layout != torch.strided:
         return False
     if type(W_quant) is Int4QuantState or _is_packed_state(W_quant):
         return False
@@ -2037,6 +2054,9 @@ def matmul_lora(
     elif (
         A is not None
         and fused
+        # Compiled inside torch.func transforms: the op has no forward-mode or batching rule, and a
+        # traced beta=0 addmm under jvp crashes, so keep the base-then-LoRA order there.
+        and not (_is_compiling() and _functorch_active())
         and _lora_fused_ok(W, W_quant, dtype)
         # A caller's buffer is written before the base GEMM, so it must already be the output and must
         # not share storage with an operand the base GEMM still reads.

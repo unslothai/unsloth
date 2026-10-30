@@ -170,3 +170,58 @@ def test_eager_helper_under_vmap(mapped):
         got = torch.vmap(lambda w: KU.matmul_lora(X, w, None, A, B, 0.5))(Ws)
         exp = torch.stack([ref(X, w) for w in Ws])
     torch.testing.assert_close(got, exp, rtol = 1e-5, atol = 1e-5)
+
+
+def _transform_cases():
+    def f(x, W, A, B):
+        return KU.matmul_lora(x, W, None, A, B, 0.5)
+
+    def jvp(X, W, A, B):
+        return torch.func.jvp(lambda x: f(x, W, A, B), (X,), (torch.ones_like(X),))[1]
+
+    def grad_(X, W, A, B):
+        return torch.func.grad(lambda x: f(x, W, A, B).float().square().sum())(X)
+
+    def jacrev(X, W, A, B):
+        return torch.func.jacrev(lambda x: f(x, W, A, B).float().sum(0))(X)
+
+    def jacfwd(X, W, A, B):
+        return torch.func.jacfwd(lambda x: f(x, W, A, B).float().sum(0))(X)
+
+    def vmap_(X, W, A, B):
+        return torch.func.vmap(lambda x: f(x, W, A, B))(torch.stack([X, X * 2]))
+
+    return {"jvp": jvp, "grad": grad_, "jacrev": jacrev, "jacfwd": jacfwd, "vmap": vmap_}
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("name", ["jvp", "grad", "jacrev", "jacfwd", "vmap"])
+def test_compiled_function_transforms_match_eager(name, dtype, backend):
+    # Compiled inside torch.func transforms, matmul_lora keeps the base-then-LoRA order: the op has no
+    # forward-mode or batching rule, so compiled jvp / jacfwd returned zeros or failed to trace.
+    import torch._dynamo
+
+    X, W, A, B = _mk(M = 8, K = 16, N = 12, r = 4, dtype = dtype)
+    fn = _transform_cases()[name]
+    eager = fn(X, W, A, B)
+    assert eager.abs().max() > 0
+    torch._dynamo.reset()
+    got = torch.compile(fn, backend = backend, fullgraph = True)(X, W, A, B)
+    tol = dict(rtol = 1e-5, atol = 1e-5) if dtype == torch.float32 else dict(rtol = 2e-2, atol = 2e-2)
+    torch.testing.assert_close(got, eager, **tol)
+
+
+def test_custom_op_saves_only_what_the_requested_grads_need():
+    # Frozen X and a base created under inference_mode (cannot be saved for backward), trainable adapters.
+    X, W, A, B = _mk(dtype = torch.float32)
+    with torch.inference_mode():
+        Wi = W.clone()
+    a, b = A.clone().requires_grad_(True), B.clone().requires_grad_(True)
+    XA = X @ a.t()
+    out = torch.ops.unsloth.lora_first_addmm(X, Wi.t(), XA, b.t(), 0.5)
+    out.square().sum().backward()
+    a2, b2 = A.clone().requires_grad_(True), B.clone().requires_grad_(True)
+    (X @ W.t() + 0.5 * (X @ a2.t()) @ b2.t()).square().sum().backward()
+    torch.testing.assert_close(a.grad, a2.grad, rtol = 1e-5, atol = 1e-5)
+    torch.testing.assert_close(b.grad, b2.grad, rtol = 1e-5, atol = 1e-5)
