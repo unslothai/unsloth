@@ -28,12 +28,27 @@ def test_tiled_mlp_trains_under_the_default_block_compile(spelling, monkeypatch,
     from unsloth import FastLanguageModel
 
     model, _ = FastLanguageModel.from_pretrained(
-        "trl-internal-testing/tiny-Qwen3ForCausalLM", max_seq_length = 512, load_in_4bit = False,
-        dtype = torch.bfloat16, **kwargs,
+        "trl-internal-testing/tiny-Qwen3ForCausalLM",
+        max_seq_length = 512,
+        load_in_4bit = False,
+        dtype = torch.bfloat16,
+        **kwargs,
     )
     model = FastLanguageModel.get_peft_model(
-        model, r = 8, lora_alpha = 16, lora_dropout = 0.0, random_state = 0,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        model,
+        r = 8,
+        lora_alpha = 16,
+        lora_dropout = 0.0,
+        random_state = 0,
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
         use_gradient_checkpointing = "unsloth",
     )
     try:
