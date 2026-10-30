@@ -2163,11 +2163,13 @@ export function reconcilePersistedGpuIds(
   ids: number[] | null,
   savedIndexKind?: GpuIndexKind | null,
   forDiffusion = false,
+  forGguf = false,
 ): number[] | null {
   return reconcilePersistedGpuSelection(
     ids,
     savedIndexKind,
     forDiffusion,
+    forGguf,
   ).ids;
 }
 
@@ -2175,8 +2177,9 @@ export function reconcilePersistedGpuSelection(
   ids: number[] | null,
   savedIndexKind?: GpuIndexKind | null,
   forDiffusion = false,
+  forGguf = false,
 ): ReconciledGpuSelection {
-  return reconcileCachedGpuSelection(ids, savedIndexKind, forDiffusion);
+  return reconcileCachedGpuSelection(ids, savedIndexKind, forDiffusion, forGguf);
 }
 
 export function requestedGpuIdsFromResponse(resp: {

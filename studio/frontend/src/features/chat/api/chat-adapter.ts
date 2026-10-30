@@ -3582,7 +3582,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // some hosts, so classify the GGUF first in that case too.
     const automaticPinsDefault =
       config.selectedGpuIds == null &&
-      reconcilePersistedGpuIds(null, undefined, false) != null;
+      reconcilePersistedGpuIds(null, undefined, false, true) != null;
     if (
       candidate.kind === "gguf" &&
       (config.selectedGpuIds != null ||
@@ -3657,6 +3657,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       config.selectedGpuIds ?? null,
       config.selectedGpuIndexKind,
       isDiffusion,
+      candidate.kind === "gguf",
     );
     // Reconciled against the raw pick: a ratio only applies to the GPU set it was saved with.
     const effectiveTensorSplit = reconcileTensorSplit(
@@ -4115,6 +4116,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       const defaultGpuIds = reconcilePersistedGpuIds(
         rt.selectedGpuIds,
         rt.selectedGpuIndexKind,
+        false,
+        true,
       );
       const request: LoadModelRequest = {
         model_path: DEFAULT_CHAT_MODEL_REPO,

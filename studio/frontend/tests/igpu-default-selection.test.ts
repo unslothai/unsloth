@@ -159,7 +159,7 @@ const hooks = loadWithStubs<typeof GpuHooks>(
 
 test("Automatic gets its default pick only once devices are cached", () => {
   snapshot = null;
-  assert.deepEqual(hooks.reconcileCachedGpuSelection(null), {
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null, null, false, true), {
     ids: null,
     indexKind: null,
   });
@@ -178,7 +178,7 @@ test("Automatic gets its default pick only once devices are cached", () => {
     gpu,
     inference_gpu: gpu,
   };
-  assert.deepEqual(hooks.reconcileCachedGpuSelection(null), {
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null, null, false, true), {
     ids: [0, 1],
     indexKind: "physical",
   });
@@ -230,8 +230,35 @@ test("a background load with no saved pick still reconciles as Automatic", () =>
   );
   assert.match(
     source,
-    /const effectiveGpuIds = reconcilePersistedGpuIds\(\s*config\.selectedGpuIds \?\? null,/,
+    /const effectiveGpuIds = reconcilePersistedGpuIds\(\s*config\.selectedGpuIds \?\? null,\s*config\.selectedGpuIndexKind,\s*isDiffusion,\s*candidate\.kind === "gguf",/,
   );
+});
+test("only a GGUF load gets the default pick; other engines keep their own device", () => {
+  const gpu = {
+    available: true,
+    backend: "rocm",
+    devices: [
+      { index: 0, index_kind: "physical", ...R9700 },
+      { index: 1, index_kind: "physical", ...R9700 },
+      { index: 2, index_kind: "physical", ...IGPU_SHARED },
+    ],
+  };
+  snapshot = { status: "ready", device_backend: "rocm", gpu, inference_gpu: gpu };
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null, null, false, true), {
+    ids: [0, 1],
+    indexKind: "physical",
+  });
+  // A vLLM/SGLang or transformers load on Automatic would otherwise go tensor-parallel over both cards.
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null), { ids: null, indexKind: null });
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null, null, true, true), {
+    ids: null,
+    indexKind: null,
+  });
+  // A manual pick is kept whatever the model kind.
+  assert.deepEqual(hooks.reconcileCachedGpuSelection([1], "physical"), {
+    ids: [1],
+    indexKind: "physical",
+  });
 });
 
 test("Automatic classifies a GGUF before pinning its default pick", () => {
@@ -246,6 +273,6 @@ test("Automatic classifies a GGUF before pinning its default pick", () => {
   );
   assert.match(
     source,
-    /automaticPinsDefault =\s*config\.selectedGpuIds == null &&\s*reconcilePersistedGpuIds\(null, undefined, false\) != null;/,
+    /automaticPinsDefault =\s*config\.selectedGpuIds == null &&\s*reconcilePersistedGpuIds\(null, undefined, false, true\) != null;/,
   );
 });

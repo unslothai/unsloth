@@ -487,6 +487,7 @@ export function reconcileCachedGpuSelection(
   ids: number[] | null,
   savedIndexKind?: GpuIndexKind | null,
   forDiffusion = false,
+  forGguf = false,
 ): ReconciledGpuSelection {
   const context = cachedPinnableGpuContext(forDiffusion);
   return reconcileGpuSelection(
@@ -494,7 +495,8 @@ export function reconcileCachedGpuSelection(
     savedIndexKind,
     context.indexKind,
     context.ids,
-    // An untouched picker shows these ticked, so that is what /load sends. Diffusion takes one card.
-    forDiffusion ? null : defaultGpuIds(context.devices),
+    // The GGUF picker shows these ticked when untouched, so that is what its /load sends. Diffusion takes
+    // one card, and other engines keep their own default device.
+    forGguf && !forDiffusion ? defaultGpuIds(context.devices) : null,
   );
 }

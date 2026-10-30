@@ -1594,6 +1594,7 @@ export function useChatModelRuntime() {
                 ids,
                 savedIndexKind,
                 status.is_diffusion ?? false,
+                status.is_gguf === true,
               ),
             defaultEngineGpuIds: defaultEngineGpuIds(),
             normalizeSpeculative: normalizeSpeculativeType,
@@ -1647,6 +1648,7 @@ export function useChatModelRuntime() {
                 pendingConfig.selectedGpuIds,
                 pendingConfig.selectedGpuIndexKind,
                 confirmedStatus.is_diffusion ?? false,
+                confirmedStatus.is_gguf === true,
               );
               const hydrated = useChatRuntimeStore.getState();
               if (!sameGpuSelection(hydrated.selectedGpuIds, picked)) {
@@ -2120,6 +2122,7 @@ export function useChatModelRuntime() {
                   pendingLoadConfig.selectedGpuIds,
                   pendingLoadConfig.selectedGpuIndexKind,
                   targetIsDiffusion,
+                  isGguf,
                 )
               : null;
           let loadSelectedGpuIds =
@@ -2129,6 +2132,7 @@ export function useChatModelRuntime() {
                   stateBeforeUnload.selectedGpuIds,
                   stateBeforeUnload.selectedGpuIndexKind,
                   targetIsDiffusion,
+                  isGguf,
                 );
           loadSplitRatio = reconcileTensorSplit(
             loadSplitRatio,
