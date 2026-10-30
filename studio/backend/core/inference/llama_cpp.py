@@ -5701,6 +5701,26 @@ def requested_video_fps(
     return rate if rate > 0 else None
 
 
+def _video_tools_search(
+    cmd: Sequence[str],
+    env: Optional[Mapping[str, str]] = None,
+    cwd: Optional[str] = None,
+    supports_ffmpeg_dir: bool = True,
+) -> str:
+    """Where the child looks for ffmpeg and ffprobe: a folder, or a PATH-style list. Raises on a bad flag."""
+    source = os.environ if env is None else env
+    bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}))
+    # A build without --video-ffmpeg-dir ignores its env twin and searches PATH.
+    search = bin_dir or (source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) if supports_ffmpeg_dir else None)
+    if not search:
+        search = source.get("PATH", os.defpath)
+        if sys.platform == "win32":
+            # CreateProcess also searches the binary's folder and the working directory.
+            launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
+            search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
+    return search
+
+
 def _video_tools_reachable(
     cmd: Sequence[str],
     env: Optional[Mapping[str, str]] = None,
@@ -5708,20 +5728,11 @@ def _video_tools_reachable(
     supports_ffmpeg_dir: bool = True,
 ) -> bool:
     """Whether the child can launch ffmpeg and ffprobe, which /props' video modality never checks (#16065)."""
-    source = os.environ if env is None else env
     try:
-        bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}))
+        search = _video_tools_search(cmd, env, cwd, supports_ffmpeg_dir)
     except Exception:
         return True
-    # A build without --video-ffmpeg-dir ignores its env twin and searches PATH.
-    search = bin_dir or (source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) if supports_ffmpeg_dir else None)
     names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
-    if not search:
-        search = source.get("PATH", os.defpath)
-        if sys.platform == "win32":
-            # CreateProcess also searches the binary's folder and the working directory.
-            launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
-            search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
     return all(shutil.which(name, path = search) for name in names)
 
 
@@ -32469,13 +32480,19 @@ class LlamaCppBackend:
                 # Use _extra_args_as_requested: the drafter-drop snapshot would restore the Metal zero-context strip.
                 self._reconcile_effective_ctx_with_server(ctx_override or 0)
                 if self._has_video_input:
+                    _supports_dir = bool(server_caps.get("supports_video_ffmpeg_dir"))
                     self._has_video_input = _video_tools_reachable(
-                        _last_spawn_cmd,
-                        env,
-                        _spawn_cwd,
-                        supports_ffmpeg_dir = bool(server_caps.get("supports_video_ffmpeg_dir")),
+                        _last_spawn_cmd, env, _spawn_cwd, supports_ffmpeg_dir = _supports_dir
                     )
                     self._video_needs_ffmpeg = not self._has_video_input
+                    if self._has_video_input:
+                        # The clip shrink runs the same ffmpeg the child found, e.g. one beside llama-server.exe.
+                        try:
+                            self._video_ffmpeg_dir = _video_tools_search(
+                                _last_spawn_cmd, env, _spawn_cwd, supports_ffmpeg_dir = _supports_dir
+                            )
+                        except Exception:
+                            pass
                     if not self._has_video_input:
                         logger.warning(
                             "Video input disabled: llama-server decodes video with ffmpeg and "

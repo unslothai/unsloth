@@ -31,7 +31,8 @@ _SHRINK_TIMEOUT_S = 300
 
 
 def video_tools(ffmpeg_dir: Optional[str] = None) -> Optional[tuple[str, str]]:
-    """``(ffmpeg, ffprobe)`` where llama-server looks for them: ``ffmpeg_dir`` when set, else PATH."""
+    """``(ffmpeg, ffprobe)`` where llama-server looks for them: ``ffmpeg_dir`` (a folder or a
+    PATH-style list) when set, else PATH."""
     if ffmpeg_dir:
         found = [shutil.which(name, path = ffmpeg_dir) for name in ("ffmpeg", "ffprobe")]
     else:

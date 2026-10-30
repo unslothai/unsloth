@@ -139,3 +139,19 @@ def test_a_load_with_both_tools_does_not_blame_ffmpeg(tmp_path, monkeypatch):
     )
     assert backend._has_video_input is True
     assert backend._video_needs_ffmpeg is False
+
+
+def test_the_shrink_searches_where_the_loaded_child_found_ffmpeg(tmp_path, monkeypatch):
+    bin_dir = _bin(tmp_path / "bin", "ffmpeg", "ffprobe")
+    backend = _load_with_video_props(tmp_path, monkeypatch, bin_dir)
+    monkeypatch.setenv("PATH", str(tmp_path / "elsewhere"))
+    ffmpeg, ffprobe = video_tools(backend._video_ffmpeg_dir)
+    assert Path(ffmpeg).parent == bin_dir == Path(ffprobe).parent
+
+
+def test_the_child_search_follows_the_older_build_rule(tmp_path):
+    env = {"PATH": str(tmp_path / "path"), "LLAMA_ARG_VIDEO_FFMPEG_DIR": str(tmp_path / "env")}
+    assert llama_mod._video_tools_search(["llama-server"], env) == str(tmp_path / "env")
+    search = llama_mod._video_tools_search(["llama-server"], env, supports_ffmpeg_dir = False)
+    assert str(tmp_path / "path") in search.split(os.pathsep)
+    assert str(tmp_path / "env") not in search.split(os.pathsep)
