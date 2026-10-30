@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useRef } from "react";
-import { Upload01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Upload01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -69,7 +69,26 @@ export function ChatBackgroundControls() {
 			title={t("chatBackground.title")}
 			actionAlign="text"
 			action={
-				<div className="flex max-w-full items-center justify-end">
+				<div className="flex max-w-full flex-wrap items-center justify-end gap-1">
+					{value && (
+						<Button
+							className="text-foreground"
+							type="button"
+							variant="ghost"
+							size="sm"
+							disabled={busy}
+							onClick={() => void resetChatBackground()}
+						>
+							<HugeiconsIcon
+								icon={Cancel01Icon}
+								strokeWidth={1.75}
+								className="size-4"
+								aria-hidden="true"
+							/>
+							{t("chatBackground.remove")}
+						</Button>
+					)}
+
 					<Button
 						className="text-foreground"
 						type="button"
@@ -143,188 +162,175 @@ export function ChatBackgroundControls() {
 					{t(errors[error])}
 				</p>
 			)}
-			{value && (
-				<div
-					className="grid grid-cols-1 gap-3 sm:grid-cols-2"
-					data-wallpaper-previews=""
-				>
-					{[false, true].map((conversation) => (
-						<div key={String(conversation)} className="min-w-0">
-							<p className="mb-2 text-xs text-muted-foreground">
-								{t(
-									conversation
-										? "chatBackground.conversation"
-										: "chatBackground.newChat",
+			<div
+				className="grid grid-cols-1 gap-3 sm:grid-cols-2"
+				data-wallpaper-previews=""
+			>
+				{[false, true].map((conversation) => (
+					<div key={String(conversation)} className="min-w-0">
+						<p className="mb-2 text-xs text-muted-foreground">
+							{t(
+								conversation
+									? "chatBackground.conversation"
+									: "chatBackground.newChat",
+							)}
+						</p>
+						<div
+							className="wallpaper-preview relative h-48 overflow-hidden rounded-xl border border-border bg-background"
+							data-wallpaper-conversation={conversation || undefined}
+						>
+							<ChatBackground />
+							{!value && (
+								<p className="absolute inset-x-4 top-4 text-center text-xs text-muted-foreground">
+									{t("chatBackground.noBackground")}
+								</p>
+							)}
+							<div className="wallpaper-preview-content absolute inset-x-4 bottom-4 space-y-3 text-xs">
+								{conversation && (
+									<p className="wallpaper-preview-prose rounded-lg p-3">
+										{t("chatBackground.response")}
+									</p>
 								)}
-							</p>
-							<div
-								className="wallpaper-preview relative h-48 overflow-hidden rounded-xl border border-border bg-background"
-								data-wallpaper-conversation={conversation || undefined}
-							>
-								<ChatBackground />
-								<div className="wallpaper-preview-content absolute inset-x-4 bottom-4 space-y-3 text-xs">
-									{conversation && (
-										<p className="wallpaper-preview-prose rounded-lg p-3">
-											{t("chatBackground.response")}
-										</p>
-									)}
-									<div className="wallpaper-preview-composer rounded-xl p-3">
-										{t("chatBackground.prompt")}
-									</div>
+								<div className="wallpaper-preview-composer rounded-xl p-3">
+									{t("chatBackground.prompt")}
 								</div>
 							</div>
 						</div>
-					))}
-				</div>
-			)}
-			<SettingsRow label={t("chatBackground.effect")}>
-				<Select
-					disabled={!value || busy}
-					value={adjustments.effect}
-					onValueChange={(effect) =>
-						patchBackground({ effect: effect as BackgroundEffect })
-					}
-				>
-					<SelectTrigger
-						aria-label={t("chatBackground.effect")}
-						className="w-52"
-					>
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						{EFFECTS.map((effect) => (
-							<SelectItem key={effect} value={effect}>
-								{t(labels[effect])}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
-			</SettingsRow>
-			<SettingsRow label={t("chatBackground.sizing")}>
-				<Select
-					disabled={!value || busy}
-					value={adjustments.sizing}
-					onValueChange={(sizing) =>
-						patchBackground({ sizing: sizing as ImageSizing })
-					}
-				>
-					<SelectTrigger
-						aria-label={t("chatBackground.sizing")}
-						className="w-52"
-					>
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						{IMAGE_SIZING.map((sizing) => (
-							<SelectItem key={sizing} value={sizing}>
-								{t(sizingLabels[sizing])}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
-			</SettingsRow>
-			{(["visibility", "blur", "zoom"] as const).map((key) => (
-				<SettingsRow
-					key={key}
-					label={t(
-						key === "zoom"
-							? "chatBackground.zoom"
-							: key === "blur"
-								? "chatBackground.blur"
-								: "chatBackground.visibility",
-					)}
-				>
-					<div className="flex w-52 items-center gap-3">
-						<Slider
+					</div>
+				))}
+			</div>
+			{value && (
+				<>
+					<SettingsRow label={t("chatBackground.effect")}>
+						<Select
 							disabled={!value || busy}
-							aria-label={t(
+							value={adjustments.effect}
+							onValueChange={(effect) =>
+								patchBackground({ effect: effect as BackgroundEffect })
+							}
+						>
+							<SelectTrigger
+								aria-label={t("chatBackground.effect")}
+								className="w-52"
+							>
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{EFFECTS.map((effect) => (
+									<SelectItem key={effect} value={effect}>
+										{t(labels[effect])}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+					</SettingsRow>
+					<SettingsRow label={t("chatBackground.sizing")}>
+						<Select
+							disabled={!value || busy}
+							value={adjustments.sizing}
+							onValueChange={(sizing) =>
+								patchBackground({ sizing: sizing as ImageSizing })
+							}
+						>
+							<SelectTrigger
+								aria-label={t("chatBackground.sizing")}
+								className="w-52"
+							>
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{IMAGE_SIZING.map((sizing) => (
+									<SelectItem key={sizing} value={sizing}>
+										{t(sizingLabels[sizing])}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+					</SettingsRow>
+					{(["visibility", "blur", "zoom"] as const).map((key) => (
+						<SettingsRow
+							key={key}
+							label={t(
 								key === "zoom"
 									? "chatBackground.zoom"
 									: key === "blur"
 										? "chatBackground.blur"
 										: "chatBackground.visibility",
 							)}
-							min={key === "zoom" ? 100 : 0}
-							max={key === "zoom" ? 300 : key === "blur" ? 20 : 100}
-							step={1}
-							value={[adjustments[key]]}
-							onValueChange={([v]) => patchBackground({ [key]: v })}
-						/>
-						<span className="w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-							{adjustments[key]}
-							{key === "blur" ? "px" : "%"}
-						</span>
-					</div>
-				</SettingsRow>
-			))}
-			<SettingsRow label={t("chatBackground.outline")}>
-				<Switch
-					aria-label={t("chatBackground.outline")}
-					checked={adjustments.outline}
-					disabled={!value || busy}
-					onCheckedChange={(outline) => patchBackground({ outline })}
-				/>
-			</SettingsRow>
-			<SettingsRow label={t("chatBackground.fade")}>
-				<Switch
-					aria-label={t("chatBackground.fade")}
-					checked={adjustments.fade}
-					disabled={!value || busy}
-					onCheckedChange={(fade) => patchBackground({ fade })}
-				/>
-			</SettingsRow>
-			<SettingsRow label={t("chatBackground.position")} className="items-start">
-				<div className="flex w-52 justify-end">
-					<div
-						className="grid w-fit grid-cols-3 gap-1"
-						role="group"
-						aria-label={t("chatBackground.position")}
-					>
-						{POSITIONS.map((position) => {
-							const [x, y] = position.split(" ").map((v) => Number.parseInt(v));
-							return (
-								<button
-									key={position}
-									type="button"
+						>
+							<div className="flex w-52 items-center gap-3">
+								<Slider
 									disabled={!value || busy}
-									aria-pressed={adjustments.position === position}
-									aria-label={t("chatBackground.positionValue", { x, y })}
-									title={t("chatBackground.positionValue", { x, y })}
-									className="flex size-7 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:text-primary disabled:opacity-40"
-									onClick={() => patchBackground({ position })}
-								>
-									<span className="size-1.5 rounded-full bg-current" />
-								</button>
-							);
-						})}
-					</div>
-				</div>
-			</SettingsRow>
-			<div className="-mx-3 flex flex-wrap items-center justify-between gap-3 pt-2">
-				{value && (
-					<Button
-						className="text-foreground"
-						type="button"
-						variant="ghost"
-						size="sm"
-						onClick={() => void resetChatBackground()}
+									aria-label={t(
+										key === "zoom"
+											? "chatBackground.zoom"
+											: key === "blur"
+												? "chatBackground.blur"
+												: "chatBackground.visibility",
+									)}
+									min={key === "zoom" ? 100 : 0}
+									max={key === "zoom" ? 300 : key === "blur" ? 20 : 100}
+									step={1}
+									value={[adjustments[key]]}
+									onValueChange={([v]) => patchBackground({ [key]: v })}
+								/>
+								<span className="w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+									{adjustments[key]}
+									{key === "blur" ? "px" : "%"}
+								</span>
+							</div>
+						</SettingsRow>
+					))}
+					<SettingsRow label={t("chatBackground.outline")}>
+						<Switch
+							aria-label={t("chatBackground.outline")}
+							checked={adjustments.outline}
+							disabled={!value || busy}
+							onCheckedChange={(outline) => patchBackground({ outline })}
+						/>
+					</SettingsRow>
+					<SettingsRow label={t("chatBackground.fade")}>
+						<Switch
+							aria-label={t("chatBackground.fade")}
+							checked={adjustments.fade}
+							disabled={!value || busy}
+							onCheckedChange={(fade) => patchBackground({ fade })}
+						/>
+					</SettingsRow>
+					<SettingsRow
+						label={t("chatBackground.position")}
+						className="items-start"
 					>
-						{t("chatBackground.remove")}
-					</Button>
-				)}
-
-				<div className="ml-auto flex justify-end">
-					<Button
-						className="text-foreground"
-						variant="ghost"
-						size="sm"
-						disabled={!value || busy}
-						onClick={() => patchBackground(DEFAULT_ADJUSTMENTS)}
-					>
-						{t("chatBackground.reset")}
-					</Button>
-				</div>
-			</div>
+						<div className="flex w-52 justify-end">
+							<div
+								className="grid w-fit grid-cols-3 gap-1"
+								role="group"
+								aria-label={t("chatBackground.position")}
+							>
+								{POSITIONS.map((position) => {
+									const [x, y] = position
+										.split(" ")
+										.map((v) => Number.parseInt(v));
+									return (
+										<button
+											key={position}
+											type="button"
+											disabled={!value || busy}
+											aria-pressed={adjustments.position === position}
+											aria-label={t("chatBackground.positionValue", { x, y })}
+											title={t("chatBackground.positionValue", { x, y })}
+											className="flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:text-primary disabled:opacity-40"
+											onClick={() => patchBackground({ position })}
+										>
+											<span className="size-1 rounded-full bg-current" />
+										</button>
+									);
+								})}
+							</div>
+						</div>
+					</SettingsRow>
+				</>
+			)}
 		</SettingsSection>
 	);
 }

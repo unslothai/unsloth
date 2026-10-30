@@ -3,6 +3,7 @@
 
 export const sv = {
   chatBackground: {
+    noBackground: "Ingen bakgrund",
     sizing: "Bildstorlek",
     fill: "Fyll",
     fit: "Anpassa",

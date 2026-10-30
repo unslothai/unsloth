@@ -6,6 +6,7 @@ import { en } from "./en.ts";
 
 export const hi = {
   chatBackground: {
+    noBackground: "कोई पृष्ठभूमि नहीं",
     sizing: "छवि का आकार",
     fill: "भरें",
     fit: "फ़िट करें",

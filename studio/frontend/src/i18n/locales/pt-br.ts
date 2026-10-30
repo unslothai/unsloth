@@ -6,6 +6,7 @@ import { en } from "./en.ts";
 
 export const ptBR = {
   chatBackground: {
+    noBackground: "Sem fundo",
     sizing: "Dimensionamento da imagem",
     fill: "Preencher",
     fit: "Ajustar",

@@ -6,6 +6,7 @@ import { en } from "./en.ts";
 
 export const ar = {
   chatBackground: {
+    noBackground: "بدون خلفية",
     sizing: "تحجيم الصورة",
     fill: "ملء",
     fit: "احتواء",

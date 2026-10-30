@@ -7,6 +7,7 @@ import { en } from "./en.ts";
 
 export const ja = {
   chatBackground: {
+    noBackground: "背景なし",
     sizing: "画像のサイズ調整",
     fill: "埋める",
     fit: "全体を表示",

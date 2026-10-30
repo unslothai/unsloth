@@ -6,6 +6,7 @@ import { en } from "./en.ts";
 
 export const es = {
   chatBackground: {
+    noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
     fill: "Rellenar",
     fit: "Ajustar",

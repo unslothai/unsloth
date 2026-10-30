@@ -6,6 +6,7 @@ import { en } from "./en.ts";
 
 export const ko = {
   chatBackground: {
+    noBackground: "배경 없음",
     sizing: "이미지 크기 조정",
     fill: "채우기",
     fit: "맞추기",

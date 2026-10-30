@@ -50,7 +50,12 @@ export function SettingsSection({
               </h2>
               {description || actionAlign === "text" ? (
                 // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
-                <div className="mt-[calc(var(--text-base)*0.372)] shrink-0">
+                <div
+                  className={cn(
+                    "mt-[calc(var(--text-base)*0.372)]",
+                    actionAlign === "text" ? "min-w-0 flex-1" : "shrink-0",
+                  )}
+                >
                   {action}
                 </div>
               ) : (

@@ -17,6 +17,11 @@ async (page) => {
   await page.reload();
   await page.getByRole('button',{name:'Reset all',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('input[type=file]')?.disabled===false);
+  check(await page.getByRole('button',{name:'Remove background',exact:true}).count()===0,'no remove action without an image');
+  check(await page.locator('section[data-settings-label="Background image"] [role=combobox], section[data-settings-label="Background image"] [role=slider], section[data-settings-label="Background image"] [role=switch]').count()===0,'no adjustments before upload');
+  check(await page.locator('[data-wallpaper-previews] .wallpaper-preview').count()===2,'both previews visible without an image');
+  check(await page.getByText('No background',{exact:true}).count()===2,'empty previews are labelled');
+  check(await page.getByRole('button',{name:'Reset adjustments',exact:true}).count()===0,'no reset action without an image');
   const upload = async (invalid=false) => page.evaluate(invalid=>{
     const c=document.createElement('canvas');c.width=900;c.height=600;
     const ctx=c.getContext('2d');const g=ctx.createLinearGradient(0,0,900,600);
@@ -31,6 +36,9 @@ async (page) => {
     return frames.length===1&&frames[0].getAttribute('data-effect')===effect;
   },effect);
   await upload();await settled('None');
+  check(await page.getByText('No background',{exact:true}).count()===0,'empty labels disappear after upload');
+  check(await page.getByRole('button',{name:'Remove background',exact:true}).count()===1,'uploaded image can be removed');
+  check(await page.getByRole('button',{name:'Reset adjustments',exact:true}).count()===0,'default adjustments need no reset');
   const canvas=page.locator('[data-wallpaper-workspace] > .chat-wallpaper');
   const crop=await canvas.boundingBox();
   await page.getByRole('button',{name:'Toggle sidebar',exact:true}).click();
@@ -91,10 +99,11 @@ async (page) => {
   await page.evaluate(()=>{window.__put=IDBObjectStore.prototype.put;IDBObjectStore.prototype.put=function(...args){if(this.name==='backgrounds')throw new DOMException('quota','QuotaExceededError');return window.__put.apply(this,args);};});
   await upload();await page.getByRole('alert').waitFor();await settled('Halftone');
   await page.evaluate(()=>{IDBObjectStore.prototype.put=window.__put;delete window.__put;});
-  await page.getByRole('button',{name:'Reset adjustments',exact:true}).click();await settled('None');
-  check(await fade.getAttribute('aria-checked')==='true','reset restores fade');
-  check(await outline.getAttribute('aria-checked')==='true','reset restores outline');
-  check(await page.getByRole('slider',{name:'Zoom',exact:true}).getAttribute('aria-valuenow')==='100','reset restores zoom');
+  await upload();await settled('None');
+  check(await page.getByRole('button',{name:'Reset adjustments',exact:true}).count()===0,'reset action is absent');
+  check(await fade.getAttribute('aria-checked')==='true','upload starts with fade enabled');
+  check(await outline.getAttribute('aria-checked')==='true','upload starts with outline enabled');
+  check(await page.getByRole('slider',{name:'Zoom',exact:true}).getAttribute('aria-valuenow')==='100','upload starts at default zoom');
   await page.getByRole('combobox',{name:'Effect',exact:true}).click();await page.getByRole('option',{name:'Halftone',exact:true}).click();await settled('Halftone');
   await page.getByRole('button',{name:'Toggle theme',exact:true}).click();await settled('Halftone');
   await page.getByRole('button',{name:'Toggle conversation',exact:true}).click();
@@ -117,6 +126,7 @@ async (page) => {
   await page.reload();await settled('Halftone');
   await page.getByRole('button',{name:'Remove background',exact:true}).click();
   await page.waitForFunction(()=>!document.querySelector('.chat-wallpaper'));
+  check(await page.getByRole('combobox',{name:'Effect',exact:true}).count()===0,'removal hides adjustments');
   await page.reload();await page.waitForFunction(()=>document.querySelector('input[type=file]')?.disabled===false);
   check(await page.locator('.chat-wallpaper').count()===0,'removal persists');
   await upload();await settled('None');

@@ -6,6 +6,7 @@ import type { en } from "./en";
 
 export const he = {
   chatBackground: {
+    noBackground: "ללא רקע",
     sizing: "התאמת גודל תמונה",
     fill: "מילוי",
     fit: "התאמה",

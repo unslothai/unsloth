@@ -6,6 +6,7 @@ import { en } from "./en.ts";
 
 export const zhCN = {
   chatBackground: {
+    noBackground: "无背景",
     sizing: "图片缩放方式",
     fill: "填充",
     fit: "适应",
