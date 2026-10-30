@@ -313,6 +313,7 @@ def _detect(monkeypatch):
         ("CHAT_ONLY", True),
         ("CHAT_ONLY_REASON", None),
         ("CHAT_ONLY_DETAIL", None),
+        ("_CPU_TRAINING_HOST", False),
     ):
         monkeypatch.setattr(hw, name, value)
     with hw._DETECT_LOCK:
@@ -327,6 +328,8 @@ def test_chat_only_stops_claiming_this_host_has_no_gpu(monkeypatch, cpu_torch_on
     assert hw.CHAT_ONLY_REASON == "torch_cpu_build"
     assert hw.CHAT_ONLY_REASON != "no_gpu"
     assert hw.CHAT_ONLY_DETAIL == "2.11.0+cpu"
+    # A GPU this PyTorch cannot use gets its repair message, not CPU training.
+    assert hw.trains_on_cpu(hw.CHAT_ONLY_REASON) is False
 
 
 def test_a_host_that_really_has_no_gpu_still_reads_no_gpu(monkeypatch):
@@ -343,6 +346,21 @@ def test_a_host_that_really_has_no_gpu_still_reads_no_gpu(monkeypatch):
     assert hw.CHAT_ONLY_REASON == "no_gpu"
     assert hw.CHAT_ONLY_DETAIL is None
     assert hw._torch_gpu_mismatch_report() == {}
+    # Chat stays GGUF-only, but Train runs on the CPU backend.
+    assert hw.CHAT_ONLY is True
+    assert hw.trains_on_cpu(hw.CHAT_ONLY_REASON) is True
+
+
+def test_a_card_that_goes_away_leaves_a_cpu_training_host(monkeypatch, cpu_torch_on_an_nvidia_host):
+    """The refreshed verdict drops a detached card's mismatch, and the host then trains on CPU (the
+    worker re-detects); a card that comes back takes Train away again."""
+    _detect(monkeypatch)
+    assert hw.CHAT_ONLY_REASON == "torch_cpu_build"
+    monkeypatch.setattr(hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": []})
+    hw.torch_build_snapshot()
+    reason, _detail = hw.current_chat_only_verdict()
+    assert reason == "no_gpu"
+    assert hw.trains_on_cpu(reason) is True
 
 
 def test_a_healthy_cuda_host_reports_no_mismatch_at_all(monkeypatch):

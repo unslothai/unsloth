@@ -2283,10 +2283,14 @@ export const sv = {
         label: "Installationstyp",
         description:
           "Endast chatt (GGUF). Den fullständiga installationen lägger till träning, export, video, safetensors-modeller och fler funktioner för bildgenerering.",
+        descriptionCpu:
+          "Endast chatt (GGUF). Ingen GPU som stöds hittades, så den fullständiga installationen lägger till träning på CPU:n.",
         action: "Uppgradera till fullständig installation",
         confirmTitle: "Uppgradera till den fullständiga installationen?",
         confirmDescription:
           "Den här installationen med endast chatt kör GGUF-modeller. Den fullständiga installationen lägger till PyTorch för den här datorns GPU, vilket aktiverar träning, export, video, safetensors-modeller och fler funktioner för bildgenerering. Den laddar ner flera gigabyte (minst 5 GB diskutrymme) och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
+        confirmDescriptionCpu:
+          "Den här installationen med endast chatt kör GGUF-modeller. Ingen GPU som stöds hittades på den här datorn, så den fullständiga installationen lägger till PyTorch för CPU:n, vilket aktiverar träning på CPU:n. Träning på CPU är mycket långsammare än på GPU. Den kräver minst 5 GB diskutrymme och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Uppgradera",
         keywords:
           "full install upgrade installationstyp fullständig installation uppgradera endast chatt chat only gguf add training träning träna train fine-tune pytorch torch export video bildgenerering safetensors",
@@ -3773,6 +3777,8 @@ export const sv = {
   },
   studio: {
     routeTitle: "Träna",
+    cpuTrainingNotice:
+      "Ingen GPU hittades, så träningen körs på CPU:n. Den är mycket långsammare än GPU-träning och stöder endast textmodeller (LoRA eller fullständig finjustering).",
     wizard: {
       modelTitle: "Modell",
       modelDescription: "Välj modell och träningsmetod",

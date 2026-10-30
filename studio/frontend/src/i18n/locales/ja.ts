@@ -2123,10 +2123,14 @@ export const ja = {
         label: "インストールの種類",
         description:
           "チャット専用 (GGUF)。フルインストールでは、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が追加されます。",
+        descriptionCpu:
+          "チャット専用 (GGUF)。対応 GPU が見つからないため、フルインストールでは CPU でのトレーニングが追加されます。",
         action: "フルインストールにアップグレード",
         confirmTitle: "フルインストールにアップグレードしますか？",
         confirmDescription:
           "このチャット専用インストールは GGUF モデルを実行します。フルインストールでは、このマシンの GPU 向けの PyTorch が追加され、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が使えるようになります。数 GB（5 GB 以上のディスク容量）をダウンロードしてサーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
+        confirmDescriptionCpu:
+          "このチャット専用インストールは GGUF モデルを実行します。このマシンには対応 GPU が見つからないため、フルインストールでは CPU 向けの PyTorch が追加され、CPU でのトレーニングが使えるようになります。CPU でのトレーニングは GPU よりも大幅に遅くなります。5 GB 以上のディスク容量が必要で、サーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
         confirmAction: "アップグレード",
         keywords:
           "full install upgrade インストールの種類 フルインストール アップグレード チャット専用 chat only gguf add training トレーニング 学習 train fine-tune pytorch torch エクスポート 動画 画像生成 safetensors",
@@ -3554,6 +3558,8 @@ export const ja = {
     imageTraining: "画像トレーニング",
     goToImageTraining: "画像 LoRA をトレーニング",
     routeTitle: "トレーニング",
+    cpuTrainingNotice:
+      "GPU が見つからないため、トレーニングは CPU で実行されます。GPU でのトレーニングよりも大幅に遅く、テキストモデル (LoRA またはフルファインチューニング) のみに対応しています。",
     wizard: {
       modelTitle: "モデル",
       modelDescription: "モデルとトレーニング方法を選択",

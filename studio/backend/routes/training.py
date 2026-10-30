@@ -1316,6 +1316,28 @@ def _reject_untrainable_model_request(
 def _validate_training_platform(request: TrainingStartRequest) -> None:
     from utils.hardware import hardware
 
+    if hardware.DEVICE == hardware.DeviceType.CPU and hardware.trains_on_cpu(
+        hardware.current_chat_only_verdict()[0]
+    ):
+        # The CPU backend (unsloth/_cpu_init.py) trains text models with SFTTrainer only; refuse the rest
+        # here rather than minutes into a run.
+        if request.is_dataset_image or request.is_dataset_audio:
+            unsupported = "Vision and audio training"
+        elif request.is_embedding:
+            unsupported = "Embedding model training"
+        elif request.is_decision:
+            unsupported = "Decision model training"
+        elif request.drafter is not None and request.drafter.enabled:
+            unsupported = "Drafter training"
+        else:
+            return
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                f"{unsupported} is not supported on CPU yet. No GPU was found, so this host "
+                "trains text models only (LoRA or full finetuning)."
+            ),
+        )
     if hardware.DEVICE != hardware.DeviceType.MLX:
         return
     if request.training_type == "Continued Pretraining":

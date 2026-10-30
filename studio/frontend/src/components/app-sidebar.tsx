@@ -1388,8 +1388,10 @@ export function AppSidebar() {
   }, [href, isMobile, setOpenMobile]);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const trainUnavailable = usePlatformStore((s) => s.isTrainUnavailable());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
+  const cpuTraining = usePlatformStore((s) => s.cpuTraining);
   const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
   const chatOnlyHint = usePlatformStore((s) => s.chatOnlyHint);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
@@ -1403,7 +1405,9 @@ export function AppSidebar() {
   // rows on a measured verdict and let them spin until it lands.
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
   const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
-  const trainDisabledHint: string | undefined = !chatOnlyMeasured
+  // A CPU-only host with PyTorch trains on the CPU backend while chat stays GGUF-only.
+  const trainBlocked = trainUnavailable && !capabilitiesUnknown;
+  const trainDisabledHint: string | undefined = !trainBlocked
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
       ? // The gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, and a resolver
@@ -1435,10 +1439,11 @@ export function AppSidebar() {
               ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
               : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
           : chatOnlyReason === "no_gpu"
-            ? "Training needs an NVIDIA or AMD GPU."
+            ? // With PyTorch this host trains on CPU; without it there is nothing to train with.
+              "Training needs PyTorch, which is not installed. Reinstall Unsloth Studio without --no-torch to enable Train."
             : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
-  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn);
+  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining);
   const videoDisabled = videoDisabledHint !== undefined;
 
   // MLX self-heal or late detection can change the verdict after first health; re-poll.
@@ -1629,10 +1634,10 @@ export function AppSidebar() {
     hasMore: runsHaveMore,
     loadMore: loadMoreRuns,
   } = useTrainingHistorySidebarItems(
-    !chatOnly && trainingRecentsRoute,
+    !trainUnavailable && trainingRecentsRoute,
   );
   const showTrainingRecents =
-    !chatOnly && trainingRecentsRoute && runItems.length > 0;
+    !trainUnavailable && trainingRecentsRoute && runItems.length > 0;
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
   const { projects, hasLoaded: projectsLoaded } = useChatProjects();
@@ -3406,8 +3411,8 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnlyMeasured && !fullInstall,
-      dimmed: chatOnlyMeasured && fullInstall !== null,
+      disabled: trainBlocked && !fullInstall,
+      dimmed: trainBlocked && fullInstall !== null,
       tooltip: fullInstall
         ? "Training is not installed. It needs at least 5 GB of disk space."
         : trainDisabledHint,
@@ -3418,7 +3423,7 @@ export function AppSidebar() {
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
-        if (chatOnlyMeasured) {
+        if (trainBlocked) {
           if (fullInstall) {
             setFullInstallOpen(true);
             closeMobileIfOpen();
@@ -3429,7 +3434,7 @@ export function AppSidebar() {
         closeMobileIfOpen();
       },
       onIntent: () => {
-        if (chatOnlyMeasured) return;
+        if (trainBlocked) return;
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
     },
