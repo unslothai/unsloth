@@ -351,7 +351,8 @@ def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
     d_As, d_Bs, start = [], [], 0
     for dY, A, B in zip(dYs, As, Bs):
         r = A.shape[1]
-        d_As.append(dA[:, start : start + r].contiguous())
+        # Transposed-contiguous, so the caller's .t() is the parameter's contiguous [r, K] layout.
+        d_As.append(dA[:, start : start + r].t().contiguous().t())
         d_B = torch.empty_like(B)
         d_B.addmm_(AX[start : start + r], dY, alpha = S, beta = 0)
         d_Bs.append(d_B)
@@ -559,7 +560,8 @@ class LoRA_MLP(torch.autograd.Function):
         )
 
         # Decided on the stored weights, before the FP8 down weight below is converted to a dense one.
-        fused = ctx.plain and _mlp_fused_ok(
+        # A handcrafted or older ctx without `plain` keeps the base-then-LoRA order.
+        fused = getattr(ctx, "plain", False) and _mlp_fused_ok(
             gateW, gateW_quant, upW, upW_quant, downW, downW_quant, dY.dtype
         )
         if downW.dtype == torch.float8_e4m3fn:
@@ -591,10 +593,6 @@ class LoRA_MLP(torch.autograd.Function):
 
         d_downA = torch.empty_like(downA)
         d_downB = torch.empty_like(downB)
-        d_gateA = torch.empty_like(gateA)
-        d_gateB = torch.empty_like(gateB)
-        d_upA = torch.empty_like(upA)
-        d_upB = torch.empty_like(upB)
 
         # d_downA = h.t() @ (dY @ downB.t()), d_downB = (downA.t() @ h.t()) @ dY, both scaled by downS.
         d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
@@ -643,6 +641,10 @@ class LoRA_MLP(torch.autograd.Function):
                 d_downBias,
             )
 
+        d_gateA = torch.empty_like(gateA)
+        d_gateB = torch.empty_like(gateB)
+        d_upA = torch.empty_like(upA)
+        d_upB = torch.empty_like(upB)
         up_dB = df @ upB.t()
         gate_dB = de @ gateB.t()
 
@@ -1016,15 +1018,8 @@ class LoRA_QKV(torch.autograd.Function):
         QA, QB, KA, KB, VA, VB = QA.t(), QB.t(), KA.t(), KB.t(), VA.t(), VB.t()
 
         # Weight projection LoRA derivatives; see the Unsloth blogpost.
-        d_QA = torch.empty_like(QA)
-        d_QB = torch.empty_like(QB)
-        d_KA = torch.empty_like(KA)
-        d_KB = torch.empty_like(KB)
-        d_VA = torch.empty_like(VA)
-        d_VB = torch.empty_like(VB)
-
         if (
-            ctx.plain
+            getattr(ctx, "plain", False)
             and QS == KS == VS
             and _qkv_fused_ok(QW, QW_quant, KW, KW_quant, VW, VW_quant, dQ.dtype)
             and dQ.dtype == dK.dtype == dV.dtype
@@ -1065,6 +1060,12 @@ class LoRA_QKV(torch.autograd.Function):
                 None,
             )
 
+        d_QA = torch.empty_like(QA)
+        d_QB = torch.empty_like(QB)
+        d_KA = torch.empty_like(KA)
+        d_KB = torch.empty_like(KB)
+        d_VA = torch.empty_like(VA)
+        d_VB = torch.empty_like(VB)
         q_dB = dQ @ QB.t()
         k_dB = dK @ KB.t()
         v_dB = dV @ VB.t()
@@ -1268,7 +1269,7 @@ class LoRA_W(torch.autograd.Function):
         del Xd
         d_bias = _lora_bias_grad(dY, S) if ctx.has_bias else None
 
-        if ctx.plain and _lora_fused_ok(W, W_quant, dY.dtype):
+        if getattr(ctx, "plain", False) and _lora_fused_ok(W, W_quant, dY.dtype):
             # dX starts as the rank-r term; the base GEMM accumulates onto it in its epilogue.
             dX = torch.addmm(y_dB.new_zeros(1), y_dB, A.t(), beta = 0, alpha = S)
             W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
