@@ -86,30 +86,37 @@ const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.1 };
 
 // React Flow reports box-selection changes before it stores the new rect, so read the pointer ourselves.
 const pointer = { x: 0, y: 0 };
+const pressed = { x: 0, y: 0 };
 
-/** A selection box drawn inside a group touches it; only a box around the whole group takes it. */
-function boxSkips(state: ReactFlowState<RfNode, RfEdge>, id: string): boolean {
-  if (!id.startsWith(GROUP_PREFIX)) return false;
-  const { userSelectionRect: box, transform, nodeLookup, domNode } = state;
-  const node = nodeLookup.get(id);
-  const pane = domNode?.getBoundingClientRect();
-  if (!box || !node || !pane) return false;
-  const x = pointer.x - pane.left;
-  const y = pointer.y - pane.top;
-  return !boxCovers(
+/** Whether the box from `from` to the pointer (client coords) encloses the whole frame `id`. */
+function boxHoldsGroup(
+  state: ReactFlowState<RfNode, RfEdge>,
+  id: string,
+  from: { x: number; y: number },
+): boolean {
+  const node = state.nodeLookup.get(id);
+  const pane = state.domNode?.getBoundingClientRect();
+  if (!node || !pane) return false;
+  return boxCovers(
     {
-      x: Math.min(x, box.startX),
-      y: Math.min(y, box.startY),
-      width: Math.abs(x - box.startX),
-      height: Math.abs(y - box.startY),
+      x: Math.min(pointer.x, from.x) - pane.left,
+      y: Math.min(pointer.y, from.y) - pane.top,
+      width: Math.abs(pointer.x - from.x),
+      height: Math.abs(pointer.y - from.y),
     },
-    transform,
+    state.transform,
     {
       ...node.internals.positionAbsolute,
       width: node.measured.width ?? 0,
       height: node.measured.height ?? 0,
     },
   );
+}
+
+/** A selection box drawn inside a group touches it; only a box around the whole group takes it. */
+function boxSkips(state: ReactFlowState<RfNode, RfEdge>, id: string): boolean {
+  if (!id.startsWith(GROUP_PREFIX) || !state.userSelectionRect) return false;
+  return !boxHoldsGroup(state, id, pressed);
 }
 
 type Size = { width: number; height: number };
@@ -257,6 +264,20 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     },
     [],
   );
+
+  // React Flow only reports a box's changes when its picked set changes, so a frame dropped while the
+  // box only touched it is never offered again; settle every frame against the final box.
+  const onSelectionEnd = useCallback(() => {
+    const state = store.getState();
+    const ui = useUiStore.getState();
+    const next = new Set(ui.selectedNodes);
+    for (const id of state.nodeLookup.keys()) {
+      if (!id.startsWith(GROUP_PREFIX)) continue;
+      if (boxHoldsGroup(state, id, pressed)) next.add(id);
+      else next.delete(id);
+    }
+    ui.setSelection([...next], ui.selectedEdges);
+  }, [store]);
 
   const onEdgesChange = useCallback((changes: EdgeChange<RfEdge>[]) => {
     let selection: { add: Set<string>; remove: Set<string> } | null = null;
@@ -514,6 +535,10 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       ref={setWrapper}
       className="relative h-full w-full"
       onDoubleClick={onDoubleClick}
+      onPointerDownCapture={(event) => {
+        pressed.x = pointer.x = event.clientX;
+        pressed.y = pointer.y = event.clientY;
+      }}
       onPointerMoveCapture={(event) => {
         pointer.x = event.clientX;
         pointer.y = event.clientY;
@@ -549,6 +574,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         deleteKeyCode={readOnly ? null : DELETE_KEYS}
         multiSelectionKeyCode={MULTI_SELECT_KEYS}
         selectionKeyCode={MULTI_SELECT_KEYS}
+        onSelectionEnd={onSelectionEnd}
         onNodeContextMenu={(event, node) => {
           if (!APPLE || !event.ctrlKey) return;
           event.preventDefault();

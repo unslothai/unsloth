@@ -198,7 +198,7 @@ function SuperCardCombineToolbarImpl({ readOnly }: { readOnly: boolean }) {
     <>
       <ViewportPortal>
         {rects.map((rect, i) => (
-          <Outline key={nodeIds[i]} rect={rect} pad={7} />
+          <Outline key={nodeIds[i]} rect={rect} pad={10} />
         ))}
       </ViewportPortal>
       <NodeToolbar

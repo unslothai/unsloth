@@ -5946,6 +5946,15 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	font-size: calc(0.75rem * var(--ui-font-scale, 1));
 }
 
+/* Box-selection frame: React Flow draws it flush on the cards; give it room. Doubled class beats its stylesheet. */
+.flows-canvas .react-flow__nodesselection-rect.react-flow__nodesselection-rect {
+	border: none;
+	border-radius: 14px;
+	outline: 1px dashed color-mix(in oklab, var(--primary) 55%, transparent);
+	outline-offset: 14px;
+	background: transparent;
+}
+
 /* Flows port colours are 300/400 tints made for a dark canvas; darken them on light. */
 .flows-editor {
 	--flows-port-mix: 68%;

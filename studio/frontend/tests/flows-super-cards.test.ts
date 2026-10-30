@@ -153,6 +153,9 @@ test("a selection box drawn inside a group leaves the group; one around it takes
 test("Cmd/Ctrl drag draws a selection box, and a closed card deletes with its blocks", () => {
   const src = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
   assert.match(src, /selectionKeyCode=\{MULTI_SELECT_KEYS\}/);
+  // A frame is settled against the final box, since React Flow won't offer it again.
+  assert.match(src, /onSelectionEnd=\{onSelectionEnd\}/);
+  assert.match(src, /if \(boxHoldsGroup\(state, id, pressed\)\) next\.add\(id\);/);
   assert.match(src, /data\.memberIds, \.\.\.data\.folded/);
   const lib = readFileSync(new URL("../src/features/flows/editor/super-cards.ts", import.meta.url), "utf8");
   const cardNode = lib.slice(lib.indexOf('type: "flowSuperCard"'), lib.indexOf('dragHandle: ".flow-node-drag"'));
