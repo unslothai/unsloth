@@ -322,8 +322,7 @@ def test_root_model_routes_are_fenced_and_token_counts_are_not_generations(monke
     for path in ("/models/load", "/models/load/", "/models/unload", "/models/unload/"):
         assert client.post(path).status_code == 409, path
         assert (
-            client.post(path, headers = {"X-Unsloth-Bench-Lease": mine["holder"]}).status_code
-            == 200
+            client.post(path, headers = {"X-Unsloth-Bench-Lease": mine["holder"]}).status_code == 200
         )
     for path in ("/v1/messages/count_tokens", "/v1/chat/count_tokens", "/v1/embeddings"):
         client.post(path)

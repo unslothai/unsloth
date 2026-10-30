@@ -214,7 +214,12 @@ def load_refused(holder: Optional[str]) -> bool:
 
 def _holds_lease(holder: Optional[str]) -> bool:
     with _lease_lock:
-        return bool(_lease and holder and _lease["holder"] == holder and _lease["expires"] > time.monotonic())
+        return bool(
+            _lease
+            and holder
+            and _lease["holder"] == holder
+            and _lease["expires"] > time.monotonic()
+        )
 
 
 def _eval_running() -> bool:

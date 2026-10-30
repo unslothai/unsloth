@@ -331,7 +331,6 @@ def _gguf_model_loaded() -> bool:
     """StudioGGUFLM scores through llama-server's /tokenize, so MLX, safetensors and LoRA loads cannot run."""
     try:
         from routes.inference import get_llama_cpp_backend
-
         return bool(get_llama_cpp_backend().is_loaded)
     except Exception as e:
         logger.debug("Could not read the llama.cpp backend: %s", e)
@@ -574,7 +573,6 @@ async def run_benchmark(
     finally:
         if lease_holder is not None:
             from routes.benchmarks import release_run_lease
-
             release_run_lease(lease_holder)
         if run_seq is not None and not started:
             # Refused before lm_eval started (bad request, key minting): free the slot.
