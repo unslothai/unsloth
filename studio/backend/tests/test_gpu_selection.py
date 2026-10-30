@@ -952,7 +952,6 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
             )
 
         self.assertEqual(pooled, [0, 1])
-        # Every card with a reading, so the caller can weigh each one on its own.
         self.assertEqual(capped, [0, 1, 2])
         self.assertEqual(metadata["selection_mode"], "fallback_all")
         self.assertAlmostEqual(metadata["usable_gb"], 12.0, places = 3)

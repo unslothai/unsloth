@@ -6774,7 +6774,7 @@ def auto_select_gpu_ids(
         fallback_usable = 0.0
     metadata["usable_gb"] = round(fallback_usable, 3)
     metadata["selected_gpu_ids"] = fallback_all
-    # A capped caller (native audio) weighs these cards itself, so this is no warning for it.
+    # A capped caller weighs these cards itself.
     (logger.warning if max_gpus is None else logger.debug)(
         "Falling back to all visible GPUs; model may not fit: model=%s "
         "selected=%s usable_gb=%s required_gb=%s multi_gpu_overhead=%s",
