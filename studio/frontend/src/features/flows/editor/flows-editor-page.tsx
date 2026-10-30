@@ -11,7 +11,7 @@ import {
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty";
-import { useSidebar } from "@/components/ui/sidebar";
+import { useOptionalSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import {
   holdSidebarUnpinned,
@@ -89,8 +89,8 @@ function EditorBody({
   const navigate = useNavigate();
   const paletteOpen = useUiStore((s) => s.paletteOpen);
   const { screenToFlowPosition } = useReactFlow();
-  const sidebar = useSidebar();
-  const sidebarBeside = sidebar.open && !sidebar.isMobile;
+  const sidebar = useOptionalSidebar();
+  const sidebarBeside = !!sidebar?.open && !sidebar.isMobile;
   useEditorShortcuts(!readOnly);
   // The Nodes panel owns the left edge here: the app sidebar unpins (Desktop peeks it from the
   // window edge) without touching the saved pin, which comes back on leaving.

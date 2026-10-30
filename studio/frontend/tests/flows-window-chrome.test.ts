@@ -55,7 +55,7 @@ test("the game player starts below the titlebar too, so the window buttons never
 test("the titlebar strip and toolbar share the sidebar's colour with no rule under them; the pill inverts", () => {
   const page = read("features/flows/editor/flows-editor-page.tsx");
   assert.match(page, /flows-editor flex h-full min-h-0 w-full flex-col bg-sidebar/);
-  assert.match(page, /const sidebarBeside = sidebar\.open && !sidebar\.isMobile;/);
+  assert.match(page, /const sidebarBeside = !!sidebar\?\.open && !sidebar\.isMobile;/);
   assert.match(page, /transition-\[border-radius\] duration-200 ease-out \$\{sidebarBeside \? "rounded-tl-xl" : "rounded-tl-none"\}/, "rounded beside the open sidebar, eased away when it closes");
   const bar = read("features/flows/editor/toolbar.tsx");
   assert.match(bar, /items-center gap-3 bg-sidebar px-2 text-foreground">/);
