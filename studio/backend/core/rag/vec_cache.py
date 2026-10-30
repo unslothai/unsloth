@@ -266,7 +266,8 @@ def _ann_min_rows() -> int:
 
 
 def _ann_threads() -> int:
-    return max(1, (os.cpu_count() or 2) // 4)
+    # usearch 2.26 strands a few nodes (unreachable at any k) when inserting in parallel: build on one thread.
+    return 1
 
 
 def _search_ann(conn, np, entry: _AnnEntry, vector, fetch: int):

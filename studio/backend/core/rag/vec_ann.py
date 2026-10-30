@@ -96,7 +96,8 @@ def search(np, ann: Ann, q, fetch: int):
     f = min(int(fetch), ann.size)
     keys, dist = [], []
     if ann.n and f:
-        m = ann.index.search(q, min(f, ann.n))
+        # Near-full fetches (widening) brute-force the stored rows: no graph reachability limit.
+        m = ann.index.search(q, min(f, ann.n), exact = 2 * f >= ann.n)
         keys.append(np.asarray(m.keys, dtype = np.int64))
         dist.append(np.asarray(m.distances, dtype = np.float64))
     if len(ann.delta_keys) and f:
