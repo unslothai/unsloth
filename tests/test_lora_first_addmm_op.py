@@ -109,3 +109,64 @@ def test_without_the_op_traced_falls_back_to_the_functional_order(monkeypatch):
     )(X, W, A, B)
     assert not any("lora_first_addmm" in s for s in seen)
     torch.testing.assert_close(got, eager, rtol = 1e-6, atol = 1e-6)
+
+
+def test_opcheck_autograd():
+    X, W, A, B = _mk(dtype = torch.float32)
+    XA = X @ A.t()
+    args = [t.clone().requires_grad_(True) for t in (X, W.t(), XA, B.t())] + [0.5]
+    torch.library.opcheck(
+        torch.ops.unsloth.lora_first_addmm.default,
+        tuple(args),
+        test_utils = ("test_schema", "test_autograd_registration", "test_aot_dispatch_dynamic"),
+    )
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_compiled_differentiable_matmul_lora_matches_eager_grads(dtype):
+    # A compiled caller that differentiates through matmul_lora gets the addmm gradients.
+    import torch._dynamo
+    from functorch.compile import make_boxed_func
+    from torch._dynamo.backends.common import aot_autograd
+
+    X, W, A, B = _mk(dtype = dtype)
+
+    def run(fn):
+        x, a, b = (t.clone().requires_grad_(True) for t in (X, A, B))
+        out = fn(x, W, a, b)
+        out.float().square().sum().backward()
+        return out.detach(), x.grad, a.grad, b.grad
+
+    f = lambda X, W, A, B: KU.matmul_lora(X, W, None, A, B, 0.5)  # noqa: E731
+    eager = run(f)
+    torch._dynamo.reset()
+    seen = []
+    boxed = lambda g, i: make_boxed_func(g.forward)  # noqa: E731
+
+    def backend(gm, inputs):
+        seen.extend(str(n.target) for n in gm.graph.nodes if n.op == "call_function")
+        return aot_autograd(fw_compiler = boxed, bw_compiler = boxed)(gm, inputs)
+
+    compiled = run(torch.compile(f, backend = backend, fullgraph = True))
+    assert any("lora_first_addmm" in s for s in seen), seen
+    tol = dict(rtol = 1e-5, atol = 1e-5) if dtype == torch.float32 else dict(rtol = 2e-2, atol = 2e-2)
+    assert torch.equal(compiled[0], eager[0])
+    for c, e in zip(compiled[1:], eager[1:]):
+        torch.testing.assert_close(c, e, **tol)
+
+
+@pytest.mark.parametrize("mapped", ["X", "W"])
+def test_eager_helper_under_vmap(mapped):
+    X, W, A, B = _mk(dtype = torch.float32)
+    Xs, Ws = torch.stack([X, X * 2]), torch.stack([W, W * 2])
+
+    def ref(X, W):
+        return X @ W.t() + 0.5 * (X @ A.t()) @ B.t()
+
+    if mapped == "X":
+        got = torch.vmap(lambda x: KU.matmul_lora(x, W, None, A, B, 0.5))(Xs)
+        exp = torch.stack([ref(x, W) for x in Xs])
+    else:
+        got = torch.vmap(lambda w: KU.matmul_lora(X, w, None, A, B, 0.5))(Ws)
+        exp = torch.stack([ref(X, w) for w in Ws])
+    torch.testing.assert_close(got, exp, rtol = 1e-5, atol = 1e-5)

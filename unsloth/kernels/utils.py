@@ -1863,8 +1863,17 @@ def fast_linear_forward(
     return out
 
 
+def _functorch_wrapped(*tensors):
+    # vmap / grad transforms wrap tensors; an in-place write from them into a plain buffer is not allowed.
+    check = getattr(torch._C._functorch, "is_functorch_wrapped_tensor", None)
+    return check is not None and any(check(t) for t in tensors)
+
+
 def _lora_first_addmm(X, Wt, XA, Bt, alpha):
     # alpha * XA @ Bt into a fresh buffer (beta 0 never reads it), then the base GEMM accumulates onto it.
+    if _functorch_wrapped(X, Wt, XA, Bt):
+        out = torch.addmm(XA.new_zeros(1), XA, Bt, beta = 0, alpha = alpha)
+        return torch.addmm(out, X, Wt)
     out = torch.empty((X.shape[0], Wt.shape[1]), dtype = X.dtype, device = X.device)
     out.addmm_(XA, Bt, alpha = alpha, beta = 0)
     out.addmm_(X, Wt)
@@ -1897,6 +1906,24 @@ if _HAS_ADDMM_OP:
         def _(X, Wt, XA, Bt, alpha):
             return X.new_empty((X.shape[0], Wt.shape[1]))
 
+        # out = alpha * XA @ Bt + X @ Wt, so a compiled differentiable caller gets the addmm gradients.
+        def _lora_first_addmm_setup(ctx, inputs, output):
+            X, Wt, XA, Bt, alpha = inputs
+            ctx.alpha = alpha
+            ctx.save_for_backward(X, Wt, XA, Bt)
+
+        def _lora_first_addmm_backward(ctx, grad):
+            X, Wt, XA, Bt = ctx.saved_tensors
+            need = ctx.needs_input_grad
+            dX = grad @ Wt.t() if need[0] else None
+            dWt = X.t() @ grad if need[1] else None
+            dXA = (grad @ Bt.t()) * ctx.alpha if need[2] else None
+            dBt = (XA.t() @ grad) * ctx.alpha if need[3] else None
+            return dX, dWt, dXA, dBt, None
+
+        _lora_first_addmm_op.register_autograd(
+            _lora_first_addmm_backward, setup_context = _lora_first_addmm_setup
+        )
         _HAS_LORA_FIRST_OP = True
     except Exception:
         # Already registered (module re-executed) or an older torch.library: the functional path below.
@@ -1986,6 +2013,11 @@ def matmul_lora(
         reshape = True
     else:
         reshape = False
+    if XA is not None and XA.dim() == 3:
+        XA = XA.reshape(-1, XA.shape[-1])
+    # Every branch below writes `out` before the LoRA term reads XA: recompute a caller's XA that shares it.
+    if XA is not None and out is not None and _shares_storage(out, XA):
+        XA = None
 
     if isinstance(W, Float8Tensor):
         assert W.ndim == 2
@@ -2038,9 +2070,6 @@ def matmul_lora(
                 out = torch.addmm(out, X, W.t())
         A = None
     else:
-        if XA is not None and out is not None and _shares_storage(out, XA):
-            # The base GEMM below overwrites a caller's XA that shares `out`: recompute it afterwards.
-            XA = None
         W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:

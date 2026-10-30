@@ -602,3 +602,55 @@ def test_traced_order_depends_on_parameter_lora_weights(param, monkeypatch):
 
     got = torch.compile(f, backend = "aot_eager", fullgraph = True)(x, a, b)
     assert got.item() == (1.0078125 if param else 1.0)
+
+
+class _FakeF8(torch.Tensor):
+    pass
+
+
+@pytest.mark.parametrize("backend", ["packed", "int4", "float8"])
+def test_a_precomputed_xa_sharing_the_buffer_is_not_reused_by_any_dispatch(backend, monkeypatch):
+    # Packed, INT4 and Float8Tensor bases write the caller's buffer too before the rank-r term reads XA.
+    _set(monkeypatch, True)
+    g = torch.Generator(device = "cpu").manual_seed(3)
+    X, W = torch.randn(3, 4, generator = g), torch.randn(2, 4, generator = g)
+    A, B = torch.randn(2, 4, generator = g), torch.randn(2, 2, generator = g)
+    ref = X @ W.t() + 2.0 * (X @ A.t()) @ B.t()
+    W_quant = None
+    if backend == "packed":
+        W_quant = type(
+            "Packed",
+            (),
+            {
+                "_unsloth_packed_weight_state": True,
+                "dtype": torch.float32,
+                "matmul": lambda self, X, W, out = None: torch.matmul(X, W.t(), out = out),
+            },
+        )()
+        monkeypatch.setattr(kernel_utils, "_is_packed_state", lambda q: q is W_quant)
+    elif backend == "int4":
+        Int4 = type("Int4QuantState", (), {})
+        monkeypatch.setattr(kernel_utils, "Int4QuantState", Int4)
+        monkeypatch.setattr(
+            kernel_utils, "_int4_matmul", lambda X, W, q, out = None: torch.matmul(X, W.t(), out = out)
+        )
+        W_quant = Int4()
+    else:
+        monkeypatch.setattr(kernel_utils, "Float8Tensor", _FakeF8)
+        W = W.as_subclass(_FakeF8)
+        W.block_size = (1, W.shape[1])  # not rowwise-after-transpose: the forward GEMM
+    XA = X @ A.t()
+    got = kernel_utils.matmul_lora(X, W, W_quant, A, B, 2.0, XA = XA, out = XA)
+    torch.testing.assert_close(got.as_subclass(torch.Tensor), ref, rtol = 1e-5, atol = 1e-5)
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_a_3d_precomputed_xa_is_flattened_with_x(on, monkeypatch):
+    _set(monkeypatch, on)
+    g = torch.Generator(device = "cpu").manual_seed(5)
+    X, W = torch.randn(2, 3, H, generator = g), torch.randn(I, H, generator = g)
+    A, B = torch.randn(4, H, generator = g), torch.randn(I, 4, generator = g)
+    ref = kernel_utils.matmul_lora(X, W, None, A, B, 2.0)
+    got = kernel_utils.matmul_lora(X, W, None, A, B, 2.0, XA = X @ A.t())
+    assert got.shape == ref.shape
+    torch.testing.assert_close(got, ref, rtol = 1e-5, atol = 1e-5)
