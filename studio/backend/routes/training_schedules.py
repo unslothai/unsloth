@@ -19,13 +19,9 @@ from storage import training_schedules_db as db
 router = APIRouter()
 
 _NOT_FOUND = "Scheduled training run not found"
-_ALREADY_SCHEDULED = (
-    "A training run is already scheduled. Cancel it before scheduling another."
-)
+_ALREADY_SCHEDULED = "A training run is already scheduled. Cancel it before scheduling another."
 
-TrainingScheduleStatus = Literal[
-    "pending", "starting", "started", "cancelled", "failed", "missed"
-]
+TrainingScheduleStatus = Literal["pending", "starting", "started", "cancelled", "failed", "missed"]
 
 
 class TrainingScheduleCreate(BaseModel):

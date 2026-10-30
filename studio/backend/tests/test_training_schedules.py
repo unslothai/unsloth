@@ -80,7 +80,12 @@ def wakes():
 
 @pytest.fixture
 def client(monkeypatch, wakes):
-    async def prepare(request, via_api_key, *, stop_token_preview = True):
+    async def prepare(
+        request,
+        via_api_key,
+        *,
+        stop_token_preview = True,
+    ):
         prepare.calls.append((via_api_key, stop_token_preview))
 
     async def admit(request, current_subject, via_api_key):
@@ -342,7 +347,11 @@ def _claimed_schedule() -> dict:
     return db.get_schedule(schedule["id"])
 
 
-def _run_execute(monkeypatch, response = None, error = None):
+def _run_execute(
+    monkeypatch,
+    response = None,
+    error = None,
+):
     async def fake_start(request, current_subject, via_api_key):
         if error is not None:
             raise error

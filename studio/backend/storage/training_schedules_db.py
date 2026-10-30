@@ -76,9 +76,7 @@ def _schedule_from_row(row: sqlite3.Row) -> dict:
 
 
 def _get(conn: sqlite3.Connection, schedule_id: str) -> Optional[dict]:
-    row = conn.execute(
-        "SELECT * FROM training_schedules WHERE id = ?", (schedule_id,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM training_schedules WHERE id = ?", (schedule_id,)).fetchone()
     return None if row is None else _schedule_from_row(row)
 
 
@@ -103,8 +101,7 @@ def get_schedule(schedule_id: str) -> Optional[dict]:
 def pending_schedule() -> Optional[dict]:
     with _connect("BEGIN") as conn:
         row = conn.execute(
-            "SELECT * FROM training_schedules WHERE status = 'pending'"
-            " ORDER BY start_at LIMIT 1"
+            "SELECT * FROM training_schedules WHERE status = 'pending' ORDER BY start_at LIMIT 1"
         ).fetchone()
         return None if row is None else _schedule_from_row(row)
 
@@ -114,9 +111,7 @@ def create_schedule(schedule: dict, payload: dict) -> dict:
     credential_secrets.ensure_schema()
     with _connect("BEGIN IMMEDIATE") as conn:
         if (
-            conn.execute(
-                f"SELECT 1 FROM training_schedules WHERE status IN {_ACTIVE}"
-            ).fetchone()
+            conn.execute(f"SELECT 1 FROM training_schedules WHERE status IN {_ACTIVE}").fetchone()
             is not None
         ):
             raise TrainingScheduleExists()
@@ -177,9 +172,7 @@ def _trim(conn: sqlite3.Connection) -> None:
     ).fetchall()
     for row in rows:
         _delete_payload(conn, row["id"])
-    conn.executemany(
-        "DELETE FROM training_schedules WHERE id = ?", [(row["id"],) for row in rows]
-    )
+    conn.executemany("DELETE FROM training_schedules WHERE id = ?", [(row["id"],) for row in rows])
 
 
 def _set_status(

@@ -71,9 +71,7 @@ class TrainingScheduleScheduler:
         self._stopping = False
         self._loop = asyncio.get_running_loop()
         self._wake = asyncio.Event()
-        self._task = asyncio.create_task(
-            self._run_loop(), name = "training-schedule-scheduler"
-        )
+        self._task = asyncio.create_task(self._run_loop(), name = "training-schedule-scheduler")
 
     async def stop(self) -> None:
         self._stopping = True
@@ -111,9 +109,7 @@ class TrainingScheduleScheduler:
                 # Sleep until the next start is due; wake() cuts it short on any change.
                 delay = _POLL_SECONDS
                 if self._due is not None:
-                    delay = min(
-                        delay, max(_MIN_SLEEP_SECONDS, (self._due - db.now_ms()) / 1000)
-                    )
+                    delay = min(delay, max(_MIN_SLEEP_SECONDS, (self._due - db.now_ms()) / 1000))
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -244,7 +240,6 @@ class TrainingScheduleScheduler:
     def _training_active() -> bool:
         try:
             from core.training import get_training_backend
-
             return bool(get_training_backend().is_training_active())
         except Exception:
             return False

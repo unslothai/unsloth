@@ -1900,7 +1900,10 @@ def _background_video_generation_active() -> bool:
 
 
 async def _prepare_training_request(
-    request: TrainingStartRequest, via_api_key: bool, *, stop_token_preview: bool = True
+    request: TrainingStartRequest,
+    via_api_key: bool,
+    *,
+    stop_token_preview: bool = True,
 ) -> None:
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
     if request.drafter is not None and request.drafter.enabled:
