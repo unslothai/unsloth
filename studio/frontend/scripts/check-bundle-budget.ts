@@ -439,6 +439,10 @@ export const BUDGET = {
   // (5,942,150 -> 5,972,134 B raw, 1,836,750 -> 1,847,702 B transfer, ed9857c0c3 -> 39b8a6ce13, Node 24,
   // 85 chunks): its color themes are read by the theme store at startup, and loading its dialog on first
   // open saves 3 KB transfer but adds five startup chunks. Raised by that growth.
+  // The GPU rendering setting (#15482) adds 1,948 B raw / 637 B transfer (5,977,895 -> 5,979,843 B raw,
+  // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
+  // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
+  // the eager English catalog and its search rows. Raised by that.
   // Settings > Agents > Desktop apps (the Claude Desktop and Codex Desktop cards, their model pickers, the shared
   // context window / MTP / keep-loaded run settings, API clients and strings) add +8,089 B raw / +2,495 B transfer
   // to the eager settings and locale chunks (6,935,466 -> 6,943,555 B raw, 2,085,390 -> 2,087,885 B transfer against
@@ -448,10 +452,10 @@ export const BUDGET = {
   // 1,801.9 KB transfer on Node 26.8.2, 1,806.1 KB transfer on Node 24.22, 85 chunks), and the Desktop apps still add
   // +8.0 KB raw / +2.5 KB transfer on top (merged: 5,845.6 KB raw, 1,804.4 KB transfer on Node 26, 1,808.6 KB on
   // Node 24). Re-measured: the merged size plus a few KB of headroom.
-  // Merged onto upstream main 987731ec56 (budget 1,849,773 B transfer / 5,989,442 B raw): upstream's budget plus
+  // Merged onto upstream main c6056ffcbc (budget 1,850,410 B transfer / 5,991,390 B raw): upstream's budget plus
   // the Desktop apps' +2,495 B transfer / +8,089 B raw.
-  transferBytes: 1_852_268,
-  rawBytes: 5_997_531,
+  transferBytes: 1_852_905,
+  rawBytes: 5_999_479,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

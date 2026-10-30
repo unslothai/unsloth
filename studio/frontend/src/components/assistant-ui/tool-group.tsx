@@ -25,7 +25,6 @@ import {
   useToolPaneScope,
   useUnresolvedToolPaneScope,
 } from "@/features/chat/tool-output-scope";
-import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cva, type VariantProps } from "class-variance-authority";
 import {
@@ -44,6 +43,7 @@ import {
 } from "./tool-activity-open-state";
 // eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
 import { foldIsActive } from "@/features/chat/utils/display-visibility";
+import { WrenchIcon } from "@/lib/wrench-icon";
 
 const ANIMATION_DURATION = 200;
 
@@ -181,7 +181,7 @@ function ToolGroupTrigger({
         <Spinner className="aui-tool-group-trigger-loader" />
       ) : (
         <HugeiconsIcon
-          icon={Wrench01Icon}
+          icon={WrenchIcon}
           data-slot="tool-group-trigger-wrench"
           className="size-4 shrink-0 text-foreground"
           strokeWidth={2}

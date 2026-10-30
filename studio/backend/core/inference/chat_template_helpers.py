@@ -2591,7 +2591,7 @@ def messages_with_attached_image(
     fallback_user_text: str = "",
     structured_content: bool = False,
     image: int = 1,
-    video: bool = False,
+    video: int = 0,
     audio: Any = None,
     extra_audio: Sequence[Any] = (),
 ) -> list:

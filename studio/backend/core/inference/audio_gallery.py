@@ -51,7 +51,7 @@ def save(
     wav_tmp = directory / f".{audio_id}.wav.tmp"
     sidecar = directory / f"{audio_id}.json"
     sidecar_tmp = directory / f".{audio_id}.json.tmp"
-    source_path = _source_path(audio_id)
+    source_path = _source_path(audio_id, directory)
     source_tmp = directory / f".{audio_id}.source.wav.tmp"
     if source_wav is not None:
         meta = {**meta, "source_saved": True}
@@ -72,7 +72,7 @@ def save(
                 pass
         raise
     _prune_to_cap()
-    return _record(audio_id, meta)
+    return _record(audio_id, meta, directory = directory)
 
 
 def save_file(
@@ -107,7 +107,7 @@ def save_file(
         raise
     if prune:
         _prune_to_cap()
-    return _record(audio_id, meta)
+    return _record(audio_id, meta, directory = directory)
 
 
 # /v1/audio/speech persists every call, so cap the gallery to avoid filling the disk.
@@ -138,14 +138,36 @@ def _env_limit(name: str, default: int) -> int:
         return 0
 
 
-def _clip_bytes(audio_id: str) -> int:
+def _clip_bytes(audio_id: str, directory: Path) -> int:
     total = 0
-    for path in (gallery_dir() / f"{audio_id}.wav", _source_path(audio_id)):
+    for path in (directory / f"{audio_id}.wav", _source_path(audio_id, directory)):
         try:
             total += path.stat().st_size
         except OSError:
             pass
     return total
+
+
+def _under_caps(directory: Path, cap: int, byte_cap: int) -> bool:
+    """All clip WAVs (a superset of what the prune ranks) fit both caps, decided without reading sidecars."""
+    try:
+        paths = _clip_wavs(directory)
+    except OSError:
+        return False
+    if cap > 0 and len(paths) > cap:
+        return False
+    if byte_cap <= 0:
+        return True
+    total = 0
+    for path in paths:
+        for counted in (path, directory / f"{path.stem}.source.wav"):
+            try:
+                total += counted.stat().st_size
+            except OSError:
+                pass
+        if total > byte_cap:
+            return False
+    return True
 
 
 def _prune_to_cap() -> int:
@@ -159,16 +181,20 @@ def _prune_to_cap() -> int:
     try:
         # Select AND delete under one lock, as clear() does; choosing victims from a snapshot lets an archive land and be deleted anyway.
         with gallery_flags.exclusive(directory, require_file_lock = True):
+            if _under_caps(directory, cap, byte_cap):
+                return 0
             # By age, not display order: a clip dragged down is not older. Pinned clips are exempt.
-            entries = [e for e in _list_audio_entries() if not e[0].get("pinned")]
-            entries.sort(key = lambda e: _mtime(gallery_dir() / f"{e[0]['id']}.wav"), reverse = True)
+            entries = [
+                e for e in _list_audio_entries(directory = directory) if not e[0].get("pinned")
+            ]
+            entries.sort(key = lambda e: _mtime(directory / f"{e[0]['id']}.wav"), reverse = True)
 
             # Newest first, so the cut point drops the oldest; the newest is always kept, never a silent failure
             keep = len(entries) if cap <= 0 else min(cap, len(entries))
             if byte_cap > 0:
                 running = 0
                 for index, (record, _cursor) in enumerate(entries[:keep]):
-                    running += _clip_bytes(record["id"])
+                    running += _clip_bytes(record["id"], directory)
                     if running > byte_cap and index > 0:
                         keep = index
                         break
@@ -191,8 +217,8 @@ def _prune_to_cap() -> int:
             for audio_id in victims:
                 if audio_id in in_use:
                     continue
-                path = audio_path(audio_id)
-                if path is None or _read_meta(_sidecar_path(audio_id)) is None:
+                path = audio_path(audio_id, directory)
+                if path is None or _read_meta(_sidecar_path(audio_id, directory)) is None:
                     continue
                 try:
                     path.unlink()
@@ -201,9 +227,9 @@ def _prune_to_cap() -> int:
                     continue
                 removed += 1
                 pruned.append(audio_id)
-                _remove_source(audio_id)
+                _remove_source(audio_id, directory)
                 try:
-                    _sidecar_path(audio_id).unlink()
+                    _sidecar_path(audio_id, directory).unlink()
                 except OSError:
                     pass
             if pruned:
@@ -228,9 +254,12 @@ def _record(
     audio_id: str,
     meta: dict[str, Any],
     flags: Optional[dict[str, dict[str, Any]]] = None,
+    directory: Optional[Path] = None,
 ) -> dict[str, Any]:
+    if directory is None:
+        directory = gallery_dir()
     if flags is None:
-        flags = gallery_flags.read(gallery_dir())
+        flags = gallery_flags.read(directory)
     return {
         **meta,
         "workflow": _workflow(meta),
@@ -239,7 +268,7 @@ def _record(
         **gallery_flags.flags_for(flags, audio_id),
         # The listing's own sort key, so a client re-sort agrees with it.
         "order_at": gallery_flags.order_rank(
-            flags, audio_id, _mtime(gallery_dir() / f"{audio_id}.wav")
+            flags, audio_id, _mtime(directory / f"{audio_id}.wav")
         ),
     }
 
@@ -251,29 +280,31 @@ def _workflow(meta: dict[str, Any]) -> str:
     return workflow_for_audio_type(meta.get("audio_type"))
 
 
-def audio_path(audio_id: str) -> Optional[Path]:
+def audio_path(audio_id: str, directory: Optional[Path] = None) -> Optional[Path]:
     """Resolve an id to its on-disk WAV, or None if missing or unsafe."""
     if not _ID_RE.match(audio_id):
         return None
-    path = gallery_dir() / f"{audio_id}.wav"
+    if directory is None:
+        directory = gallery_dir()
+    path = directory / f"{audio_id}.wav"
     try:
-        path.resolve().relative_to(gallery_dir().resolve())
+        path.resolve().relative_to(directory.resolve())
     except ValueError:
         return None
     return path if path.is_file() else None
 
 
-def _sidecar_path(audio_id: str) -> Path:
-    return gallery_dir() / f"{audio_id}.json"
+def _sidecar_path(audio_id: str, directory: Optional[Path] = None) -> Path:
+    return (gallery_dir() if directory is None else directory) / f"{audio_id}.json"
 
 
-def _source_path(audio_id: str) -> Path:
-    return gallery_dir() / f"{audio_id}.source.wav"
+def _source_path(audio_id: str, directory: Optional[Path] = None) -> Path:
+    return (gallery_dir() if directory is None else directory) / f"{audio_id}.source.wav"
 
 
-def _remove_source(audio_id: str) -> None:
+def _remove_source(audio_id: str, directory: Optional[Path] = None) -> None:
     try:
-        _source_path(audio_id).unlink(missing_ok = True)
+        _source_path(audio_id, directory).unlink(missing_ok = True)
     except OSError:
         pass
 
@@ -291,7 +322,7 @@ def _sources_in_use(directory: Path, leaving: set[str]) -> set[str]:
     sources: set[str] = set()
     used: set[str] = set()
     for path in paths:
-        meta = _read_meta(_sidecar_path(path.stem))
+        meta = _read_meta(_sidecar_path(path.stem, directory))
         if meta is None:
             continue
         if meta.get("role") == "source":
@@ -327,20 +358,23 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
     return meta
 
 
-def owned_audio_path(audio_id: str) -> Optional[Path]:
+def owned_audio_path(audio_id: str, directory: Optional[Path] = None) -> Optional[Path]:
     """Serve routes use this, not audio_path(), so a guessed stem for an orphan WAV cannot stream out."""
-    path = audio_path(audio_id)
-    if path is None or _read_meta(_sidecar_path(audio_id)) is None:
+    if directory is None:
+        directory = gallery_dir()
+    path = audio_path(audio_id, directory)
+    if path is None or _read_meta(_sidecar_path(audio_id, directory)) is None:
         return None
     return path
 
 
 def owned_source_path(audio_id: str) -> Optional[Path]:
-    if owned_audio_path(audio_id) is None:
+    directory = gallery_dir()
+    if owned_audio_path(audio_id, directory) is None:
         return None
-    path = _source_path(audio_id)
+    path = _source_path(audio_id, directory)
     try:
-        path.resolve().relative_to(gallery_dir().resolve())
+        path.resolve().relative_to(directory.resolve())
     except ValueError:
         return None
     return path if path.is_file() else None
@@ -377,12 +411,15 @@ def _list_audio_entries(
     before: Optional[GalleryCursor] = None,
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
     archived: bool = False,
+    directory: Optional[Path] = None,
 ) -> list[tuple[dict[str, Any], GalleryCursor]]:
+    if directory is None:
+        directory = gallery_dir()
     try:
-        paths = _clip_wavs(gallery_dir())
+        paths = _clip_wavs(directory)
     except OSError:
         return []
-    flags = gallery_flags.read(gallery_dir())
+    flags = gallery_flags.read(directory)
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
     keyed_paths = [(_sort_key(flags, path), path) for path in paths]
     keyed_paths.sort(key = lambda item: item[0], reverse = True)
@@ -391,10 +428,10 @@ def _list_audio_entries(
     for cursor, path in keyed_paths:
         if before is not None and cursor >= before:
             continue
-        meta = _read_meta(_sidecar_path(path.stem))
+        meta = _read_meta(_sidecar_path(path.stem, directory))
         if meta is None:
             continue
-        record = _record(path.stem, meta, flags)
+        record = _record(path.stem, meta, flags, directory)
         if valid is not None and not valid(record):
             continue
         entries.append((record, cursor))
@@ -439,40 +476,42 @@ def set_flags(
     archived: Optional[bool] = None,
 ) -> Optional[dict[str, Any]]:
     """Pin or archive one owned clip; None when the id is not an Unsloth-owned clip."""
-    with gallery_flags.exclusive(gallery_dir()):
-        if owned_audio_path(audio_id) is None:
+    directory = gallery_dir()
+    with gallery_flags.exclusive(directory):
+        if owned_audio_path(audio_id, directory) is None:
             return None
-        gallery_flags.set_flags_locked(gallery_dir(), audio_id, pinned = pinned, archived = archived)
-        meta = _read_meta(_sidecar_path(audio_id))
+        gallery_flags.set_flags_locked(directory, audio_id, pinned = pinned, archived = archived)
+        meta = _read_meta(_sidecar_path(audio_id, directory))
     if meta is None:
         return None
-    return _record(audio_id, meta)
+    return _record(audio_id, meta, directory = directory)
 
 
 def move(audio_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
     """Move an active clip to just after ``after_id`` (None = front) and return its record.
 
     None if the id is not an owned, active clip. Raises KeyError if ``after_id`` is not in history."""
-    with gallery_flags.exclusive(gallery_dir()):
-        if owned_audio_path(audio_id) is None:
+    directory = gallery_dir()
+    with gallery_flags.exclusive(directory):
+        if owned_audio_path(audio_id, directory) is None:
             return None
-        flags = gallery_flags.read(gallery_dir())
+        flags = gallery_flags.read(directory)
         if gallery_flags.is_archived(flags, audio_id):
             return None
         # The whole shelf in listing order, so neighbours past the client's loaded window are known.
         try:
             paths = [
-                p for p in _clip_wavs(gallery_dir()) if not gallery_flags.is_archived(flags, p.stem)
+                p for p in _clip_wavs(directory) if not gallery_flags.is_archived(flags, p.stem)
             ]
         except OSError:
             paths = []
         paths.sort(key = lambda p: _sort_key(flags, p), reverse = True)
         keyed = [(p.stem, _mtime(p)) for p in paths]
-        gallery_flags.place_locked(gallery_dir(), audio_id, keyed, after_id = after_id)
-        meta = _read_meta(_sidecar_path(audio_id))
+        gallery_flags.place_locked(directory, audio_id, keyed, after_id = after_id)
+        meta = _read_meta(_sidecar_path(audio_id, directory))
     if meta is None:
         return None
-    return _record(audio_id, meta)
+    return _record(audio_id, meta, directory = directory)
 
 
 def delete(audio_id: str, *, cascade: bool = True) -> bool:
@@ -481,11 +520,15 @@ def delete(audio_id: str, *, cascade: bool = True) -> bool:
 
     WAV first: sidecar-first then failing would lose a clip with no retry, while this
     leaves at worst an orphan sidecar list_audio ignores."""
-    path = audio_path(audio_id)
+    return _delete_in(gallery_dir(), audio_id, cascade)
+
+
+def _delete_in(directory: Path, audio_id: str, cascade: bool) -> bool:
+    path = audio_path(audio_id, directory)
     if path is None:
         return False
     # only delete a pair we own; a foreign or orphan wav must not be destroyed by a guessed id
-    meta = _read_meta(_sidecar_path(audio_id))
+    meta = _read_meta(_sidecar_path(audio_id, directory))
     if meta is None:
         return False
     try:
@@ -494,20 +537,20 @@ def delete(audio_id: str, *, cascade: bool = True) -> bool:
         logger.warning("audio_gallery.delete_failed: %s", exc)
         return False
     try:
-        _sidecar_path(audio_id).unlink()
+        _sidecar_path(audio_id, directory).unlink()
     except OSError:
         pass
-    _remove_source(audio_id)
-    gallery_flags.forget(gallery_dir(), [audio_id])
+    _remove_source(audio_id, directory)
+    gallery_flags.forget(directory, [audio_id])
     # An Edit's hidden Original goes with the last clip that plays it.
     original = str(meta.get("source_clip_id") or "")
     if (
         cascade
         and _ID_RE.match(original)
-        and (_read_meta(_sidecar_path(original)) or {}).get("role") == "source"
-        and original not in _sources_in_use(gallery_dir(), set())
+        and (_read_meta(_sidecar_path(original, directory)) or {}).get("role") == "source"
+        and original not in _sources_in_use(directory, set())
     ):
-        delete(original)
+        _delete_in(directory, original, True)
     return True
 
 
@@ -525,7 +568,7 @@ def delete_group(group_id: str) -> int:
             return 0
         removed: list[str] = []
         for path in paths:
-            if (_read_meta(_sidecar_path(path.stem)) or {}).get(
+            if (_read_meta(_sidecar_path(path.stem, directory)) or {}).get(
                 "group_id"
             ) != group_id or gallery_flags.is_archived(flags, path.stem):
                 continue
@@ -536,10 +579,10 @@ def delete_group(group_id: str) -> int:
                 continue
             removed.append(path.stem)
             try:
-                _sidecar_path(path.stem).unlink()
+                _sidecar_path(path.stem, directory).unlink()
             except OSError:
                 pass
-            _remove_source(path.stem)
+            _remove_source(path.stem, directory)
         gallery_flags.forget_locked(directory, removed)
     return len(removed)
 
@@ -556,7 +599,7 @@ def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int
             return 0
         doomed = []
         for path in paths:
-            meta = _read_meta(_sidecar_path(path.stem))
+            meta = _read_meta(_sidecar_path(path.stem, directory))
             if meta is None:
                 continue
             if workflow is not None and _workflow(meta) != workflow:
@@ -575,9 +618,9 @@ def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int
                 continue
             removed += 1
             cleared.append(path.stem)
-            _remove_source(path.stem)
+            _remove_source(path.stem, directory)
             try:
-                _sidecar_path(path.stem).unlink()
+                _sidecar_path(path.stem, directory).unlink()
             except OSError:
                 pass
         if include_archived and workflow is None and not gallery_flags.is_trusted(directory):

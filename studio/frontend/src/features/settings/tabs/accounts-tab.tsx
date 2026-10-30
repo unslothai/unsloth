@@ -3,7 +3,6 @@
 
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import {
-  Add01Icon,
   CubeIcon,
   Delete02Icon,
   Key01Icon,
@@ -208,7 +207,7 @@ function OwnerAccountsTab() {
         >
           {t("settings.accounts.title")}
         </h1>
-        <p className="max-w-lg text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {t("settings.accounts.description")}
         </p>
       </header>
@@ -241,7 +240,7 @@ function OwnerAccountsTab() {
           }}
         >
           <HugeiconsIcon
-            icon={Add01Icon}
+            icon={PlusSignIcon}
             className="size-3.5"
             aria-hidden="true"
           />

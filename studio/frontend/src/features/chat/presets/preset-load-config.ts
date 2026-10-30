@@ -332,6 +332,7 @@ export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
       chatTemplateOverride: null,
       // Not carried by presets: enabling it always goes through its confirmation.
       mlxInt8Prefill: store.mlxInt8Prefill,
+      mlxAnePrefill: store.mlxAnePrefill,
       mlxPleOffload: store.mlxPleOffload,
       mlxExpertOffload: store.mlxExpertOffload,
       gpuMemoryMode: config.gpuMemoryMode,
