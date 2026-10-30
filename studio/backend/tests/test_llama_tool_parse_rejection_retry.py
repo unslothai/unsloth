@@ -107,7 +107,6 @@ def test_complete_calls_before_a_rejected_later_call_still_run(monkeypatch):
 
 
 def test_rejection_after_an_incomplete_streamed_call_still_fails(monkeypatch):
-    """A second request cannot be joined to output the caller already has, so nothing is retried."""
     payloads: list[dict] = []
     partial = {"index": 0, "id": "c1", "type": "function"}
     partial["function"] = {"name": "web_search", "arguments": '{"query": "a'}
