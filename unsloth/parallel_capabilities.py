@@ -600,7 +600,9 @@ def _moe_note(family, precision, aux, mode):
     if mode == "pp":
         return "pipeline parallel refuses MoE (stage receive-buffer liveness test first)"
     if precision == "qlora":
-        return "4-bit experts need bitsandbytes on a GPU (L4 / G4 via notebook_cloud_run.py --gpu)"
+        # Measured on one G4 (2 NCCL ranks sharing the card): qwen3_moe QLoRA under DDP equals one process over the
+        # same micro-batches (bitsandbytes 4-bit expert path engaged); cp / FSDP2 x QLoRA have not run.
+        return "4-bit experts need bitsandbytes on a GPU (only DDP measured so far; L4 / G4 via notebook_cloud_run.py)"
     if family != "qwen3_moe":
         return "no tiny-checkpoint gloo run for this family yet"
     return "not run yet"

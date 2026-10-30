@@ -13,8 +13,8 @@ the gradient reduction) is the production path."""
 import multiprocessing
 import os
 
-if multiprocessing.parent_process() is not None or getattr(
-    multiprocessing.current_process(), "_inheriting", False
+if os.environ.get("UNSLOTH_TEST_RANKS_ON_GPU") != "1" and (
+    multiprocessing.parent_process() is not None or getattr(multiprocessing.current_process(), "_inheriting", False)
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
@@ -54,11 +54,16 @@ def _checkpoint(tmp, arch = "llama"):
 
     from test_tp_native_oracle import LLAMA, QWEN3, QWEN3_MOE, build
 
-    if arch in ("qwen3_moe", "qwen3"):
+    if arch in ("qwen3_moe", "qwen3", "qwen3_moe_wide"):
         # qwen3_moe: 4 heads / 2 kv heads, 4 experts (2 per token), router aux loss off as shipped.
-        repo = QWEN3_MOE if arch == "qwen3_moe" else QWEN3
+        # qwen3_moe_wide: hidden and expert widths of 32, so Unsloth's Triton grouped GEMM takes the experts (it
+        # needs multiples of 16; the shipped hidden size 8 sends unsloth_triton to torch._grouped_mm).
+        repo = QWEN3 if arch == "qwen3" else QWEN3_MOE
+        overrides = {"num_hidden_layers": 2}
+        if arch == "qwen3_moe_wide":
+            overrides.update(hidden_size = 32, moe_intermediate_size = 32)
         path = os.path.join(tmp, "ckpt")
-        model = build(repo, {"num_hidden_layers": 2}, lora = False)
+        model = build(repo, overrides, lora = False)
         model.generation_config.pad_token_id = None
         model.save_pretrained(path, safe_serialization = True)
         AutoTokenizer.from_pretrained(repo).save_pretrained(path)
@@ -98,6 +103,62 @@ def _block_compile_on_cpu(model):
         bc.torch.compile = real_compile
 
 
+def _selected_moe_backend():
+    try:
+        from unsloth_zoo.temporary_patches import moe_utils
+
+        return moe_utils.select_moe_backend()
+    except Exception as e:
+        return f"unknown: {e!r}"[:200]
+
+
+def _count_moe_backend_calls():
+    """Engagement for GPU MoE cells: calls into each Unsloth Zoo expert backend and into torch._grouped_mm."""
+    import collections
+
+    calls = collections.Counter()
+    try:
+        from unsloth_zoo.temporary_patches import moe_utils
+    except Exception:
+        return calls
+    modules = [moe_utils]
+    try:
+        cached = moe_utils._load_cached_moe_utils_module()
+        if cached is not None and cached is not moe_utils:
+            modules.append(cached)
+    except Exception:
+        pass
+    try:
+        from unsloth_zoo.temporary_patches import moe_utils_bnb4bit
+
+        modules.append(moe_utils_bnb4bit)
+    except Exception:
+        pass
+
+    def counted(name, fn):
+        def wrapper(*a, **k):
+            calls[name] += 1
+            return fn(*a, **k)
+
+        wrapper.__wrapped__ = fn
+        return wrapper
+
+    for module in modules:
+        for name in ("forward_native_grouped_mm", "forward_triton_grouped_gemm", "forward_native_moe_loop",
+                     "forward_moe_backend_bnb4bit", "_triton_grouped_mm", "_manual_grouped_mm"):
+            if callable(getattr(module, name, None)):
+                setattr(module, name, counted(name, getattr(module, name)))
+    try:
+        from unsloth.kernels.moe.grouped_gemm import interface
+
+        interface.grouped_gemm = counted("unsloth grouped_gemm (Triton)", interface.grouped_gemm)
+    except Exception:
+        pass
+    if hasattr(torch, "_grouped_mm"):
+        torch._grouped_mm = counted("torch._grouped_mm", torch._grouped_mm)
+    return calls
+
+
 def _case_train(
     rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = True, keep = False, compile = False,
     arch = "llama", router_aux = False, attn = "sdpa", ungate = False, mode = "lora", trl_aux = False,
@@ -122,6 +183,14 @@ def _case_train(
     if device == "cpu":
         cpm.DEVICE_TYPE_TORCH = "cpu"
     else:  # NCCL ranks under torchrun (scripts/local_correctness.py): one GPU each
+        if torch.cuda.device_count() < world:
+            # Correctness only: every rank shares the one card (a one-GPU cloud VM). NCCL >= 2.32 takes that with
+            # NCCL_MULTI_RANK_GPU_ENABLE=1 (the driver probes it), else gloo on CUDA tensors.
+            os.environ["LOCAL_RANK"], os.environ["LOCAL_WORLD_SIZE"] = "0", "1"
+            import torch.distributed as dist
+
+            if world > 1 and not dist.is_initialized():
+                dist.init_process_group(os.environ.get("UNSLOTH_TEST_SHARED_GPU_BACKEND", "gloo"))
         torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
         # fp32 like the CPU reference: no TF32 matmuls / convolutions (Unsloth may have allowed them).
         torch.backends.cuda.matmul.allow_tf32 = False
@@ -154,8 +223,18 @@ def _case_train(
     layout = tp_env.env_layout()
 
     def load(model_name, load_in_4bit = True, **kwargs):
+        extra = {}
+        if mode == "qlora":
+            from transformers import BitsAndBytesConfig
+
+            extra = dict(
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit = True, bnb_4bit_quant_type = "nf4", bnb_4bit_compute_dtype = torch.float32
+                ),
+                device_map = {"": torch.cuda.current_device()},
+            )
         return AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype = torch.float32, attn_implementation = attn
+            model_name, torch_dtype = torch.float32, attn_implementation = attn, **extra
         )
 
     def peft(model):
@@ -168,10 +247,12 @@ def _case_train(
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
     model = load(ckpt, load_in_4bit = False)
-    if mode == "lora":
+    if mode in ("lora", "qlora"):
         model = peft(model)
     else:
         model.train()
+    count = device != "cpu" or os.environ.get("UNSLOTH_TEST_COUNT_MOE") == "1"
+    moe_calls = _count_moe_backend_calls() if count else None
     if router_aux:
         model.config.output_router_logits = True
     for name, module in model.named_modules():
@@ -234,6 +315,8 @@ def _case_train(
         dataset_kwargs = {"skip_prepare_dataset": True},
         gradient_checkpointing = False,
     )
+    if device != "cpu" and torch.cuda.device_count() < world:
+        args.ddp_backend = os.environ.get("UNSLOTH_TEST_SHARED_GPU_BACKEND", "gloo")
     if hasattr(args, "router_aux_loss_coef"):
         # TRL turns the MoE load balancing loss on from the architecture's coefficient unless this is 0.0
         # (it then sets output_router_logits on the config itself): aux off unless the case asks for it.
@@ -303,6 +386,10 @@ def _case_train(
         "banner": trainer.__dict__.get("_unsloth_parallel_announced"),
         "output_router_logits": bool(getattr(trainer.model.config, "output_router_logits", False)),
         "compile": compile_used,
+        "moe_calls": None if moe_calls is None else dict(moe_calls),
+        "moe_backend": _selected_moe_backend(),
+        "device_name": torch.cuda.get_device_name() if device != "cpu" else "cpu",
+        "dist_backend": dist.get_backend() if dist.is_initialized() else None,
     }
     if dist.is_initialized():
         dist.barrier()
