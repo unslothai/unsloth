@@ -201,7 +201,7 @@ export function ChatBackgroundControls() {
 			</div>
 			{value && (
 				<>
-					<SettingsRow label={t("chatBackground.effect")} className="items-start">
+					<SettingsRow label={t("chatBackground.effect")} className="mt-3 items-start">
 						<Select
 							disabled={!value || busy}
 							value={adjustments.effect}
