@@ -592,6 +592,7 @@ export {
   useChatProjects,
 } from "./hooks/use-chat-projects";
 export { subscribeDictationLevel } from "./adapters/dictation-level";
+export { prewarmPcmCapture } from "./adapters/pcm-capture";
 export {
   appendTranscriptText,
   joinTranscriptParts,
@@ -617,6 +618,7 @@ export {
   SttModelNotDownloadedError,
   cancelSttDownload,
   fetchSttStatus,
+  keepSttModelAlive,
   loadSttModel,
   startSttDownload,
   sttEngineFor,

@@ -213,6 +213,17 @@ pub async fn voice_typing_hud_level(app: AppHandle, level: f32) {
     hud::emit_level(&app, level.clamp(0.0, 1.0));
 }
 
+/// Build the overlay before the first press needs it.
+///
+/// The first [`voice_typing_hud_state`] of a session creates a webview, and that
+/// cost lands between the shortcut and the recording indicator. Building it hidden
+/// while the user is still in Settings moves it out of the press path. Async for
+/// the same reason as the state command: creation is queued to the event loop.
+#[tauri::command]
+pub async fn voice_typing_hud_prewarm(app: AppHandle) {
+    hud::prewarm(&app);
+}
+
 // ---------------------------------------------------------------------------
 // Shortcut chords
 // ---------------------------------------------------------------------------

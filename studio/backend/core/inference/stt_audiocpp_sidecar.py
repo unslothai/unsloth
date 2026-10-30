@@ -719,6 +719,20 @@ class AudioCppSttSidecar:
             self._idle_timer.cancel()
             self._idle_timer = None
 
+    def keep_alive(self) -> bool:
+        """Push the idle unload back for a server that is already resident.
+
+        Voice typing heartbeats this while it is enabled so the first press after a
+        pause does not pay for a load. A model that has already gone is reported,
+        never reloaded: the heartbeat must stay cheap, and the next real press owns
+        the load.
+        """
+        with self._lock:
+            if not self._server_alive():
+                return False
+            self._schedule_idle_unload_locked()
+            return True
+
     def _schedule_idle_unload_locked(self) -> None:
         self._cancel_idle_unload_locked()
         if not self._server_alive():

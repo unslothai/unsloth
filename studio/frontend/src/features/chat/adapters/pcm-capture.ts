@@ -43,6 +43,32 @@ function createCaptureContext(): AudioContext {
   }
 }
 
+// One context for every recording in the app. Opening one per dictation cost a
+// fresh audio thread and a resume each time the user pressed the shortcut, which
+// is latency paid before a single sample arrives. It is never closed: a context
+// with nothing connected is idle, and the graph is disconnected on stop.
+let sharedContext: AudioContext | null = null;
+
+function captureContext(): AudioContext {
+  if (sharedContext && sharedContext.state !== "closed") return sharedContext;
+  sharedContext = createCaptureContext();
+  return sharedContext;
+}
+
+/** Open the shared audio context ahead of the first recording.
+ *
+ *  Best-effort and safe to call repeatedly: creating it is what costs, and a
+ *  context made before a user gesture simply resumes on the first start. */
+export function prewarmPcmCapture(): void {
+  try {
+    void captureContext()
+      .resume()
+      .catch(() => {});
+  } catch {
+    // Web Audio missing entirely is reported by the first real capture.
+  }
+}
+
 export class PcmCapture {
   readonly sampleRate: number;
   private readonly context: AudioContext;
@@ -58,7 +84,7 @@ export class PcmCapture {
   constructor(stream: MediaStream, options: PcmCaptureOptions) {
     this.onSegment = options.onSegment;
     this.onFrame = options.onFrame;
-    this.context = createCaptureContext();
+    this.context = captureContext();
     this.sampleRate = this.context.sampleRate;
     this.segmenter = new SpeechSegmenter({
       ...options,
@@ -66,16 +92,7 @@ export class PcmCapture {
     });
     this.source = this.context.createMediaStreamSource(stream);
     this.processor = this.context.createScriptProcessor(BUFFER_FRAMES, 1, 1);
-    this.processor.addEventListener("audioprocess", (event) => {
-      if (!this.running || this.stopped) return;
-      const input = event.inputBuffer.getChannelData(0);
-      // getChannelData reuses its buffer; the segmenter copies the frame
-      // before retaining it in the pre-roll or a segment.
-      const segment = this.segmenter.push(input);
-      publishDictationLevel(this.segmenter.level);
-      this.onFrame?.(this.segmenter.rawRms, this.segmenter.level);
-      if (segment) this.onSegment(segment);
-    });
+    this.processor.addEventListener("audioprocess", this.handleAudioProcess);
     // A ScriptProcessor only runs while connected to a destination; route it
     // through silence rather than playing the microphone back.
     this.sink = this.context.createGain();
@@ -84,6 +101,17 @@ export class PcmCapture {
     this.processor.connect(this.sink);
     this.sink.connect(this.context.destination);
   }
+
+  private readonly handleAudioProcess = (event: AudioProcessingEvent): void => {
+    if (!this.running || this.stopped) return;
+    const input = event.inputBuffer.getChannelData(0);
+    // getChannelData reuses its buffer; the segmenter copies the frame
+    // before retaining it in the pre-roll or a segment.
+    const segment = this.segmenter.push(input);
+    publishDictationLevel(this.segmenter.level);
+    this.onFrame?.(this.segmenter.rawRms, this.segmenter.level);
+    if (segment) this.onSegment(segment);
+  };
 
   start(): void {
     if (this.stopped) return;
@@ -94,7 +122,8 @@ export class PcmCapture {
   }
 
   /** Stop capturing, flush the segment in progress, and release the audio
-   *  graph. The microphone stream itself belongs to the caller. */
+   *  graph. The microphone stream itself belongs to the caller, and the shared
+   *  context stays open for the next recording. */
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
@@ -103,12 +132,15 @@ export class PcmCapture {
     if (segment) this.onSegment(segment);
     publishDictationLevel(0);
     try {
+      this.processor.removeEventListener(
+        "audioprocess",
+        this.handleAudioProcess,
+      );
       this.source.disconnect();
       this.processor.disconnect();
       this.sink.disconnect();
     } catch {
       // Already torn down.
     }
-    void this.context.close().catch(() => {});
   }
 }

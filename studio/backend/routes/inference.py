@@ -27775,6 +27775,28 @@ async def stt_unload(
     return JSONResponse(content = {"loaded_model": None, "device": None, "released": released})
 
 
+@studio_router.post("/audio/stt/keepalive")
+async def stt_keep_alive(
+    engine: Optional[str] = None,
+    model: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Push the idle unload back for a dictation model that is already loaded.
+
+    Voice typing heartbeats this while it is enabled, so a press after a pause
+    starts recording at once instead of waiting out a reload. It never loads
+    anything: an evicted model stays evicted and the next real press owns the
+    load, which is what keeps a background timer from pinning VRAM the user is
+    not using. Only a timer is touched, so this deliberately does not queue
+    behind inference.
+    """
+    from core.inference import stt_registry
+
+    target = _resolve_serving_stt_engine(engine) if engine is not None else None
+    result = await asyncio.to_thread(stt_registry.keep_alive, target, model)
+    return JSONResponse(content = result)
+
+
 async def _transcribe_audio_bytes(
     raw: bytes,
     model: Optional[str],

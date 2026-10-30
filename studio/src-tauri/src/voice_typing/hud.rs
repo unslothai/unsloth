@@ -63,6 +63,19 @@ fn existing(app: &AppHandle) -> Option<WebviewWindow> {
     }
 }
 
+/// Build the overlay window ahead of the first press.
+///
+/// Creating a webview is the expensive part of the first show, and that cost
+/// currently lands between the shortcut and the recording indicator. Built hidden,
+/// so nothing changes on screen; a failure is the same as never having been
+/// prewarmed, and `show` reports it if it still cannot build the window.
+pub fn prewarm(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let _ = existing(&handle);
+    });
+}
+
 /// Show the overlay without ever taking focus from the app being dictated into.
 pub fn show(app: &AppHandle) {
     let handle = app.clone();

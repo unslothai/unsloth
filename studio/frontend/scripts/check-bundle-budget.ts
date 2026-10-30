@@ -449,8 +449,13 @@ export const BUDGET = {
   // provider, and the feedback-tone table sits beside the controller the composer dictation path already
   // loads. Both are needed before the first recording, so they stay in the startup set. Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_109_433,
-  rawBytes: 6_996_274,
+  // Voice-typing press-to-insert latency work adds 1,355 B raw / 394 B transfer (6,996,114 -> 6,997,469 B
+  // raw, 2,109,244 -> 2,109,638 B transfer, Node 24, 96 chunks): the model keepalive heartbeat, the
+  // shared AudioContext prewarm and the stream-off dictation option all sit in the controller that has
+  // to be resident before the shortcut is pressed, so none of it can be lazy. Raised by that growth plus
+  // the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_109_827,
+  rawBytes: 6_997_629,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

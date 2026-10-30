@@ -576,6 +576,30 @@ export function unloadSttModel(
   });
 }
 
+/** Keep a resident dictation model from being unloaded for another keep-alive window.
+ *
+ *  Voice typing sends this on a timer while it is enabled, so the first press after a
+ *  pause does not pay for a reload. The backend never loads anything on its behalf: if
+ *  the model has already gone, `held` is false and the next press loads it as usual. */
+export async function keepSttModelAlive(
+  engine?: SttEngine,
+  model?: string,
+): Promise<boolean> {
+  const params = new URLSearchParams();
+  if (engine) params.set("engine", engine);
+  if (model) params.set("model", model);
+  const query = params.size ? `?${params}` : "";
+  const response = await authFetch(
+    `/api/inference/audio/stt/keepalive${query}`,
+    { method: "POST" },
+  );
+  if (!response.ok) return false;
+  const body = (await response.json().catch(() => null)) as {
+    held?: boolean;
+  } | null;
+  return body?.held === true;
+}
+
 /** Recorded-audio dictation. Short recordings use one pass; long ones split near whisper's 30s
  *  window. Confirm keeps text, discard removes it, and either releases the microphone. */
 export interface StudioModelDictationOptions {
@@ -588,6 +612,11 @@ export interface StudioModelDictationOptions {
   removeFillerWords?: boolean;
   /** Turn spoken punctuation into marks. */
   spokenPunctuation?: boolean;
+  /** Ask the local backend for NDJSON partials. Off for callers that only ever
+   *  read the final transcript (system-wide voice typing): the partials are
+   *  decoded text they would throw away, and skipping them keeps the response a
+   *  single JSON body. Defaults on, so the composer keeps its live text. */
+  stream?: boolean;
 }
 
 export class StudioModelDictationAdapter implements DictationAdapter {
@@ -638,6 +667,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       ? null
       : sttModelVariant(sessionModel, settings.sttGgufVariant);
     const sessionChatId = resolveDictationChatId(this.options.chatId);
+    // Pinned with the rest of the session: a caller that only reads finals must
+    // not start receiving partials because the option changed mid-recording.
+    const streamPartials = this.options.stream !== false;
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
@@ -797,8 +829,10 @@ export class StudioModelDictationAdapter implements DictationAdapter {
             providerId: sessionProviderId,
             signal: abortController.signal,
             // The local backend can stream partial text while it decodes; an
-            // external endpoint answers with one JSON body.
-            stream: !usesExternalEndpoint,
+            // external endpoint answers with one JSON body. A caller that only
+            // reads finals turns this off: the partials would be decoded and
+            // thrown away.
+            stream: !usesExternalEndpoint && streamPartials,
             save: false,
             onPartial: (partial) => {
               if (cancelled || ended) return;

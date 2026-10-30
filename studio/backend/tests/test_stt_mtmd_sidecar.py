@@ -328,7 +328,9 @@ def test_a_training_load_pins_the_projector_off_the_gpu_too(spawned, monkeypatch
     sidecar.unload()
 
 
-def test_an_ordinary_load_keeps_the_gpu(spawned, monkeypatch):
+def test_an_ordinary_load_lets_llama_cpp_fit_the_gpu(spawned, monkeypatch):
+    """Pinning every layer on a card that cannot hold them made llama.cpp spill,
+    and a fresh dictation took 20-32s. Left to its own fitter it keeps what fits."""
     commands = []
 
     def capture(cmd, **kwargs):
@@ -343,8 +345,12 @@ def test_an_ordinary_load_keeps_the_gpu(spawned, monkeypatch):
     sidecar.load("qwen3-asr-0.6b")
 
     cmd = commands[0]
-    assert cmd[cmd.index("-ngl") + 1] == "99"
+    assert "-ngl" not in cmd, "a pinned layer count is what spilled on a small card"
     assert "--no-mmproj-offload" not in cmd
+    # A dictation never needs the model's 65536-token default, and the bounded
+    # context is what leaves room for the weights.
+    assert cmd[cmd.index("-c") + 1] == "4096"
+    assert cmd[cmd.index("-fa") + 1] == "on"
     sidecar.unload()
 
 
@@ -419,7 +425,7 @@ def test_a_server_started_for_training_goes_back_to_the_gpu_after(spawned, monke
     training["active"] = False
     sidecar.load("qwen3-asr-0.6b")
     assert len(commands) == 2, "the CPU-only server was never replaced"
-    assert commands[1][commands[1].index("-ngl") + 1] == "99"
+    assert "-ngl" not in commands[1], "the GPU server is fitted, not pinned"
     assert "--no-mmproj-offload" not in commands[1]
     sidecar.unload()
 
@@ -444,7 +450,7 @@ def test_a_running_transcription_outranks_the_offload_upgrade(spawned, monkeypat
     with sidecar._lock:
         sidecar._active_requests = 1
     sidecar.load("qwen3-asr-0.6b")
-    assert len(commands) == 1, "an in-flight transcription was torn down for -ngl"
+    assert len(commands) == 1, "an in-flight transcription was torn down for an offload change"
 
     with sidecar._lock:
         sidecar._active_requests = 0
@@ -534,6 +540,138 @@ def test_dictation_still_works_on_cpu_during_training(spawned, monkeypatch):
     result = sidecar.transcribe(b"audio", model = "qwen3-asr-0.6b")
     assert result["text"] == "on cpu"
     sidecar.unload()
+
+
+def _pcm16_wav(
+    seconds: float,
+    rate: int = 16000,
+    channels: int = 1,
+    bits: int = 16,
+) -> bytes:
+    """A WAV in the exact shape the recorder encodes."""
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(bits // 8)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * int(rate * seconds))
+    return buf.getvalue()
+
+
+def test_a_recorder_wav_skips_the_decode_round_trip(spawned, monkeypatch):
+    """The recorder already sends 16 kHz mono PCM16, so decoding and re-encoding
+    it through PyAV was pure overhead on every dictation."""
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+
+    def should_not_decode(audio, cancel_event = None):
+        raise AssertionError("a recorder WAV went through PyAV")
+
+    monkeypatch.setattr(mtmd_mod, "_decode_audio_bounded", should_not_decode)
+    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"reencoded")
+    posted = {}
+
+    def post(self, port, model_id, wav, seconds = None, **kwargs):
+        posted.update(wav = wav, seconds = seconds)
+        return "hi"
+
+    monkeypatch.setattr(MtmdSttSidecar, "_post_transcribe", post)
+
+    audio = _pcm16_wav(2.5)
+    result = sidecar.transcribe(audio, model = "qwen3-asr-0.6b")
+
+    assert posted["wav"] is audio, "the WAV was re-encoded"
+    assert posted["seconds"] == pytest.approx(2.5)
+    assert result["duration"] == pytest.approx(2.5)
+    sidecar.unload()
+
+
+def test_long_audio_is_cut_into_windows_that_fit_the_context(spawned, monkeypatch):
+    """The server runs a 4096-token context, so a whole long upload cannot be one
+    request; each window has to stay well inside it and the text has to join."""
+    import numpy as np
+
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(
+        mtmd_mod,
+        "_decode_audio_bounded",
+        lambda audio, cancel_event = None: np.zeros(150 * 16000, dtype = np.float32),
+    )
+    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: f"wav{len(pcm)}".encode())
+
+    posted = []
+    progress = []
+
+    def post(self, port, model_id, wav, seconds = None, **kwargs):
+        posted.append(seconds)
+        if kwargs.get("on_progress"):
+            kwargs["on_progress"]({"text": f"part{len(posted)}"})
+        return f"part{len(posted)}"
+
+    monkeypatch.setattr(MtmdSttSidecar, "_post_transcribe", post)
+
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    result = sidecar.transcribe(
+        b"audio", model = "qwen3-asr-0.6b", on_progress = progress.append
+    )
+
+    assert len(posted) == 3, posted
+    assert all(seconds <= 60 for seconds in posted), posted
+    assert sum(posted) == pytest.approx(150.0)
+    assert result["text"] == "part1 part2 part3"
+    assert result["duration"] == pytest.approx(150.0)
+    # A later window's partial carries the windows already finished.
+    assert progress[-1]["text"] == "part1 part2 part3"
+    sidecar.unload()
+
+
+def test_keep_alive_rearms_the_timer_only_for_a_live_server(spawned, monkeypatch):
+    """Voice typing heartbeats this; it must never spawn a server of its own."""
+    commands = []
+
+    def capture(cmd, **kwargs):
+        commands.append([str(a) for a in cmd])
+        return _FakeProcess()
+
+    monkeypatch.setattr(mtmd_mod.subprocess, "Popen", capture)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(mtmd_mod, "_training_active", lambda: False)
+
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 300)
+    assert sidecar.keep_alive() is False, "nothing was resident to hold"
+    assert commands == [], "a heartbeat loaded a model"
+
+    sidecar.load("qwen3-asr-0.6b")
+    with sidecar._lock:
+        sidecar._cancel_idle_unload_locked()
+        assert sidecar._idle_timer is None
+    assert sidecar.keep_alive() is True
+    assert sidecar._idle_timer is not None, "the idle unload was not pushed back"
+    assert len(commands) == 1, "a heartbeat spawned another server"
+    sidecar.unload()
+
+
+# Named cases, not raw bytes: pytest writes the test id into an environment
+# variable, and a 96 kB WAV id overflows it. Every case here must miss the fast
+# path, so a caller with an unusual WAV still gets the decoder's checks.
+@pytest.mark.parametrize(
+    "case",
+    ["empty", "riff-only", "not-a-wav", "48 kHz", "stereo", "8-bit", "truncated"],
+)
+def test_anything_else_still_goes_through_the_decoder(case):
+    audio = {
+        "empty": lambda: b"",
+        "riff-only": lambda: b"RIFF",
+        "not-a-wav": lambda: b"not a wav at all",
+        "48 kHz": lambda: _pcm16_wav(0.25, rate = 48000),
+        "stereo": lambda: _pcm16_wav(0.25, channels = 2),
+        "8-bit": lambda: _pcm16_wav(0.25, bits = 8),
+        "truncated": lambda: _pcm16_wav(0.25)[:-10],
+    }[case]()
+    assert mtmd_mod._already_pcm16_wav(audio) is None
 
 
 def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
@@ -791,7 +929,7 @@ def test_training_that_starts_while_the_old_server_is_reaped_still_pins_the_cpu(
 
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     sidecar.load("qwen3-asr-0.6b")
-    assert commands[0][commands[0].index("-ngl") + 1] == "99", "nothing was training yet"
+    assert "-ngl" not in commands[0], "nothing was training yet, so the fitter owns the split"
 
     monkeypatch.setattr(mtmd_mod, "_reap", reap_then_train)
     sidecar.load("qwen3-asr-1.7b")

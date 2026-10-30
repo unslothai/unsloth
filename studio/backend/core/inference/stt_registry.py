@@ -141,6 +141,28 @@ def unload(
     return failed
 
 
+def keep_alive(engine: Optional[str] = None, model: Optional[str] = None) -> dict:
+    """Push the idle unload back for the dictation model that is already loaded.
+
+    Voice typing heartbeats this while it is enabled, so a press after a pause does
+    not pay for a reload. It never loads anything: an evicted model stays evicted
+    and the next press owns the load, which keeps a background timer from holding
+    VRAM the user is not using.
+    """
+    engines: Sequence[str] = (engine,) if engine is not None else STT_ENGINES
+    held = False
+    for name in engines:
+        try:
+            sidecar = sidecar_for(name)
+            if model and sidecar.loaded_model != model:
+                continue
+            if sidecar.keep_alive():
+                held = True
+        except Exception as exc:  # noqa: BLE001 - a heartbeat must never fail the caller
+            logger.debug("Could not keep STT engine '%s' alive: %s", name, exc)
+    return {"held": held}
+
+
 def resident() -> dict:
     """What dictation currently holds, for the shared inference status.
 

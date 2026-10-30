@@ -28,9 +28,16 @@ class _Sidecar:
         self.loaded_with = None
         self.load_cancel_event = None
         self.loaded_device = None
+        self.kept_alive = 0
 
     def is_loading(self):
         return self._loading
+
+    def keep_alive(self):
+        if self._fail:
+            raise RuntimeError("boom")
+        self.kept_alive += 1
+        return self.loaded_model is not None
 
     def load(
         self,
@@ -136,6 +143,65 @@ def test_resident_reports_an_in_flight_load(monkeypatch):
 def test_resident_reports_nothing_when_every_engine_is_idle(monkeypatch):
     monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: _Sidecar(name))
     assert stt_registry.resident()["model"] is None
+
+
+def test_keep_alive_rearms_only_the_engine_holding_the_model(monkeypatch):
+    sidecars = {name: _Sidecar(name) for name in stt_registry.STT_ENGINES}
+    sidecars["mtmd"] = _Sidecar("mtmd", model = "qwen3-asr-0.6b")
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
+
+    assert stt_registry.keep_alive(model = "qwen3-asr-0.6b") == {"held": True}
+    assert [name for name, sidecar in sidecars.items() if sidecar.kept_alive] == ["mtmd"]
+    # A heartbeat is not a load: an evicted model must stay evicted.
+    assert all(sidecar.loaded_with is None for sidecar in sidecars.values())
+
+
+def test_keep_alive_reports_an_evicted_model_instead_of_loading_it(monkeypatch):
+    sidecars = {name: _Sidecar(name) for name in stt_registry.STT_ENGINES}
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
+
+    assert stt_registry.keep_alive("mtmd", "qwen3-asr-0.6b") == {"held": False}
+    # A sidecar holding something else is not even asked, so nothing is rearmed.
+    assert all(sidecar.kept_alive == 0 for sidecar in sidecars.values())
+    assert all(sidecar.loaded_with is None for sidecar in sidecars.values())
+
+
+def test_a_heartbeat_survives_an_engine_that_raises(monkeypatch):
+    sidecars = {
+        "transformers": _Sidecar("transformers", fail = True),
+        "gguf": _Sidecar("gguf"),
+        "mtmd": _Sidecar("mtmd", model = "qwen3-asr-0.6b"),
+        "audiocpp": _Sidecar("audiocpp"),
+    }
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
+
+    assert stt_registry.keep_alive() == {"held": True}
+    assert sidecars["mtmd"].kept_alive == 1
+
+
+def test_the_keepalive_route_forwards_without_loading(monkeypatch):
+    """The heartbeat endpoint must reach the registry without touching a model."""
+    import asyncio
+
+    import routes.inference as inference_route
+
+    assert "/audio/stt/keepalive" in [
+        route.path for route in inference_route.studio_router.routes
+    ]
+
+    calls = []
+
+    def keep(engine = None, model = None):
+        calls.append((engine, model))
+        return {"held": True}
+
+    monkeypatch.setattr(stt_registry, "keep_alive", keep)
+    response = asyncio.run(
+        inference_route.stt_keep_alive(engine = None, model = "qwen3-asr-0.6b")
+    )
+
+    assert calls == [(None, "qwen3-asr-0.6b")]
+    assert response.status_code == 200
 
 
 def test_an_unimportable_engine_never_takes_the_status_down(monkeypatch):

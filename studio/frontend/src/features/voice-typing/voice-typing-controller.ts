@@ -18,8 +18,11 @@ import {
   StudioModelDictationAdapter,
   isStudioDictationAvailable,
   joinTranscriptParts,
+  keepSttModelAlive,
   notifyStudioDictationUnavailable,
   openMicrophone,
+  prewarmPcmCapture,
+  sttEngineFor,
   stopMediaStream,
   subscribeDictationLevel,
 } from "@/features/chat";
@@ -65,6 +68,10 @@ const NO_SPEECH_NOTICE_MIN_MS = 2000;
 const DONE_VISIBLE_MS = 900;
 /** Mic-level frames are throttled on their way to the overlay window. */
 const LEVEL_THROTTLE_MS = 55;
+/** How often to tell the backend the loaded dictation model is still wanted. The
+ *  sidecar unloads it after five idle minutes, and a press then pays for the load
+ *  before it can record; a heartbeat well inside that window keeps a press instant. */
+const MODEL_KEEPALIVE_MS = 60_000;
 
 export class VoiceTypingController {
   private info: VoiceTypingInfo | null = null;
@@ -89,6 +96,8 @@ export class VoiceTypingController {
   /** Microphone kept open between sessions so the next press records at once. */
   private warmStream: MediaStream | null = null;
   private warmTimer: number | null = null;
+  /** Repeats the backend keepalive so a loaded model is not evicted between presses. */
+  private keepAliveTimer: number | null = null;
   /** Bumped when a warm stream is released; an open that resolves afterwards is
    *  stopped instead of leaving the microphone on after a cancel. */
   private warmToken = 0;
@@ -163,6 +172,7 @@ export class VoiceTypingController {
     this.unsubscribeVoiceSettings?.();
     this.unsubscribeVoiceSettings = null;
     this.clearTimers();
+    this.clearModelKeepAlive();
     this.discardSessionStream();
     this.releaseWarmMicrophone();
     try {
@@ -187,6 +197,7 @@ export class VoiceTypingController {
       // Turning voice typing off should also close a microphone that was kept
       // open for the next press, and stop a dictation that is still running.
       this.releaseWarmMicrophone();
+      this.clearModelKeepAlive();
       if (this.phase !== "idle") this.cancelSession();
     }
     if (state.enabled && !previous.enabled) {
@@ -234,6 +245,14 @@ export class VoiceTypingController {
     if (this.disposed || this.activating) return;
     this.activating = true;
     try {
+      // Opening the shared audio context is part of getting ready: doing it here
+      // keeps the first press from paying for it before a sample arrives.
+      prewarmPcmCapture();
+      // Building the overlay is the other first-press cost; a hidden window now
+      // means the pill appears as soon as the shortcut is pressed.
+      void invoke("voice_typing_hud_prewarm").catch(() => {
+        // The overlay is still created on first use.
+      });
       if (explicit) {
         // A user gesture: the only moment the consent dialog may be raised.
         if (!(await ensureMicrophonePermission("voice-typing"))) {
@@ -297,6 +316,9 @@ export class VoiceTypingController {
       }
     } finally {
       this.activating = false;
+      // Whatever the outcome, a resident model is worth holding on to from here.
+      // The heartbeat itself checks readiness before it sends anything.
+      this.armModelKeepAlive();
     }
   }
 
@@ -388,6 +410,9 @@ export class VoiceTypingController {
         microphone: warm,
         removeFillerWords,
         spokenPunctuation,
+        // This surface inserts the final transcript and nothing else, so the
+        // partial text the backend would stream is work nobody reads.
+        stream: false,
       }).listen();
     } catch (error) {
       console.error("[voice typing] could not start:", error);
@@ -707,6 +732,54 @@ export class VoiceTypingController {
       window.clearTimeout(this.warmTimer);
       this.warmTimer = null;
     }
+  }
+
+  /** Hold the loaded dictation model past the sidecar's idle unload.
+   *
+   *  A press after a pause otherwise pays for a load before it can record, which
+   *  is most of the gap the user sees. The backend only rearms its timer: it never
+   *  loads on a heartbeat, so an idle app cannot pin VRAM it is not using, and a
+   *  model that was evicted anyway is simply loaded by the next press. */
+  private armModelKeepAlive(): void {
+    if (this.keepAliveTimer !== null || this.disposed) return;
+    if (!useVoiceTypingStore.getState().enabled) return;
+    this.keepAliveTimer = window.setInterval(() => {
+      this.heartbeatModel();
+    }, MODEL_KEEPALIVE_MS);
+  }
+
+  private clearModelKeepAlive(): void {
+    if (this.keepAliveTimer !== null) {
+      window.clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+    }
+  }
+
+  private heartbeatModel(): void {
+    if (this.disposed) {
+      this.clearModelKeepAlive();
+      return;
+    }
+    const { readiness, enabled } = useVoiceTypingStore.getState();
+    if (!enabled) {
+      this.clearModelKeepAlive();
+      return;
+    }
+    // Nothing resident to hold while the model is missing or still downloading;
+    // the press that finds it ready starts the timer again.
+    if (
+      readiness === "needs-download" ||
+      readiness === "engine-missing" ||
+      readiness === "unknown"
+    ) {
+      return;
+    }
+    const model = useVoiceSettingsStore.getState().sttModel.trim();
+    if (!model) return;
+    void keepSttModelAlive(sttEngineFor(model), model).catch((error) => {
+      // A heartbeat is an optimization; a failure must never surface.
+      console.info("[voice typing] model keepalive failed:", error);
+    });
   }
 
   private releaseWarmMicrophone(): void {
