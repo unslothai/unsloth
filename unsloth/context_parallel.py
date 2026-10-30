@@ -155,11 +155,11 @@ def _unregister_cp_sharding_rules() -> None:
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
 from .utils.ulysses_hybrid import (
-    GATED_DELTA_ATTENTION_CLASSES,
-    check_gated_delta_heads,
+    ULYSSES_ATTENTION_CLASSES,
+    check_ulysses_mixer_heads,
     install_hf_attention_wrapper,
-    is_ulysses_gated_delta,
-    wrap_gated_delta_forward,
+    is_ulysses_mixer,
+    wrap_ulysses_mixer_forward,
 )
 
 # A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
@@ -215,11 +215,98 @@ def _hybrid_config_blocker(model) -> Optional[str]:
     if getattr(text_config, "output_router_logits", False):
         # The load balancing loss is a product of per-sequence means, not a sum over shards.
         return "the MoE router auxiliary loss (output_router_logits)"
-    if any(isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules()):
+    if any(
+        isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and not _runs_every_expert(m)
+        for m in model.modules()
+    ):
         # Per-expert modules run only for experts the local shard routes to, so with DDP's
         # find_unused_parameters off an expert unused on one rank stalls the gradient reduction.
         return "sparse MoE layers with per-expert modules (transformers 4.x Qwen3-Next)"
     return None
+
+
+def _runs_every_expert(block) -> bool:
+    # Unsloth's train-mode remote MoE (Kimi-Linear) gives unrouted experts zero gradients under CP;
+    # expert parallel blocks (ep_size > 1) keep the remote forward, so they do not.
+    if (getattr(block, "ep_size", 1) or 1) > 1:
+        return False
+    return getattr(getattr(type(block), "forward", None), "_unsloth_remote_moe_shim", False)
+
+
+def record_expert_tokens(block, token_counts) -> None:
+    # Per-expert routed token counts since the last optimizer step (no host sync). Only forwards
+    # that build a graph count: checkpoint recomputes count twice, which only matters as > 0.
+    if not torch.is_grad_enabled():
+        return
+    seen = block.__dict__.get("_unsloth_cp_expert_tokens")
+    block.__dict__["_unsloth_cp_expert_tokens"] = (
+        token_counts.detach().clone() if seen is None else seen.add_(token_counts)
+    )
+
+
+def drop_idle_expert_grads(blocks, group = None) -> int:
+    """Set .grad = None on experts (incl. their LoRA adapters) that no rank routed a token to since
+    the last optimizer step. Under CP they ran on no tokens so DDP sees a gradient, but the
+    single-process run leaves them None, so AdamW must not decay them or advance their state.
+    One all-reduce and one host sync for all layers. Returns the number of experts dropped."""
+    if not blocks:
+        return 0
+    counts = []
+    for block in blocks:
+        seen = block.__dict__.pop("_unsloth_cp_expert_tokens", None)
+        if seen is None:
+            device = next(block.experts.parameters()).device
+            seen = torch.zeros(len(block.experts), dtype = torch.long, device = device)
+        counts.append(seen.to(torch.long))
+    device = counts[0].device
+    total = torch.cat([c.to(device) for c in counts])
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(total, group = group)
+    idle = total.eq(0).tolist()
+    dropped = 0
+    offset = 0
+    for block in blocks:
+        for expert_index, expert in enumerate(block.experts):
+            if idle[offset + expert_index]:
+                for param in expert.parameters():
+                    param.grad = None
+                dropped += 1
+        offset += len(block.experts)
+    return dropped
+
+
+def install_idle_expert_grad_hook(
+    optimizer,
+    model,
+    group = None,
+) -> bool:
+    """Once per optimizer: a step pre-hook running drop_idle_expert_grads over model's every-expert
+    MoE blocks. It runs after backward (DDP reduction) and all gradient accumulation micro-steps."""
+    while not isinstance(optimizer, torch.optim.Optimizer) or (
+        # accelerate's AcceleratedOptimizer subclasses Optimizer but steps the one it wraps.
+        isinstance(getattr(optimizer, "optimizer", None), torch.optim.Optimizer)
+    ):
+        optimizer = getattr(optimizer, "optimizer", None)
+        if optimizer is None:
+            return False
+    if optimizer.__dict__.get("_unsloth_idle_expert_hook") is not None:
+        return True
+    if not isinstance(model, torch.nn.Module):
+        return False
+    blocks = [
+        m
+        for m in model.modules()
+        if isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and _runs_every_expert(m)
+    ]
+    if not blocks:
+        return False
+    blocks = [weakref.ref(b) for b in blocks]
+
+    def hook(_optimizer, _args, _kwargs):
+        drop_idle_expert_grads([b for b in (ref() for ref in blocks) if b is not None], group)
+
+    optimizer.__dict__["_unsloth_idle_expert_hook"] = optimizer.register_step_pre_hook(hook)
+    return True
 
 
 def _supports_context_parallel(model, backend = "ring") -> bool:
@@ -231,9 +318,14 @@ def _supports_context_parallel(model, backend = "ring") -> bool:
     mixers = _stateful_mixers(model)
     return (
         backend == "ulysses"
-        and bool(mixers)
-        and all(is_ulysses_gated_delta(m) for m, _ in mixers)
-        and all(type(m).__name__ in GATED_DELTA_ATTENTION_CLASSES for m in modules)
+        and bool(modules)
+        and all(is_ulysses_mixer(m) for m, _ in mixers)
+        # Kimi-Linear and MiniMax name their linear attention layers self_attn too.
+        and all(
+            type(m).__name__ in ULYSSES_ATTENTION_CLASSES
+            for m in modules
+            if not is_ulysses_mixer(m)
+        )
         and _hybrid_config_blocker(model) is None
     )
 
@@ -248,14 +340,14 @@ def _check_stateful_mixers(model, backend, size) -> None:
             f"Unsloth: ring context parallelism cannot split the sequential scans of {kinds}; "
             "use context_parallel_backend = 'ulysses'."
         )
-    unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_gated_delta(m)})
+    unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_mixer(m)})
     if unsupported:
         raise NotImplementedError(
-            "Unsloth: Ulysses context parallelism supports Gated DeltaNet linear attention only, "
-            f"not {unsupported}."
+            "Unsloth: Ulysses context parallelism supports Gated DeltaNet, Kimi delta and "
+            f"Lightning linear attention only, not {unsupported}."
         )
     for module, _ in mixers:
-        check_gated_delta_heads(module, size)
+        check_ulysses_mixer_heads(module, size)
 
 
 def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
@@ -298,12 +390,12 @@ class ContextParallelManager:
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
         if self.backend == "ulysses":
             for module, _ in _stateful_mixers(model):
-                if is_ulysses_gated_delta(module):
-                    wrap_gated_delta_forward(module, get_cp_manager)
+                if is_ulysses_mixer(module):
+                    wrap_ulysses_mixer_forward(module, get_cp_manager)
             for name, module in model.named_modules():
                 if (
                     name.endswith("self_attn")
-                    and type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
+                    and type(module).__name__ in ULYSSES_ATTENTION_CLASSES
                 ):
                     install_hf_attention_wrapper(
                         module, module.config._attn_implementation, get_cp_manager
@@ -739,6 +831,18 @@ def _check_cp_runtime(self, size: int, backend: str) -> None:
         )
 
 
+def _runs_hf_ulysses_attention(model, backend) -> bool:
+    # Attention the RL hooks do not shard: Hugging Face forwards wrapped for Ulysses, not Llama-style.
+    from .models.llama import LlamaAttention_fast_forward, runs_fast_forward
+    if backend != "ulysses" or not isinstance(model, torch.nn.Module):
+        return False
+    return any(
+        type(m).__name__ in ULYSSES_ATTENTION_CLASSES
+        and not runs_fast_forward(m, LlamaAttention_fast_forward)
+        for m in model.modules()
+    )
+
+
 def _check_cp_model(
     model,
     size: int,
@@ -759,20 +863,24 @@ def _check_cp_model(
             getattr(text_config, "num_key_value_heads", None) or text_config.num_attention_heads,
             size,
         )
-    if _stateful_mixers(model) and not allow_hybrids:
+    # MiniMax-M2 has no stateful mixer but runs on the same Ulysses attention path.
+    hf_ulysses = _runs_hf_ulysses_attention(model, backend)
+    if (_stateful_mixers(model) or hf_ulysses) and not allow_hybrids:
         raise NotImplementedError(
-            "Unsloth: DPO / GRPO context parallelism does not support Gated DeltaNet hybrids yet."
+            "Unsloth: DPO / GRPO context parallelism supports Llama-style attention only, not "
+            "linear attention hybrids or Ulysses-only attention yet."
         )
     _check_stateful_mixers(model, backend, size)
-    blocker = _hybrid_config_blocker(model) if _stateful_mixers(model) else None
+    blocker = _hybrid_config_blocker(model) if _stateful_mixers(model) or hf_ulysses else None
     if blocker is not None:
         raise NotImplementedError(
-            f"Unsloth: context parallelism on Gated DeltaNet hybrids does not support {blocker}."
+            f"Unsloth: Ulysses context parallelism does not support {blocker}."
         )
     if not _supports_context_parallel(model, backend):
         raise NotImplementedError(
             "Unsloth: context parallelism currently supports Llama-style attention "
-            "(Llama, Qwen2, Gemma), and Qwen3-Next / Qwen3.5 Gated DeltaNet hybrids with Ulysses."
+            "(Llama, Qwen2, Gemma), and with Ulysses Qwen3-Next / Qwen3.5, Kimi-Linear and "
+            "MiniMax (M1 hybrids, M2)."
         )
 
 
@@ -1078,6 +1186,9 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             # Without gradient checkpointing the model would build a cache for the sharded scans.
             if hasattr(inputs, "setdefault"):
                 inputs.setdefault("use_cache", False)
+            install_idle_expert_grad_hook(
+                getattr(self, "optimizer", None), getattr(self, "model", None)
+            )
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
         with manager.apply(inputs) if manager else contextlib.nullcontext():
             return original_training_step(self, model, inputs, *args, **kwargs)
@@ -1571,6 +1682,8 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
                 return original(self, *args, **kwargs)
             for decoder in _decoders(self.model):
                 decoder._unsloth_cp_rl_stack.clear()
+            if name == "training_step":
+                install_idle_expert_grad_hook(getattr(self, "optimizer", None), self.model)
             # Backward, and checkpoint recompute in it, run Ulysses attention too, so the scope spans them.
             with _manager_scope(manager if activate_at_step else None):
                 return original(self, *args, **kwargs)
