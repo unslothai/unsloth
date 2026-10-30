@@ -381,6 +381,7 @@ async def run_benchmark(
     api_key_raw: str | None = None
     api_key_id: int | None = None
     run_seq: int | None = None
+    lease_holder: str | None = None
     started = False
 
     try:
@@ -406,6 +407,16 @@ async def run_benchmark(
                 if backend.is_draining()
                 else "A benchmark is already running.",
             )
+        # A sweep or llama-bench reloads the one llama-server: the Eval would score its variants.
+        from routes.benchmarks import claim_run_lease
+
+        if not claim_run_lease(f"evals-{run_seq}", "evals"):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Another benchmark is running in another tab or on another device. "
+                "Stop it or let it finish first.",
+            )
+        lease_holder = f"evals-{run_seq}"
 
         logger.info("=== Benchmark Run Request =========================")
         logger.info(f"checkpoint_path: {request.checkpoint_path}")
@@ -561,6 +572,10 @@ async def run_benchmark(
             detail = f"Failed to run benchmark: {safe_error_detail(e)}",
         )
     finally:
+        if lease_holder is not None:
+            from routes.benchmarks import release_run_lease
+
+            release_run_lease(lease_holder)
         if run_seq is not None and not started:
             # Refused before lm_eval started (bad request, key minting): free the slot.
             backend.release(run_seq)

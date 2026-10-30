@@ -644,3 +644,68 @@ def test_partial_credit_runs_are_not_reported_as_accuracy(monkeypatch, tmp_path,
     assert [s["score"] for s in detail["samples"]] == [
         s["acc_norm" if task == "arc_easy" else "acc"] for s in results["samples"][task]
     ]
+
+
+def test_an_eval_and_a_sweep_never_share_the_server(monkeypatch):
+    import asyncio
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import routes.inference as inference_routes
+    from auth.authentication import get_current_subject
+    from routes import benchmarks as lease_routes
+
+    monkeypatch.setattr(lease_routes, "_lease", None)
+    seen = {}
+    backend = _orchestrator(
+        monkeypatch, lambda params: seen.setdefault("lease", lease_routes._lease) and {"results": {}}
+    )
+    monkeypatch.setattr(benchmark_routes, "get_benchmark_backend", lambda: backend)
+    monkeypatch.setattr(orch, "_orchestrator", backend)
+    monkeypatch.setattr(benchmark_routes, "_lm_eval_available", True)
+    monkeypatch.setattr(benchmark_routes, "_gguf_backend_supported", lambda: True)
+    monkeypatch.setattr(
+        inference_routes, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = True)
+    )
+    monkeypatch.setattr(
+        benchmark_routes,
+        "resolve_model_details",
+        lambda *a, **k: ([], {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]}),
+    )
+    monkeypatch.setattr(benchmark_routes, "parse_run_summary", lambda *a, **k: None)
+    req = benchmark_routes.BenchmarkRunRequest(
+        checkpoint_path = "m.gguf", model_source = "local", task = "arc_easy"
+    )
+    http = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(lease_routes.router, prefix = "/api/benchmarks")
+    app.post("/api/inference/load")(lambda: {"ok": True})
+    app.add_middleware(lease_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app, headers = {"Authorization": "Bearer t"})
+    sweep = {"holder": "sweep-aaaaaaaa", "kind": "sweep"}
+
+    # A sweep holds the server: the Eval is refused and frees its slot.
+    client.post("/api/benchmarks/lease", json = sweep)
+    with pytest.raises(benchmark_routes.HTTPException) as exc:
+        asyncio.run(benchmark_routes.run_benchmark(req, http, current_subject = "u"))
+    assert exc.value.status_code == 409 and not backend.is_active()
+    # Even while an Eval is active, the lease holder's own loads go through.
+    seq = backend.try_begin()
+    own = client.post("/api/inference/load", headers = {"X-Unsloth-Bench-Lease": sweep["holder"]})
+    assert own.status_code == 200
+    assert client.post("/api/inference/load").status_code == 409
+    backend.release(seq)
+    client.delete("/api/benchmarks/lease", params = {"holder": sweep["holder"]})
+
+    # An Eval holds the lease for its whole run, however long, and lets go after.
+    asyncio.run(benchmark_routes.run_benchmark(req, http, current_subject = "u"))
+    assert seen["lease"]["kind"] == "evals"
+    assert lease_routes._lease is None
+    lease_routes.claim_run_lease("evals-test", "evals")
+    monkeypatch.setattr(lease_routes.time, "monotonic", lambda: 10**9)
+    assert client.post("/api/benchmarks/lease", json = sweep).status_code == 409
+    lease_routes.release_run_lease("evals-test")
+    assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200

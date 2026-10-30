@@ -132,6 +132,27 @@ class BenchmarkLease(BaseModel):
     kind: Literal["sweep", "llama-bench", "evals"] = "sweep"
 
 
+def _held_by_other(holder: str, now: float) -> bool:
+    return bool(_lease and _lease["holder"] != holder and _lease["expires"] > now)
+
+
+def claim_run_lease(holder: str, kind: str) -> bool:
+    """For a run the server drives itself (Evals): held until release_run_lease, no renewals."""
+    global _lease
+    with _lease_lock:
+        if _held_by_other(holder, time.monotonic()):
+            return False
+        _lease = {"holder": holder, "kind": kind, "expires": float("inf"), "outside": 0}
+        return True
+
+
+def release_run_lease(holder: str) -> None:
+    global _lease
+    with _lease_lock:
+        if _lease and _lease["holder"] == holder:
+            _lease = None
+
+
 @router.post("/lease")
 def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current_subject)):
     """One benchmark at a time across tabs and devices: each reloads the one llama-server, so a
@@ -139,7 +160,7 @@ def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current
     global _lease
     now = time.monotonic()
     with _lease_lock:
-        if _lease and _lease["holder"] != lease.holder and _lease["expires"] > now:
+        if _held_by_other(lease.holder, now):
             raise HTTPException(
                 status_code = 409,
                 detail = {
@@ -191,6 +212,11 @@ def load_refused(holder: Optional[str]) -> bool:
         return _sweep_holds_against(holder)
 
 
+def _holds_lease(holder: Optional[str]) -> bool:
+    with _lease_lock:
+        return bool(_lease and holder and _lease["holder"] == holder and _lease["expires"] > time.monotonic())
+
+
 def _eval_running() -> bool:
     """An Eval scores whatever the llama-server holds, so a load mid-run would credit its tasks to another model."""
     from core.benchmark import orchestrator
@@ -239,7 +265,7 @@ class BenchmarkTrafficMiddleware:
             if path.rstrip("/") in LOAD_PATHS and _carries_bearer_credentials(scope, path):
                 if load_refused(holder):
                     refused = "A benchmark is running on this model."
-                elif _eval_running():
+                elif _eval_running() and not _holds_lease(holder):
                     refused = "An eval is running on this model."
             if refused:
                 from starlette.responses import JSONResponse
