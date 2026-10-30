@@ -273,14 +273,6 @@ export function AppearanceTab() {
         >
           <FontSmoothingSwitch />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.layout.compactSidebar")}
-          description={t(
-            "settings.appearance.layout.compactSidebarDescription",
-          )}
-        >
-          <Switch checked={pinned} onCheckedChange={setPinned} />
-        </SettingsRow>
       </SettingsSection>
 
       {isTauri ? (
@@ -294,6 +286,14 @@ export function AppearanceTab() {
           title={t("settings.appearance.sidebarNav.title")}
           description={t("settings.appearance.sidebarNav.description")}
         >
+          <SettingsRow
+            label={t("settings.appearance.layout.compactSidebar")}
+            description={t(
+              "settings.appearance.layout.compactSidebarDescription",
+            )}
+          >
+            <Switch checked={pinned} onCheckedChange={setPinned} />
+          </SettingsRow>
           <div className="pt-3">
             <SidebarNavCustomizer />
           </div>

@@ -18,6 +18,7 @@ for _up in _iso.parents:
 
 import contextlib
 import errno
+import functools
 import itertools
 import os
 import shutil
@@ -393,6 +394,28 @@ def _no_sandbox_mover_outlives_its_test(monkeypatch):
     _drain_sandbox_movers()
 
 
+@pytest.fixture(autouse = True)
+def _no_crash_watchdog_outlives_its_test(monkeypatch):
+    # Every load arms the crash watchdog, and one left running replays a real load_model in a later test.
+    llama = sys.modules.get("core.inference.llama_cpp")
+    backend = getattr(llama, "LlamaCppBackend", None)
+    if backend is None:
+        yield
+        return
+    armed = []
+    start = backend._start_mtp_crash_watchdog
+
+    @functools.wraps(start)
+    def _tracked(self):
+        armed.append(self)
+        return start(self)
+
+    monkeypatch.setattr(backend, "_start_mtp_crash_watchdog", _tracked)
+    yield
+    for armed_backend in armed:
+        armed_backend._stop_mtp_crash_watchdog()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -590,17 +613,86 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
 
 
+_REAL_APPLE_METAL_BUDGET = None
+
+
 @pytest.fixture(autouse = True)
 def _no_live_metal_wired_ceiling(monkeypatch):
     """Keep Metal context verdicts off the host's live GPU memory."""
+    import inspect
+
     from core.inference.llama_cpp import LlamaCppBackend
 
+    global _REAL_APPLE_METAL_BUDGET
+    if _REAL_APPLE_METAL_BUDGET is None:
+        _REAL_APPLE_METAL_BUDGET = inspect.getattr_static(
+            LlamaCppBackend, "_apple_metal_memory_budget_bytes"
+        )
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
     )
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_headroom_bytes", staticmethod(lambda: None)
     )
+    # On a Mac the real budget is non-zero, which sends every GGUF load down the Metal
+    # context-fit path and adds its "cannot size the KV cache" notice to loads that tests
+    # written against a CPU or CUDA host expect to be silent. Tests of the budget itself,
+    # or of the Metal path, set it explicitly or ask for real_apple_metal_budget.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+    )
+
+
+@pytest.fixture
+def real_apple_metal_budget(monkeypatch):
+    """The real budget probe, for the tests of the probe itself."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", _REAL_APPLE_METAL_BUDGET
+    )
+
+
+# Below the ephemeral range on Linux (32768+), macOS and Windows (49152+), one block per xdist worker.
+_ENGINE_PORT_BASE = 21000
+_ENGINE_PORTS_PER_WORKER = 250
+_engine_port_counter = itertools.count()
+
+
+@pytest.fixture(autouse = True)
+def _engine_ports_no_other_worker_can_take(monkeypatch):
+    """managed_engine._free_port releases an ephemeral port that the engine binds later. In that
+    gap any bind(0) on the runner, such as another worker's test server, can be handed the same
+    port and answer /health, and a start that should time out returns ready. Each worker gets its
+    own ports below the ephemeral range instead, which bind(0) never hands out."""
+    module = sys.modules.get("core.inference.managed_engine")
+    if module is None:
+        return
+    import socket
+
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    index = int(worker[2:]) if worker[2:].isdigit() else 0
+    base = _ENGINE_PORT_BASE + (index % 40) * _ENGINE_PORTS_PER_WORKER
+
+    def _worker_port(limit = None):
+        for _ in range(_ENGINE_PORTS_PER_WORKER):
+            port = base + next(_engine_port_counter) % _ENGINE_PORTS_PER_WORKER
+            with socket.socket() as sock:
+                try:
+                    sock.bind(("127.0.0.1", port))
+                except OSError:
+                    continue
+            return port
+        raise RuntimeError("no free engine port left in this worker's block")
+
+    _worker_port.__wrapped__ = module._free_port
+    monkeypatch.setattr(module, "_free_port", _worker_port)
+
+
+@pytest.fixture
+def real_engine_free_port(monkeypatch):
+    """The real allocator, for the tests of the allocator itself."""
+    from core.inference import managed_engine
+    monkeypatch.setattr(managed_engine, "_free_port", managed_engine._free_port.__wrapped__)
 
 
 @pytest.fixture(autouse = True)
@@ -973,7 +1065,12 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
         root.mkdir(parents = True, exist_ok = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
     monkeypatch.setattr(rag_db, "_schema_ready", set())
-    return root
+    yield root
+    from core.rag import vec_cache
+
+    # A background build still holding the db would block its removal on Windows.
+    vec_cache.drain()
+    vec_cache.clear()
 
 
 @pytest.fixture
