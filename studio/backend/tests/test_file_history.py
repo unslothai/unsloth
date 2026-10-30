@@ -453,17 +453,17 @@ def test_an_upload_during_the_last_walk_is_never_undone_with_it(chat, monkeypatc
     workdir, history = chat
     file_history.set_turn("chat-1", "u1")
     _edit("seed.txt", "", "s\n")  # the baseline
-    real_walk, walks = tools._snapshot_workdir_files, []
+    real_walk, walks = tools._snapshot_workdir_views, []
 
-    def walk_with_an_upload(path, history = False):
-        walks.append(history)
-        if history and walks.count(True) == 2:
+    def walk_with_an_upload(path, views):
+        walks.append(True in views)
+        if True in views and walks.count(True) == 2:
             tools.save_sandbox_upload("s", "upload.txt", [b"mine\n"])
-        return real_walk(path, history = history)
+        return real_walk(path, views)
 
-    monkeypatch.setattr(tools, "_snapshot_workdir_files", walk_with_an_upload)
+    monkeypatch.setattr(tools, "_snapshot_workdir_views", walk_with_an_upload)
     execute_tool("python", {"code": "open('out.txt', 'w').write('x')"}, session_id = "s")
-    monkeypatch.setattr(tools, "_snapshot_workdir_files", real_walk)
+    monkeypatch.setattr(tools, "_snapshot_workdir_views", real_walk)
 
     report = _rewind(history, ["u1"])
     assert "upload.txt" in report.conflicts

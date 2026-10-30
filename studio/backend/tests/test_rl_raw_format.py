@@ -273,3 +273,26 @@ def test_grpo_runs_without_loss_based_early_stopping(trainer):
     trainer._attach_early_stopping({"early_stopping_patience": 2})
     assert trainer._early_stopping is None
     assert any("Early stopping is off for GRPO" in w for w in trainer.training_progress.warnings)
+
+
+def test_images_late_in_a_chat_column_are_found():
+    from datasets import Dataset
+
+    text = [{"role": "user", "content": [{"type": "text", "text": "q", "image": None}]}]
+    for source in ("cat.png", "https://example.com/render?id=7"):
+        block = {"type": "image", "image": source, "text": None}
+        image = [{"role": "user", "content": [block]}]
+        dataset = Dataset.from_dict({"messages": [text] * 150 + [image]})
+        assert tmod._image_columns(dataset) == ["messages"], source
+        assert tmod._image_columns(dataset.select(range(150))) == []
+    late_bytes = [b"plain"] * 150 + [b"\x89PNG\r\n"]
+    assert tmod._image_columns(Dataset.from_dict({"blob": late_bytes})) == ["blob"]
+
+
+def test_a_numeric_or_audio_column_is_not_an_image_column():
+    from datasets import Audio, Dataset
+
+    dataset = Dataset.from_dict(
+        {"score": [[1.0, 2.0]] * 3, "clip": [{"bytes": b"RIFF", "path": None}] * 3}
+    ).cast_column("clip", Audio(decode = False))
+    assert tmod._image_columns(dataset) == []

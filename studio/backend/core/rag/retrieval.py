@@ -6,6 +6,8 @@ kept so callers can apply a similarity floor."""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import sqlite3
 from dataclasses import dataclass
@@ -13,6 +15,23 @@ from dataclasses import dataclass
 from . import config, embeddings, reembed, store
 
 logger = logging.getLogger(__name__)
+
+_query_vectors: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "rag_query_vectors", default = None
+)
+
+
+@contextlib.contextmanager
+def query_vector_memo():
+    """Within the block, each (model, query) is encoded once; a nested entry shares the outer memo."""
+    if _query_vectors.get() is not None:
+        yield
+        return
+    token = _query_vectors.set({})
+    try:
+        yield
+    finally:
+        _query_vectors.reset(token)
 
 
 @dataclass
@@ -58,11 +77,18 @@ def retrieve_dense(
 ) -> list[Hit]:
     k = k or config.TOP_K_DENSE
     effective = model_name or config.effective_embedding_model()
-    # Take identity from the encode, not the process: a concurrent ST failure may have swapped it.
-    vectors, identity = embeddings.encode_with_identity(
-        [query], model_name = effective, normalize = True
-    )
-    vec = vectors[0]
+    memo = _query_vectors.get()
+    key = (effective, query)
+    if memo is not None and key in memo:
+        vec, identity = memo[key]
+    else:
+        # Take identity from the encode, not the process: a concurrent ST failure may have swapped it.
+        vectors, identity = embeddings.encode_with_identity(
+            [query], model_name = effective, normalize = True
+        )
+        vec = vectors[0]
+        if memo is not None:
+            memo[key] = (vec, identity)
     _warn_once_on_untagged(conn)
     try:
         reembed.start_after_backend_change(identity)
@@ -130,16 +156,21 @@ def retrieve_hybrid(
     model_name: str | None = None,
     mode: str = "hybrid",
     lexical_query: str | None = None,
+    lexical_k: int | None = None,
+    dense_k: int | None = None,
 ) -> list[Hit]:
-    """lexical_query changes only the FTS5 leg; the dense leg always encodes the natural-language query."""
+    """lexical_query changes only the FTS5 leg; the dense leg always encodes the natural-language query.
+    lexical_k / dense_k size the legs (default TOP_K_LEXICAL / TOP_K_DENSE): fused output never exceeds their sum."""
     k = k if k is not None else config.TOP_K_HYBRID
     k = int(k)  # tool-call / scope top_k may arrive as a float; LIMIT + slice need int
     if mode == "lexical":
         return retrieve_lexical(conn, scope, query, k, match_query = lexical_query)
     if mode == "dense":
         return retrieve_dense(conn, scope, query, k, model_name = model_name)
-    lexical = retrieve_lexical(conn, scope, query, config.TOP_K_LEXICAL, match_query = lexical_query)
-    dense = retrieve_dense(conn, scope, query, config.TOP_K_DENSE, model_name = model_name)
+    lexical = retrieve_lexical(
+        conn, scope, query, lexical_k or config.TOP_K_LEXICAL, match_query = lexical_query
+    )
+    dense = retrieve_dense(conn, scope, query, dense_k or config.TOP_K_DENSE, model_name = model_name)
     return _rrf([lexical, dense], config.RRF_K, k)
 
 

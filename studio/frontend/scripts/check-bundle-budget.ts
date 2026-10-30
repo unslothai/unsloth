@@ -439,14 +439,18 @@ export const BUDGET = {
   // (5,942,150 -> 5,972,134 B raw, 1,836,750 -> 1,847,702 B transfer, ed9857c0c3 -> 39b8a6ce13, Node 24,
   // 85 chunks): its color themes are read by the theme store at startup, and loading its dialog on first
   // open saves 3 KB transfer but adds five startup chunks. Raised by that growth.
-  // DPO, ORPO and GRPO in Studio (#12601): +29,272 B raw / +9,131 B transfer over main at fa7ad0d60 (5,984,705 ->
-  // 6,013,977 B raw, 1,845,111 -> 1,854,242 B transfer, Node 26, 78 chunks): the RL strings in the eager catalog
+  // The GPU rendering setting (#15482) adds 1,948 B raw / 637 B transfer (5,977,895 -> 5,979,843 B raw,
+  // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
+  // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
+  // the eager English catalog and its search rows. Raised by that.
+  // DPO, ORPO and GRPO in Studio (#12601): +29,649 B raw / +9,389 B transfer over main at 4089c57a82 (5,373,852 ->
+  // 5,403,501 B raw, 1,661,918 -> 1,671,307 B transfer, Node 26, 78 chunks): the RL strings in the eager catalog
   // and the RL settings and role mapping in the eager training store. Raised by that growth.
-  // Python rewards (#12995): +4,199 B raw / +1,422 B transfer over #12601 (6,013,977 -> 6,018,176 B raw,
-  // 1,854,242 -> 1,855,664 B transfer, Node 26): the isolation switch, Start gating and per-reward Try it
+  // Python rewards (#12995): +4,369 B raw / +1,522 B transfer over #12601 (5,403,501 -> 5,407,870 B raw,
+  // 1,671,307 -> 1,672,829 B transfer, Node 26): the isolation switch, Start gating and per-reward Try it
   // errors in the eager rewards section and catalog. Raised by that growth.
-  transferBytes: 1_860_326,
-  rawBytes: 6_022_913,
+  transferBytes: 1_861_321,
+  rawBytes: 6_025_408,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

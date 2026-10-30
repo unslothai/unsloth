@@ -312,6 +312,11 @@ def test_mlx_chat_need_prices_one_row_the_prompt_cache_and_a_batch_row_per_extra
     monkeypatch.setattr(inf, "_unified_metal_host", lambda: True)
     need, growth = inf._mlx_chat_need(None, mlx, "m", 4)
     assert (need, growth) == (4096 + 3 * 768, {"mib": 3072, "row_mib": 768, "slots": 4})
+    # A drafter that spent the prompt cache's share leaves the cache only the room the load caps it to.
+    for room, reserved in ((256 << 20, 256), (4 * gib, 1024)):
+        stretched = estimate._replace(cache_room = room)
+        monkeypatch.setattr(inf, "_mlx_load_estimate", lambda *a: (None, stretched))
+        assert inf._mlx_chat_need(None, mlx, "m", 4)[0] == 3072 + reserved + 3 * 768
     offloaded = estimate._replace(offloaded = True)
     monkeypatch.setattr(inf, "_mlx_load_estimate", lambda *a: (None, offloaded))
     assert inf._mlx_chat_need(None, mlx, "m", 4) is None

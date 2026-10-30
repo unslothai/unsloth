@@ -341,6 +341,53 @@ def _string_column_has_image_paths(dataset, name: str) -> Optional[bool]:
         return None
 
 
+def _arrow_may_hold_images(array) -> bool:
+    """Vectorised and conservative: False only when no value could pass the per-row image checks."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    kind = array.type
+    if pa.types.is_struct(kind):
+        names = {field.name for field in kind}
+        if {"bytes", "path"} <= names:  # the undecoded Image layout
+            return True
+        return any(_arrow_may_hold_images(array.field(i)) for i in range(kind.num_fields))
+    if pa.types.is_list(kind) or pa.types.is_large_list(kind) or pa.types.is_fixed_size_list(kind):
+        return _arrow_may_hold_images(array.flatten())
+    if pa.types.is_string(kind) or pa.types.is_large_string(kind):
+        return bool(
+            pc.any(pc.match_substring_regex(array, _IMAGE_PATH_PATTERN)).as_py()
+            or pc.any(pc.equal(array, "image")).as_py()  # a content block's "type"
+        )
+    if pa.types.is_binary(kind) or pa.types.is_large_binary(kind):
+        return array.null_count < len(array)
+    return False
+
+
+def _nested_column_has_images(dataset, name: str) -> Optional[bool]:
+    """Every row of a non-string Arrow column, through the same checks as the row sample; None when not Arrow-backed."""
+    try:
+        column = dataset.data.column(name)
+        indices = getattr(dataset, "_indices", None)
+        if indices is not None:
+            column = column.take(indices.column(0))
+        candidate = any(_arrow_may_hold_images(chunk) for chunk in column.chunks)
+    except Exception:  # noqa: BLE001 - not an Arrow-backed dataset
+        return None
+    feature = (getattr(dataset, "features", None) or {}).get(name)
+    if not candidate or hasattr(feature, "decode"):
+        # Audio and other media features are the audio check's; Image ones were found by type.
+        return False
+    from utils.datasets.format_detection import _holds_images, _is_image_value
+
+    # Raw Arrow rows, so nothing is decoded on the way.
+    rows = dataset.select_columns([name]).with_format("arrow")
+    for batch in rows.iter(batch_size = 1000):
+        if any(_is_image_value(v) or _holds_images(v) for v in batch.column(name).to_pylist()):
+            return True
+    return False
+
+
 def _image_columns(dataset) -> list:
     """Columns holding images, by feature type or by value; a column name alone does not count."""
 
@@ -361,10 +408,12 @@ def _image_columns(dataset) -> list:
     except Exception:  # noqa: BLE001 - datasets missing or a mapping that is not a features dict
         pass
     names = [n for n in getattr(dataset, "column_names", None) or [] if n not in found]
-    # Image paths can start anywhere in a text column, so those are scanned whole.
+    # Images can start at any row, so Arrow columns are scanned whole; only other datasets are sampled.
     sampled = []
     for name in names:
         whole = _string_column_has_image_paths(dataset, name)
+        if whole is None:
+            whole = _nested_column_has_images(dataset, name)
         if whole:
             found.append(name)
         elif whole is None:
