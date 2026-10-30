@@ -470,6 +470,12 @@ def test_pinned_call_rolls_the_ref_back_only_when_nothing_landed(monkeypatch, tm
         == "pinned"
     )
     assert ref.read_text() == "d" * 40
+    # Same when a peer had already published the commit before this download started.
+    assert (
+        hf_download._pinned_snapshot_download(fake("peer_rollback"), "d" * 40, repo_id = _REPO)
+        == "pinned"
+    )
+    assert ref.read_text() == "d" * 40
     # No ref before and nothing landed: no ref after.
     ref.unlink()
     assert (

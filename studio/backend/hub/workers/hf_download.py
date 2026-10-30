@@ -322,13 +322,13 @@ def _pinned_snapshot_download(snapshot_download, commit, **kwargs):
     ref = repo_dir / "refs" / "main"
     previous = _read_ref(ref)
     pin = _pinned_revision(repo_type, repo_id, commit)
-    if not pin or previous == commit:
-        return snapshot_download(**kwargs, **pin)
-    before = _landed_state(repo_dir, commit)
+    if not pin:
+        return snapshot_download(**kwargs)
+    before = None if previous == commit else _landed_state(repo_dir, commit)
     try:
         path = snapshot_download(**kwargs, **pin)
     except BaseException as e:
-        if _landed_state(repo_dir, commit) != before:
+        if before is None or _landed_state(repo_dir, commit) != before:
             raise
         try:
             # Only our own write is undone: a peer may have moved the ref since.
@@ -347,8 +347,8 @@ def _pinned_snapshot_download(snapshot_download, commit, **kwargs):
             file = sys.stderr,
         )
         return snapshot_download(**kwargs)
-    # A concurrent variant download that failed early may have put back the ref this one replaced.
-    if _read_ref(ref) == previous:
+    # A concurrent variant download that failed early may have put back the ref this one or a peer replaced.
+    if _read_ref(ref) in (previous, None) or previous == commit:
         _pinned_revision(repo_type, repo_id, commit)
     return path
 
