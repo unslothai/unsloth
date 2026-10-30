@@ -280,8 +280,16 @@ class _Evaluator:
         if op == "*":
             total = 1
             for a in args:
-                total = _norm(total * _num(a, op))
-            return total
+                # Bound each step without changing its type, so float chains match the browser player.
+                try:
+                    total = total * _num(a, op)
+                except OverflowError:
+                    raise ExprError("number out of range") from None
+                if isinstance(total, int) and abs(total) > _MAX_DOUBLE:
+                    raise ExprError("number out of range")
+                if isinstance(total, float) and (math.isnan(total) or math.isinf(total)):
+                    raise ExprError("number out of range")
+            return _norm(total)
         if op in ("/", "%"):
             arity(2)
             a, b = _num(args[0], op), _num(args[1], op)

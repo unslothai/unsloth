@@ -78,3 +78,8 @@ def test_round_and_multiply_stay_bounded():
     assert time.monotonic() - start < 1.0
     assert eval_expr({"op": "round", "args": [1.23456, 2]}) == 1.23
     assert eval_expr({"op": "*", "args": [2, 3, 4]}) == 24
+
+
+def test_multiply_keeps_float_accumulator_like_browser():
+    # 1.5 * 2 * 9007199254740991 in a JS double is 27021597764222972.
+    assert eval_expr({"op": "*", "args": [1.5, 2, 9007199254740991]}) == 27021597764222972
