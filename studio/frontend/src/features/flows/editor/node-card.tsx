@@ -27,17 +27,19 @@ import { portInk } from "./theme-colors";
 /** Centre of the two-line header: where flow-in and collapsed ports sit. */
 export const HEADER_MID = 22;
 
+// Done and cached cards keep the plain border; their badge says so. Green means hover or selection.
 const STATUS_BORDER: Record<string, string> = {
   queued: "border-ring",
-  waiting: "border-dashed border-amber-400/70",
-  loading_model: "border-ring-strong shadow-md",
-  running: "border-ring-strong shadow-md",
-  done: "border-emerald-500/60 ring-1 ring-emerald-500/20",
-  cached: "border-emerald-500/40",
-  failed: "border-destructive/60 ring-1 ring-destructive/20",
+  waiting: "border-dashed border-amber-400/70 hover:border-amber-400/70",
+  loading_model: "border-ring-strong hover:border-ring-strong shadow-md",
+  running: "border-ring-strong hover:border-ring-strong shadow-md",
+  failed:
+    "border-destructive/60 hover:border-destructive/60 ring-1 ring-destructive/20",
   cancelled: "opacity-80",
   skipped: "opacity-60",
 };
+// Statuses whose own border colour wins over hover and selection.
+const LOUD_STATUS = new Set(["waiting", "loading_model", "running", "failed"]);
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "Queued",
@@ -98,6 +100,9 @@ export function NodeCard({
       className={cn(
         "corner-squircle group/node min-w-0 overflow-visible border-border/60 shadow-sm",
         sized ? "flex h-full w-full flex-col" : "w-65",
+        !LOUD_STATUS.has(runtime.status) &&
+          "hover:border-emerald-500/60 [.react-flow\\_\\_node.selected_&]:border-emerald-500/80",
+        "[.react-flow\\_\\_node.selected_&]:ring-2 [.react-flow\\_\\_node.selected_&]:ring-emerald-500/25",
         STATUS_BORDER[runtime.status],
         disabled && "opacity-45",
         lowDetail && "[&_.flow-detail]:invisible",
