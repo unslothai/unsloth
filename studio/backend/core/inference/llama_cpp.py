@@ -4045,8 +4045,7 @@ _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
 _WINDOWS_SYSMEM_FALLBACK_MAX_FRACTION = 0.125
 
-# WDDM backs every GPU allocation with system commit the process never touches (HIP and Vulkan
-# measured, #16015): warn once the child holds at least this much and less than this is left.
+# WDDM backs GPU allocations with system commit the process never touches (#16015).
 _WINDOWS_GPU_UNTOUCHED_COMMIT_MIN_MIB = 2048
 _WINDOWS_GPU_COMMIT_HEADROOM_WARN_MIB = 4096
 
@@ -32403,7 +32402,6 @@ class LlamaCppBackend:
                         ),
                     )
                 elif not intent.cpu_fallback:
-                    # The commit lands as the GPU buffers are allocated, under every load mode.
                     _gpu_commit_notice = self._windows_gpu_commit_notice(
                         getattr(self._process, "pid", None), binary
                     )
