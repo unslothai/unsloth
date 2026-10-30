@@ -151,10 +151,10 @@ $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Imports $fa
 Check "a 3.8 that no longer imports is force-reinstalled" ($r.Installs.Count -eq 1 -and $r.Installs[0] -eq "--force-reinstall --no-deps $pin" -and $r.Manifest)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Imports $false -Leaves @{ Triton = "3.8.0.post29"; Imports = $false }
 Check "a forced reinstall that still does not import is not certified" (-not $r.Manifest -and $r.Pending -eq 0)
-# Finding 2: a post-install probe that could not read the venv verifies nothing.
+# A post-install probe that could not read the venv verifies nothing.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Readable = $false }
 Check "an unreadable post-install probe is not certified" ((Repaired $r) -and -not $r.Manifest -and $r.Pending -eq 0)
-# Findings 3 to 5: a manifest that cannot be set aside stays valid, so nothing is replaced.
+# A manifest that cannot be set aside stays valid, so nothing is replaced.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Move "fail"
 Check "a manifest that cannot be moved blocks the replacement" ($r.Installs.Count -eq 0 -and $r.Manifest -and $r.StackExit -eq 0 -and $r.Pending -eq 0)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Move "stays"
@@ -165,17 +165,17 @@ $r = Invoke-Block -Torch "2.11.0" -Triton "3.9.0.post30" -Hip "7.2.26015"
 Check "an untagged ROCm build (torch.version.hip set) is repaired" (Repaired $r)
 $r = Invoke-Block -Torch "2.11.0" -Triton "3.9.0.post30"
 Check "an untagged build without hip is not touched" (Untouched $r)
-# Finding 1: a fresh install or a CPU / CUDA -> ROCm move through an opaque custom index.
+# A fresh install or a CPU / CUDA -> ROCm move through an opaque custom index.
 foreach ($previousTag in @($null, "cpu", "cu128")) {
     $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -IndexUrl $null -Tag $previousTag
     Check "custom-index ROCm torch is repaired after prior tag '$previousTag'" (Repaired $r)
 }
-# Finding 2: a ROCm index URL left behind does not make a CUDA / CPU / XPU torch ROCm.
+# A ROCm index URL left behind does not make a CUDA / CPU / XPU torch ROCm.
 foreach ($currentTorch in @("2.11.0+cu128", "2.11.0+cpu", "2.11.0+xpu")) {
     $r = Invoke-Block -Torch $currentTorch -Triton "3.6.0.post25" -IndexUrl "https://mirror.example/rocm7.2/" -Tag "rocm"
     Check "a ROCm index URL does not touch resident '$currentTorch'" (Untouched $r)
 }
-# Findings 5 and 6: inherited uv / pip inputs are cleared for the install and restored after.
+# Inherited uv / pip inputs are cleared for the install and restored after.
 $envNames = @('UV_OVERRIDE', 'UV_EXCLUDE', 'UV_CONSTRAINT', 'PIP_CONSTRAINT')
 foreach ($n in $envNames) { Set-Item "Env:$n" "inherited-$n.txt" }
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30"
@@ -194,10 +194,10 @@ Remove-Item Env:UV_REQUIRE_HASHES, Env:PIP_REQUIRE_HASHES -ErrorAction SilentlyC
 $script:HashSeen = @()
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30"
 Check "an unset PIP_REQUIRE_HASHES is 0 during the install and unset after" ($script:HashSeen[0] -eq "|0" -and $null -eq [Environment]::GetEnvironmentVariable('PIP_REQUIRE_HASHES'))
-# Finding 6: exit 0 that leaves the old version (a uv config override) is not accepted.
+# Exit 0 that leaves the old version (a uv config override) is not accepted.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Leaves @{ Triton = "3.9.0.post30"; Imports = $true }
 Check "exit 0 with 3.9 still installed is not certified (manifest dropped, setup continues)" ((Repaired $r) -and -not $r.Manifest -and $r.StackExit -eq 0 -and $r.Pending -eq 0)
-# Finding 3: a replacement that fails part way and breaks a working triton fails setup and is never certified.
+# A replacement that fails part way and breaks a working triton fails setup and is never certified.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -InstallExit 1 -Leaves @{ Triton = "3.8.0.post29"; Imports = $false }
 Check "a failed replacement that breaks triton fails setup" ((Repaired $r) -and $r.StackExit -eq 1 -and -not $r.Manifest)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -InstallExit 0 -Leaves @{ Triton = "3.8.0.post29"; Imports = $false }
@@ -210,22 +210,22 @@ $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Manifest $f
 Check "no manifest to hold is fine" ((Repaired $r) -and $r.StackExit -eq 0 -and -not $r.Manifest -and $r.Pending -eq 0)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -StackExit 1
 Check "a failed stack is not touched" ($r.Installs.Count -eq 0 -and $r.StackExit -eq 1)
-# Round 5. Findings 1 / 2: metadata or a namespace import is not enough; the imported runtime decides.
+# Metadata or a namespace import is not enough; the imported runtime decides.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra @{ Paired = $false }
 Check "3.8 metadata over a runtime that is not 3.8 is repaired" ($r.Installs.Count -eq 1 -and $r.Installs[0] -eq "--force-reinstall --no-deps $pin" -and $r.Manifest)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra @{ Healthy = $false; Paired = $false }
 Check "a namespace-only triton.language is not certified as paired" ($r.Installs.Count -eq 1 -and $r.Installs[0] -eq "--force-reinstall --no-deps $pin")
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra @{ Paired = $false } -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Healthy = $true; Paired = $false }
 Check "an install whose runtime still is not 3.8 is not certified" (-not $r.Manifest -and $r.Pending -eq 0)
-# Findings 5 / 6: the health baseline and the escalation use the runtime check, not a bare import.
+# The health baseline and the escalation use the runtime check, not a bare import.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -InstallExit 1 -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Healthy = $false; Paired = $false }
 Check "a replacement that leaves an importable triton without its API fails setup" ($r.StackExit -eq 1 -and -not $r.Manifest)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra @{ Healthy = $false; Paired = $false } -InstallExit 1 -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Healthy = $false; Paired = $false }
 Check "a namespace-only baseline is not counted as a working triton that the repair broke" ($r.StackExit -eq 0 -and -not $r.Manifest)
-# Finding 3: the post-stack repair honours UV_OFFLINE like the fast path.
+# The post-stack repair honours UV_OFFLINE like the fast path.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Offline $true
 Check "UV_OFFLINE leaves the post-stack repair for the next online update" (Untouched $r)
-# Finding 4: a record without a version and a broken payload is force-reinstalled, as a broken 3.8 is.
+# A record without a version and a broken payload is force-reinstalled, as a broken 3.8 is.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "" -Imports $false -Extra @{ Dists = 1 }
 Check "a versionless record over a broken payload is force-reinstalled" ($r.Installs.Count -eq 1 -and $r.Installs[0] -eq "--force-reinstall --no-deps $pin" -and $r.Manifest)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -NoTorch $true
@@ -298,7 +298,7 @@ try {
     New-TritonPackage
     $pair = Get-RocmTritonPairing
     Check "the active 3.8 that imports wins over a 3.9 pip backup" ($pair.Triton -eq "3.8.0.post29" -and -not $pair.Stale)
-    # Round 5, findings 1 / 2 / 13 with real Python: the runtime, not the metadata, decides.
+    # With real Python: the runtime, not the metadata, decides.
     New-TritonPackage -Version "3.9.0" -Stub
     $pair = Get-RocmTritonPairing
     Check "3.8 metadata over a 3.9 runtime is stale" ($pair.Triton -eq "3.8.0.post29" -and $pair.Stale -and $pair.Healthy)
@@ -314,14 +314,14 @@ try {
         Check "a $pre runtime is not a 3.8 release" ((Get-RocmTritonPairing).Stale)
     }
     New-TritonPackage -Version "3.8.0"
-    # Findings 11 / 12: a leftover or versionless record does not hide the 3.8 record.
+    # A leftover or versionless record does not hide the 3.8 record.
     New-DistInfo "triton_windows-0.dist-info" "triton-windows" ""
     New-DistInfo "triton_windows-3.9.0.post30.dist-info" "triton-windows" "3.9.0.post30"
     $pair = Get-RocmTritonPairing
     Check "a versionless and a leftover 3.9 record do not hide the 3.8 record" ($pair.Triton -eq "3.8.0.post29" -and -not $pair.Stale -and $pair.Dists -eq 3)
     Remove-Item -LiteralPath (Join-Path $site "triton_windows-0.dist-info") -Recurse -Force
     Remove-Item -LiteralPath (Join-Path $site "triton_windows-3.9.0.post30.dist-info") -Recurse -Force
-    # Finding 4: a dist-info without Version reads as missing and keeps the torch version.
+    # A dist-info without Version reads as missing and keeps the torch version.
     Remove-Item -LiteralPath (Join-Path $site "triton_windows-3.8.0.post29.dist-info") -Recurse -Force
     New-DistInfo "triton_windows-3.9.0.dist-info" "triton-windows" ""
     $pair = Get-RocmTritonPairing
