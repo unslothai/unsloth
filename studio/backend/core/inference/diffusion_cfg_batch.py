@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Batches CFG branches into one forward for stateless denoisers only (ComfyUI's calc_cond_batch rule: one call
-whenever the doubled call fits); a second call differing from the batched inputs reruns that branch plain; not
-always bit-exact; UNSLOTH_DIFFUSION_CFG_BATCH=0 keeps one branch per call, =timed restores the per-shape timing
-trial; UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED=0 keeps a compiled resident denoiser plain"""
+"""Batches CFG branches into one forward for stateless denoisers only (offloaded: whenever the doubled call fits;
+resident: where a per-shape timing trial measured a win); a second call differing from the batched inputs reruns
+that branch plain; not always bit-exact; UNSLOTH_DIFFUSION_CFG_BATCH=0 keeps one branch per call, =timed times
+offloaded loads too; UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED=0 keeps a compiled resident denoiser plain"""
 
 from __future__ import annotations
 
@@ -85,8 +85,8 @@ _OFF_TRANSIENT = "transient"
 
 
 def cfg_batch_mode() -> str:
-    """``off`` / ``auto`` (default: a listed class, resident or offloaded, batched whenever the doubled call fits, as
-    ComfyUI does) / ``timed`` (the old per-shape timing trial: batched only where it measured an 8% win) / ``force``.
+    """``off`` / ``auto`` (default: a listed class; offloaded, batched whenever the doubled call fits; resident, after the
+    per-shape timing trial) / ``timed`` (the trial for offloaded loads too) / ``force`` (no trial, any class).
     Independent of the multi-GPU switches: a single card is the usual case."""
     raw = (os.environ.get(CFG_BATCH_ENV) or "").strip().lower()
     if raw in ("0", "off", "false", "no", "disable", "disabled"):
@@ -105,7 +105,10 @@ def cfg_policy(denoiser: Any) -> tuple[str, Optional[str]]:
         return "never", NOT_BATCHABLE[name]
     if name in STATELESS_CLASSES and type(denoiser).__module__.startswith("diffusers."):
         return "batch", None
-    return "unlisted", f"{name} is not on the stateless-forward list ({CFG_BATCH_ENV}=force opts it in)"
+    return (
+        "unlisted",
+        f"{name} is not on the stateless-forward list ({CFG_BATCH_ENV}=force opts it in)",
+    )
 
 
 def measured_slower(denoiser: Any, card: Optional[str], compiled: bool) -> Optional[str]:
@@ -670,7 +673,9 @@ class CfgBatchRouter:
         module.__dict__["forward"] = self
         self.stats["retaken"] = self.stats.get("retaken", 0) + 1
         if self.logger is not None:
-            self.logger.info("diffusion.cfg_batch: back in the forward slot (a removed offload hook restored the class forward)")
+            self.logger.info(
+                "diffusion.cfg_batch: back in the forward slot (a removed offload hook restored the class forward)"
+            )
         return True
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -701,7 +706,9 @@ class CfgBatchRouter:
                             # compile warm-up, so its batch-2 graph is compiled here, once
                             shape.judged = False
                         else:
-                            self._shape_off(shape, "the denoiser was compiled after this shape's trial")
+                            self._shape_off(
+                                shape, "the denoiser was compiled after this shape's trial"
+                            )
             self.render_checked = True
         if self.render_off is not None:
             return self._plain(args, kwargs)
@@ -782,9 +789,16 @@ class CfgBatchRouter:
         return self._plain(args, kwargs)
 
     def _untimed_mode(self) -> bool:
-        """ComfyUI's rule (the default): batch whenever the doubled call fits, no timing trial. ``timed`` keeps the
-        trial for eager loads; a compiled resident denoiser never takes it (it would compile the batch-2 graph anyway)."""
-        return self.compiled_resident or cfg_batch_mode() != "timed"
+        """No timing trial: an offloaded denoiser batches whenever the doubled call fits (it saves one weight upload
+        per step), and so does a compiled resident one (a trial would compile the batch-2 graph anyway). A resident
+        eager load keeps the trial: measured speed-neutral on L4 / T4, so it batches only where it wins. ``timed``
+        puts offloaded loads back on the trial; ``force`` skips it everywhere."""
+        mode = cfg_batch_mode()
+        if mode == "force":
+            return True
+        if mode == "timed":
+            return self.compiled_resident
+        return self.compiled_resident or self.offloaded
 
     def _plain_steps(self) -> int:
         """Plain steps per render: step 1 records the template; the timed path also prices step 2."""

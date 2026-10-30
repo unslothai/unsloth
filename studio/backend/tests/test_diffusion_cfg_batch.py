@@ -152,7 +152,7 @@ def test_batched_steps_match_two_calls_and_engage(monkeypatch):
     pipe, router = _armed(model, monkeypatch)
     got, _ = _flux_loop(model)
     torch.testing.assert_close(got, ref)
-    # ComfyUI's rule: no timing trial, step 1 records the second call, steps 2-6 run doubled
+    # offloaded: no timing trial, step 1 records the second call, steps 2-6 run doubled
     assert router.stats["batched_steps"] == 5 and router.stats["hits"] == 5
     assert model.calls == [1, 1] + [2] * 5
     assert cb.cfg_batch_status(pipe)["batched_steps"] == 5
@@ -322,8 +322,8 @@ def test_a_resident_denoiser_is_armed_by_default(monkeypatch):
 
 
 def test_a_resident_denoiser_off_cuda_stays_plain_unless_forced(monkeypatch):
-    """CPU / MPS loads have no CUDA memory gate and were never measured: the shape stays plain and the render matches
-    two plain calls exactly. ``force`` still batches."""
+    """CPU / MPS loads have no device timer, so the trial cannot price the doubled call: the shape stays plain and the
+    render matches two plain calls exactly. ``force`` still batches."""
     model = Flux2Transformer2DModel()
     pipe = _Pipe(model)
     assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
@@ -335,7 +335,7 @@ def test_a_resident_denoiser_off_cuda_stays_plain_unless_forced(monkeypatch):
         torch.testing.assert_close(got, ref, rtol = 0, atol = 0)
     assert set(model.calls) == {1}
     assert router.stats["batched_steps"] == 0
-    assert "measured on CUDA only" in cb.cfg_batch_status(pipe)["shape_off"]
+    assert "no device timer on cpu" in cb.cfg_batch_status(pipe)["shape_off"]
 
     monkeypatch.setenv(cb.CFG_BATCH_ENV, "force")
     forced = Flux2Transformer2DModel()
@@ -500,7 +500,9 @@ def test_an_offloaded_shape_judged_before_a_compile_rejudges_in_the_compile_rend
     assert router.last_shape.off is None and router.last_shape.compiled_at_trial
     cb.end_cfg_batch_render(pipe)
     assert router.disabled is None
-    monkeypatch.setattr(cb, "_graph_count", lambda: 7)  # warm: nothing compiles on a follow-up prompt
+    monkeypatch.setattr(
+        cb, "_graph_count", lambda: 7
+    )  # warm: nothing compiles on a follow-up prompt
     del model.calls[:]
     _flux_loop(model)
     assert model.calls == [1, 1] + [2] * 5 and router.disabled is None
@@ -1042,3 +1044,21 @@ def test_a_version_1_verdict_store_is_not_read(monkeypatch, tmp_path):
         )
     )
     assert cb.stored_verdict("k") == entry["k"]
+
+
+@pytest.mark.parametrize("batched_cost, wins", [(1.2, True), (2.0, False)])
+def test_the_default_times_a_resident_eager_load_and_skips_the_trial_offloaded(
+    monkeypatch, batched_cost, wins
+):
+    model = _timed(monkeypatch, lambda b: 1.0 if b == 1 else batched_cost)
+    monkeypatch.delenv(cb.CFG_BATCH_ENV, raising = False)
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    calls = _render(pipe, model)
+    assert calls[4:10] == _TRIAL  # resident eager: the trial still prices the shape
+    assert calls[10:] == ([2] * 4 if wins else [1] * 8)
+    off = _timed(monkeypatch, lambda b: 1.0 if b == 1 else 2.0)  # slower batched, but offloaded
+    monkeypatch.delenv(cb.CFG_BATCH_ENV, raising = False)
+    opipe = _Pipe(_offloaded(off))
+    assert cb.install_cfg_batch(opipe, offload_policy = "group") is None
+    assert _render(opipe, off) == [1, 1] + [2] * 5  # no trial: batched from step 2
