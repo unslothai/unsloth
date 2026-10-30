@@ -48592,7 +48592,66 @@ async def generate_diffusion_image(
 ):
     if request.provider_id:
         return await _external_image_generation(request, http_request)
+    if request.xy is not None:
+        return await _generate_xy_grid(request)
     return await _generate_diffusion_image_core(request)
+
+
+async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGenerateResponse:
+    """Render every X/Y cell as its own gallery image, then save the labelled grid. A Stop or a failing cell ends the
+    grid with that cell's error; the cells before it stay in the gallery."""
+    from core.inference import diffusion_xy, image_gallery
+    from core.inference.diffusion_segment import render_fence
+
+    try:
+        plan = diffusion_xy.expand(request)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    records: list[Optional[GalleryImage]] = [None] * len(plan.cells)
+    pictures: list[Any] = [None] * len(plan.cells)
+    global _diffusion_persist_active
+    # Progress stays active between cells and through the grid save, so a reload does not settle the run early.
+    _diffusion_persist_active += 1
+    try:
+        with render_fence():
+            for index in plan.order:
+                captured: list[Any] = []
+                result = await _generate_diffusion_image_run(
+                    plan.cells[index].request, captured = captured
+                )
+                records[index] = result.images[0]
+                pictures[index] = captured[0]
+        first = records[0]
+
+        def _save_grid() -> dict:
+            grid = diffusion_xy.compose_grid(pictures, plan)
+            meta = first.model_dump(
+                exclude = {"id", "url", "pinned", "archived", "order_at", "schema_version"}
+            )
+            meta.update(
+                width = grid.width,
+                height = grid.height,
+                batch_index = 0,
+                batch_size = 1,
+                xy_grid = {
+                    **plan.describe([request.xy.x, request.xy.y]),
+                    "cells": [r.id for r in records],
+                },
+                created_at = time.time(),
+            )
+            return image_gallery.save(grid, meta)
+
+        try:
+            grid_record = await asyncio.to_thread(_save_grid)
+        except Exception as exc:
+            logger.error("diffusion.xy_grid_failed: %s", exc, exc_info = True)
+            raise HTTPException(
+                status_code = 500,
+                detail = "The grid cells are in the gallery, but the grid image could not be saved.",
+            )
+    finally:
+        _diffusion_persist_active -= 1
+    return DiffusionGenerateResponse(images = records, grid = GalleryImage(**grid_record))
 
 
 async def _generate_diffusion_image_core(
@@ -48608,7 +48667,7 @@ async def _generate_diffusion_image_core(
 
 
 async def _generate_diffusion_image_run(
-    request: DiffusionGenerateRequest,
+    request: DiffusionGenerateRequest, captured: Optional[list] = None
 ) -> DiffusionGenerateResponse:
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -48791,6 +48850,9 @@ async def _generate_diffusion_image_run(
             _diffusion_persist_active -= 1
             raise
 
+    # After the Detailer, so an X/Y cell is the picture the gallery keeps.
+    if captured is not None:
+        captured.extend(result["images"])
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
     per_image_seeds = result.get("seeds")
