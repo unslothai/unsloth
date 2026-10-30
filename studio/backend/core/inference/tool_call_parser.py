@@ -2377,6 +2377,7 @@ def _parse_tool_call_json(
 
 # Identical to the healer's copy; imported so the two cannot drift.
 _trim_param_value = _tool_healing._trim_param_value
+_json_object_body = _tool_healing._json_object_body
 
 
 def _inside_open_parameter(text: str, pos: int) -> bool:
@@ -2458,16 +2459,8 @@ def _parse_function_xml(
         # Strict mode: a dangling parameter means the call was cut off; a closed zero-parameter call stays valid.
         if not allow_incomplete and param_unclosed:
             continue
-        if allow_incomplete and not param_starts and body.lstrip().startswith("{"):
-            # No <parameter> blocks but a JSON object body: models mix the Hermes and XML forms, and
-            # reading it as zero arguments ran the tool with {} (web_search: "No query provided").
-            # A heal, so only with Auto-Heal on; strict mode keeps the well-formed reading.
-            try:
-                _json_body = json.loads(body.strip())
-            except (json.JSONDecodeError, ValueError, RecursionError):
-                _json_body = None
-            if isinstance(_json_body, dict):
-                args = _json_body
+        if allow_incomplete and not param_starts:
+            args = _json_object_body(body) or args
 
         out.append(
             {

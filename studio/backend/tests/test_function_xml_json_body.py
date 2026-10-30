@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen3.5-style ``<function=NAME>`` with no ``<parameter>`` blocks: a JSON object body is the arguments
-(models mix the Hermes and XML forms). Reading it as zero arguments ran the tool with ``{}`` (web_search:
-"No query provided"). Every other body parses as before."""
+"""A JSON object body in ``<function=NAME>`` was read as no arguments (web_search: "No query provided")."""
 
 from __future__ import annotations
 
@@ -51,8 +49,6 @@ def test_zero_argument_and_parameter_calls_are_unchanged():
 
 @pytest.mark.parametrize("wrap", [True, False])
 def test_json_body_is_left_alone_with_auto_heal_off(wrap):
-    # Auto-Heal off (allow_incomplete=False) accepts only well-formed calls, so the mixed form keeps
-    # its strict reading in both copies of the reader.
     from core.tool_healing import parse_tool_calls_from_text as heal_parse
 
     call = '<function=python>\n{"code": "print(1)"}\n</function>'
