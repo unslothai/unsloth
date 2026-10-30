@@ -652,3 +652,33 @@ def test_a_complete_snapshot_with_a_supplied_component_skips_the_download(tmp_pa
     (tmp_path / "tokenizer" / "tokenizer_config.json").write_text("{}")
     assert sh.snapshot_weights_complete(tmp_path, skip = ("transformer",))
     assert not sh.snapshot_weights_complete(tmp_path)
+
+
+def test_complete_fp16_twins_with_an_orphan_default_index_skip_the_download(tmp_path, monkeypatch):
+    # A cached fp16 load reads the twins: the absent default shards an orphan index lists are not owed.
+    from core.inference import diffusion as dif
+
+    monkeypatch.delenv(sh.DOWNLOAD_FIRST_ENV, raising = False)
+    index = {"transformer": ["diffusers", "X"], "vae": ["diffusers", "Y"]}
+    (tmp_path / "model_index.json").write_text(json.dumps(index))
+    _header_only(tmp_path, "transformer", 1, "diffusion_pytorch_model.fp16.safetensors")
+    _header_only(tmp_path, "vae", 1, "diffusion_pytorch_model.fp16.safetensors")
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "diffusion_pytorch_model-00001-of-00002.safetensors"}})
+    )
+    assert not sh.snapshot_weights_complete(tmp_path)
+    assert sh.snapshot_weights_complete(tmp_path, variant = "fp16")
+    monkeypatch.setattr(dif, "host_ram_mib", lambda: (64 * 1024, 60 * 1024))
+    monkeypatch.setattr(dif, "host_commit_mib", lambda: None)
+    monkeypatch.setattr(dif, "pread_available", lambda: False)
+    calls = []
+    dif.DiffusionBackend()._small_host_decision(
+        str(tmp_path),
+        {},
+        types.SimpleNamespace(device = "cuda"),
+        torch.float16,
+        lora_active = False,
+        fetch = lambda: calls.append(1),
+        variant = "fp16",
+    )
+    assert calls == []

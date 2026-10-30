@@ -9286,10 +9286,14 @@ class DiffusionBackend:
                                         fetch = _small_host_fetch(
                                             pipeline_cls,
                                             fetch_base,
-                                            pipe_kwargs,
+                                            # the layout the load reads: a twins load never fetches the defaults
+                                            {**pipe_kwargs, "variant": _fp16_variant}
+                                            if _fp16_variant is not None
+                                            else pipe_kwargs,
                                             _base_local_dir,
                                             local_files_only,
                                         ),
+                                        variant = _fp16_variant,
                                     )
                                     if small_host is not None and small_host.engaged:
                                         pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
@@ -12019,9 +12023,11 @@ class DiffusionBackend:
         *,
         lora_active: bool,
         fetch: Optional[Callable[[], Any]] = None,
+        variant: Optional[str] = None,
     ) -> Any:
         """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot.
-        ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet."""
+        ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet; ``variant``
+        is the weight layout the load reads (complete ``.fp16`` twins need no default shards)."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
         if (
             fetch is not None
@@ -12030,7 +12036,9 @@ class DiffusionBackend:
                 snapshot is None
                 or not stored_components(snapshot)
                 # an interrupted download: sizing only the cached part would hide the missing components
-                or not snapshot_weights_complete(snapshot, skip = tuple(pipe_kwargs))
+                or not snapshot_weights_complete(
+                    snapshot, skip = tuple(pipe_kwargs), variant = variant
+                )
             )
         ):
             fetched = fetch()
