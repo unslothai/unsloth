@@ -21,8 +21,9 @@ router.include_router(llama_bench_router, prefix = "/llama-bench")
 
 MAX_RESULTS = 20_000
 MAX_RUNS_LISTED = 200
-# A runner renews well inside this, so a closed tab frees the GPU within a minute.
-LEASE_TTL_SECONDS = 45
+# Renewed every 15 s, but a backgrounded Chrome tab throttles timers to about once a minute,
+# so this outlasts a throttled renewal; a closed tab still frees the GPU within a few minutes.
+LEASE_TTL_SECONDS = 150
 
 _lease_lock = threading.Lock()
 _lease: Optional[dict[str, Any]] = None
@@ -173,7 +174,10 @@ def release_lease(
 
 
 LEASE_HEADER = b"x-unsloth-bench-lease"
-LOAD_PATHS = ("/api/inference/load", "/api/inference/unload")
+# Compared without a trailing slash; /models/* are the llama-server-compatible root routes.
+LOAD_PATHS = ("/api/inference/load", "/api/inference/unload", "/models/load", "/models/unload")
+# Matched by _is_inference_path but never generate on the server.
+_NOT_GENERATIONS = ("/count_tokens", "/embeddings")
 
 
 def _sweep_holds_against(holder: Optional[str]) -> bool:
@@ -223,7 +227,7 @@ class BenchmarkTrafficMiddleware:
             )
             # Uncredentialed calls go on to the route's own 401.
             if (
-                path in LOAD_PATHS
+                path.rstrip("/") in LOAD_PATHS
                 and _carries_bearer_credentials(scope, path)
                 and load_refused(holder)
             ):
@@ -236,6 +240,6 @@ class BenchmarkTrafficMiddleware:
                     status_code = 409,
                 )(scope, receive, send)
                 return
-            if _is_inference_path(path):
+            if _is_inference_path(path) and not path.endswith(_NOT_GENERATIONS):
                 note_inference_request(holder)
         await self.app(scope, receive, send)
