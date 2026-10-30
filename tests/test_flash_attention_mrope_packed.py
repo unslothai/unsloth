@@ -184,7 +184,9 @@ def _compiled_boundaries(packed_rows, cases, warm):
         lengths = torch.tensor(docs, dtype = torch.int32)
         packing._PACKED_INFO_CACHE.clear()
         if warm:  # the hybrid varlen outer forward fills the cache before the layers run
-            packing.get_packed_info_from_kwargs({"packed_seq_lengths": lengths}, torch.device("cpu"))
+            packing.get_packed_info_from_kwargs(
+                {"packed_seq_lengths": lengths}, torch.device("cpu")
+            )
         compiled(_query(length), lengths)
         kw = calls[-1]
         seen.append(

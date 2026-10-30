@@ -2203,7 +2203,6 @@ def fix_transformers_flash_attention_mrope_packed_rows():
     global _PACKED_ROW_BOUNDARIES_DISABLED
     if _PACKED_ROW_BOUNDARIES_DISABLED is None:
         import torch
-
         _PACKED_ROW_BOUNDARIES_DISABLED = torch.compiler.disable(_packed_row_boundaries_eager)
 
     @functools.wraps(current)
