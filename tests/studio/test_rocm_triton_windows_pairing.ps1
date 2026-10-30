@@ -51,9 +51,17 @@ function Invoke-BoundedPythonProbe {
         try { $out = & $py.Source -S -c $Code 2>&1 | Out-String } finally { $env:PYTHONPATH = $savedPath }
         return @{ Ok = ($LASTEXITCODE -eq 0); Output = $out }
     }
-    if ($Code -eq "import triton.language") { return @{ Ok = [bool]$script:State.Imports; Output = "" } }
+    if ($Code -like "*HEALTHY=*") {
+        # The runtime probe: a failing import exits non-zero. Healthy / Paired default to what a working install of
+        # the recorded version gives; a state can override them (namespace package, API gone, a mismatched payload).
+        if (-not $script:State.Imports) { return @{ Ok = $false; Output = "" } }
+        $healthy = if ($script:State.ContainsKey('Healthy')) { $script:State.Healthy } else { $true }
+        $paired = if ($script:State.ContainsKey('Paired')) { $script:State.Paired } else { $healthy -and $script:State.Triton -match '^3\.8(\.|$)' }
+        return @{ Ok = $true; Output = "TRITONVER=`nHEALTHY=$([int][bool]$healthy)`nPAIRED=$([int][bool]$paired)" }
+    }
     if (-not $script:State.Readable) { return @{ Ok = $false; Output = "" } }
-    return @{ Ok = $true; Output = "TORCH=$($script:State.Torch)`nTRITONWIN=$($script:State.Triton)`nHIP=$($script:State.Hip)" }
+    $dists = if ($script:State.ContainsKey('Dists')) { $script:State.Dists } elseif ($script:State.Triton) { 1 } else { 0 }
+    return @{ Ok = $true; Output = "TORCH=$($script:State.Torch)`nTRITONWIN=$($script:State.Triton)`nTRITONDISTS=$dists`nHIP=$($script:State.Hip)" }
 }
 function Fast-Install {
     $script:Installs += ,($args -join " ")
@@ -61,7 +69,10 @@ function Fast-Install {
     if ($script:InstallLeaves) {
         $script:State.Triton = $script:InstallLeaves.Triton
         $script:State.Imports = $script:InstallLeaves.Imports
-        if ($script:InstallLeaves.ContainsKey('Readable')) { $script:State.Readable = $script:InstallLeaves.Readable }
+        foreach ($k in 'Healthy', 'Paired', 'Dists') { $script:State.Remove($k) }
+        foreach ($k in 'Readable', 'Healthy', 'Paired', 'Dists') {
+            if ($script:InstallLeaves.ContainsKey($k)) { $script:State[$k] = $script:InstallLeaves[$k] }
+        }
     }
     $global:LASTEXITCODE = $script:InstallExit
     return ""
@@ -80,9 +91,10 @@ function Write-StudioLine { param($Text, $ForegroundColor) }
 function Redact-InstallOutput { param($Text) return $Text }
 Invoke-Expression $helpers
 
-function Set-Venv([string]$Torch, [string]$Triton, [string]$Hip = "", [bool]$Imports = $true, [bool]$Readable = $true) {
+function Set-Venv([string]$Torch, [string]$Triton, [string]$Hip = "", [bool]$Imports = $true, [bool]$Readable = $true, $Extra = $null) {
     if (-not $Hip -and $Torch -match '\+rocm(\S+)') { $Hip = $Matches[1] }
     $script:State = @{ Torch = $Torch; Triton = $Triton; Hip = $Hip; Imports = $Imports; Readable = $Readable }
+    if ($Extra) { foreach ($k in $Extra.Keys) { $script:State[$k] = $Extra[$k] } }
 }
 
 $venvRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("rocm_triton_venv_" + [guid]::NewGuid().ToString("N"))
@@ -92,8 +104,10 @@ $manifestFile = Join-Path $venvRoot "unsloth_install_manifest.json"
 # Runs the post-stack block. $IndexUrl and $Tag are what earlier code left behind; the block must not read them.
 function Invoke-Block([string]$Torch, [string]$Triton, [string]$Hip = "", [bool]$Imports = $true, [int]$StackExit = 0,
                       [bool]$NoTorch = $false, $IndexUrl = $null, $Tag = $null, [int]$InstallExit = 0,
-                      $Leaves = @{ Triton = "3.8.0.post29"; Imports = $true }, [bool]$Manifest = $true, [string]$Move = "") {
-    Set-Venv $Torch $Triton $Hip $Imports
+                      $Leaves = @{ Triton = "3.8.0.post29"; Imports = $true }, [bool]$Manifest = $true, [string]$Move = "",
+                      $Extra = $null, [bool]$Offline = $false) {
+    Set-Venv $Torch $Triton $Hip $Imports -Extra $Extra
+    $script:Offline = $Offline
     $script:Installs = @()
     $script:EnvSeen = @()
     $script:InstallExit = $InstallExit
@@ -106,7 +120,7 @@ function Invoke-Block([string]$Torch, [string]$Triton, [string]$Hip = "", [bool]
     $installedTorchTag = $Tag
     $NoTorchMode = $NoTorch
     $VenvDir = $venvRoot
-    try { Invoke-Expression $block } finally { $script:MoveMode = "" }
+    try { Invoke-Expression $block } finally { $script:MoveMode = ""; $script:Offline = $false }
     return @{ Installs = $script:Installs; StackExit = $stackExit; Manifest = (Test-Path -LiteralPath $manifestFile -PathType Leaf);
               Pending = @(Get-ChildItem -LiteralPath $venvRoot -Filter "*.triton-pending" -ErrorAction SilentlyContinue).Count }
 }
@@ -185,6 +199,24 @@ $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Manifest $f
 Check "no manifest to hold is fine" ((Repaired $r) -and $r.StackExit -eq 0 -and -not $r.Manifest -and $r.Pending -eq 0)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -StackExit 1
 Check "a failed stack is not touched" ($r.Installs.Count -eq 0 -and $r.StackExit -eq 1)
+# Round 5. Findings 1 / 2: metadata or a namespace import is not enough; the imported runtime decides.
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra @{ Paired = $false }
+Check "3.8 metadata over a runtime that is not 3.8 is repaired" ($r.Installs.Count -eq 1 -and $r.Installs[0] -eq "--force-reinstall --no-deps $pin" -and $r.Manifest)
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra @{ Healthy = $false; Paired = $false }
+Check "a namespace-only triton.language is not certified as paired" ($r.Installs.Count -eq 1 -and $r.Installs[0] -eq "--force-reinstall --no-deps $pin")
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra @{ Paired = $false } -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Healthy = $true; Paired = $false }
+Check "an install whose runtime still is not 3.8 is not certified" (-not $r.Manifest -and $r.Pending -eq 0)
+# Findings 5 / 6: the health baseline and the escalation use the runtime check, not a bare import.
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -InstallExit 1 -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Healthy = $false; Paired = $false }
+Check "a replacement that leaves an importable triton without its API fails setup" ($r.StackExit -eq 1 -and -not $r.Manifest)
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra @{ Healthy = $false; Paired = $false } -InstallExit 1 -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Healthy = $false; Paired = $false }
+Check "a namespace-only baseline is not counted as a working triton that the repair broke" ($r.StackExit -eq 0 -and -not $r.Manifest)
+# Finding 3: the post-stack repair honours UV_OFFLINE like the fast path.
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Offline $true
+Check "UV_OFFLINE leaves the post-stack repair for the next online update" (Untouched $r)
+# Finding 4: a record without a version and a broken payload is force-reinstalled, as a broken 3.8 is.
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "" -Imports $false -Extra @{ Dists = 1 }
+Check "a versionless record over a broken payload is force-reinstalled" ($r.Installs.Count -eq 1 -and $r.Installs[0] -eq "--force-reinstall --no-deps $pin" -and $r.Manifest)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -NoTorch $true
 Check "no-torch mode leaves an existing Triton alone" (Untouched $r)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "" -NoTorch $true
@@ -229,10 +261,18 @@ function New-TorchPackage([string]$HipLine) {
     Set-Content -LiteralPath (Join-Path $dir "__init__.py") -Value "raise ImportError('the probe must not import torch')" -Encoding ascii
     Set-Content -LiteralPath (Join-Path $dir "version.py") -Value "from typing import Optional`n__version__ = '2.11.0'`ncuda: Optional[str] = None`n$HipLine`n" -Encoding ascii
 }
-function New-TritonPackage {
-    New-Item -ItemType Directory -Path (Join-Path $site "triton/language") -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $site "triton/__init__.py") -Value "" -Encoding ascii
-    Set-Content -LiteralPath (Join-Path $site "triton/language/__init__.py") -Value "" -Encoding ascii
+function New-TritonPackage([string]$Version = "3.8.0", [switch]$Stub, [switch]$Namespace, [string]$Doc = "") {
+    $lang = Join-Path $site "triton/language"
+    Remove-Item -LiteralPath (Join-Path $site "triton") -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $lang -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $site "triton/__init__.py") -Value "__version__ = '$Version'`ndef jit(fn):`n    return fn`n" -Encoding ascii
+    if ($Namespace) { return }
+    # Like triton: make_block_ptr sits behind a functools.wraps decorator; 3.9 left a raise-only stub.
+    $body = if ($Stub) { "    raise ValueError('Block pointers have been removed in favor of the tensor descriptor API')" } else { "    return base" }
+    $docLine = if ($Doc) { "    `"$Doc`"`n" } else { "" }
+    $src = "import functools`ndef builtin(fn):`n    @functools.wraps(fn)`n    def wrapper(*a, **k):`n        return fn(*a, **k)`n    return wrapper`n" +
+        "def program_id(axis):`n    return 0`n@builtin`ndef make_block_ptr(base, shape=None):`n$docLine$body`n"
+    Set-Content -LiteralPath (Join-Path $lang "__init__.py") -Value $src -Encoding ascii
 }
 try {
     New-DistInfo "torch-2.11.0+rocm7.14.0.dist-info" "torch" "2.11.0+rocm7.14.0"
@@ -247,11 +287,34 @@ try {
     New-TritonPackage
     $pair = Get-RocmTritonPairing
     Check "the active 3.8 that imports wins over a 3.9 pip backup" ($pair.Triton -eq "3.8.0.post29" -and -not $pair.Stale)
+    # Round 5, findings 1 / 2 / 13 with real Python: the runtime, not the metadata, decides.
+    New-TritonPackage -Version "3.9.0" -Stub
+    $pair = Get-RocmTritonPairing
+    Check "3.8 metadata over a 3.9 runtime is stale" ($pair.Triton -eq "3.8.0.post29" -and $pair.Stale -and $pair.Healthy)
+    New-TritonPackage -Version "3.8.0" -Stub
+    Check "a runtime whose make_block_ptr is the removed stub is stale" ((Get-RocmTritonPairing).Stale)
+    New-TritonPackage -Version "3.8.0" -Doc "Block pointers have been removed elsewhere; this one works"
+    Check "a working make_block_ptr that only mentions the removal in its docstring is paired" (-not (Get-RocmTritonPairing).Stale)
+    New-TritonPackage -Version "3.8.0" -Namespace
+    $pair = Get-RocmTritonPairing
+    Check "a namespace-only triton.language is neither paired nor healthy" ($pair.Stale -and -not $pair.Healthy)
+    foreach ($pre in @("3.8.0.dev20261001", "3.8.0rc1")) {
+        New-TritonPackage -Version $pre
+        Check "a $pre runtime is not a 3.8 release" ((Get-RocmTritonPairing).Stale)
+    }
+    New-TritonPackage -Version "3.8.0"
+    # Findings 11 / 12: a leftover or versionless record does not hide the 3.8 record.
+    New-DistInfo "triton_windows-0.dist-info" "triton-windows" ""
+    New-DistInfo "triton_windows-3.9.0.post30.dist-info" "triton-windows" "3.9.0.post30"
+    $pair = Get-RocmTritonPairing
+    Check "a versionless and a leftover 3.9 record do not hide the 3.8 record" ($pair.Triton -eq "3.8.0.post29" -and -not $pair.Stale -and $pair.Dists -eq 3)
+    Remove-Item -LiteralPath (Join-Path $site "triton_windows-0.dist-info") -Recurse -Force
+    Remove-Item -LiteralPath (Join-Path $site "triton_windows-3.9.0.post30.dist-info") -Recurse -Force
     # Finding 4: a dist-info without Version reads as missing and keeps the torch version.
     Remove-Item -LiteralPath (Join-Path $site "triton_windows-3.8.0.post29.dist-info") -Recurse -Force
     New-DistInfo "triton_windows-3.9.0.dist-info" "triton-windows" ""
     $pair = Get-RocmTritonPairing
-    Check "triton-windows without Version reads as missing, torch still read" ($pair.Torch -eq "2.11.0+rocm7.14.0" -and $pair.Triton -eq "" -and $pair.Stale)
+    Check "triton-windows without Version reads as missing, torch still read" ($pair.Torch -eq "2.11.0+rocm7.14.0" -and $pair.Triton -eq "" -and $pair.Dists -eq 1)
     # torch.version.hip, read without importing torch.
     Remove-Item -LiteralPath (Join-Path $site "torch-2.11.0+rocm7.14.0.dist-info") -Recurse -Force
     New-DistInfo "torch-2.11.0.dist-info" "torch" "2.11.0"
@@ -267,6 +330,11 @@ try {
 }
 
 Write-Host "=== wiring ==="
+$repairLine = [regex]::Match($block, 'Repair with: (python[^\r\n]*?)" -ForegroundColor').Groups[1].Value
+$repairCmd = $repairLine.Replace('`"', '"').Replace('$($_rocmPair.Spec)', $pin)
+$parseErrors = $null
+[System.Management.Automation.PSParser]::Tokenize($repairCmd, [ref]$parseErrors) | Out-Null
+Check "the printed repair command is valid PowerShell (the pin is quoted)" ($repairCmd -match [regex]::Escape("`"$pin`"") -and @($parseErrors).Count -eq 0)
 $stackAt = $setup.IndexOf('python "$PSScriptRoot\install_python_stack.py"')
 Check "the repair runs after the dependency stack" ($stackAt -ge 0 -and $setup.IndexOf($block) -gt $stackAt)
 Check "the repair reads neither the old tag nor the ROCm index URL" ($block -notmatch '\$installedTorchTag|\$ROCmIndexUrl')

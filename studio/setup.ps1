@@ -7596,14 +7596,38 @@ function Get-TritonWindowsRocmSpec {
     return $null
 }
 
+function Get-TritonRuntimeState {
+    # Judged by the imported runtime, not metadata: a dist-info can say 3.8 while the files are 3.9 or half removed.
+    # Healthy = triton and a real (non-namespace) triton.language import with their core API, whatever the version.
+    # Paired = healthy, a final 3.8.x release (no dev / rc) and make_block_ptr present, not 3.9's raise-only stub
+    # (its message is a constant of the function body; a docstring that mentions the removal does not count).
+    # A failing import exits non-zero, which reads as neither. No double quotes: the probe helper wraps $Code in them.
+    $code = "import importlib, inspect, re; t = importlib.import_module('triton'); tl = importlib.import_module('triton.language'); " +
+        "v = getattr(t, '__version__', '') or ''; " +
+        "h = getattr(tl, '__file__', None) is not None and callable(getattr(t, 'jit', None)) and callable(getattr(tl, 'program_id', None)); " +
+        "f = getattr(tl, 'make_block_ptr', None); c = getattr(inspect.unwrap(f), '__code__', None) if callable(f) else None; " +
+        "d = getattr(inspect.unwrap(f), '__doc__', None) if callable(f) else None; " +
+        "bp = c is not None and not any(isinstance(k, str) and k != d and 'have been removed' in k for k in c.co_consts); " +
+        "print('TRITONVER=' + v); print('HEALTHY=' + str(int(bool(h)))); " +
+        "print('PAIRED=' + str(int(bool(h and bp and re.fullmatch(r'3\.8\.\d+(\.post\d+)?(\+[\w.]+)?', v)))))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
+    return @{
+        Healthy = [bool]($probe.Ok -and $probe.Output -match '(?m)^HEALTHY=1\s*$')
+        Paired = [bool]($probe.Ok -and $probe.Output -match '(?m)^PAIRED=1\s*$')
+    }
+}
+
 function Get-RocmTritonPairing {
     # Reads the venv as it is now; nothing cached from before the install decides. No double quotes:
     # Invoke-BoundedPythonProbe wraps $Code in them. ROCm = torch.version.hip, read from torch/version.py without
     # importing torch (an untagged ROCm build has no +rocm). The name lookup skips the ~riton_windows-* backup an
-    # interrupted pip replacement leaves; a dist-info without Version reads as missing.
+    # interrupted pip replacement leaves. Triton is only what the metadata reports (a 3.8 record wins over a
+    # leftover one, a record without Version is skipped); whether the pair is stale comes from the runtime.
     $code = "import importlib.metadata as m, importlib.util as u, os, re; " +
         "print('TORCH=' + m.version('torch')); " +
-        "print('TRITONWIN=' + (next((d.version for d in m.distributions(name='triton-windows')), '') or '')); " +
+        "ds = list(m.distributions(name='triton-windows')); vs = [d.version for d in ds if d.version]; " +
+        "print('TRITONWIN=' + next((x for x in vs if x.startswith('3.8')), vs[0] if vs else '')); " +
+        "print('TRITONDISTS=' + str(len(ds))); " +
         "s = u.find_spec('torch'); p = os.path.join(os.path.dirname(s.origin), 'version.py') if s and s.origin else ''; " +
         "t = open(p, encoding='utf-8').read() if p and os.path.isfile(p) else ''; " +
         "h = re.search(r'^hip\b[^=\n]*=\s*.([0-9][^\x27\x22\n]*)', t, re.M); " +
@@ -7611,15 +7635,13 @@ function Get-RocmTritonPairing {
     $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
     $torch = if ($probe.Ok -and $probe.Output -match '(?m)^TORCH=(\S+)\s*$') { $Matches[1] } else { "" }
     $triton = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
+    $dists = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONDISTS=(\d+)\s*$') { [int]$Matches[1] } else { 0 }
     $hip = if ($probe.Ok -and $probe.Output -match '(?m)^HIP=(\S+)\s*$') { $Matches[1] } else { "" }
     $spec = if ($hip -or $torch -match '\+rocm') { Get-TritonWindowsRocmSpec -TorchVersion $torch } else { $null }
-    # A 3.8 whose replacement half-failed keeps its metadata but no longer imports.
-    $usable = $false
-    if ($spec -and $triton -match '^3\.8(\.|$)') {
-        $usable = (Invoke-BoundedPythonProbe -PythonExe "python" -Code "import triton.language").Ok
-    }
+    $runtime = if ($spec) { Get-TritonRuntimeState } else { @{ Healthy = $false; Paired = $false } }
     # Known is false when the probe itself failed: nothing about the venv was read, so nothing is verified.
-    return @{ Torch = $torch; Triton = $triton; Spec = $spec; Stale = [bool]($spec -and -not $usable); Known = [bool]$probe.Ok }
+    return @{ Torch = $torch; Triton = $triton; Dists = $dists; Spec = $spec; Stale = [bool]($spec -and -not $runtime.Paired);
+              Healthy = $runtime.Healthy; Known = [bool]$probe.Ok }
 }
 
 function Test-RocmTritonPairingNeedsPass {
@@ -8481,10 +8503,13 @@ $script:SetupVenvChanged = $true
 # venv the stack left, whatever index or earlier tag produced it.
 if ($stackExit -eq 0 -and -not $NoTorchMode) {
     $_rocmPair = Get-RocmTritonPairing
-    if ($_rocmPair.Stale) {
-        $_rocmTritonFrom = if ($_rocmPair.Triton) { "triton-windows $($_rocmPair.Triton)" } else { "no triton-windows" }
+    $_rocmTritonFrom = if ($_rocmPair.Triton) { "triton-windows $($_rocmPair.Triton)" } else { "no triton-windows" }
+    if ($_rocmPair.Stale -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))) {
+        # As on the fast path: the repair needs the index, so an offline run leaves it for the next online update.
+        substep "$_rocmTritonFrom does not pair with torch $($_rocmPair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
+    } elseif ($_rocmPair.Stale) {
         substep "pairing Triton for Windows with torch $($_rocmPair.Torch) ($_rocmTritonFrom -> $($_rocmPair.Spec))..." "Cyan"
-        $_rocmImportedBefore = (Invoke-BoundedPythonProbe -PythonExe "python" -Code "import triton.language").Ok
+        $_rocmImportedBefore = $_rocmPair.Healthy
         # Set the install manifest aside until the pair is verified, so a failed replacement is never certified
         # complete and the next update re-runs the dependency pass. As in the XPU swap: a manifest that cannot be
         # moved stays valid through the replacement, so nothing is installed then.
@@ -8515,9 +8540,12 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
                 $_rocmSavedEnv[$_n] = [Environment]::GetEnvironmentVariable($_n)
                 Remove-Item "Env:$_n" -ErrorAction SilentlyContinue
             }
-            # A 3.8 that no longer imports already satisfies the pin, so only a forced reinstall restores its files.
+            # A broken 3.8, or a record with no version, already satisfies the pin as far as the installer can
+            # tell, so only a forced reinstall restores its files.
             $_rocmArgs = @($_rocmPair.Spec)
-            if ($_rocmPair.Triton -match '^3\.8(\.|$)') { $_rocmArgs = @('--force-reinstall', '--no-deps') + $_rocmArgs }
+            if ($_rocmPair.Triton -match '^3\.8(\.|$)' -or ($_rocmPair.Dists -gt 0 -and -not $_rocmPair.Triton)) {
+                $_rocmArgs = @('--force-reinstall', '--no-deps') + $_rocmArgs
+            }
             try {
                 $_rocmTritonOut = Fast-Install @_rocmArgs | Out-String
                 $_rocmTritonExit = $LASTEXITCODE
@@ -8540,9 +8568,9 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
                 $_rocmHave = if (-not $_rocmAfter.Known) { "the venv could not be read" } elseif ($_rocmAfter.Triton) { "triton-windows $($_rocmAfter.Triton) installed" } else { "no triton-windows installed" }
                 substep "[WARN] could not pair $($_rocmPair.Spec) (exit $_rocmTritonExit, $_rocmHave); flex attention decode may run unfused. Check uv override-dependencies / constraints if this repeats." "Yellow"
                 Write-StudioLine (Redact-InstallOutput $_rocmTritonOut) -ForegroundColor Yellow
-                if ($_rocmImportedBefore -and -not (Invoke-BoundedPythonProbe -PythonExe "python" -Code "import triton.language").Ok) {
-                    Write-StudioLine "[ERROR] the Triton replacement failed part way and triton no longer imports -- torch.compile is broken." -ForegroundColor Red
-                    Write-StudioLine "        Repair with: python -m pip install --force-reinstall --no-deps $($_rocmPair.Spec)" -ForegroundColor Red
+                if ($_rocmImportedBefore -and -not (Get-TritonRuntimeState).Healthy) {
+                    Write-StudioLine "[ERROR] the Triton replacement failed part way and triton no longer works -- torch.compile is broken." -ForegroundColor Red
+                    Write-StudioLine "        Repair with: python -m pip install --force-reinstall --no-deps `"$($_rocmPair.Spec)`"" -ForegroundColor Red
                     # Fail, or install.ps1 commits this venv over its rollback copy.
                     $stackExit = if ($_rocmTritonExit -ne 0) { $_rocmTritonExit } else { 1 }
                 }
