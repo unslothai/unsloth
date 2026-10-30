@@ -6643,6 +6643,8 @@ _DISPLAY_HOLD_TRIGGERS = tuple(
     )
 )
 _DISPLAY_HOLD_OVERLAP = max(len(trigger) for trigger in _DISPLAY_HOLD_TRIGGERS) - 1
+# The longest text after a backtick that ``tool_healing.tag_mention_spans`` could still close as a lone-tag mention.
+_DISPLAY_HOLD_MENTION_TAG_RE = _re.compile(r"<[^<>`\n]*>?[\w.\-]*[ \t]*")
 
 
 class _StreamingDisplayStrip:
@@ -6737,6 +6739,14 @@ class _StreamingDisplayStrip:
         ):
             self._hold_dead = True
             return
+        if prefix.rstrip(" \t").endswith("`"):
+            # A backticked tag followed by its closing backticks is a mention the strip keeps; wait until B rules it out.
+            tag = _DISPLAY_HOLD_MENTION_TAG_RE.match(text, first)
+            if tag is not None and tag.end() == len(text):
+                return
+            if tag is not None and text[tag.end()] == "`":
+                self._hold_dead = True
+                return
         opener = _DISPLAY_HOLD_OPENER_RE.match(text, first)
         if opener is not None and opener.group().endswith("<tool_call>"):
             # A wrapped ``<function=NAME>`` may still be arriving after the whitespace.

@@ -304,6 +304,27 @@ def test_route_hold_releases_on_the_close_split_at_every_offset():
     assert strip.strip(text) == "Writing.\n\nDone."
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Use `<tool_call>` to call a tool.",
+        "Use ``<tool_call>` `` here, then more prose follows.",
+        "Name it `<function=web_search>` and wait.",
+        "Wrap it: ` <function=python> `\n<tool_call>\n<function=python>\n<parameter=code>\n1\n",
+    ],
+)
+def test_route_hold_does_not_arm_on_a_backticked_tag(text):
+    # A tag closed by backticks is a mention a mention-aware strip keeps, so the hold must not pin the display.
+    for names in NAME_GATES:
+        strip = _StreamingDisplayStrip(auto_heal_tool_calls = True, enabled_tool_names = names)
+        for cut in range(1, len(text) + 1):
+            prefix = text[:cut]
+            assert strip.strip(prefix) == _strip_tool_xml_for_display(
+                prefix, auto_heal_tool_calls = True, enabled_tool_names = names
+            ), (text, cut)
+            assert strip._hold_out is None, (text, cut)
+
+
 def test_span_guard_skips_the_full_strip_on_plain_prose(monkeypatch):
     calls = _count_route_strips(monkeypatch)
     guard = _ReasoningSpanGuard()
