@@ -245,6 +245,15 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "Choose only curated Codex models.")
 
 
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(url.strip())
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
+    return (parts.scheme.lower(), (parts.hostname or "").lower(), port)
+
+
 def _validate_max_output_tokens_contract(
     provider_type: str,
     field_was_set: bool,
@@ -475,6 +484,21 @@ async def update_provider_config(
         "shared",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
+
+    # A saved Nace key belongs to the host it was entered for; moving the connection needs a new one.
+    # A keyless row, or a save that clears the key, has nothing to protect.
+    if (
+        existing["provider_type"] == "nace"
+        and payload.base_url
+        and not payload.encrypted_api_key
+        and not payload.clear_api_key
+        and credential_secrets.provider_api_key_saved(provider_id)
+        and _origin(payload.base_url) != _origin(existing["base_url"])
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Changing the Nace base URL requires entering the API key again.",
+        )
 
     # Validate only a changed base URL, or unchanged legacy rows become uneditable.
     base_url = payload.base_url

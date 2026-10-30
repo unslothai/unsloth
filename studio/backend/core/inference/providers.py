@@ -576,6 +576,17 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "model_list_mode": "curated",
         "decisions_only": True,
     },
+    "nace": {
+        "display_name": "Nace",
+        "base_url": "https://console.nace.ai/v1",
+        "default_models": ["drex-max", "drex-v2.0"],
+        "supports_streaming": False,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "Drex System One decision models. Used by the Decision API, never by chat.",
+        "model_list_mode": "curated",
+        "decisions_only": True,
+    },
 }
 
 
