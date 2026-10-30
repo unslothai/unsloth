@@ -708,7 +708,10 @@ def test_twins_completed_by_a_supplied_component_skip_the_early_download(tmp_pat
     )
     pipe_kwargs = {"torch_dtype": torch.float16, "vae": object()}
     # The pipeline load's own variant pick once the vae is supplied.
-    assert local_fp16_variant(str(tmp_path), load_dtype = torch.float16, supplied = tuple(pipe_kwargs)) == "fp16"
+    assert (
+        local_fp16_variant(str(tmp_path), load_dtype = torch.float16, supplied = tuple(pipe_kwargs))
+        == "fp16"
+    )
 
     # Evaluate the variant the pipeline call site hands the decision, from the source's latest assignment to it.
     src = inspect.getsource(dif)
