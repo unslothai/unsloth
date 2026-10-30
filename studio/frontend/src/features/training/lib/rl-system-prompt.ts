@@ -40,3 +40,13 @@ export function effectiveSystemPrompt(
   const fromColumn = systemColumn ? row?.[systemColumn] : undefined;
   return fromColumn ? String(fromColumn) : configured;
 }
+
+/** The configured prompt as training gets it: with the reasoning format on, an empty one is
+ * replaced by the reasoning prompt (routes/training.py), so "no system prompt" is not offered. */
+export function configuredSystemPrompt(
+  prompt: string,
+  reasoning: boolean,
+  reasoningPrompt: string,
+): string {
+  return reasoning && prompt.trim() === "" ? reasoningPrompt : prompt;
+}

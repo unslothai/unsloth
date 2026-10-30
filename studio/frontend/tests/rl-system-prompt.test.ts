@@ -2,12 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { effectiveSystemPrompt } = await import(
+const { configuredSystemPrompt, effectiveSystemPrompt } = await import(
   "../src/features/training/lib/rl-system-prompt.ts"
 );
 
@@ -48,4 +49,20 @@ test("rows without their own system message show the configured prompt", () => {
     effectiveSystemPrompt(null, mapping, "Use <answer>"),
     "Use <answer>",
   );
+});
+
+test("with the reasoning format on, an empty prompt is the reasoning prompt training gets", () => {
+  assert.equal(configuredSystemPrompt("", true, "Use <think>"), "Use <think>");
+  assert.equal(configuredSystemPrompt("  ", true, "Use <think>"), "Use <think>");
+  assert.equal(configuredSystemPrompt("", false, "Use <think>"), "");
+  assert.equal(configuredSystemPrompt("Mine", true, "Use <think>"), "Mine");
+});
+
+test("the reasoning format offers no 'no system prompt' preset, since training would add one", () => {
+  const src = readFileSync(
+    new URL("../src/features/studio/sections/rl/prompt-format-section.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /value: "none",\s*label: presetLabel\("none"\),[^}]*disabled: s\.reasoning/);
+  assert.match(src, /effectiveSystemPrompt\(previewRow, s\.mapping, configured\)/);
 });

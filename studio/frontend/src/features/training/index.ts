@@ -86,7 +86,10 @@ export type {
   RewardRecord,
   RlSampleGroup,
 } from "./api/rewards-api";
-export { effectiveSystemPrompt } from "./lib/rl-system-prompt";
+export {
+  configuredSystemPrompt,
+  effectiveSystemPrompt,
+} from "./lib/rl-system-prompt";
 export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
 export { rlChartKeys } from "./lib/rl-chart-keys";
 export {

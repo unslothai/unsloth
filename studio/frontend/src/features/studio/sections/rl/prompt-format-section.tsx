@@ -13,6 +13,7 @@ import {
   GRPO_REASONING_SYSTEM_PROMPT,
 } from "@/config/training";
 import {
+  configuredSystemPrompt,
   effectiveSystemPrompt,
   previewCell,
   ruleTags,
@@ -65,7 +66,13 @@ export function PromptFormatSection(): ReactElement {
   const notebookPrompt = s.reasoning
     ? GRPO_REASONING_SYSTEM_PROMPT
     : GRPO_DEFAULT_SYSTEM_PROMPT;
-  const preset = presetOf(s.prompt, notebookPrompt);
+  // What training gets: with the reasoning format on, an empty prompt is the reasoning one.
+  const configured = configuredSystemPrompt(
+    s.prompt,
+    s.reasoning,
+    GRPO_REASONING_SYSTEM_PROMPT,
+  );
+  const preset = presetOf(configured, notebookPrompt);
   const showEditor = preset === "custom" || editing;
   const active: Preset = showEditor ? "custom" : preset;
   // The preset is the reasoning format's prompt while that is on.
@@ -81,7 +88,7 @@ export function PromptFormatSection(): ReactElement {
   )?.[0];
   const userText = promptColumn ? previewCell(previewRow?.[promptColumn]) : "";
   // A row's own system message wins in training, so the preview and tag check use it too.
-  const system = effectiveSystemPrompt(previewRow, s.mapping, s.prompt);
+  const system = effectiveSystemPrompt(previewRow, s.mapping, configured);
 
   const selected = new Set(s.rewards.map((r) => r.name));
   const tags = [
@@ -176,7 +183,12 @@ export function PromptFormatSection(): ReactElement {
                 size="compact"
                 options={[
                   { value: "notebook", label: presetLabel("notebook") },
-                  { value: "none", label: presetLabel("none") },
+                  {
+                    value: "none",
+                    label: presetLabel("none"),
+                    // Training adds the reasoning prompt to an empty one.
+                    disabled: s.reasoning,
+                  },
                   { value: "custom", label: presetLabel("custom") },
                 ]}
               />
