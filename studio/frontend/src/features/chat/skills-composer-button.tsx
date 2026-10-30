@@ -49,7 +49,6 @@ export function SkillsComposerButton({
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const [skillsOn, setSkillsOn] = useSkillsSwitch();
 
-  // Runnable skills only: shadowed or invalid ones stay in Manage skills.
   const usable = skills.filter((skill) => skill.valid && !skill.shadowed);
   const enabledCount = usable.filter((skill) => skill.enabled).length;
 
@@ -138,7 +137,6 @@ export function SkillsComposerButton({
                 <DropdownMenuItem
                   key={`${skill.source}:${skill.name}`}
                   disabled={pending.has(skill.name)}
-                  // Stays open to toggle several.
                   onSelect={(event) => {
                     event.preventDefault();
                     void toggle(skill.name, !skill.enabled);

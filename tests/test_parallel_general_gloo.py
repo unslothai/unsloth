@@ -16,7 +16,6 @@ if multiprocessing.parent_process() is not None or getattr(
 
 import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
-import socket  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 import types  # noqa: E402
@@ -574,9 +573,8 @@ def _worker(rank, world, port, case, tmp):
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _spawn(case, world = 2):
@@ -712,24 +710,43 @@ def test_tp_clip_coefficient_is_not_narrowed_to_fp16():
     assert p.grad.float() == pytest.approx(torch.full((4,), 1e-3), rel = 1e-2), p.grad
 
 
-@pytest.mark.parametrize("kind", ["tp", "pp"])
 @pytest.mark.parametrize("name", EXPORTS)
-def test_exports_refuse_model_parallel_before_writing(kind, name):
+def test_exports_refuse_pipeline_parallel_before_writing(name):
     results = _spawn_cached("export")
     if "skip" in results[0]:
         pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
-    want = "tensor parallel model" if kind == "tp" else "pipeline parallel model"
     for res in results:
-        r = res[f"{kind}:{name}"]
-        assert r["error"] and "RuntimeError" in r["error"] and want in r["error"], r
+        r = res[f"pp:{name}"]
+        assert (
+            r["error"] and "RuntimeError" in r["error"] and "pipeline parallel model" in r["error"]
+        ), r
         assert not r["wrote"], r
+
+
+@pytest.mark.parametrize("name", EXPORTS)
+def test_exports_of_a_tensor_parallel_model_run_on_rank0_only(name):
+    """tp_replica.py: rank 0 runs the one-process export on the gathered model, the other ranks wait and
+    share its outcome (here a merged save with no base checkpoint fails the same way one process does)."""
+    results = _spawn_cached("export")
+    if "skip" in results[0]:
+        pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
+    rank0, rank1 = results[0][f"tp:{name}"], results[1][f"tp:{name}"]
+    assert not rank1["wrote"], rank1  # rank 1's own directory: only rank 0 writes
+    if rank0["error"] is None:
+        assert rank0["wrote"] and rank1["error"] is None, (rank0, rank1)
+    else:
+        assert (
+            "tensor parallel" not in rank0["error"]
+        ), rank0  # the export's own error, not a refusal
+        assert rank1["error"] and "failed on rank 0" in rank1["error"], rank1
 
 
 def test_every_whole_model_export_is_guarded():
     """Static: every export patch_saving_functions binds, and every writer behind them, refuses TP / PP first."""
     import ast
 
-    tree = ast.parse(open(os.path.join(REPO, "unsloth", "save.py")).read())
+    with open(os.path.join(REPO, "unsloth", "save.py"), encoding = "utf-8") as f:
+        tree = ast.parse(f.read())
     functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     bound = set()
     for node in ast.walk(functions["patch_saving_functions"]):

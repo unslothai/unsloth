@@ -12,7 +12,6 @@ import {
 import { useAuiState } from "@assistant-ui/react";
 import type { FC } from "react";
 
-/** Mounted only while the prompt's actions are revealed, with no clock subscription. */
 export const UserMessageTime: FC = () => {
   const t = useT();
   const locale = useLocale();

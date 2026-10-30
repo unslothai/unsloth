@@ -96,3 +96,24 @@ test("a loaded hub GGUF row opens its quant list, so quants downloaded after the
   assert.match(loadedRow, /expandable\s*\?\s*setExpandedGguf\(\(prev\) =>\s*prev === entry\.id \? null : entry\.id,?\s*\)/);
   assert.match(loadedRow, /\{expanded && \(\s*<GgufVariantExpander[\s\S]*?repoId=\{entry\.id\}/);
 });
+
+test("a model loaded by path keeps its row menu, and a cached download pins and reveals as its repo", () => {
+  // The menu hides with no items, so a path load once lost it with only one model loaded.
+  const start = picker.indexOf("const renderLoadedRow = (");
+  const loadedRow = picker.slice(start, picker.indexOf("const renderConnectedModelRow", start));
+  assert.match(
+    loadedRow,
+    /const pinRepoId = !isLocal\s*\? checkpoint\s*: isHfCacheSnapshotPath\(checkpoint\)\s*\? publicModelId\(checkpoint\)\s*: null;/,
+  );
+  // A cached download reveals through the cache endpoint; the local one 404s for hf_cache rows.
+  assert.match(
+    loadedRow,
+    /cachePath=\{\s*pinRepoId === null \? undefined : \{ repoId: pinRepoId, variant: quant \?\? undefined \}\s*\}/,
+  );
+  assert.match(
+    loadedRow,
+    /onReveal=\{\s*pinRepoId === null \? \(\) => revealLocalModel\(checkpoint, entry\.id\) : undefined\s*\}/,
+  );
+  assert.match(loadedRow, /pinnedSet\.has\(pinKey\(pinRepoId, quant \?\? undefined\)\)/);
+  assert.match(loadedRow, /togglePinned\(pinRepoId, quant \?\? undefined\)/);
+});

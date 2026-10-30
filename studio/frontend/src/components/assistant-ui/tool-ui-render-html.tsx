@@ -4,6 +4,7 @@
 "use client";
 
 import { ArtifactCard } from "@/features/chat";
+import { appSessionStartedAt } from "@/lib/app-session-start";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
@@ -14,14 +15,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { memo } from "react";
 import { isToolCallRunning } from "./tool-arg-text";
 
-// Per Context7 assistant-ui docs: tool UIs read streaming args via
-// useToolArgsStatus, so render_html need not wait for tool completion.
 type RenderHtmlArgs = Record<string, unknown> & {
   code?: string;
   title?: string;
 };
-
-const RENDER_HTML_SESSION_STARTED_AT = Date.now();
 
 const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   args,
@@ -38,7 +35,6 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   const isRunning = isToolCallRunning(status);
   const codeIsStreaming = propStatus.code === "streaming";
 
-  // Surface the backend error when the tool call completed with invalid args.
   // Success results start with "Rendered HTML canvas"; errors with "Error:".
   const errorText =
     status?.type === "complete" &&
@@ -59,7 +55,7 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
     !(isThreadRunning && isMessageRunning) && (isRunning || codeIsStreaming);
   const messageCreatedThisSession =
     messageCreatedAtMs != null &&
-    messageCreatedAtMs >= RENDER_HTML_SESSION_STARTED_AT - 1000;
+    messageCreatedAtMs >= appSessionStartedAt() - 1000;
   const shouldAutoOpenArtifact =
     (isLiveGeneratingArtifact && (hasCode || isRunning || codeIsStreaming)) ||
     (hasCode && messageCreatedThisSession);

@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat tools that render on the image or video model already loaded in Unsloth Studio.
-
-Every registry that needs to know these tools (sentinel stripping, always-safe, dedupe
-exemptions, the Anthropic allow-list) reads ``MEDIA_CHAT_TOOLS`` so the lists can't drift.
-The module has no heavy imports at load time; the status helpers import lazily.
-"""
+"""Chat tools for the loaded image/video model; registries read MEDIA_CHAT_TOOLS so they cannot
+drift; no heavy imports at load, status helpers import lazily."""
 
 from __future__ import annotations
 

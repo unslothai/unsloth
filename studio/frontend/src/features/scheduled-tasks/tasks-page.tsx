@@ -2,15 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  Add01Icon,
   Delete02Icon,
+  Edit03Icon,
   FilterMailIcon,
   MoreHorizontalIcon,
-  PencilEdit02Icon,
+  PlusSignIcon,
   Search01Icon,
   Clock01Icon,
-  PauseIcon,
 } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { PlayIcon } from "lucide-react";
@@ -286,7 +286,7 @@ function TaskRow({
             className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-48 font-heading rounded-[14px] border-0"
           >
             <DropdownMenuItem onSelect={onEdit}>
-              <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               {t("scheduledTasks.edit")}
             </DropdownMenuItem>
             {task.status !== "completed" && (
@@ -437,8 +437,8 @@ export function TasksPage() {
               className="h-control w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
             />
           </div>
-          <Button onClick={() => setEditing(null)}>
-            <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
+          <Button variant="dark" onClick={() => setEditing(null)}>
+            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
             {t("scheduledTasks.newTask")}
           </Button>
         </div>
@@ -478,7 +478,7 @@ export function TasksPage() {
             className="mt-3 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
             onClick={() => setEditing(null)}
           >
-            <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
             {t("scheduledTasks.createFirst")}
           </Button>
         </div>

@@ -139,6 +139,11 @@ export const ar = {
     more: "المزيد",
     addressPlaceholder: "ابحث أو أدخل عنوان URL",
     local: "محلي",
+    browserUse: {
+      label: "استخدام المتصفح",
+      description: "السماح للنماذج بالتحكم في المتصفح المدمج",
+      unavailable: "حمّل نموذجًا يمكنه استدعاء الأدوات ليتمكن من استخدام المتصفح.",
+    },
     suggested: "مقترحات",
     suggestedMenu: {
       open: "فتح",
@@ -496,7 +501,6 @@ export const ar = {
       clearDataFailed: "تعذّر مسح بيانات المواقع. حاول مرة أخرى.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "وضع حماية نظام التشغيل غير متاح",
@@ -625,6 +629,37 @@ export const ar = {
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",
   },
+  halloween: {
+    navLabel: "حلوى أم خدعة…",
+    title: "حلوى أم خدعة?!",
+    description:
+      "حضّرنا بعض المفاجآت المخيفة لـ Unsloth، وستبقى حتى نهاية أكتوبر.",
+    chooseTheme: "اختر سمة مخيفة",
+    spookyGreetings: "تحيات مخيفة",
+    spookyGreetingsDescription: "يستقبل الكسلان المحادثات الجديدة بإخافة.",
+    decorations: "عناكب وخفافيش",
+    decorationsDescription:
+      "شباك عنكبوت في الزوايا، وعنكبوت أو خفاش بين حين وآخر مع سمة الهالوين.",
+    surprise: "حلوى أم خدعة!",
+    surpriseDescription: "دع الكسلان يختار سمة لك.",
+    themesTitle: "سمات مخيفة",
+    back: "رجوع",
+    footer: "يعود Unsloth إلى طبيعته عند منتصف ليل 1 نوفمبر.",
+    removeNow: "إزالة الآن",
+    hideFromSidebar: "إخفاء من الشريط الجانبي",
+    greeting: {
+      pumpkins: "نُحتت اليقطينات. ما التالي؟",
+      brewing: "هيا نحضّر الجرعة",
+      trickOrTreat: "حلوى أم خدعة؟",
+      manor: "مرحبًا بك في القصر",
+      manorName: "مرحبًا بك في القصر يا {name}",
+      happyHalloween: "هالوين سعيد",
+      happyHalloweenName: "هالوين سعيد يا {name}",
+      spirits: "الأرواح تُصغي…",
+      mysteries: "ما الأسرار التي سنكشفها الليلة؟",
+      conjure: "ماذا أستحضر لك؟",
+    },
+  },
   welcome: {
     goodToSeeYou: "سعيد برؤيتك",
     goodToSeeYouName: "سعيد برؤيتك يا {name}",
@@ -701,7 +736,6 @@ export const ar = {
     shutdown: "إيقاف التشغيل",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "الوثائق",
       keyboardShortcuts: "اختصارات لوحة المفاتيح",
@@ -773,11 +807,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
-      // Shown under an empty project folder in the sidebar.
       noChats: "لا توجد محادثات",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "كل المشاريع مثبتة",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "كل المشاريع مثبتة أو ضمن أقسام",
       noProjects: "لا توجد مشاريع",
       showMore: "عرض المزيد",
@@ -789,6 +820,8 @@ export const ar = {
       guidedTour: "جولة إرشادية",
       help: "مساعدة",
       logOut: "تسجيل الخروج",
+      logOutNeedsPassword: "عيّن كلمة مرور في الإعدادات > الوصول عن بُعد قبل تسجيل الخروج، حتى تتمكن من تسجيل الدخول مرة أخرى.",
+      logOutFailed: "تعذّر تسجيل الخروج بأمان. حاول مرة أخرى بعد قليل.",
       shutdown: "إيقاف التشغيل",
     },
     commandPalette: {
@@ -879,11 +912,9 @@ export const ar = {
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
-      // Header of the menu's section-visibility toggles.
       show: "إظهار",
       newSection: "قسم جديد",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "قسم جديد",
       createDescription: "جمّع المحادثات والمشاريع بالطريقة التي تناسبك",
@@ -894,16 +925,13 @@ export const ar = {
       edit: "تعديل",
       remove: "إزالة القسم",
       markAllRead: "تعليم الكل كمقروء",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "نقل إلى",
       section: "قسم",
       sectionsHeading: "الأقسام",
       removeFromProject: "إزالة من المشروع",
       newSection: "قسم جديد",
       removeFromSection: "إزالة من القسم",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "إزالة من {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "اسحب المحادثات أو المشاريع إلى هنا",
       sectionOptions: "خيارات القسم",
       newChatInSection: "محادثة جديدة في {name}",
@@ -938,6 +966,11 @@ export const ar = {
   },
   settings: {
     accounts: {
+      signsInAs: "يسجّل الدخول باسم {username}",
+      signsInAsOwner: "يسجّل الدخول باسم {alias} أو {username}",
+      signInName: "اسم تسجيل الدخول",
+      signInNameDescription: "الاسم الذي تكتبه لتسجيل الدخول عندما يكون في هذا التثبيت أكثر من حساب. يعمل unsloth دائمًا أيضًا. اتركه فارغًا لاستخدام unsloth فقط.",
+      signInNameSave: "حفظ الاسم",
       title: "الحسابات",
       description: "أنشئ حسابات Unsloth خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
       username: "اسم المستخدم",
@@ -1078,7 +1111,7 @@ export const ar = {
       lastVisited: "آخر ما تمت زيارته",
     },
     tabs: {
-      sandbox: "وضع الحماية",
+      sandbox: "الأمان",
       accounts: "الحسابات",
       general: "عام",
       profile: "الملف الشخصي",
@@ -1362,7 +1395,7 @@ export const ar = {
       },
     },
     sandbox: {
-      title: "وضع الحماية",
+      title: "الأمان",
       description: "ما إذا كانت استدعاءات أدوات Python والطرفية تعمل داخل وضع حماية نظام التشغيل على هذا الكمبيوتر.",
       docs: "التوثيق",
       docsLabel: "فتح توثيق وضع الحماية",
@@ -1417,17 +1450,17 @@ export const ar = {
       installingRuntime: "جارٍ التثبيت…",
       installRuntimeFailed: "فشل تثبيت بيئة التشغيل.",
       installRuntimeError: "تعذر بدء تثبيت بيئة التشغيل.",
-      unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
+      unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 وARM64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
       builtinNeedsUpdate:
         "تحتاج الحاوية المدمجة في Windows إلى الإصدار {required} أو أحدث، بينما يعمل هذا الكمبيوتر بالإصدار {current}. ثبّت آخر تحديث لـ Windows لاستخدامها دون خطوة مسؤول، أو فعّل وضع الحماية الاحتياطي أدناه.",
       unsupportedBuild: "يتطلب وضع حماية Windows (MXC) إصدار Windows 11 24H2 (البنية 26100) أو أحدث، لذا فهو غير متاح على هذا الكمبيوتر.",
-      permissionsIntro: "اختر متى تسأل الأدوات أولاً، وما إذا كان Python والطرفية يعملان أيضاً داخل وضع حماية نظام التشغيل.",
       permissionLabel: "أذونات الأدوات",
+      levelRowLabel: "مستوى وضع الحماية",
       levelPickerTitle: "كيف يجب عزل الكود؟",
       levelOff: "معطّل",
       levelOffShort: "الوصول الكامل يوقف وضع الحماية",
-      levelHighDetail: "حماية على مستوى النظام. يعمل Python والطرفية داخل وضع حماية نظام التشغيل (bubblewrap أو Seatbelt أو MXC) إضافة إلى الضمانات البرمجية. من دون وضع حماية يعمل، تسأل الاستدعاءات الخطرة أولاً.",
-      levelLowDetail: "حماية برمجية. يعمل Python والطرفية بالضمانات البرمجية فقط، خارج وضع حماية نظام التشغيل. تسأل الاستدعاءات الخطرة أولاً ما لم تختر الوصول الكامل.",
+      levelHighDetail: "يعمل Python والطرفية داخل وضع حماية نظام التشغيل (bubblewrap أو Seatbelt أو MXC) إضافة إلى الضمانات البرمجية. من دون وضع حماية يعمل، تسأل الاستدعاءات الخطرة أولاً.",
+      levelLowDetail: "يعمل Python والطرفية بالضمانات البرمجية فقط، خارج وضع حماية نظام التشغيل. تسأل الاستدعاءات الخطرة أولاً ما لم تختر الوصول الكامل.",
       levelLabel: "وضع الحماية",
       levelHigh: "عالٍ",
       levelLow: "منخفض",
@@ -1438,6 +1471,7 @@ export const ar = {
       managedNote: "يُعدّ مالك خادم Unsloth هذا وضع حماية نظام التشغيل.",
     },
     debugging: {
+      description: "اقرأ سجلات Unsloth دون مغادرة التطبيق.",
       logSection: "ملف السجل",
       source: "ملف السجل",
       sourceHint: "تكتب مشغّلات النماذج سجلاتها الخاصة، لذا غالبًا ما يكون سبب فشل التحميل أو التوليد موضّحًا فيها لا في سجل الخادم.",
@@ -2156,13 +2190,13 @@ export const ar = {
         },
         details: {
           ask:
-            "يطلب الموافقة قبل كل استدعاء أداة، بما في ذلك شيفرة الطرفية وPython وعمليات البحث في الويب وتعديل الملفات وأدوات MCP. الأدوات التي يشغّلها مزوّد خارجي لا تتوقف لطلب الموافقة. الأنسب عندما تريد مراجعة كل خطوة.",
+            "يطلب الموافقة قبل كل استدعاء أداة، بما في ذلك شيفرة الطرفية وPython وعمليات البحث في الويب وتعديل الملفات وأدوات MCP. الأدوات التي يشغّلها مزوّد خارجي لا تتوقف لطلب الموافقة.",
           auto:
             "يشغّل استدعاءات الأدوات المعتادة تلقائيًا ولا يطلب الموافقة إلا عندما يبدو الإجراء خطرًا، مثل قراءة بيانات الاعتماد أو رفع الصلاحيات أو تشغيل أوامر مدمّرة.",
           off:
-            "يشغّل كل استدعاءات الأدوات دون سؤال. تظل شيفرة Python والطرفية تعمل داخل صندوق العزل، الذي يحدّ من الملفات التي يمكنها الوصول إليها على جهازك. إذا لم يكن على هذا الكمبيوتر وضع حماية يعمل لنظام التشغيل، فإن استدعاءات Python والطرفية الخطرة تطلب الموافقة أولًا.",
+            "يشغّل كل استدعاءات الأدوات دون سؤال. تظل شيفرة Python والطرفية تعمل داخل صندوق العزل، الذي يحدّ من الملفات التي يمكنها الوصول إليها على جهازك. من دون وضع حماية يعمل، تسأل الاستدعاءات الخطرة أولاً.",
           full:
-            "يشغّل كل استدعاءات الأدوات دون سؤال ويوقف صندوق عزل الشيفرة، فيمكن لشيفرة Python والطرفية قراءة أي ملف يصل إليه حسابك وتغييره. الأنسب للمهام الموثوقة التي تحتاج إلى العمل خارج صندوق العزل.",
+            "يشغّل كل استدعاءات الأدوات دون سؤال ويوقف صندوق عزل الشيفرة، فيمكن لشيفرة Python والطرفية قراءة أي ملف يصل إليه حسابك وتغييره.",
         },
       },
     },
@@ -2191,8 +2225,8 @@ export const ar = {
       uploadPhoto: "رفع صورة",
       removePhoto: "إزالة",
       pictureOptions: "خيارات صورة الملف الشخصي",
-      greetingSloth: "الكسلان في التحية",
-      greetingSlothDescription: "إظهار الكسلان في تحية المحادثة.",
+      greetingSloth: "التحية",
+      greetingSlothDescription: "إظهار التحية في المحادثات الجديدة.",
       noPicture: "لا توجد صورة ملف شخصي",
       noneLabel: "بلا",
       stats: {
@@ -2267,6 +2301,26 @@ export const ar = {
     appearance: {
       title: "المظهر",
       description: "كيفية ظهور Unsloth على هذا الجهاز.",
+      gpuRendering: {
+        sectionTitle: "العرض",
+        label: "العرض عبر GPU",
+        description: "اعرض Unsloth باستخدام بطاقة الرسومات. يستخدمها الوضع «تلقائي» حيث يُعرف أنها تعمل. تُطبَّق التغييرات بعد إعادة تشغيل Unsloth.",
+        auto: "تلقائي",
+        on: "تشغيل",
+        off: "إيقاف",
+        oldWebkitWarning: "WebKitGTK {version} على Wayland: قد يتعطل العرض عبر GPU عند التشغيل على NVIDIA مع التحجيم الكسري (WebKit bug 280210). إذا حدث ذلك، يعود Unsloth تلقائيًا إلى العرض عبر CPU. على WebKitGTK 2.50.4 لم يُحقق أي تسريع ملموس (8 fps في الحالتين)، لذا لا يُنصح بخيار «تشغيل» هنا.",
+        oldDriverWarning:
+          "برنامج تشغيل NVIDIA {version} على X11: يُبقي Unsloth العرض عبر GPU متوقفًا حتى يصبح برنامج التشغيل 610 أو أحدث. تُسرّب برامج التشغيل الأقدم واصف ملف في كل إطار، فتتوقف النافذة عن الرسم خلال دقائق.",
+        fallbackNote: "تعطّل العرض عبر GPU عند التشغيل على هذا النظام، لذا يستخدم Unsloth العرض عبر CPU.",
+        tryAgain: "جرّب GPU مرة أخرى",
+        envOverride: "مُعيَّن بواسطة متغير البيئة {name}. لا يكون لهذا الإعداد أي تأثير حتى تتم إزالته.",
+        macNote: "يعرض macOS دائمًا باستخدام GPU. لا يوفر WebKit أي خيار مدعوم لإيقاف ذلك.",
+        restartPending: "أعد تشغيل Unsloth للتطبيق.",
+        restartNow: "إعادة التشغيل الآن",
+        loadError: "تعذّر تحميل إعداد العرض عبر GPU.",
+        saveError: "تعذّر حفظ إعداد العرض عبر GPU.",
+        restartError: "تعذّرت إعادة تشغيل Unsloth.",
+      },
       theme: {
         title: "النمط المرئي",
         label: "الوضع",
@@ -2282,6 +2336,12 @@ export const ar = {
         classic: "كلاسيكية",
         minimal: "بسيطة",
         moreThemes: "المزيد من السمات",
+        halloween: "هالوين",
+      },
+      trickOrTreat: {
+        label: "حلوى أم خدعة",
+        description:
+          "سمات الهالوين وتحيات مخيفة حتى 1 نوفمبر.",
       },
       custom: {
         chatWidth: {
@@ -2414,10 +2474,12 @@ export const ar = {
       description: "راقب عتاد خادم Unsloth هذا ومساحة تخزينه.",
       liveUpdates: "التحديثات المباشرة",
       floatingWindow: "نافذة عائمة",
-      disableOverlay: "تعطيل التراكب",
+      showFloatingWindow: "إظهار النافذة العائمة",
+      showFloatingWindowDescription: "أبقِ استخدام المعالج والذاكرة ووحدة الرسوميات ظاهرًا فوق Unsloth.",
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
+        apiDescription: "شاهد ما ترسله التطبيقات الأخرى إلى واجهة برمجة هذا الخادم فور وصوله.",
         summary: "الطلبات المباشرة والأخطاء واستخدام التوكنات",
         status: "نشطة: {active} · حديثة: {recent} · {model}",
         noModelLoaded: "لا يوجد نموذج محمّل",
@@ -2436,7 +2498,7 @@ export const ar = {
         gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
         detailedView: "عرض مفصل",
         detailedViewDescription:
-          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة وهنا.",
+          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة.",
         cpuLoad: "حمل المعالج",
         gpuLoad: "حمل GPU",
         temperature: "الحرارة",
@@ -2469,6 +2531,10 @@ export const ar = {
         used: "{value} مستخدم",
         free: "{value} متاح",
         total: "{value} إجمالي",
+        usedOf: "{used} مستخدمة من {total}",
+        segmentUsed: "مستخدمة بواسطة GPU",
+        segmentSystem: "مستخدمة بواسطة النظام",
+        segmentAvailable: "متاحة",
       },
       llamaBackend: {
         title: "محرك استدلال GGUF",
@@ -2520,7 +2586,6 @@ export const ar = {
           updateChecksDisabled:
             "عمليات التحقق من التحديثات معطّلة (UNSLOTH_DISABLE_UPDATE_CHECK=1)، لذلك لا يتم البحث عن الخلفيات المتاحة.",
         },
-        // لا يظهر: كلمات إضافية لبحث الإعدادات.
         llamaBackendKeywords:
           "llama.cpp backend gguf استدلال cuda rocm hip vulkan metal cpu gpu مسرّع prebuilt تبديل محرك",
       },
@@ -2554,7 +2619,6 @@ export const ar = {
         reloadRequired: "أعد تحميل النموذج لتطبيق خيارات الذاكرة الجديدة.",
         loadError: "تعذّر تحميل إعدادات ذاكرة النموذج",
         saveError: "تعذّر حفظ إعدادات ذاكرة النموذج",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu ذاكرة رام مقيم تثبيت قفل إبقاء محمل تفريغ خامل mmap no-mmap load-mode تبديل ترحيل",
         multiModelKeywords:
@@ -2600,6 +2664,10 @@ export const ar = {
           hideDetailsAction: "إخفاء التفاصيل",
           clearAction: "مسح ذاكرات التخزين المؤقت",
           clearOneAction: "مسح",
+          showFolders: "إظهار المجلدات",
+          hideFolders: "إخفاء المجلدات",
+          previousLocations: "يشمل المواقع السابقة. يؤثر زر المسح الرئيسي على مجلد ذاكرة التخزين المؤقت الحالي. تمسح أزرار النماذج النسخة المحددة فقط.",
+          clearModelDescription: "يؤدي هذا إلى إزالة هذه النسخة المخزنة مؤقتًا فقط. سيتم تنزيلها مرة أخرى عند الحاجة.",
           clearingAction: "جارٍ المسح...",
           confirmTitle: "هل تريد مسح الملفات المخزّنة مؤقتًا؟",
           confirmDescription: "سيؤدي ذلك إلى تحرير نحو {size}.",
@@ -2657,6 +2725,8 @@ export const ar = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "مدة التشغيل",
         processMemory: "ذاكرة العملية",
         notInstalled: "غير مثبّت",
@@ -2696,8 +2766,6 @@ export const ar = {
       docsLabel: "فتح توثيق unsloth start",
       agentDocs: "فتح توثيق إعداد {agent}",
       copyGeneratedCommand: "نسخ الأمر المُنشأ",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -2846,11 +2914,6 @@ export const ar = {
       autoScrollManual: "يدوي",
       autoScrollKeywords:
         "تمرير تلقائي متابعة أسفل قفز بث إنشاء تثبيت scroll autoscroll follow",
-      scrollToBottomButton: "زر التمرير إلى الأسفل",
-      scrollToBottomButtonDescription:
-        "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
-      scrollToBottomButtonKeywords:
-        "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
       replyNotification: "الإشعار عند انتهاء الرد",
       replyNotificationDescription:
         "إظهار إشعار من النظام عند انتهاء الرد بينما يكون Unsloth مصغرًا أو في الخلفية.",
@@ -2872,9 +2935,8 @@ export const ar = {
         "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
-      modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
-      modelDisclaimerDescription:
-        'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
+      composerAtBottom: "حقل الكتابة في الأسفل",
+      composerAtBottomDescription: "ابدأ المحادثات الجديدة وحقل الكتابة أسفل الصفحة بدلًا من منتصفها.",
       projectAttachments: "مشاركة الملفات عبر المشروع",
       projectAttachmentsDescription:
         "أتِح مرفقات الدردشة الجديدة لكل دردشة في المشروع.",
@@ -3241,6 +3303,7 @@ export const ar = {
       readDocs: "قراءة وثائق API",
       noAccess: "لا يوجد وصول إلى API بعد.",
       accessTokens: "توكنات الوصول",
+      quickstartTitle: "البدء السريع",
       columnName: "الاسم",
       columnToken: "التوكن",
       columnCreated: "تاريخ الإنشاء",
@@ -3380,8 +3443,9 @@ export const ar = {
         loadError: "تعذّر تحميل إعدادات واجهة القرارات.",
         sendsTo: "تُرسَل الطلبات إلى {provider}.",
         connectionMissing: "هذا الاتصال لم يعد موجودًا أو لا يحتوي على نماذج قرارات. اختر نموذجًا آخر.",
-        addConnection: "لاستخدام نموذج قرارات مستضاف، أضف TypeSafe أو Liquid AI أو OpenRouter في الاتصالات.",
-        openConnections: "فتح الاتصالات",
+        addConnection: "لاستخدام نموذج قرارات مستضاف، أضفه في ",
+        connectionsLink: "الاتصالات",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "وصول الوكلاء (MCP)",
@@ -3408,6 +3472,7 @@ export const ar = {
       desktopAppVersionUnavailable: "غير متاح",
       llamaCppVersion: "إصدار llama.cpp",
       audioCppVersion: "إصدار audio.cpp",
+      mlxVersion: "إصدار MLX",
       whisperCppVersion: "إصدار whisper.cpp",
       engines: {
         title: "المحركات",
@@ -3517,6 +3582,8 @@ export const ar = {
   },
   studio: {
     goToLibrary: "الانتقال إلى المكتبة",
+    imageTraining: "تدريب الصور",
+    goToImageTraining: "تدريب LoRA للصور",
     routeTitle: "تدريب",
     wizard: {
       modelTitle: "النموذج",
@@ -4295,7 +4362,6 @@ export const ar = {
       terminalStart: "> يبدأ تدريب Unsloth...",
       preparingResources: "> جارٍ تحضير النموذج ومجموعة البيانات...",
       gettingReady: "> نُجهّز كل شيء لعملية التدريب...",
-      waitingForFirstStep: "> {message} | في انتظار الخطوة الأولى... ({step})",
       resumingTraining: "جارٍ استئناف التدريب...",
       startingTraining: "جارٍ بدء التدريب...",
       dataset: "مجموعة البيانات",
@@ -4527,7 +4593,6 @@ export const ar = {
       all: "الكل",
       chats: "المحادثات",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "المحادثات",
@@ -4595,8 +4660,6 @@ export const ar = {
       empty: {
         chatsTitle: "لا توجد محادثات بعد",
         chatsDescription: "تظهر محادثاتك هنا، منفصلة عن ملفاتك.",
-        projectsTitle: "لا توجد مشاريع بعد",
-        projectsDescription: "تجمع المشاريع المحادثات المرتبطة وتشارك التعليمات بينها.",
         archivedTitle: "لا يوجد شيء مؤرشف",
         archivedDescription: "تظهر هنا المحادثات التي تؤرشفها.",
         sectionsTitle: "لا توجد أقسام بعد",
@@ -4661,6 +4724,7 @@ export const ar = {
       modelsTitle: "لا توجد نماذج مضبوطة بعد",
       modelsDescription: "تظهر هنا النماذج التي تدربها أو تصدّرها في Unsloth.",
       createFolder: "إنشاء مجلد",
+      generateImage: "إنشاء صورة",
       generateVideo: "إنشاء فيديو",
       generateAudio: "إنشاء صوت",
       trainModel: "تدريب نموذج",
@@ -4725,6 +4789,8 @@ export const ar = {
       pdfs: "ملفات PDF",
       gridView: "عرض الشبكة",
       listView: "عرض القائمة",
+      grid: "شبكة",
+      list: "قائمة",
       settings: "إعدادات المكتبة",
       sort: "الترتيب",
       sortDefault: "الترتيب الافتراضي",
@@ -5021,5 +5087,62 @@ export const ar = {
       dragHandleLabel: "انقل شاشة المراقبة المباشرة. مفاتيح الأسهم تحركها قليلًا، والنقر المزدوج يعيدها إلى مكانها.",
       reconnecting: "جارٍ إعادة الاتصال...",
     },
+  },
+  projectsPage: {
+    title: "المشاريع",
+    search: "البحث في المشاريع",
+    importExport: "استيراد / تصدير المشاريع",
+    importChatsAction: "استيراد المحادثات…",
+    exportAllProjects: "تصدير كل المشاريع",
+    exportProjectsAndRecents: "تصدير المشاريع + الأحدث",
+    combined: "مجمّع",
+    perChat: "لكل محادثة",
+    newProject: "مشروع جديد",
+    name: "الاسم",
+    updated: "آخر تحديث",
+    newestFirst: "الأحدث أولاً",
+    oldestFirst: "الأقدم أولاً",
+    today: "اليوم",
+    yesterday: "أمس",
+    emptyDescription: "يجمع المشروع المحادثات ذات الصلة معًا، مع تعليمات ومصادر مشتركة يمكن لكل محادثة فيه استخدامها.",
+    createFirst: "أنشئ مشروعك الأول",
+    noMatches: "لا توجد مشاريع تطابق بحثك.",
+    clearSearch: "مسح البحث",
+    showChats: "إظهار المحادثات",
+    hideChats: "إخفاء المحادثات",
+    pinProject: "تثبيت المشروع",
+    unpinProject: "إلغاء تثبيت المشروع",
+    newChatInProject: "محادثة جديدة في المشروع",
+    projectOptions: "خيارات المشروع",
+    loadChatsFailed: "تعذّر تحميل المحادثات. إعادة المحاولة",
+    refreshChatsFailed: "تعذّر تحديث المحادثات. إعادة المحاولة",
+    noChats: "لا توجد محادثات",
+    unread: "غير مقروءة",
+    pinChat: "تثبيت المحادثة",
+    unpinChat: "إلغاء تثبيت المحادثة",
+    chatOptions: "خيارات المحادثة",
+    exportAllChats: "تصدير كل المحادثات…",
+    archive: "أرشفة",
+    renameChat: "إعادة تسمية المحادثة",
+    chatName: "اسم المحادثة",
+    deleteChat: "حذف المحادثة",
+    deleteChatDescription: "هل تريد بالتأكيد حذف {name}؟ ستُحذف رسائلها نهائيًا.",
+    importChats: "استيراد المحادثات",
+    importDestination: "اختر مكان استيراد {name}:",
+    selectDestination: "اختر الوجهة",
+    recents: "الأحدث",
+    import: "استيراد",
+    deleteProject: "حذف المشروع",
+    deleteProjectDescription: "هل تريد بالتأكيد حذف {name}؟ ستُحذف محادثاته نهائيًا.",
+    deleteProjectFiles: "ستتم إزالة مجلد عمل المشروع من القرص.",
+    deleteAll: "حذف الكل",
+    projectFallback: "مشروع",
+    importFailed: "فشل الاستيراد.",
+    nothingToExport: "لا توجد محادثات للتصدير.",
+    exportFailed: "فشل التصدير.",
+    renameChatFailed: "تعذّرت إعادة تسمية المحادثة",
+    archiveChatFailed: "تعذّرت أرشفة المحادثة",
+    deleteChatFailed: "تعذّر حذف المحادثة",
+    deleteProjectFailed: "تعذّر حذف المشروع",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

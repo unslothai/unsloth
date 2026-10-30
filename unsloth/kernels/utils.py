@@ -763,26 +763,15 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             return nvfp4_dequantize(
                 W, quant_state.scale, quant_state.global_scale, quant_state.dtype
             )
-        if type(quant_state) is not list:
-            # New quant_state as a class, per TimDettmers/bitsandbytes#763.
-            absmax = quant_state.absmax
-            shape = quant_state.shape
-            dtype = quant_state.dtype
-            blocksize = quant_state.blocksize
-            offset = quant_state.offset
-            state2 = quant_state.state2
-            absmax2 = state2.absmax
-            code2 = state2.code
-            blocksize2 = state2.blocksize
-        else:
-            # Old quant_state as a list of lists
-            absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
-            offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
-        global XPU_STREAMS
+        absmax, shape, dtype, blocksize, _, code2, absmax2, offset, blocksize2 = (
+            _unpack_quant_state(quant_state)
+        )
+        if code2 is None:
+            return bnb_functional.dequantize_4bit(W, quant_state, out = out)
         device = W.device
         device_index = device.index
-        XPU_STREAM = XPU_STREAMS[device_index]
+        # Live stream, as bitsandbytes' xpu ops read it; a snapshot ignores torch.xpu.stream().
+        XPU_STREAM = _get_tensor_stream(W)
 
         n_elements_absmax = absmax.numel()
         if use_global_buffer:
@@ -1124,26 +1113,14 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             return torch_matmul(X, W, out = out)
         # Fast X @ W where seq_len == 1, from bitsandbytes functional.py#L1469 and TimDettmers/bitsandbytes#763.
         _, q_len, hd = X.shape
-
-        if type(quant_state) is not list:
-            absmax = quant_state.absmax
-            shape = quant_state.shape
-            dtype = quant_state.dtype
-            blocksize = quant_state.blocksize
-            stats = quant_state.code
-            offset = quant_state.offset
-            state2 = quant_state.state2
-            absmax2 = state2.absmax
-            code2 = state2.code
-            blocksize2 = state2.blocksize
-        else:
-            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
-            offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
-        global XPU_STREAMS
+        absmax, shape, dtype, blocksize, stats, code2, absmax2, offset, blocksize2 = (
+            _unpack_quant_state(quant_state)
+        )
+        if shape[1] % blocksize != 0:
+            # The gemv kernel needs each weight row to start a new block (bitsandbytes' xpu gemm_4bit checks too).
+            return torch_matmul(X, fast_dequantize(W, quant_state, dtype = X.dtype).t(), out = out)
         device = W.device
-        device_index = device.index
-        XPU_STREAM = XPU_STREAMS[device_index]
+        XPU_STREAM = _get_tensor_stream(W)
 
         bout = shape[0]
 
@@ -1158,12 +1135,9 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 device = device,
             )
 
-        if DEVICE_TYPE == "xpu":
-            m = 1
-            n = shape[0]
-        else:
-            n = 1
-            m = shape[0]
+        # The xpu gemv takes m = 1, n = rows (the CUDA one is transposed).
+        m = 1
+        n = shape[0]
         k = shape[1]
         lda = shape[0]
         ldc = shape[0]
@@ -1175,19 +1149,20 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         with torch_gpu_device(device):
-            cdequantize_blockwise_fp32(
-                get_ptr(code2),
-                get_ptr(absmax),
-                get_ptr(absmax2),
-                get_ptr(df),
-                ctypes_c_int(blocksize2),
-                ctypes_c_int(df.numel()),
-                XPU_STREAM,
-            )
-            df += offset
-            absmax = df
+            if code2 is not None:
+                df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
+                cdequantize_blockwise_fp32(
+                    get_ptr(code2),
+                    get_ptr(absmax),
+                    get_ptr(absmax2),
+                    get_ptr(df),
+                    ctypes_c_int(blocksize2),
+                    ctypes_c_int(df.numel()),
+                    XPU_STREAM,
+                )
+                df += offset
+                absmax = df
 
             fx = (
                 cgemm_4bit_inference_naive_fp16
@@ -1525,6 +1500,10 @@ def _quant_state_dtype(quant_state):
 # decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
 _GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
 _GEMV_ROWS_CAP = {}
+# Rows from which bnb gemm_4bit replaces the GEMV. Colab T4 eager decode (Qwen3-4B, Llama-3.2-3B): batch 4
+# 13-30% faster at equal NLL vs fp32; batch 2 ~40% slower (host bound), batch 3 a tie.
+_GEMV_ROWS_BNB_FROM_BY_ARCH = {(7, 5): 4}
+_GEMV_ROWS_BNB_FROM = {}
 
 
 def _gemv_rows_cap(device):
@@ -1533,6 +1512,7 @@ def _gemv_rows_cap(device):
     if cap is None:
         if "UNSLOTH_GEMV_MAX_ROWS" in os.environ:
             cap = _GEMV_MAX_ROWS
+            bnb_from = cap + 1
         else:
             try:
                 # ROCm reports gfx versions here (gfx1200 is (12, 0)), so the table is CUDA only.
@@ -1540,6 +1520,8 @@ def _gemv_rows_cap(device):
             except Exception:
                 arch = None
             cap = min(_GEMV_MAX_ROWS, _GEMV_ROWS_BY_ARCH.get(arch, 1))
+            bnb_from = _GEMV_ROWS_BNB_FROM_BY_ARCH.get(arch, cap + 1)
+        _GEMV_ROWS_BNB_FROM[index] = bnb_from
         _GEMV_ROWS_CAP[index] = cap
     return cap
 
@@ -1599,13 +1581,22 @@ def _bnb_gemm_4bit_ok(X, W, quant_state):
         and _bnb_gemm_4bit_device_ok(X.device)
         # bitsandbytes passes raw pointers to the kernel on X's device.
         and W.device == X.device
+        # Its fp16 kernels load 16 bytes at a time from both pointers.
+        and not (X.data_ptr() & 15 or W.data_ptr() & 15)
         and type(quant_state) is not list
         and quant_state.absmax.device == X.device
         and getattr(quant_state, "quant_type", None) in ("nf4", "fp4")
         # bitsandbytes dequantizes (and warns) itself when K is not a multiple of the blocksize.
         and quant_state.shape[-1] % quant_state.blocksize == 0
-        # matmul_4bit raises for any other nested blocksize.
-        and (not quant_state.nested or quant_state.state2.blocksize == 256)
+        # matmul_4bit raises for any other nested blocksize, a list state2 or a non-tensor offset.
+        and (
+            not quant_state.nested
+            or (
+                type(quant_state.state2) is not list
+                and quant_state.state2.blocksize == 256
+                and isinstance(quant_state.offset, torch_Tensor)
+            )
+        )
     )
 
 
@@ -1614,6 +1605,12 @@ def _gemv_rows(X, W, quant_state, out):
     M = X.shape[0]
     # First, so rows above the cap cost the dequantize path nothing.
     if not 2 <= M <= _gemv_rows_cap(X.device) or W.device != X.device:
+        return None
+    if (
+        not _is_compiling()
+        and M >= _GEMV_ROWS_BNB_FROM.get(X.device.index, M + 1)
+        and _bnb_gemm_4bit_ok(X, W, quant_state)
+    ):
         return None
     eager = (
         not _is_compiling()

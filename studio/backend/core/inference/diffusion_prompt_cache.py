@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-memory, host-RAM LRU of text-encoder outputs for diffusion/video pipes.
-
-``UNSLOTH_DIFFUSION_PROMPT_CACHE=0`` disables; ``UNSLOTH_DIFFUSION_PROMPT_CACHE_MB`` (default 256, capped on
-small hosts) bounds it. Hits return fresh copies so in-place edits cannot poison later renders.
-"""
+"""Host-RAM LRU of text-encoder outputs; hits return copies so in-place edits cannot poison renders."""
 
 from __future__ import annotations
 
@@ -190,8 +186,7 @@ class PromptCache:
 def _store_copy(t: Any) -> Any:
     t = t.detach()
     device = t.device
-    # Not pinned: pin_memory() is a fresh cudaHostAlloc per entry (60 ms to 1.6 s for 4 MB on a busy host) to save
-    # ~0.3 ms per hit.
+    # Not pinned: pin_memory() costs a slow cudaHostAlloc per entry, to save only ~0.3 ms per hit.
     stored = t.to("cpu", copy = True)
     stored._unsloth_src_device = device
     return stored

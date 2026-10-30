@@ -22,6 +22,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import textwrap
 import threading
 import time
 
@@ -1077,12 +1078,15 @@ def test_the_probe_launch_sets_no_new_privs_like_a_real_one(tmp_path):
 
     assert sandbox_probe._PR_SET_NO_NEW_PRIVS == 38
     source = inspect.getsource(sandbox_probe._run_probe)
-    assert "preexec_fn = _no_new_privs" in source
-    assert not [
-        node
-        for node in ast.walk(ast.parse(inspect.getsource(sandbox_probe._no_new_privs)))
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-    ]
+    assert "preexec_fn = _probe_preexec" in source
+    assert "_no_new_privs()" in inspect.getsource(sandbox_probe._probe_preexec)
+    for hook in (sandbox_probe._no_new_privs, sandbox_probe._probe_preexec):
+        # Runs between fork and exec: an import there can deadlock on the import lock.
+        assert not [
+            node
+            for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(hook))))
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
 
 
 def test_the_pip_targets_script_directory_is_last_on_path(prepared):

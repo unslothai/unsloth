@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resolve the caller's IP for rate limiting.
-
-Trust model, in order:
-  1. If the operator opts in via ``UNSLOTH_STUDIO_TRUST_FORWARDED`` (Unsloth behind
-     their own reverse proxy), honor the *rightmost* ``X-Forwarded-For`` hop -- the
-     one the trusted proxy appended. The leftmost entry is client-controlled and
-     spoofable, so this assumes a proxy that appends (or overwrites) the header;
-     only enable the env var behind such a proxy.
-  2. A loopback peer relaying Unsloth's own Cloudflare tunnel (``app.state.cloudflare_url``,
-     Host naming it): ``CF-Connecting-IP``, set by Cloudflare's edge, so tunnel visitors
-     don't share the local cloudflared bucket. Without that tunnel the header is forgeable.
-  3. Any other loopback relay: ``relayed:<peer>``, one bucket per relay, never a local caller.
-  4. Otherwise the socket peer, so a direct LAN caller can't spoof a header to
-     dodge a per-IP limit.
-"""
+"""Trust order: rightmost X-Forwarded-For only if UNSLOTH_STUDIO_TRUST_FORWARDED (leftmost is
+spoofable; enable only behind an appending proxy); CF-Connecting-IP only via loopback tunnel;
+relayed:<peer>; socket peer"""
 
 from __future__ import annotations
 
@@ -140,8 +128,7 @@ def _is_loopback_ip(host: str | None) -> bool:
     return ip.is_loopback or (mapped is not None and mapped.is_loopback)
 
 
-# A loopback peer carrying any of these is a proxy/tunnel relaying a remote client, so the peer is the
-# proxy, not the caller: cloudflared sets cf-connecting-ip, reverse proxies set the rest.
+# A loopback peer with these headers is a proxy relaying a remote client.
 _PROXIED_CLIENT_HEADERS = (
     "cf-connecting-ip",
     "forwarded",

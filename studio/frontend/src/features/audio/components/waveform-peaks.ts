@@ -6,7 +6,6 @@
 // Source resolution; the player pools it down to as many bars as fit.
 export const WAVEFORM_BARS = 240;
 
-/** Per-bar peak across channels, normalised so the loudest bar is 1; silence stays 0. */
 export function computePeaks(
   channels: readonly Float32Array[],
   bars: number = WAVEFORM_BARS,

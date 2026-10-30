@@ -22,8 +22,6 @@ export function SettingsSection({
   danger?: boolean;
   description?: ReactNode;
   children: ReactNode;
-  /** For deep links that scroll a section into view. Optional, so every
-      existing caller renders exactly as before. */
   ref?: Ref<HTMLElement>;
 }) {
   return (
@@ -38,11 +36,23 @@ export function SettingsSection({
       {hideHeading ? null : (
         <div className="mb-1 flex flex-col gap-0.5">
           {action ? (
-            <div className="flex items-center justify-between gap-3">
+            <div
+              className={cn(
+                "flex justify-between gap-3",
+                description ? "items-start" : "items-center",
+              )}
+            >
               <h2 className="settings-heading text-base font-semibold font-heading">
                 {title}
               </h2>
-              {action}
+              {description ? (
+                // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
+                <div className="mt-[calc(var(--text-base)*0.372)] shrink-0">
+                  {action}
+                </div>
+              ) : (
+                action
+              )}
             </div>
           ) : (
             <h2 className="settings-heading text-base font-semibold font-heading">
@@ -56,13 +66,11 @@ export function SettingsSection({
           ) : null}
         </div>
       )}
-      {/* Related rows share a section without dividers. */}
       <div className="flex flex-col">{children}</div>
     </section>
   );
 }
 
-/** Divider between unrelated clusters of rows inside one section. */
 export function SettingsGroupDivider() {
   return <div className="my-1 border-t border-border/60" />;
 }

@@ -17,6 +17,7 @@ CONVERSATION_COLUMNS = ("messages", "conversations", "texts")
 _CHATML_KEYS = frozenset({"role", "content"})
 _SHAREGPT_KEYS = frozenset({"from", "value"})
 _TRACE_SUFFIXES = ("__trace", "_trace")
+_PLAIN_TEXT_SAMPLE_ROWS = 10
 
 
 def _sample_dataset_rows(dataset, limit: int = 100) -> list[dict]:
@@ -157,6 +158,27 @@ def _detect_conversation_column(
     if unknown_exact is not None:
         return unknown_exact
     return None
+
+
+def is_plain_text_dataset(dataset) -> bool:
+    """One column of non-blank strings: raw text, whatever the column is called (prepare_raw_text_dataset renames it)."""
+    column_names = getattr(dataset, "column_names", None)
+    if column_names is not None and len(list(column_names)) != 1:
+        return False
+    rows = _sample_dataset_rows(dataset, limit = _PLAIN_TEXT_SAMPLE_ROWS)
+    if not rows:
+        return False
+    return all(_is_single_string_row(row) for row in rows)
+
+
+def _is_single_string_row(row) -> bool:
+    if not isinstance(row, dict) or len(row) != 1:
+        return False
+    value = next(iter(row.values()))
+    if not isinstance(value, str) or not value.strip() or _is_image_value(value):
+        return False
+    # A column of media paths still needs its other roles mapped.
+    return not value.strip().lower().endswith(_AUDIO_EXTENSIONS)
 
 
 def detect_dataset_format(dataset):
@@ -470,9 +492,7 @@ def detect_custom_format_heuristic(dataset):
             user_candidates.append((col, score))
 
     if not user_candidates and not any(col != assistant_col for col in user_potential):
-        # has_keyword drops "context" from user_potential because "text" only matches
-        # inside it. When nothing else can hold the user turn, that column is a better
-        # user turn than an assistant-worded leftover.
+        # "text" only matches inside "context", so it is still the best user column if nothing else fits.
         shadowed_potential = [
             col
             for col in content_columns

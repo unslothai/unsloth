@@ -29,6 +29,7 @@ from .import_fixes import (
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
     fix_torchao_pytree_register_constant,
+    disable_torchao_if_torch_too_old,
     propagate_torchao_fix_to_subprocesses,
     check_fbgemm_gpu_version,
     check_transformers_dependency_versions,
@@ -93,6 +94,8 @@ from ._torchao_nodist import fix_torchao_without_torch_distributed
 
 fix_torchao_without_torch_distributed()
 del fix_torchao_without_torch_distributed
+# After the torchao shims, before transformers imports torchao: a torchao too new for this torch reads as absent.
+disable_torchao_if_torch_too_old()
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
@@ -121,6 +124,7 @@ del patch_torch_missing_attribute_error
 del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
 del fix_torchao_pytree_register_constant
+del disable_torchao_if_torch_too_old
 del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
@@ -335,6 +339,7 @@ from .import_fixes import (
     fix_transformers_bnb_prequantized_save,
     fix_transformers_fully_masked_rows,
     fix_transformers_flash_attention_mrope_packed_sequence,
+    fix_transformers_flash_attention_mrope_packed_rows,
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
     fix_transformers_tokenizer_config_vocab_file_override,
@@ -361,6 +366,7 @@ from .import_fixes import (
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
     fix_cudnn_sdpa_d256_masked_backward,
+    fix_cudnn_sdpa_backward_grad_layout,
     fix_rocm_windows_fused_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
@@ -399,6 +405,7 @@ fix_transformers5_bare_annotation_configs()
 # Probe-gated: no-op unless SDPA gets a query row that attends to nothing; runs before model imports so plain generate is covered.
 fix_transformers_fully_masked_rows()
 fix_transformers_flash_attention_mrope_packed_sequence()
+fix_transformers_flash_attention_mrope_packed_rows()
 fix_transformers_chunked_mask_block_sequence_ids()
 fix_transformers_flex_mask_graph_breaks()
 # CVE-2026-4372 / 5241 / 9856 and the tokenizer_config.json vocab path traversal, no-ops once
@@ -450,6 +457,7 @@ fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
 fix_cudnn_sdpa_d256_masked_backward()
+fix_cudnn_sdpa_backward_grad_layout()
 # Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
 fix_rocm_windows_fused_sdpa()
 fix_triton_compiled_kernel_missing_attrs()
@@ -517,6 +525,7 @@ del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
 del fix_cudnn_sdpa_d256_masked_backward
+del fix_cudnn_sdpa_backward_grad_layout
 del fix_rocm_windows_fused_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
@@ -623,9 +632,15 @@ try:
 except Exception as _triton_import_exception:
     triton = None
     TRITON_IMPORT_ERROR = f"{type(_triton_import_exception).__name__}: {_triton_import_exception}"
+    # No Triton package at all (AMD Windows wheels), not an installed but broken one.
+    _TRITON_MISSING = (
+        isinstance(_triton_import_exception, ModuleNotFoundError)
+        and _triton_import_exception.name == "triton"
+    )
     del _triton_import_exception
 else:
     TRITON_IMPORT_ERROR = None
+    _TRITON_MISSING = False
 
 if TRITON_IMPORT_ERROR is not None:
     if DEVICE_TYPE in ("cuda", "hip") and torch.cuda.is_available():
@@ -766,12 +781,68 @@ from .import_fixes import patch_bitsandbytes_optimizer_step_sync
 patch_bitsandbytes_optimizer_step_sync()
 del patch_bitsandbytes_optimizer_step_sync
 
-from .models import *
-from .models import __version__
-from .save import *
-from .chat_templates import *
-from .tokenizer_utils import *
-from .trainer import *
+
+def _define_kernels_against_triton_stub():
+    """Unsloth's kernel modules define @triton.jit kernels at import. With no Triton package, a triton import made
+    by an unsloth.* module resolves to unsloth_zoo's triton stub (calling a kernel raises); every other importer
+    still sees no Triton, so no library mistakes the stub for a real one. Returns the undo callable."""
+    try:
+        from unsloth_zoo.stubs import triton_stub
+    except ImportError:
+        return None
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
+        importer = (globals or {}).get("__name__") or ""
+        if (
+            level
+            or not (name == "triton" or name.startswith("triton."))
+            or importer.split(".")[0] != "unsloth"
+        ):
+            return real_import(name, globals, locals, fromlist, level)
+        meta_path, modules = list(sys.meta_path), set(sys.modules)
+        triton_stub.inject_into_sys_modules()
+        try:
+            return real_import(name, globals, locals, fromlist, level)
+        finally:
+            sys.meta_path[:] = meta_path
+            for key in [
+                k
+                for k in sys.modules
+                if (k == "triton" or k.startswith("triton.")) and k not in modules
+            ]:
+                del sys.modules[key]
+
+    builtins.__import__ = _import
+
+    def remove():
+        if builtins.__import__ is _import:
+            builtins.__import__ = real_import
+
+    return remove
+
+
+_remove_triton_stub = _define_kernels_against_triton_stub() if _TRITON_MISSING else None
+try:
+    from .models import *
+    from .models import __version__
+    from .save import *
+    from .chat_templates import *
+    from .tokenizer_utils import *
+    from .trainer import *
+finally:
+    # Also on a failed import: the hook must never outlive `import unsloth`.
+    if _remove_triton_stub is not None:
+        _remove_triton_stub()
+del _define_kernels_against_triton_stub, _remove_triton_stub
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor

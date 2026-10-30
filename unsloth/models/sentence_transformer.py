@@ -71,10 +71,107 @@ unsloth_save_pretrained_gguf._unsloth_deferred_shim = True
 
 
 import contextlib
+import functools
 import shutil
 
 
 _CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
+
+
+@contextlib.contextmanager
+def fsdp2_st_usage_snippet(model):
+    """Collective (every rank enters) around an FSDP2 SentenceTransformer save. The model card's usage
+    snippet encodes example sentences, and a forward of a sharded model is collective: run it here on
+    every rank (same inputs, same result), so the writer's card reuses it instead of a forward only rank
+    0 would enter. `encode` moves the model to its own device first, which a DTensor parameter refuses
+    to be swapped for, so that move is skipped (the model is already there)."""
+    card = getattr(model, "model_card_data", None)
+    run = getattr(card, "run_usage_snippet", None)
+    if not callable(run) or "run_usage_snippet" in getattr(card, "__dict__", {}):
+        yield
+        return
+    from .fsdp2_native import native_fsdp2_unsharded
+
+    model.__dict__["to"] = lambda *args, **kwargs: model
+    # encode() switches the model to eval mode; a save must not change training mode.
+    modes = [(module, module.training) for module in model.modules()]
+    try:
+        # Whole weights on every rank for the snippet: older sentence-transformers' encode calls
+        # self.forward, which skips the root unit's FSDP2 hooks.
+        with native_fsdp2_unsharded(model):
+            run()
+    except Exception as exc:
+        print(f"Unsloth: FSDP2 save: model card usage snippet not computed ({exc}).")
+    finally:
+        model.__dict__.pop("to", None)
+        for module, training in modes:
+            module.training = training
+    card.__dict__["run_usage_snippet"] = lambda *args, **kwargs: None
+    try:
+        yield
+    finally:
+        card.__dict__.pop("run_usage_snippet", None)
+
+
+def _save_creates_model_card(save, model, args, kwargs):
+    try:
+        bound = inspect.signature(save).bind_partial(model, *args, **kwargs)
+    except (TypeError, ValueError):
+        return kwargs.get("create_model_card", True) is not False
+    return bound.arguments.get("create_model_card", True) is not False
+
+
+def _install_fsdp2_collective_st_save(SentenceTransformer):
+    """Under native FSDP2 (UNSLOTH_FSDP2=1) the encoder's weights are DTensor shards, and ST's `save`
+    (behind `save_pretrained` and the Trainer's `_save`) reads them directly, on every rank, into the
+    same folder. Make it collective, like the causal LM `save_pretrained`: every rank calls it, the
+    shards are gathered to rank 0, which writes; the others return None. Idempotent, and a model FSDP2
+    does not shard is passed straight through."""
+    original = getattr(SentenceTransformer, "save", None)
+    if original is None or getattr(original, "_unsloth_fsdp2_collective", False):
+        return
+
+    def plainly_named(self, args, kwargs):
+        # The model card prints the architecture: name the modules as one process would, not
+        # FSDP2's FSDP<Name> subclasses.
+        renamed = []
+        for module in self.modules():
+            cls = type(module)
+            if cls.__name__.startswith("FSDP") and "_get_name" not in module.__dict__:
+                plain = next((c for c in cls.__mro__[1:] if not c.__name__.startswith("FSDP")), cls)
+                module.__dict__["_get_name"] = lambda name = plain.__name__: name
+                renamed.append(module)
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            for module in renamed:
+                module.__dict__.pop("_get_name", None)
+
+    @functools.wraps(original)
+    def save(self, *args, **kwargs):
+        from .fsdp2_save import fsdp2_gather_active, fsdp2_gathered, fsdp2_units
+
+        if not fsdp2_units(self):
+            return original(self, *args, **kwargs)
+        if fsdp2_gather_active():
+            # The writer inside a gather already made (Trainer.save_model under native FSDP2, which
+            # also ran fsdp2_st_usage_snippet on every rank).
+            return plainly_named(self, args, kwargs)
+        # No card: skip the snippet's unshard + forward.
+        snippet = (
+            fsdp2_st_usage_snippet(self)
+            if _save_creates_model_card(original, self, args, kwargs)
+            else contextlib.nullcontext()
+        )
+        # Every parameter, not just the trainable ones: ST writes its other modules (Dense, ...) too,
+        # and embedding models are small.
+        with snippet, fsdp2_gathered(self) as writer:
+            if writer is False:
+                return None
+            return plainly_named(self, args, kwargs)
+
+    save._unsloth_fsdp2_collective = True
+    SentenceTransformer.save = save
 
 
 def _ensure_sentence_attention_masks(model):
@@ -2402,6 +2499,7 @@ class FastSentenceTransformer(FastModel):
         try:
             from sentence_transformers import SentenceTransformer
             from sentence_transformers.models import Transformer, Pooling, Normalize
+            _install_fsdp2_collective_st_save(SentenceTransformer)
         except ImportError:
             raise ImportError(
                 "Unsloth: To use `FastSentenceTransformer`, you must install `sentence-transformers`.\n"
@@ -3036,6 +3134,8 @@ class FastSentenceTransformer(FastModel):
     ):
         from sentence_transformers import SentenceTransformer
         from peft import LoraConfig, get_peft_model as peft_get_peft_model
+
+        _install_fsdp2_collective_st_save(SentenceTransformer)
 
         if "task_type" not in kwargs:
             kwargs["task_type"] = "FEATURE_EXTRACTION"

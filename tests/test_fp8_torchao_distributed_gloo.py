@@ -60,6 +60,8 @@ def _ddp_helpers():
             {
                 "_ROTARY_INV_FREQ_BUFFER_NAMES",
                 "_is_tensor_subclass_weight",
+                "_holds_float8",
+                "_ddp_can_flatten",
                 "_frozen_tensor_subclass_names_for_ddp",
                 "_exclude_rope_inv_freq_from_ddp",
             },
@@ -147,6 +149,72 @@ def _fsdp_case(native, rank, shard_frozen):
     return res
 
 
+def _other_torchao_llama(kind):
+    """A 256 wide llama whose MLP weights are torchao subclasses that store no float8: frozen NF4 (QLoRA)
+    or trainable int8 mixed precision training weights. Both implement FSDP2's all-gather hooks."""
+    import transformers
+
+    torch.manual_seed(0)
+    config = transformers.LlamaConfig(
+        hidden_size = 256,
+        intermediate_size = 256,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        vocab_size = 128,
+    )
+    model = transformers.LlamaForCausalLM(config)
+    for name, p in model.named_parameters():
+        p.requires_grad_("norm" in name)
+    mlp = model.model.layers[0].mlp
+    for mod in (mlp.up_proj, mlp.down_proj):
+        w = mod.weight.detach().clone()
+        if kind == "nf4":
+            from torchao.quantization.quantize_.workflows.nf4.nf4_tensor import to_nf4
+            mod.weight = torch.nn.Parameter(to_nf4(w), requires_grad = False)
+        else:
+            from torchao.prototype.quantized_training.int8_mixed_precision import (
+                Int8MixedPrecisionTrainingConfig,
+                Int8MixedPrecisionTrainingLinearWeight,
+            )
+            mod.weight = torch.nn.Parameter(
+                Int8MixedPrecisionTrainingLinearWeight(w, Int8MixedPrecisionTrainingConfig()),
+                requires_grad = True,
+            )
+    return model
+
+
+def _fsdp_other_case(native, rank, kind):
+    from torch.distributed.tensor import DTensor
+
+    model = _other_torchao_llama(kind)
+    cfg = native.FSDP2Config(param_dtype = torch.float32, shard_frozen = True)
+    try:
+        model = native.shard_model(model, cfg)
+    except Exception as exc:
+        return {"wrap": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    mlp = model.model.layers[0].mlp
+    weights = [mlp.up_proj.weight, mlp.down_proj.weight]
+    local = [w.to_local() if isinstance(w, DTensor) else w for w in weights]
+    if kind == "nf4":
+        nbytes = sum(t.quantized_data.numel() * t.quantized_data.element_size() for t in local)
+    else:
+        nbytes = sum(t._data.numel() * t._data.element_size() for t in local)
+    ids = _rows(rank)
+    model(input_ids = ids, labels = ids).loss.backward()
+    grads = [w.grad for w in weights if w.requires_grad]
+    return {
+        "wrap": "ok",
+        "dtensor": sum(isinstance(w, DTensor) for w in weights),
+        "local_bytes": nbytes,
+        "grads": len(grads),
+        "finite": all(
+            torch.isfinite(g.full_tensor() if isinstance(g, DTensor) else g).all().item()
+            for g in grads
+        ),
+    }
+
+
 def _ddp_case(lu, ut, rank, via):
     from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -181,7 +249,7 @@ def _worker(rank, world, port, out, kind, arg):
         LOCAL_RANK = str(rank),
         LOCAL_WORLD_SIZE = str(world),
     )
-    if kind == "fsdp":
+    if kind.startswith("fsdp"):
         os.environ["UNSLOTH_FSDP2"] = "1"
     import torch.distributed as dist
 
@@ -191,6 +259,8 @@ def _worker(rank, world, port, out, kind, arg):
     try:
         if kind == "fsdp":
             res = _fsdp_case(_load_native(), rank, arg)
+        elif kind == "fsdp_other":
+            res = _fsdp_other_case(_load_native(), rank, arg)
         else:
             res = _ddp_case(*_ddp_helpers(), rank, arg)
         out.put((rank, res))
@@ -295,3 +365,65 @@ def test_float8_training_weights_stay_with_ddp():
         Float8Tensor.from_hp(torch.randn(8, 8), granularity = PerRow()), requires_grad = False
     )
     assert lu._is_tensor_subclass_weight(frozen) is True
+
+
+def test_fsdp2_still_shards_frozen_nf4_weights():
+    # NF4Tensor stores uint8 / int8, not float8, and implements FSDP2's hooks: with shard_frozen each rank
+    # holds half the packed bytes (256 x 256 nf4 = 32768 bytes per weight), not a replicated copy.
+    pytest.importorskip("torchao.quantization.quantize_.workflows.nf4.nf4_tensor")
+    for rank, r in _run("fsdp_other", "nf4").items():
+        assert r["wrap"] == "ok", (rank, r)
+        assert r["dtensor"] == 2, (rank, r)
+        assert r["local_bytes"] == 2 * 32768 // 2, (rank, r)
+
+
+def test_fsdp2_shards_trainable_int8_mixed_precision_weights():
+    pytest.importorskip("torchao.prototype.quantized_training.int8_mixed_precision")
+    for rank, r in _run("fsdp_other", "int8").items():
+        assert r["wrap"] == "ok", (rank, r)
+        assert r["dtensor"] == 2 and r["grads"] == 2 and r["finite"], (rank, r)
+
+
+def test_ddp_keeps_trainable_non_float8_torchao_weights():
+    # Only float8 storage is refused for DDP training: the int8 mixed precision training weight
+    # implements the flatten DDP's broadcast needs, and frozen NF4 is simply left out of the broadcast.
+    nf4 = pytest.importorskip("torchao.quantization.quantize_.workflows.nf4.nf4_tensor")
+    int8 = pytest.importorskip("torchao.prototype.quantized_training.int8_mixed_precision")
+    lu, _ = _ddp_helpers()
+    model = torch.nn.Sequential(
+        torch.nn.Linear(256, 256, bias = False), torch.nn.Linear(256, 256, bias = False)
+    )
+    model[0].weight = torch.nn.Parameter(
+        int8.Int8MixedPrecisionTrainingLinearWeight(
+            model[0].weight.detach().clone(), int8.Int8MixedPrecisionTrainingConfig()
+        ),
+        requires_grad = True,
+    )
+    model[1].weight = torch.nn.Parameter(
+        nf4.to_nf4(model[1].weight.detach().clone()), requires_grad = False
+    )
+    assert lu._frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = True) == ["1.weight"]
+    native = _load_native()
+    assert native._float8_params(model) == set()
+
+
+def test_frozen_int8_inference_weights_stay_replicated_and_trainable_ones_refused():
+    # torchao's Int8Tensor (Int8WeightOnlyConfig, the portable INT8 export) stores int8, not float8, but
+    # implements no FSDP2 all-gather extension: fully_shard fails on it, so frozen ones stay replicated as
+    # under #15001, and DDP's broadcast cannot flatten it, so a trainable one is refused up front.
+    Q = pytest.importorskip("torchao.quantization")
+    if not hasattr(Q, "Int8Tensor"):
+        pytest.skip("torchao without Int8Tensor")
+    lin = torch.nn.Linear(64, 64, bias = False)
+    Q.quantize_(lin, Q.Int8WeightOnlyConfig(version = 2))
+    assert type(lin.weight).__name__ == "Int8Tensor"
+    lin.weight.requires_grad_(False)
+    native = _load_native()
+    assert native._float8_params(lin) == {lin.weight}
+    lu, _ = _ddp_helpers()
+    assert lu._frozen_tensor_subclass_names_for_ddp(lin, refuse_trainable = True) == ["weight"]
+    lin.weight.requires_grad_(True)
+    with pytest.raises(NotImplementedError, match = "native FSDP2 cannot shard"):
+        native._float8_params(lin)
+    with pytest.raises(NotImplementedError, match = "DDP cannot train"):
+        lu._frozen_tensor_subclass_names_for_ddp(lin, refuse_trainable = True)

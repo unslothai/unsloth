@@ -139,6 +139,11 @@ export const hi = {
     more: "और",
     addressPlaceholder: "खोजें या URL डालें",
     local: "लोकल",
+    browserUse: {
+      label: "ब्राउज़र उपयोग",
+      description: "मॉडलों को बिल्ट-इन ब्राउज़र नियंत्रित करने दें",
+      unavailable: "ब्राउज़र इस्तेमाल करने देने के लिए ऐसा मॉडल लोड करें जो टूल कॉल कर सके।",
+    },
     suggested: "सुझाव",
     suggestedMenu: {
       open: "खोलें",
@@ -496,7 +501,6 @@ export const hi = {
       clearDataFailed: "साइट डेटा साफ़ नहीं हो सका। फिर से कोशिश करें।",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "OS सैंडबॉक्स उपलब्ध नहीं है",
@@ -625,6 +629,37 @@ export const hi = {
     compactEmpty: "अभी कॉम्पैक्ट करने के लिए कुछ नहीं है",
     compactUnsupported: "कॉम्पैक्शन के लिए टूल सपोर्ट वाला GGUF या MLX मॉडल आवश्यक है",
   },
+  halloween: {
+    navLabel: "ट्रिक या ट्रीट…",
+    title: "ट्रिक या ट्रीट?!",
+    description:
+      "हमने Unsloth के लिए कुछ डरावनी चीज़ें तैयार की हैं, जो अक्टूबर के अंत तक रहेंगी।",
+    chooseTheme: "एक डरावनी थीम चुनें",
+    spookyGreetings: "डरावने अभिवादन",
+    spookyGreetingsDescription: "स्लॉथ नई चैट का स्वागत एक डर के साथ करता है।",
+    decorations: "मकड़ियाँ और चमगादड़",
+    decorationsDescription:
+      "हैलोवीन थीम पर कोनों में जाले, और कभी-कभी कोई मकड़ी या चमगादड़।",
+    surprise: "ट्रिक या ट्रीट!",
+    surpriseDescription: "स्लॉथ को आपके लिए थीम चुनने दें।",
+    themesTitle: "डरावनी थीम",
+    back: "वापस",
+    footer: "Unsloth 1 नवंबर की आधी रात को सामान्य हो जाएगा।",
+    removeNow: "अभी हटाएँ",
+    hideFromSidebar: "साइडबार से छिपाएं",
+    greeting: {
+      pumpkins: "कद्दू तराशे जा चुके हैं। आगे क्या?",
+      brewing: "चलो, कुछ जादू घोलें",
+      trickOrTreat: "ट्रिक या ट्रीट?",
+      manor: "हवेली में आपका स्वागत है",
+      manorName: "{name}, हवेली में आपका स्वागत है",
+      happyHalloween: "हैप्पी हैलोवीन",
+      happyHalloweenName: "हैप्पी हैलोवीन, {name}",
+      spirits: "आत्माएँ सुन रही हैं…",
+      mysteries: "आज रात हम कौन-से रहस्य खोलेंगे?",
+      conjure: "मैं आपके लिए क्या जादू करूँ?",
+    },
+  },
   welcome: {
     goodToSeeYou: "आपको देखकर अच्छा लगा",
     goodToSeeYouName: "{name}, आपको देखकर अच्छा लगा",
@@ -705,7 +740,6 @@ export const hi = {
     shutdown: "शटडाउन",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "दस्तावेज़",
       keyboardShortcuts: "कीबोर्ड शॉर्टकट",
@@ -777,11 +811,8 @@ export const hi = {
       export: "एक्सपोर्ट",
       recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
-      // Shown under an empty project folder in the sidebar.
       noChats: "कोई चैट नहीं",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "सभी प्रोजेक्ट पिन किए गए",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "सभी प्रोजेक्ट पिन किए गए हैं या सेक्शन में हैं",
       noProjects: "कोई प्रोजेक्ट नहीं",
       showMore: "और दिखाएं",
@@ -793,6 +824,8 @@ export const hi = {
       guidedTour: "गाइडेड टूर",
       help: "सहायता",
       logOut: "लॉग आउट",
+      logOutNeedsPassword: "लॉग आउट करने से पहले सेटिंग्स > रिमोट एक्सेस में पासवर्ड सेट करें, ताकि आप फिर से साइन इन कर सकें।",
+      logOutFailed: "सुरक्षित रूप से लॉग आउट नहीं हो सका। थोड़ी देर बाद फिर से कोशिश करें।",
       shutdown: "शटडाउन",
     },
     commandPalette: {
@@ -883,11 +916,9 @@ export const hi = {
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
-      // Header of the menu's section-visibility toggles.
       show: "दिखाएँ",
       newSection: "नया सेक्शन",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "नया सेक्शन",
       createDescription: "चैट और प्रोजेक्ट को अपनी पसंद से समूहित करें",
@@ -898,16 +929,13 @@ export const hi = {
       edit: "संपादित करें",
       remove: "सेक्शन हटाएँ",
       markAllRead: "सभी को पढ़ा हुआ चिह्नित करें",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "यहाँ ले जाएँ",
       section: "सेक्शन",
       sectionsHeading: "सेक्शन",
       removeFromProject: "प्रोजेक्ट से हटाएँ",
       newSection: "नया सेक्शन",
       removeFromSection: "सेक्शन से हटाएँ",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "{name} से हटाएँ",
-      // Shown in a section with nothing filed in it yet.
       empty: "चैट या प्रोजेक्ट यहाँ खींचें",
       sectionOptions: "सेक्शन विकल्प",
       newChatInSection: "{name} में नई चैट",
@@ -942,6 +970,11 @@ export const hi = {
   },
   settings: {
     accounts: {
+      signsInAs: "{username} के रूप में साइन इन करता है",
+      signsInAsOwner: "{alias} या {username} के रूप में साइन इन करता है",
+      signInName: "आपका साइन-इन नाम",
+      signInNameDescription: "जब इस इंस्टॉलेशन में एक से ज़्यादा अकाउंट हों, तब साइन इन के लिए टाइप किया जाने वाला नाम। unsloth भी हमेशा काम करता है। सिर्फ़ unsloth इस्तेमाल करने के लिए खाली छोड़ें।",
+      signInNameSave: "नाम सेव करें",
       title: "खाते",
       description: "निजी Unsloth खाते बनाएँ। नए उपयोगकर्ता एक बार इस्तेमाल होने वाले सेटअप कोड से साइन इन करते हैं और पासवर्ड चुनते हैं।",
       username: "उपयोगकर्ता नाम",
@@ -1082,7 +1115,7 @@ export const hi = {
       lastVisited: "पिछली बार देखा गया",
     },
     tabs: {
-      sandbox: "सैंडबॉक्स",
+      sandbox: "सुरक्षा",
       accounts: "खाते",
       general: "सामान्य",
       profile: "प्रोफ़ाइल",
@@ -1366,7 +1399,7 @@ export const hi = {
       },
     },
     sandbox: {
-      title: "सैंडबॉक्स",
+      title: "सुरक्षा",
       description: "क्या इस कंप्यूटर पर Python और टर्मिनल टूल कॉल OS सैंडबॉक्स के अंदर चलती हैं।",
       docs: "दस्तावेज़",
       docsLabel: "सैंडबॉक्स दस्तावेज़ खोलें",
@@ -1421,17 +1454,17 @@ export const hi = {
       installingRuntime: "इंस्टॉल हो रहा है…",
       installRuntimeFailed: "रनटाइम इंस्टॉल नहीं हो सका।",
       installRuntimeError: "रनटाइम इंस्टॉल शुरू नहीं हो सका।",
-      unsupportedArch: "Windows सैंडबॉक्स (MXC) केवल x64 Windows पर चलता है, इसलिए यह इस PC पर उपलब्ध नहीं है।",
+      unsupportedArch: "Windows सैंडबॉक्स (MXC) केवल x64 और ARM64 Windows पर चलता है, इसलिए यह इस PC पर उपलब्ध नहीं है।",
       builtinNeedsUpdate:
         "Windows के बिल्ट-इन कंटेनर को बिल्ड {required} या नया चाहिए, और यह PC {current} चला रहा है। इसे बिना एडमिनिस्ट्रेटर चरण के उपयोग करने के लिए नवीनतम Windows अपडेट इंस्टॉल करें, या नीचे फ़ॉलबैक सैंडबॉक्स चालू करें।",
       unsupportedBuild: "Windows सैंडबॉक्स (MXC) के लिए Windows 11 24H2 (बिल्ड 26100) या नया चाहिए, इसलिए यह इस PC पर उपलब्ध नहीं है।",
-      permissionsIntro: "चुनें कि टूल कब पहले पूछें, और क्या Python और टर्मिनल OS सैंडबॉक्स के अंदर भी चलें।",
       permissionLabel: "टूल अनुमतियाँ",
+      levelRowLabel: "सैंडबॉक्स स्तर",
       levelPickerTitle: "कोड को कैसे सैंडबॉक्स करें?",
       levelOff: "बंद",
       levelOffShort: "पूरी पहुंच सैंडबॉक्स बंद कर देता है",
-      levelHighDetail: "OS सैंडबॉक्सिंग। Python और टर्मिनल सॉफ़्टवेयर सुरक्षा के साथ OS सैंडबॉक्स (bubblewrap, Seatbelt या MXC) के अंदर चलते हैं। काम करने वाले OS सैंडबॉक्स के बिना, जोखिम भरे कॉल पहले पूछते हैं।",
-      levelLowDetail: "सॉफ़्टवेयर सैंडबॉक्सिंग। Python और टर्मिनल केवल सॉफ़्टवेयर सुरक्षा के साथ, OS सैंडबॉक्स के बाहर चलते हैं। पूरी पहुंच को छोड़कर, जोखिम भरे कॉल पहले पूछते हैं।",
+      levelHighDetail: "Python और टर्मिनल सॉफ़्टवेयर सुरक्षा के साथ OS सैंडबॉक्स (bubblewrap, Seatbelt या MXC) के अंदर चलते हैं। काम करने वाले OS सैंडबॉक्स के बिना, जोखिम भरे कॉल पहले पूछते हैं।",
+      levelLowDetail: "Python और टर्मिनल केवल सॉफ़्टवेयर सुरक्षा के साथ, OS सैंडबॉक्स के बाहर चलते हैं। पूरी पहुंच को छोड़कर, जोखिम भरे कॉल पहले पूछते हैं।",
       levelLabel: "सैंडबॉक्स",
       levelHigh: "उच्च",
       levelLow: "निम्न",
@@ -1442,6 +1475,7 @@ export const hi = {
       managedNote: "OS सैंडबॉक्स इस Unsloth सर्वर का स्वामी सेट अप करता है।",
     },
     debugging: {
+      description: "ऐप छोड़े बिना Unsloth के लॉग पढ़ें।",
       logSection: "लॉग फ़ाइल",
       source: "लॉग फ़ाइल",
       sourceHint: "मॉडल रनर अपने अलग लॉग लिखते हैं, इसलिए लोड या जनरेशन विफल होने का कारण अक्सर सर्वर लॉग के बजाय वहीं मिलता है।",
@@ -2162,13 +2196,13 @@ export const hi = {
         },
         details: {
           ask:
-            "हर टूल कॉल से पहले पूछता है, जिसमें टर्मिनल और Python कोड, वेब सर्च, फ़ाइल बदलाव और MCP टूल शामिल हैं। बाहरी प्रोवाइडर द्वारा चलाए गए टूल नहीं रुकते। तब सबसे अच्छा, जब आप हर कदम की समीक्षा करना चाहें।",
+            "हर टूल कॉल से पहले पूछता है, जिसमें टर्मिनल और Python कोड, वेब सर्च, फ़ाइल बदलाव और MCP टूल शामिल हैं। बाहरी प्रोवाइडर द्वारा चलाए गए टूल नहीं रुकते।",
           auto:
             "सामान्य टूल कॉल अपने आप चलाता है और सिर्फ़ तब पूछता है जब कोई काम जोखिम भरा लगे, जैसे क्रेडेंशियल पढ़ना, अधिकार बढ़ाना या विनाशकारी कमांड चलाना।",
           off:
-            "हर टूल कॉल बिना पूछे चलाता है। Python और टर्मिनल कोड फिर भी सैंडबॉक्स में चलता है, जो सीमित करता है कि वह आपके कंप्यूटर की किन फ़ाइलों तक पहुंच सकता है। अगर इस कंप्यूटर पर कोई काम करने वाला OS सैंडबॉक्स नहीं है, तो जोखिम भरी Python और टर्मिनल कॉल पहले पूछती हैं।",
+            "हर टूल कॉल बिना पूछे चलाता है। Python और टर्मिनल कोड फिर भी सैंडबॉक्स में चलता है, जो सीमित करता है कि वह आपके कंप्यूटर की किन फ़ाइलों तक पहुंच सकता है। काम करने वाले OS सैंडबॉक्स के बिना, जोखिम भरे कॉल पहले पूछते हैं।",
           full:
-            "हर टूल कॉल बिना पूछे चलाता है और कोड सैंडबॉक्स बंद कर देता है, ताकि Python और टर्मिनल कोड आपके खाते की पहुंच वाली कोई भी फ़ाइल पढ़ और बदल सके। उन भरोसेमंद कामों के लिए सबसे अच्छा, जिन्हें सैंडबॉक्स के बाहर काम करना हो।",
+            "हर टूल कॉल बिना पूछे चलाता है और कोड सैंडबॉक्स बंद कर देता है, ताकि Python और टर्मिनल कोड आपके खाते की पहुंच वाली कोई भी फ़ाइल पढ़ और बदल सके।",
         },
       },
     },
@@ -2197,8 +2231,8 @@ export const hi = {
       uploadPhoto: "फ़ोटो अपलोड करें",
       removePhoto: "हटाएं",
       pictureOptions: "प्रोफ़ाइल फ़ोटो विकल्प",
-      greetingSloth: "अभिवादन में स्लॉथ",
-      greetingSlothDescription: "चैट के अभिवादन में स्लॉथ दिखाएं।",
+      greetingSloth: "अभिवादन",
+      greetingSlothDescription: "नई चैट में अभिवादन दिखाएँ।",
       noPicture: "कोई प्रोफ़ाइल फ़ोटो नहीं",
       noneLabel: "कोई नहीं",
       stats: {
@@ -2273,6 +2307,26 @@ export const hi = {
     appearance: {
       title: "रूप-रंग",
       description: "इस डिवाइस पर Unsloth कैसा दिखता है।",
+      gpuRendering: {
+        sectionTitle: "रेंडरिंग",
+        label: "GPU रेंडरिंग",
+        description: "Unsloth को आपके ग्राफ़िक्स कार्ड से दिखाएँ। ऑटो इसका इस्तेमाल वहीं करता है जहाँ यह काम करने के लिए जाना जाता है। बदलाव Unsloth के दोबारा शुरू होने के बाद लागू होते हैं।",
+        auto: "ऑटो",
+        on: "चालू",
+        off: "बंद",
+        oldWebkitWarning: "Wayland पर WebKitGTK {version}: फ़्रैक्शनल स्केलिंग वाले NVIDIA पर GPU रेंडरिंग लॉन्च के समय क्रैश हो सकती है (WebKit bug 280210)। ऐसा होने पर Unsloth अपने आप CPU रेंडरिंग पर लौट आता है। WebKitGTK 2.50.4 पर इससे कोई मापने लायक तेज़ी नहीं मिली (दोनों तरह 8 fps), इसलिए यहाँ चालू की सलाह नहीं दी जाती।",
+        oldDriverWarning:
+          "X11 पर NVIDIA ड्राइवर {version}: ड्राइवर 610 या नया होने तक Unsloth GPU रेंडरिंग बंद रखता है। पुराने ड्राइवर हर फ़्रेम में एक फ़ाइल डिस्क्रिप्टर लीक करते हैं, और कुछ ही मिनटों में विंडो बनना बंद हो जाती है।",
+        fallbackNote: "इस सिस्टम पर GPU रेंडरिंग लॉन्च के समय क्रैश हो गई, इसलिए Unsloth CPU रेंडरिंग का इस्तेमाल कर रहा है।",
+        tryAgain: "GPU फिर से आज़माएँ",
+        envOverride: "{name} एनवायरनमेंट वेरिएबल से सेट है। जब तक इसे हटाया नहीं जाता, इस सेटिंग का कोई असर नहीं होगा।",
+        macNote: "macOS हमेशा GPU से रेंडर करता है। WebKit में इसे बंद करने का कोई समर्थित विकल्प नहीं है।",
+        restartPending: "लागू करने के लिए Unsloth दोबारा शुरू करें।",
+        restartNow: "अभी दोबारा शुरू करें",
+        loadError: "GPU रेंडरिंग सेटिंग लोड नहीं हो सकी।",
+        saveError: "GPU रेंडरिंग सेटिंग सहेजी नहीं जा सकी।",
+        restartError: "Unsloth दोबारा शुरू नहीं हो सका।",
+      },
       theme: {
         title: "विज़ुअल स्टाइल",
         label: "मोड",
@@ -2288,6 +2342,12 @@ export const hi = {
         classic: "क्लासिक",
         minimal: "मिनिमल",
         moreThemes: "और थीम",
+        halloween: "हैलोवीन",
+      },
+      trickOrTreat: {
+        label: "ट्रिक या ट्रीट",
+        description:
+          "1 नवंबर तक हैलोवीन थीम और डरावने अभिवादन।",
       },
       custom: {
         chatWidth: {
@@ -2420,10 +2480,12 @@ export const hi = {
       description: "इस Unsloth सर्वर के हार्डवेयर और स्टोरेज की निगरानी करें।",
       liveUpdates: "लाइव अपडेट",
       floatingWindow: "फ्लोटिंग विंडो",
-      disableOverlay: "ओवरले अक्षम करें",
+      showFloatingWindow: "फ्लोटिंग विंडो दिखाएँ",
+      showFloatingWindowDescription: "CPU, RAM और GPU का उपयोग Unsloth के ऊपर दिखता रहे।",
       liveMonitor: {
         title: "लाइव मॉनिटर",
         apiTitle: "API मॉनिटर",
+        apiDescription: "देखें कि दूसरे ऐप इस सर्वर के API को क्या भेजते हैं, जैसे ही वह आता है।",
         summary: "सक्रिय अनुरोध, त्रुटियाँ और टोकन उपयोग",
         status: "{active} सक्रिय · {recent} हाल के · {model}",
         noModelLoaded: "कोई मॉडल लोड नहीं है",
@@ -2442,7 +2504,7 @@ export const hi = {
         gpuUnusableDetail: "पहचाना गया, लेकिन PyTorch इसका उपयोग नहीं कर सकता",
         detailedView: "विस्तृत दृश्य",
         detailedViewDescription:
-          "फ़्लोटिंग विंडो में और यहाँ CPU लोड तथा हर GPU का लोड, तापमान और पावर दिखाएँ।",
+          "फ़्लोटिंग विंडो में CPU लोड तथा हर GPU का लोड, तापमान और पावर दिखाएँ।",
         cpuLoad: "CPU लोड",
         gpuLoad: "GPU लोड",
         temperature: "तापमान",
@@ -2475,6 +2537,10 @@ export const hi = {
         used: "{value} उपयोग में",
         free: "{value} खाली",
         total: "{value} कुल",
+        usedOf: "{total} में से {used} उपयोग में",
+        segmentUsed: "GPU द्वारा उपयोग में",
+        segmentSystem: "सिस्टम द्वारा उपयोग में",
+        segmentAvailable: "उपलब्ध",
       },
       llamaBackend: {
         title: "GGUF इनफ़रेंस इंजन",
@@ -2526,7 +2592,6 @@ export const hi = {
           updateChecksDisabled:
             "अपडेट जाँच बंद है (UNSLOTH_DISABLE_UPDATE_CHECK=1), इसलिए उपलब्ध बैकएंड नहीं खोजे जाते।",
         },
-        // दिखाया नहीं जाता: सेटिंग्स खोज के लिए अतिरिक्त शब्द।
         llamaBackendKeywords:
           "llama.cpp backend gguf इनफ़रेंस cuda rocm hip vulkan metal cpu gpu एक्सेलेरेटर prebuilt बदलें इंजन",
       },
@@ -2560,7 +2625,6 @@ export const hi = {
         reloadRequired: "नई मेमोरी सेटिंग्स लागू करने के लिए मॉडल दोबारा लोड करें।",
         loadError: "मॉडल मेमोरी सेटिंग्स लोड नहीं हो सकीं",
         saveError: "मॉडल मेमोरी सेटिंग्स सहेजी नहीं जा सकीं",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu मेमोरी रैम स्थायी पिन लॉक बनाए रखें लोड अनलोड निष्क्रिय mmap no-mmap load-mode स्वैप पेजिंग",
         multiModelKeywords:
@@ -2606,6 +2670,10 @@ export const hi = {
           hideDetailsAction: "विवरण छिपाएँ",
           clearAction: "कैश साफ़ करें",
           clearOneAction: "साफ़ करें",
+          showFolders: "फ़ोल्डर दिखाएँ",
+          hideFolders: "फ़ोल्डर छिपाएँ",
+          previousLocations: "इसमें पिछले स्थान शामिल हैं। मुख्य साफ़ करें बटन मौजूदा कैश फ़ोल्डर पर लागू होता है। मॉडल बटन केवल चुनी गई कॉपी साफ़ करते हैं।",
+          clearModelDescription: "यह केवल इस कैश की गई कॉपी को हटाता है। ज़रूरत पड़ने पर इसे फिर से डाउनलोड किया जाएगा।",
           clearingAction: "साफ़ किया जा रहा है...",
           confirmTitle: "कैश की गई फ़ाइलें साफ़ करें?",
           confirmDescription: "इससे लगभग {size} खाली होगा।",
@@ -2663,6 +2731,8 @@ export const hi = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "अपटाइम",
         processMemory: "प्रोसेस मेमोरी",
         notInstalled: "इंस्टॉल नहीं है",
@@ -2702,8 +2772,6 @@ export const hi = {
       docsLabel: "unsloth start दस्तावेज़ खोलें",
       agentDocs: "{agent} के सेटअप दस्तावेज़ खोलें",
       copyGeneratedCommand: "बनाया गया कमांड कॉपी करें",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -2855,11 +2923,6 @@ export const hi = {
       autoScrollManual: "मैन्युअल",
       autoScrollKeywords:
         "स्क्रॉल ऑटो-स्क्रॉल फ़ॉलो नीचे स्ट्रीमिंग जनरेट लॉक scroll autoscroll follow",
-      scrollToBottomButton: "नीचे स्क्रॉल करने का बटन",
-      scrollToBottomButtonDescription:
-        "ऊपर स्क्रॉल करने के बाद नवीनतम संदेश पर वापस जाने के लिए बटन दिखाएँ।",
-      scrollToBottomButtonKeywords:
-        "स्क्रॉल नीचे नवीनतम तीर बटन छिपाएँ scroll bottom button",
       replyNotification: "जवाब पूरा होने पर सूचना दें",
       replyNotificationDescription:
         "जब Unsloth छोटा किया हुआ हो या बैकग्राउंड में हो, तब जवाब पूरा होने पर सिस्टम सूचना दिखाएँ।",
@@ -2881,9 +2944,8 @@ export const hi = {
         "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
-      modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
-      modelDisclaimerDescription:
-        'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
+      composerAtBottom: "कंपोज़र नीचे",
+      composerAtBottomDescription: "नई चैट में कंपोज़र को पेज के बीच के बजाय नीचे दिखाएँ।",
       projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",
       projectAttachmentsDescription:
         "नए चैट अटैचमेंट प्रोजेक्ट की हर चैट में उपलब्ध कराएँ।",
@@ -3250,6 +3312,7 @@ export const hi = {
       readDocs: "API दस्तावेज़ पढ़ें",
       noAccess: "अभी तक कोई API एक्सेस नहीं।",
       accessTokens: "एक्सेस टोकन",
+      quickstartTitle: "क्विकस्टार्ट",
       columnName: "नाम",
       columnToken: "टोकन",
       columnCreated: "बनाया गया",
@@ -3389,8 +3452,9 @@ export const hi = {
         loadError: "निर्णय API की सेटिंग्स लोड नहीं हो सकीं।",
         sendsTo: "अनुरोध {provider} को भेजे जाते हैं।",
         connectionMissing: "यह कनेक्शन अब मौजूद नहीं है या इसमें कोई निर्णय मॉडल नहीं है। कोई दूसरा मॉडल चुनें।",
-        addConnection: "होस्ट किया गया निर्णय मॉडल इस्तेमाल करने के लिए कनेक्शन में TypeSafe, Liquid AI या OpenRouter जोड़ें।",
-        openConnections: "कनेक्शन खोलें",
+        addConnection: "होस्ट किया गया निर्णय मॉडल इस्तेमाल करने के लिए उसे ",
+        connectionsLink: "कनेक्शन",
+        addConnectionSuffix: " में जोड़ें।",
       },
       mcp: {
         title: "एजेंट एक्सेस (MCP)",
@@ -3417,6 +3481,7 @@ export const hi = {
       desktopAppVersionUnavailable: "उपलब्ध नहीं",
       llamaCppVersion: "llama.cpp संस्करण",
       audioCppVersion: "audio.cpp संस्करण",
+      mlxVersion: "MLX संस्करण",
       whisperCppVersion: "whisper.cpp संस्करण",
       engines: {
         title: "इंजन",
@@ -3528,6 +3593,8 @@ export const hi = {
   },
   studio: {
     goToLibrary: "लाइब्रेरी पर जाएं",
+    imageTraining: "इमेज ट्रेनिंग",
+    goToImageTraining: "इमेज LoRA ट्रेन करें",
     routeTitle: "ट्रेनिंग",
     wizard: {
       modelTitle: "मॉडल",
@@ -4306,7 +4373,6 @@ export const hi = {
       terminalStart: "> unsloth ट्रेनिंग शुरू हो रही है...",
       preparingResources: "> मॉडल और डेटासेट तैयार हो रहे हैं...",
       gettingReady: "> हम आपके रन के लिए सब कुछ तैयार कर रहे हैं...",
-      waitingForFirstStep: "> {message} | पहले स्टेप की प्रतीक्षा में... ({step})",
       resumingTraining: "ट्रेनिंग फिर से शुरू हो रही है...",
       startingTraining: "ट्रेनिंग शुरू हो रही है...",
       dataset: "डेटासेट",
@@ -4538,7 +4604,6 @@ export const hi = {
       all: "सभी",
       chats: "चैट",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "चैट",
@@ -4606,8 +4671,6 @@ export const hi = {
       empty: {
         chatsTitle: "अभी तक कोई चैट नहीं",
         chatsDescription: "आपकी बातचीत यहाँ दिखती है, आपकी फ़ाइलों से अलग।",
-        projectsTitle: "अभी तक कोई प्रोजेक्ट नहीं",
-        projectsDescription: "प्रोजेक्ट संबंधित चैट को एक साथ रखते हैं और उनके बीच निर्देश साझा करते हैं।",
         archivedTitle: "कुछ भी आर्काइव नहीं",
         archivedDescription: "आप जो चैट आर्काइव करते हैं, वे यहाँ दिखती हैं।",
         sectionsTitle: "अभी कोई सेक्शन नहीं",
@@ -4672,6 +4735,7 @@ export const hi = {
       modelsTitle: "अभी कोई फ़ाइन-ट्यून किया गया मॉडल नहीं",
       modelsDescription: "Unsloth में आप जो मॉडल ट्रेन या एक्सपोर्ट करते हैं, वे यहाँ दिखते हैं।",
       createFolder: "फ़ोल्डर बनाएँ",
+      generateImage: "इमेज बनाएँ",
       generateVideo: "वीडियो जनरेट करें",
       generateAudio: "ऑडियो जनरेट करें",
       trainModel: "मॉडल ट्रेन करें",
@@ -4736,6 +4800,8 @@ export const hi = {
       pdfs: "PDF",
       gridView: "ग्रिड व्यू",
       listView: "सूची व्यू",
+      grid: "ग्रिड",
+      list: "सूची",
       settings: "लाइब्रेरी सेटिंग्स",
       sort: "क्रमबद्ध करें",
       sortDefault: "डिफ़ॉल्ट क्रम",
@@ -5032,5 +5098,62 @@ export const hi = {
       dragHandleLabel: "लाइव मॉनिटर हिलाएँ। एरो कुंजियाँ इसे थोड़ा खिसकाती हैं, डबल-क्लिक करने पर यह रीसेट हो जाता है।",
       reconnecting: "फिर से कनेक्ट हो रहा है...",
     },
+  },
+  projectsPage: {
+    title: "प्रोजेक्ट",
+    search: "प्रोजेक्ट खोजें",
+    importExport: "प्रोजेक्ट इंपोर्ट / एक्सपोर्ट करें",
+    importChatsAction: "चैट इंपोर्ट करें…",
+    exportAllProjects: "सभी प्रोजेक्ट एक्सपोर्ट करें",
+    exportProjectsAndRecents: "प्रोजेक्ट + हाल के एक्सपोर्ट करें",
+    combined: "संयुक्त",
+    perChat: "प्रति चैट",
+    newProject: "नया प्रोजेक्ट",
+    name: "नाम",
+    updated: "अपडेट किया गया",
+    newestFirst: "नए पहले",
+    oldestFirst: "पुराने पहले",
+    today: "आज",
+    yesterday: "कल",
+    emptyDescription: "एक प्रोजेक्ट संबंधित चैट को साथ रखता है, साझा निर्देशों और स्रोतों के साथ जिन्हें उसकी हर चैट इस्तेमाल कर सकती है।",
+    createFirst: "अपना पहला प्रोजेक्ट बनाएँ",
+    noMatches: "आपकी खोज से कोई प्रोजेक्ट मेल नहीं खाता।",
+    clearSearch: "खोज साफ़ करें",
+    showChats: "चैट दिखाएँ",
+    hideChats: "चैट छिपाएँ",
+    pinProject: "प्रोजेक्ट पिन करें",
+    unpinProject: "प्रोजेक्ट अनपिन करें",
+    newChatInProject: "प्रोजेक्ट में नई चैट",
+    projectOptions: "प्रोजेक्ट विकल्प",
+    loadChatsFailed: "चैट लोड नहीं हो सकीं। फिर से कोशिश करें",
+    refreshChatsFailed: "चैट रीफ़्रेश नहीं हो सकीं। फिर से कोशिश करें",
+    noChats: "कोई चैट नहीं",
+    unread: "अपठित",
+    pinChat: "चैट पिन करें",
+    unpinChat: "चैट अनपिन करें",
+    chatOptions: "चैट विकल्प",
+    exportAllChats: "सभी चैट एक्सपोर्ट करें…",
+    archive: "संग्रहित करें",
+    renameChat: "चैट का नाम बदलें",
+    chatName: "चैट का नाम",
+    deleteChat: "चैट हटाएँ",
+    deleteChatDescription: "क्या आप वाकई {name} को हटाना चाहते हैं? इसके संदेश स्थायी रूप से हट जाएँगे।",
+    importChats: "चैट इंपोर्ट करें",
+    importDestination: "चुनें कि {name} को कहाँ इंपोर्ट करना है:",
+    selectDestination: "गंतव्य चुनें",
+    recents: "हाल के",
+    import: "इंपोर्ट करें",
+    deleteProject: "प्रोजेक्ट हटाएँ",
+    deleteProjectDescription: "क्या आप वाकई {name} को हटाना चाहते हैं? इसकी चैट स्थायी रूप से हट जाएँगी।",
+    deleteProjectFiles: "प्रोजेक्ट का वर्कस्पेस फ़ोल्डर डिस्क से हटा दिया जाएगा।",
+    deleteAll: "सब हटाएँ",
+    projectFallback: "प्रोजेक्ट",
+    importFailed: "इंपोर्ट विफल रहा।",
+    nothingToExport: "एक्सपोर्ट करने के लिए कोई बातचीत नहीं।",
+    exportFailed: "एक्सपोर्ट विफल रहा।",
+    renameChatFailed: "चैट का नाम नहीं बदला जा सका",
+    archiveChatFailed: "चैट संग्रहित नहीं हो सकी",
+    deleteChatFailed: "चैट हटाई नहीं जा सकी",
+    deleteProjectFailed: "प्रोजेक्ट हटाया नहीं जा सका",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -139,6 +139,11 @@ export const ru = {
     more: "Ещё",
     addressPlaceholder: "Введите запрос или URL",
     local: "Локальный",
+    browserUse: {
+      label: "Работа с браузером",
+      description: "Разрешить моделям управлять встроенным браузером",
+      unavailable: "Загрузите модель с поддержкой вызова инструментов, чтобы она могла работать с браузером.",
+    },
     suggested: "Рекомендуемые",
     suggestedMenu: {
       open: "Открыть",
@@ -496,7 +501,6 @@ export const ru = {
       clearDataFailed: "Не удалось очистить данные сайтов. Повторите попытку.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "Песочница ОС недоступна",
@@ -625,6 +629,37 @@ export const ru = {
     compactEmpty: "Пока нечего сжимать",
     compactUnsupported: "Для сжатия нужна модель GGUF или MLX с поддержкой инструментов",
   },
+  halloween: {
+    navLabel: "Сладость или гадость…",
+    title: "Сладость или гадость?!",
+    description:
+      "Мы приготовили для Unsloth немного страшилок до конца октября.",
+    chooseTheme: "Выберите жуткую тему",
+    spookyGreetings: "Жуткие приветствия",
+    spookyGreetingsDescription: "Ленивец встречает новые чаты страшилкой.",
+    decorations: "Пауки и летучие мыши",
+    decorationsDescription:
+      "Паутина по углам, а иногда паук или летучая мышь с темой Хэллоуина.",
+    surprise: "Сладость или гадость!",
+    surpriseDescription: "Пусть ленивец выберет тему за вас.",
+    themesTitle: "Жуткие темы",
+    back: "Назад",
+    footer: "Unsloth вернётся к обычному виду в полночь 1 ноября.",
+    removeNow: "Убрать сейчас",
+    hideFromSidebar: "Скрыть с боковой панели",
+    greeting: {
+      pumpkins: "Тыквы вырезаны. Что дальше?",
+      brewing: "Пора варить зелье",
+      trickOrTreat: "Сладость или гадость?",
+      manor: "Добро пожаловать в особняк",
+      manorName: "Добро пожаловать в особняк, {name}",
+      happyHalloween: "С Хэллоуином",
+      happyHalloweenName: "С Хэллоуином, {name}",
+      spirits: "Духи слушают…",
+      mysteries: "Какие тайны мы раскроем этой ночью?",
+      conjure: "Что мне наколдовать для вас?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Рады вас видеть",
     goodToSeeYouName: "Рады вас видеть, {name}",
@@ -704,7 +739,6 @@ export const ru = {
     shutdown: "Выключить",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "Документация",
       keyboardShortcuts: "Сочетания клавиш",
@@ -776,11 +810,8 @@ export const ru = {
       export: "Экспорт",
       recents: "Недавние",
       noChatsYet: "Пока нет чатов",
-      // Shown under an empty project folder in the sidebar.
       noChats: "Нет чатов",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Все проекты закреплены",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "Все проекты закреплены или находятся в разделах",
       noProjects: "Нет проектов",
       showMore: "Показать больше",
@@ -792,6 +823,8 @@ export const ru = {
       guidedTour: "Обзор интерфейса",
       help: "Справка",
       logOut: "Выйти",
+      logOutNeedsPassword: "Перед выходом задайте пароль в разделе Настройки > Удалённый доступ, чтобы потом снова войти.",
+      logOutFailed: "Не удалось безопасно выйти. Повторите попытку чуть позже.",
       shutdown: "Выключить",
     },
     commandPalette: {
@@ -882,11 +915,9 @@ export const ru = {
       organizeChats: "Настроить чаты",
       organizeProjects: "Настроить проекты",
       sortPinnedChats: "Сортировать закреплённые чаты",
-      // Header of the menu's section-visibility toggles.
       show: "Показывать",
       newSection: "Новый раздел",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "Новый раздел",
       createDescription: "Группируйте чаты и проекты как угодно",
@@ -897,16 +928,13 @@ export const ru = {
       edit: "Изменить",
       remove: "Удалить раздел",
       markAllRead: "Отметить все как прочитанные",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Переместить в",
       section: "Раздел",
       sectionsHeading: "Разделы",
       removeFromProject: "Убрать из проекта",
       newSection: "Новый раздел",
       removeFromSection: "Убрать из раздела",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "Убрать из {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "Перетащите сюда чаты или проекты",
       sectionOptions: "Параметры раздела",
       newChatInSection: "Новый чат в «{name}»",
@@ -941,6 +969,11 @@ export const ru = {
   },
   settings: {
     accounts: {
+      signsInAs: "Входит как {username}",
+      signsInAsOwner: "Входит как {alias} или {username}",
+      signInName: "Ваше имя для входа",
+      signInNameDescription: "Имя, которое вы вводите для входа, когда в этой установке больше одной учётной записи. unsloth тоже всегда работает. Оставьте пустым, чтобы использовать только unsloth.",
+      signInNameSave: "Сохранить имя",
       title: "Учётные записи",
       description: "Создавайте отдельные учётные записи Unsloth. Новые пользователи входят по одноразовому коду настройки и задают пароль.",
       username: "Имя пользователя",
@@ -1081,7 +1114,7 @@ export const ru = {
       lastVisited: "Последняя открытая",
     },
     tabs: {
-      sandbox: "Песочница",
+      sandbox: "Безопасность",
       accounts: "Учётные записи",
       general: "Общие",
       profile: "Профиль",
@@ -1365,7 +1398,7 @@ export const ru = {
       },
     },
     sandbox: {
-      title: "Песочница",
+      title: "Безопасность",
       description: "Выполняются ли вызовы инструментов Python и терминала в песочнице ОС на этом компьютере.",
       docs: "Документация",
       docsLabel: "Открыть документацию по песочнице",
@@ -1420,17 +1453,17 @@ export const ru = {
       installingRuntime: "Установка…",
       installRuntimeFailed: "Не удалось установить среду.",
       installRuntimeError: "Не удалось начать установку среды.",
-      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64, поэтому на этом ПК она недоступна.",
+      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64 и ARM64, поэтому на этом ПК она недоступна.",
       builtinNeedsUpdate:
         "Встроенному контейнеру Windows нужна сборка {required} или новее, а на этом ПК установлена {current}. Установите последнее обновление Windows, чтобы использовать его без шага администратора, или включите резервную песочницу ниже.",
       unsupportedBuild: "Песочнице Windows (MXC) нужна Windows 11 24H2 (сборка 26100) или новее, поэтому на этом ПК она недоступна.",
-      permissionsIntro: "Выберите, когда инструменты спрашивают заранее и запускаются ли Python и Терминал также в песочнице ОС.",
       permissionLabel: "Разрешения инструментов",
+      levelRowLabel: "Уровень песочницы",
       levelPickerTitle: "Как изолировать код?",
       levelOff: "Отключена",
       levelOffShort: "Полный доступ отключает песочницу",
-      levelHighDetail: "Песочница ОС. Python и Терминал работают в песочнице ОС (bubblewrap, Seatbelt или MXC) поверх программной защиты. Без рабочей песочницы ОС рискованные вызовы сначала спрашивают.",
-      levelLowDetail: "Программная песочница. Python и Терминал работают только с программной защитой, вне песочницы ОС. Рискованные вызовы сначала спрашивают, кроме режима Полный доступ.",
+      levelHighDetail: "Python и Терминал работают в песочнице ОС (bubblewrap, Seatbelt или MXC) поверх программной защиты. Без рабочей песочницы ОС рискованные вызовы сначала спрашивают.",
+      levelLowDetail: "Python и Терминал работают только с программной защитой, вне песочницы ОС. Рискованные вызовы сначала спрашивают, кроме режима Полный доступ.",
       levelLabel: "Песочница",
       levelHigh: "Высокий",
       levelLow: "Низкий",
@@ -1441,6 +1474,7 @@ export const ru = {
       managedNote: "Песочницу ОС настраивает владелец этого сервера Unsloth.",
     },
     debugging: {
+      description: "Читайте журналы Unsloth, не выходя из приложения.",
       logSection: "Файл журнала",
       source: "Файл журнала",
       sourceHint: "Средства запуска моделей ведут собственные журналы, поэтому причина неудачной загрузки или генерации чаще всего указана именно в них, а не в журнале сервера.",
@@ -2166,13 +2200,13 @@ export const ru = {
         },
         details: {
           ask:
-            "Спрашивает перед каждым вызовом инструмента, включая код в терминале и Python, веб-поиск, правку файлов и инструменты MCP. Инструменты, которые выполняет внешний провайдер, не приостанавливаются. Подходит, если вы хотите проверять каждый шаг.",
+            "Спрашивает перед каждым вызовом инструмента, включая код в терминале и Python, веб-поиск, правку файлов и инструменты MCP. Инструменты, которые выполняет внешний провайдер, не приостанавливаются.",
           auto:
             "Сам выполняет обычные вызовы инструментов и спрашивает, только когда действие выглядит рискованным, например чтение учётных данных, повышение привилегий или разрушительные команды.",
           off:
-            "Выполняет все вызовы инструментов без вопросов. Код Python и терминала по-прежнему запускается в песочнице, которая ограничивает доступ к файлам на вашем компьютере. Если на этом компьютере нет рабочей песочницы ОС, рискованные вызовы Python и терминала сначала требуют подтверждения.",
+            "Выполняет все вызовы инструментов без вопросов. Код Python и терминала по-прежнему запускается в песочнице, которая ограничивает доступ к файлам на вашем компьютере. Без рабочей песочницы ОС рискованные вызовы сначала спрашивают.",
           full:
-            "Выполняет все вызовы инструментов без вопросов и отключает песочницу для кода, поэтому код Python и терминала может читать и изменять любые файлы, доступные вашей учётной записи. Подходит для надёжных задач, которым нужно работать вне песочницы.",
+            "Выполняет все вызовы инструментов без вопросов и отключает песочницу для кода, поэтому код Python и терминала может читать и изменять любые файлы, доступные вашей учётной записи.",
         },
       },
     },
@@ -2201,8 +2235,8 @@ export const ru = {
       uploadPhoto: "Загрузить фото",
       removePhoto: "Удалить",
       pictureOptions: "Параметры фото профиля",
-      greetingSloth: "Ленивец в приветствии",
-      greetingSlothDescription: "Показывать ленивца в приветствии чата.",
+      greetingSloth: "Приветствие",
+      greetingSlothDescription: "Показывать приветствие в новых чатах.",
       noPicture: "Нет фото профиля",
       noneLabel: "Нет",
       stats: {
@@ -2277,6 +2311,26 @@ export const ru = {
     appearance: {
       title: "Оформление",
       description: "Как Unsloth выглядит на этом устройстве.",
+      gpuRendering: {
+        sectionTitle: "Отрисовка",
+        label: "Отрисовка на GPU",
+        description: "Отрисовывать Unsloth с помощью видеокарты. В режиме «Авто» она используется там, где известно, что это работает. Изменения вступят в силу после перезапуска Unsloth.",
+        auto: "Авто",
+        on: "Вкл.",
+        off: "Выкл.",
+        oldWebkitWarning: "WebKitGTK {version} в Wayland: отрисовка на GPU может аварийно завершаться при запуске на NVIDIA с дробным масштабированием (WebKit bug 280210). В этом случае Unsloth сам вернётся к отрисовке на CPU. На WebKitGTK 2.50.4 измеримого ускорения не было (8 fps в обоих случаях), поэтому режим «Вкл.» здесь не рекомендуется.",
+        oldDriverWarning:
+          "Драйвер NVIDIA {version} в X11: Unsloth не включает GPU-рендеринг, пока драйвер не будет версии 610 или новее. Старые драйверы теряют по одному файловому дескриптору на кадр, и через несколько минут окно перестаёт отрисовываться.",
+        fallbackNote: "Отрисовка на GPU аварийно завершилась при запуске в этой системе, поэтому Unsloth использует отрисовку на CPU.",
+        tryAgain: "Попробовать GPU снова",
+        envOverride: "Задано переменной окружения {name}. Пока она не удалена, эта настройка ни на что не влияет.",
+        macNote: "macOS всегда выполняет отрисовку на GPU. В WebKit нет поддерживаемого способа это отключить.",
+        restartPending: "Перезапустите Unsloth, чтобы применить.",
+        restartNow: "Перезапустить",
+        loadError: "Не удалось загрузить настройку отрисовки на GPU.",
+        saveError: "Не удалось сохранить настройку отрисовки на GPU.",
+        restartError: "Не удалось перезапустить Unsloth.",
+      },
       theme: {
         title: "Внешний вид",
         label: "Режим",
@@ -2292,6 +2346,12 @@ export const ru = {
         classic: "Классическая",
         minimal: "Минималистичная",
         moreThemes: "Другие темы",
+        halloween: "Хеллоуин",
+      },
+      trickOrTreat: {
+        label: "Сладость или гадость",
+        description:
+          "Темы Хэллоуина и жуткие приветствия до 1 ноября.",
       },
       custom: {
         chatWidth: {
@@ -2424,10 +2484,12 @@ export const ru = {
       description: "Мониторинг оборудования и хранилища этого сервера Unsloth.",
       liveUpdates: "Обновления в реальном времени",
       floatingWindow: "Плавающее окно",
-      disableOverlay: "Отключить оверлей",
+      showFloatingWindow: "Показывать плавающее окно",
+      showFloatingWindowDescription: "Использование CPU, RAM и GPU всегда видно поверх Unsloth.",
       liveMonitor: {
         title: "Монитор в реальном времени",
         apiTitle: "Монитор API",
+        apiDescription: "Смотрите, что другие приложения отправляют в API этого сервера, по мере поступления.",
         summary: "Активные запросы, ошибки и использование токенов",
         status: "активных: {active} · недавних: {recent} · {model}",
         noModelLoaded: "модель не загружена",
@@ -2447,7 +2509,7 @@ export const ru = {
         gpuUnusableDetail: "Обнаружен, но PyTorch не может его использовать",
         detailedView: "Подробный вид",
         detailedViewDescription:
-          "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне и здесь.",
+          "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне.",
         cpuLoad: "Загрузка CPU",
         gpuLoad: "Загрузка GPU",
         temperature: "Температура",
@@ -2481,6 +2543,10 @@ export const ru = {
         used: "{value} использовано",
         free: "{value} свободно",
         total: "{value} всего",
+        usedOf: "Занято {used} из {total}",
+        segmentUsed: "Занято GPU",
+        segmentSystem: "Занято системой",
+        segmentAvailable: "Доступно",
       },
       llamaBackend: {
         title: "Движок инференса GGUF",
@@ -2532,7 +2598,6 @@ export const ru = {
           updateChecksDisabled:
             "Проверка обновлений отключена (UNSLOTH_DISABLE_UPDATE_CHECK=1), поэтому доступные бэкенды не запрашиваются.",
         },
-        // Не отображается: дополнительные слова для поиска по настройкам.
         llamaBackendKeywords:
           "llama.cpp backend gguf инференс cuda rocm hip vulkan metal cpu gpu ускоритель prebuilt переключить движок",
       },
@@ -2566,7 +2631,6 @@ export const ru = {
         reloadRequired: "Перезагрузите модель, чтобы применить новые параметры памяти.",
         loadError: "Не удалось загрузить настройки памяти модели",
         saveError: "Не удалось сохранить настройки памяти модели",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu память озу резидентный закрепить блокировать держать загружен выгрузка простой mmap no-mmap load-mode подкачка",
         multiModelKeywords:
@@ -2612,6 +2676,10 @@ export const ru = {
           hideDetailsAction: "Скрыть подробности",
           clearAction: "Очистить кеши",
           clearOneAction: "Очистить",
+          showFolders: "Показать папки",
+          hideFolders: "Скрыть папки",
+          previousLocations: "Включает прежние расположения. Основная кнопка «Очистить» затрагивает текущую папку кэша. Кнопки моделей очищают только выбранную копию.",
+          clearModelDescription: "Будет удалена только эта копия в кэше. При необходимости она будет загружена снова.",
           clearingAction: "Очистка...",
           confirmTitle: "Очистить кешированные файлы?",
           confirmDescription: "Это освободит примерно {size}.",
@@ -2669,6 +2737,8 @@ export const ru = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Время работы",
         processMemory: "Память процесса",
         notInstalled: "Не установлено",
@@ -2708,8 +2778,6 @@ export const ru = {
       docsLabel: "Открыть документацию по unsloth start",
       agentDocs: "Открыть документацию по настройке {agent}",
       copyGeneratedCommand: "Копировать сформированную команду",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -2863,11 +2931,6 @@ export const ru = {
       autoScrollManual: "Вручную",
       autoScrollKeywords:
         "прокрутка автопрокрутка следовать вниз низ поток генерация зафиксировать scroll autoscroll follow",
-      scrollToBottomButton: "Кнопка «Прокрутить вниз»",
-      scrollToBottomButtonDescription:
-        "Показывать кнопку для возврата к последнему сообщению после прокрутки вверх.",
-      scrollToBottomButtonKeywords:
-        "прокрутка вниз последнее стрелка кнопка скрыть scroll bottom button",
       replyNotification: "Уведомлять о готовом ответе",
       replyNotificationDescription:
         "Показывать системное уведомление, когда ответ готов, а Unsloth свернут или в фоне.",
@@ -2889,9 +2952,8 @@ export const ru = {
         "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
-      modelDisclaimer: "Показывать предупреждение о модели",
-      modelDisclaimerDescription:
-        "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
+      composerAtBottom: "Поле ввода внизу",
+      composerAtBottomDescription: "Начинать новые чаты с полем ввода внизу страницы, а не посередине.",
       projectAttachments: "Общий доступ к файлам в проекте",
       projectAttachmentsDescription:
         "Делает новые вложения доступными во всех чатах проекта.",
@@ -3257,6 +3319,7 @@ export const ru = {
       readDocs: "Читать документацию API",
       noAccess: "Доступа к API пока нет.",
       accessTokens: "Токены доступа",
+      quickstartTitle: "Быстрый старт",
       columnName: "Имя",
       columnToken: "Токен",
       columnCreated: "Создан",
@@ -3396,8 +3459,9 @@ export const ru = {
         loadError: "Не удалось загрузить настройки API решений.",
         sendsTo: "Запросы отправляются в {provider}.",
         connectionMissing: "Этого подключения больше нет или в нём нет моделей решений. Выберите другую модель.",
-        addConnection: "Чтобы использовать облачную модель решений, добавьте TypeSafe, Liquid AI или OpenRouter в разделе «Подключения».",
-        openConnections: "Открыть подключения",
+        addConnection: "Чтобы использовать облачную модель решений, добавьте её в разделе ",
+        connectionsLink: "Подключения",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Доступ агентов (MCP)",
@@ -3425,6 +3489,7 @@ export const ru = {
       desktopAppVersionUnavailable: "Недоступно",
       llamaCppVersion: "Версия llama.cpp",
       audioCppVersion: "Версия audio.cpp",
+      mlxVersion: "Версия MLX",
       whisperCppVersion: "Версия whisper.cpp",
       engines: {
         title: "Движки",
@@ -3539,6 +3604,8 @@ export const ru = {
   },
   studio: {
     goToLibrary: "Перейти в Библиотеку",
+    imageTraining: "Обучение изображений",
+    goToImageTraining: "Обучить LoRA для изображений",
     routeTitle: "Обучение",
     wizard: {
       modelTitle: "Модель",
@@ -4327,7 +4394,6 @@ export const ru = {
       terminalStart: "> обучение unsloth начинается...",
       preparingResources: "> Подготовка модели и датасета...",
       gettingReady: "> Мы готовим всё для вашего запуска...",
-      waitingForFirstStep: "> {message} | ожидание первого шага... ({step})",
       resumingTraining: "Продолжение обучения...",
       startingTraining: "начало обучения...",
       dataset: "Датасет",
@@ -4559,7 +4625,6 @@ export const ru = {
       all: "Все",
       chats: "Чаты",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "Чаты",
@@ -4627,8 +4692,6 @@ export const ru = {
       empty: {
         chatsTitle: "Чатов пока нет",
         chatsDescription: "Здесь появляются ваши разговоры, отдельно от файлов.",
-        projectsTitle: "Проектов пока нет",
-        projectsDescription: "Проекты объединяют связанные чаты с общими инструкциями.",
         archivedTitle: "Архив пуст",
         archivedDescription: "Здесь появляются чаты, которые вы архивируете.",
         sectionsTitle: "Разделов пока нет",
@@ -4693,6 +4756,7 @@ export const ru = {
       modelsTitle: "Дообученных моделей пока нет",
       modelsDescription: "Здесь появляются модели, которые вы обучаете или экспортируете в Unsloth.",
       createFolder: "Создать папку",
+      generateImage: "Создать изображение",
       generateVideo: "Сгенерировать видео",
       generateAudio: "Сгенерировать аудио",
       trainModel: "Обучить модель",
@@ -4757,6 +4821,8 @@ export const ru = {
       pdfs: "PDF",
       gridView: "Сетка",
       listView: "Список",
+      grid: "Сетка",
+      list: "Список",
       settings: "Настройки библиотеки",
       sort: "Сортировка",
       sortDefault: "Порядок по умолчанию",
@@ -5053,5 +5119,62 @@ export const ru = {
       dragHandleLabel: "Переместить живой монитор. Стрелки сдвигают его понемногу, двойной щелчок сбрасывает положение.",
       reconnecting: "Повторное подключение…",
     },
+  },
+  projectsPage: {
+    title: "Проекты",
+    search: "Поиск проектов",
+    importExport: "Импорт / экспорт проектов",
+    importChatsAction: "Импортировать чаты…",
+    exportAllProjects: "Экспортировать все проекты",
+    exportProjectsAndRecents: "Экспортировать проекты + недавние",
+    combined: "Объединённо",
+    perChat: "По чатам",
+    newProject: "Новый проект",
+    name: "Название",
+    updated: "Обновлено",
+    newestFirst: "Сначала новые",
+    oldestFirst: "Сначала старые",
+    today: "Сегодня",
+    yesterday: "Вчера",
+    emptyDescription: "Проект объединяет связанные чаты с общими инструкциями и источниками, которые может использовать каждый чат в нём.",
+    createFirst: "Создать первый проект",
+    noMatches: "Нет проектов, соответствующих поиску.",
+    clearSearch: "Очистить поиск",
+    showChats: "Показать чаты",
+    hideChats: "Скрыть чаты",
+    pinProject: "Закрепить проект",
+    unpinProject: "Открепить проект",
+    newChatInProject: "Новый чат в проекте",
+    projectOptions: "Параметры проекта",
+    loadChatsFailed: "Не удалось загрузить чаты. Повторить",
+    refreshChatsFailed: "Не удалось обновить чаты. Повторить",
+    noChats: "Нет чатов",
+    unread: "Непрочитано",
+    pinChat: "Закрепить чат",
+    unpinChat: "Открепить чат",
+    chatOptions: "Параметры чата",
+    exportAllChats: "Экспортировать все чаты…",
+    archive: "Архивировать",
+    renameChat: "Переименовать чат",
+    chatName: "Название чата",
+    deleteChat: "Удалить чат",
+    deleteChatDescription: "Удалить {name}? Его сообщения будут удалены безвозвратно.",
+    importChats: "Импорт чатов",
+    importDestination: "Выберите, куда импортировать {name}:",
+    selectDestination: "Выберите место",
+    recents: "Недавние",
+    import: "Импортировать",
+    deleteProject: "Удалить проект",
+    deleteProjectDescription: "Удалить {name}? Его чаты будут удалены безвозвратно.",
+    deleteProjectFiles: "Рабочая папка проекта будет удалена с диска.",
+    deleteAll: "Удалить всё",
+    projectFallback: "проект",
+    importFailed: "Не удалось импортировать.",
+    nothingToExport: "Нет разговоров для экспорта.",
+    exportFailed: "Не удалось экспортировать.",
+    renameChatFailed: "Не удалось переименовать чат",
+    archiveChatFailed: "Не удалось архивировать чат",
+    deleteChatFailed: "Не удалось удалить чат",
+    deleteProjectFailed: "Не удалось удалить проект",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

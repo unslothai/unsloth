@@ -2125,6 +2125,75 @@ def fix_transformers_flash_attention_mrope_packed_sequence():
     )
 
 
+_PACKED_ROWS_PATCH_FLAG = "_unsloth_patched_mrope_packed_rows"
+_PACKED_ROWS_CHECKED = [None, None, False]
+
+
+def _packed_row_varlen_kwargs(query, attention_mask, kwargs):
+    """cu_seqlens from an Unsloth packed row whose layers got mRoPE ids, else None."""
+    if kwargs.get("packed_seq_lengths") is None:
+        return None
+    import torch
+
+    position_ids = kwargs.get("position_ids")
+    if (
+        attention_mask is not None
+        or kwargs.get("cu_seq_lens_q") is not None
+        or not isinstance(position_ids, torch.Tensor)
+        or position_ids.dim() <= 2
+        or query.dim() != 4
+        or query.shape[0] != 1
+    ):
+        return None
+    from .utils.packing import get_packed_info_from_kwargs
+
+    info = get_packed_info_from_kwargs(kwargs, query.device)
+    if info is None:
+        return None
+    _, cu_seqlens, max_seqlen = info
+    # One host read per batch, not per layer: rows that do not cover the query keep the original path.
+    if not torch.compiler.is_compiling():
+        checked = _PACKED_ROWS_CHECKED
+        if checked[0] is not cu_seqlens or checked[1] != query.shape[1]:
+            checked[:] = [cu_seqlens, query.shape[1], int(cu_seqlens[-1]) == query.shape[1]]
+        if not checked[2]:
+            return None
+    return {
+        "cu_seq_lens_q": cu_seqlens,
+        "cu_seq_lens_k": cu_seqlens,
+        "max_length_q": max_seqlen,
+        "max_length_k": max_seqlen,
+    }
+
+
+def fix_transformers_flash_attention_mrope_packed_rows():
+    """Qwen3.5 / Qwen3.5-MoE on transformers 5.3 give decoder layers 3-row mRoPE ids, which cannot mark
+    document starts: take a packed row's boundaries from `packed_seq_lengths` instead."""
+    try:
+        from transformers.integrations import flash_attention as fa_integration
+    except Exception:
+        return
+    current = getattr(fa_integration, "_flash_attention_forward", None)
+    if current is None or getattr(current, _PACKED_ROWS_PATCH_FLAG, False):
+        return
+
+    @functools.wraps(current)
+    def _flash_attention_forward(
+        query_states, key_states, value_states, attention_mask, *args, **kwargs
+    ):
+        varlen = _packed_row_varlen_kwargs(query_states, attention_mask, kwargs)
+        if varlen is not None:
+            kwargs.update(varlen)
+        return current(query_states, key_states, value_states, attention_mask, *args, **kwargs)
+
+    setattr(_flash_attention_forward, _PACKED_ROWS_PATCH_FLAG, True)
+    fa_integration._flash_attention_forward = _flash_attention_forward
+    logger.info(
+        "Unsloth: Patching transformers flash attention so packed rows with mRoPE layer "
+        "position ids keep their documents apart"
+    )
+
+
 _CHUNKED_MASK_PATCH_FLAG = "_unsloth_patched_chunked_block_sequence_ids"
 _BLOCK_SEQUENCE_IDS = "block_sequence_ids"
 
@@ -2915,23 +2984,48 @@ def _rope_theta_snapshot(config):
     return snapshot or None
 
 
-def _carry_per_layer_rope_theta(config, parameters, carried):
+def _rope_labels_naming_no_base(config, value):
+    """Labels of a NESTED incoming ``rope_scaling`` whose entry states no ``rope_theta``.
+
+    Read before the upstream setter runs: from transformers 5.21.0 that setter calls
+    ``standardize_rope_params``, which ``setdefault``s the ONE global ``rope_theta`` into
+    every nested entry in place, so afterwards a filled-in default looks caller-stated.
+    """
+    if not isinstance(value, dict) or not _rope_parameters_are_per_layer(config, value):
+        return None
+    return frozenset(
+        label
+        for label, entry in value.items()
+        if isinstance(entry, dict) and entry.get("rope_theta", None) is None
+    )
+
+
+def _carry_per_layer_rope_theta(
+    config,
+    parameters,
+    carried,
+    unnamed = None,
+):
     """Put each layer type's base back into a per-layer replacement that lost it.
 
     A top-level ``rope_theta`` would make the dict read as flat, so the base goes back
     into each nested entry. Copies throughout, never the caller's dicts in place. An
-    entry naming its own base is left alone. ``None`` means nothing was written -- no nested
-    snapshot, OR every entry already named its base, OR refused; never "fall through as scalar".
+    entry naming its own base is left alone; ``unnamed`` lists the labels the caller gave
+    no base, so a global default transformers filled in there is not mistaken for one.
+    ``None`` means nothing was written -- no nested snapshot, OR every entry already named
+    its base, OR refused; never "fall through as scalar".
     """
     if not isinstance(carried, dict) or not carried:
         return None
+    unnamed = unnamed or ()
     replacement = {}
     changed = False
     for layer_type, entry in parameters.items():
         if (
             isinstance(entry, dict)
-            and entry.get("rope_theta", None) is None
+            and (entry.get("rope_theta", None) is None or layer_type in unnamed)
             and carried.get(layer_type, None) is not None
+            and entry.get("rope_theta", None) != carried[layer_type]
         ):
             entry = dict(entry)
             entry["rope_theta"] = carried[layer_type]
@@ -2946,7 +3040,11 @@ def _carry_per_layer_rope_theta(config, parameters, carried):
     return carried
 
 
-def _carry_rope_theta_across_assignment(config, carried):
+def _carry_rope_theta_across_assignment(
+    config,
+    carried,
+    unnamed = None,
+):
     """Keep the RoPE base frequency across a ``rope_scaling`` replacement.
 
     Separated from the wrapper so every parameter shape is testable without a live
@@ -2972,7 +3070,7 @@ def _carry_rope_theta_across_assignment(config, carried):
     per_layer = _rope_parameters_are_per_layer(config, parameters)
     if per_layer:
         # Per-layer rope bases are restored from the nested snapshot; the global attribute is used only when none exists.
-        restored = _carry_per_layer_rope_theta(config, parameters, carried)
+        restored = _carry_per_layer_rope_theta(config, parameters, carried, unnamed)
         if restored is not None:
             return restored
         if isinstance(carried, dict):
@@ -3815,9 +3913,13 @@ def fix_transformers_rope_scaling_drops_theta():
             carried = _rope_theta_snapshot(self)
         except Exception:
             carried = None
+        try:
+            unnamed = _rope_labels_naming_no_base(self, value)
+        except Exception:
+            unnamed = None
         result = original(self, value)
         try:
-            _carry_rope_theta_across_assignment(self, carried)
+            _carry_rope_theta_across_assignment(self, carried, unnamed)
         except Exception:
             pass
         return result
@@ -4326,19 +4428,47 @@ def fix_vllm_guided_decoding_params():
 
 
 def fix_trl_vllm_ascend():
-    # TRL caches transformers' (bool, version) tuple, which is always truthy; coerce to bool.
     if importlib.util.find_spec("trl") is None:
         return
     try:
         import trl.import_utils as tiu
     except Exception:
         return
+    _coerce_trl_available_checks(tiu)
+
+
+def _coerce_trl_available_checks(tiu):
+    # TRL caches transformers' (bool, version) tuple, which is always truthy; coerce to bool.
     for attr in list(vars(tiu)):
         if not (attr.startswith("_") and attr.endswith("_available")):
             continue
         cached = getattr(tiu, attr)
         if isinstance(cached, tuple):
             setattr(tiu, attr, bool(cached and cached[0]))
+    # TRL 0.27-0.28 call this helper per check; transformers >= 5.3 returns (exists, None) there.
+    helper = getattr(tiu, "_is_package_available", None)
+    if helper is None or getattr(helper, "_unsloth_bool", False):
+        return
+    try:
+        if not isinstance(helper("_unsloth_absent_package_probe"), tuple):
+            return
+    except Exception:
+        return
+
+    @functools.wraps(helper)
+    def _is_package_available(
+        pkg_name,
+        return_version = False,
+        *args,
+        **kwargs,
+    ):
+        result = helper(pkg_name, return_version, *args, **kwargs)
+        if not return_version and isinstance(result, tuple):
+            return bool(result and result[0])
+        return result
+
+    _is_package_available._unsloth_bool = True
+    tiu._is_package_available = _is_package_available
 
 
 def ignore_logger_messages():
@@ -7045,7 +7175,9 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
             return self.inner(graph, *args, **kwargs)
 
         def uuid(self):
-            return (marker, self.inner.uuid())
+            # None is the inner pass opting out of the FX cache: keep it, never key a stale graph.
+            inner_uuid = self.inner.uuid()
+            return None if inner_uuid is None else (marker, inner_uuid)
 
     inductor_config.post_grad_custom_post_pass = ReadbackBarrierKeyedPass(existing)
 
@@ -7591,6 +7723,113 @@ def fix_cudnn_sdpa_d256_masked_backward():
     logger.info(
         "Unsloth: SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
         f"(devices {sorted(sm100_devices)})"
+    )
+
+
+_SDPA_GRAD_LAYOUT_FLAG = "_unsloth_gives_sdpa_backward_the_output_layout"
+_SDPA_GRAD_LAYOUT_FUNCTION = []
+# Eager outputs whose backward is cuDNN's; flash / efficient / math outputs stay untouched.
+_SDPA_GRAD_LAYOUT_NODES = frozenset(("ScaledDotProductCudnnAttentionBackward0",))
+
+
+def _cudnn_sdpa_backward_cache_ignores_grad_layout(torch_version, cudnn_version):
+    """torch 2.6 - 2.13 key the cuDNN backward plan without grad_output strides (fixed in
+    pytorch/pytorch#191576); cuDNN < 9.5.1 always copies grad_output to the output layout."""
+    try:
+        torch_version = TrueVersion(TrueVersion(str(torch_version)).base_version)
+    except Exception:
+        return False
+    if not (TrueVersion("2.6") <= torch_version < TrueVersion("2.14")):
+        return False
+    return cudnn_version is not None and int(cudnn_version) >= 90501
+
+
+def _sdpa_grad_to_layout(stride, grad):
+    if grad.stride() == stride:
+        return grad
+    return grad.new_empty_strided(grad.size(), stride).copy_(grad)
+
+
+def _sdpa_grad_layout_function():
+    if _SDPA_GRAD_LAYOUT_FUNCTION:
+        return _SDPA_GRAD_LAYOUT_FUNCTION[0]
+    import torch
+
+    try:
+        import torch._dynamo.config as dynamo_config
+
+        # torch 2.6 Dynamo bans grad.stride() in a traced backward: a graph break per SDPA call.
+        stride_banned = "stride" in dynamo_config._autograd_backward_strict_mode_banned_ops
+    except Exception:
+        stride_banned = False
+
+    class _GradInOutputLayout(torch.autograd.Function):
+        # setup_context + generate_vmap_rule: torch.func.grad / vmap / jacrev keep working.
+        generate_vmap_rule = True
+
+        @staticmethod
+        def forward(out):
+            # Not a view: view outputs reject in-place consumers; Inductor drops the clone.
+            return out.clone()
+
+        @staticmethod
+        def setup_context(ctx, inputs, output):
+            ctx.out_stride = inputs[0].stride()
+
+        @staticmethod
+        def backward(ctx, grad):
+            if stride_banned and torch.compiler.is_compiling():
+                return grad.new_empty_strided(grad.size(), ctx.out_stride).copy_(grad)
+            return _sdpa_grad_to_layout(ctx.out_stride, grad)
+
+    _SDPA_GRAD_LAYOUT_FUNCTION.append(_GradInOutputLayout)
+    return _GradInOutputLayout
+
+
+def fix_cudnn_sdpa_backward_grad_layout():
+    """Force SDPA grad_output into the output's layout, which the plan key does cover, so two
+    same-shape backwards with different grad layouts cannot share a stale plan (wrong grads)."""
+    if os.environ.get("UNSLOTH_SKIP_CUDNN_SDPA_GRAD_LAYOUT_FIX", "0") == "1":
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return
+        if not _cudnn_sdpa_backward_cache_ignores_grad_layout(
+            torch.__version__, torch.backends.cudnn.version()
+        ):
+            return
+        grad_in_output_layout = _sdpa_grad_layout_function()
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA backward layout fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, False):
+        return
+
+    original = F.scaled_dot_product_attention
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(*args, **kwargs):
+        out = original(*args, **kwargs)
+        # Plain tensors only: a DTensor gradient cannot be copied into a plain empty_strided buffer.
+        if type(out) is torch.Tensor and out.requires_grad and out.is_cuda and not out.is_nested:
+            if torch.compiler.is_compiling():
+                # Dynamo graph-breaks on a hook on an intermediate; the Function traces inline.
+                return grad_in_output_layout.apply(out)
+            if type(out.grad_fn).__name__ in _SDPA_GRAD_LAYOUT_NODES:
+                # A hook keeps out a plain tensor: a Function output is a view, so in-place
+                # ops on it would raise.
+                out.register_hook(functools.partial(_sdpa_grad_to_layout, out.stride()))
+        return out
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        f"Unsloth: torch {torch.__version__} reuses cuDNN SDPA backward plans across gradient "
+        "layouts; SDPA gradients are given the output's layout"
     )
 
 
@@ -11316,6 +11555,140 @@ def fix_torchao_pytree_register_constant():
     return True
 
 
+# Newest torchao release whose Python API supports each torch minor (pytorch/ao#2919); newer torch has no ceiling.
+_TORCHAO_NEWEST_FOR_TORCH = {
+    (2, 4): (0, 12),
+    (2, 5): (0, 12),
+    (2, 6): (0, 13),
+    (2, 7): (0, 15),
+    (2, 8): (0, 16),
+}
+
+# What importing transformers / peft pulls from torchao at module scope (transformers 5 quantizer_torchao, peft lora).
+_TORCHAO_IMPORT_TIME_MODULES = (
+    "torchao",
+    "torchao.quantization",
+    "torchao.prototype.safetensors.safetensors_support",
+)
+
+# "<torchao>|<torch>" metadata versions; the subprocess sitecustomize hides torchao only on an exact match.
+_TORCHAO_DISABLED_ENV = "UNSLOTH_TORCHAO_DISABLED_FOR"
+
+TORCHAO_DISABLED_FOR_OLD_TORCH = False
+
+
+def _release_pair(version_string):
+    match = re.match(r"\s*(\d+)\.(\d+)", str(version_string))
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def _is_torchao_torch_skew_error(error):
+    """Only torch's own missing-name wording; any other torchao failure stays visible."""
+    message = str(error)
+    if isinstance(error, AttributeError):
+        return message.startswith("module 'torch") and "has no attribute" in message
+    if isinstance(error, ImportError):
+        return "cannot import name" in message and "from 'torch" in message
+    return False
+
+
+def _hide_torchao_from_dependents():
+    """Make torchao read as not installed, as `disable_torchaudio_if_cuda_mismatched` does."""
+    for name in [n for n in list(sys.modules) if n == "torchao" or n.startswith("torchao.")]:
+        sys.modules.pop(name, None)
+    # find_spec returns None and `import torchao` raises ModuleNotFoundError: every guard takes its no-torchao branch.
+    sys.modules["torchao"] = None
+    # Libraries imported before unsloth cached the answer.
+    for module_name, flag_names in (
+        ("transformers.utils.import_utils", ("_torchao_available",)),
+        ("transformers.utils", ()),
+        ("peft.import_utils", ()),
+        ("diffusers.utils.import_utils", ("_torchao_available",)),
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        for flag_name in flag_names:
+            if hasattr(module, flag_name):
+                try:
+                    setattr(module, flag_name, False)
+                except Exception:
+                    pass
+        check = getattr(module, "is_torchao_available", None)
+        if check is None:
+            continue
+        try:
+            check.cache_clear()
+        except AttributeError:
+            pass
+        try:
+            setattr(module, "is_torchao_available", lambda *args, **kwargs: False)
+        except Exception:
+            pass
+
+
+def disable_torchao_if_torch_too_old():
+    """Treat a torchao built for a newer torch as not installed instead of failing `import unsloth`.
+
+    unsloth_zoo's uncapped `torchao>=0.13.0` resolves 0.18 on torch 2.6, whose import reads
+    `torch.float4_e2m1fn_x2` (torch 2.7+). Disables only on a real missing torch name.
+    """
+    global TORCHAO_DISABLED_FOR_OLD_TORCH
+    if TORCHAO_DISABLED_FOR_OLD_TORCH:
+        _hide_torchao_from_dependents()
+        return True
+    try:
+        if "torchao" in sys.modules or importlib.util.find_spec("torchao") is None:
+            return False
+        torchao_version = importlib_version("torchao")
+        torchao_release = _release_pair(torchao_version)
+        import torch
+
+        torch_version = str(torch.__version__)
+        newest = _TORCHAO_NEWEST_FOR_TORCH.get(_release_pair(torch_version))
+    except Exception:
+        return False
+    if newest is None or torchao_release is None or torchao_release <= newest:
+        return False
+    reason = None
+    for module_name in _TORCHAO_IMPORT_TIME_MODULES:
+        try:
+            importlib.import_module(module_name)
+        except Exception as error:
+            if _is_torchao_torch_skew_error(error):
+                reason = str(error).split("\n", 1)[0]
+                break
+            if isinstance(error, ModuleNotFoundError) and str(
+                getattr(error, "name", "")
+            ).startswith("torchao"):
+                # An older torchao without this submodule: nothing imports it there.
+                continue
+            return False
+    if reason is None:
+        return False
+    TORCHAO_DISABLED_FOR_OLD_TORCH = True
+    _hide_torchao_from_dependents()
+    try:
+        os.environ[_TORCHAO_DISABLED_ENV] = (
+            f"{importlib_version('torchao')}|{importlib_version('torch')}"
+        )
+    except Exception:
+        pass
+    # unsloth_zoo needs torchao>=0.13, so below that only a newer torch is installable.
+    remedy = (
+        f'    pip install "torchao<{newest[0]}.{newest[1] + 1}"\nor a newer torch.'
+        if newest >= (0, 13)
+        else '    pip install --upgrade "torch>=2.6"'
+    )
+    print(
+        f"Unsloth: torchao=={torchao_version} does not support torch=={torch_version} "
+        f"({reason}), so torchao is disabled for this process and everything that does "
+        f"not use it keeps working. QAT, torchao float8 and torchao-quantized checkpoints "
+        f"need a torchao that matches this torch:\n{remedy}"
+    )
+    return True
+
+
 # vLLM inspects architectures in a separate process that imports torchao itself, never sees a
 # parent monkey-patch, and fails the same way. sitecustomize is the one hook reaching a process
 # we do not launch: site imports it at startup off the inherited PYTHONPATH. A .pth would need
@@ -11375,8 +11748,9 @@ def _subprocess_sitecustomize_source():
     every subprocess. Ours runs the next one on sys.path first, then the fix.
     """
     return '''"""Written by unsloth. Makes `import torchao` survive a torch that
-predates the symbols torchao 0.18 imports unconditionally, in processes
-unsloth did not launch (notably vLLM's model-architecture inspector)."""
+predates the symbols torchao 0.18 imports unconditionally, or hides a torchao
+the parent disabled, in processes unsloth did not launch (notably vLLM's
+model-architecture inspector)."""
 import os
 import sys
 
@@ -11557,6 +11931,15 @@ class _TorchaoImportHook:
 # module object alive here: the finder below outlives this file's execution.
 _SELF = sys.modules.get(__name__)
 _chain_to_the_real_sitecustomize()
+# The parent disabled a torchao too new for its torch; hide it here only for the same torchao and torch.
+try:
+    _expected = os.environ.get("UNSLOTH_TORCHAO_DISABLED_FOR")
+    if _expected:
+        import importlib.metadata as _md
+        if _expected == "%s|%s" % (_md.version("torchao"), _md.version("torch")):
+            sys.modules["torchao"] = None
+except Exception:
+    pass
 try:
     sys.meta_path.insert(0, _TorchaoImportHook())
 except Exception:
@@ -11651,12 +12034,30 @@ def _torch_really_has(F, name):
     return not getattr(symbol, "__unsloth_placeholder__", False)
 
 
+def _child_torchao_symbol_fix_needed():
+    if importlib.util.find_spec("torchao") is None:
+        return False
+    try:
+        if Version(importlib_version("torchao")) < Version("0.18.0"):
+            return False
+        import torch.nn.functional as F
+
+        # Our own in-process patches do not count as torch having the symbols.
+        return not (
+            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
+            and _aten_grouped_mm_library is None
+            and not _torch_op_is_missing("aten", "_grouped_mm")
+        )
+    except Exception:
+        return False
+
+
 def propagate_torchao_fix_to_subprocesses():
     """Make the torchao fix apply to child processes too.
 
-    A no-op unless the fix is needed: returns early when torchao is absent,
-    old enough to guard its own import, or when torch already has the symbols.
-    Nothing is written and PYTHONPATH is untouched on a healthy pair.
+    A no-op unless the symbol fix is needed (torchao 0.18+ on a torch missing its
+    symbols) or `disable_torchao_if_torch_too_old` disabled torchao here. Nothing is
+    written and PYTHONPATH is untouched on a healthy pair.
 
     The generated file inlines the symbol fix rather than importing unsloth: a
     sitecustomize runs at the start of every subprocess on the machine, so an
@@ -11668,24 +12069,7 @@ def propagate_torchao_fix_to_subprocesses():
 
     Returns the directory added to PYTHONPATH, or None.
     """
-    if importlib.util.find_spec("torchao") is None:
-        return None
-    try:
-        if Version(importlib_version("torchao")) < Version("0.18.0"):
-            return None
-    except Exception:
-        return None
-    try:
-        import torch.nn.functional as F
-
-        # Nothing to do only when both the functional symbols and the aten op are missing; our own in-process patches do not count.
-        if (
-            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
-            and _aten_grouped_mm_library is None
-            and not _torch_op_is_missing("aten", "_grouped_mm")
-        ):
-            return None  # this torch is new enough; nothing to do
-    except Exception:
+    if not TORCHAO_DISABLED_FOR_OLD_TORCH and not _child_torchao_symbol_fix_needed():
         return None
 
     try:
@@ -11717,9 +12101,9 @@ def propagate_torchao_fix_to_subprocesses():
     if directory not in parts:
         os.environ["PYTHONPATH"] = os.pathsep.join([directory] + parts)
         logger.info(
-            "Unsloth: torchao %s needs torch symbols this torch lacks. Added "
-            "a sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
-            "inspector) can import torchao too.",
+            "Unsloth: torchao %s does not match this torch. Added a "
+            "sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
+            "inspector) get the same torchao fix.",
             importlib_version("torchao"),
         )
     return directory

@@ -1,20 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Recover a VAE decode that runs out of memory by offloading, never by shrinking tiles.
-
-Wraps the instance ``_decode`` (under the decode-level wrappers, over the tiled decode). On an OOM, each step runs only
-if the previous one still runs out of memory:
-
-a. Free the decode's device without changing the math: Studio's resident offload groups (text encoders, denoiser
-   blocks) stream again, captured CUDA graphs are dropped, and every other pipeline component still whole on the card
-   moves to the host. The SAME decode is retried, so an untiled decode stays untiled and the output is unchanged.
-b. An untiled decode retries tiled at the VAE's stock tile sizes: ComfyUI's single tiled retry.
-c. The VAE's own weights stream from the host per layer (diffusers leaf-level group offload), still at stock tiles.
-
-Tile sizes are never touched: tiles under the stock size bring back visible seams. Everything moved goes back where
-it was once the decode returns or fails. Kill switch ``UNSLOTH_VAE_OOM_RETRY=0``.
-"""
+"""VAE decode OOM recovery: offload, never shrink tiles (seams); steps run in order, each only if
+the previous still OOMs; moved parts restored; UNSLOTH_VAE_OOM_RETRY=0 disables"""
 
 from __future__ import annotations
 
@@ -667,11 +655,6 @@ class DecodeSession:
             _defer(comp, device, f"moved:{name}", retry, True, self.vae)
 
         return Change(f"moved:{name}", lambda: _return_to(comp, device), settle, defer)
-
-    def _component_undo(self, name: str, comp: Any) -> tuple:
-        """(undo, defer) for a component moved to the host; kept for callers recording a move by hand."""
-        change = self._component_change(name, comp)
-        return change.retry, lambda exc: change.defer(change.retry, exc)
 
     def offload_vae(self) -> bool:
         """Step (c): the VAE's weights stream per layer from the host (diffusers leaf-level group offload)."""

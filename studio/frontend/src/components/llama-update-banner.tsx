@@ -62,7 +62,6 @@ function backendLabel(backend: string | null | undefined): string {
   return BACKEND_LABELS[backend] ?? backend;
 }
 
-// Smooth coarse backend progress without freezing between milestones.
 function useSmoothedProgress(
   active: boolean,
   progress: number | null,
@@ -90,15 +89,15 @@ function useSmoothedProgress(
       const current = displayRef.current;
       const real = progressRef.current ?? 0;
       let target: number;
-      let speed: number; // approach rate (fraction of remaining gap per second)
+      let speed: number;
       if (doneRef.current) {
         target = 1;
         speed = 5;
       } else if (real > current) {
-        target = real; // catch up to a freshly observed milestone
+        target = real;
         speed = 4;
       } else {
-        target = RUNNING_CAP; // no signal: creep toward the cap, never frozen
+        target = RUNNING_CAP;
         speed = 0.3;
       }
       const cap = doneRef.current ? 1 : RUNNING_CAP;
@@ -592,6 +591,7 @@ export function LlamaUpdateBanner({
             </Button>
             <Button
               size="sm"
+              variant="primary"
               // align the pill edge with the card padding.
               className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
               onClick={handleUpdate}

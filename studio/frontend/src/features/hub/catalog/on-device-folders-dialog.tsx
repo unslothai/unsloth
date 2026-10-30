@@ -48,14 +48,11 @@ import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
   Download01Icon,
-  FolderAddIcon,
-  FolderExportIcon,
-  FolderOpenIcon,
-  FolderSearchIcon,
   InformationCircleIcon,
   PlusSignIcon,
   Refresh01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderExportIcon, FolderOpenIcon, FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { setDownloadDir, useDownloadDir } from "../download-manager";
@@ -135,8 +132,7 @@ export function OnDeviceFoldersDialog({
     if (!open) return;
     setInputError(null);
     let cancelled = false;
-    // The dialog stays mounted between opens, so re-arm the flag or a reopen
-    // shows the previous answer as if it were fresh.
+    // The dialog stays mounted, so re-arm the flag or a reopen shows stale data.
     setDownloadCacheLoaded(false);
     loadHuggingFaceCacheSettings()
       // Null drops the stale path rather than offer Change against a location we could not confirm.

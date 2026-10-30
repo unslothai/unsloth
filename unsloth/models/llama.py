@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import torch
-import gc
 import contextlib
 import math
 import functools
@@ -22,10 +21,10 @@ from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import _ignore_block_swap_params_for_ddp
-from ._utils import _refuse_tensor_parallel_for_inference
+from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
-from ._utils import per_layer_device
+from ._utils import per_layer_device, refresh_moved_layer_devices
 from ._utils import embedding_applies_scale
 from ._utils import (
     _get_inference_mode_context_manager,
@@ -118,6 +117,7 @@ try:
 except ImportError:
     # Older unsloth_zoo: fall back to reading the config fields directly.
     detect_logit_transforms = None
+from .._gc_passes import collect_garbage
 from ..device_type import (
     xpu_keeps_explicit_bf16,
     xpu_vllm_refuses_bf16,
@@ -218,7 +218,10 @@ try:
 except:
     # Old HF Hub versions <= 0.0.25.
     from huggingface_hub.utils._token import get_token
-from triton import __version__ as triton_version
+try:
+    from triton import __version__ as triton_version
+except ImportError:  # AMD Windows wheels ship no Triton
+    triton_version = None
 
 # Not xformers is not None: HAS_XFORMERS is off when no kernel runs here, and then Mistral skips its sliding-window mask
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
@@ -1778,6 +1781,7 @@ def _LlamaModel_fast_forward_inference(
 
         next_decoder_cache = []
         block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
+        refresh_moved_layer_devices(self.model.layers, block_swap)
 
         for idx, decoder_layer in enumerate(self.model.layers):
             if block_swap is not None:
@@ -3305,6 +3309,22 @@ def _gated_method(cls, name, fast, original):
 
     gated._unsloth_gated = True
     return gated
+
+
+def runs_fast_forward(
+    module,
+    fast,
+    name = "forward",
+):
+    """True when `module` runs Unsloth's `fast` as its class `name`: directly, or through the gate that
+    pre_patch installs (which runs `fast` only on modules marked by mark_unsloth_fast_path)."""
+    method = getattr(type(module), name, None)
+    method = getattr(method, "__func__", method)
+    if method is fast:
+        return True
+    if getattr(method, "_unsloth_gated", False) and getattr(method, "__wrapped__", None) is fast:
+        return bool(getattr(module, "_unsloth_fast_path", False))
+    return False
 
 
 def mark_unsloth_fast_path(model):
@@ -5080,17 +5100,13 @@ class FastLlamaModel:
                 print("Unsloth: Offloading input_embeddings to disk to save VRAM")
                 offload_input_embeddings(model, temporary_location)
 
-            for _ in range(3):
-                gc.collect()
-                clean_gpu_cache()
+            collect_garbage(after = clean_gpu_cache)
 
             if train_lm_head:
                 print("Unsloth: Offloading output_embeddings to disk to save VRAM")
                 offload_output_embeddings(model, temporary_location)
 
-            for _ in range(3):
-                gc.collect()
-                clean_gpu_cache()
+            collect_garbage(after = clean_gpu_cache)
 
         from .lora_init import fast_lora_init, record_fast_pissa
 
@@ -5207,9 +5223,7 @@ class FastLlamaModel:
         # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
         _mark_unsloth_disable_data_parallel(model)
 
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
 
         patch_peft_fast_inference(model)
 
@@ -5284,7 +5298,6 @@ class FastLlamaModel:
                 if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
                     name = name[: len(name) - len("-bnb-4bit")]
                     model.peft_config[active_adapter].base_model_name_or_path = name
-                pass
             # Adding a revision to enable future fast inference paths bugs out; see #492.
 
         from transformers.trainer import Trainer
@@ -5454,9 +5467,7 @@ class FastLlamaModel:
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "right"
 
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
 
         patch_peft_fast_inference(model)
 
@@ -5477,7 +5488,7 @@ class FastLlamaModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
-        _refuse_tensor_parallel_for_inference(model)
+        _tensor_parallel_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5520,6 +5531,7 @@ class FastLlamaModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        _tensor_parallel_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(

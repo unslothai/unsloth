@@ -36,11 +36,11 @@ import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import {
-  Copy01Icon,
   Delete02Icon,
   Search01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -51,7 +51,6 @@ import {
 } from "../stores/voice-settings-store";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-/** Dictations shown per page; "Show more" reveals the next page. */
 const PAGE_SIZE = 20;
 
 type PendingDelete =
@@ -89,13 +88,11 @@ export function RecentDictationsView({
     (s) => s.clearRecentDictations,
   );
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
-  // Only "Delete chat and dictation" removes a chat, so only that path shows
-  // the switch. Preselected from the preference, off for this one if asked.
+  // Only "Delete chat and dictation" removes a chat, so only that path shows the switch.
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
-  // Pagination is keyed to the search/sort inputs so changing either restarts
-  // from the first page without an effect.
+  // Keyed on the inputs so a change restarts from page one without an effect.
   const pageKey = `${sortOrder}::${search}`;
   const [page, setPage] = useState({ key: pageKey, count: PAGE_SIZE });
   const visibleCount = page.key === pageKey ? page.count : PAGE_SIZE;
@@ -152,7 +149,6 @@ export function RecentDictationsView({
     }
   }
 
-  // Delete a linked dictation together with the chat it was used in.
   async function confirmDeleteWithChat(deleteFiles: boolean) {
     if (pendingDelete?.kind !== "one") {
       return;
@@ -172,7 +168,6 @@ export function RecentDictationsView({
           item,
           useChatRuntimeStore.getState().activeThreadId ?? undefined,
           () => {
-            // The deleted chat was open; leave the user on a fresh chat.
             void navigate({
               to: "/chat",
               search: { new: crypto.randomUUID() },
@@ -494,7 +489,6 @@ export function RecentDictationsView({
                   : t("settings.voice.recents.deleteDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {/* Only the linked case offers a chat delete, so only it can remove files. */}
           {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
             <DeleteChatFilesSwitch
               id="dictation-delete-files"
@@ -509,8 +503,7 @@ export function RecentDictationsView({
                 variant="destructive"
                 className="text-destructive hover:text-destructive"
                 onClick={(event) => {
-                  // Close only through state so the dismissal can't race a
-                  // click on whatever ends up under the pointer.
+                  // Close only through state so dismissal cannot race a click underneath.
                   event.preventDefault();
                   void confirmDeleteWithChat(deleteFilesOnDelete);
                 }}

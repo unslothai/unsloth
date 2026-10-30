@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ollama model inventory: manifest parsing and writable-symlink materialization.
-
-Ollama stores models content-addressed under ``<root>/manifests/`` and
-``<root>/blobs/``. Inventory scans read the manifests directly (no writes),
-returning rows whose ``id`` is an opaque ``ollama-manifest:`` reference. The
-load path then calls :func:`materialize_ollama_model_ref`, which creates a
-``.gguf``-named symlink (or hardlink) so that downstream loaders see a path
-with the GGUF suffix without copying multi-GB blobs inside an API request.
-"""
+"""Ollama inventory is read-only; materialize_ollama_model_ref makes a .gguf link to blobs, no copy."""
 
 from __future__ import annotations
 
@@ -54,9 +46,7 @@ _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES = frozenset(
     }
 )
 
-# Modelfile metadata nearly every pulled model carries. llama.cpp uses the GGUF's own template
-# and defaults instead, so none of it reaches the load and none of it should hide the row.
-# `image.adapter` is deliberately absent: it changes the weights.
+# llama.cpp uses the GGUF's own template/defaults. `image.adapter` is absent: it changes weights.
 _OLLAMA_METADATA_LAYER_MEDIA_TYPES = frozenset(
     {
         "application/vnd.ollama.image.template",
@@ -67,10 +57,7 @@ _OLLAMA_METADATA_LAYER_MEDIA_TYPES = frozenset(
     }
 )
 
-# Layers the load drops without changing what it returns. `image.draft` only feeds
-# speculative decoding, which is output-equivalent by construction, so losing it costs
-# speed and nothing else; `image.embed` has been deprecated since ollama 0.1.2 and
-# ollama's own load ignores it too.
+# `image.draft` only feeds speculative decoding; `image.embed` is deprecated and ignored by ollama.
 _OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES = frozenset(
     {
         "application/vnd.ollama.image.draft",
@@ -162,8 +149,7 @@ def _contained_link_path(link_dir: Path, link_name: str) -> Optional[Path]:
 
 
 def _ollama_links_roots(ollama_dir: Path) -> tuple[Path, ...]:
-    """Where *ollama_dir*'s ``.gguf`` links can live, best first: beside the blobs, then Unsloth's cache (read-only installs), then the temp dir (sandboxed installs)."""
-    # Hashed so two Ollama roots cannot collide. A cache path, not a security boundary.
+    """Hashed so two Ollama roots cannot collide. A cache path, not a security boundary."""
     try:
         digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
     except (OSError, RuntimeError):
@@ -502,17 +488,7 @@ def scan_ollama_dir(
     limit: Optional[int] = None,
     materialize_links: bool = False,
 ) -> List[LocalModelInfo]:
-    """Scan an Ollama models directory for downloaded models.
-
-    Ollama uses a content-addressable layout
-    (``manifests/<host>/<namespace>/<model>/<tag>`` + ``blobs/sha256-...``),
-    iterated via ``rglob`` to find every depth. Each manifest's ``model`` layer
-    holds the GGUF weights (vision models add a projector layer).
-
-    Scans are read-only by default and return an opaque manifest reference;
-    the load route later calls :func:`materialize_ollama_model_ref` to create a
-    ``.gguf`` symlink/hardlink, keeping GET /local free of filesystem writes.
-    """
+    """Read-only scan; the load route materializes the .gguf so GET /local does no filesystem writes."""
     manifests_root = ollama_dir / "manifests"
     if not manifests_root.is_dir():
         return []

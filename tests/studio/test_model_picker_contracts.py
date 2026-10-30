@@ -552,7 +552,7 @@ def test_diffusion_load_paths_disable_tensor_parallel():
     compare = _read("features/chat/shared-composer.tsx")
     compact_compare = " ".join(compare.split())
     assert "const effectiveTensorParallel = resolvedIsDiffusion ? false :" in compact_compare
-    assert compare.count("tensor_parallel: effectiveTensorParallel") == 2
+    assert compare.count("tensor_parallel: effectiveTensorParallel") == 1
 
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert "const loadTensorParallel = targetIsDiffusion ? false :" in runtime
@@ -566,7 +566,7 @@ def test_diffusion_load_paths_disable_tensor_parallel():
     compact_autoload = " ".join(autoload.split())
     assert "config.selectedGpuIds != null || config.tensorParallel === true" in compact_autoload
     assert "const effectiveTensorParallel = isDiffusion ? false :" in compact_autoload
-    assert autoload.count("tensor_parallel: effectiveTensorParallel") == 2
+    assert autoload.count("tensor_parallel: effectiveTensorParallel") == 1
 
 
 def test_diffusion_load_keeps_the_standing_gpu_memory_mode():
@@ -710,8 +710,10 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert (
         '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
     ), "loadPath must fall back to the id, so an unpinned pick is unchanged"
-    # Staged metadata, validate, the engine-switch revalidate and load all read the copy that loads.
-    assert runtime.count("model_path: loadPath,") == 4
+    # Staged metadata, and the one request validate, the engine-switch revalidate and load all send,
+    # read the copy that loads.
+    assert runtime.count("model_path: loadPath,") == 2
+    assert "...loadRequest()," in runtime
     assert "model_path: modelId," not in runtime
     # A rollback reads the approval under the snapshot path, so store it under both keys.
     assert "rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);" in runtime
@@ -1103,13 +1105,12 @@ def test_same_click_commit_covers_all_numeric_inputs():
     )
 
 
-def test_context_commit_rechecks_persistence_only_shortcut():
-    """Committed context changes must bypass persistence-only saves."""
+def test_load_always_runs_the_committed_config():
+    """Load has no save-only shortcut left: Save is its own button, so a committed edit always loads."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const effectiveConfig =" in src
-    assert "perModelConfigsEqual(effectiveConfig, baseline, {" in src
-    assert "const effectivePersistenceOnly =" in src
-    assert "if (effectivePersistenceOnly)" in src
+    assert "const { effectiveRuntimeConfig, effectiveMaxSeqLengthValue } = commitDraft();" in src
+    assert "effectivePersistenceOnly" not in src
 
 
 def test_reset_enabled_for_explicit_context_pin_at_native():
@@ -1451,7 +1452,7 @@ def test_save_settings_is_not_rendered_when_it_could_do_nothing():
     gate = " ".join(_save_button_gate().split())
     assert "!canSave" in gate, gate
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "? !atDefault || savedRemember" in page
+    assert "? !atDefault || (savedRemember && !loadsOnce)" in page
 
 
 def test_save_settings_reflects_the_context_it_pinned():
@@ -1962,12 +1963,16 @@ def test_local_model_sections_respect_the_task_filter():
 
 
 def test_chat_picker_routes_diffusion_picks_to_their_page():
-    """Chat cannot load a diffusion or audio model. Rather than hiding an on-device one or
-    letting it 400, the unfiltered picker routes the pick to the page that loads it."""
+    """Chat cannot load a diffusion or audio model. The unfiltered picker hides on-device diffusion
+    rows (Images / Video list them; #15336), and a pick that still reaches it routes to its page."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     gate = re.search(r"function passesTaskGate\(.*?\n\}", src, re.S)
     assert gate, "passesTaskGate not found"
-    assert "UNSUPPORTED_DIFFUSION_TASK" in gate.group(0)
+    assert "!isDiffusionTask(repoTask)" in gate.group(0)
+    caps = _read("features/model-picker/components/model-selector/model-capabilities.ts")
+    assert (
+        'task === "image-diffusion-unsupported"' in caps
+    ), "the never-loadable tag must stay hidden"
     wrapper = re.search(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
     assert wrapper, "the routing wrapper around onSelect is missing"
     body = wrapper.group(0)
@@ -2115,15 +2120,17 @@ def test_parallel_slots_setting_wired_end_to_end():
     assert "pendingLoadConfig?.nParallel" in runtime
     # Both backends take a width: llama-server slots, or the MLX batch width.
     assert "n_parallel: loadNParallel," in runtime
-    assert "n_parallel: validateNParallel," in runtime
+    # /validate is sent the load's own request, so the preflight sizes the same slots.
+    assert "...loadRequest()," in runtime
     assert "loadNParallel = pendingLoadConfig?.nParallel ?? null;" in runtime
     assert "n_parallel: rollbackState.loadedNParallel," in runtime
     chat_api = _read("features/chat/api/chat-api.ts")
-    assert "n_parallel: payload.n_parallel," in chat_api
+    assert "validateRequestBody(payload, preparedToken.token)" in chat_api
+    assert "...wireLoadRequest(payload, hfToken)," in _read("features/chat/lib/load-request.ts")
     composer = _read("features/chat/shared-composer.tsx")
-    assert composer.count("n_parallel: ownConfig.nParallel ?? null,") == 2
+    assert composer.count("n_parallel: ownConfig.nParallel ?? null,") == 1
     adapter = _read("features/chat/api/chat-adapter.ts")
-    assert adapter.count("n_parallel: config.nParallel ?? null,") == 2
+    assert adapter.count("n_parallel: config.nParallel ?? null,") == 1
     assert "loadedNParallel: committedSlots," in adapter
     status = _read("features/chat/lib/apply-inference-status-to-store.ts")
     # Hydration seeds only the rollback baseline; adopting the echo would pin a blank default.
@@ -2358,13 +2365,20 @@ def test_batch_sizes_setting_wired_end_to_end():
     api_types = _read("features/chat/types/api.ts")
     assert "n_batch?: number | null;" in api_types
     assert "n_ubatch?: number | null;" in api_types
+    # One rule for every load path: omitted when blank, since an explicit null reads as set and
+    # strips inherited -b / -ub.
+    load_request = " ".join(_read("features/chat/lib/load-request.ts").split())
+    assert (
+        "...(target.isGguf && settings.nBatch != null ? { n_batch: settings.nBatch } : {}),"
+        in load_request
+    )
+    assert (
+        "...(target.isGguf && settings.nUbatch != null ? { n_ubatch: settings.nUbatch } : {}),"
+        in load_request
+    )
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert "pendingLoadConfig?.nBatch" in runtime
-    # omitted when blank: an explicit null reads as set and strips inherited -b / -ub
-    assert "...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {})," in runtime
-    assert "...(isGguf && loadNUbatch != null ? { n_ubatch: loadNUbatch } : {})," in runtime
-    assert "...(validateNBatch != null ? { n_batch: validateNBatch } : {})," in runtime
-    assert "...(validateNUbatch != null ? { n_ubatch: validateNUbatch } : {})," in runtime
+    assert "nBatch: loadNBatch, nUbatch: loadNUbatch," in runtime
     assert "n_batch: isGguf ? loadNBatch : null," not in runtime
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "loadNBatch = pendingLoadConfig?.nBatch ?? null;" in runtime
@@ -2373,19 +2387,14 @@ def test_batch_sizes_setting_wired_end_to_end():
     assert "{ n_ubatch: rollbackState.loadedNUbatch }" in runtime
     assert "n_batch: rollbackState.loadedNBatch," not in runtime
     chat_api = " ".join(_read("features/chat/api/chat-api.ts").split())
-    assert "...(payload.n_batch != null ? { n_batch: payload.n_batch } : {})," in chat_api
-    assert "...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {})," in chat_api
+    assert "validateRequestBody(payload, preparedToken.token)" in chat_api
     composer = " ".join(_read("features/chat/shared-composer.tsx").split())
-    assert (
-        composer.count("...(ownConfig.nBatch != null ? { n_batch: ownConfig.nBatch } : {}),") == 2
-    )
-    assert (
-        composer.count("...(ownConfig.nUbatch != null ? { n_ubatch: ownConfig.nUbatch } : {}),")
-        == 2
-    )
+    assert composer.count("...llamaServerLoadFields(ownConfig, {") == 1
     adapter = " ".join(_read("features/chat/api/chat-adapter.ts").split())
-    assert adapter.count("...(config.nBatch != null ? { n_batch: config.nBatch } : {}),") == 2
-    assert adapter.count("...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),") == 2
+    assert (
+        adapter.count("...llamaServerLoadFields( { ...config, llamaExtraArgs: resolvedExtraArgs },")
+        == 1
+    )
     assert "loadedNBatch: committedNBatch," in adapter
     assert "loadedNUbatch: committedNUbatch," in adapter
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
@@ -2517,7 +2526,7 @@ def test_chat_autoload_records_every_validation_failure():
     assert "throw error;" in wrapper
     autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
     autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
-    assert "canAutoLoadRecordingFailures(failureLabel, {" in autoload
+    assert "canAutoLoadRecordingFailures(failureLabel, request)" in autoload
     assert "recordCandidateFailure(failureLabel, error)" in autoload
     # The preflight cancellation must also go through the helper, or it records without halting.
     assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
@@ -2688,22 +2697,20 @@ def test_a_recipe_compares_the_requested_reasoning_budget():
 
 
 def test_validate_sends_reasoning_controls_before_the_runtime_unloads():
-    api = _read("features/chat/api/chat-api.ts")
-    validate_body = api.split("export async function validateModel", 1)[1].split(
-        "export async function", 1
-    )[0]
+    body = _read("features/chat/lib/load-request.ts")
+    validate_body = body.split("export function validateRequestBody", 1)[1]
     assert "reasoning_budget: payload.reasoning_budget ?? -1" in validate_body
     assert 'reasoning_budget_message: payload.reasoning_budget_message ?? ""' in validate_body
 
+    # The preflight is sent the load's own request, reasoning budget included, before any unload.
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    validation = runtime.index("const validation = await validateModel({")
+    request = runtime.index("const loadRequest = (): LoadModelRequest =>")
+    validation = runtime.index("const validation = await validateModel({", request)
     unload = runtime.index("await unloadModel(", validation)
-    assert validation < unload
-    validate_payload = runtime[validation:unload]
-    assert "reasoning_budget:" in validate_payload
-    assert "validateReasoningBudget" in validate_payload
-    assert "reasoning_budget_message:" in validate_payload
-    assert "validateReasoningBudgetMessage" in validate_payload
+    assert request < validation < unload
+    assert "reasoningBudget: loadReasoningBudget," in runtime[request:validation]
+    assert "reasoningBudgetMessage: loadReasoningBudgetMessage," in runtime[request:validation]
+    assert "...loadRequest()," in runtime[validation:unload]
 
 
 def test_backfill_compares_server_keys_by_normalized_identity():
@@ -3194,20 +3201,21 @@ def test_run_settings_page_keeps_its_identifying_controls():
     assert 'aria-label="Back to model list"' in page
     assert 'ariaLabel="Context Length"' in page
     assert 'aria-label="Context Length"' in page
-    # The button element, not the word: "Reset" also appears in comments. Reset picks Default
-    # settings, which fills the panel with DEFAULT_PER_MODEL_CONFIG.
+    # The button element, not the word: "Reset" also appears in comments. Reset picks the pinned set,
+    # else Default settings, which fills the panel with DEFAULT_PER_MODEL_CONFIG.
     reset = any(
-        "onClick={() => pickSet(null)}" in el.group(0) and re.search(r">\s*Reset\s*<", el.group(0))
+        "onClick={() => pickSet(pinnedSet)}" in el.group(0)
+        and re.search(r">\s*Reset\s*<", el.group(0))
         for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
     )
     assert reset, "the Reset button's JSX is gone or no longer named Reset"
     assert "const next = entry?.config ?? DEFAULT_PER_MODEL_CONFIG;" in page
 
 
-def test_the_primary_action_keeps_its_four_labels():
+def test_the_primary_action_keeps_its_labels():
     """The driver sweeps these names to find the one button the panel shows."""
     page = _read("features/model-picker/components/model-config-page.tsx")
-    for label in ('"Save settings"', '"Forget settings"', '"Reload model"', '"Load model"'):
+    for label in ('"Reload model"', '"Load model"'):
         assert label in page, label
     # The labels live in a calculation, so require a button that renders them. Other props
     # contain braces, so match whole elements first.
@@ -3569,10 +3577,11 @@ def test_the_default_is_preflighted_before_the_managed_download():
     src = _read("features/chat/api/chat-adapter.ts")
     fallback = src.split("      return { loaded: false, blockedByTrustRemoteCode: false };", 1)[1]
     fallback = fallback.split("export function createOpenAIStreamAdapter", 1)[0]
-    assert fallback.index("canAutoLoad({") < fallback.index("ensureDefaultModelDownloaded(")
+    assert fallback.index("canAutoLoad(request)") < fallback.index("ensureDefaultModelDownloaded(")
     assert fallback.index("const rt = useChatRuntimeStore.getState();") < fallback.index(
-        "canAutoLoad({"
+        "canAutoLoad(request)"
     )
+    assert "await loadModel({ ...request, alongside: true })" in fallback
 
 
 def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():

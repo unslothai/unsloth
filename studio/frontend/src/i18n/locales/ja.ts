@@ -140,6 +140,11 @@ export const ja = {
     more: "その他",
     addressPlaceholder: "検索または URL を入力",
     local: "ローカル",
+    browserUse: {
+      label: "ブラウザ操作",
+      description: "モデルに内蔵ブラウザを操作させる",
+      unavailable: "ブラウザを使わせるには、ツールを呼び出せるモデルを読み込んでください。",
+    },
     suggested: "おすすめ",
     suggestedMenu: {
       open: "開く",
@@ -497,7 +502,6 @@ export const ja = {
       clearDataFailed: "サイトデータを消去できませんでした。もう一度お試しください。",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "OS サンドボックスを利用できません",
@@ -626,6 +630,36 @@ export const ja = {
     compactEmpty: "まだ圧縮する内容がありません",
     compactUnsupported: "会話の圧縮にはツール対応のGGUFまたはMLXモデルが必要です",
   },
+  halloween: {
+    navLabel: "トリック・オア・トリート…",
+    title: "トリック・オア・トリート？！",
+    description: "Unslothに少しだけ怖い仕掛けを用意しました。10月いっぱいお楽しみください。",
+    chooseTheme: "怖いテーマを選ぶ",
+    spookyGreetings: "怖いあいさつ",
+    spookyGreetingsDescription: "新しいチャットでナマケモノが驚かせます。",
+    decorations: "クモとコウモリ",
+    decorationsDescription:
+      "ハロウィンテーマの間、隅にクモの巣が張られ、ときどきクモやコウモリが現れます。",
+    surprise: "トリック・オア・トリート！",
+    surpriseDescription: "ナマケモノにテーマを選んでもらいましょう。",
+    themesTitle: "怖いテーマ",
+    back: "戻る",
+    footer: "Unslothは11月1日の午前0時に元に戻ります。",
+    removeNow: "今すぐ解除",
+    hideFromSidebar: "サイドバーから非表示",
+    greeting: {
+      pumpkins: "かぼちゃのランタンができました。次は何をしましょう？",
+      brewing: "さあ、魔法の薬を作ろう",
+      trickOrTreat: "トリック・オア・トリート？",
+      manor: "屋敷へようこそ",
+      manorName: "{name}さん、屋敷へようこそ",
+      happyHalloween: "ハッピーハロウィン",
+      happyHalloweenName: "{name}さん、ハッピーハロウィン",
+      spirits: "精霊たちが耳を澄ませています…",
+      mysteries: "今夜はどんな謎を解き明かしましょう？",
+      conjure: "どんな魔法をかけましょうか？",
+    },
+  },
   welcome: {
     goodToSeeYou: "お会いできてうれしいです",
     goodToSeeYouName: "{name}さん、お会いできてうれしいです",
@@ -703,7 +737,6 @@ export const ja = {
     shutdown: "シャットダウン",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "ドキュメント",
       keyboardShortcuts: "キーボードショートカット",
@@ -775,11 +808,8 @@ export const ja = {
       export: "エクスポート",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",
-      // Shown under an empty project folder in the sidebar.
       noChats: "チャットなし",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "すべてのプロジェクトをピン留め済み",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "すべてのプロジェクトがピン留め済みまたはセクション内にあります",
       noProjects: "プロジェクトはありません",
       showMore: "もっと見る",
@@ -791,6 +821,8 @@ export const ja = {
       guidedTour: "ガイドツアー",
       help: "ヘルプ",
       logOut: "ログアウト",
+      logOutNeedsPassword: "ログアウトする前に、設定 > リモートアクセスでパスワードを設定してください。再びサインインするために必要です。",
+      logOutFailed: "安全にログアウトできませんでした。しばらくしてからもう一度お試しください。",
       shutdown: "シャットダウン",
     },
     commandPalette: {
@@ -881,11 +913,9 @@ export const ja = {
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
-      // Header of the menu's section-visibility toggles.
       show: "表示",
       newSection: "新しいセクション",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "新しいセクション",
       createDescription: "チャットやプロジェクトを自由にグループ化できます",
@@ -896,16 +926,13 @@ export const ja = {
       edit: "編集",
       remove: "セクションを削除",
       markAllRead: "すべて既読にする",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "移動先",
       section: "セクション",
       sectionsHeading: "セクション",
       removeFromProject: "プロジェクトから削除",
       newSection: "新しいセクション",
       removeFromSection: "セクションから削除",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "{name}から削除",
-      // Shown in a section with nothing filed in it yet.
       empty: "ここにチャットやプロジェクトをドラッグ",
       sectionOptions: "セクションのオプション",
       newChatInSection: "{name} に新しいチャット",
@@ -940,6 +967,11 @@ export const ja = {
   },
   settings: {
     accounts: {
+      signsInAs: "{username} としてサインイン",
+      signsInAsOwner: "{alias} または {username} としてサインイン",
+      signInName: "サインイン名",
+      signInNameDescription: "このインストールに複数のアカウントがあるときにサインインで入力する名前です。unsloth も常に使えます。空欄にすると unsloth のみになります。",
+      signInNameSave: "名前を保存",
       title: "アカウント",
       description: "個別の Unsloth アカウントを作成します。新しいユーザーは一度きりのセットアップコードでサインインし、パスワードを設定します。",
       username: "ユーザー名",
@@ -1080,7 +1112,7 @@ export const ja = {
       lastVisited: "前回開いたタブ",
     },
     tabs: {
-      sandbox: "サンドボックス",
+      sandbox: "セキュリティ",
       accounts: "アカウント",
       general: "一般",
       profile: "プロフィール",
@@ -1364,7 +1396,7 @@ export const ja = {
       },
     },
     sandbox: {
-      title: "サンドボックス",
+      title: "セキュリティ",
       description: "このコンピューターで Python とターミナルのツール呼び出しを OS サンドボックス内で実行するかどうか。",
       docs: "ドキュメント",
       docsLabel: "サンドボックスのドキュメントを開く",
@@ -1419,17 +1451,17 @@ export const ja = {
       installingRuntime: "インストール中…",
       installRuntimeFailed: "ランタイムのインストールに失敗しました。",
       installRuntimeError: "ランタイムのインストールを開始できませんでした。",
-      unsupportedArch: "Windows サンドボックス (MXC) は x64 版 Windows でのみ動作するため、この PC では使用できません。",
+      unsupportedArch: "Windows サンドボックス (MXC) は x64 版および ARM64 版 Windows でのみ動作するため、この PC では使用できません。",
       builtinNeedsUpdate:
         "Windows の組み込みコンテナーにはビルド {required} 以降が必要ですが、この PC は {current} です。管理者の手順なしで使うには最新の Windows Update をインストールするか、下のフォールバック サンドボックスをオンにしてください。",
       unsupportedBuild: "Windows サンドボックス (MXC) には Windows 11 24H2 (ビルド 26100) 以降が必要なため、この PC では使用できません。",
-      permissionsIntro: "ツールが先に確認するタイミングと、Python とターミナルを OS サンドボックス内でも実行するかを選びます。",
       permissionLabel: "ツールの権限",
+      levelRowLabel: "サンドボックスのレベル",
       levelPickerTitle: "コードをどのように隔離しますか？",
       levelOff: "無効",
       levelOffShort: "フルアクセスではサンドボックスがオフになります",
-      levelHighDetail: "OS サンドボックス。Python とターミナルは、ソフトウェアの保護に加えて OS サンドボックス (bubblewrap、Seatbelt または MXC) 内で実行されます。OS サンドボックスが動作しない場合、危険な呼び出しは先に確認します。",
-      levelLowDetail: "ソフトウェア サンドボックス。Python とターミナルはソフトウェアの保護のみで、OS サンドボックスの外で実行されます。フルアクセス以外では、危険な呼び出しは先に確認します。",
+      levelHighDetail: "Python とターミナルは、ソフトウェアの保護に加えて OS サンドボックス (bubblewrap、Seatbelt または MXC) 内で実行されます。OS サンドボックスが動作しない場合、危険な呼び出しは先に確認します。",
+      levelLowDetail: "Python とターミナルはソフトウェアの保護のみで、OS サンドボックスの外で実行されます。フルアクセス以外では、危険な呼び出しは先に確認します。",
       levelLabel: "サンドボックス",
       levelHigh: "高",
       levelLow: "低",
@@ -1440,6 +1472,7 @@ export const ja = {
       managedNote: "OS サンドボックスは、この Unsloth サーバーの所有者が設定します。",
     },
     debugging: {
+      description: "アプリを離れずに Unsloth のログを確認できます。",
       logSection: "ログファイル",
       source: "ログファイル",
       sourceHint: "モデルランナーはそれぞれ独自のログを書き出すため、読み込みや生成の失敗の理由は、サーバーログではなくそちらに記録されていることがよくあります。",
@@ -2141,13 +2174,13 @@ export const ja = {
         },
         details: {
           ask:
-            "ターミナルや Python のコード、ウェブ検索、ファイル編集、MCP ツールを含め、すべてのツール呼び出しの前に確認します。外部プロバイダーが実行するツールは一時停止されません。各ステップを確認したいときに最適です。",
+            "ターミナルや Python のコード、ウェブ検索、ファイル編集、MCP ツールを含め、すべてのツール呼び出しの前に確認します。外部プロバイダーが実行するツールは一時停止されません。",
           auto:
             "通常のツール呼び出しは自動で実行し、認証情報の読み取り、権限昇格、破壊的なコマンドなど、危険そうな操作のときだけ確認します。",
           off:
-            "すべてのツール呼び出しを確認なしで実行します。Python とターミナルのコードは引き続きサンドボックス内で実行され、コンピューター上でアクセスできるファイルが制限されます。このコンピューターで OS サンドボックスが動作しない場合、危険な Python とターミナルの呼び出しは先に確認します。",
+            "すべてのツール呼び出しを確認なしで実行します。Python とターミナルのコードは引き続きサンドボックス内で実行され、コンピューター上でアクセスできるファイルが制限されます。OS サンドボックスが動作しない場合、危険な呼び出しは先に確認します。",
           full:
-            "すべてのツール呼び出しを確認なしで実行し、コードサンドボックスをオフにします。Python とターミナルのコードは、アカウントがアクセスできる任意のファイルを読み取り、変更できます。サンドボックスの外で作業する必要がある、信頼できるタスクに最適です。",
+            "すべてのツール呼び出しを確認なしで実行し、コードサンドボックスをオフにします。Python とターミナルのコードは、アカウントがアクセスできる任意のファイルを読み取り、変更できます。",
         },
       },
     },
@@ -2162,8 +2195,8 @@ export const ja = {
       avatarShape: "プロフィール写真の形状",
       avatarShapeCircle: "円形",
       avatarShapeRounded: "角丸",
-      greetingSloth: "挨拶にナマケモノを表示",
-      greetingSlothDescription: "チャットの挨拶にナマケモノを表示します。",
+      greetingSloth: "あいさつ",
+      greetingSlothDescription: "新しいチャットにあいさつを表示します。",
       chooseSloth: "またはナマケモノのプロフィール画像を選択",
       noPicture: "プロフィール画像なし",
       noneLabel: "なし",
@@ -2250,6 +2283,26 @@ export const ja = {
     appearance: {
       title: "外観",
       description: "このデバイスでの Unsloth の見た目。",
+      gpuRendering: {
+        sectionTitle: "レンダリング",
+        label: "GPU レンダリング",
+        description: "グラフィックカードで Unsloth を描画します。自動では、動作が確認されている環境でのみ使用します。変更は Unsloth の再起動後に反映されます。",
+        auto: "自動",
+        on: "オン",
+        off: "オフ",
+        oldWebkitWarning: "Wayland 上の WebKitGTK {version}: 分数スケーリングを使う NVIDIA 環境では、GPU レンダリングが起動時にクラッシュすることがあります (WebKit bug 280210)。その場合、Unsloth は自動的に CPU レンダリングに戻ります。WebKitGTK 2.50.4 では測定できる高速化はなかった (どちらも 8 fps) ため、ここではオンはおすすめしません。",
+        oldDriverWarning:
+          "X11 上の NVIDIA ドライバー {version}: ドライバーが 610 以降になるまで、Unsloth は GPU レンダリングをオフのままにします。古いドライバーはフレームごとにファイル記述子をリークし、数分でウィンドウが描画されなくなります。",
+        fallbackNote: "このシステムでは GPU レンダリングが起動時にクラッシュしたため、Unsloth は CPU レンダリングを使用しています。",
+        tryAgain: "GPU をもう一度試す",
+        envOverride: "環境変数 {name} で設定されています。これを削除するまで、この設定は効果がありません。",
+        macNote: "macOS では常に GPU で描画されます。WebKit にはこれをオフにするサポートされた方法がありません。",
+        restartPending: "反映するには Unsloth を再起動してください。",
+        restartNow: "今すぐ再起動",
+        loadError: "GPU レンダリングの設定を読み込めませんでした。",
+        saveError: "GPU レンダリングの設定を保存できませんでした。",
+        restartError: "Unsloth を再起動できませんでした。",
+      },
       theme: {
         title: "表示スタイル",
         label: "モード",
@@ -2265,6 +2318,12 @@ export const ja = {
         classic: "クラシック",
         minimal: "ミニマル",
         moreThemes: "その他のテーマ",
+        halloween: "ハロウィン",
+      },
+      trickOrTreat: {
+        label: "トリック・オア・トリート",
+        description:
+          "11月1日まで、ハロウィンのテーマと怖いあいさつを楽しめます。",
       },
       custom: {
         chatWidth: {
@@ -2394,10 +2453,12 @@ export const ja = {
       description: "この Unsloth サーバーのハードウェアとストレージを監視します。",
       liveUpdates: "リアルタイム更新",
       floatingWindow: "フローティングウィンドウ",
-      disableOverlay: "オーバーレイを無効化",
+      showFloatingWindow: "フローティングウィンドウを表示",
+      showFloatingWindowDescription: "CPU・RAM・GPU の使用状況を Unsloth の上に表示し続けます。",
       liveMonitor: {
         title: "リアルタイムモニター",
         apiTitle: "API モニター",
+        apiDescription: "他のアプリがこのサーバーの API に送る内容を、届いたそばから確認できます。",
         summary: "処理中のリクエスト、エラー、トークン使用量",
         status: "処理中 {active} 件 · 最近 {recent} 件 · {model}",
         noModelLoaded: "モデル未読み込み",
@@ -2417,7 +2478,7 @@ export const ja = {
         gpuUnusableDetail: "検出されましたが、PyTorch から利用できません",
         detailedView: "詳細表示",
         detailedViewDescription:
-          "フローティングウィンドウとここに、CPU 負荷と各 GPU の負荷、温度、消費電力を表示します。",
+          "フローティングウィンドウに、CPU 負荷と各 GPU の負荷、温度、消費電力を表示します。",
         cpuLoad: "CPU 負荷",
         gpuLoad: "GPU 負荷",
         temperature: "温度",
@@ -2451,6 +2512,10 @@ export const ja = {
         used: "{value} 使用中",
         free: "{value} 空き",
         total: "{value} 合計",
+        usedOf: "{total} 中 {used} 使用中",
+        segmentUsed: "GPU が使用中",
+        segmentSystem: "システムが使用中",
+        segmentAvailable: "使用可能",
       },
       llamaBackend: {
         title: "GGUF 推論エンジン",
@@ -2502,7 +2567,6 @@ export const ja = {
           updateChecksDisabled:
             "更新チェックが無効になっているため (UNSLOTH_DISABLE_UPDATE_CHECK=1)、利用可能なバックエンドは確認されません。",
         },
-        // 非表示: 設定検索用の追加キーワード。
         llamaBackendKeywords:
           "llama.cpp backend gguf 推論 cuda rocm hip vulkan metal cpu gpu アクセラレータ prebuilt 切り替え エンジン",
       },
@@ -2536,7 +2600,6 @@ export const ja = {
         reloadRequired: "新しいメモリ設定を適用するにはモデルを再読み込みしてください。",
         loadError: "モデルメモリ設定の読み込みに失敗しました",
         saveError: "モデルメモリ設定の保存に失敗しました",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu メモリ ram 常駐 固定 ロック 保持 ロード済み アンロード アイドル mmap no-mmap load-mode スワップ ページング",
         multiModelKeywords:
@@ -2582,6 +2645,10 @@ export const ja = {
           hideDetailsAction: "詳細を隠す",
           clearAction: "キャッシュを削除",
           clearOneAction: "削除",
+          showFolders: "フォルダを表示",
+          hideFolders: "フォルダを非表示",
+          previousLocations: "以前の場所も含みます。メインの削除ボタンは現在のキャッシュフォルダが対象です。モデルのボタンは選択したコピーのみを削除します。",
+          clearModelDescription: "このキャッシュ済みコピーのみを削除します。必要になったときに再度ダウンロードされます。",
           clearingAction: "削除しています...",
           confirmTitle: "キャッシュファイルを削除しますか?",
           confirmDescription: "約{size}の空き容量ができます。",
@@ -2639,6 +2706,8 @@ export const ja = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "稼働時間",
         processMemory: "プロセスメモリ",
         notInstalled: "未インストール",
@@ -2678,8 +2747,6 @@ export const ja = {
       docsLabel: "unsloth start のドキュメントを開く",
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -2832,11 +2899,6 @@ export const ja = {
       autoScrollManual: "手動",
       autoScrollKeywords:
         "スクロール 自動スクロール 追従 下 ジャンプ ストリーミング 生成 固定 scroll autoscroll follow",
-      scrollToBottomButton: "一番下へスクロールボタン",
-      scrollToBottomButtonDescription:
-        "上にスクロールしたときに、最新のメッセージへ戻るボタンを表示します。",
-      scrollToBottomButtonKeywords:
-        "スクロール 一番下 最新 矢印 ボタン 非表示 scroll bottom button",
       replyNotification: "応答完了時に通知",
       replyNotificationDescription:
         "Unsloth が最小化またはバックグラウンドにあるときに応答が完了すると、システム通知を表示します。",
@@ -2858,8 +2920,8 @@ export const ja = {
         "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "応答に応答の編集を表示",
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
-      modelDisclaimer: "モデルの免責事項を表示",
-      modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
+      composerAtBottom: "入力欄を下に表示",
+      composerAtBottomDescription: "新しいチャットで入力欄を中央ではなくページ下部に表示します。",
       projectAttachments: "プロジェクト全体でファイルを共有",
       projectAttachmentsDescription:
         "新しく添付したファイルをプロジェクト内のすべてのチャットで利用できるようにします。",
@@ -3216,6 +3278,7 @@ export const ja = {
       readDocs: "API ドキュメントを読む",
       noAccess: "アクセストークンはまだありません。",
       accessTokens: "アクセストークン",
+      quickstartTitle: "クイックスタート",
       columnName: "名前",
       columnToken: "トークン",
       columnCreated: "作成",
@@ -3352,8 +3415,9 @@ export const ja = {
         loadError: "判定 API の設定を読み込めませんでした。",
         sendsTo: "リクエストは {provider} に送信されます。",
         connectionMissing: "この接続は存在しないか、判定モデルがありません。別のモデルを選んでください。",
-        addConnection: "ホスト型の判定モデルを使うには、接続で TypeSafe、Liquid AI、OpenRouter のいずれかを追加してください。",
-        openConnections: "接続を開く",
+        addConnection: "ホスト型の判定モデルを使うには、",
+        connectionsLink: "接続",
+        addConnectionSuffix: "で追加してください。",
       },
       mcp: {
         title: "エージェントアクセス (MCP)",
@@ -3380,6 +3444,7 @@ export const ja = {
       desktopAppVersionUnavailable: "利用できません",
       llamaCppVersion: "llama.cpp バージョン",
       audioCppVersion: "audio.cpp バージョン",
+      mlxVersion: "MLX バージョン",
       whisperCppVersion: "whisper.cpp バージョン",
       engines: {
         title: "エンジン",
@@ -3486,6 +3551,8 @@ export const ja = {
   },
   studio: {
     goToLibrary: "ライブラリへ移動",
+    imageTraining: "画像トレーニング",
+    goToImageTraining: "画像 LoRA をトレーニング",
     routeTitle: "トレーニング",
     wizard: {
       modelTitle: "モデル",
@@ -4245,7 +4312,6 @@ export const ja = {
       terminalStart: "> unsloth トレーニングを開始します...",
       preparingResources: "> モデルとデータセットを準備中...",
       gettingReady: "> 実行の準備を整えています...",
-      waitingForFirstStep: "> {message} | 最初のステップを待機中... ({step})",
       resumingTraining: "トレーニングを再開しています...",
       startingTraining: "トレーニングを開始しています...",
       dataset: "データセット",
@@ -4477,7 +4543,6 @@ export const ja = {
       all: "すべて",
       chats: "チャット",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "チャット",
@@ -4545,8 +4610,6 @@ export const ja = {
       empty: {
         chatsTitle: "まだチャットはありません",
         chatsDescription: "会話はファイルとは別にここに表示されます。",
-        projectsTitle: "まだプロジェクトはありません",
-        projectsDescription: "プロジェクトは関連するチャットをまとめ、指示を共有します。",
         archivedTitle: "アーカイブはありません",
         archivedDescription: "アーカイブしたチャットがここに表示されます。",
         sectionsTitle: "セクションはまだありません",
@@ -4611,6 +4674,7 @@ export const ja = {
       modelsTitle: "ファインチューニング済みモデルはまだありません",
       modelsDescription: "Unsloth でトレーニングまたはエクスポートしたモデルがここに表示されます。",
       createFolder: "フォルダを作成",
+      generateImage: "画像を生成",
       generateVideo: "動画を生成",
       generateAudio: "音声を生成",
       trainModel: "モデルをトレーニング",
@@ -4675,6 +4739,8 @@ export const ja = {
       pdfs: "PDF",
       gridView: "グリッド表示",
       listView: "リスト表示",
+      grid: "グリッド",
+      list: "リスト",
       settings: "ライブラリの設定",
       sort: "並べ替え",
       sortDefault: "デフォルトの順序",
@@ -4971,5 +5037,62 @@ export const ja = {
       dragHandleLabel: "ライブモニターを移動します。矢印キーで少しずつ動かせ、ダブルクリックで位置をリセットします。",
       reconnecting: "再接続中...",
     },
+  },
+  projectsPage: {
+    title: "プロジェクト",
+    search: "プロジェクトを検索",
+    importExport: "プロジェクトのインポート / エクスポート",
+    importChatsAction: "チャットをインポート…",
+    exportAllProjects: "すべてのプロジェクトをエクスポート",
+    exportProjectsAndRecents: "プロジェクト + 最近の項目をエクスポート",
+    combined: "まとめて",
+    perChat: "チャットごと",
+    newProject: "新しいプロジェクト",
+    name: "名前",
+    updated: "更新",
+    newestFirst: "新しい順",
+    oldestFirst: "古い順",
+    today: "今日",
+    yesterday: "昨日",
+    emptyDescription: "プロジェクトは関連するチャットをまとめ、その中のすべてのチャットで使える共通の指示とソースを持ちます。",
+    createFirst: "最初のプロジェクトを作成",
+    noMatches: "検索に一致するプロジェクトはありません。",
+    clearSearch: "検索をクリア",
+    showChats: "チャットを表示",
+    hideChats: "チャットを非表示",
+    pinProject: "プロジェクトをピン留め",
+    unpinProject: "プロジェクトのピン留めを解除",
+    newChatInProject: "プロジェクトで新しいチャット",
+    projectOptions: "プロジェクトのオプション",
+    loadChatsFailed: "チャットを読み込めませんでした。再試行",
+    refreshChatsFailed: "チャットを更新できませんでした。再試行",
+    noChats: "チャットはありません",
+    unread: "未読",
+    pinChat: "チャットをピン留め",
+    unpinChat: "チャットのピン留めを解除",
+    chatOptions: "チャットのオプション",
+    exportAllChats: "すべてのチャットをエクスポート…",
+    archive: "アーカイブ",
+    renameChat: "チャット名を変更",
+    chatName: "チャット名",
+    deleteChat: "チャットを削除",
+    deleteChatDescription: "{name} を削除してもよろしいですか？メッセージは完全に削除されます。",
+    importChats: "チャットをインポート",
+    importDestination: "{name} のインポート先を選択してください:",
+    selectDestination: "インポート先を選択",
+    recents: "最近の項目",
+    import: "インポート",
+    deleteProject: "プロジェクトを削除",
+    deleteProjectDescription: "{name} を削除してもよろしいですか？チャットは完全に削除されます。",
+    deleteProjectFiles: "プロジェクトの作業フォルダーはディスクから削除されます。",
+    deleteAll: "すべて削除",
+    projectFallback: "プロジェクト",
+    importFailed: "インポートに失敗しました。",
+    nothingToExport: "エクスポートする会話がありません。",
+    exportFailed: "エクスポートに失敗しました。",
+    renameChatFailed: "チャット名を変更できませんでした",
+    archiveChatFailed: "チャットをアーカイブできませんでした",
+    deleteChatFailed: "チャットを削除できませんでした",
+    deleteProjectFailed: "プロジェクトを削除できませんでした",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

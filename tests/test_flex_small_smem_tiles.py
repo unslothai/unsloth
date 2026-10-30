@@ -224,3 +224,47 @@ def test_small_card_with_tuned_backward_forced_keeps_fitting_tiles(monkeypatch):
     wrapped(_Causal(), *_qkv(256), object())
     for k, v in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS.items():
         assert seen[k] == v
+
+
+@pytest.mark.parametrize("requested", [{"FORCE_USE_FLEX_ATTENTION": True}, {"BACKEND": "TRITON"}])
+def test_wrapper_forced_main_kernel_no_grad_short_query_gets_tiles(monkeypatch, requested):
+    # Gradient checkpointing runs each block's first forward under no_grad, and the block compile
+    # hook forces the main kernel there, whose default head_dim 256 tiles do not fit (#15271).
+    wrapped, seen = _wrapped(monkeypatch)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    wrapped(_Causal(), *_qkv(64, grad = False), object(), kernel_options = dict(requested))
+    for k, v in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS.items():
+        assert seen[k] == v
+    for k, v in requested.items():
+        assert seen[k] == v
+    wrapped(_Causal(), *_qkv(64, grad = False), object(), kernel_options = {"BACKEND": "AUTO"})
+    assert "fwd_BLOCK_M" not in seen  # flex_decoding may still run: its own tiles
+
+
+def test_wrapper_training_calls_add_no_sequence_guard(monkeypatch):
+    # The grad check must short-circuit before query.shape[2] >= 128, or a dynamic-shape block
+    # compiles once more when the sequence crosses 128.
+    import torch
+
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
+
+    def graphs_for(small_ok):
+        wrapped, _ = _wrapped(monkeypatch, small_ok = small_ok)
+        graphs = []
+
+        def backend(gm, example_inputs):
+            graphs.append(gm)
+            return gm.forward
+
+        torch._dynamo.reset()
+
+        @torch.compile(backend = backend, dynamic = True)
+        def block(q):
+            return wrapped(_Causal(), q, q, q, None, is_causal = False) * 2
+
+        for q_len in (256, 512, 64, 32):
+            block(torch.randn(1, 2, q_len, 256))
+        torch._dynamo.reset()
+        return len(graphs)
+
+    assert graphs_for(True) == graphs_for(False)

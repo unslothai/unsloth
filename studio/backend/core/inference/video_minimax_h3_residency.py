@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep as much of a streamed MiniMax-H3 denoiser on the device as the card allows: the top-level group first, then a
-prefix of its block groups, re-fitted per request. Resident groups keep their pinned host copy, so demoting is free.
-
-``UNSLOTH_H3_DIT_RESIDENT=0`` keeps everything streamed.
-"""
+"""Keeps as much of a MiniMax-H3 denoiser on device as fits: top-level group first, then a prefix of
+its block groups; re-fitted per request; demotion is free; UNSLOTH_H3_DIT_RESIDENT=0 keeps all
+streamed."""
 
 from __future__ import annotations
 
@@ -14,8 +12,7 @@ from typing import Any, Optional
 
 H3_DIT_RESIDENT_ENV = "UNSLOTH_H3_DIT_RESIDENT"
 
-# Decimal GB each phase of an H3 render needs on top of the resident set (B200 peaks at 12 / 16 / 24 / 40 GB caps).
-#   running block + prefetched next block + compiled workspace
+# Decimal GB each H3 render phase needs on top of the resident set (B200 peaks).
 H3_STREAM_WINDOW_GB = 1.5
 #   per million pixel-frames
 H3_ACTIVATION_GB_PER_MPIXEL_FRAME = 0.08
@@ -135,8 +132,7 @@ def make_resident(group: Any) -> None:
 
     if is_resident(group):
         return
-    # The instance attribute, not the class method: an instance override (pinned top group) is an onload path too.
-    # Except the prefetcher's own: a group leaving the stream must not count against its in-flight window.
+    # Instance attribute: an instance override is an onload path too, except the prefetcher's own.
     prefetcher = getattr(group, "_unsloth_prefetcher", None)
     owns = getattr(prefetcher, "owns", None)
     if callable(owns) and owns(group):
@@ -340,10 +336,7 @@ def _is_original_forward(fn: Any, module: Any) -> bool:
 
 
 def compile_blocks_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
-    """Compile each streamed block's own ``forward`` instead of ``_call_impl``, so the group-offload hooks stay eager.
-
-    Traced hooks put residency and prefetch state into the guards: 40 graphs on the first render at 24 GB and more on
-    every resident-set change. ``UNSLOTH_H3_COMPILE_BELOW_HOOKS=0`` keeps the old placement."""
+    """Compile each streamed block's forward, not _call_impl, so hook state stays out of guards; UNSLOTH_H3_COMPILE_BELOW_HOOKS=0 keeps old placement."""
     if str(os.environ.get(H3_COMPILE_BELOW_HOOKS_ENV, "")).strip().lower() in (
         "0",
         "off",
@@ -389,17 +382,15 @@ H3_TOP_GROUP_PIN_ENV = "UNSLOTH_H3_TOP_GROUP_PIN"
 
 
 def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
-    """Give a block-streamed denoiser's top-level group a pinned host copy and the blocks' copy stream.
-
-    diffusers builds it without a stream, so every forward uploads it from pageable memory and copies it back (0.45 s
-    of a 1.5 s step at 12 GB). #12389's top-level pin skips torchao weights, which this checkpoint has.
-    ``UNSLOTH_H3_TOP_GROUP_PIN=0`` keeps diffusers' group."""
+    """diffusers builds top group without a stream, so each forward uploads it from pageable memory; UNSLOTH_H3_TOP_GROUP_PIN=0 keeps diffusers' group."""
     if str(os.environ.get(H3_TOP_GROUP_PIN_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
         return False
     from .video_minimax_h3_te import h3_te_pin_allowed
 
     top, blocks = h3_offload_groups(transformer)
-    if not h3_te_pin_allowed(group_payload_bytes(top) if top is not None else 0):
+    if not h3_te_pin_allowed(
+        group_payload_bytes(top) if top is not None else 0, getattr(top, "onload_device", None)
+    ):
         if logger is not None:
             logger.info(
                 "video.h3_top_group: left as diffusers built it (pinning not allowed on this host)"
@@ -502,7 +493,9 @@ def pin_streamed_block_groups(transformer: Any, logger: Any = None) -> tuple[int
             tensors = _group_tensors(group)
             if any(getattr(t, "device", None) is None or t.device.type != "cpu" for t in tensors):
                 break
-            if not h3_te_pin_allowed(group_payload_bytes(group)):
+            if not h3_te_pin_allowed(
+                group_payload_bytes(group), getattr(group, "onload_device", None)
+            ):
                 break
             saved = (group.low_cpu_mem_usage, group.cpu_param_dict)
             try:
@@ -732,7 +725,7 @@ def defer_streamed_block_pins(
 
     if not pin_arena_enabled() or _pinned_memory_capped():
         return None
-    if not _background_pin_enabled() or not _fast_pin_supported():
+    if not _background_pin_enabled(device) or not _fast_pin_supported(device):
         return None
     for group in lazy:
         cpu = group.cpu_param_dict
@@ -743,7 +736,7 @@ def defer_streamed_block_pins(
                 or tensor not in cpu
             ):
                 return None
-    if not h3_te_pin_allowed(group_payload_bytes(lazy[0])):
+    if not h3_te_pin_allowed(group_payload_bytes(lazy[0]), device):
         return None
     pending = getattr(pipe, _PENDING_PINS_ATTR, None)
     if pending is None:
@@ -758,7 +751,7 @@ def defer_streamed_block_pins(
         lazy,
         device,
         logger,
-        admit = lambda g: h3_te_pin_allowed(group_payload_bytes(g)),
+        admit = lambda g: h3_te_pin_allowed(group_payload_bytes(g), device),
     )
     # cpu_param_dict already maps each tensor to its pageable host copy; onloads read it until the pin swaps it
     for group in lazy:
@@ -775,6 +768,17 @@ def defer_streamed_block_pins(
 
 
 H3_STREAM_PREFETCH_ENV = "UNSLOTH_H3_STREAM_PREFETCH"
+H3_STREAM_CARRY_ENV = "UNSLOTH_H3_STREAM_CARRY"
+
+
+def h3_stream_carry_enabled() -> bool:
+    """Cross-forward carry for H3's scheduler.step-driven loop; ``UNSLOTH_H3_STREAM_CARRY=0`` off."""
+    return str(os.environ.get(H3_STREAM_CARRY_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def h3_stream_prefetch_depth(block_bytes: list, default_depth: int) -> int:
@@ -827,8 +831,7 @@ def install_h3_stream_prefetch(
 
     if _pinned_memory_capped():
         depth = 1  # each in-flight group is pinned on the fly; diffusers' own path holds two near a ~1 GiB cap
-    # The prefetcher refuses groups whose onload_ is replaced: lift the outside-inference_mode wrappers (torchao v1
-    # int8 cannot be re-pointed inside it), install, then wrap its moves the same way.
+    # Prefetcher refuses replaced onload_: lift the outside-inference_mode wrappers (torchao int8 cannot be re-pointed inside), install, then rewrap.
     groups = _all_offload_groups(transformer)
     # A top-level group the H3 pin left unstreamed (kill switch, host refusal) keeps its wrapper, so the generic
     # top-group adoption cannot pin it.
@@ -855,6 +858,8 @@ def install_h3_stream_prefetch(
                 group_payload_bytes(top) if top is not None else 0,
                 [group_payload_bytes(g) for g in blocks],
             )
+            # a streamed top-level group runs for the whole forward, so only keeping it hides its upload
+            prefetcher.keep_first = h3_stream_carry_enabled()
             # end() puts groups copied ahead but never run back on the host copy; kick() queues copies
             for name in ("end", "kick"):
                 setattr(prefetcher, name, _outside_inference_mode(getattr(prefetcher, name)))
@@ -894,6 +899,7 @@ def _outside_inference_mode(fn: Any) -> Any:
 
 
 H3_VAE_PINNED_SWAP_ENV = "UNSLOTH_H3_VAE_PINNED_SWAP"
+H3_VAE_PAGEABLE_SWAP_ENV = "UNSLOTH_H3_VAE_PAGEABLE_SWAP"
 
 
 def install_pinned_swap(
@@ -902,17 +908,11 @@ def install_pinned_swap(
     logger: Any = None,
     label: str = "component",
 ) -> bool:
-    """Make a ComponentsManager-rotated module (H3's VAEs) move by re-pointing at a pinned in-place host copy.
-
-    Stock rotation uploads from pageable memory and copies back every park (3.0 s per VAE decode at 24 GB). A device
-    move uploads from the pinned copy, a CPU move only re-points; dtype changes or mismatched tensors take stock
-    ``nn.Module.to``. ``UNSLOTH_H3_VAE_PINNED_SWAP=0`` keeps stock moves."""
-    if str(os.environ.get(H3_VAE_PINNED_SWAP_ENV, "")).strip().lower() in (
-        "0",
-        "off",
-        "false",
-        "no",
-    ):
+    """Stock rotation uploads from pageable memory and copies back every park; device moves use pinned host copy; UNSLOTH_H3_VAE_PINNED_SWAP=0 keeps stock moves.
+    Where pinning is not allowed the swap keeps the module's own pageable host copy, so a park is still a re-point
+    (UNSLOTH_H3_VAE_PAGEABLE_SWAP=0 keeps stock moves there)."""
+    off = ("0", "off", "false", "no")
+    if str(os.environ.get(H3_VAE_PINNED_SWAP_ENV, "")).strip().lower() in off:
         return False
     if module is None or getattr(module, "_unsloth_pinned_swap", None) is not None:
         return False
@@ -920,22 +920,26 @@ def install_pinned_swap(
 
     from .video_minimax_h3_te import _module_payload_bytes, h3_te_pin_allowed, pin_module_in_place
 
-    if not torch.cuda.is_available() or not h3_te_pin_allowed(_module_payload_bytes(module)):
+    if not torch.cuda.is_available():
         return False
     tensors = list(module.parameters()) + list(module.buffers())
     if not tensors or any(t.device.type != "cpu" for t in tensors):
         return False
     if any(type(t.data) is not torch.Tensor for t in tensors):
         return False
-    try:
-        pin_module_in_place(module, repoint = True)
-    except Exception as exc:  # noqa: BLE001 -- stock moves
-        if logger is not None:
-            logger.warning("video.h3_pinned_swap: %s not pinned (%s)", label, exc)
+    pinned = h3_te_pin_allowed(_module_payload_bytes(module))
+    if not pinned and str(os.environ.get(H3_VAE_PAGEABLE_SWAP_ENV, "")).strip().lower() in off:
         return False
+    if pinned:
+        try:
+            pin_module_in_place(module, repoint = True)
+        except Exception as exc:  # noqa: BLE001 -- stock moves
+            if logger is not None:
+                logger.warning("video.h3_pinned_swap: %s not pinned (%s)", label, exc)
+            return False
     host: dict[int, Any] = {}
     for tensor in list(module.parameters()) + list(module.buffers()):
-        if tensor.device.type == "cpu" and tensor.is_pinned():
+        if tensor.device.type == "cpu" and (tensor.is_pinned() or not pinned):
             host[id(tensor)] = tensor.data
     stock_to = module.to
 
@@ -965,8 +969,9 @@ def install_pinned_swap(
     module._unsloth_pinned_swap = host
     if logger is not None:
         logger.info(
-            "video.h3_pinned_swap: %s moves by re-pointing at a pinned host copy (%.2f GB)",
+            "video.h3_pinned_swap: %s moves by re-pointing at a %s host copy (%.2f GB)",
             label,
+            "pinned" if pinned else "pageable",
             sum(t.numel() * t.element_size() for t in host.values()) / 1e9,
         )
     return True

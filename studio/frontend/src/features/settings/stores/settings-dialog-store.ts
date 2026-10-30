@@ -3,10 +3,7 @@
 
 import { create } from "zustand";
 
-/**
- * One list, so the type and the persisted-tab check cannot drift: a tab added
- * to the union alone used to be rejected on reload and fall back to General.
- */
+/** One list so the type and the persisted-tab check cannot drift. */
 export const SETTINGS_TABS = [
   "general",
   "profile",
@@ -34,7 +31,10 @@ export type SettingsScrollTarget =
   | "about-updates"
   | "api-keys-audio-api"
   | "api-keys-media-api"
+  | "api-keys-training-api"
   | "api-keys-decision-api"
+  | "api-keys-agents"
+  | "api-keys-mcp"
   | "appearance-sidebar-nav"
   | "chat-composer"
   | "browser-html-network"
@@ -43,6 +43,7 @@ export type SettingsScrollTarget =
   /** Old name of sandbox-permissions, from when Permissions lived in General. */
   | "general-permissions"
   | "library-storage"
+  | "remote-lan-keyless"
   | "resources-caches"
   | "resources-model-memory"
   | "sandbox-os"
@@ -65,6 +66,19 @@ export interface MediaApiRequest {
   model: string | null;
 }
 
+/** The Train page's form, already narrowed to what the fine-tuning API takes. */
+export interface TrainingApiRequest {
+  model: string | null;
+  /** The uploaded dataset's file name; null for a Hugging Face or S3 dataset. */
+  datasetName: string | null;
+  datasetFromHub: boolean;
+  nEpochs: number;
+  batchSize: number;
+  seed: number;
+  suffix: string | null;
+  extras: Record<string, unknown>;
+}
+
 /** Which archive the Data tab should open straight into. */
 export type ArchivedShelf = "chats" | "images" | "videos" | "audio";
 
@@ -78,30 +92,26 @@ interface SettingsDialogState {
   open: boolean;
   activeTab: SettingsTab;
   scrollTarget: SettingsScrollTarget | null;
-  // Element focused when openDialog() ran. Radix's FocusScope normally tracks this, but the
-  // rAF-scheduled focus() in settings-dialog.tsx races its previous-focus capture, leaving focus on
-  // <body> after close. We restore explicitly via onCloseAutoFocus.
+  // The rAF focus in settings-dialog.tsx races Radix's previous-focus capture, so restore it
+  // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
   openerFallback: HTMLElement | null;
-  // Set when something asks to jump straight to an archive listing (the archive
-  // toast). DataTab uses it as its initial subpage, then clears it. See requestsFor
-  // for how long it lives unconsumed.
+  // DataTab uses it as its initial subpage, then clears it. See requestsFor for its lifetime.
   archivedRequested: ArchivedShelf | null;
   logFamilyRequested: string | null;
   logSourcePathRequested: string | null;
-  /** Bumped per View logs click, so a repeated identical request still reads as new. */
+  /** Bumped per click so an identical request still reads as new. */
   logRequestSeq: number;
-  // Set when something asks for one connection's settings (the picker's Connected group gear).
   // ConnectionsTab hands it to the form, then clears it. Same lifetime as archivedRequested.
   connectionRequested: string | null;
   // The Audio API card applies it, then clears it. Same lifetime as archivedRequested.
   audioApiRequested: AudioApiRequest | null;
   decisionTryRequested: string | null;
   mediaApiRequested: MediaApiRequest | null;
+  trainingApiRequested: TrainingApiRequest | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
   openArchivedMedia: (shelf: Exclude<ArchivedShelf, "chats">) => void;
-  /** Open Connections with `providerId`'s edit form already up. */
   openConnectionSettings: (providerId: string) => void;
   openAudioApi: (request: AudioApiRequest) => void;
   consumeAudioApiRequest: () => void;
@@ -113,6 +123,8 @@ interface SettingsDialogState {
   consumeDecisionTryRequest: () => void;
   openMediaApi: (request: MediaApiRequest) => void;
   consumeMediaApiRequest: () => void;
+  openTrainingApi: (request: TrainingApiRequest) => void;
+  consumeTrainingApiRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
   setActiveTab: (tab: SettingsTab) => void;
@@ -166,19 +178,23 @@ function loadInitialTab(): SettingsTab {
     : "general";
 }
 
-/** The panel that delivers each scroll target, so a navigation elsewhere abandons it. */
+/** A navigation elsewhere abandons the scroll target. */
 const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "chat-composer": "chat",
   "about-updates": "about",
   "api-keys-audio-api": "api-keys",
   "api-keys-media-api": "api-keys",
+  "api-keys-training-api": "api-keys",
   "api-keys-decision-api": "api-keys",
+  "api-keys-agents": "api-keys",
+  "api-keys-mcp": "api-keys",
   "appearance-sidebar-nav": "appearance",
   "browser-html-network": "browser",
   "general-hub": "general",
   "general-rag-embedding": "general",
   "general-permissions": "sandbox",
   "library-storage": "library",
+  "remote-lan-keyless": "remote-lan",
   "resources-caches": "resources",
   "resources-model-memory": "resources",
   "sandbox-os": "sandbox",
@@ -197,13 +213,8 @@ export function resolveScrollRequest(
 }
 
 /**
- * The unconsumed deep-link requests that outlive a navigation landing on `tab`.
- *
- * Only the panel that performs a jump clears its request, and panels are fetched on first
- * view, so a navigation can move before the chunk arrives. A request therefore lives while
- * the dialog is open on the tab that reads it: reselecting keeps it, anything else drops
- * it, and closing (below) always does. Held wider, a stale request replays on a later
- * visit; held narrower, reselecting loses a deep-link still in flight.
+ * A request lives while the dialog is open on the tab that reads it: panels load on first view,
+ * so reselecting keeps it, anything else drops it, and closing always does.
  */
 function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
   return {
@@ -248,6 +259,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   audioApiRequested: null,
   decisionTryRequested: null,
   mediaApiRequested: null,
+  trainingApiRequested: null,
   openDialog: (requestedTab, options) =>
     set((state) => {
       const { tab, target } = resolveScrollRequest(requestedTab, options?.scrollTarget);
@@ -356,16 +368,30 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       connectionRequested: null,
       audioApiRequested: null,
       mediaApiRequested: request,
+      trainingApiRequested: null,
       ...focusForOpen(state),
     })),
   consumeMediaApiRequest: () => set({ mediaApiRequested: null }),
+  openTrainingApi: (request) =>
+    set((state) => ({
+      open: true,
+      activeTab: "api-keys",
+      scrollTarget: "api-keys-training-api",
+      archivedRequested: null,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
+      connectionRequested: null,
+      audioApiRequested: null,
+      mediaApiRequested: null,
+      trainingApiRequested: request,
+      ...focusForOpen(state),
+    })),
+  consumeTrainingApiRequest: () => set({ trainingApiRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
       scrollTarget: state.scrollTarget === target ? null : state.scrollTarget,
     })),
-  // Do NOT clear `opener` here. onCloseAutoFocus runs on the next render
-  // pass after `open: false` lands, so the opener must still be readable
-  // from the store at that point. The next openDialog() overwrites it.
+  // Do NOT clear `opener`: onCloseAutoFocus reads it on the render after `open: false`.
   closeDialog: () =>
     set({
       open: false,
@@ -377,6 +403,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       audioApiRequested: null,
       decisionTryRequested: null,
       mediaApiRequested: null,
+      trainingApiRequested: null,
     }),
   setActiveTab: (tab) => {
     try {

@@ -139,6 +139,11 @@ export const zhCN = {
     more: "更多",
     addressPlaceholder: "搜索或输入网址",
     local: "本地",
+    browserUse: {
+      label: "浏览器操作",
+      description: "允许模型控制内置浏览器",
+      unavailable: "请加载支持工具调用的模型，才能让它使用浏览器。",
+    },
     suggested: "推荐",
     suggestedMenu: {
       open: "打开",
@@ -496,7 +501,6 @@ export const zhCN = {
       clearDataFailed: "无法清除网站数据。请重试。",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "操作系统沙盒不可用",
@@ -625,6 +629,36 @@ export const zhCN = {
     compactEmpty: "暂无可压缩的内容",
     compactUnsupported: "对话压缩需要支持工具调用的 GGUF 或 MLX 模型",
   },
+  halloween: {
+    navLabel: "不给糖就捣蛋…",
+    title: "不给糖就捣蛋？！",
+    description: "我们为 Unsloth 准备了一些惊吓，持续到十月底。",
+    chooseTheme: "选择一个惊悚主题",
+    spookyGreetings: "惊悚问候",
+    spookyGreetingsDescription: "树懒会在新对话中吓你一跳。",
+    decorations: "蜘蛛和蝙蝠",
+    decorationsDescription:
+      "使用万圣节主题时，角落会有蛛网，偶尔还会出现蜘蛛或蝙蝠。",
+    surprise: "不给糖就捣蛋！",
+    surpriseDescription: "让树懒为你挑选主题。",
+    themesTitle: "惊悚主题",
+    back: "返回",
+    footer: "Unsloth 将于 11 月 1 日零点恢复正常。",
+    removeNow: "立即移除",
+    hideFromSidebar: "从侧边栏隐藏",
+    greeting: {
+      pumpkins: "南瓜灯已经刻好了。接下来做什么？",
+      brewing: "开始熬制魔药吧",
+      trickOrTreat: "不给糖就捣蛋？",
+      manor: "欢迎来到古宅",
+      manorName: "{name}，欢迎来到古宅",
+      happyHalloween: "万圣节快乐",
+      happyHalloweenName: "{name}，万圣节快乐",
+      spirits: "幽灵们正在聆听……",
+      mysteries: "今晚我们要揭开什么谜团？",
+      conjure: "想让我为你变出什么？",
+    },
+  },
   welcome: {
     goodToSeeYou: "很高兴见到你",
     goodToSeeYouName: "很高兴见到你，{name}",
@@ -699,7 +733,6 @@ export const zhCN = {
     shutdown: "关闭服务",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "文档",
       keyboardShortcuts: "键盘快捷键",
@@ -771,11 +804,8 @@ export const zhCN = {
       export: "导出",
       recents: "最近",
       noChatsYet: "暂无对话",
-      // Shown under an empty project folder in the sidebar.
       noChats: "无对话",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "所有项目均已置顶",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "所有项目均已置顶或归入分区",
       noProjects: "暂无项目",
       showMore: "显示更多",
@@ -787,6 +817,8 @@ export const zhCN = {
       guidedTour: "引导教程",
       help: "帮助",
       logOut: "退出登录",
+      logOutNeedsPassword: "退出登录前，请先在 设置 > 远程访问 中设置密码，以便重新登录。",
+      logOutFailed: "无法安全退出登录，请稍后重试。",
       shutdown: "关闭服务",
     },
     commandPalette: {
@@ -877,11 +909,9 @@ export const zhCN = {
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
-      // Header of the menu's section-visibility toggles.
       show: "显示",
       newSection: "新建分区",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "新建分区",
       createDescription: "按你的喜好对对话和项目进行分组",
@@ -892,16 +922,13 @@ export const zhCN = {
       edit: "编辑",
       remove: "移除分区",
       markAllRead: "全部标为已读",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "移动到",
       section: "分区",
       sectionsHeading: "分区",
       removeFromProject: "从项目中移除",
       newSection: "新建分区",
       removeFromSection: "从分区中移除",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "从{name}中移除",
-      // Shown in a section with nothing filed in it yet.
       empty: "将对话或项目拖到此处",
       sectionOptions: "分区选项",
       newChatInSection: "在 {name} 中新建聊天",
@@ -936,6 +963,11 @@ export const zhCN = {
   },
   settings: {
     accounts: {
+      signsInAs: "以 {username} 登录",
+      signsInAsOwner: "以 {alias} 或 {username} 登录",
+      signInName: "你的登录名",
+      signInNameDescription: "当此安装有多个账户时，登录时输入的名称。unsloth 也始终可用。留空则只使用 unsloth。",
+      signInNameSave: "保存名称",
       title: "账户",
       description: "创建独立的 Unsloth 账户。新用户使用一次性设置码登录并设置密码。",
       username: "用户名",
@@ -1076,7 +1108,7 @@ export const zhCN = {
       lastVisited: "上次访问",
     },
     tabs: {
-      sandbox: "沙盒",
+      sandbox: "安全",
       accounts: "账户",
       general: "通用",
       profile: "个人资料",
@@ -1360,7 +1392,7 @@ export const zhCN = {
       },
     },
     sandbox: {
-      title: "沙盒",
+      title: "安全",
       description: "Python 和终端工具调用是否在此计算机上的系统沙箱中运行。",
       docs: "文档",
       docsLabel: "打开沙盒文档",
@@ -1415,17 +1447,17 @@ export const zhCN = {
       installingRuntime: "正在安装…",
       installRuntimeFailed: "运行时安装失败。",
       installRuntimeError: "无法开始安装运行时。",
-      unsupportedArch: "Windows 沙箱 (MXC) 仅支持 x64 版 Windows，因此在此电脑上不可用。",
+      unsupportedArch: "Windows 沙箱 (MXC) 仅支持 x64 和 ARM64 版 Windows，因此在此电脑上不可用。",
       builtinNeedsUpdate:
         "Windows 内置容器需要版本 {required} 或更高，而这台电脑运行的是 {current}。安装最新的 Windows 更新即可无需管理员步骤使用它，或在下方开启备用沙盒。",
       unsupportedBuild: "Windows 沙箱 (MXC) 需要 Windows 11 24H2（版本 26100）或更高版本，因此在此电脑上不可用。",
-      permissionsIntro: "选择工具何时先询问，以及 Python 和终端是否也在操作系统沙盒中运行。",
       permissionLabel: "工具权限",
+      levelRowLabel: "沙盒级别",
       levelPickerTitle: "代码应如何隔离？",
       levelOff: "已停用",
       levelOffShort: "完全访问会关闭沙盒",
-      levelHighDetail: "操作系统沙盒。Python 和终端在软件防护之外，还在操作系统沙盒（bubblewrap、Seatbelt 或 MXC）中运行。没有可用的操作系统沙盒时，有风险的调用会先询问。",
-      levelLowDetail: "软件沙盒。Python 和终端仅使用软件防护，在操作系统沙盒之外运行。除完全访问外，有风险的调用会先询问。",
+      levelHighDetail: "Python 和终端在软件防护之外，还在操作系统沙盒（bubblewrap、Seatbelt 或 MXC）中运行。没有可用的操作系统沙盒时，有风险的调用会先询问。",
+      levelLowDetail: "Python 和终端仅使用软件防护，在操作系统沙盒之外运行。除完全访问外，有风险的调用会先询问。",
       levelLabel: "沙盒",
       levelHigh: "高",
       levelLow: "低",
@@ -1436,6 +1468,7 @@ export const zhCN = {
       managedNote: "操作系统沙盒由此 Unsloth 服务器的所有者设置。",
     },
     debugging: {
+      description: "无需离开应用即可查看 Unsloth 日志。",
       logSection: "日志文件",
       source: "日志文件",
       sourceHint: "模型运行器会各自写入日志，因此加载或生成失败的原因通常记录在那里，而不是服务器日志中。",
@@ -2133,13 +2166,13 @@ export const zhCN = {
         },
         details: {
           ask:
-            "每次调用工具前都会询问，包括终端和 Python 代码、网页搜索、编辑文件以及 MCP 工具。由外部提供商运行的工具不会暂停。适合需要逐步检查的场景。",
+            "每次调用工具前都会询问，包括终端和 Python 代码、网页搜索、编辑文件以及 MCP 工具。由外部提供商运行的工具不会暂停。",
           auto:
             "常规工具调用会自动执行，只有在操作看起来有风险时才会询问，例如读取凭据、提升权限或执行破坏性命令。",
           off:
-            "所有工具调用都不再询问。Python 和终端代码仍在沙箱中运行，沙箱会限制它们能访问你电脑上的哪些文件。如果这台电脑没有可用的系统沙箱，高风险的 Python 和终端调用会先询问。",
+            "所有工具调用都不再询问。Python 和终端代码仍在沙箱中运行，沙箱会限制它们能访问你电脑上的哪些文件。没有可用的操作系统沙盒时，有风险的调用会先询问。",
           full:
-            "所有工具调用都不再询问，并关闭代码沙箱，Python 和终端代码可以读取和修改你的账户能访问的任何文件。适合需要在沙箱外工作的可信任务。",
+            "所有工具调用都不再询问，并关闭代码沙箱，Python 和终端代码可以读取和修改你的账户能访问的任何文件。",
         },
       },
     },
@@ -2154,8 +2187,8 @@ export const zhCN = {
       avatarShape: "头像形状",
       avatarShapeCircle: "圆形",
       avatarShapeRounded: "圆角矩形",
-      greetingSloth: "问候语中显示树懒",
-      greetingSlothDescription: "在对话问候语中显示树懒。",
+      greetingSloth: "问候语",
+      greetingSlothDescription: "在新聊天中显示问候语。",
       chooseSloth: "或选择一只树懒作为头像",
       noPicture: "无头像",
       noneLabel: "无",
@@ -2251,6 +2284,26 @@ export const zhCN = {
         spellCheck: "拼写检查",
         spellCheckDescription: "输入时在拼写错误的单词下方显示下划线。",
       },
+      gpuRendering: {
+        sectionTitle: "渲染",
+        label: "GPU 渲染",
+        description: "使用显卡绘制 Unsloth。“自动”只在已知可正常工作的环境中使用显卡。更改将在 Unsloth 重启后生效。",
+        auto: "自动",
+        on: "开启",
+        off: "关闭",
+        oldWebkitWarning: "Wayland 上的 WebKitGTK {version}：在使用分数缩放的 NVIDIA 环境中，GPU 渲染可能会在启动时崩溃（WebKit bug 280210）。如果发生这种情况，Unsloth 会自动切换回 CPU 渲染。在 WebKitGTK 2.50.4 上未测得任何提速（两种方式都是 8 fps），因此不建议在此开启。",
+        oldDriverWarning:
+          "X11 上的 NVIDIA 驱动 {version}：在驱动更新到 610 或更高版本之前，Unsloth 会保持 GPU 渲染关闭。旧驱动每帧泄漏一个文件描述符，几分钟内窗口就会停止绘制。",
+        fallbackNote: "GPU 渲染在此系统上启动时崩溃，因此 Unsloth 正在使用 CPU 渲染。",
+        tryAgain: "重试 GPU",
+        envOverride: "由环境变量 {name} 设置。在移除该变量之前，此设置不会生效。",
+        macNote: "macOS 始终使用 GPU 渲染。WebKit 没有受支持的开关可以将其关闭。",
+        restartPending: "重启 Unsloth 以应用更改。",
+        restartNow: "立即重启",
+        loadError: "无法加载 GPU 渲染设置。",
+        saveError: "无法保存 GPU 渲染设置。",
+        restartError: "无法重启 Unsloth。",
+      },
       theme: {
         title: "视觉样式",
         label: "模式",
@@ -2266,6 +2319,12 @@ export const zhCN = {
         classic: "经典",
         minimal: "极简",
         moreThemes: "更多主题",
+        halloween: "万圣节",
+      },
+      trickOrTreat: {
+        label: "不给糖就捣蛋",
+        description:
+          "万圣节主题和惊悚问候，持续到 11 月 1 日。",
       },
       custom: {
         chatWidth: {
@@ -2386,10 +2445,12 @@ export const zhCN = {
       description: "监控此 Unsloth 服务器的硬件和存储。",
       liveUpdates: "实时更新",
       floatingWindow: "悬浮窗口",
-      disableOverlay: "禁用悬浮层",
+      showFloatingWindow: "显示悬浮窗口",
+      showFloatingWindowDescription: "在 Unsloth 上方持续显示 CPU、内存和 GPU 使用情况。",
       liveMonitor: {
         title: "实时监控",
         apiTitle: "API 监控",
+        apiDescription: "实时查看其他应用发送到此服务器 API 的内容。",
         summary: "实时请求、错误和 token 用量",
         status: "{active} 个进行中 · {recent} 个近期请求 · {model}",
         noModelLoaded: "未加载模型",
@@ -2408,7 +2469,7 @@ export const zhCN = {
         gpuUnusableDetail: "已检测到，但 PyTorch 无法使用",
         detailedView: "详细视图",
         detailedViewDescription:
-          "在浮动窗口和此处显示 CPU 负载以及每个 GPU 的负载、温度和功耗。",
+          "在浮动窗口中显示 CPU 负载以及每个 GPU 的负载、温度和功耗。",
         cpuLoad: "CPU 负载",
         gpuLoad: "GPU 负载",
         temperature: "温度",
@@ -2439,6 +2500,10 @@ export const zhCN = {
         used: "已用 {value}",
         free: "{value} 可用",
         total: "共 {value}",
+        usedOf: "已用 {used}，共 {total}",
+        segmentUsed: "GPU 已用",
+        segmentSystem: "系统已用",
+        segmentAvailable: "可用",
       },
       llamaBackend: {
         title: "GGUF 推理引擎",
@@ -2490,7 +2555,6 @@ export const zhCN = {
           updateChecksDisabled:
             "更新检查已禁用（UNSLOTH_DISABLE_UPDATE_CHECK=1），因此不会查询可用的后端。",
         },
-        // 不显示：用于设置搜索的额外词条。
         llamaBackendKeywords:
           "llama.cpp backend gguf 推理 cuda rocm hip vulkan metal cpu gpu 加速器 prebuilt 切换 引擎",
       },
@@ -2524,7 +2588,6 @@ export const zhCN = {
         reloadRequired: "重新加载模型以应用新的内存选项。",
         loadError: "加载模型内存设置失败",
         saveError: "保存模型内存设置失败",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu 内存 显存 常驻 固定 锁定 保持 已加载 卸载 空闲 mmap no-mmap load-mode 交换 分页",
         multiModelKeywords: "多个 模型 同时 一起 切换 容纳 卸载 驱逐 vram gpu 图像 视频 聊天 总是 空闲 语音 朗读 tts",
@@ -2567,6 +2630,10 @@ export const zhCN = {
           hideDetailsAction: "隐藏详情",
           clearAction: "清理缓存",
           clearOneAction: "清理",
+          showFolders: "显示文件夹",
+          hideFolders: "隐藏文件夹",
+          previousLocations: "包含以前的位置。主清理按钮作用于当前缓存文件夹。模型按钮仅清理所选副本。",
+          clearModelDescription: "这只会删除此缓存副本。需要时会重新下载。",
           clearingAction: "正在清理...",
           confirmTitle: "要清理缓存文件吗？",
           confirmDescription: "这将释放约{size}。",
@@ -2621,6 +2688,8 @@ export const zhCN = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "运行时长",
         processMemory: "进程内存",
         notInstalled: "未安装",
@@ -2659,8 +2728,6 @@ export const zhCN = {
       docsLabel: "打开 unsloth start 文档",
       agentDocs: "打开 {agent} 的配置文档",
       copyGeneratedCommand: "复制生成的命令",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -2804,11 +2871,6 @@ export const zhCN = {
       autoScrollManual: "手动",
       autoScrollKeywords:
         "滚动 自动滚动 跟随 底部 跳转 流式 生成 锁定 scroll autoscroll follow",
-      scrollToBottomButton: "滚动到底部按钮",
-      scrollToBottomButtonDescription:
-        "向上滚动后显示一个按钮，用于跳回最新消息。",
-      scrollToBottomButtonKeywords:
-        "滚动 底部 跳转 最新 箭头 按钮 隐藏 scroll bottom button",
       replyNotification: "回复完成时通知",
       replyNotificationDescription:
         "当 Unsloth 最小化或在后台时，回复完成后显示系统通知。",
@@ -2829,9 +2891,8 @@ export const zhCN = {
         "详情 速度 统计 层 卸载 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
-      modelDisclaimer: "显示模型免责声明",
-      modelDisclaimerDescription:
-        "在聊天框下方显示“LLM 可能会出错”。",
+      composerAtBottom: "输入框置底",
+      composerAtBottomDescription: "新聊天时将输入框放在页面底部，而不是中间。",
       projectAttachments: "在项目内共享文件",
       projectAttachmentsDescription:
         "让项目内的所有聊天都能使用新添加的聊天附件。",
@@ -3187,6 +3248,7 @@ export const zhCN = {
       readDocs: "阅读 API 文档",
       noAccess: "还没有 API 访问权限。",
       accessTokens: "访问 token",
+      quickstartTitle: "快速开始",
       columnName: "名称",
       columnToken: "Token",
       columnCreated: "创建时间",
@@ -3326,8 +3388,9 @@ export const zhCN = {
         loadError: "无法加载决策 API 设置。",
         sendsTo: "请求将发送到 {provider}。",
         connectionMissing: "此连接已不存在或没有决策模型。请选择其他模型。",
-        addConnection: "要使用托管的决策模型，请在连接中添加 TypeSafe、Liquid AI 或 OpenRouter。",
-        openConnections: "打开连接",
+        addConnection: "要使用托管的决策模型，请在",
+        connectionsLink: "连接",
+        addConnectionSuffix: "中添加。",
       },
       mcp: {
         title: "智能体访问 (MCP)",
@@ -3354,6 +3417,7 @@ export const zhCN = {
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
       audioCppVersion: "audio.cpp 版本",
+      mlxVersion: "MLX 版本",
       whisperCppVersion: "whisper.cpp 版本",
       engines: {
         title: "引擎",
@@ -3458,6 +3522,8 @@ export const zhCN = {
   },
   studio: {
     goToLibrary: "前往资料库",
+    imageTraining: "图像训练",
+    goToImageTraining: "训练图像 LoRA",
     routeTitle: "训练",
     wizard: {
       modelTitle: "模型",
@@ -4197,7 +4263,6 @@ export const zhCN = {
       terminalStart: "> Unsloth 训练开始...",
       preparingResources: "> 正在准备模型和数据集...",
       gettingReady: "> 正在为本次运行做好准备...",
-      waitingForFirstStep: "> {message} | 正在等待首个训练步...（{step}）",
       resumingTraining: "正在继续训练...",
       startingTraining: "正在开始训练...",
       dataset: "数据集",
@@ -4429,7 +4494,6 @@ export const zhCN = {
       all: "全部",
       chats: "聊天",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "聊天",
@@ -4497,8 +4561,6 @@ export const zhCN = {
       empty: {
         chatsTitle: "还没有聊天",
         chatsDescription: "你的对话会显示在这里，与文件分开存放。",
-        projectsTitle: "还没有项目",
-        projectsDescription: "项目将相关聊天归为一组，并共享指令。",
         archivedTitle: "没有已归档内容",
         archivedDescription: "你归档的聊天会显示在这里。",
         sectionsTitle: "还没有分区",
@@ -4563,6 +4625,7 @@ export const zhCN = {
       modelsTitle: "还没有微调模型",
       modelsDescription: "你在 Unsloth 中训练或导出的模型会显示在这里。",
       createFolder: "创建文件夹",
+      generateImage: "生成图像",
       generateVideo: "生成视频",
       generateAudio: "生成音频",
       trainModel: "训练模型",
@@ -4627,6 +4690,8 @@ export const zhCN = {
       pdfs: "PDF",
       gridView: "网格视图",
       listView: "列表视图",
+      grid: "网格",
+      list: "列表",
       settings: "资料库设置",
       sort: "排序",
       sortDefault: "默认顺序",
@@ -4923,5 +4988,62 @@ export const zhCN = {
       dragHandleLabel: "移动实时监控。方向键可微调位置，双击可重置。",
       reconnecting: "正在重新连接...",
     },
+  },
+  projectsPage: {
+    title: "项目",
+    search: "搜索项目",
+    importExport: "导入 / 导出项目",
+    importChatsAction: "导入聊天…",
+    exportAllProjects: "导出所有项目",
+    exportProjectsAndRecents: "导出项目 + 最近",
+    combined: "合并",
+    perChat: "按聊天",
+    newProject: "新建项目",
+    name: "名称",
+    updated: "更新时间",
+    newestFirst: "最新优先",
+    oldestFirst: "最早优先",
+    today: "今天",
+    yesterday: "昨天",
+    emptyDescription: "项目将相关聊天放在一起，并提供其中每个聊天都能使用的共享指令和来源。",
+    createFirst: "创建你的第一个项目",
+    noMatches: "没有与搜索匹配的项目。",
+    clearSearch: "清除搜索",
+    showChats: "显示聊天",
+    hideChats: "隐藏聊天",
+    pinProject: "置顶项目",
+    unpinProject: "取消置顶项目",
+    newChatInProject: "在项目中新建聊天",
+    projectOptions: "项目选项",
+    loadChatsFailed: "无法加载聊天。重试",
+    refreshChatsFailed: "无法刷新聊天。重试",
+    noChats: "没有聊天",
+    unread: "未读",
+    pinChat: "置顶聊天",
+    unpinChat: "取消置顶聊天",
+    chatOptions: "聊天选项",
+    exportAllChats: "导出所有聊天…",
+    archive: "归档",
+    renameChat: "重命名聊天",
+    chatName: "聊天名称",
+    deleteChat: "删除聊天",
+    deleteChatDescription: "确定要删除 {name} 吗？其消息将被永久删除。",
+    importChats: "导入聊天",
+    importDestination: "选择 {name} 的导入位置：",
+    selectDestination: "选择目标",
+    recents: "最近",
+    import: "导入",
+    deleteProject: "删除项目",
+    deleteProjectDescription: "确定要删除 {name} 吗？其聊天将被永久删除。",
+    deleteProjectFiles: "项目工作文件夹将从磁盘中删除。",
+    deleteAll: "全部删除",
+    projectFallback: "项目",
+    importFailed: "导入失败。",
+    nothingToExport: "没有可导出的对话。",
+    exportFailed: "导出失败。",
+    renameChatFailed: "无法重命名聊天",
+    archiveChatFailed: "无法归档聊天",
+    deleteChatFailed: "无法删除聊天",
+    deleteProjectFailed: "无法删除项目",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
