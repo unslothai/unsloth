@@ -107,7 +107,7 @@ export function supportsProviderReasoningToggle(
   );
 }
 
-const DECISION_PROVIDER_TYPES = new Set(["typesafe", "liquid"]);
+const DECISION_PROVIDER_TYPES = new Set(["typesafe", "liquid", "nace"]);
 
 export function isDecisionConnection(
   provider: Pick<ExternalProviderConfig, "providerType" | "decisionsOnly">,

@@ -273,6 +273,9 @@ def _floats(values: Any) -> Optional[dict[str, float]]:
 
 def _answer(answer: dict) -> DecisionAnswer:
     legend = answer.get("legend")
+    # Laya keys a score's legend by level; a Drex connection sends the levels as a list, lowest first.
+    if isinstance(legend, list):
+        legend = dict(enumerate(legend))
     return DecisionAnswer.from_route(
         answer,
         type = str(answer.get("type")),
