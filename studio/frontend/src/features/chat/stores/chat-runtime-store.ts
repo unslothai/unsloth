@@ -2868,9 +2868,10 @@ const SCALAR_SETTING_KEYS = [
 const locallyRememberedModels = new Set<string>();
 // Models showing a preset's values: their edits are filed as deltas and they are not snapshotted on leave.
 const modelsShowingPresetPick = new Set<string>();
-// Per-model edits made before the settings response lands are held as PATCHES: a row built from a
-// hydrated entry is overlaid whole, but one typed earlier names only the keys touched, so
-// overlaying it would drop the temperature, top-p or seed the response brings.
+// Per-model edits made before the settings response landed, held as PATCHES rather than rows.
+// The set above is overlaid wholesale, which is right for a row built from a hydrated entry but
+// not for one typed before there was an entry: that row names only the keys the user touched, so
+// replacing with it would drop the temperature, top-p or seed the response is about to bring.
 const modelParamEditsBeforeHydration = new Map<string, PersistedInferenceParams>();
 /** Lazy and memoized, or the += 1 bumps stop accumulating; import cycle leaves the const in its TDZ. */
 let inferenceParamMutationVersionsCache: Record<

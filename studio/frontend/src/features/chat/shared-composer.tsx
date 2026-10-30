@@ -933,8 +933,9 @@ export function SharedComposer({
   const reasoningLockedOn =
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
-  // Kimi's $web_search builtin mandates thinking=disabled; both pills stay clickable, but turning
-  // one on flips the other off so the visible state matches what the backend sends.
+  // Kimi's $web_search builtin mandates thinking=disabled
+  // (https://platform.kimi.ai/docs/guide/use-web-search). Both pills stay clickable, but turning
+  // one on flips the other off, so the visible state matches what the backend sends.
   const isKimiExternal = kimiSearchExcludesThinking(
     selectedExternalProvider?.providerType,
     externalSelection?.modelId,

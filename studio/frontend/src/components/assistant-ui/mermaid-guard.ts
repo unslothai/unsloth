@@ -34,7 +34,8 @@ const CSS_FETCH = /url|image|cross-fade|element\s*\(|@import|\\|&/i;
 // Mermaid drops a whole line starting with `%%` before parsing (an `%%{init}%%` directive stays).
 const COMMENT_LINE = /^[^\S\n]*%%(?!\{).*$/gm;
 
-// Sequence `details Actor: id` lines merge page element JSON (icon too), unseen here: dropped.
+// `details Actor: id` in a sequence diagram merges the page element `id`'s JSON (an `icon` too),
+// which this cannot see; the line is dropped.
 const DETAILS_LINE = /^[^\S\n]*details\b[^:\n[({]*:.*$/gim;
 const SEQUENCE = /^[^\S\n]*sequenceDiagram\b/m;
 

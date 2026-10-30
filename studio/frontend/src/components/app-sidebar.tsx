@@ -675,7 +675,8 @@ function NavItem({
   testId?: string;
   tooltip?: string;
   tooltipAction?: { label: string; onClick: () => void };
-  // Tooltip also on expanded rows, not just the collapsed rail where it replaces the label.
+  // Show that tooltip on the expanded row too, not just the collapsed rail where it
+  // stands in for the hidden label.
   alwaysTooltip?: boolean;
   badge?: string;
   overlay?: ReactNode;
@@ -776,8 +777,9 @@ function ApprovalMark({ className, testId }: { className: string; testId?: strin
 
 const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
 
-// Hardware-verdict re-read cadence: unmeasured holds Train and Video on a spinner, so it is re-read
-// sooner than the MLX self-heal check; a stalled re-read is given up on, not latched.
+// Re-read cadences for the hardware verdict below. An unmeasured verdict holds Train and Video on
+// a spinner, so it is re-read sooner than the background MLX self-heal check. A re-read outstanding
+// longer than the stall window is given up on rather than latching the poll off.
 const SELECTION_ACTION_GRACE_MS = 750;
 const SIDEBAR_SELECTOR = '[data-slot="sidebar"]';
 const VERDICT_UNKNOWN_POLL_MS = 3000;
@@ -787,9 +789,10 @@ const VERDICT_POLL_STALL_MS = 30000;
 // CPU-torch machine and no_gpu becomes torch_cpu_build. Nothing else re-reads the verdict.
 // Matched to that TTL, since polling faster than the answer can change is pure traffic.
 const INVENTORY_POLL_MS = 60000;
-// Health reads are non-blocking and the first read past expiry schedules a refresh and returns
-// stale; on the TTL alone an attached eGPU stays invisible for close to two minutes, so a short
-// follow-up read collects it.
+// The health path reads those snapshots non-blocking: the first read past expiry SCHEDULES the
+// refresh and returns the stale entry. On the TTL alone the read that triggers the refresh is a
+// whole interval from the read that consumes it, leaving an attached eGPU invisible for close to
+// two minutes. One short follow-up read collects it instead.
 const INVENTORY_FOLLOW_UP_MS = 4000;
 // The verdicts the inventory can still move. Everything else describes something a probe
 // cannot change (an Intel Mac stays an Intel Mac).
@@ -1931,7 +1934,8 @@ export function AppSidebar() {
     () => groupChatsByProject(listedChatItems),
     [listedChatItems],
   );
-  // A project's activity is its own edits or newest chat; its updatedAt moves only on edit.
+  // A project's last activity: its own edits or its newest chat. Its updatedAt only moves when it
+  // is edited.
   const projectActivityAt = useMemo(() => {
     const map = new Map<string, number>();
     for (const project of projects) {
@@ -2395,9 +2399,10 @@ export function AppSidebar() {
     !isStudioRoute &&
     !showTrainingRecents &&
     (isMobile || sidebarState !== "collapsed");
-  // Selecting needs the rows mounted, not just the lists: a closed mobile sheet or icon rail
-  // unmounts them, so Select All would build an unseen selection that Archive, Pin or Mark unread
-  // would act on. Navigation is exempt, since it moves the chat the user is looking at.
+  // Selecting needs the rows, not just the lists. A closed mobile sheet unmounts them as the icon
+  // rail does, so Select All would build a selection with nothing on screen and Archive, Pin and Mark
+  // unread would take it over the open chat. Navigation is exempt: it moves the chat the user IS
+  // looking at, and the sheet is closed for most of its life on a narrow window.
   const chatRowsOnScreen = chatListsOnScreen && (!isMobile || openMobile);
   const [mountedFolderIds, setMountedFolderIds] = useState<ReadonlySet<string>>(() => new Set());
   const folderMountCountsRef = useRef(new Map<string, number>());
@@ -3033,8 +3038,9 @@ export function AppSidebar() {
       projectChatRowIds,
     ],
   );
-  // A chat's row stays on screen while its move is written, so it can be dropped again; moves of
-  // one chat run in series, and only the latest drop commits its slot and pin.
+  // A chat's row stays on screen while its move is written, so it can be dropped again before
+  // the first move lands. Moves of one chat run one after another, and only the latest drop
+  // commits its slot and pin, so an earlier drop cannot land after, or on top of, a later one.
   const chatMovesRef = useRef(
     new Map<string, { generation: number; chain: Promise<unknown> }>(),
   );
@@ -3129,16 +3135,19 @@ export function AppSidebar() {
     }
     const item = allChatItems.find((candidate) => candidate.id === move.chatId);
     if (!item) return;
-    // The move can fail, so its new slot and the pin it sheds both wait for it; a slow move can be
-    // overtaken by a reorder, so the slot is re-aimed when it lands.
+    // The move can fail. Its slot in the new list and the pin it sheds both wait for it, so a
+    // failed move leaves nothing behind in the list the chat never reached. A slow move can
+    // also be overtaken by a reorder of that list, so the slot is re-aimed once it lands.
     const unpinAfter = effects.unpinChat;
     const ordersBefore = useSidebarOrganizationStore.getState().manualOrder;
     const moves = chatMovesRef.current;
     const previous = moves.get(item.id);
     const generation = (previous?.generation ?? 0) + 1;
-    // Watches the change itself, not the before and after values: a sort picked and picked back
-    // mid-move is still a change. Only the list this drop would switch counts, since a pick in the
-    // other sort is no intent about this one; standing down for it would ignore the drop.
+    // Watches for the change itself, not the value before against the value after: a sort picked
+    // and picked back while the move is in flight reads as untouched by value, and it is not.
+    // Only the one list this drop would switch, since the two sorts are independent: a pick in
+    // the other is no intent about this one, and standing down for it would leave the slot
+    // written into a list still sorted, which is the drop ignored all over again.
     const switching = effects.switchSort;
     let sortPicked = false;
     // The chat stays on screen in its old list until the move lands, so it can be filed from its
@@ -3277,8 +3286,9 @@ export function AppSidebar() {
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
 
-  // Navigation rows share one box so a hover pill has the same edges; rows outside the scroller add
-  // the rail width, so both end on one edge. Logical sides, since rtl moves the rail.
+  // Navigation rows share one box, so a hover pill has the same edges wherever it lands. Rows outside
+  // the list scroller add the rail width it does not lose, so both end on the same edge whether or
+  // not the scrollbar takes space. Logical sides, since the rail moves under rtl.
   const rowPadding = usesDesktopTitlebar
     ? "ps-[calc(5px*var(--ui-space-scale,1))] pe-[calc(var(--sidebar-rail,0px)+5px*var(--ui-space-scale,1))]"
     : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px*var(--ui-space-scale,1))]";
@@ -4003,7 +4013,8 @@ export function AppSidebar() {
   }
 
   function openChatItem(item: SidebarItem) {
-    // Archive, pin and unread prefer the selection, so it must not outlive navigating away.
+    // Archive/pin/unread act on the selection when there is one, so leaving it
+    // behind would point them at rows the user just navigated away from.
     clearSelection();
     clearChatNotifications(item);
     noteViewed(item.id);
@@ -4593,8 +4604,9 @@ export function AppSidebar() {
     );
   }
 
-  // Sections above Recents, each drawn by its own function so the user's drag order decides
-  // placement. Pinned: folders and chats in one list, in drop order.
+  // The sections above Recents, each drawn by its own function so the order the user dragged
+  // them into decides where it goes.
+  // Pinned: folders and chats in one list, in the order they were dropped into.
   function renderPinnedSection(): ReactNode {
     // Kept while pages are filed elsewhere, so they can be dragged back.
     if (isStudioRoute || showTrainingRecents || (pinnedRows.length === 0 && pinnedPages.length === 0)) return null;
@@ -4838,7 +4850,8 @@ export function AppSidebar() {
     );
   }
 
-  // One folder per unpinned project; the header's New project keeps it when all are pinned.
+  // One folder per unpinned project. The header owns "New project", so the section stays
+  // even when every project is pinned.
   function renderProjectsSection(): ReactNode {
     if (!projectsSectionRendered) return null;
     return (
@@ -5029,7 +5042,8 @@ export function AppSidebar() {
     );
   }
 
-  /** Section for rows only sections take (folder, selection); chat menus add Move to projects. */
+  /** "Section" for rows that only sections take: a folder, or a selection. A chat's own menu
+   *  has "Move to", which adds its projects. */
   function renderSectionSubmenu(
     P: RowMenuParts,
     config: {
@@ -5165,7 +5179,8 @@ export function AppSidebar() {
     );
   }
 
-  /** Every chat row action, shared by the 3-dot and right-click menus so they never drift. */
+  /** Every action a chat row offers. Rendered into the 3-dot dropdown and, unchanged, into
+   *  the row's right-click menu, so the two never drift apart. */
   function renderChatRowMenuItems(item: SidebarItem, P: RowMenuParts) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
@@ -5379,7 +5394,8 @@ export function AppSidebar() {
       "sidebar-nav-btn h-[calc(30px*var(--ui-space-scale,1))] cursor-pointer rounded-full py-0 pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
       variant === "project" ? "pl-[calc(39px*var(--ui-space-scale,1))]" : "pl-3",
       isPinned && variant !== "project" && "gap-[calc(8.5px*var(--ui-space-scale,1))]",
-      // Spinner cannot truncate; pin and kebab overlay that edge, so room is always held.
+      // A spinner glyph cannot truncate, and the pin and the kebab overlay that same edge, so a
+      // working row holds their room open whether or not it is hovered.
       showWorkSpinner ? "pr-16" : hasUnreadActivity || showForkMark ? "pr-9" : showScheduledMark ? "pr-7" : undefined,
       // Coarse pointers reveal the actions permanently, so the spinner drops back beside
       // them (right-16, ending 78px in) and the title has to clear that, not just pr-16.
@@ -5470,7 +5486,8 @@ export function AppSidebar() {
               <span
                 className={cn(
                   "pointer-events-none absolute right-4 top-1/2 z-10 -translate-y-1/2 transition-opacity",
-                  // Touch keeps the pin and kebab visible, so sit left of them, not behind.
+                  // Touch reveals the pin and kebab for good, so there is nothing to fade
+                  // behind: sit left of them instead, where this used to be.
                   "[@media(pointer:coarse)]:right-16",
                   variant === "project"
                     ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
@@ -5834,7 +5851,8 @@ export function AppSidebar() {
               if (!showAll) void folderPages(project.id)?.loadMore();
               toggleProjectShowAll(project.id);
             }}
-            // Needs !: .sidebar-nav-btn outranks plain text, else Show more matches chat rows.
+            // Force the muted token: .sidebar-nav-btn's own color rule outweighs a plain text utility,
+            // so Show more would otherwise match the chat rows.
             className="sidebar-nav-btn h-[calc(30px*var(--ui-space-scale,1))] rounded-full pl-9 pr-4 font-medium text-nav-fg-muted!"
           >
             <span className="text-ui-13 leading-ui-18 tracking-nav">

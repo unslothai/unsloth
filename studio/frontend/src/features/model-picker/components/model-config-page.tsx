@@ -3024,10 +3024,13 @@ export function ModelConfigPage({
                 ),
               );
 
-        // Shared row outranks the local seed so LAN and Desktop agree; fromApiOverride keeps the
-        // other fields; never overwrite an in-flight edit; the edited check is load-bearing
-        // (another editor's earlier edit is already in configAtStart) and compares by value, as the
-        // primed draft is a new object.
+        // The shared row outranks the local seed for every field it carries, so LAN and Desktop cannot
+        // show different remembered values; fromApiOverride keeps the rest of this browser's config,
+        // since an absent field is as much a gap in the mirror as a chosen default. Never over an
+        // edit made while the request was in flight.
+        // The edited check is load-bearing: an edit the OTHER editor made before this read
+        // started is already in configAtStart, so the comparison below reads as untouched.
+        // By value: the primed draft is a new object, so identity refused every row on a fresh editor.
         if (
           resolvedRow &&
           serverConfig &&

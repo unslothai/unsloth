@@ -8,8 +8,9 @@ export type LineWindow = { first: number; last: number };
 
 export const EMPTY_LINE_WINDOW: LineWindow = { first: -1, last: -1 };
 
-// Below the cap a fence is highlighted whole and matches main's DOM; the mechanism exists for the
-// 140K-character fence in #10769. Capped by lines, since mounted elements are the cost.
+// Below the cap a fence is highlighted end to end and produces main's DOM byte for byte; the
+// mechanism exists for the 140K-character fence in #10769. Lines, not characters: the bounded cost
+// is mounted elements, which track lines.
 export const WINDOW_CAP_LINES = 240;
 
 // Viewports of lookahead each way, matching `REACH_MARGIN`.
@@ -118,7 +119,8 @@ export const pinBoundaryLines = (
   return pins.length === 0 ? null : pins;
 };
 
-// Structurally typed, not Shiki's `ThemedToken`, so a bundler-less test runner can load it.
+// Structurally typed rather than importing Shiki's `ThemedToken`, so a bundler-less test runner
+// can load this module.
 type LineToken = { content: string };
 
 /** A blank line must still be one line tall: an empty text node has no line box. */

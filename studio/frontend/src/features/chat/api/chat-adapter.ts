@@ -5819,9 +5819,11 @@ export function createOpenAIStreamAdapter(
         providerCompactionModelId,
         providerCompactionConnectionKey: providerCompactionOriginConnectionKey,
         geminiContinuationReplay: geminiContinuationReplay(false),
-        // Legacy (browser-tool, attachment, incognito) runs closed by the tab persist their last
-        // yield as an interruption (partial kept, Resume); durable runs and an explicit Stop stay
-        // cancelled; a provider-reported full window beats either guess (utils/continuation.ts)
+        // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
+        // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
+        // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
+        // their reconnect path marks state via recovery, and an explicit Stop still reads as cancelled below.
+        // A window the provider reported as full outranks either guess (utils/continuation.ts).
         incomplete: {
           reason: resolveIncompleteReason(
             // After an explicit Stop, yields carry it so the turn persists as cancelled.

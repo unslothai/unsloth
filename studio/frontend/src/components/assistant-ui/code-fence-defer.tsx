@@ -1542,9 +1542,12 @@ const NO_WINDOW = { window: null, pins: null, measured: false } as const;
 const EMPTY_WINDOW = { window: EMPTY_LINE_WINDOW, pins: null, measured: false } as const;
 
 /**
- * A fence body, highlighted within the visible spans; falls back to the plain shell until the
- * grammar chunk arrives, with the same markup as streamdown's fallback, so the fence does not
- * change shape.
+ * A fence's body, highlighted, with the spans bounded to what is on screen.
+ *
+ * Falls back to the plain shell whenever there are no tokens to render, which is the window
+ * between a fence appearing and its grammar chunk arriving. That is the same markup the deferred
+ * shell uses and the same markup streamdown's own unhighlighted fallback uses, so the fence does
+ * not change shape when the colours land.
  */
 export const FenceBody = memo(function FenceBody({
   isIncomplete,

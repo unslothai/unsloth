@@ -40,7 +40,8 @@ interface PlatformState {
   // MLX gate covers mlx, mlx-lm, and mlx-vlm together; record the blocker when known.
   chatOnlyDetail: string | null;
   chatOnlyHint: string | null;
-  // Developer mode CPU video opt-in, read from authed /api/health; keeps Video navigable.
+  // Developer mode's CPU video opt-in, from authed /api/health; keeps the Video row navigable
+  // on a no-GPU host that opted in.
   videoCpuOptIn: boolean;
   // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
@@ -136,7 +137,8 @@ let sharedHealthRead: {
 } | null = null;
 
 function readAuthToken(): string | null {
-  // device_type is only reported to authed callers; importing features/auth would cycle.
+  // device_type is only reported to authed callers. Read the token directly: importing
+  // features/auth would cycle.
   return typeof window === "undefined"
     ? null
     : localStorage.getItem("unsloth_auth_token");

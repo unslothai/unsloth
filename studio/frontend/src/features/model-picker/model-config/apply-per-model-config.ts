@@ -104,9 +104,13 @@ export function applyPerModelConfigToRuntime(
       ? false
       : (config.disableVision ?? false),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
-    // Per-model GPU memory knobs (GGUF only); absent mode falls back to the standing preference;
-    // the split restores only if the GPU pick survives. A sanitized diffusion auto must not reach
-    // the standing preference, or the next GGUF persists it over the user's Manual.
+    // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is a standing
+    // preference so an absent mode falls back to the persisted one. The per-GPU split is restored
+    // only when the ordered GPU pick survives reconciliation. A diffusion
+    // config is sanitized to gpuMemoryMode "auto" because the mode does not apply, not because
+    // the user chose Auto: writing that into the live standing preference would strand the session
+    // on Auto, since the load skips saveGpuMemoryMode for diffusion and the next ordinary GGUF
+    // would persist it over the user's Manual.
     gpuMemoryMode: options.isDiffusion
       ? readPersistedGpuMemoryMode()
       : (config.gpuMemoryMode ?? readPersistedGpuMemoryMode()),

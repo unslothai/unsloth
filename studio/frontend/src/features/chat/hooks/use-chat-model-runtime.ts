@@ -2074,9 +2074,10 @@ export function useChatModelRuntime() {
           let loadMlxExpertOffload = pendingLoadConfig
             ? (pendingLoadConfig.mlxExpertOffload ?? null)
             : stateBeforeUnload.mlxExpertOffload;
-          // gpuMemoryMode is a standing preference; the other knobs are per-model and re-baselined
-          // with the store; a GGUF native context can exceed maxSeqLength, so raw sizing could
-          // pass, unload, then have /load refuse; a same-repo quant switch is a new model.
+          // gpuMemoryMode is a standing preference; the rest are per-model knobs the reset below clears, so
+          // they are re-baselined there in lock-step with the store. A GGUF native context can exceed
+          // maxSeqLength, so sizing on raw maxSeqLength could pass, unload, then have /load refuse it. A
+          // same-repo quant switch is a different model for per-model knobs, so re-baseline them.
           let loadCustomContextLength =
             pendingLoadConfig?.customContextLength ??
             stateBeforeUnload.customContextLength;
