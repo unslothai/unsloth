@@ -59,6 +59,18 @@ function interrupted(): Response {
   return new Response(body, { status: 200 });
 }
 
+/** A 200 whose body never finishes; like fetch, the request's signal aborts the read. */
+function stalled(init?: RequestInit): Response {
+  const signal = init?.signal;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"settings": {'));
+      signal?.addEventListener("abort", () => controller.error(signal.reason));
+    },
+  });
+  return new Response(body, { status: 200 });
+}
+
 type Handler = (url: string, init?: RequestInit) => Promise<Response>;
 let handle: Handler = async () => json({});
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
@@ -170,6 +182,49 @@ test("a pin write whose body the shutdown cut off is an update failure", async (
   assert.equal(isPinFailureUnderDesktopUpdate(failure), true);
 });
 
+/** Runs `call` against a backend that sends 200 headers and stalls, until the 10s timeout fires. */
+async function timedOutAfterHeaders(
+  t: import("node:test").TestContext,
+  call: (api: ReturnType<typeof createChatPinsApi>) => Promise<unknown>,
+): Promise<unknown> {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { api } = pinRuntime();
+  let stalledRequests = 0;
+  handle = async (url, init) => {
+    // The pins routes predate this backend: fall back to /api/chat/settings.
+    if (url.includes("/api/chat/pins")) return new Response(null, { status: 404 });
+    stalledRequests += 1;
+    return stalled(init);
+  };
+  const leave = followDesktopUpdateScreen(true, false, noResync);
+  try {
+    const failure = call(api).then(() => assert.fail("expected a timeout"), (e) => e);
+    while (stalledRequests === 0) await new Promise((r) => setImmediate(r));
+    t.mock.timers.tick(10_000);
+    return await failure;
+  } finally {
+    leave();
+  }
+}
+
+test("a pin write that times out after 200 headers is an update failure", async (t) => {
+  const failure = await timedOutAfterHeaders(t, (api) => api.compareAndSet([], ["a"]));
+  assert.equal((failure as Error).name, "AbortError");
+  assert.equal(isPinFailureUnderDesktopUpdate(failure), true);
+});
+
+test("a legacy pin read that times out after 200 headers is an update failure", async (t) => {
+  const failure = await timedOutAfterHeaders(t, (api) => api.load());
+  assert.equal((failure as Error).name, "AbortError");
+  assert.equal(isPinFailureUnderDesktopUpdate(failure), true);
+});
+
+test("a legacy pin migration that times out after 200 headers is an update failure", async (t) => {
+  const failure = await timedOutAfterHeaders(t, (api) => api.migrateLegacy(["a"]));
+  assert.equal((failure as Error).name, "AbortError");
+  assert.equal(isPinFailureUnderDesktopUpdate(failure), true);
+});
+
 test("a malformed pin response still reports under the update screen", async () => {
   const { api } = pinRuntime();
   handle = async () => new Response('{"pinnedIds": [', { status: 200 });
@@ -228,6 +283,38 @@ test("a write that fails under the update stays silent when it reports after the
   assert.equal(runtime.raised.length, 2);
   assert.ok(runtime.raised[1] instanceof PinnedChatsBlockedError);
   assert.deepEqual(runtime.toasted, []);
+});
+
+test("a queued write that times out after 200 headers stays silent with the edit behind it", async (t) => {
+  const server = pinsServer();
+  const runtime = pinRuntime();
+  await runtime.sync.refresh();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let stalledWrites = 0;
+  handle = async (url, init) => {
+    if (url.endsWith("/api/chat/settings/compare-and-set")) {
+      stalledWrites += 1;
+      return stalled(init);
+    }
+    // The recovery read finds the backend gone.
+    throw transport();
+  };
+  const leave = followDesktopUpdateScreen(true, false, noResync);
+  try {
+    const settled = Promise.allSettled([
+      runtime.sync.setPinned(["a"], true),
+      runtime.sync.setPinned(["b"], true),
+    ]);
+    while (stalledWrites === 0) await new Promise((r) => setImmediate(r));
+    t.mock.timers.tick(10_000);
+    await settled;
+  } finally {
+    leave();
+  }
+  assert.equal((runtime.raised[0] as Error).name, "AbortError");
+  assert.ok(runtime.raised[1] instanceof PinnedChatsBlockedError);
+  assert.deepEqual(runtime.toasted, []);
+  assert.deepEqual(server.pins, []);
 });
 
 test("the same pin failures still toast outside an update", async () => {

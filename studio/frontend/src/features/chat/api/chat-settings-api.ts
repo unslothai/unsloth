@@ -123,10 +123,19 @@ function parseErrorText(status: number, body: unknown): string {
   return `Request failed (${status})`;
 }
 
+/** The connection broke or the caller's signal fired while reading; invalid JSON is a SyntaxError. */
+function isInterruptedBody(error: unknown): boolean {
+  return (
+    error instanceof TypeError ||
+    (error instanceof Error &&
+      (error.name === "AbortError" || error.name === "TimeoutError"))
+  );
+}
+
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   const body = await response.json().catch((error: unknown) => {
-    // A 200 cut off mid-body has no answer to return; an error status still reports its status.
-    if (response.ok && error instanceof TypeError) throw asBodyTransportFailure(error);
+    // A 200 cut off or aborted mid-body has no answer to return; an error status still reports its status.
+    if (response.ok && isInterruptedBody(error)) throw asBodyTransportFailure(error);
     return null;
   });
   if (!response.ok) {
