@@ -2304,6 +2304,9 @@ def backfill_fp8_modules_to_convert(
     token = None,
     revision = None,
     local_files_only = False,
+    subfolder = None,
+    cache_dir = None,
+    variant = None,
 ):
     """An fp8 checkpoint shipping a per-tensor `weight_scale` table its config leaves out of `modules_to_convert`
     (unsloth/Qwen3.8-Flash-Next-FP8's n-gram embedding) loads it as raw fp8 with the scale dropped; list it."""
@@ -2315,7 +2318,9 @@ def backfill_fp8_modules_to_convert(
     ):
         return None
     try:
-        weight_map = _load_fp8_weight_map(model_name, local_files_only, token, revision)
+        weight_map = _load_fp8_weight_map(
+            model_name, local_files_only, token, revision, subfolder, cache_dir, variant = variant
+        )
     except Exception:
         return None
     skip = set(quant.get("modules_to_not_convert") or [])

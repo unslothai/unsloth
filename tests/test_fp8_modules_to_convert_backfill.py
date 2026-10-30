@@ -59,3 +59,20 @@ def test_block_fp8_only_and_skipped_tables_add_nothing():
     )
     skipped = _config(modules_to_not_convert = [TABLE])
     assert _backfill(WEIGHT_MAP)(skipped, "x") is None
+
+
+def test_forwards_the_checkpoint_locator_options():
+    calls = []
+    node = next(
+        n
+        for n in ast.parse(SRC).body
+        if isinstance(n, ast.FunctionDef) and n.name == "backfill_fp8_modules_to_convert"
+    )
+    ns = {"re": re, "_load_fp8_weight_map": lambda *a, **k: calls.append((a, k)) or WEIGHT_MAP}
+    exec(ast.get_source_segment(SRC, node), ns)
+    ns["backfill_fp8_modules_to_convert"](
+        _config(), "repo", "tok", "rev", subfolder = "sub", cache_dir = "/c", variant = "fp8"
+    )
+    # subfolder / cache_dir / variant pick which index and shards are probed.
+    (args, kwargs), = calls
+    assert args == ("repo", False, "tok", "rev", "sub", "/c") and kwargs == {"variant": "fp8"}
