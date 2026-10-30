@@ -4302,8 +4302,7 @@ def _dflash_snapshot_load(
     *,
     hub_sizes = True,
 ):
-    """Run _download_dflash over a real snapshot holding ``files`` (name -> (architecture,
-    bytes, on disk)); the Hub lists every name at its size, or answers nothing."""
+    """``files``: name -> (architecture, bytes, on disk); the Hub lists them all or answers nothing."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "abc"
@@ -4347,9 +4346,7 @@ def _dflash_snapshot_load(
 def test_download_dflash_reuses_a_cached_sidecar_without_asking_the_hub_for_sizes(
     monkeypatch, tmp_path
 ):
-    """The snapshot scan sized its own files with model_info(files_metadata=True): a Hub
-    round trip on every load that reuses a sidecar already on disk, and a wait for the
-    client timeout when the Hub is unreachable but not flagged offline."""
+    """An unreachable Hub not flagged offline otherwise stalls the load until the client timeout."""
     files = {
         "model-Q4_K_M.gguf": ("llama", 100_000, True),
         "dflash-kquant.gguf": ("dflash", 2_000, True),
@@ -4461,8 +4458,7 @@ _D, _L = "dflash", "llama"
 def test_download_dflash_local_sizes_keep_the_hub_sized_picks(
     monkeypatch, tmp_path, weight, files, expected, expected_calls, hub_sizes
 ):
-    """Every pick is the one the Hub-sized scan made, whether the Hub answers or not;
-    only a bound that would drop an on-disk file still asks it, and at most once."""
+    """Picks match the Hub-sized scan; only a bound dropping an on-disk file asks, at most once."""
     got, hub_calls = _dflash_snapshot_load(
         monkeypatch, tmp_path, files, weight, hub_sizes = hub_sizes
     )
