@@ -4,11 +4,11 @@ import { Upload01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
@@ -20,267 +20,267 @@ import { SettingsSection } from "@/features/settings/components/settings-section
 import { SettingsRow } from "@/features/settings/components/settings-row";
 import { ChatBackground } from "./index";
 import {
-  DEFAULT_ADJUSTMENTS,
-  EFFECTS,
-  POSITIONS,
-  normalizedSize,
-  validUpload,
-  type BackgroundEffect,
+	DEFAULT_ADJUSTMENTS,
+	EFFECTS,
+	POSITIONS,
+	normalizedSize,
+	validUpload,
+	type BackgroundEffect,
 } from "./model";
 import {
-  beginBackgroundUpload,
-  failBackgroundUpload,
-  finishBackgroundUpload,
-  patchBackground,
-  resetChatBackground,
-  useChatBackground,
+	beginBackgroundUpload,
+	failBackgroundUpload,
+	finishBackgroundUpload,
+	patchBackground,
+	resetChatBackground,
+	useChatBackground,
 } from "./storage";
 import { canvasBlob, decodeImage } from "./image";
 
 const labels: Record<BackgroundEffect, TranslationKey> = {
-  None: "chatBackground.none",
-  Dither: "chatBackground.dither",
-  ASCII: "chatBackground.ascii",
-  Halftone: "chatBackground.halftone",
-  Scanlines: "chatBackground.scanlines",
+	None: "chatBackground.none",
+	Dither: "chatBackground.dither",
+	ASCII: "chatBackground.ascii",
+	Halftone: "chatBackground.halftone",
+	Scanlines: "chatBackground.scanlines",
 };
 const errors = {
-  storage: "chatBackground.storageError",
-  file: "chatBackground.fileError",
-  dimensions: "chatBackground.dimensionsError",
-  decode: "chatBackground.decodeError",
-  effect: "chatBackground.effectError",
+	storage: "chatBackground.storageError",
+	file: "chatBackground.fileError",
+	dimensions: "chatBackground.dimensionsError",
+	decode: "chatBackground.decodeError",
+	effect: "chatBackground.effectError",
 } as const;
 export function ChatBackgroundControls() {
-  const t = useT();
-  const { value, error, ready, busy } = useChatBackground();
-  const input = useRef<HTMLInputElement>(null);
-  const adjustments = value ?? DEFAULT_ADJUSTMENTS;
-  return (
-    <SettingsSection
-      title={t("chatBackground.title")}
-      action={
-        <div className="flex max-w-full items-center justify-end">
-          <Button
-            className="text-foreground"
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!ready || busy}
-            onClick={() => input.current?.click()}
-          >
-            <HugeiconsIcon
-              icon={Upload01Icon}
-              strokeWidth={1.75}
-              className="size-4"
-              aria-hidden="true"
-            />
-            {busy
-              ? t("common.loading")
-              : t(value ? "chatBackground.replace" : "chatBackground.upload")}
-          </Button>
-        </div>
-      }
-    >
-      <input
-        ref={input}
-        className="sr-only"
-        tabIndex={-1}
-        aria-label={t("chatBackground.upload")}
-        type="file"
-        accept="image/jpeg,image/png,image/webp"
-        disabled={!ready || busy}
-        onChange={async (event) => {
-          const file = event.target.files?.[0];
-          event.target.value = "";
-          if (!file) return;
-          const ticket = beginBackgroundUpload();
-          if (!validUpload(file)) {
-            failBackgroundUpload(ticket, "file");
-            return;
-          }
-          try {
-            const decoded = await decodeImage(file);
-            try {
-              const [width, height] = normalizedSize(
-                decoded.width,
-                decoded.height,
-              );
-              const canvas = document.createElement("canvas");
-              canvas.width = width;
-              canvas.height = height;
-              const ctx = canvas.getContext("2d");
-              if (!ctx) throw new Error("decode");
-              ctx.drawImage(decoded.source, 0, 0, width, height);
-              await finishBackgroundUpload(ticket, {
-                ...DEFAULT_ADJUSTMENTS,
-                blob: await canvasBlob(canvas),
-              });
-            } finally {
-              decoded.close();
-            }
-          } catch (error) {
-            failBackgroundUpload(
-              ticket,
-              error instanceof Error && error.message === "dimensions"
-                ? "dimensions"
-                : "decode",
-            );
-          }
-        }}
-      />
-      {error && (
-        <p role="alert" className="mb-3 text-sm text-destructive">
-          {t(errors[error])}
-        </p>
-      )}
-      {value && (
-        <div
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2"
-          data-wallpaper-previews=""
-        >
-          {[false, true].map((conversation) => (
-            <div key={String(conversation)} className="min-w-0">
-              <p className="mb-2 text-xs text-muted-foreground">
-                {t(
-                  conversation
-                    ? "chatBackground.conversation"
-                    : "chatBackground.newChat",
-                )}
-              </p>
-              <div
-                className="wallpaper-preview relative h-48 overflow-hidden rounded-xl border border-border bg-background"
-                data-wallpaper-conversation={conversation || undefined}
-              >
-                <ChatBackground />
-                <div className="wallpaper-preview-content absolute inset-x-4 bottom-4 space-y-3 text-xs">
-                  {conversation && (
-                    <p className="wallpaper-preview-prose rounded-lg p-3">
-                      {t("chatBackground.response")}
-                    </p>
-                  )}
-                  <div className="wallpaper-preview-composer rounded-xl border border-border p-3">
-                    {t("chatBackground.prompt")}
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      <SettingsRow label={t("chatBackground.effect")}>
-        <Select
-          disabled={!value || busy}
-          value={adjustments.effect}
-          onValueChange={(effect) =>
-            patchBackground({ effect: effect as BackgroundEffect })
-          }
-        >
-          <SelectTrigger
-            aria-label={t("chatBackground.effect")}
-            className="w-52"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {EFFECTS.map((effect) => (
-              <SelectItem key={effect} value={effect}>
-                {t(labels[effect])}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </SettingsRow>
-      {(["visibility", "blur"] as const).map((key) => (
-        <SettingsRow
-          key={key}
-          label={t(
-            key === "blur"
-              ? "chatBackground.blur"
-              : "chatBackground.visibility",
-          )}
-        >
-          <div className="flex w-52 items-center gap-3">
-            <Slider
-              disabled={!value || busy}
-              aria-label={t(
-                key === "blur"
-                  ? "chatBackground.blur"
-                  : "chatBackground.visibility",
-              )}
-              min={0}
-              max={key === "blur" ? 20 : 100}
-              step={1}
-              value={[adjustments[key]]}
-              onValueChange={([v]) => patchBackground({ [key]: v })}
-            />
-            <span className="w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-              {adjustments[key]}
-              {key === "blur" ? "px" : "%"}
-            </span>
-          </div>
-        </SettingsRow>
-      ))}
-      <SettingsRow label={t("chatBackground.fade")}>
-        <Switch
-          aria-label={t("chatBackground.fade")}
-          checked={adjustments.fade}
-          disabled={!value || busy}
-          onCheckedChange={(fade) => patchBackground({ fade })}
-        />
-      </SettingsRow>
-      <SettingsRow label={t("chatBackground.position")} className="items-start">
-        <div className="flex w-52 justify-end">
-          <div
-            className="grid w-fit grid-cols-3 gap-1"
-            role="group"
-            aria-label={t("chatBackground.position")}
-          >
-            {POSITIONS.map((position) => {
-              const [x, y] = position.split(" ").map((v) => Number.parseInt(v));
-              return (
-                <button
-                  key={position}
-                  type="button"
-                  disabled={!value || busy}
-                  aria-pressed={adjustments.position === position}
-                  aria-label={t("chatBackground.positionValue", { x, y })}
-                  title={t("chatBackground.positionValue", { x, y })}
-                  className="flex size-7 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:text-primary disabled:opacity-40"
-                  onClick={() => patchBackground({ position })}
-                >
-                  <span className="size-1.5 rounded-full bg-current" />
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </SettingsRow>
-      <div className="-mx-3 flex flex-wrap items-center justify-between gap-3 pt-2">
-        {value && (
-          <Button
-            className="text-foreground"
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => void resetChatBackground()}
-          >
-            {t("chatBackground.remove")}
-          </Button>
-        )}
+	const t = useT();
+	const { value, error, ready, busy } = useChatBackground();
+	const input = useRef<HTMLInputElement>(null);
+	const adjustments = value ?? DEFAULT_ADJUSTMENTS;
+	return (
+		<SettingsSection
+			title={t("chatBackground.title")}
+			action={
+				<div className="flex max-w-full items-center justify-end">
+					<Button
+						className="text-foreground"
+						type="button"
+						variant="outline"
+						size="sm"
+						disabled={!ready || busy}
+						onClick={() => input.current?.click()}
+					>
+						<HugeiconsIcon
+							icon={Upload01Icon}
+							strokeWidth={1.75}
+							className="size-4"
+							aria-hidden="true"
+						/>
+						{busy
+							? t("common.loading")
+							: t(value ? "chatBackground.replace" : "chatBackground.upload")}
+					</Button>
+				</div>
+			}
+		>
+			<input
+				ref={input}
+				className="sr-only"
+				tabIndex={-1}
+				aria-label={t("chatBackground.upload")}
+				type="file"
+				accept="image/jpeg,image/png,image/webp"
+				disabled={!ready || busy}
+				onChange={async (event) => {
+					const file = event.target.files?.[0];
+					event.target.value = "";
+					if (!file) return;
+					const ticket = beginBackgroundUpload();
+					if (!validUpload(file)) {
+						failBackgroundUpload(ticket, "file");
+						return;
+					}
+					try {
+						const decoded = await decodeImage(file);
+						try {
+							const [width, height] = normalizedSize(
+								decoded.width,
+								decoded.height,
+							);
+							const canvas = document.createElement("canvas");
+							canvas.width = width;
+							canvas.height = height;
+							const ctx = canvas.getContext("2d");
+							if (!ctx) throw new Error("decode");
+							ctx.drawImage(decoded.source, 0, 0, width, height);
+							await finishBackgroundUpload(ticket, {
+								...DEFAULT_ADJUSTMENTS,
+								blob: await canvasBlob(canvas),
+							});
+						} finally {
+							decoded.close();
+						}
+					} catch (error) {
+						failBackgroundUpload(
+							ticket,
+							error instanceof Error && error.message === "dimensions"
+								? "dimensions"
+								: "decode",
+						);
+					}
+				}}
+			/>
+			{error && (
+				<p role="alert" className="mb-3 text-sm text-destructive">
+					{t(errors[error])}
+				</p>
+			)}
+			{value && (
+				<div
+					className="grid grid-cols-1 gap-3 sm:grid-cols-2"
+					data-wallpaper-previews=""
+				>
+					{[false, true].map((conversation) => (
+						<div key={String(conversation)} className="min-w-0">
+							<p className="mb-2 text-xs text-muted-foreground">
+								{t(
+									conversation
+										? "chatBackground.conversation"
+										: "chatBackground.newChat",
+								)}
+							</p>
+							<div
+								className="wallpaper-preview relative h-48 overflow-hidden rounded-xl border border-border bg-background"
+								data-wallpaper-conversation={conversation || undefined}
+							>
+								<ChatBackground />
+								<div className="wallpaper-preview-content absolute inset-x-4 bottom-4 space-y-3 text-xs">
+									{conversation && (
+										<p className="wallpaper-preview-prose rounded-lg p-3">
+											{t("chatBackground.response")}
+										</p>
+									)}
+									<div className="wallpaper-preview-composer rounded-xl border border-border p-3">
+										{t("chatBackground.prompt")}
+									</div>
+								</div>
+							</div>
+						</div>
+					))}
+				</div>
+			)}
+			<SettingsRow label={t("chatBackground.effect")}>
+				<Select
+					disabled={!value || busy}
+					value={adjustments.effect}
+					onValueChange={(effect) =>
+						patchBackground({ effect: effect as BackgroundEffect })
+					}
+				>
+					<SelectTrigger
+						aria-label={t("chatBackground.effect")}
+						className="w-52"
+					>
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						{EFFECTS.map((effect) => (
+							<SelectItem key={effect} value={effect}>
+								{t(labels[effect])}
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
+			</SettingsRow>
+			{(["visibility", "blur"] as const).map((key) => (
+				<SettingsRow
+					key={key}
+					label={t(
+						key === "blur"
+							? "chatBackground.blur"
+							: "chatBackground.visibility",
+					)}
+				>
+					<div className="flex w-52 items-center gap-3">
+						<Slider
+							disabled={!value || busy}
+							aria-label={t(
+								key === "blur"
+									? "chatBackground.blur"
+									: "chatBackground.visibility",
+							)}
+							min={0}
+							max={key === "blur" ? 20 : 100}
+							step={1}
+							value={[adjustments[key]]}
+							onValueChange={([v]) => patchBackground({ [key]: v })}
+						/>
+						<span className="w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+							{adjustments[key]}
+							{key === "blur" ? "px" : "%"}
+						</span>
+					</div>
+				</SettingsRow>
+			))}
+			<SettingsRow label={t("chatBackground.fade")}>
+				<Switch
+					aria-label={t("chatBackground.fade")}
+					checked={adjustments.fade}
+					disabled={!value || busy}
+					onCheckedChange={(fade) => patchBackground({ fade })}
+				/>
+			</SettingsRow>
+			<SettingsRow label={t("chatBackground.position")} className="items-start">
+				<div className="flex w-52 justify-end">
+					<div
+						className="grid w-fit grid-cols-3 gap-1"
+						role="group"
+						aria-label={t("chatBackground.position")}
+					>
+						{POSITIONS.map((position) => {
+							const [x, y] = position.split(" ").map((v) => Number.parseInt(v));
+							return (
+								<button
+									key={position}
+									type="button"
+									disabled={!value || busy}
+									aria-pressed={adjustments.position === position}
+									aria-label={t("chatBackground.positionValue", { x, y })}
+									title={t("chatBackground.positionValue", { x, y })}
+									className="flex size-7 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:text-primary disabled:opacity-40"
+									onClick={() => patchBackground({ position })}
+								>
+									<span className="size-1.5 rounded-full bg-current" />
+								</button>
+							);
+						})}
+					</div>
+				</div>
+			</SettingsRow>
+			<div className="-mx-3 flex flex-wrap items-center justify-between gap-3 pt-2">
+				{value && (
+					<Button
+						className="text-foreground"
+						type="button"
+						variant="ghost"
+						size="sm"
+						onClick={() => void resetChatBackground()}
+					>
+						{t("chatBackground.remove")}
+					</Button>
+				)}
 
-        <div className="ml-auto flex justify-end">
-          <Button
-            className="text-foreground"
-            variant="ghost"
-            size="sm"
-            disabled={!value || busy}
-            onClick={() => patchBackground(DEFAULT_ADJUSTMENTS)}
-          >
-            {t("chatBackground.reset")}
-          </Button>
-        </div>
-      </div>
-    </SettingsSection>
-  );
+				<div className="ml-auto flex justify-end">
+					<Button
+						className="text-foreground"
+						variant="ghost"
+						size="sm"
+						disabled={!value || busy}
+						onClick={() => patchBackground(DEFAULT_ADJUSTMENTS)}
+					>
+						{t("chatBackground.reset")}
+					</Button>
+				</div>
+			</div>
+		</SettingsSection>
+	);
 }
