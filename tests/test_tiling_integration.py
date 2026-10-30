@@ -218,7 +218,9 @@ def test_tiling_off_never_imports_the_registry(monkeypatch, off):
     assert tiling.loader_tile_mlp(_model(), off) is None
 
 
-@pytest.mark.parametrize(("env", "kwarg"), [(None, True), (None, "auto"), ("arctic", False), ("0", True)])
+@pytest.mark.parametrize(
+    ("env", "kwarg"), [(None, True), (None, "auto"), ("arctic", False), ("0", True)]
+)
 def test_tiling_on_without_the_registry_fails_fast(monkeypatch, env, kwarg):
     import sys
 
@@ -236,7 +238,11 @@ def test_loaders_check_the_registry_before_loading_weights():
         for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef)
         and n.name == "from_pretrained"
-        and any(getattr(c.func, "id", None) == "loader_tile_mlp" for c in ast.walk(n) if isinstance(c, ast.Call))
+        and any(
+            getattr(c.func, "id", None) == "loader_tile_mlp"
+            for c in ast.walk(n)
+            if isinstance(c, ast.Call)
+        )
     ]
     assert len(loaders) == 2  # FastLanguageModel and FastModel
     for fn in loaders:

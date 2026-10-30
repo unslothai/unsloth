@@ -3481,7 +3481,9 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
             else:
                 # Called as module._old_forward(x): a bound method.
                 module.__dict__[name] = (
-                    types.MethodType(module.__class__.forward, module) if previous is None else previous
+                    types.MethodType(module.__class__.forward, module)
+                    if previous is None
+                    else previous
                 )
             n += 1
     if n:
@@ -3502,7 +3504,9 @@ def _fused_lora_layers(layers, mlp_function):
         if getattr(getattr(layer, "self_attn", None), "apply_qkv", None) is apply_lora_qkv
         or getattr(getattr(layer, "self_attn", None), "apply_o", None) is apply_lora_o
         or any(
-            getattr(getattr(getattr(layer, "mlp", None), "__dict__", {}).get(name), "__func__", None)
+            getattr(
+                getattr(getattr(layer, "mlp", None), "__dict__", {}).get(name), "__func__", None
+            )
             is mlp_function
             for name in _MLP_FORWARD_SLOTS
         )
