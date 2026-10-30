@@ -2,12 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """float16 GradScaler skip agreement over pipeline stages when the caller uses the plain torch AMP recipe.
-
-An inf gradient on one stage only must skip the optimizer step on every stage, and every stage's scale must
-back off together, also when the loop calls scaler.unscale_(optimizer) or only scaler.step(optimizer) instead
-of PipelineParallel.unscale_. Otherwise the stage without the inf steps, the other skips, and the pipeline
-trains a model no single process would (the stages' scales also drift apart from then on).
-clip_grad_norm_ on still-scaled gradients clips the wrong norm, so it is refused."""
+An inf on one stage must skip the step and back off the scale on every stage."""
 
 import multiprocessing
 import os

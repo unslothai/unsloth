@@ -627,12 +627,7 @@ def _install_accelerator_state(self):
 
 def _cp_scaler_start(trainer, accelerator) -> None:
     """float16: start the GradScaler at 2**16 / world, as native FSDP2 and tensor parallel do.
-
-    Context parallel peers share one batch and the Trainer multiplies every rank's loss by the number of
-    processes, so each rank's backward carries world x one GPU's per-token gradient. Over plain DDP or
-    accelerate's FSDP2 the scaler kept 2**16, overflowed where one GPU did not and skipped the first
-    log2(world) steps. Left alone: a user init_scale, a scaler that already started, or one native FSDP2 /
-    tensor parallel already divided (no longer at the default)."""
+    CP rank grads are world x one GPU's (loss is multiplied by world). Only touches a scaler still at the default."""
     scaler = getattr(accelerator, "scaler", None)
     if scaler is None or getattr(scaler, "_unsloth_cp_init_scale", False):
         return

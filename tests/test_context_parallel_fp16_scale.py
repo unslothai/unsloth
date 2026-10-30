@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""float16 GradScaler start scale for context parallel over plain DDP / accelerate FSDP2.
-
-CP peers share one batch and the Trainer multiplies each rank's loss by the number of processes, so a rank's
-backward carries world x one GPU's per-token gradient. Native FSDP2 and tensor parallel start the scaler at
-2**16 / world; the CP trainer hook must do the same for the scaler accelerate built, or the first steps
-overflow where one GPU does not."""
+"""CP over DDP / accelerate FSDP2 must start the float16 GradScaler at 2**16 / world (rank grads are world x one GPU's)."""
 
 import types
 

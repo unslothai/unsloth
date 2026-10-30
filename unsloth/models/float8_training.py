@@ -153,8 +153,7 @@ def _probe_float8_gemm(
     dtype = torch.bfloat16,
 ):
     """Tiny torch._scaled_mm calls with each GEMM's own fp8 dtypes and scaling, so an unsupported GPU / torch refuses here, not mid-training.
-    dtype is the training compute dtype, which torchao asks _scaled_mm to write: float16 for a float16 run
-    (tensorwise), bfloat16 for rowwise (torchao computes rowwise float16 / float32 in bfloat16 and casts)."""
+    Rowwise always writes bfloat16 (torchao computes it in bfloat16 and casts)."""
     M, K, N = 16, 32, 16
     for (dtype_a, rowwise_a), (dtype_b, rowwise_b) in _probe_gemms(recipe):
         a = torch.ones(M, K, device = device).to(dtype_a)

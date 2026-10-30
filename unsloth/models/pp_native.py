@@ -1239,9 +1239,7 @@ class PipelineParallel:
         self._agree_found_inf(scaler, optimizer)
 
     def _bind_scaler(self, scaler):
-        """Make scaler.unscale_ agree over every stage too: the plain torch AMP loop calls
-        scaler.unscale_(optimizer) before clipping, or only scaler.step(optimizer), which unscales itself.
-        Either way a stage-local found_inf would let one stage step while another skips."""
+        """Make scaler.unscale_ / scaler.step agree found_inf over every stage, or one stage steps while another skips."""
         import weakref
 
         if getattr(scaler, "_unsloth_pp_agree", None) is self:
