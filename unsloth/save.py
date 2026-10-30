@@ -986,7 +986,11 @@ def _preserve_tokenizer_eos_token(
 
 
 @contextmanager
-def _without_runtime_truncation(tokenizer, save_directory = None, filename_prefix = None):
+def _without_runtime_truncation(
+    tokenizer,
+    save_directory = None,
+    filename_prefix = None,
+):
     """A fast tokenizer keeps the last call's truncation and padding on its backend, so after training with max_length=2048 save_pretrained writes them into tokenizer.json and every later load truncates. A VLM prompt with large images then loses image tokens and the processor fails ("Failed to apply Qwen3VLProcessor"). Clear both for the save and restore them after; also drop the max_length a reload of such a file copies into tokenizer_config.json."""
     source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
     backend = getattr(source_tokenizer, "_tokenizer", None)
@@ -1000,7 +1004,9 @@ def _without_runtime_truncation(tokenizer, save_directory = None, filename_prefi
             backend.no_truncation()
             backend.no_padding()
         except Exception as error:
-            logger.warning_once(f"Unsloth: Could not clear tokenizer truncation before saving: {error}")
+            logger.warning_once(
+                f"Unsloth: Could not clear tokenizer truncation before saving: {error}"
+            )
         yield
     finally:
         try:
@@ -1009,7 +1015,9 @@ def _without_runtime_truncation(tokenizer, save_directory = None, filename_prefi
             if padding is not None:
                 backend.enable_padding(**padding)
         except Exception as error:
-            logger.warning_once(f"Unsloth: Could not restore tokenizer truncation after saving: {error}")
+            logger.warning_once(
+                f"Unsloth: Could not restore tokenizer truncation after saving: {error}"
+            )
     if truncation is None or save_directory is None:
         return
     tokenizer_config = os.path.join(

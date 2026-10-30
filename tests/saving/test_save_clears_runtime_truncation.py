@@ -23,9 +23,7 @@ def _load_save_helpers():
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     wanted = {"_without_runtime_truncation", "_unsloth_tokenizer_save_pretrained"}
     nodes = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name in wanted
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
     ]
     module = ast.Module(body = nodes, type_ignores = [])
     ast.fix_missing_locations(module)
@@ -46,7 +44,9 @@ def _trained_tokenizer():
     vocab = {"[PAD]": 0, "[UNK]": 1, **{w: i + 2 for i, w in enumerate("abcdefgh")}}
     backend = Tokenizer(models.WordLevel(vocab, unk_token = "[UNK]"))
     backend.pre_tokenizer = pre_tokenizers.Whitespace()
-    tokenizer = PreTrainedTokenizerFast(tokenizer_object = backend, pad_token = "[PAD]", unk_token = "[UNK]")
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object = backend, pad_token = "[PAD]", unk_token = "[UNK]"
+    )
     # What a collator does during SFT: leaves max_length truncation and padding on the backend.
     tokenizer(["a b c d e f g h"], truncation = True, max_length = 3, padding = "max_length")
     assert tokenizer._tokenizer.truncation["max_length"] == 3
@@ -105,7 +105,10 @@ def test_resaving_a_truncated_checkpoint_drops_leaked_max_length(tmp_path):
 
     config = json.loads((fixed / "tokenizer_config.json").read_text(encoding = "utf-8"))
     assert config.get("max_length") is None
-    assert len(PreTrainedTokenizerFast.from_pretrained(str(fixed))("a b c d e f g h")["input_ids"]) == 8
+    assert (
+        len(PreTrainedTokenizerFast.from_pretrained(str(fixed))("a b c d e f g h")["input_ids"])
+        == 8
+    )
 
 
 class _PaddingClearFails:
