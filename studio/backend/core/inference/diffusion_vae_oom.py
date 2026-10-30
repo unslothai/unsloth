@@ -110,10 +110,9 @@ def drop_tracebacks(exc: Optional[BaseException]) -> Optional[BaseException]:
 
 
 def clear_partial_decode(vae: Any, z: Any = None) -> None:
-    """Before ANY retry of a decode that failed part way: drop a causal decoder's frame / feature cache (Wan,
-    Qwen-Image, LTX-2 and HunyuanVideo expose ``clear_cache``), which still holds the failed attempt's state and
-    tensors, and return the freed blocks to the device. Every fallback (wide tiles -> stock tiles, LTX-2 tiles ->
-    the floor tile, untiled -> tiled, the ladder's own steps) calls this first."""
+    """Before any retry of a partly failed decode, drops the causal decoder's frame or feature cache
+    (Wan, Qwen-Image, LTX-2 and HunyuanVideo expose clear_cache) and returns the freed blocks to
+    the device; every fallback calls this first."""
     _release_cache(z, vae)
 
 
@@ -782,10 +781,9 @@ def _device_of(z: Any) -> Any:
 
 
 def free_first(vae: Any, z: Any = None) -> bool:
-    """Step (a) for a Studio decode wrapper about to fall back to a cheaper decode on an OOM (wide tiles -> stock
-    tiles, LTX-2 tiles -> the floor tile, untiled -> tiled): free the card inside the current decode's recovery
-    session. True when something was freed, so the wrapper retries its own attempt first. Outside a decode scope, or
-    with the retry switched off, or once this decode already freed the card: False (fall back as before)."""
+    """Step (a) before a cheaper decode fallback on OOM: frees the card within the current decode's
+    recovery session and returns True if anything was freed so the wrapper retries first; False
+    outside a decode scope, when retry is off, or once this decode already freed the card."""
     holder = getattr(vae, "__dict__", {}).get(_SESSION_ATTR)
     if holder is None or oom_retry_disabled() or _compiling():
         return False
@@ -1090,12 +1088,9 @@ def ensure_outermost(vae: Any, logger: Any = None) -> bool:
 
 
 def _install_scope(vae: Any, logger: Any = None) -> bool:
-    """Wrap the public ``decode`` as its outermost layer: the outermost call opens the recovery scope every inner
-    ``_decode`` (batch slices, frames, tiles) shares, and closes it, restoring what the recovery moved, once the
-    whole decode returns. An out-of-memory that reaches the scope (a compiled graph, which never enters the
-    ``_decode`` ladder, or a wrapper's own allocation) frees the card and retries the whole decode as it was (a
-    compiled one with the same kernels, same output); then, with a compiled guard below, the whole decode once more
-    with every guard on its eager path, where the ``_decode`` ladder continues in the same session."""
+    """Wraps public decode as outermost layer: opens a recovery scope shared with inner _decode and
+    restores on return; OOM frees the card and retries the whole decode (compiled: same kernels,
+    same output), then once more on eager guards when a compiled guard sits below."""
     if decode_layers.find(vae, "decode", _SCOPE_LAYER) is not None:
         return True
     if not callable(getattr(vae, "decode", None)):
@@ -1186,10 +1181,9 @@ def _install_scope(vae: Any, logger: Any = None) -> bool:
 
 
 def uninstall(vae: Any) -> None:
-    """Remove everything ``install`` and its retries put in place: the ``_decode`` layer, the ``decode`` scope /
-    compiled guard (cut out exactly when outermost, a pass-through under later wrappers), and every deferred return.
-    A deferred return is settled first (its pending undo runs); one that still cannot run (the card is full) stays,
-    since it is that module's only way back to the card."""
+    """Removes everything install and its retries added: the _decode layer, the decode scope or
+    compiled guard (cut out when outermost, else a pass-through), and every deferred return,
+    settled first; one the full card cannot take stays as its module's only way back."""
     record = vae.__dict__.get(_RECORD_ATTR, {})
     decode_layers.unwrap(record.pop("scope", None))
     for ref in record.pop("deferred", []):

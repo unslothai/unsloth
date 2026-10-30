@@ -113,8 +113,7 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse = True)
 def _no_deleted_torch_config_entries():
-    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
-    tests/_shared/torch_config_guard.py."""
+    """Config entry deleted by a test errors at its teardown; see torch_config_guard.py."""
     from torch_config_guard import check_after_test, install_delete_recorder
 
     install_delete_recorder()
@@ -173,8 +172,7 @@ def _forget_mcp_discovery_state():
                 try:
                     client.close_mcp_sessions(all_accounts = True)
                 except AttributeError:
-                    # A test's monkeypatched stand-in sessions (SimpleNamespace) have no close(); its own
-                    # monkeypatch puts the real dict back.
+                    # Test stand-in sessions lack close(); monkeypatch restores the real dict.
                     pass
 
     _forget()
@@ -274,8 +272,7 @@ def _isolate_agent_skills(_skills_home_root, monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
-    """test_torchao_select runs install_python_stack in process, so it would rewrite this venv's
-    manifest."""
+    """In-process install_python_stack (test_torchao_select) would rewrite the venv manifest."""
     for _up in _iso.parents:
         _shared = _up / "tests" / "_shared"
         if (_shared / "installer_venv_root.py").is_file():
@@ -385,10 +382,8 @@ def _drain_sandbox_movers(timeout: float = 30.0) -> None:
 
 @pytest.fixture(autouse = True)
 def _no_sandbox_mover_outlives_its_test(monkeypatch):
-    # get_sandbox_workdir starts a background mover that reads the legacy root from HOME when it gets
-    # scheduled, not when it starts: one left running moved the next test's legacy folder into the
-    # previous test's root. Requesting monkeypatch drains it before HOME is put back, so a late mover
-    # never reads the real home either.
+    # Drain the sandbox mover before HOME is restored, or a late one moves the next test's legacy
+    # folder.
     _drain_sandbox_movers()
     yield
     _drain_sandbox_movers()
@@ -479,8 +474,7 @@ def _isolate_xet_health_home(tmp_path_factory):
 
 @pytest.fixture(autouse = True)
 def _isolate_xet_health_state():
-    """Keep the persisted Xet health verdict out of the real HF home, or a stalled machine starts on
-    HTTP."""
+    """Keep Xet's health verdict out of the real HF home, or a stalled machine starts on HTTP."""
     # Load like the shim: a bare unsloth_zoo import raises on CPU-only hosts.
     from utils.hf_xet_fallback import _load_optional
 
@@ -539,8 +533,7 @@ def _forget_the_cached_owner_identity():
 
 @pytest.fixture(autouse = True)
 def _isolate_wal_keepers():
-    """Close the WAL keepers a test opened, so a later test's assertion on _wal_keepers sees only
-    its own."""
+    """Closes WAL keepers a test opened, so a later _wal_keepers check sees only its own."""
     from storage import rag_db, studio_db
 
     before = set(studio_db._wal_keepers)
@@ -660,10 +653,7 @@ _engine_port_counter = itertools.count()
 
 @pytest.fixture(autouse = True)
 def _engine_ports_no_other_worker_can_take(monkeypatch):
-    """managed_engine._free_port releases an ephemeral port that the engine binds later. In that
-    gap any bind(0) on the runner, such as another worker's test server, can be handed the same
-    port and answer /health, and a start that should time out returns ready. Each worker gets its
-    own ports below the ephemeral range instead, which bind(0) never hands out."""
+    """Each worker gets ports below the ephemeral range, which bind(0) never hands out."""
     module = sys.modules.get("core.inference.managed_engine")
     if module is None:
         return
@@ -713,8 +703,7 @@ def _no_leftover_generation_account(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _assume_bare_metal(monkeypatch):
-    """Force the Metal paravirtual detector False: on a Mac or macOS runner, fixture state would
-    mismatch."""
+    """Pins the Metal paravirtual detector False, so Mac or macOS runners match the fixtures."""
     from core.inference import llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
@@ -1217,8 +1206,7 @@ def real_prequant_safe_globals(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _no_carried_over_hardware_measurements():
-    """Clear the torch build and GPU inventory caches per test, since their 60 second TTL outlives a
-    test."""
+    """Clears torch and GPU inventory caches per test; their 60 second TTL outlives a test."""
     from utils.hardware import hardware as _hw
 
     def _clear():
@@ -1257,8 +1245,7 @@ def _process_shutdown_latch_is_clear():
 
 @pytest.fixture(autouse = True)
 def _no_leaked_inventory_handles():
-    """Empty the per-request handle table per test: its ContextVar is never reset, so handles leak
-    onward."""
+    """Empties the per-request handle table per test; its ContextVar is never reset."""
     try:
         from hub.utils import host_paths
     except Exception:  # optional deps absent on some CI legs

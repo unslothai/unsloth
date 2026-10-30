@@ -803,9 +803,7 @@ def job_events(job_id: str):
 
 
 def get_job_status(job_id: str) -> dict | None:
-    """Read the persisted ingestion job row (status / stage / progress / error), plus
-    the document's ``num_chunks`` so a client polling to completion learns the chunk
-    count (the SSE ``complete`` frame carries it, but the poll/reconcile path does not)."""
+    """Job row plus the document's ``num_chunks``, since the poll path cannot get the count from SSE."""
     conn = rag_db.get_connection()
     try:
         row = conn.execute(

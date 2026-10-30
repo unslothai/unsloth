@@ -32,8 +32,7 @@ MANAGED_REMOTE_CODE_REFUSAL = (
 
 
 def managed_remote_code_refused() -> bool:
-    """Remote code runs unconfined as the Studio user, so a managed account may not
-    enable it unless the owner opted in for the whole installation."""
+    """Remote code runs unconfined, so managed accounts need the owner's whole-install opt-in."""
     if is_owner_context():
         return False
     return os.environ.get(MANAGED_REMOTE_CODE_OVERRIDE, "").lower() not in ("1", "true", "yes")

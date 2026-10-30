@@ -433,8 +433,7 @@ def test_a_data_uri_with_no_payload_is_refused(monkeypatch):
 
 @pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
 def test_an_external_provider_refuses_either_spelling(monkeypatch, body):
-    """_build_external_messages rebuilds from an allowlist, so a clip left standing is dropped
-    and the provider answers a prompt the caller did not send."""
+    """The allowlist rebuild drops a clip, so the provider answers a prompt never sent."""
     body = {**body, "provider_type": "openai", "provider_api_key": "sk-test"}
     with _client(monkeypatch, _VideoGguf()) as client:
         response = client.post("/v1/chat/completions", json = body)
@@ -580,8 +579,7 @@ def test_admission_prices_the_two_spellings_of_one_clip_alike():
 
 
 def test_the_rolling_context_does_not_price_a_clip_as_text():
-    """Trimming counts a turn to decide what to drop; a clip counted as text would evict the
-    conversation around it."""
+    """Trimming counts turns to pick drops; a clip priced as text would evict its neighbors."""
     from core.inference.context_window import _UNPRICED_MEDIA_TYPES
     assert {"video_url", "input_video"} <= set(_UNPRICED_MEDIA_TYPES)
 
@@ -615,9 +613,8 @@ def test_an_unknown_part_type_is_still_refused_by_name(monkeypatch):
     ],
 )
 def test_a_remote_video_url_is_refused(monkeypatch, url):
-    """llama-server, not Studio, would fetch the clip, and its downloader follows redirects
-    (set_follow_location in common/http.h), so a public URL redirecting to a private address
-    defeats any host check made here. The shape is refused rather than guarded."""
+    """llama-server fetches the clip and follows redirects (common/http.h set_follow_location), so a
+    public URL redirecting to a private address defeats host checks; the shape is refused."""
     with _client(monkeypatch, _VideoGguf()) as client:
         response = client.post("/v1/chat/completions", json = _part_body(url))
     assert response.status_code == 400
@@ -634,8 +631,7 @@ def test_no_url_ever_reaches_llama_server_as_a_video(monkeypatch):
 
 
 def test_the_dispatch_boundary_refuses_a_remote_url_on_its_own():
-    """_request_video_rejection only runs on a pre-switch validation, so translation has to
-    refuse it too rather than trust that it was already checked."""
+    """The pre-switch check does not run here, so translation must refuse remote URLs too."""
     from fastapi import HTTPException
 
     messages = [{"role": "user", "content": [{"type": "video_url", "video_url": {"url": _REMOTE}}]}]
@@ -672,9 +668,8 @@ def _older_turn_body(clip = _DATA_URI):
 
 
 def test_a_clip_on_an_older_turn_is_refused_on_a_non_gguf_backend():
-    """GGUF keeps the part on the turn that carried it; the non-GGUF path flattens the parts and
-    hands generation the clips alone, which MLX attaches to the newest turn. Refusing keeps the
-    two backends from reading the same request as different conversations."""
+    """GGUF keeps a clip on the turn that carried it, while non-GGUF flattens parts and MLX attaches
+    the clips to the newest turn; refusing stops the backends diverging."""
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
 
@@ -764,9 +759,8 @@ def test_the_measured_verdict_agrees_on_the_cap_boundary():
 
 
 def test_a_part_carried_clip_is_transcoded_like_the_legacy_field(monkeypatch):
-    """main shrinks the clip before llama-server samples it, but only on the legacy field's
-    path. Without the same pass over the parts, the same clip would reach llama-server at a
-    different resolution depending on which spelling carried it."""
+    """main shrinks the clip before llama-server samples it, but only on the legacy field path; the
+    same pass must cover parts, or resolution depends on the spelling."""
     seen = []
 
     def _shrink(
@@ -849,9 +843,8 @@ def test_recosting_still_charges_a_clip_the_conversation_kept():
 
 
 def test_the_legacy_field_is_not_charged_twice_during_recosting():
-    """_inject_video_part splices the legacy clip into the conversation as input_video before
-    the loop starts, so during a recost the conversation clips already include it. Charging the
-    field as well priced it at exactly 2x and clamped the lease toward the whole KV budget."""
+    """_inject_video_part splices the legacy clip in as input_video before the loop, so charging the
+    field too priced it at 2x and clamped the lease toward the whole KV budget."""
     from models.inference import ChatCompletionRequest
 
     clip = "A" * 40_000

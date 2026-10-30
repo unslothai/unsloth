@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 attention fast paths, each off with its env var set to 0: UNSLOTH_H3_STRIDED_ATTN
-(permuted SDPA views, no copies), UNSLOTH_H3_FUSED_QKV (one row-concatenated int8 to_qkv),
-UNSLOTH_H3_SHARED_QKV_QUANT (unfused Q / K / V on one rotation + act quant), UNSLOTH_H3_ATTN_ARCH
-(flash only on H3_FLASH_FASTER_ARCHS); all but the last are bit-identical."""
+"""H3 attention fast paths, each off at 0: UNSLOTH_H3_STRIDED_ATTN, UNSLOTH_H3_FUSED_QKV,
+UNSLOTH_H3_SHARED_QKV_QUANT, UNSLOTH_H3_ATTN_ARCH; all but ATTN_ARCH are bit-identical"""
 
 from __future__ import annotations
 
@@ -44,8 +42,7 @@ def h3_attention_backend(
     capability: Optional[tuple[int, int]] = None,
     requested: Optional[str] = None,
 ) -> Optional[str]:
-    """Moves only the automatic cuDNN pick (``requested`` auto / unset), and only to flash on a measured-faster arch;
-    anything else unchanged."""
+    """Only an automatic cuDNN pick moves, and only to flash on a measured-faster arch."""
     if selected != _CUDNN or not _enabled(ATTN_ARCH_ENV):
         return selected
     try:

@@ -742,10 +742,7 @@ def refine_plan_for_multigpu(
     from .diffusion_memory import plan_keeps_transformer_resident
 
     if mode != "fast" and plan.offload_policy != "none" and plan_keeps_transformer_resident(plan):
-        # The one-card plan already holds the denoiser resident against the full budget and streams only the
-        # encoders: moving companions off leaves the primary holding no more than that, so the 85% margin would
-        # refuse a split that is lighter than the plan it replaces (the text encoder then streamed from host memory
-        # beside an idle second card).
+        # Denoiser stays resident on one card, so the 85% margin must not refuse a lighter split.
         primary_limit = max(int(primary_limit), int(budget))
     measured_headroom = plan.estimates.get("measured_runtime_headroom_mib")
     flat_headroom = (
@@ -1539,9 +1536,7 @@ def _portable(fn: Any, depth: int = 0) -> bool:
     return True
 
 
-# Where a hook shared by a replica may come from. Studio's own hooks keep their per-call state on the module (mirrored
-# by _mirror_hook_state); a foreign hook may keep it in a module global that both threads would then race on, and that
-# cannot be seen from the function, so it declines the replica.
+# Foreign hooks may keep state in a module global that replica threads race on, so they decline.
 _TRUSTED_HOOK_MODULES = ("core.inference.", "studio.backend.core.inference.")
 
 
@@ -2746,9 +2741,7 @@ class CfgParallelRouter:
             self._note_refusal(exc)
             return
         torch = _torch()
-        # What the replica consumes, kept per tensor: at the real call the sources are compared bitwise against it, so
-        # an in-place edit between launch and the odd branch (same object, new values) rejects the prediction.
-        # Version counters cannot do this: inference tensors do not track one.
+        # Bitwise-compared snapshots catch in-place edits; version counters miss inference tensors.
         snapshots = []
         for (_path, src), (_rpath, used) in zip(
             _leaves((p_args, p_kwargs)), _leaves((r_args, r_kwargs))

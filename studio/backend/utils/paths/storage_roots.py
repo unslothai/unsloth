@@ -137,8 +137,7 @@ def _recorded_master_root() -> Path | None:
 
 
 def forget_recorded_master_root() -> None:
-    """Drop the cached note reading. For tests, and for an installer that writes the note into
-    a tree this process has already looked at."""
+    """Drops the cached note reading, for tests and installers rewriting an already-read tree."""
     with _recorded_master_lock:
         _recorded_master_roots.clear()
 
@@ -175,8 +174,7 @@ def _warn_unrecognized_portable(raw: str) -> None:
 
 
 def portable_mode() -> bool:
-    """Whether this install keeps everything under one directory. Implied by UNSLOTH_HOME, and
-    settable on its own so an existing install can opt in."""
+    """One-directory install, implied by UNSLOTH_HOME; UNSLOTH_PORTABLE alone opts in."""
     # Case-folded: FALSE must not read as on.
     raw = (os.environ.get("UNSLOTH_PORTABLE") or "").strip()
     value = raw.lower()
@@ -1078,12 +1076,9 @@ def _path_with_first(path: str, first: str) -> str:
 
 
 def _setup_cache_env() -> None:
-    """Set cache env vars for HuggingFace, uv, and vLLM.
-
-    Explicit Hugging Face environment variables take precedence over Unsloth's
-    stored location. Unsloth seeds import-time variables once, while each later
-    worker receives its own captured cache location.
-    """
+    """Sets cache env vars for Hugging Face, uv and vLLM; explicit Hugging Face env vars override
+    Unsloth's stored location, and import-time variables are seeded once while each later worker
+    gets its own captured location."""
     _use_studio_uv_tools()
     root = cache_root()
     from utils.hf_cache_settings import initialize_hf_cache_environment

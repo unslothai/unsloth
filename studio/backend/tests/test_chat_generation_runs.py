@@ -465,9 +465,8 @@ def test_running_generation_still_cannot_be_explicitly_edited(chat_home):
 
 
 def test_refreshed_generation_can_be_edited_when_tab_created_at_differs(chat_home):
-    """#15004: Refresh/Reload lets create_run insert the assistant row with its own
-    created_at. The tab keeps the Date it minted for the bubble, so an edit must still
-    detach the finished run."""
+    """Issue 15004: Refresh/Reload lets create_run insert the assistant row with its own created_at,
+    while the tab keeps its minted Date, so an edit must still detach the finished run."""
     _create()
     token = runs_db.get_worker_token("run-1")
     assert runs_db.mark_running("run-1", token)
@@ -922,9 +921,8 @@ _INLINE_PNG_PART = {
 
 
 def test_a_text_only_follow_up_carrying_an_earlier_inline_image_stays_legacy():
-    """The case turn-scoping opened. No top-level image_base64 is set on a text-only follow-up, so
-    the field-shaped guard admitted it, and a durable run persists its request verbatim: the
-    thread's earlier screenshot would be written into request_json again on every follow-up."""
+    """A text-only follow-up has no top-level image_base64, so the field-shaped guard admits it, but
+    a durable run persists the old screenshot in request_json."""
     messages = [
         {"role": "user", "content": [{"type": "text", "text": "what is this?"}, _INLINE_PNG_PART]},
         {"role": "assistant", "content": "A red square."},

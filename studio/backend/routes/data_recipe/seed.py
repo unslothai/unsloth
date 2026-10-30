@@ -118,9 +118,7 @@ def _normalize_optional_text(value: str | None) -> str | None:
 
 
 def _list_hf_repo_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
-    """Every file in the repo: the reader globs over all of them, not just the
-    ones a builder can load, so a pattern is judged against the whole listing.
-    """
+    """Lists every repo file, not just loadable ones, so globs are judged against the whole listing."""
     try:
         from huggingface_hub import HfApi
         from huggingface_hub.utils import HfHubHTTPError
@@ -467,8 +465,7 @@ def _candidate_patterns(stem: str, suffix: str, split_lower: str) -> list[str]:
         at = stem_lower.find(label)
         if at >= 0:
             candidates.append(f"*{stem[at : at + len(label)]}*{suffix}")
-    # Last and narrowest: the whole name, which keeps train-main off
-    # train-socratic.
+    # Last and narrowest: the whole name, which keeps train-main off train-socratic.
     candidates.append(f"{stem}*{suffix}")
     return list(dict.fromkeys(candidates))
 

@@ -103,8 +103,7 @@ def test_the_prefix_check_locates_rather_than_imports(auth, tmp_path, monkeypatc
     assert auth._cli_is_inside(str(tmp_path / "venv"))
     assert not auth._cli_is_inside(str(tmp_path / "elsewhere"))
 
-    # A namespace package has no origin, and nothing found returns None. Neither
-    # is evidence that isolation would work.
+    # A namespace package has no origin and a missing spec is None; neither shows isolation.
     monkeypatch.setattr(auth.importlib.util, "find_spec", lambda _name: _Spec(None))
     assert not auth._cli_is_inside(str(tmp_path / "venv"))
     monkeypatch.setattr(auth.importlib.util, "find_spec", lambda _name: None)

@@ -434,9 +434,8 @@ def test_all_linear_alongside_other_leaves_is_not_the_keyword():
 
 @pytest.mark.parametrize("target_modules", [["lm_head"], ["embed_tokens"], ["lm_head", "Wqkv"]])
 def test_mlx_keeps_a_target_the_loader_trains_whatever_the_flags_say(target_modules):
-    """embed_tokens and lm_head go down get_peft_model's CPT path, applied without consulting
-    the layer families. Something trains, so the preflight must not refuse these however the
-    four selectors are set."""
+    """embed_tokens and lm_head train through the get_peft_model CPT path, so preflight must not
+    refuse them however the four selectors are set."""
     config = _request_config("LoRA/QLoRA", "text", SELECTOR_CASES["all_false"], target_modules)
 
     _check_mlx_finetune_targets(config)
@@ -522,9 +521,7 @@ def test_the_preflight_still_lets_a_vision_only_selection_through():
 
 
 def test_the_effective_check_refuses_a_text_run_whose_only_selection_was_vision():
-    """The call site has already forced vision False for a text model and run the language
-    back-fill, so both layer families are off and get_peft_model would apply no adapter at
-    all -- a warning, and a model with no trainable parameters."""
+    """Vision-only selection on a text run leaves no layer family on; get_peft_model applies no adapter."""
     config = {"training_type": "LoRA/QLoRA", "target_modules": ["Wqkv"]}
 
     with pytest.raises(ValueError, match = "Nothing to train"):

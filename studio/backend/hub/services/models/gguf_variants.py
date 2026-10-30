@@ -1623,8 +1623,7 @@ async def get_gguf_variants_answer(
             await listing_thread(
                 False, account_access.authorize_download, repo_id, "model", hf_token
             )
-    # Returned with the listing because the HF cache answers before local_path, so a caller cannot infer
-    # the copy from the request alone.
+    # Sent back since the HF cache answers before local_path; callers cannot infer the copy.
     answered_from: list[Optional[str]] = [None]
     # A repo id naming a directory is answered by that directory alone, or a GGUF-less dir evicts it.
     answered_locally = [False]
@@ -1980,8 +1979,7 @@ async def get_gguf_variants_answer(
                 complete = None if size > 0 and _direct_gguf_split_is_whole(local_target) else set()
             answered_from[0] = repo_id
             answered_locally[0] = True
-            # Surface the resolution so the CLI gate matches the local resolver's exact labels rather than the
-            # id's shape, and no client mirrors its grammar.
+            # Report the resolution so the CLI gate matches the resolver, not the id's shape.
             return _local_response(
                 repo_id, variants, has_vision, complete, context_root = local_id
             ).model_copy(

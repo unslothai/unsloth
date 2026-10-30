@@ -299,10 +299,7 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
 
 
 def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
-    """The SDPA backends that actually EXECUTE on ``target``, cheapest source of truth available.
-
-    Empty when the probe could not run at all (no torch, no device, an allocator failure) -- an
-    unanswerable probe must never be read as "only math", which is a claim about the hardware."""
+    """SDPA backends that really run on target; empty when the probe cannot run, never read as math-only."""
     kernels = _sdpa_capability(target)
     if _target_device(target).split(":")[0] == "mps":
         # MPS dispatch ignores the torch.backends.cuda toggles.
@@ -358,10 +355,7 @@ def _family_sdpa_kernels(target: Any, head_dims: Any = None) -> tuple[str, ...]:
 
 
 def sdpa_math_only(target: Any, head_dims: Any = None) -> bool:
-    """True only when MATH ran and every sub-quadratic backend refused.
-    ``head_dims`` (the family's; empty = unknown) narrows the shape-blind MPS answer.
-
-    A probe that answered nothing at all returns False: silence is not evidence."""
+    """True only when MATH ran and every sub-quadratic backend refused; an empty probe answer is False."""
     available = _family_sdpa_kernels(target, head_dims)
     if not available:
         return False
@@ -387,9 +381,7 @@ def warn_if_sdpa_math_only(
     logger: Any = None,
     head_dims: Any = None,
 ) -> bool:
-    """Log the math-only diagnosis at LOAD, not 70 seconds into a doomed generation.
-
-    Returns whether the warning fired, so callers can carry it into their resolved controls."""
+    """Log math-only at load, not 70 seconds into a doomed generation; returns whether it warned."""
     if not sdpa_math_only(target, head_dims):
         return False
     if logger is not None:
@@ -658,9 +650,7 @@ ROCM_FLASH_MIN_GAIN = 0.03
 ROCM_FLASH_BLOCK_TOL = 2e-2  # attention output rel L1
 ROCM_FLASH_MAX_TOL = 5e-2  # attention max abs error / max abs output
 ROCM_FLASH_PROBE_TOKENS = 4096  # the load-time bucket: a 1024^2 image DiT sequence
-# Calls are gated per (query, key) length bucket pair (powers of two from 256 up, open ended): a pair is timed at its
-# lower edges on first use, so the 4096 verdict never decides a 30k-token video call, and a long-video x short-text
-# cross-attention is timed as that rectangle, not as square self-attention.
+# Gated per (query, key) length bucket pair, so a 4096 verdict never decides a 30k-token call.
 ROCM_FLASH_MIN_BUCKET = 256
 ROCM_FLASH_LONG_PROBE = (
     16384  # from here the probe times fewer runs (one native SDPA call is seconds at 64k tokens)
@@ -939,9 +929,7 @@ _ROCM_FLASH_LOCAL = threading.local()
 # (device, dtype, *geometry, query bucket, key bucket, batch bucket) -> flash serves it, filled on an eager call's
 # first use (the probe or a stored verdict). In memory: a bucket the probe rejected stays native.
 _ROCM_FLASH_BUCKETS: dict[tuple, bool] = {}
-# On each hooked DiT: bucket keys whose probe could not run (no room beside the live forward, or it raised), native
-# until that DiT's next generation retries them. Never a verdict, so a transient shortfall cannot disable a working
-# kernel; per DiT, so another pipeline's generation boundary does not clear it.
+# Unrun probes defer per DiT, not verdicts; a transient shortfall cannot disable a working kernel
 ROCM_FLASH_DEFERRED_ATTR = "_unsloth_rocm_flash_deferred"
 _ROCM_FLASH_GATE_LOCK = threading.Lock()
 # The native SDPA baseline the in-memory verdicts were timed against; when it moves (a later load re-enables or disables
@@ -1292,9 +1280,7 @@ def _rocm_flash_probe_bytes(
 
 
 def _rocm_flash_probe_fits(device: str, need: int) -> bool:
-    """Room for the probe beside the live forward: device free plus the allocator's cached-but-unused blocks, with
-    25% + 256 MiB to spare, less the user's VRAM Budget reserve (0 at the default). Unknown memory state counts as no
-    room."""
+    """Probe room: free plus idle cache, less 25% + 256 MiB and the VRAM Budget reserve; unknown is none"""
     try:
         import torch
 
@@ -2060,11 +2046,7 @@ def _install_dispatch_guard(
     make_op: Any = None,
     ran: Any = None,
 ) -> bool:
-    """Wrap diffusers' registered ``backend`` so calls its kernel cannot take run native. Idempotent.
-
-    False when the registry is not where expected: the caller then does not engage the backend. ``make_op(fn)``
-    optionally returns an opaque op for plain (no lse, no context-parallel) calls. ``ran()`` is called for each call
-    the kernel itself takes."""
+    """Wrap the registered backend so unsupported calls run native; idempotent; False if registry moved"""
     try:
         from diffusers.models.attention_dispatch import (
             AttentionBackendName,
@@ -2360,9 +2342,7 @@ def _untrack_rocm_flash_calls(pipe: Any) -> None:
 
 
 def attention_may_run_native(pipe: Any) -> bool:
-    """Whether some attention call of this pipe can run native SDPA although flash is engaged: ROCm flash routes masked
-    calls (explicit or auto), and in auto lengths flash does not win (or could not time beside a live forward), to native. For
-    memory budgets: conservative, never from what a past run reported."""
+    """Whether a call may run native SDPA despite flash; conservative, never from past run reports"""
     return bool(_rocm_flash_dits(pipe))
 
 
@@ -3531,8 +3511,7 @@ def apply_attention_backend(
             if logger is not None:
                 logger.info("diffusion.attention: backend=%s", backend)
             return backend
-    # No backend requested, or every set failed: pin native so a stale process-wide backend cannot leak in. One reset
-    # covers every fresh DiT.
+    # No backend requested or all failed: pin native so a stale process-wide backend cannot leak in.
     _tag_dits(pipe, None)
     _untrack_rocm_flash_calls(pipe)
     _restore_native_backend(setters[0], logger)
@@ -3612,9 +3591,7 @@ _NULL_PROCESSOR_CACHE: dict = {}
 
 
 def _set_hunyuan_null_mask(module: Any, enabled: bool) -> None:
-    """Set the null-mask flag on every block's attention of ``module``. The flag is valid ONLY for
-    the forward whose pre-hook removed the padding, so a post-hook clears it back to False after
-    each call (see the module note and _hunyuan_trim_post_hook)."""
+    """Null-mask flag on block attention, valid only for the forward whose pre-hook removed the padding."""
     for blk in getattr(module, "transformer_blocks", []):
         attn = getattr(blk, "attn", None)
         if attn is not None:
@@ -3730,9 +3707,7 @@ def _null_mask_processor_cls():
 
 
 def _trim_stream(states, mask):
-    """Drop the columns of a [B, S, D] text stream + its [B, S] mask that are padding for EVERY
-    batch element (globally invalid). Returns (states, mask, all_valid): all_valid is True when
-    the trimmed stream has NO partially-padded column left (so it needs no attention mask)."""
+    """Drops globally padded columns; all_valid (no partly padded column left) means no mask needed."""
     if states is None or mask is None or mask.dim() != 2:
         return states, mask, True  # nothing to mask -> treat as no-padding
     mb = mask.bool()
@@ -3741,8 +3716,7 @@ def _trim_stream(states, mask):
         states = states[:, keep]
         mask = mask[:, keep]
         mb = mb[:, keep]
-    # All remaining slots valid for every element (vacuously True for a 0-length stream, fine for an unused secondary
-    # stream e.g. byt5 in t2v).
+    # Vacuously True for a 0-length stream, e.g. the unused byt5 stream in t2v; all slots valid.
     all_valid = bool(mb.all().item())
     return states, mask, all_valid
 
@@ -3848,9 +3822,7 @@ def _hunyuan_trim_post_hook(module, _args, output):
 
 
 def _install_null_processors(dit: Any, logger: Any) -> bool:
-    """Swap every stock block attention processor on ``dit`` for the null-mask subclass. Only
-    touches blocks whose processor is exactly the stock class (so a diffusers change or an
-    already-installed run is a no-op). Preserves any pinned attention backend."""
+    """Swap stock block processors for the null-mask subclass; keep any pinned attention backend"""
     try:
         cls = _null_mask_processor_cls()
     except Exception as exc:  # noqa: BLE001 - diffusers moved / unavailable -> skip

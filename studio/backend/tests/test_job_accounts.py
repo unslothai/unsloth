@@ -1370,8 +1370,7 @@ def test_startup_reconciliation_settles_a_deactivated_accounts_interrupted_runs(
 def test_retirement_cancels_model_downloads_and_no_late_grant_recreates_the_workspace(
     tmp_path, monkeypatch
 ):
-    """A model download of a deleted account is killed, and a worker that still completes cannot
-    rebuild the workspace retirement just renamed aside."""
+    """A deleted account's downloads are killed, and no late grant recreates the retired workspace."""
     import subprocess
     import sys
 

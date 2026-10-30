@@ -14,10 +14,9 @@ VIDEO_CPU_SETTING_KEY = "developer_mode_video_cpu"
 VIDEO_CPU_ENV = "UNSLOTH_VIDEO_ALLOW_CPU"
 DEFAULT_VIDEO_CPU_ENABLED = False
 
-# Host RAM below which the Settings dialog warns before enabling. Wan2.1-T2V-1.3B, the smallest
-# video family, peaked at 24.5 GiB of server RSS on CPU (float32 pipeline, 832x480, 5 frames,
-# 3 steps; measured end to end through /video/load + /video/generate); 32 GiB leaves room for the
-# OS and the browser. Every larger family needs far more.
+# Host RAM below which the Settings dialog warns before enabling; the smallest video family,
+# Wan2.1-T2V-1.3B, peaked at 24.5 GiB server RSS on CPU (float32, 832x480, 5 frames), so 32 GiB
+# leaves room for the OS.
 VIDEO_CPU_MIN_RAM_GB = 32
 
 _TRUE = {"1", "true", "yes", "on"}

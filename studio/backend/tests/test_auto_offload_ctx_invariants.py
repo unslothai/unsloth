@@ -41,8 +41,7 @@ from test_llama_cpp_max_context_threshold import (  # noqa: E402
 
 
 def test_auto_offload_context_is_not_below_the_fit_floor():
-    """Invariant 1. Below the floor, the offload re-check starts awarding GPU
-    residency again and the constant stops being a display choice."""
+    """Keep offload context at or above the fit floor, else the re-check awards GPU residency."""
     assert _AUTO_OFFLOAD_CTX >= _FIT_MIN_CTX
 
 
@@ -66,9 +65,8 @@ def test_the_fit_helpers_still_floor_where_the_invariant_assumes():
 
 
 def test_the_published_ui_ceiling_tracks_the_auto_offload_context():
-    """Invariant 2, asserted on the source because the value is produced deep
-    inside ``load_model`` and the failure is a stale literal, not a bad number.
-    """
+    """Asserted on the source because the value is produced deep inside load_model; a failure means
+    a stale literal, not a bad number."""
     source = inspect.getsource(LlamaCppBackend.load_model)
     anchor = re.search(
         r"max_available_ctx\s*=\s*min\(\s*([A-Za-z_0-9]+)\s*,\s*native_ctx_for_cap",

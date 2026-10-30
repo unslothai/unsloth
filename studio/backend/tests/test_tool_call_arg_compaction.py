@@ -359,8 +359,7 @@ def test_compacting_a_refusal_leaves_other_calls_alone():
     ],
 )
 def test_the_gate_refuses_only_what_the_server_would_reject(prompt_tokens, servable):
-    """`prompt_budget` sets aside all of max_tokens -- right for sizing a result, far too
-    strict for deciding whether a call may run at all."""
+    """prompt_budget reserves all of max_tokens, too strict to gate whether a call may run."""
     assert turn_is_servable(4096, 512, prompt_tokens) is servable
 
 
@@ -614,9 +613,7 @@ def test_an_earlier_success_does_not_vouch_for_a_later_declined_call():
 
 
 def test_an_edit_that_ran_and_failed_is_not_called_written():
-    """The tool NAME does not settle disk state. A call that ran and changed nothing is
-    not a write, and saying the content is already there invites the model to skip the
-    retry the error was asking for."""
+    """The tool name does not settle disk state: a failed edit must not be called written."""
     body = "x" * 8000
     messages = _thread(body)
     messages[-1]["content"] = "Error: old_string not found in flappy-bird.html"
@@ -661,9 +658,8 @@ def test_a_non_file_tool_is_not_told_it_wrote_nothing(tool_name):
 
 
 def test_the_destination_path_survives_aggregate_compaction():
-    """The receipt promises the content is on disk, so the field naming WHICH file is
-    the one thing that can never be spent. Once the aggregate floor lowers the per-leaf
-    bar to 256, a long nested path was elided like content."""
+    """The destination path must survive aggregate compaction; a long nested path was elided like
+    content."""
     long_path = "src/" + "very_long_directory_name/" * 20 + "module.py"
     assert len(long_path) > 256
     edits = [

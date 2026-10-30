@@ -112,10 +112,8 @@ def cancel_preparing_loads(
     any_account: bool = False,
     load_token: Optional[str] = None,
 ) -> int:
-    """Cancel ``media`` load POSTs in preflight: ``account``'s own, or all when the unload is not account scoped.
-
-    With ``load_token``, only ``account``'s POSTs that carry that token (an unload naming its load).
-    Returns once each one either stopped or registered, as the token's lock is held until then."""
+    """Cancels media load POSTs in preflight: the account's, or all when unscoped; with load_token
+    only those carrying it; returns once each has stopped or registered."""
     with _lock:
         tokens = [
             t
@@ -143,9 +141,8 @@ def raise_if_load_cancelled(message: str) -> None:
 
 
 def run_unless_load_cancelled(message: str, fn, *args, **kwargs):
-    """``fn(*args, **kwargs)`` under this POST's preflight lock once no unload has cancelled it, so a
-    destructive step (an engine switch, another resident's unload) never runs for a cancelled load:
-    a cancel lands before the check, or waits for ``fn`` to finish."""
+    """Runs fn under the preflight lock unless an unload cancelled the load, so a destructive step
+    never runs for a cancelled load."""
     token = _current_preparing.get()
     if token is None:
         return fn(*args, **kwargs)
@@ -364,10 +361,7 @@ async def save_chat_kv_before_swap(
     gpu_ids: Optional[list] = None,
     **_ignored,
 ) -> SwapSave:
-    """Save the chat KV if acquiring ``owner`` will evict the chat model; never raises.
-
-    ``policy``, ``need_mib`` and ``gpu_ids`` are the keywords the route passes to the acquire, so the peek
-    predicts that exact acquire. Off passes none, and the acquire then runs as Off too."""
+    """Save chat KV if acquiring owner evicts the chat model; never raises; keywords match the acquire."""
     global _pending
     try:
         from core.inference import gpu_arbiter

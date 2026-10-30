@@ -64,8 +64,7 @@ class TestDescribeStreamError:
     def test_starvation_explains_concurrency_rather_than_repeating_the_server(self):
         described = describe_stream_error("Context size has been exceeded.")
         assert described == KV_STARVATION_MESSAGE
-        # The server's own wording sends the user off to shorten a conversation that was
-        # never too long, so it must not be what they read.
+        # Server's wording urges shortening a conversation never too long; it must not be shown.
         assert "Context size has been exceeded" not in described
         assert "at the same time" in described
 

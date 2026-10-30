@@ -217,9 +217,8 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
 
 
 def _unify_batch_schemas(base_dataset_path: Path) -> None:
-    """Give every batch file one schema. Each batch infers its own, so a field stored as JSON text in one
-    batch and as an object in another (or float vs int, all-null vs text) left a folder that training
-    could not load as one dataset."""
+    """Unify all batch files to one schema; per-batch inference made mixed types (JSON text vs
+    object) unloadable."""
     parquet_dir = base_dataset_path / "parquet-files"
     parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
     if len(parquet_files) <= 1:

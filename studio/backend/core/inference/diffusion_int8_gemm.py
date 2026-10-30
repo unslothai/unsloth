@@ -528,10 +528,9 @@ def _tma_probe(index: int, capability: tuple) -> Optional[tuple]:
 
 
 def device_config(index: int) -> Optional[tuple]:
-    """Probe once per device: arch gate, Triton, op registration, then a launch that must match the eager torchao
-    epilogue bit for bit (bf16 and fp32 activation scales, bias, ragged M / N / K). None keeps the stock path. Each
-    per-shape tile is probed the same way; one that fails leaves its shapes on the default tile. Unlisted archs:
-    ``unlisted_config``, re-read per call so its switch acts between loads."""
+    """Probed once per device (arch gate, Triton, op registration, bit-exact match with the eager
+    torchao epilogue); None keeps the stock path, a failing per-shape tile falls back to the
+    default, and unlisted archs re-read unlisted_config per call."""
     if index in _UNLISTED_CARDS:
         return unlisted_config(index)
     if index in _DEVICE_CFG:

@@ -2707,14 +2707,8 @@ def test_cached_models_scan_flags_a_single_file_diffusion_checkpoint(monkeypatch
 
 
 def test_a_companion_mirror_carries_the_flag_on_the_hub_row(monkeypatch, tmp_path):
-    """The chat picker is backed by /api/hub/cached-models, NOT the legacy /api/models one, so a
-    flag set only on the legacy route arrives as undefined here -- the same trap single_file fell
-    into. A mirror that reaches this scan must carry it.
-
-    Given a config.json, because the real mirrors have none: see the test below for what that
-    means today. A synthetic companion id: no image sd-cli asset is a safetensors-only companion repo any more (the
-    encoders are unsloth GGUFs and the VAEs official diffusers files), but the flag still has to reach this row.
-    """
+    """Chat picker reads /api/hub/cached-models, not legacy /api/models, so a flag set only on the
+    legacy route arrives undefined; a mirror reaching this scan must carry it"""
     import core.inference.diffusion_families as families
 
     real = families.sd_cpp_companion_only_repo_ids
@@ -3552,9 +3546,7 @@ def test_download_dataset_disk_fallback_is_not_attested(monkeypatch, tmp_path):
 def test_download_snapshot_fails_when_metadata_unavailable_and_partial_remains(
     monkeypatch, tmp_path
 ):
-    """No prior manifest + metadata unavailable + leftover .incomplete blobs means
-    a cached partial was returned without downloading: the worker must exit 1, not
-    derive a self-certifying manifest from the finalized subset."""
+    """No manifest and no metadata with .incomplete blobs: exit 1 rather than self-certify the subset."""
     written = []
     verified = []
 
@@ -3665,8 +3657,7 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
 
 
 def test_gguf_progress_counts_completed_mmproj_with_expected_bytes(monkeypatch, tmp_path):
-    """A finished mmproj companion keeps counting toward progress once the caller
-    supplies expected bytes; resolving the variant requirement credits it."""
+    """A finished mmproj companion counts toward progress once expected bytes are supplied."""
     entry, snap, blobs = _gguf_cache_dirs(tmp_path)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 30)
@@ -4732,9 +4723,7 @@ def test_variant_partial_accepts_variant_filtered_legacy_hashes(monkeypatch, tmp
 
 
 def test_variant_partial_accepts_completed_variant_in_non_latest_snapshot(monkeypatch, tmp_path):
-    """A verified GGUF update can prune an older snapshot and make that old
-    directory the newest by mtime. The variant is still complete when another
-    snapshot satisfies its manifest."""
+    """A variant stays complete if any retained snapshot satisfies its manifest, not just the newest."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     repo_dir = tmp_path / "cache" / "models--Org--Repo"
     old_snapshot = repo_dir / "snapshots" / "old"
@@ -6143,9 +6132,7 @@ def test_scan_folder_rejects_credential_directories(tmp_path):
 
 
 def _build_variant_cache_repo(repo_dir, blob_specs, snapshot_links):
-    """Build a HF cache repo dir with blobs + snapshot symlinks for the
-    per-variant deletion path. blob_specs: {blob_name: bytes_payload};
-    snapshot_links: list of (revision, filename, blob_name)."""
+    """Builds a HF cache repo; blob_specs maps name to bytes, snapshot_links are (revision, file, blob)."""
     blobs_dir = repo_dir / "blobs"
     blobs_dir.mkdir(parents = True)
     for blob_name, payload in blob_specs.items():
@@ -6189,8 +6176,7 @@ def _patch_variant_delete_side_effects(monkeypatch, hub_cache = None):
 
 
 def test_snapshot_progress_filters_stale_blobs(monkeypatch, tmp_path):
-    """Exclude superseded-revision blobs; count an in-progress blob only when its
-    hash belongs to the target."""
+    """Skip superseded blobs; an in-progress blob counts only if its hash is the target's."""
     entry = tmp_path / "datasets--Org--Data"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -6278,9 +6264,7 @@ def test_expected_files_from_snapshot_dir_records_relative_paths_and_sizes(tmp_p
 
 
 def test_snapshot_progress_complete_with_manifest_synthesized_from_disk(monkeypatch, tmp_path):
-    """A finished snapshot whose only manifest was synthesized from on-disk files
-    still verifies as complete, so a refresh finalizes it instead of capping at
-    99% and evicting it as gone."""
+    """A finished snapshot with a disk-synthesized manifest still verifies, so refresh finalizes it."""
     entry = tmp_path / "models--Org--Model"
     blobs, snap = _shared_setup_21(entry)
     (blobs / "keep1").write_bytes(b"a" * 100)
@@ -6454,8 +6438,7 @@ def test_a_complete_scan_still_reports_the_target_as_gone(monkeypatch, tmp_path)
 
 
 def test_delete_variant_keeps_blob_shared_with_other_snapshot(monkeypatch, tmp_path):
-    """A blob still referenced by a non-target snapshot symlink survives so that
-    symlink doesn't dangle (which the scanner reports as partial)."""
+    """Blobs still linked from another snapshot are kept, so that symlink does not dangle."""
     repo_dir = tmp_path / "models--Org--Repo-GGUF"
     repo = _build_variant_cache_repo(
         repo_dir,
@@ -6668,8 +6651,7 @@ def test_shared_blob_helpers_kept_when_signature_matches(monkeypatch):
 
 
 def test_delete_variant_surfaces_locked_file_as_conflict(monkeypatch, tmp_path):
-    """A blob unlink that fails (e.g. a Windows file lock on a loaded model)
-    must raise a clear 409, not report a misleading success."""
+    """A locked blob (e.g. a loaded model on Windows) must raise 409, not report success."""
     repo_dir = tmp_path / "models--Org--Repo-GGUF"
     repo = _build_variant_cache_repo(
         repo_dir,
@@ -6843,15 +6825,13 @@ def _write_local_model(
     ],
 )
 def test_local_transformers_chat_classification(tmp_path, config, modules, expected):
-    """A safetensors dir is chat-capable on file format alone, so an embedding
-    export looked like a chat model, and auto-load tries the smallest first."""
+    """File format alone must not mark a chat model: embedding exports would auto-load first."""
     path = _write_local_model(tmp_path, "row", config, modules = modules)
     assert model_common._local_transformers_can_chat(path) is expected
 
 
 def test_local_embedding_model_is_not_chat_capable(tmp_path):
-    """End to end through the scanner: the row is still listed, since that is
-    how the user deletes it, but can_chat is false so auto-load skips it."""
+    """Embedding rows stay listed to delete, but can_chat is false so auto-load skips them."""
     _write_local_model(
         tmp_path,
         "all-MiniLM-L6-v2",
@@ -6892,8 +6872,7 @@ def test_a_snapshot_whose_only_weight_is_finder_metadata_is_not_a_safetensors_ro
 
 
 def test_cached_encoder_repo_is_not_chat_capable(tmp_path):
-    """Cached rows build capabilities from file format too, so a cached BERT
-    looked like a chat model to auto-load."""
+    """Cached rows must not infer chat from file format alone; a cached BERT looked like one."""
     snapshot = _write_local_model(
         tmp_path, "snap", {"architectures": ["BertModel"], "model_type": "bert"}
     )
@@ -6946,9 +6925,7 @@ def test_cached_row_without_a_snapshot_keeps_its_format_capability(tmp_path):
     ],
 )
 def test_non_chat_conditional_generation_is_not_chat_capable(tmp_path, config):
-    """These end in ForConditionalGeneration but cannot answer a text turn, and
-    are small enough that the cascade would stop there. The managed cache
-    already hides Whisper; scan folders did not."""
+    """ForConditionalGeneration models that cannot answer text turns; the cascade must not stop on them."""
     path = _write_local_model(tmp_path, "row", config)
     assert model_common._local_transformers_can_chat(path) is False
 
@@ -6977,8 +6954,7 @@ def test_real_conditional_generation_chat_models_are_unaffected(tmp_path, config
     ],
 )
 def test_bare_vision_and_audio_backbones_are_not_chat_capable(tmp_path, config):
-    """Their class names carry no task suffix, so only the model type gives them
-    away."""
+    """Bare vision and audio backbones have no task suffix; only model_type identifies them."""
     path = _write_local_model(tmp_path, "row", config)
     assert model_common._local_transformers_can_chat(path) is False
 
@@ -7028,9 +7004,7 @@ def test_a_fifo_named_config_json_does_not_block_the_scan(tmp_path):
     ["siglip", "clip", "bert", "vit", "wav2vec2"],
 )
 def test_an_encoder_without_architectures_is_still_not_chat_capable(tmp_path, model_type):
-    """google/siglip2-* ships config.json with no architectures key, and the
-    encoder-only branch used to require one, so those rows stayed chat-capable
-    and sorted ahead of a real chat model."""
+    """google/siglip2-* has no architectures key; the encoder-only check must not require one."""
     path = tmp_path / model_type
     path.mkdir()
     (path / "config.json").write_text(json.dumps({"model_type": model_type}), encoding = "utf-8")
@@ -7039,8 +7013,7 @@ def test_an_encoder_without_architectures_is_still_not_chat_capable(tmp_path, mo
 
 
 def test_a_causal_lm_without_architectures_still_fails_open(tmp_path):
-    """Control: keyed on the encoder-only type list, so an unknown type with no
-    architectures stays inconclusive."""
+    """Control: an unknown type with no architectures stays inconclusive, not encoder-only."""
     path = tmp_path / "custom"
     path.mkdir()
     (path / "config.json").write_text(json.dumps({"model_type": "some_new_llm"}), encoding = "utf-8")
@@ -7058,8 +7031,7 @@ def test_a_causal_lm_without_architectures_still_fails_open(tmp_path):
     ],
 )
 def test_an_image_captioner_is_not_chat_capable(tmp_path, config):
-    """These generate text, but only about an image, so a plain text turn fails,
-    and the smallest-first cascade would load one and stop looking."""
+    """Image captioners fail a plain text turn; the smallest-first cascade must skip them."""
     path = tmp_path / "captioner"
     path.mkdir()
     (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
@@ -7072,8 +7044,7 @@ def test_an_image_captioner_is_not_chat_capable(tmp_path, config):
     ["CLIPTextModelWithProjection", "CLIPVisionModelWithProjection", "CLIPTextModel"],
 )
 def test_a_projection_head_encoder_is_not_chat_capable(tmp_path, architecture):
-    """The encoder-only branch also required the name to end in Model, so a
-    projection variant fell through and kept its format capability."""
+    """Encoder-only check needs no Model name suffix, so projection heads are caught."""
     path = tmp_path / "proj"
     path.mkdir()
     (path / "config.json").write_text(
@@ -7092,8 +7063,7 @@ def test_a_projection_head_encoder_is_not_chat_capable(tmp_path, architecture):
     ],
 )
 def test_a_generative_head_still_wins_over_the_encoder_type(tmp_path, config):
-    """Control for both gates above: a generative architecture is accepted
-    before the type list is consulted."""
+    """Control: a generative head is accepted before the encoder type list is consulted."""
     path = tmp_path / "gen"
     path.mkdir()
     (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
@@ -7111,8 +7081,7 @@ def test_a_generative_head_still_wins_over_the_encoder_type(tmp_path, config):
     ],
 )
 def test_a_bare_text_backbone_is_not_chat_capable(tmp_path, config):
-    """AutoModel.save_pretrained writes the backbone name, and a backbone has no
-    LM head, so the cascade would stop on one before a usable chat model."""
+    """AutoModel.save_pretrained backbones have no LM head; the cascade must not stop on one."""
     path = tmp_path / "backbone"
     path.mkdir()
     (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
@@ -7121,8 +7090,7 @@ def test_a_bare_text_backbone_is_not_chat_capable(tmp_path, config):
 
 
 def test_an_unfamiliar_backbone_still_fails_open(tmp_path):
-    """The list is explicit, not shape-matched, so a custom FooModel keeps its
-    format capability."""
+    """Backbones match an explicit list, so a custom FooModel keeps format capability."""
     path = tmp_path / "custom"
     path.mkdir()
     (path / "config.json").write_text(
@@ -7135,9 +7103,7 @@ def test_an_unfamiliar_backbone_still_fails_open(tmp_path):
 
 @pytest.mark.parametrize("layout", ["flat", "publisher_child"])
 def test_lmstudio_scan_matches_gguf_suffix_case_insensitively(tmp_path, layout):
-    """The custom and models-dir scans lower() the suffix; these two did not, so a
-    .GGUF was invisible only here. Windows and macOS treat the two spellings as one
-    name, so the file is reachable but unlisted."""
+    """LM Studio scan must match .gguf case-insensitively; a .GGUF file was otherwise left unlisted."""
     lm_dir = tmp_path / "models"
     holder = lm_dir if layout == "flat" else lm_dir / "publisher"
     holder.mkdir(parents = True)
@@ -7158,8 +7124,7 @@ def test_lmstudio_scan_matches_gguf_suffix_case_insensitively(tmp_path, layout):
     ],
 )
 def test_custom_promotion_keeps_the_classifier_verdict(tmp_path, config, expected):
-    """Promotion rebuilt capabilities from the format alone, which restored
-    can_chat on rows the classifier had ruled out."""
+    """Promotion must keep the classifier verdict, not rebuild can_chat from format alone."""
     model_dir = tmp_path / "scan" / "model"
     model_dir.mkdir(parents = True)
     (model_dir / "config.json").write_text(json.dumps(config), encoding = "utf-8")
@@ -7192,9 +7157,7 @@ def _write_pipeline(root: Path, *, components = ("transformer", "vae", "text_enc
 
 
 def test_models_dir_scan_surfaces_a_local_diffusers_pipeline(tmp_path):
-    """A pipeline the user already has on disk must be listed. It carries no root config.json
-    and no loose weight file, which is the only shape the scan used to accept, so the Video and
-    Images pickers showed nothing for a model that was sitting right there."""
+    """A local diffusers pipeline (no root config.json) must be listed by the models-dir scan."""
     models = tmp_path / "models"
     _write_pipeline(models / "MiniMax-H3-local")
 
@@ -7235,9 +7198,7 @@ def test_the_walk_does_not_descend_into_an_interrupted_pipeline_copy(tmp_path):
 
 
 def test_a_scan_folder_pointed_straight_at_a_pipeline_is_not_walked_as_a_publisher(tmp_path):
-    """The same walk, entered AT the pipeline. A user adding the model folder itself as a scan
-    folder is the obvious thing to do, and it published vae / transformer / text_encoder as three
-    models instead of the one that is there."""
+    """A pipeline folder added as a scan folder is one model, not its vae/transformer/text_encoder parts."""
     pipeline = _write_pipeline(tmp_path / "MiniMax-H3-local")
 
     rows = local_inventory._scan_lmstudio_dir(pipeline)
@@ -7246,9 +7207,7 @@ def test_a_scan_folder_pointed_straight_at_a_pipeline_is_not_walked_as_a_publish
 
 
 def test_a_custom_folder_offers_the_pipeline_and_not_its_components(tmp_path):
-    """End to end over the path the Custom Folders control uses. The format filter keeps only
-    gguf / safetensors / adapter rows, and a pipeline root has no loose weight to classify, so
-    it reports "unknown" by construction -- judged on its shape instead."""
+    """Custom Folders offers the pipeline root by shape, not its components; format filter says unknown."""
     root = tmp_path / "scan"
     _write_pipeline(root / "MiniMax-H3-local")
 
@@ -7436,9 +7395,7 @@ def test_an_unreadable_blobs_dir_is_not_evidence_of_absence(monkeypatch, tmp_pat
 
 
 def test_a_manifest_alone_is_not_evidence_the_variant_is_on_disk(monkeypatch, tmp_path):
-    """The state-dir manifest says what the target SHOULD contain. It survives a deletion made
-    outside the app, so with a sibling quant keeping the repo dir alive it made a variant with
-    nothing left on disk read as present -- the phantom job this field exists to retire."""
+    """A manifest alone does not prove a variant is on disk; it outlives deletions made outside the app."""
     entry = tmp_path / "models--Org--Model-GGUF"
     (entry / "snapshots" / "rev0").mkdir(parents = True)
     (entry / "blobs").mkdir(parents = True)
@@ -7527,9 +7484,7 @@ def test_a_subtree_that_cannot_be_scanned_keeps_presence_unknown(monkeypatch, tm
 
 
 def test_a_blob_that_cannot_be_stated_keeps_presence_unknown(monkeypatch, tmp_path):
-    """The hashes resolved, so the blob loop is what measures the variant -- and a blob it could
-    not inspect is not a blob that is not there. Swallowing the error produced a MEASURED
-    absence, which hydration reads as gone and retires a persisted download."""
+    """A blob that cannot be inspected is unknown, not absent; swallowing the error retired downloads."""
     entry = tmp_path / "models--Org--Model-GGUF"
     (entry / "snapshots" / "rev0").mkdir(parents = True)
     blobs = entry / "blobs"
@@ -7563,9 +7518,7 @@ def test_a_blob_that_cannot_be_stated_keeps_presence_unknown(monkeypatch, tmp_pa
 
 
 def test_an_older_snapshot_still_proves_the_variant_is_here(monkeypatch, tmp_path):
-    """A cache can retain several revisions. The requested quant living in an older snapshot
-    while the newest holds only a sibling read as absent, and hydration retired a job whose
-    target is still perfectly usable."""
+    """A quant in an older retained snapshot is still present; checking only the newest retired the job."""
     entry = tmp_path / "models--Org--Model-GGUF"
     old_snap = entry / "snapshots" / "rev0"
     new_snap = entry / "snapshots" / "rev1"
@@ -7644,9 +7597,7 @@ def test_an_unstatable_blobs_dir_is_not_an_absent_one(monkeypatch, tmp_path):
 
 
 def test_a_variant_complete_in_an_older_snapshot_settles(monkeypatch, tmp_path):
-    """The presence check already looks at every retained snapshot, but the byte reading and the
-    manifest verification did not: a quant complete in an older revision, with the newest
-    holding only a sibling, reported 0 bytes and never settled -- 99% and adoptable forever."""
+    """Bytes and manifest checks must cover every retained snapshot, else a done quant sticks at 99%."""
     entry = tmp_path / "models--Org--Model-GGUF"
     old_snap = entry / "snapshots" / "rev0"
     new_snap = entry / "snapshots" / "rev1"

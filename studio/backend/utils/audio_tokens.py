@@ -84,8 +84,7 @@ _MAX_TOKENIZER_CONFIG_BYTES = 32 * 1024 * 1024
 
 
 def may_hold_audio_tokens(raw: str) -> bool:
-    """Whether a tokenizer_config's raw text is worth parsing. A false True costs only
-    the parse that would have happened anyway; a false False misclassifies."""
+    """A false True only costs a parse that would happen anyway; a false False misclassifies."""
     return any(marker in raw for marker in AUDIO_TOKEN_MARKERS)
 
 
@@ -142,8 +141,7 @@ def is_audio_input_type(audio_type: Optional[str]) -> bool:
 
 
 def is_tts_audio_type(audio_type: Optional[str]) -> bool:
-    """True for a speech-emitting codec. audio_vlm is absent on purpose: Gemma 3n takes
-    audio in and answers in text."""
+    """audio_vlm is left out on purpose: Gemma 3n takes audio in and answers in text."""
     return audio_type in TTS_AUDIO_TYPES
 
 
@@ -153,8 +151,7 @@ def is_output_audio_type(audio_type: Optional[str]) -> bool:
 
 
 def detect_local_tts_audio_type(directory) -> Optional[str]:
-    """The TTS codec a downloaded model directory fingerprints, or None. Local files
-    only. Whisper and audio_vlm answer None: both of those chat."""
+    """Local-only TTS codec, or None; Whisper and audio_vlm answer None since both chat."""
     try:
         root = Path(directory)
         if not root.is_dir():

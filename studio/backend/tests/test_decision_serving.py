@@ -939,9 +939,8 @@ def test_a_clef_worker_that_never_reports_ready_is_stopped(monkeypatch):
             self.child = kwargs["args"][1]
 
         def start(self):
-            # A live child holds its own end of the pipe, so the parent sees silence, not EOF.
-            # Keeping the parent's close from releasing it works on Windows too, where a pipe
-            # end is a handle os.dup cannot copy.
+            # A live child keeps its pipe end open, so the parent sees no EOF; the no-op close also
+            # works on Windows, where os.dup cannot copy a pipe handle.
             held.append(self.child)
             self.child.close = lambda: None
 
@@ -979,9 +978,8 @@ def test_a_training_run_stops_a_clef_worker_still_loading(monkeypatch):
             self.child = kwargs["args"][1]
 
         def start(self):
-            # A live child holds its own end of the pipe, so the parent sees silence, not EOF.
-            # Keeping the parent's close from releasing it works on Windows too, where a pipe
-            # end is a handle os.dup cannot copy.
+            # A live child keeps its pipe end open, so the parent sees no EOF; the no-op close also
+            # works on Windows, where os.dup cannot copy a pipe handle.
             held.append(self.child)
             self.child.close = lambda: None
 

@@ -350,8 +350,7 @@ def predict(
         others = [s for s in slots if s.kind == "stt" and _ident(s.model) != _ident(model)]
         return others, not others, False
     same_repo = [s for s in slots if s.kind == slot_kind and _repo(s.model) == _repo(model)]
-    # A load of a resident repo may load it again (another variant, context, device or build), so it
-    # is predicted as a new load and reported as an upper bound.
+    # Resident repo may load again (variant, context, device, build): an upper bound.
     exact = not same_repo
     chat = [s for s in slots if s.kind == "llm"]
     media = [s for s in slots if s.kind in ("image", "video")]

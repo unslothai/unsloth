@@ -21,9 +21,8 @@ def _hip_sees(
     count,
     totals = None,
 ):
-    """Declare HIP's own inventory: how many devices it opens, and the total memory
-    it reports per physical id. Empty totals mean torch could not describe the
-    devices, which the probe fails open on."""
+    """Sets HIP's device count and total memory per physical id; empty totals mean torch cannot
+    describe the devices, so the probe fails open."""
     monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_device_count", staticmethod(lambda: count))
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -112,8 +111,7 @@ class TestTheAmdSmiIdIsTranslatedToHip:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 96256, 98304)]
 
     def test_a_multi_gpu_host_declines_when_the_mapping_is_unavailable(self, rocm, monkeypatch):
-        """amd-smi before ROCm 6.4.0 has no ``list -e``. Identity is an assumption
-        there, not a fact, so hand the host to torch."""
+        """Before ROCm 6.4.0 amd-smi lacks list -e, so identity is unproven; defer to torch."""
         monkeypatch.setattr(
             amd,
             "_run_amd_smi",
@@ -134,8 +132,7 @@ class TestTheAmdSmiIdIsTranslatedToHip:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
     def test_a_single_gpu_host_needs_no_mapping(self, rocm, monkeypatch):
-        """One card on both sides forces the mapping, so the common ROCm desktop
-        keeps the context saving on any amd-smi version."""
+        """One card on both sides forces the mapping, so any amd-smi version keeps the saving."""
         monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 4096, 24576)), None))
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]
 
@@ -182,8 +179,7 @@ class TestAPartialAnswerDefersToTorch:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
     def test_the_probe_still_sees_both_devices(self, apu_plus_dgpu, monkeypatch):
-        """End to end: the torch branch answers, and both GPUs survive, so the
-        tensor-parallel decision is the one main makes."""
+        """End to end: torch answers and both GPUs survive, so tensor-parallel sees both."""
         monkeypatch.setattr(
             LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary: False)
         )
@@ -209,8 +205,7 @@ class TestAPartialAnswerDefersToTorch:
         assert LlamaCppBackend._get_gpu_memory() == [(0, 16384, 32768), (1, 7168, 8192)]
 
     def test_a_visible_device_amd_smi_never_enumerated_declines(self, rocm, monkeypatch):
-        """The mask names two cards and amd-smi answered for one; the other is not
-        "absent", it is unmeasured."""
+        """Unenumerated visible devices are unmeasured, not absent, so the probe declines."""
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
         _hip_sees(monkeypatch, 2)
         monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 1024, 16384)), None))

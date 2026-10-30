@@ -414,8 +414,7 @@ def test_automatic_default_budgets_dense_when_the_hub_cannot_answer(monkeypatch)
 def test_automatic_default_budgets_int8_once_the_hub_lists_the_file(monkeypatch):
     scale, _ = _budget(monkeypatch, _auto_int8(), listed = (_QWEN25VL_INT8[1],))
     explicit, _ = _budget(monkeypatch, "int8")
-    # The automatic pick takes the int8 file only, so it is priced at that file; an explicit int8 keeps the fp8
-    # ceiling of the file it may fall back to.
+    # Auto takes only the int8 file, priced there; explicit int8 keeps the fp8 ceiling.
     assert scale == tpq.te_int8_convrot_budget_scale(_fam("qwen-image")) < explicit < 1.0
 
 
@@ -1054,9 +1053,7 @@ def test_an_unconfirmed_automatic_file_still_falls_back_to_dense(target, monkeyp
     assert out == {} and fetched == [fam.base_repo]
 
 
-# te_prequant_budget_scale on the merge base (origin/main 6583ae4de8) for every family with a hosted encoder,
-# request (unset resolved through that tree's own te_quant_auto, fp8, int8) and device; computed by
-# running te_prequant_budget_scale there with fp8 support on CUDA only.
+# Table from te_prequant_budget_scale on origin/main 6583ae4de8; fp8 supported on CUDA only.
 _ORIGIN_MAIN_BUDGET_SCALE = {
     "flux.1|fp8|cuda": 0.65,
     "flux.1|fp8|mps": 1.0,

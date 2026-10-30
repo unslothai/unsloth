@@ -22,8 +22,7 @@ def _reset_db(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _isolate_stdio_env():
-    """apply_stdio_mcp_loopback_default() mutates os.environ plus a module flag
-    monkeypatch cannot roll back; snapshot and restore both."""
+    """apply_stdio_mcp_loopback_default() edits os.environ and a flag monkeypatch can't undo."""
     saved = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
     host_policy._reset_loopback_default_state()
     yield
@@ -187,8 +186,7 @@ def test_update_refuses_http_to_stdio_conversion_from_api_key(tmp_path, monkeypa
 def test_update_refuses_any_edit_of_a_stdio_row_from_api_key(
     tmp_path, monkeypatch, stdio_on, payload_kwargs
 ):
-    """Not just the address: the env vars, the name and the enabled flag all
-    change what runs or how, so an API key may not touch a stdio row at all."""
+    """API keys may not edit a stdio row: env vars, name and enabled flag change what runs."""
     from models.mcp_servers import McpServerUpdate
     import routes.mcp_servers as routes_mcp
 

@@ -3960,8 +3960,7 @@ def test_a_run_stored_by_an_older_install_still_renders():
 
 
 def test_a_json_integer_too_large_for_a_float_is_disabled_not_a_500():
-    """`float()` on a huge JSON int raises OverflowError, which is not a ValueError, so it
-    escaped the validator and 500d the start endpoint."""
+    """A huge JSON int makes float() raise OverflowError, not ValueError, which escaped the check."""
     huge = "1" + "0" * 310
     assert isinstance(json.loads(huge), int)
     with pytest.raises(OverflowError):

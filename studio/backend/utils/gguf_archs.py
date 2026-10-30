@@ -44,8 +44,7 @@ FAMILY_NAMING_DIFFUSION_GGUF_ARCHS = frozenset({"krea2", "moss_image"})
 UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
     {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}
 )
-# Shared by several families, so the header alone does not say whether Images can run the file
-# (Z-Image's DiT is a Lumina2 derivative and declares "lumina2").
+# Shared by several families, so the header alone does not decide if Images can run it.
 AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
 # Not architectures: placeholders gguf-connector writes for its diffusion GGUFs.
 PLACEHOLDER_DIFFUSION_GGUF_ARCHS = frozenset({"pig", "cow"})

@@ -45,8 +45,7 @@ _FETCH_TIMEOUT_SECONDS = 5.0
 _FETCH_RETRIES = 1
 # urlopen's timeout bounds each read, not the transfer, so the transfer gets its own budget.
 _FETCH_DEADLINE_SECONDS = 2 * _FETCH_TIMEOUT_SECONDS
-# One attempt's true worst case: the budget, plus the single socket read already blocking
-# when it runs out (the deadline is only tested between reads).
+# Worst case is the budget plus one blocked socket read; the deadline is checked between reads.
 _FETCH_ATTEMPT_SECONDS = _FETCH_DEADLINE_SECONDS + _FETCH_TIMEOUT_SECONDS
 _READ_CHUNK_BYTES = 1 << 16
 _CACHE_TTL_SECONDS = 24 * 60 * 60
@@ -63,8 +62,7 @@ _lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
 _is_fetching: bool = False
-# Set whenever no refresh is in flight; a concurrent caller waits on it for the running
-# fetch's answer instead of reporting "no answer" (see _get_snapshot).
+# Set when no refresh runs; concurrent callers wait on it rather than report no answer.
 _fetch_done: threading.Event = threading.Event()
 _fetch_done.set()
 # Body, or None if still running at deadline; read1 returns what has arrived, since resp.read() has no bound against a drip-fed body.
@@ -90,13 +88,8 @@ _FETCH_MISSING = "__unsloth_fetch_missing__"
 
 
 def _read_within(resp, deadline: float) -> str | None:
-    """Body of *resp*, or None if the transfer is still running at *deadline*.
-
-    ``resp.read()`` in one call has no bound at all: the socket timeout only fires on a
-    read that stalls longer than itself, so a drip-fed response never trips it. ``read1``
-    returns what has arrived instead of blocking for a full chunk, which is what lets the
-    budget be checked as the body comes in.
-    """
+    """Body of resp, or None if still running at deadline; resp.read() has no bound against a
+    drip-fed body, while read1 returns what has arrived so the budget is checked as it comes in."""
     read1 = getattr(resp, "read1", None)
     if read1 is None:
         # A file-like that hands back the whole body in one go has nothing to dribble.
@@ -616,9 +609,8 @@ def _base_env_sidecar_pins() -> list[str]:
 
 
 def is_install_in_progress() -> bool:
-    """True while a latest-transformers install or lazy repair holds the sidecar swap
-    reservation. Training and export starts check this so a fresh worker never
-    activates the sidecar mid-swap."""
+    """True while a latest-transformers install or lazy repair holds the sidecar swap; training and
+    export check it so a fresh worker never activates mid-swap."""
     from utils.transformers_version import sidecar_swap_in_progress
     return sidecar_swap_in_progress()
 
@@ -746,9 +738,8 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
 
 
 def _invalidate_capability_caches():
-    """Drop caches computed before the new sidecar existed: tier probes and the
-    latest tier's model_type mapping (stale on upgrade) plus vision detection
-    (a raw-heuristic False may now defer to the sidecar AutoConfig probe)."""
+    """Drop caches built before the new sidecar existed (tier probes, latest model_type mapping,
+    vision detection); a raw-heuristic False may now defer to the sidecar AutoConfig probe."""
     try:
         from utils import transformers_version as tv
         tv._probe_tier_cache.clear()

@@ -725,8 +725,7 @@ class _OcrNeedsImageError(ValueError):
 
 
 def _without_image_parts(messages) -> list[dict]:
-    """The same conversation with every image placeholder dropped, collapsing a
-    turn back to its text when that is all it held."""
+    """Drops image parts; a turn left with only text collapses back to that text."""
     out = []
     for message in messages:
         content = message.get("content")
@@ -812,8 +811,7 @@ def _diffusion_frame_relay(
     stop = None,
     eos_ids = (),
 ):
-    """on_frame for the core sampler: one frame per interval to ``sink``, cut where the final reply is.
-    Never raises into the sampler."""
+    """Core-sampler on_frame: one frame per interval to sink; never raises into the sampler."""
     import time
 
     last = [float("-inf")]
@@ -2544,8 +2542,7 @@ class InferenceBackend:
         cancel_event = None,
         extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
-        """Whisper ASR: takes an audio numpy array, yields transcribed text through the pipeline
-        built at model load."""
+        """Whisper ASR over an audio array; yields text from the pipeline built at model load."""
         # No token counts here; clear so gen_done does not ship a previous turn's stats.
         self.last_generation_stats = None
 
@@ -2990,8 +2987,7 @@ class InferenceBackend:
             raise RuntimeError(f"Model {self.active_model_name} is not an audio model")
 
         top_k = self._normalize_top_k(top_k)
-        # Every codec below concatenates its prompt instead of templating it, so this
-        # is the one choke point for all four (#7066).
+        # All four codecs concatenate prompts, not templates; this is their one choke point.
         text = tts_prompt_with_voice(
             neutralize_tts_prompt_text(text, audio_type), audio_type, audio_options
         )
@@ -3289,9 +3285,8 @@ class InferenceBackend:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
     ) -> str:
-        """Render the chat prompt, peeling kwargs the template does not understand. Delegates to the
-        dependency-light helper module so the fallback chain is unit-testable without pulling
-        unsloth / torch into the test sandbox."""
+        """Peels kwargs the template does not understand; delegates to a dependency-light helper for
+        testing."""
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
         )

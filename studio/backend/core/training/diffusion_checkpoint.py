@@ -70,8 +70,7 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("random_flip", "random flipping"),
     # Buckets change canvases and batch order; a pre-field manifest trained square (_LEGACY_IDENTITY_DEFAULTS).
     ("bucketing", "aspect ratio buckets"),
-    # TF32 versus strict fp32 continues the trajectory at a different numeric precision, and off is the documented
-    # strict-reproducibility mode.
+    # TF32 changes numerics mid-trajectory; off is the strict-reproducibility mode.
     ("enable_tf32", "TF32 matmuls"),
     # Batch, accumulation and clip norm all change the trajectory the restored moments were produced on.
     ("train_batch_size", "batch size"),
@@ -339,8 +338,7 @@ def _flow_shift_key(value: Any, family: str = "") -> str:
 
 
 def _snr_gamma_key(value: Any) -> str:
-    """min-SNR as a comparable token. None DISABLES the weighting, so it gets its own value rather
-    than the unknown the optional-field rule skips."""
+    """Comparable min-SNR token; None disables weighting, so it is a value, not an unknown."""
     number = _optional_float(value)
     return "off" if number is None else f"{number}"
 
@@ -940,9 +938,7 @@ def _recover_orphaned_slots(
 
 
 def _recover_orphaned_slot(root: Path, entry: Path) -> bool:
-    """True when ``entry`` is a stale bundle that must not be swept up: either it was handed back to
-    its empty slot, or the hand-back failed and leaving it on disk beats deleting the only copy
-    of the run's last resumable state."""
+    """Stale bundles to leave alone: already handed back, or a failed hand-back is kept as the only copy."""
     match = _STALE_SLOT.match(entry.name[len(_STAGING_PREFIX) :])
     if match is None:
         return False
@@ -1473,20 +1469,8 @@ def _join_clauses(items: list[str]) -> str:
 
 
 def _assert_optimizer_buildable(path: Path, manifest: dict[str, Any]) -> None:
-    """Refuse moments this host provably cannot build an optimizer for, BEFORE teardown.
-
-    Bundles from older builds carry bitsandbytes AdamW8bit moments, which the trainers can only
-    restore into AdamW8bit. Without bitsandbytes the child's own check fires after the route has
-    evicted the resident inference models and loaded a multi-GB base, for a run that is guaranteed
-    to terminate without training.
-
-    Deliberately one-directional, and deliberately import-free. ``find_spec`` answers "is
-    bitsandbytes installed" without creating a CUDA context in the Unsloth process, but it cannot
-    tell an installed-and-broken wheel (which the trainer catches and falls back from) from a
-    working one. So only the case that cannot be wrong is refused here: 8-bit moments with no
-    bitsandbytes to load them, or with the fp32 override forcing torch AdamW. The other direction
-    stays with the child, where the real optimizer object exists.
-    """
+    """Refuse only provably unbuildable AdamW8bit moments (no bitsandbytes, or fp32 override),
+    before teardown; import-free, so no CUDA context; other cases left to the child."""
     saved = manifest.get("optimizer_class")
     if not isinstance(saved, str) or "bitsandbytes" not in saved:
         return
@@ -1605,8 +1589,7 @@ def preflight_resume(
 
 
 def _terminal(error: ResumeError) -> ResumeError:
-    """Mark a refusal as final: it describes the REQUEST, not a damaged bundle, so the directory
-    scan must not walk past it to an older checkpoint."""
+    """Final refusal of the request, not a damaged bundle: the scan must not walk past it."""
     error.terminal = True  # type: ignore[attr-defined]
     return error
 

@@ -142,8 +142,7 @@ def _probe(
 
 
 def test_an_unsettled_verdict_is_published_as_still_warming_up():
-    """Without this the watchdog ends its startup grace on the first reply, and the next
-    GIL stall inside the torch import reads as three dead probes."""
+    """Unsettled warm-ups must report warming up, or the watchdog ends startup grace on the first reply."""
     result = _probe(settled = False)
 
     assert result["status_code"] == 200
@@ -202,9 +201,7 @@ def test_a_deferred_warm_says_so_instead_of_looking_like_a_slow_start():
 
 
 def test_a_warm_retired_mid_stage_is_not_reported_as_warming_forever():
-    """A shutdown stops the warm at a stage boundary, so it never sets finished and its
-    thread is gone. Deriving the marker from "not finished" alone would leave it lit for
-    the rest of the process, which is the deferred trap by another route."""
+    """A retired warm never sets finished, so the marker must also check that its thread has exited."""
     result = _probe(settled = False, warm = "retired")
 
     assert not result["has_warm_key"], (
@@ -244,8 +241,7 @@ def test_liveness_answers_immediately_and_never_starts_detection():
 
 
 def test_the_desktop_watchdog_still_reads_these_fields():
-    """Cross-language guard: the marker only does anything because commands.rs reads it,
-    and either side can be changed without the other."""
+    """Guard: commands.rs reads this marker, and either side can change without the other."""
     assert _COMMANDS_RS.is_file(), f"{_COMMANDS_RS} moved; update this guard"
     rust = _COMMANDS_RS.read_text(encoding = "utf-8")
     probe = rust[rust.index("async fn check_health_inner") :]

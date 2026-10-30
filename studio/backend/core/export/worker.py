@@ -307,9 +307,8 @@ def _run_export_security_gates(
             )
             return False
 
-    # Consent gate: scan auto_map code before it runs; block CRITICAL/HIGH unless pinned-approved.
-    # A LoRA merges its base model, whose code runs, so gate it too. Adapter + base are scanned as
-    # one combined unit, pinned by a single fingerprint.
+    # Consent gate scans auto_map code before it runs; blocks CRITICAL/HIGH unless pinned-approved;
+    # a LoRA's base code is gated too, scanned as one unit by one fingerprint.
     if trust_remote_code:
         from utils.security import evaluate_remote_code_consent_for_targets
         _rc = evaluate_remote_code_consent_for_targets(
@@ -387,9 +386,7 @@ def _preflight_security_gates(cmd: dict, resp_queue: Any) -> bool:
 
 
 def _export_uses_cuda_kernels(device_backend) -> bool:
-    """causal-conv1d / mamba-ssm are CUDA / ROCm extensions, so only a CUDA export (ROCm reports as
-    "cuda" too) provisions them: MLX, CPU, XPU, an unspecified backend and any macOS export never
-    load them. ssm_runtime then checks the torch build itself."""
+    """Only CUDA exports provision causal-conv1d and mamba-ssm; ROCm also reports as cuda."""
     return sys.platform != "darwin" and str(device_backend or "") in ("cuda", "rocm")
 
 
@@ -401,9 +398,7 @@ def _provision_ssm_kernels(
     device_backend = None,
     trust_remote_code = None,
 ) -> bool:
-    """Install the causal-conv1d / mamba-ssm a checkpoint needs before Unsloth and its modeling
-    import, decided from its config (a LoRA's base config), as a training or chat load does.
-    Returns False after reporting a failure only for a model that cannot load without mamba-ssm."""
+    """Install before the Unsloth import, from config; False only for a model that needs mamba-ssm."""
     if not _export_uses_cuda_kernels(device_backend):
         return True
     try:
@@ -786,11 +781,8 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             )
             return
 
-        # Before Unsloth and the modeling import: transformers captures its kernel gates at import,
-        # and some remote modeling code (Nemotron-H) cannot import at all without mamba-ssm. Inside
-        # the activation window, so it adds no Hub reachability probe of its own; an MLX / CPU /
-        # macOS export installs nothing. The security gates run first, so a blocked checkpoint
-        # never triggers a kernel build on its behalf.
+        # Runs before the Unsloth import (transformers captures kernel gates then); security gates
+        # run first, so a blocked checkpoint never triggers a kernel build.
         if not _preflight_security_gates(config, resp_queue):
             return
         if not _provision_ssm_kernels(

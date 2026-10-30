@@ -935,8 +935,7 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
 
 
 def test_training_runs_map_only_folders_directly_under_outputs(monkeypatch):
-    """A newer run in an external folder of the same name, or a newer failed one in the same
-    folder, must not claim the managed model."""
+    """Only folders directly under outputs map to runs; a newer external or failed run cannot claim it."""
     import sqlite3
 
     from storage import studio_db
@@ -1989,8 +1988,7 @@ def test_an_upload_finishing_during_a_move_lands_in_the_new_folder(client, tmp_p
 
 
 def _move_after_lookup(monkeypatch, new):
-    """The first lookup of an upload's file starts a move of the uploads folder, and gives it a
-    moment to finish, before answering with where the file was."""
+    """The first upload lookup starts moving the uploads folder, then waits briefly before answering."""
     import threading
 
     real = library.upload_path

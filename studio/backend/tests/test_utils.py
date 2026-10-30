@@ -210,8 +210,7 @@ class TestGetGpuMemoryInfo:
         assert "backend" in get_gpu_memory_info()
 
     def test_backend_matches_device(self):
-        # _backend_label swaps "cuda" for "rocm" on AMD hosts; elsewhere it
-        # equals get_device().value.
+        # _backend_label maps cuda to rocm on AMD; elsewhere it equals get_device().value.
         from utils.hardware.hardware import _backend_label
         result = get_gpu_memory_info()
         assert result["backend"] == _backend_label(get_device())
@@ -331,8 +330,7 @@ class TestGetGpuMemoryInfo:
             patch("torch.cuda.get_device_properties", return_value = mock_props),
             patch("torch.cuda.memory_allocated", return_value = 4 * (1024**3)),
             patch("torch.cuda.memory_reserved", return_value = 6 * (1024**3)),
-            # Driver truth from a context-free SMI/sysfs probe: another process
-            # and torch's cache leave only 9 of 16 GiB free.
+            # Context-free SMI probe: other processes and torch's cache leave 9 of 16 GiB free.
             patch(
                 "utils.hardware.hardware._context_free_cuda_memory_info",
                 return_value = 9 * (1024**3),
@@ -372,8 +370,7 @@ class TestGetGpuMemoryInfo:
         ):
             result = get_gpu_memory_info()
 
-        # Reserved includes allocated, so the fallback bound is 16 - 6, not
-        # the old allocated-only 12.
+        # Reserved counts allocated: free is total - reserved, not total - allocated.
         assert abs(result["free_gb"] - 10.0) < 0.01
 
     @needs_torch
@@ -424,8 +421,7 @@ class TestGetGpuMemoryInfo:
         return get_gpu_memory_info()
 
     def test_xpu_free_comes_from_the_driver(self, monkeypatch):
-        # 12 of 16 GiB free system-wide, against 2 GiB allocated by this process:
-        # the old total - allocated would have claimed 14.
+        # Driver free is 12 of 16 GiB system-wide; total - allocated would wrongly claim 14.
         result = self._xpu_result(monkeypatch, lambda _o: (12 * (1024**3), 16 * (1024**3)))
         assert abs(result["free_gb"] - 12.0) < 0.01
         assert abs(result["total_gb"] - 16.0) < 0.01
@@ -438,8 +434,7 @@ class TestGetGpuMemoryInfo:
         assert abs(result["free_gb"] - 13.0) < 0.01
 
     def test_xpu_falls_back_on_a_torch_without_mem_get_info(self, monkeypatch):
-        # torch.xpu.mem_get_info is newer than the floor this backend supports,
-        # so its absence must degrade, not raise.
+        # torch.xpu.mem_get_info postdates the floor; its absence must degrade, not raise.
         result = self._xpu_result(monkeypatch, None)
         assert abs(result["free_gb"] - 13.0) < 0.01
 
@@ -571,8 +566,7 @@ class TestCudaDeviceOrder:
 
 
 class TestPrintCudaDeviceList:
-    """The startup console lists every CUDA GPU with its index, not just
-    device 0, so a multi-GPU host shows the full available set."""
+    """Startup console lists every CUDA GPU by index, not just device 0, on multi-GPU hosts."""
 
     @needs_torch
     def test_lists_all_devices_when_multi_gpu(self, capsys):

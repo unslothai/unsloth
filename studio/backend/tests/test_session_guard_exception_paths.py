@@ -228,11 +228,7 @@ def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
 
 @pytest.mark.parametrize("seed", list(range(100)))
 def test_randomised_schedules_leave_no_lifecycle_state(seed, removals):
-    """100 seeds mixing successes, failures, deletes and case variants.
-
-    Joins have a deadline and faulthandler is armed, so a deadlock leaves
-    stacks rather than a silent CI timeout.
-    """
+    """Joins have a deadline and faulthandler is armed, so a deadlock leaves stacks, not a CI timeout."""
     rng = random.Random(seed)
     ids = ["alpha", "Alpha", "beta", "BETA", "gamma"]
     errors: list[BaseException] = []

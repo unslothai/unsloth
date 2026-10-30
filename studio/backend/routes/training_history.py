@@ -81,9 +81,7 @@ def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
 
 
 def _resume_blocked_reason(row: dict) -> Optional[str]:
-    """The provenance gate's own explanation, for runs it refuses. Only consulted for a row that is
-    already known unresumable, so the extra work is bounded to those. Returns None when the
-    checkpoint is what is missing, leaving the client's existing wording in place for that case."""
+    """Provenance refusal reason for known-unresumable rows; None when the checkpoint is what is missing."""
     from core.training.provenance import resource_provenance_resume_blocker
     from core.training.resume import has_resume_state, training_run_config
 
@@ -305,8 +303,7 @@ async def get_training_run_detail(
     sharing_on = await asyncio.to_thread(get_preview_sharing_enabled) and not no_credential
 
     summary = await asyncio.to_thread(_summary_from_row, run, sharing_on)
-    # The same persisted path, in the summary as `model_name` and again inside `config_json`,
-    # so the WHOLE response goes through.
+    # The same persisted path sits in model_name and config_json, so redact the WHOLE response.
     from hub.utils.host_paths import redact_host_paths
 
     return redact_host_paths(

@@ -711,9 +711,8 @@ def effective_ctx_checkpoints(
 
 
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
-    """Return the context size load_model should treat as requested. Single source of truth for
-    load_model's ctx-override conditional so tests don't reimplement and assert against their own
-    logic."""
+    """Return the context size load_model treats as requested; the single source of truth for its
+    ctx-override conditional, so tests call it rather than reimplement the logic."""
     override = parse_ctx_override(args)
     return override if override is not None else fallback_n_ctx
 
@@ -1052,9 +1051,8 @@ def resolve_cache_type_kv(
 
 
 def parse_split_mode_override(args: Optional[Iterable[str]]) -> Optional[str]:
-    """Return the last-wins ``--split-mode`` / ``-sm`` value from extras. Mirrors
-    parse_cache_override for the multi-GPU split mode; returns the raw mode string (``tensor`` /
-    ``row`` / ``none`` / ``layer``), or None when extras don't set it."""
+    """Return the last-wins --split-mode or -sm value from extras as a raw mode string (tensor, row,
+    none or layer), or None; mirrors parse_cache_override for multi-GPU split mode."""
     return _last_flag_value(args, _SPLIT_MODE_FLAGS)
 
 

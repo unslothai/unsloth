@@ -53,8 +53,7 @@ NATIVE = 262144
 
 @pytest.fixture(autouse = True)
 def _no_opt_out(monkeypatch):
-    """A real environment read, so a host that has it set must not turn every refusal
-    test silently green."""
+    """Unset for real: a host with it set would turn every refusal test silently green."""
     monkeypatch.delenv(_ENV, raising = False)
 
 
@@ -283,8 +282,7 @@ class TestWhatLoadModelDoes:
         assert _ctx_values(captured["cmd"])[-1] == "4096"
 
     def test_the_ceiling_itself_is_allowed(self, tmp_path, monkeypatch):
-        """Off-by-one on the boundary would refuse the number the message tells the
-        user to type."""
+        """Off-by-one at the boundary would refuse the number the message tells users to type."""
         captured = _launch(tmp_path, monkeypatch, n_ctx = CEILING)
         assert _ctx_values(captured["cmd"])[-1] == str(CEILING)
 
@@ -306,8 +304,7 @@ class TestWhatLoadModelDoes:
         assert _ctx_values(captured["cmd"])[-1] == "32768"
 
     def test_an_unsizeable_kv_cache_does_not_refuse(self, tmp_path, monkeypatch):
-        """The branch falls back to a flat 4096 there. It is a guess, and refusing
-        against it would block contexts that load fine today."""
+        """Falls back to a flat 4096 guess; refusing against it would block loads that work."""
         captured = _launch(tmp_path, monkeypatch, n_ctx = 32768, can_estimate_kv = False)
         assert _ctx_values(captured["cmd"])[-1] == "32768"
 
@@ -338,14 +335,12 @@ class TestAVirtualisedMetalDevice:
         assert _ctx_values(cmd)[-1] == "32768"
 
     def test_a_physical_mac_in_the_same_shape_is_still_refused(self, tmp_path, monkeypatch):
-        """Pins that the exemption is the virtualised device, not the CPU placement
-        it happens to produce."""
+        """Pins the exemption to the virtualised device, not the CPU placement it produces."""
         with pytest.raises(RuntimeError, match = "unified"):
             _launch(tmp_path, monkeypatch, n_ctx = 32768, paravirtual = False)
 
     def test_auto_is_still_capped_there(self, tmp_path, monkeypatch):
-        """The exemption is from the refusal only. Auto still shrinks to the ceiling,
-        which is what keeps a virtualised Mac off its native context."""
+        """Only the refusal is exempt; Auto still shrinks to the ceiling, not native context."""
         cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, paravirtual = True)["cmd"]
         assert _ctx_values(cmd)[-1] == str(CEILING)
 
@@ -359,8 +354,7 @@ class TestTheMessageSurvivesTheRoute:
         return str(excinfo.value)
 
     def test_it_is_not_relabelled_as_an_unsupported_model(self, tmp_path, monkeypatch):
-        """Context errors must not be relabelled unsupported: the user can simply lower the context
-        instead."""
+        """Context errors must not be relabelled unsupported; the user can lower the context."""
         import ast
         import re
 
@@ -376,8 +370,7 @@ class TestTheMessageSurvivesTheRoute:
         assert [h for h in hints if h.lower() in message] == []
 
     def test_it_carries_nothing_for_the_path_redactor_to_eat(self, tmp_path, monkeypatch):
-        """redact_native_paths replaces any leased path with <native_path>. A message
-        with no path in it cannot be cut in half by that."""
+        """redact_native_paths replaces leased paths, so the message must contain no path."""
         message = self._message(tmp_path, monkeypatch)
         assert "/" not in message.replace("q8_0", "")
 
@@ -399,8 +392,7 @@ class TestWhatARefusedReloadCosts:
         assert not backend.is_active
 
     def test_a_smaller_retry_after_a_refusal_succeeds(self, tmp_path, monkeypatch):
-        """Nothing about the refusal is sticky: no half-written request state, and no
-        dedupe that would read the retry as already loaded."""
+        """A refusal leaves no half-written state, and no dedupe marks the retry as loaded."""
         backend = LlamaCppBackend()
         with pytest.raises(RuntimeError, match = "unified"):
             _launch(tmp_path, monkeypatch, n_ctx = 32768, backend = backend)
@@ -429,8 +421,7 @@ class TestTheContextCanArriveByAnotherDoor:
         assert _ctx_values(cmd)[-1] == "4096"
 
     def test_a_zero_pass_through_is_floored_not_refused(self, tmp_path, monkeypatch):
-        """ "-c 0" is read as non-explicit and handled by the existing floor (#5118),
-        so it must not turn into a refusal."""
+        """The -c 0 pass-through is read as non-explicit and floored, not refused (#5118)."""
         cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, extra_args = ["-c", "0"])["cmd"]
         assert _ctx_values(cmd) and _ctx_values(cmd)[-1] != "0"
 
@@ -448,13 +439,11 @@ def _named_ceiling(message: str) -> int:
 
 
 class TestWhenEvenTheFitsOwnMinimumDoesNotFit:
-    """The fit floors at min_ctx, so a 4096 back means either it fits or nothing does; pins that
-    contract."""
+    """The fit floors at min_ctx, so a 4096 answer means it fits or nothing does; pinned here."""
 
     def test_the_premise_the_fit_hands_back_its_own_floor(self):
-        """Not a behaviour assertion -- a guard on the return contract the branch reads.
-        998 MiB of weights against a 1000 MiB budget leaves room for 2048 tokens at 1 KiB
-        each, yet asking with the default floor still answers 4096."""
+        """A guard on the return contract: 998 MiB of weights in a 1000 MiB budget leaves room for
+        2048 tokens at 1 KiB each, yet the default floor still answers 4096."""
         backend = LlamaCppBackend()
         backend._can_estimate_kv = lambda: True
         backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 1024
@@ -495,8 +484,7 @@ class TestWhenEvenTheFitsOwnMinimumDoesNotFit:
             self._tight(tmp_path, monkeypatch, n_ctx = 8192)
 
     def test_auto_starts_at_what_fits_not_at_the_floor(self, tmp_path, monkeypatch):
-        """The same number the refusal names, or the UI advertises as its maximum a
-        context that is itself the over-commit."""
+        """Auto starts at what fits, the same number the refusal names, not an over-commit."""
         cmd = self._tight(tmp_path, monkeypatch, n_ctx = 0)["cmd"]
         assert _ctx_values(cmd)[-1] == str(_TIGHT_CEILING)
 
@@ -505,8 +493,7 @@ class TestWhenEvenTheFitsOwnMinimumDoesNotFit:
         assert _ctx_values(cmd)[-1] == "512"
 
     def test_weights_over_budget_is_still_never_refused(self, tmp_path, monkeypatch):
-        """The exemption the guard shipped with: nothing was measured there, so refusing
-        would block loads that work today."""
+        """The old exemption had no measurement, so refusing there would block loads that work."""
         cmd = _launch(
             tmp_path,
             monkeypatch,
@@ -542,8 +529,7 @@ class TestAContextAboveTheModelsNativeLength:
     def test_the_load_does_not_arrive_carrying_a_warning_against_itself(
         self, tmp_path, monkeypatch
     ):
-        """The published max_context_length must match the loaded context, or a warning fires
-        against itself."""
+        """The published max_context_length must equal the loaded one, or a warning fires."""
         out = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)
         loaded = int(_ctx_values(out["cmd"])[-1])
         published = out["backend"].max_context_length
@@ -611,8 +597,7 @@ class TestAnAboveNativeRequestOnAShortNativeModel:
         )
 
     def test_the_intermediate_context_launches(self, tmp_path, monkeypatch):
-        """The other half of the contradiction, and what makes the number in the
-        refusal checkable: this same load is one the guard already allows."""
+        """This same load is allowed, which makes the number in the refusal checkable."""
         cmd = self._short(tmp_path, monkeypatch, n_ctx = self._FITS)["cmd"]
         assert _ctx_values(cmd)[-1] == str(self._FITS)
 
@@ -624,8 +609,7 @@ class TestAnAboveNativeRequestOnAShortNativeModel:
         assert f"{self._NATIVE:,}" not in message
 
     def test_the_re_probe_only_ever_raises_the_ceiling(self, tmp_path, monkeypatch):
-        """It runs on every above-native request, including ones where the floored
-        probe already fits, so it must not talk a working ceiling back down."""
+        """It runs on every above-native request, so it must never lower a working ceiling."""
         with pytest.raises(RuntimeError) as excinfo:
             _launch(
                 tmp_path,
@@ -661,8 +645,7 @@ class TestWhenNothingFitsAtAll:
             _launch(tmp_path, monkeypatch, n_ctx = 512, **self.NOTHING_FITS)
 
     def test_the_refusal_names_no_ceiling(self, tmp_path, monkeypatch):
-        """Naming one would be inventing a number the fit never vouched for, and the
-        user would lower to it and hit the same wall."""
+        """Naming one invents a number the fit never vouched for; users hit the same wall."""
         with pytest.raises(RuntimeError) as excinfo:
             _launch(tmp_path, monkeypatch, n_ctx = 8192, **self.NOTHING_FITS)
         message = str(excinfo.value)
@@ -794,9 +777,8 @@ class TestACpuPinnedProjectorOnUnifiedMemory:
             )
 
     def test_the_same_load_without_the_projector_is_allowed(self, tmp_path, monkeypatch):
-        """The control, and the whole point: 32768 fits on this machine once the
-        projector is not in the pool, so the refusal above is about those bytes and not
-        about a budget too small for anything."""
+        """The control: 32768 fits once the projector is out of the pool, so the refusal is about
+        those bytes, not a budget too small for anything."""
         captured = _launch(
             tmp_path,
             monkeypatch,
@@ -807,8 +789,7 @@ class TestACpuPinnedProjectorOnUnifiedMemory:
         assert _ctx_values(captured["cmd"])[-1] == "32768"
 
     def test_the_pinned_projector_is_charged_once_and_not_twice(self, tmp_path, monkeypatch):
-        """A pinned projector is charged once in the common fit total, so a second charge refuses
-        valid loads."""
+        """A pinned projector is charged once; a second charge would refuse valid loads."""
         captured = _launch(
             tmp_path,
             monkeypatch,
@@ -1548,8 +1529,7 @@ def test_every_forced_full_offload_arm_owes_the_fit_on_retry():
     tree = ast.parse(textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model)))
 
     def pins_full_offload(stmt):
-        """The emission as a DIRECT statement of the arm, so an enclosing `if` does
-        not also count as one."""
+        """Matches only a DIRECT statement of the arm, so an enclosing if does not also count."""
         if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
             return False
         call = stmt.value
@@ -1724,13 +1704,11 @@ class TestFitterKeepsTheWiredHeadroom:
 
 
 class TestAutoGivesUpContextBeforeLayers:
-    """Auto launches a fixed -c, so past the wired headroom llama.cpp's fitter can only
-    move layers to CPU. The context the headroom holds is already measured; Auto launches
-    at it while that stays at or above the Auto floor."""
+    """Auto launches at a fixed -c, so past the wired headroom the fitter can only move layers to
+    CPU; Auto uses the measured headroom while it stays at or above the Auto floor."""
 
     GiB = 1024**3
-    # Footprint here is 6 GiB plus 64 KiB per token: the 9 GiB budget holds 49,152,
-    # 7.5 GiB of headroom 24,576, and 6.4 GiB less than the 8,192 floor.
+    # 6 GiB + 64 KiB/token: 9 GiB fits 49,152; 7.5 GiB headroom 24,576; 6.4 GiB short of 8,192.
     FITS = dict(
         real_fit = True,
         budget_bytes = 9 * 1024**3,

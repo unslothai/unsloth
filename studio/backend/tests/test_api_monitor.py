@@ -379,9 +379,8 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
 
 
 def test_clear_keeps_the_callers_own_request_that_is_still_running():
-    """Clear log drops history, and a request in flight is not history yet. Dropping it
-    loses the request outright: the active count falls to zero and the finish that follows
-    has no entry left to land on, so a completed call never appears at all."""
+    """Clear keeps an in-flight request, since dropping it zeroes the active count and the later
+    finish then has no entry to land on."""
     monitor = ApiMonitor(max_entries = 4)
     done = _start(monitor, prompt = "finished", subject = "alice")
     monitor.finish(done)
@@ -568,8 +567,7 @@ def test_clear_hides_shared_lifecycle_rows_for_that_caller_only():
 
 
 def test_clear_leaves_a_running_shared_row_visible():
-    """A load still in progress is live state, not history, so clearing the log
-    must not hide the row that shows it."""
+    """A load still running is live state, so clearing the log must not hide its row."""
     monitor = ApiMonitor(max_entries = 10)
     running = monitor.record_lifecycle(event = "load", model = "org/A", running = True)
     monitor.clear(subject = "alice")
@@ -577,8 +575,7 @@ def test_clear_leaves_a_running_shared_row_visible():
 
 
 def test_hidden_shared_ids_do_not_outlive_their_entries():
-    """The hidden set names rows that exist, so it stays bounded by the ring
-    buffer instead of growing for the life of the process."""
+    """The hidden set names only rows that exist, so it stays bounded by the ring buffer."""
     monitor = ApiMonitor(max_entries = 2)
     monitor.record_lifecycle(event = "unload", model = "org/A")
     monitor.clear(subject = "alice")
@@ -683,8 +680,7 @@ def test_monitor_route_reports_disabled(monkeypatch):
 
 
 def test_monitor_route_disabled_still_hides_recorded_rows(monkeypatch):
-    """A disabled monitor records nothing, so the route reports an empty list
-    even after traffic that would otherwise have shown up."""
+    """A disabled monitor records nothing and the route hides already-recorded rows too."""
     monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled = False))
     _start(inference_route.api_monitor, subject = "test-user")
     app = FastAPI()
@@ -1032,9 +1028,8 @@ def test_queue_state_counts_rag_vision_captioning(monkeypatch):
 
 @pytest.mark.parametrize("fails", [False, True])
 def test_rag_vision_call_balances_the_direct_counter(monkeypatch, fails):
-    """Both outcomes must return the count to zero: a failed vision call is swallowed
-    as non-fatal, so a leak here would pin the panel at busy for the whole session.
-    """
+    """Both outcomes must return the active count to zero, since a failed vision call is swallowed
+    as non-fatal and a leak would pin the panel at busy for the whole session."""
     import routes.inference as inf
     from core.rag import captioner
 

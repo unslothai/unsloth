@@ -262,8 +262,7 @@ def test_a_turn_that_is_not_fitted_leaves_the_saved_boundary_to_the_next(
     assert len(asked) == 1
 
 
-# The cap's budget notice; then the no-op notice a repeated call earns, once, twice, and
-# twice with the model's own words in between.
+# The cap's budget notice, then no-op notices: once, twice, and twice with model text between.
 @pytest.mark.parametrize(
     "replies, chars, fits, dropped",
     [

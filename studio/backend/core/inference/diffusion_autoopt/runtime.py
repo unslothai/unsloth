@@ -7,9 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-# Multi-call renders (a request that calls its pipeline more than once, e.g. LTX-2.5's two stages) use the
-# family-agnostic helpers of diffusion_multistage; they are the runtime layer's multi-runner primitives, re-exported
-# here so the optimizer has one runtime entry point instead of a second copy.
+# Re-exports diffusion_multistage's multi-call helpers so the optimizer has one runtime entry point.
 from ..diffusion_multistage import encode_once, hold_denoiser_between_calls  # noqa: F401
 
 

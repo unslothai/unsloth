@@ -961,8 +961,7 @@ def test_messages_keep_text_order_when_the_finish_chunk_carries_text(v1, monkeyp
 
 
 def test_messages_keep_default_thinking_out_of_the_stop_filter(v1, monkeypatch):
-    # No thinking controls sent, yet the provider thinks by default: a stop word in the thought
-    # must neither cut the answer nor leak the markup.
+    # Stop words in default-on thinking must neither cut the answer nor leak the markup.
     import routes.inference as inf
 
     monkeypatch.setattr(

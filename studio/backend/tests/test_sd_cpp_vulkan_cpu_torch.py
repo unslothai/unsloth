@@ -162,8 +162,7 @@ def test_a_uhd_beside_an_arc_needs_the_arcs_own_node(monkeypatch, arc_node_reach
 @pytest.mark.parametrize(
     "arc_node_reachable, drivers, expected",
     [
-        # The Arc node is not mounted and only the Intel driver loads: Intel Vulkan sees the UHD alone and the AMD
-        # card has no driver, so the iGPU would render.
+        # With the Arc unmounted, only Intel's driver loads, so the UHD alone would render.
         (False, {"intel"}, "auto"),
         # The AMD card's own driver loads: it renders, whatever the Arc's node.
         (False, {"amd"}, "vulkan"),

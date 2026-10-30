@@ -80,8 +80,7 @@ def test_an_unresumable_partial_is_priced_as_a_full_refetch(blobs):
 
 
 def test_a_one_file_quant_reads_back_its_full_size(blobs):
-    """Nothing to keep, so a resume costs the whole quant -- the case users report as the
-    model downloading all over again, and the number has to say so."""
+    """With nothing to keep, a resume costs the whole quant, and the number must say so."""
     plan = plan_from_expected_files(
         "Q4_K_M",
         [ExpectedFile(path = "model-Q4_K_M.gguf", size = 4 * GB, sha256 = SHARD_A)],
@@ -147,8 +146,7 @@ def test_an_unnamed_variant_is_not_priced(blobs, state):
 
 
 def test_a_local_row_is_not_capped_by_the_shards_it_already_has(blobs, state):
-    """A local scan sizes a variant from the shards ON DISK, so an early interruption makes
-    that total smaller than the transfer still to come."""
+    """Shards on disk undercount a partial download, so a local row must not be capped by them."""
     shard_c = "c" * 64
     _write_manifest(
         [

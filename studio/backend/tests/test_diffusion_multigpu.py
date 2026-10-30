@@ -118,8 +118,7 @@ def test_no_split_keeps_single_card_behaviour(overrides):
 
 
 def test_text_encoders_alone_when_the_decode_needs_the_runtime_room():
-    # Video-like: the secondary cannot also hold the decode headroom, but the encoders alone fit it, and the denoiser +
-    # VAE fit the primary.
+    # Secondary can't hold decode headroom: encoders alone fit, denoiser+VAE go on primary.
     kwargs = dict(
         companion_dense_mib = 11500,
         text_encoder_dense_mib = 11000,
@@ -1663,8 +1662,7 @@ def test_split_video_request_is_guarded_on_every_card():
     assert (
         vid.video_split_shortfall_message(cards, family = "f", available_mib = roomy.get, **big) is None
     )
-    # the decode card is priced for the decoded clip; the denoiser card for its weights, the base headroom and the
-    # decoded frames copied back to it
+    # Decode card: the decoded clip; denoiser card: weights, base headroom, frames copied back.
     frames_mib = -(-1280 * 720 * 121 * 3 * 4 // (1 << 20))
     home_mib = max(frames_mib, vid._VIDEO_DENOISE_ACTIVATION_MIB)
     tight = {0: 4 + home_mib + dm.DEFAULT_BASE_OVERHEAD_MIB, 1: 3 + dm.DEFAULT_BASE_OVERHEAD_MIB}

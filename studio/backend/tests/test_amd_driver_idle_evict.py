@@ -242,8 +242,7 @@ def test_a_fixed_driver_publishes_nothing(monkeypatch):
     [({"AMD Radeon AI PRO R9700": FIXED}, False), ({"AMD Radeon AI PRO R9700": BROKEN}, True)],
 )
 def test_the_live_adapter_decides_over_a_stale_same_named_record(monkeypatch, live, flagged):
-    # One of two identical R9700s was replaced: the registry holds both an old and a current
-    # record under one name, and only WMI knows which version is installed.
+    # Stale same-named registry records exist; only WMI knows the installed driver version.
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw.threading, "Thread", _InlineThread)
     _registry(monkeypatch, _amd(driver = BROKEN), _amd(driver = FIXED))

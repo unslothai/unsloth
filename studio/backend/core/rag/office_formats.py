@@ -1517,11 +1517,8 @@ def _ppt_record_at(data: bytes, offset: int | None, kind: int) -> tuple[int, int
 
 
 def _ppt_current(cf: CompoundFile, data: bytes) -> tuple[dict[int, int], int] | None:
-    """Persist id -> offset as of the latest save, and the document's persist id.
-
-    Incremental saves append new versions of records, so the stream also holds stale ones;
-    the edit chain from "Current User" says which are live.
-    """
+    """Returns (persist id to offset map as of the latest save, and the document's persist id);
+    stale record copies are skipped via the Current User chain."""
     if not cf.exists("Current User"):
         return None
     user = cf.read("Current User")

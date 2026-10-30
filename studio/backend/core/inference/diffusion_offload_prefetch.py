@@ -621,9 +621,7 @@ class GroupPrefetcher:
         )
 
     def _carry(self, ahead: int) -> None:
-        """While the last block runs, at most ``TAIL_CARRY_GROUPS``: its activations are live and the allocator's peak
-        follows host order, so a second group beside them lifts the peak (FLUX at 32k tokens); after it frees, the
-        rest of the depth follows."""
+        """While the last block runs, carry at most TAIL_CARRY_GROUPS: a second group lifts the peak."""
         carried = self.__dict__.setdefault("carried", set())
         running = any(gid not in carried for gid in self.ready)
         limit = min(self.depth, TAIL_CARRY_GROUPS) if running else self.depth

@@ -527,8 +527,7 @@ def create_run(
             (assistant_message_id,),
         ).fetchone()
         if assistant is None:
-            # An empty placeholder adds no attachment entries. Preserve an already
-            # clean inventory without clearing older dirtiness or advancing its version.
+            # Empty placeholder adds nothing; clean inventory stays clean with its version.
             inventory_was_clean = (
                 conn.execute(
                     "SELECT 1 FROM chat_attachment_inventory_state WHERE singleton=1 AND dirty=0"

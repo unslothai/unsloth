@@ -75,9 +75,7 @@ WithoutCredential = Annotated[bool, Depends(request_admitted_without_credential)
 
 
 def _looks_like_command(value: str) -> bool:
-    """Whitespace is a one-way signal: a URL can't hold an unencoded space, so a value with whitespace is
-    definitely a command. No whitespace proves nothing (a lone token may be a single-arg command or a
-    scheme-less URL)."""
+    """Whitespace proves a command (a URL cannot hold an unencoded space); no whitespace proves nothing."""
     return any(ch.isspace() for ch in value)
 
 

@@ -52,9 +52,7 @@ _cache: dict[str, dict[str, Any]] = {}
 
 
 def _as_float(value: Any) -> Optional[float]:
-    """Coerce JSON numbers defensively; metadata is written by the client. json accepts integers of any width,
-    and float() raises OverflowError past ~1e308, so one oversized counter would 500 the whole panel.
-    """
+    """float() overflows past ~1e308 on huge JSON ints; one such counter must not 500 the panel."""
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
@@ -92,9 +90,8 @@ def _resolve_zone(tz_name: str, tz_offset_minutes: int):
 
 
 def _local_stamp(created_at_ms: int, zone) -> Optional[datetime]:
-    """Wall-clock time in the caller's timezone, not the server's. created_at is a client-supplied
-    integer that SQLite stores unchecked, so a value outside datetime's range is possible. Drop that
-    row rather than let one bad import take down the whole panel."""
+    """Wall-clock time in the caller's timezone, not the server's; a client-supplied created_at
+    outside datetime's range is dropped, not raised"""
     if created_at_ms <= 0:
         return None
     try:
@@ -278,9 +275,7 @@ def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
 
 
 def _surviving_original_keys(conn) -> set[tuple[str, int, str]]:
-    """Identity of every message still living in a thread that has been forked. Clones get fresh ids,
-    so there is nothing to join on. Within one thread the timestamp and role are enough to recognise
-    the row a clone was taken from."""
+    """Keys (thread_id, created_at, role) for surviving originals, since forked clones get fresh ids."""
     rows = conn.execute(
         """
         SELECT m.thread_id, m.created_at, m.role
@@ -603,9 +598,8 @@ def compute_profile_stats(
     *,
     subject: str = "",
 ) -> dict[str, Any]:
-    """Aggregate profile statistics, subject-scoping only external API usage. Legacy Unsloth chat and
-    training history is install-wide because those rows have no authenticated owner. An empty
-    subject intentionally sees no API receipts, keeping non-route callers fail-closed."""
+    """API usage is subject-scoped; an empty subject sees no API receipts, keeping non-route callers
+    fail-closed; legacy chat and training history is install-wide"""
     days = max(1, min(int(days), MAX_DAILY_DAYS))
     tz_offset_minutes = max(
         -MAX_TZ_OFFSET_MINUTES, min(int(tz_offset_minutes), MAX_TZ_OFFSET_MINUTES)

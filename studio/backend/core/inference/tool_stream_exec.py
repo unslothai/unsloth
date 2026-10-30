@@ -97,16 +97,9 @@ def _drain_queue(
     max_chars: int | None,
     held: list | None = None,
 ) -> tuple[str, bool]:
-    """Pull every currently-queued item, joining chunks in FIFO order.
-
-    With ``max_chars`` set, stop concatenating at the budget and discard the
-    remaining chunks in place, bounding peak allocation when a chatty tool queues
-    far more than the cap before the consumer wakes. The crossing chunk is sliced
-    to one char past the budget, enough for the caller's truncation to stay
-    byte-identical. Returns ``(joined_text, hit_sentinel)``; the surplus is still
-    scanned so completion is detected promptly. A structured event (a dict) ends
-    the run of text and waits in ``held``, so it is never joined or dropped.
-    """
+    """Joins queued chunks FIFO up to max_chars, discarding the rest but still scanning it so
+    completion is detected; crossing chunk sliced one char past budget; dict events held, never
+    joined or dropped"""
     parts: list[str] = []
     total = 0
     dropping = False

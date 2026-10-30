@@ -818,8 +818,7 @@ def test_max_tokens_equal_to_the_window_is_the_context_wall(monkeypatch):
 
 
 def test_a_refused_continuation_does_not_double_count_its_usage(monkeypatch):
-    """The fold ran before the decision, and the reject path reported the same tokens
-    again through _build_metadata_event."""
+    """Usage is folded before the decision; the reject path must not report it twice."""
 
     payloads: list[dict] = []
     backend = _make_backend(
@@ -885,9 +884,8 @@ def test_an_in_loop_continuation_with_room_is_still_sent(monkeypatch):
 
 
 def test_replayed_output_is_neutralized_before_it_is_sent(monkeypatch):
-    """The replay is text the MODEL produced, and the first payload neutralized
-    everything it carried. Sent raw, a template delimiter inside it -- printed code
-    being the obvious case -- is read back as chat structure."""
+    """The replay is model-produced text already neutralized in the first payload; sent raw, a
+    template delimiter in it (such as printed code) is read back as chat structure."""
 
     with_delimiter = _HALF_AN_ANSWER + "\nprint('<|im_end|>')\n"
     payloads: list[dict] = []
@@ -1014,8 +1012,7 @@ def test_a_final_continuation_does_not_reset_the_route_cursor(monkeypatch):
     events = _run_no_tools(backend)
 
     assert len(payloads) == 2, "the answer was not continued"
-    # Only what happens AFTER text is on screen matters: a blank status before the
-    # first content event resets a cursor that is already empty.
+    # Only statuses after the first content count: a blank one earlier resets an empty cursor.
     kinds = [(e.get("type"), e.get("text")) for e in events]
     first_content = next(i for i, (kind, _) in enumerate(kinds) if kind == "content")
     after = [text for kind, text in kinds[first_content:] if kind == "status"]

@@ -41,8 +41,7 @@ import time
 
 
 def test_intent_signal_matches_plan_only_phrases():
-    """Original behaviour is preserved: intent regex still matches the
-    plan-without-action phrases that motivated the re-prompt."""
+    """Intent regex matches the plan-without-action phrases that motivated the re-prompt."""
     plan_only_samples = [
         "I'll search the web for that.",
         "I will look that up.",
@@ -76,9 +75,7 @@ def test_artifact_regex_detects_closed_code_fence():
 
 
 def test_artifact_regex_detects_non_alpha_info_strings():
-    """Common languages with digits / symbols in the fence info string
-    (python3, c++, c#, objective-c, ts-node, bash-session) must all be
-    recognised as complete code answers."""
+    """Info strings with digits or symbols (python3, c++, c#) must still count as complete code answers."""
     samples = [
         "First, let me write it.\n```python3\nprint('hi')\n```",
         "First, let me write it.\n```c++\nint main() { return 0; }\n```",
@@ -197,9 +194,7 @@ def test_quoted_closer_does_not_close_an_unquoted_fence():
 
 
 def test_balanced_inline_fence_span_is_not_an_opener():
-    """A balanced inline span is not a fence, wherever on the line it starts.
-    Scanning one delimiter per line read the first run as an opener and left the
-    answer looking unfinished."""
+    """A balanced inline span must not count as an opener, or the finished answer looks unfinished."""
     for tail in ("The marker is ```python```.", "```python``` is the syntax."):
         text = "First, let me show it.\n```python\nx = 1\n```\n" + tail
         assert _has_answer_artifact(text), tail
@@ -207,8 +202,7 @@ def test_balanced_inline_fence_span_is_not_an_opener():
 
 
 def test_bare_delimiter_in_prose_after_a_closed_block():
-    """A delimiter ending the line escapes both trailing-prose rules. Once a
-    block has closed it is a literal."""
+    """After a block closes, a bare delimiter in later prose is literal, not an opener."""
     samples = [
         "First, let me show it.\n```python\nx = 1\n```\nWrap it in ```",
         "First, let me show it.\n~~~python\nx = 1\n~~~\nOr use ~~~",
@@ -221,8 +215,7 @@ def test_bare_delimiter_in_prose_after_a_closed_block():
 
 
 def test_fence_body_indented_four_spaces_is_not_a_closer():
-    """CommonMark allows a fence at most 3 columns of indentation, so a deeper
-    delimiter in a markdown example is body and the block is still open."""
+    """A 4-space-indented closer is body; CommonMark allows at most 3 columns of indent."""
     text = "First, let me show it.\n```markdown\n    ```\nstill going"
     assert not _has_answer_artifact(text)
     assert _would_reprompt(text)
@@ -230,9 +223,7 @@ def test_fence_body_indented_four_spaces_is_not_a_closer():
 
 
 def test_fence_indentation_is_measured_from_its_container():
-    """The 3-column allowance comes from the container, so a block a list indents
-    closes at the list's column, while a block that merely indented itself does
-    not get those columns twice."""
+    """The 3-column allowance comes from the container, so a self-indented block does not get it twice."""
     nested = [
         "First, let me show it.\n  - ```python\n    x = 1\n    ```",
         "First, let me show it.\n    - ```python\n      x = 1\n      ```",
@@ -246,17 +237,15 @@ def test_fence_indentation_is_measured_from_its_container():
 
 
 def test_blockquote_inside_a_list_item_is_one_container():
-    """``- > ```py`` is a quote in a list item, so the opener and the closer under it
-    have to be read at the same quote depth."""
+    """Opener and closer in a quoted list item must be read at the same quote depth."""
     text = "First, let me show it.\n- > ```python\n  > x = 1\n  > ```"
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
 
 
 def test_indented_code_literal_is_not_a_fence_opener():
-    """Past 3 columns a delimiter on its own line is an indented code line, so a
-    fence shown as a literal must not reopen after a finished block. A quote marker
-    that deep is literal too, since a blockquote cannot start there."""
+    """Past 3 columns of indent a delimiter is code, not a fence, and a quote marker that deep is
+    literal too; neither can reopen a finished block."""
     for tail in ("    ```python", "    > ```python"):
         text = "First, let me show it.\n```python\nx = 1\n```\nLiteral:\n\n" + tail
         assert _has_answer_artifact(text), tail
@@ -272,17 +261,14 @@ def test_closer_must_start_its_own_line():
 
 
 def test_prose_delimiter_and_real_opener_on_one_line():
-    """Every run on a line is examined, so a prose delimiter earlier in the line
-    does not hide the opener that follows it."""
+    """A prose delimiter earlier on a line must not hide the real opener that follows it."""
     text = "First, let me explain: use ``` for fences; here is code: ```python\nx = 1\n```"
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
 
 
 def test_closing_tag_in_prose_does_not_eat_a_fence_closer():
-    """Removing complete markup must not span a fence: an opening tag inside a
-    block paired with a closing one in the prose after it took the fence's own
-    closer with it, leaving a finished answer looking unfinished."""
+    """A tag inside a fence must not pair with a closer in prose, or the fence loses its own closer."""
     samples = [
         "First, let me show it.\n```html\n<html>\n```\nClose it with </html>.",
         "First, let me show it.\n```xml\n<svg>\n```\nEnd it with </svg>.",
@@ -299,8 +285,7 @@ def test_closing_tag_in_prose_does_not_eat_a_fence_closer():
 
 
 def test_root_tag_may_carry_many_attributes():
-    """A real SVG root carries namespace, accessibility and data attributes; the
-    opener bound has to fit one."""
+    """A real SVG root carries many attributes, so the opener match must allow for them."""
     tag = (
         '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
         'width="200" height="100" viewBox="0 0 200 100" fill="none" stroke="black" '
@@ -322,8 +307,7 @@ def test_a_sentence_word_is_not_an_info_string():
 
 
 def test_markup_tags_named_in_a_plan_are_not_a_page():
-    """A page carries child markup. A plan that only names the root tags, closed or
-    not, is describing work still to do."""
+    """A plan that only names root tags, closed or not, is work still to do, not a page."""
     samples = [
         "First, I'll create <html lang='en' and then close it with </html>",
         "First, I'll draw <svg width='10' and then close with </svg>",
@@ -338,8 +322,7 @@ def test_markup_tags_named_in_a_plan_are_not_a_page():
 
 
 def test_dedented_delimiter_does_not_close_a_list_fence():
-    """A delimiter dedented out of the list leaves the container, so it starts a new
-    top-level block rather than closing the one the list opened."""
+    """A dedented delimiter leaves the list's container, so it cannot close the list's fence."""
     text = "First, let me show it.\n- ```python\n  x = 1\n```"
     assert not _has_answer_artifact(text)
     assert _would_reprompt(text)
@@ -376,8 +359,7 @@ def test_markup_closing_tag_tolerates_whitespace():
 
 
 def test_blockquote_marker_does_not_close_an_open_fence_early():
-    """The ``>`` tolerance is for the closer only: quoted prose must not close
-    a block that is still open."""
+    """Only a closer may carry the > marker, so quoted prose cannot close an open block."""
     text = "First, let me write it.\n```python\nimport sys\n> ``` is the delimiter"
     assert not _has_answer_artifact(text)
     assert _would_reprompt(text)
@@ -518,8 +500,7 @@ def test_reprompts_on_numbered_plan_only_stall():
 
 
 def test_reprompts_on_intent_with_numbered_action_plan():
-    """Numbered list where each item is an action (search, fetch, ...)
-    paired with intent phrasing is treated as a plan, not an answer."""
+    """A numbered list of actions after intent phrasing is a plan, not an answer."""
     content = (
         "First, I'll do these:\n"
         "1. Search the web\n"
@@ -536,8 +517,7 @@ def test_reprompts_on_incomplete_html_intent():
 
 
 def test_plan_framing_requires_apostrophe_in_ill():
-    """The ``i['’]ll`` intent alternative requires an apostrophe so the
-    regex does not match the word "ill" (sick)."""
+    """The intent alternative needs an apostrophe, so the regex does not match the word ill."""
     samples = [
         ("She is ill. Here is the list:\n1. Apple\n2. Orange\n3. Banana", False),
         ("I'll search the web for X:\n1. step\n2. step", True),
@@ -684,8 +664,7 @@ def test_artifact_regex_rejects_tilde_close_with_trailing_text():
 
 
 def test_artifact_regex_detects_four_or_more_backticks():
-    """CommonMark allows opening fences of 3+ backticks. Models use
-    4+ delimiters when the body itself contains a triple fence."""
+    """Fences of 4+ backticks are real openers, since a body can hold a triple fence."""
     samples = [
         "First, let me show.\n````python\nprint('``` inside')\n````",
         "Let me show.\n`````markdown\n```python\nprint(1)\n```\n`````",
@@ -703,16 +682,13 @@ def test_artifact_regex_detects_four_or_more_tildes():
 
 
 def test_reasoning_only_visible_artifact_suppresses_reprompt():
-    """With no content tokens at all the loop yields the reasoning as the answer, so
-    a complete artifact inside it is the answer and suppresses the re-prompt."""
+    """No content: reasoning is the answer, so a complete artifact in it skips the re-prompt."""
     reasoning = "First, let me set up pygame.\n```python\nimport pygame\npygame.init()\n```"
     assert not _gate_would_reprompt("", reasoning, False)
 
 
 def test_artifact_regex_rejects_shorter_commonmark_closing_fence():
-    """Four-or-more delimiter opening fence cannot be closed by fewer
-    delimiters. The opener cannot backtrack to three delimiters and
-    consume the rest as info-string text."""
+    """A four-or-more delimiter fence is closed only by a run at least as long, not by a shorter one."""
     samples = [
         "First, let me show.\n````python\nprint('hi')\n```",
         "First, let me show.\n~~~~python\nprint('hi')\n~~~",
@@ -723,9 +699,7 @@ def test_artifact_regex_rejects_shorter_commonmark_closing_fence():
 
 
 def test_artifact_regex_accepts_longer_commonmark_closing_fence():
-    """CommonMark allows the closing fence to have MORE delimiters than
-    the opener. A 3-backtick opener with a 4-backtick close, or a
-    3-tilde opener with a 4-tilde close, is still a complete artifact."""
+    """CommonMark closers may be longer than the opener, so a fence closed by more delimiters counts."""
     samples = [
         "First, let me show.\n```python\nprint('hi')\n````",
         "First, let me show.\n````python\nprint('``` inside')\n`````",
@@ -737,9 +711,7 @@ def test_artifact_regex_accepts_longer_commonmark_closing_fence():
 
 
 def test_no_reprompt_on_lesson_plan_answer_without_explicit_header():
-    """A final answer with a ``Plan:`` heading (no ``Here's my``
-    possessive) and no tool framing must STILL count as an answer.
-    Common cases: lesson plan, workout plan, meal plan."""
+    """A Plan: heading in a final answer, with no tool framing, must still count as an answer."""
     samples = [
         (
             "Plan:\n"
@@ -777,9 +749,7 @@ def test_reprompts_on_first_step_numbered_compute_plan():
 
 
 def test_reprompts_on_incomplete_html_with_inner_numbered_list():
-    """Partial markup (open <html> with no </html>) plus a numbered
-    list must NOT be treated as a final answer; the markup is still
-    being streamed."""
+    """Open markup with no closing tag plus a numbered list is still streaming, not a final answer."""
     samples = [
         ("First, I'll draft a page.\n<html><body>\n1. Section one.\n2. Section two.\n"),
         ("Let me design a chart.\n<svg width='100'>\n1. circle.\n2. rect."),
@@ -801,8 +771,7 @@ def test_complete_html_with_trailing_prose_tag_still_counts():
 
 
 def test_reprompts_on_empty_html_or_svg_skeleton_mention():
-    """``<html></html>`` / ``<svg></svg>`` with no body content is a
-    plan-only mention, not a substantive answer."""
+    """An empty <html></html> or <svg></svg> skeleton in a plan is a mention, not an answer."""
     samples = [
         "First, I'll create an <html></html> skeleton, then add CSS.",
         "First, I'll draft a <svg></svg> icon, then add shapes.",
@@ -838,8 +807,7 @@ def test_no_reprompt_on_code_fence_containing_markup_literal():
 
 
 def test_no_reprompt_on_bare_i_need_to_clarification():
-    """Bare ``I need to`` clarification or prose answers must NOT
-    trigger the re-prompt. The phrase is too common in plain answers."""
+    """The phrase I need to is too common in plain answers to trigger the re-prompt."""
     samples = [
         "I need to know your operating system before giving the install command.",
         "I need to be clear: the answer is Paris.",
@@ -864,9 +832,8 @@ def test_no_reprompt_on_inline_backtick_python_prose_after_code():
 
 
 def test_no_reprompt_on_prose_mention_of_triple_backticks_after_code():
-    """Closed code fence followed by prose that describes triple-
-    backtick syntax (with leading space after the ticks) must NOT be
-    treated as an unclosed fence."""
+    """Prose after a closed fence describing triple-backtick syntax (with a leading space after the
+    ticks) must not be treated as an unclosed fence."""
     content = (
         "Here is the snippet:\n"
         "```python\n"
@@ -879,9 +846,7 @@ def test_no_reprompt_on_prose_mention_of_triple_backticks_after_code():
 
 
 def test_no_reprompt_on_html_with_inner_svg_or_self_closing_tag():
-    """Complete <html> answers that contain nested SVG / self-closing
-    tags are still complete pages. The unbalanced-count cross-check is
-    skipped when a real artifact already exists."""
+    """Complete HTML with nested SVG or self-closing tags still counts as a page, not an unclosed one."""
     samples = [
         "<html><body><svg width='10'/></body></html>",
         "<html><body>" + "<script>const s = '<svg width=10>';</script>" + "</body></html>",
@@ -892,8 +857,7 @@ def test_no_reprompt_on_html_with_inner_svg_or_self_closing_tag():
 
 
 def test_no_reprompt_on_complete_artifact_with_prose_tag_mention():
-    """Complete code/markup artifacts followed by ordinary prose that
-    mentions ``<html>`` or ``<svg>`` tags are not mid-stream output."""
+    """A complete artifact followed by prose naming <html> or <svg> is not mid-stream output."""
     samples = [
         "<html><body>hi</body></html>\nUse the <html> tag as the root.",
         (
@@ -907,9 +871,7 @@ def test_no_reprompt_on_complete_artifact_with_prose_tag_mention():
 
 
 def test_no_reprompt_on_html_containing_backtick_literal():
-    """A complete <html> answer whose body contains a JS string with
-    literal backticks is still a complete page. The unclosed-fence
-    cross-check operates on text with closed markup stripped out."""
+    """Literal backticks inside a complete HTML page's script do not make it an unclosed fence."""
     content = (
         "First, here is the page.\n"
         "<html><body><script>const fence = '```';</script></body></html>"
@@ -919,9 +881,7 @@ def test_no_reprompt_on_html_containing_backtick_literal():
 
 
 def test_empty_markup_before_real_artifact_still_counts_real_artifact():
-    """An empty <html></html> / <svg></svg> skeleton that PRECEDES a
-    real complete artifact must not hide it. _first_real_artifact
-    iterates every match."""
+    """An empty markup skeleton before a real artifact must not hide it; every match is scanned."""
     samples = [
         (
             "First, the minimal skeleton is <html></html>. "
@@ -961,8 +921,7 @@ def test_reprompts_when_later_fence_is_open_after_closed_fence():
 
 
 def test_open_fence_with_inner_numbered_list_still_reprompts():
-    """A response that opens a code fence and emits numbered lines INSIDE
-    must NOT count those lines as a completed numbered-list answer."""
+    """Numbered lines inside an open code fence are not a completed numbered-list answer."""
     samples = [
         ("First, let me write it.\n```text\n1. Install dependencies\n2. Run the app"),
         ("Let me draft a checklist.\n````markdown\n1. step one\n2. step two"),
@@ -973,9 +932,7 @@ def test_open_fence_with_inner_numbered_list_still_reprompts():
 
 
 def test_hidden_reasoning_artifact_still_reprompts():
-    """When content tokens were emitted but content_accum is empty (a
-    streaming oddity) and reasoning hides a complete artifact, the user
-    sees nothing, so the re-prompt MUST still fire."""
+    """Empty content_accum with reasoning hiding a complete artifact must still re-prompt."""
     from core.inference.llama_cpp import _REPROMPT_MAX_CHARS
 
     content_accum = ""
@@ -1016,9 +973,8 @@ def _gate_would_reprompt(
 
 
 def test_content_channel_think_block_is_not_an_answer():
-    """A template that renders thinking as ``<think>`` in the CONTENT channel keeps
-    those blocks in the visible text, but a fence rehearsed inside one is not an
-    answer the user was shown, so the nudge must still fire."""
+    """A think block in the content channel stays visible, but a fence rehearsed in it is not an
+    answer, so the nudge must still fire."""
     think_only = "<think>First, let me write it.\n```python\nx = 1\n```\nDone.</think>"
     assert _gate_would_reprompt(think_only, "", True)
 
@@ -1027,9 +983,7 @@ def test_content_channel_think_block_is_not_an_answer():
 
 
 def test_prefilled_reasoning_closes_without_an_opener():
-    """A template that sends the opening marker itself leaves only the closer in the
-    generated text, so the answer after it still has to be found. Every marker pair
-    the strip paths know is covered, not just ``</think>``."""
+    """Without an opener, each closer (</think>, [/THINK], </thinking>) must still end the reasoning."""
     for closer in ("</think>", "[/THINK]", "</thinking>"):
         text = f"First, I will search the web.{closer}The answer is Paris."
         assert not _gate_would_reprompt(text, "", True), closer
@@ -1040,8 +994,7 @@ def test_prefilled_reasoning_closes_without_an_opener():
 
 
 def test_whitespace_only_fence_is_not_an_answer():
-    """A block holding a single space is no more an answer than an empty
-    ``<html></html>`` is a page."""
+    """Whitespace-only fence bodies are not answers, just as an empty block is not."""
     for body in (" ", ""):
         text = f"First, I'll run it.\n```bash\n{body}\n```"
         assert not _has_answer_artifact(text), body
@@ -1054,9 +1007,7 @@ def test_whitespace_only_fence_is_not_an_answer():
 
 
 def test_reasoning_artifact_counts_only_when_the_loop_promotes_it():
-    """Reasoning stands in for the answer only when it is promoted to visible
-    content. On the Anthropic path it stays a thinking block and the user saw
-    nothing, so a fence inside it must not suppress the nudge."""
+    """Reasoning counts as the answer only when promoted to visible content, not on the Anthropic path."""
     reasoning = "First, let me draft it.\n```python\nprint('hi')\n```"
     assert not _gate_would_reprompt("", reasoning, False, promote_reasoning_only = True)
     assert _gate_would_reprompt("", reasoning, False, promote_reasoning_only = False)
@@ -1072,8 +1023,7 @@ def test_only_a_leading_block_is_reasoning():
 
 
 def test_unclosed_leading_reasoning_is_all_hidden():
-    """A thought the window cut off has no closing tag, so a leading block without
-    one runs to the end and none of it was shown, artifact included."""
+    """An unclosed leading thought runs to the end, so an artifact inside it is hidden too."""
     for opener in ("<think>", "<thinking>", "<think id=1>"):
         turn = f"{opener}First, let me draft it.\n```python\nx = 1\n```"
         assert _gate_would_reprompt(turn, "", True), opener
@@ -1083,8 +1033,7 @@ def test_unclosed_leading_reasoning_is_all_hidden():
 
 
 def test_reasoning_marker_inside_an_example_is_not_reasoning():
-    """A closer shown in a code example is the example. Cutting the turn at it left
-    the finished fence unrecognised and re-prompted the answer away."""
+    """A closer shown inside a code example is part of the example, not the end of reasoning."""
     text = "First, let me show.\n```xml\n</think>\n```\nI will explain the token."
     assert _has_answer_artifact(text)
     assert not _gate_would_reprompt(text, "", True)
@@ -1099,16 +1048,14 @@ def test_leading_block_wins_over_a_marker_named_in_its_body():
 
 
 def test_prefilled_opener_detection_respects_a_tag_boundary():
-    """`<think-card>` named in a prefilled trace is not a `<think>` opener, so the
-    block is still stripped at its closer."""
+    """A think-card tag is not a think opener, so the block is still stripped at its closer."""
     assert not _gate_would_reprompt(
         "First, I will inspect <think-card> markup.</think>The answer is Paris.", "", True
     )
 
 
 def test_a_thought_naming_a_tag_does_not_swallow_its_own_closer():
-    """A leading block ends at its first closer, plainly, so nothing derived from the
-    surrounding markup can span the boundary and hide it."""
+    """A leading block ends at its first closer, so markup around it cannot hide that closer."""
     turn = (
         "<think>First, I will search for data to put in <html>.</think>"
         "Here is the page: <html><body>Hi</body></html>"
@@ -1117,8 +1064,7 @@ def test_a_thought_naming_a_tag_does_not_swallow_its_own_closer():
 
 
 def test_tilde_info_string_may_hold_tildes():
-    """CommonMark bars backticks from a backtick info string but allows tildes in a
-    tilde one, so a longer tilde run there does not displace the opener."""
+    """Tildes are legal in a tilde info string; a longer run does not displace the opener."""
     text = "First, let me show it.\n~~~markdown title=~~~~\nbody\n~~~"
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
@@ -1135,16 +1081,14 @@ def test_delimiter_mention_after_a_closed_block_is_prose():
 
 
 def test_info_string_may_hold_the_other_delimiter():
-    """```markdown title=~~~ is an opener whose info string mentions tildes; only a
-    later run of the SAME delimiter closes an inline span."""
+    """Info strings may hold the other delimiter; only the same delimiter closes the block."""
     text = "First, let me show it.\n```markdown title=~~~\nbody line\n```"
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
 
 
 def test_markup_closed_inside_a_fence_stays_that_fence_s_content():
-    """Prose may open a tag that the fenced fragment goes on to close, so a markup
-    match ending inside a fence belongs to the example."""
+    """Markup closed inside a fence belongs to the example, even if prose opened that tag."""
     text = (
         "First, I will complete `<html>` with this fragment:\n"
         "```html\n<body>Hi</body></html>\n```"
@@ -1161,8 +1105,7 @@ def test_bracketed_reasoning_only_turn_still_gets_nudged():
 
 
 def test_intent_inside_a_think_block_is_not_an_announcement():
-    """A plan the model only thought is not one it told the user about, so a plain
-    answer after ``</think>`` must stand even with no code or markup in it."""
+    """A plan inside a think block was never announced, so a plain answer after it stands."""
     assert not _gate_would_reprompt(
         "<think>First, I will search the web.</think>The answer is Paris.", "", True
     )
@@ -1180,8 +1123,7 @@ def test_info_string_may_be_a_long_title():
 
 
 def test_a_deeper_delimiter_line_is_the_quoted_block_s_content():
-    """A ``> > ``` `` line inside a singly quoted block is text the block quotes,
-    not the block's closer, so the fence around it holds content."""
+    """A deeper quoted delimiter line inside a quoted block is its content, not the closer."""
     text = "First, I will run it.\n> ```text\n> \n> > ```\n> ```"
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)

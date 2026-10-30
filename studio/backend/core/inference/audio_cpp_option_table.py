@@ -662,8 +662,7 @@ OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
                 },
             ),
         ),
-        # VoxCPM1: the embedded spec's defaults are older than the runtime's; prompt_text is the
-        # Clone transcript under another name.
+        # VoxCPM1 spec defaults lag the runtime; prompt_text is Clone's transcript.
         "voxcpm1": (
             OptionRule(
                 defaults = {

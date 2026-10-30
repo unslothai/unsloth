@@ -75,8 +75,7 @@ _RUN_CONVERTER = (
 
 @contextlib.contextmanager
 def staged_output(out_dir: Path):
-    """Yield a fresh folder to build into; its files replace ``out_dir``'s only on success,
-    so a failed re-conversion keeps the previous export."""
+    """Build in a fresh folder; out_dir is replaced only on success, so the old export stays."""
 
     # Only the save directory is account-checked; a planted symlink here would redirect writes.
     def refuse_symlink():
@@ -185,9 +184,7 @@ def _vocab_id(tokenizer_json: dict, token) -> Optional[int]:
 
 
 def write_flm_tokenizer_config(out_dir: Path, *configs: Optional[dict]) -> None:
-    """Add the ids FastFlowLM exits without (an ``eos_token_id`` array, ``bos_token_id`` with a
-    ``bos_token``); its uploads list the configs' stop ids too (Llama 3.2: 128001, 128008, 128009).
-    """
+    """Adds eos_token_id array and bos_token_id for FastFlowLM; Llama 3.2 stops 128001, 128008, 128009."""
     path = out_dir / "tokenizer_config.json"
     tokenizer_config = json.loads(path.read_text(encoding = "utf-8"))
     tokenizer_path = out_dir / "tokenizer.json"

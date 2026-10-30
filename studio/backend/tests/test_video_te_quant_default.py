@@ -50,8 +50,7 @@ HV15_BASES = (
 
 
 def test_every_generic_path_video_family_has_a_default():
-    """Every family that casts its own encoder in place defaults to a hosted one; only H3 and LTX-2.5 resolve theirs,
-    and Cosmos3 has no text encoder."""
+    """Only H3 and LTX-2.5 resolve their own encoder default; Cosmos3 has no text encoder."""
     assert {f.name for f in _FAMILIES if f.te_quant_auto} == set(EXPECTED_DEFAULTS)
     assert {f.name for f in _FAMILIES if not f.te_quant_auto} == {
         "minimax-h3",
@@ -72,8 +71,7 @@ def _family(name):
 
 
 def test_every_video_family_default_scheme_is_one_we_host():
-    """The video twin of the image sweep: a te_quant_auto with no hosted file would cost a dense download plus an
-    in-place cast on every default load."""
+    """A te_quant_auto with no hosted file means a dense download and in-place cast on load."""
     offenders = []
     for fam in _FAMILIES:
         scheme = getattr(fam, "te_quant_auto", None)

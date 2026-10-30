@@ -60,11 +60,9 @@ _MINIMAX_H3_SOURCES: tuple[str, ...] = (
     *_hooked_args(r"\[1\]"),
 )
 
-# FLUX.3 Klein (distilled and base): the pipeline pads the prompt to a multiple of 80 tokens, so every new bucket was
-# a new shape. The per-mode block runs the text stream dense and the image stream int8 (two graphs by weight type),
-# and the joint block takes the text beside the image tokens; both recompiled on the first longer prompt (two graphs,
-# ~12-20 s). Arming the block inputs makes the first compile cover every length. Same images bit for bit on a B200,
-# no recompile from 5 to 138 words, no slower steady state.
+# FLUX.3 Klein pads prompts to a multiple of 80 tokens, so each bucket was a new shape and
+# recompiled both blocks; arming these block inputs makes the first compile cover every length with
+# unchanged output.
 _FLUX3_SOURCES: tuple[str, ...] = (
     "L['hidden_states']",
     "L['temb_mod']",
@@ -117,10 +115,9 @@ _MOSS_IMAGE_SOURCES: tuple[str, ...] = (
     *_hooked_args(r"\[0\]"),
     *_hooked_args(r"\[1\]\[[01]\]"),
 )
-# Prompt-length policy for every denoiser class Studio loads (the ONE list; test_diffusion_prompt_length_policy checks
-# it covers diffusion_families and video_families). A tuple: the denoiser's text length follows the prompt, and these
-# are the repeated block's dynamo sources that carry it. FIXED_LENGTH: the pipeline pads every prompt to one length
-# (padding="max_length" to max_sequence_length, masked), so a new prompt never changes a shape.
+# Policy for every denoiser class (test_diffusion_prompt_length_policy checks coverage); a tuple
+# lists the dynamo sources carrying a prompt-following text length, and FIXED_LENGTH means every
+# prompt is padded to max_sequence_length, so a new prompt never changes a shape.
 FIXED_LENGTH = "fixed"
 PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "FluxTransformer2DModel": _FLUX1_SOURCES,
@@ -151,10 +148,9 @@ def prompt_length_varies(transformer: Any) -> bool:
     return isinstance(PROMPT_LENGTH_POLICY.get(cls.__name__), tuple)
 
 
-# What the compile arms. int8 / fp8 FLUX.1 and Z-Image (torchao weights compile with automatic dynamic) recompiled on
-# new text lengths: FLUX.1 both blocks on the first prompt past 256 T5 tokens and again on the first new resolution (31 s
-# and 60 s on a loaded B200); Z-Image's shared block on the caption, image and unified lengths (12 recompiles in the
-# first render) and again on the first longer prompt. Armed, the first compile covers every text length and image size.
+# What the compile arms: int8 and fp8 FLUX.1 and Z-Image (torchao weights, automatic dynamic)
+# recompiled on new text lengths and resolutions; armed, the first compile covers every text length
+# and image size.
 _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "FluxTransformer2DModel": _FLUX1_SOURCES,
     "ZImageTransformer2DModel": _ZIMAGE_SOURCES,

@@ -32,16 +32,14 @@ logger = logging.getLogger(__name__)
 _ARCHIVE_EMBED_BATCH = 64
 # Per call; the rest is archived by later requests, which re-evict the same turns.
 _ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT = 256
-# Background pre-embedding runs only while no inference runs (tool calls, between turns); small batches so
-# a new generation waits at most one of them.
+# Background embedding waits for idle inference; small batches bound a new generation's wait.
 _PREWARM_BATCH = 16
 _PREWARM_MAX_CHUNKS = 2048
 _VECTOR_CACHE_MAX = 8192
 _NOTED_MAX = 8
 _PAUSE_JOIN_S = 10.0
 
-# Instructions, not conversation. An archived system prompt could come back quoted as an "earlier turn" and read as
-# user-authored text.
+# Skip system roles: an archived prompt quoted back would read as user-authored text.
 _SKIP_ROLES = frozenset({"system", "developer"})
 
 # Auto-inject/recall call ids: their results are retrieved passages, so archiving them would self-feed the index.
@@ -183,9 +181,7 @@ def _probe_text(message: dict) -> str:
         results.clear()
 
     def rendered(value) -> list[str]:
-        """A structured value as the strings a wire-format copy of it could look like. The store
-        keeps tool arguments as an object; the archived copy is the model's raw string, with its
-        own spacing. This is a haystack, so offering both is free."""
+        """Spellings a wire-format copy of a structured value could take; the store keeps an object."""
         if isinstance(value, str):
             return [value]
         try:
@@ -236,9 +232,7 @@ def _is_injected(message: dict) -> bool:
 
 
 def render_turn(group: list[dict]) -> str:
-    """Render one evicted turn group as the text that gets indexed and quoted back. Both sides go in
-    one document on purpose, so retrieval returns the question with its answer rather than a
-    floating fragment."""
+    """One indexed document per evicted turn group, question and answer together for retrieval."""
     lines: list[str] = []
     for message in group:
         role = str(message.get("role") or "")
@@ -452,9 +446,8 @@ def _embed_pending_chunks(
     cached: Optional[list] = None,
     max_encode: Optional[int] = None,
 ):
-    """``(vectors, identity, cancelled, error)``, partial after a cancel or a late failure:
-    write only groups ``vectors`` fully covers. A failing first batch raises. Only cache misses
-    are encoded."""
+    """Returns (vectors, identity, cancelled, error), partial after a cancel or late failure; a
+    failing first batch raises; only cache misses are encoded."""
     # `cached` is the lookup the caller's cap was computed from; a second lookup could see a later eviction.
     vectors = list(cached) if cached is not None else _cached_vectors(expected_identity, texts)
     identity = expected_identity if any(v is not None for v in vectors) else None
@@ -632,8 +625,7 @@ def _gap_closed() -> bool:
 
 
 def _requeue(jobs: list) -> None:
-    """Put back what a closed gap interrupted, behind nothing newer: a fresh note for the same chat wins, and a
-    stopped request stays dropped."""
+    """Requeue interrupted jobs; a newer note for the chat wins, and stopped ones stay gone."""
     with _gap:
         kept = {
             (job[0].account_id, job[1]): job
@@ -772,18 +764,8 @@ def archive_turns(
     branch: Optional[list[dict]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> int:
-    """Index the evicted turns for ``thread_id``. Returns how many were newly written.
-
-    Idempotent by content hash: the same turns are evicted again on every later request in the
-    session, so re-archiving has to be free. After the first write each repeat costs one indexed
-    SELECT and writes nothing.
-
-    ``live`` is the fitted conversation, i.e. what the model can still see. It bounds how many
-    copies of a repeated turn the archive is allowed to hold right now; see ``_write_budget``.
-    Optional, and omitting it keeps the previous behaviour.
-
-    ``cancel_check`` (Chat Stop) is polled before chunking and between embedding batches.
-    """
+    """Indexes evicted turns for thread_id and returns how many were newly written; idempotent by
+    content hash; live bounds repeat copies; cancel_check is polled."""
     if not thread_id or not evicted or not enabled():
         return 0
     # Incognito and API-only threads are skipped (see can_archive); compacted chats are always persisted.
@@ -804,8 +786,7 @@ def _archive_turns(
     branch: Optional[list[dict]],
     cancel_check: Optional[Callable[[], bool]],
 ) -> int:
-    # The evictor's own grouper, so an archived unit is exactly the unit the window drops. Imported lazily because the
-    # inference layer imports this module.
+    # Same grouper as the evictor so units match the window; lazy import avoids a cycle.
     from core.inference.context_window import group_turns
 
     # Track the turn's span separately: _archivable may drop messages, and the branch check needs it.
@@ -922,8 +903,7 @@ def _archive_turns(
             len(texts),
             _ARCHIVE_EMBED_BATCH,
         )
-        # Identity from the encode that produced these vectors: a concurrent embedder swap would otherwise label them
-        # with a space they were never in.
+        # Identity from the encode; a concurrent embedder swap would mislabel them.
         vectors, identity, cancelled, embed_error = _embed_pending_chunks(
             texts,
             model_name = model,
@@ -1298,8 +1278,7 @@ def _active_chain(
 _EMPTY_TOOL_RESULT = '{"result":""}'
 
 
-# Mirrors SERVER_SIDE_BUILTIN_TOOL_NAMES (chat-adapter.ts); name alone never decides, as the frontend also
-# requires.
+# Mirrors SERVER_SIDE_BUILTIN_TOOL_NAMES (chat-adapter.ts); the name alone never decides.
 _SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", "image_generation"})
 # `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._FILE_SENTINEL_TOOLS`. Only these wrap.
 _SANDBOX_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
@@ -1397,9 +1376,7 @@ def _sanitised_assistant_text(text: str) -> str:
 
 
 def _sanitised_assistant_content(content):
-    """`content` with every part `_probe_text` reads as text sanitised, others untouched. Keyed on
-    the `text` field rather than on the type, as `_probe_text` is, so a part shape it renders
-    cannot slip past this one."""
+    """Sanitises each part `_probe_text` reads as text, keyed on the text field so no shape slips past."""
     if isinstance(content, str):
         return _sanitised_assistant_text(content)
     if not isinstance(content, list):
@@ -1640,16 +1617,8 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     calls = [bool(message.get("tool_calls")) for message in group]
 
     def _same(stored: str, live: str, is_call: bool) -> bool:
-        # A tool call is compared as needle in haystack, never for equality: the store keeps arguments as an OBJECT
-        # and the request carries the model's raw string, so `_probe_text` offers both JSON spellings for the stored
-        # copy and one for the live one. Every other message is compared exactly.
-        # In two pieces when the whole needle does not fit, since the second spelling is inserted BETWEEN the
-        # arguments and what followed them: a call with a preamble renders live as name/args/text and stored as
-        # name/args/args/text, so the live string is no longer contiguous. One split point, so this tolerates exactly
-        # the one insertion `_probe_text` makes.
-        # Space offsets keep split(" ") semantics. Head presence only falls and tail presence only rises as the cut
-        # moves right, so both bounds are binary-searched; the ordered match is not monotone, so every cut between
-        # them is still checked against the earliest head and the latest tail.
+        # Tool calls are matched as a needle in a haystack, never by equality; other messages
+        # compare exactly; one split point is tolerated.
         if not is_call:
             return stored == live
 
@@ -1940,9 +1909,7 @@ def branch_message_texts(
 
 
 def message_text(content) -> str:
-    """One stored message's content, normalised the way the branch check normalises it. Exposed so
-    the rolling window compares stored messages on exactly these terms rather than inventing a
-    second notion of "same text"."""
+    """Normalises stored content the way the branch check does, so the rolling window agrees with it."""
     return _normalise(_probe_text({"content": content}))
 
 

@@ -313,8 +313,7 @@ class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
         auto_mock.assert_not_called()
 
     def test_xpu_gets_sized_like_cuda(self):
-        # XPU is a first-class training backend: the keep-guard must size it,
-        # not blanket-unload it as a non-accelerator.
+        # XPU is sized like CUDA, not blanket-unloaded as a non-accelerator.
         meta = {"selection_mode": "auto", "required_gb": 10.0, "usable_gb": 30.0}
         keep, info, auto_mock = self._run(([0], meta), device = DeviceType.XPU)
         self.assertTrue(keep)
@@ -533,8 +532,7 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(freed, ["stt:loading"])
 
     def test_cancels_inflight_load_then_unloads_settled_model(self):
-        # A load that finished before observing the cancel leaves a resident
-        # model behind; it must be unloaded so training reclaims the memory.
+        # A load that finishes after cancel leaves a resident model, so it must be unloaded.
         sidecar = _fake_stt_sidecar(model = "small", loading = True)
         with _patch_stt(sidecar):
             freed = tv.free_stt_model_for_training(reason = "test")
@@ -544,8 +542,7 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(freed, ["stt:loading"])
 
     def test_cancelled_load_still_unloads_gguf_sidecar(self):
-        # Cancelling a Transformers load must not skip the GGUF sidecar; both
-        # engines can hold memory at once (engine switch or direct load calls).
+        # A cancelled Transformers load must not skip the GGUF sidecar; both can hold memory.
         sidecar = _fake_stt_sidecar(loading = True)
         ggml = _fake_ggml_sidecar(model = "small")
         with _patch_stt(sidecar), _patch_ggml_stt(ggml):

@@ -1068,8 +1068,7 @@ def _check_config_needs_457(model_name: str, hf_token: str | None = None) -> boo
 
 
 def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> bool:
-    """Check ``config.json`` for Gemma 4 Unified / 12B architectures (authenticated with
-    ``hf_token``; cached by (model, token) only for a definitive read)."""
+    """Gemma 4 Unified / 12B check of config.json; caches definitive reads per (model, token)."""
     cache_key = _token_cache_key(model_name, hf_token)
     if cache_key in _config_needs_510_cache:
         return _config_needs_510_cache[cache_key]
@@ -1105,8 +1104,7 @@ def _config_saved_by_transformers_5(cfg: dict | None) -> bool:
 
 
 def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
-    """Already-fetched config.json from the in-process cache (no new fetch); the tier checks
-    above populate it, and a miss just skips the version-field probe."""
+    """Cached config.json only, no fetch; a miss just skips the version-field probe."""
     return _config_json_cache.get(_token_cache_key(model_name, hf_token))
 
 
@@ -1115,8 +1113,7 @@ _config_mapping_cache: dict[str, frozenset[str]] = {}
 
 
 def _latest_tier_disabled() -> bool:
-    """Kill switch shared with utils.transformers_latest: lets operators roll
-    back a provisioned latest sidecar without deleting files."""
+    """Kill switch shared with transformers_latest; roll back without deleting sidecar files."""
     return os.environ.get("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "").strip().lower() in (
         "1",
         "true",
@@ -1315,9 +1312,8 @@ def _config_model_types(tier: str) -> frozenset[str]:
 
 
 def _model_types_from_config(cfg: dict) -> list[str]:
-    """All model_types in the config: the primary (top-level, else first nested)
-    first, then every other nested sub-config. Wrappers instantiate sub-configs
-    through CONFIG_MAPPING, so nested types matter for routing too."""
+    """All model_types in the config, primary first; nested types matter for routing too, since
+    wrappers build sub-configs via CONFIG_MAPPING."""
     seen: list[str] = []
 
     def add(value):
@@ -1571,8 +1567,7 @@ def _norm_separators(s: str) -> str:
 
 
 def _looks_like_hf_id(value: str) -> bool:
-    """True if *value* looks like a Hub id (``org/name``), not a local path. An
-    existing path is treated as a path, mirroring transformers' own resolution."""
+    """True if value looks like a Hub id (org/name); an existing path wins, as in transformers."""
     if not value or not value.strip():
         return False
     if os.path.isabs(value) or value.startswith((".", "~")) or "\\" in value:
@@ -1888,8 +1883,7 @@ _VENV_T4_457_PACKAGES = (
     "huggingface_hub==0.36.2",
 )
 
-# Setup installs tiktoken best-effort, so the runtime must agree or it deletes the sidecar and
-# retries the same impossible install.
+# Setup installs tiktoken best-effort, so the runtime must agree or it deletes the sidecar.
 _OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
 
 
@@ -2227,8 +2221,7 @@ def _optional_package_entries(venv_dir: str, pkg_spec: str) -> list[str]:
 
 
 def _optional_package_partly_there(venv_dir: str, pkg_spec: str) -> bool:
-    """A payload without the dist-info that would make it count: an interrupted top-up
-    (or a failed install) left it, and it sits ahead of site-packages."""
+    """Payload without dist-info, left by an interrupted top-up, sits ahead of site-packages."""
     return _optional_package_absent(venv_dir, pkg_spec) and bool(
         _optional_package_entries(venv_dir, pkg_spec)
     )
@@ -3055,9 +3048,8 @@ def _read_swap_lock(path: Path) -> dict | None:
 
 
 def try_begin_sidecar_swap(kind: str = "install") -> bool:
-    """Reserve the sidecar swap window; False when one is already reserved
-    (in this process or, via the lock file, in any worker subprocess).
-    *kind* is "install" (consented route) or "repair" (lazy venv repair)."""
+    """Reserve the sidecar swap window; False if one is held here or, via the lock file, by any
+    worker subprocess. kind is install (consented) or repair (lazy venv repair)."""
     global _sidecar_swap_active, _sidecar_swap_token, _sidecar_swap_kind
     with _sidecar_swap_lock:
         if _sidecar_swap_active:
@@ -3315,8 +3307,7 @@ _LLMC_MAIN_COMPRESSED_TENSORS = "0.17.2a20260702"
 # `git describe` of that commit. GitHub keeps an archive's contents stable, not its bytes.
 _LLMC_MAIN_ARCHIVE_DIGEST = "63ccb4f99833e3b24602f18a1e386e6c1127c1a84f7fc4e8ff56336c929138f8"
 _LLMC_MAIN_DESCRIBE = "0.12.0-40"
-# Installed --no-deps (torch untouched) beside llmcompressor's source tree; the full runtime set
-# llm-compressor main needs, pinned.
+# --no-deps keeps torch untouched; pins are the full runtime llm-compressor main needs.
 _VENV_LLMCOMPRESSOR_SPECS = (
     f"transformers=={_LLMC_MAIN_TRANSFORMERS}",
     f"compressed-tensors=={_LLMC_MAIN_COMPRESSED_TENSORS}",
@@ -3440,8 +3431,7 @@ def _download_llmcompressor_source(parent: Path) -> Path:
 
 
 def _archive_content_digest(archive: Path) -> str:
-    """sha256 over each file's path and contents, independent of compression, member order and
-    the root directory name."""
+    """sha256 of each file's path and contents; compression, order and root dir are ignored."""
     entries = []
     with tarfile.open(archive, "r:gz") as tar:
         for member in tar:

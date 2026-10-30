@@ -605,9 +605,8 @@ def _names_env_credential(value: Any) -> bool:
 
 
 def recipe_names_host_env_credential(recipe: Any) -> bool:
-    """True when a credential would come from this host's environment (Data Designer resolves a bare
-    variable name in api_key/token from the environment first). Only top-level local model providers
-    are exempt: the routes rewire exactly those to this server and drop their external auth."""
+    """A bare api_key/token name resolves from this host's env; top-level local providers are
+    exempt, since the routes rewire exactly those to this server and drop external auth."""
     if isinstance(recipe, dict) and isinstance(recipe.get("model_providers"), list):
         rest = {key: value for key, value in recipe.items() if key != "model_providers"}
         external = [

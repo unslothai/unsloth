@@ -370,9 +370,7 @@ def _rope_ok(x: Any, freqs: Any) -> bool:
 
 
 def _self_attention(attn: Any, hidden_states: Any, rotary_emb: Any) -> Any:
-    """``WanAttnProcessor.__call__`` for self-attention (no mask, no image branch), step for step, with the rotary as
-    one kernel per q / k. None when the processor or the inputs are not the ones this reproduces; the caller then runs
-    the stock module."""
+    """Fused self-attention matching WanAttnProcessor; None when unsupported, so the stock module runs."""
     import torch
 
     if (os.environ.get(WAN_FUSED_ROPE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):

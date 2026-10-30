@@ -962,8 +962,7 @@ async def stream_export_logs(
                         yield _format_sse("{}", event = "heartbeat")
                         last_yield = now
                     if not backend.is_export_active():
-                        # Let the reader thread drain trailing lines printed just
-                        # before the worker signalled done.
+                        # Reader drains lines printed just before the worker signalled done.
                         if idle_since is None:
                             idle_since = now
                         elif now - idle_since > 1.0:

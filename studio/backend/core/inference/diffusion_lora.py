@@ -320,11 +320,8 @@ def _read_lora_sidecar(weight_path: Path) -> tuple[tuple[str, ...], float]:
 def list_loras(
     *, family: Optional[str] = None, include_copies: bool = False
 ) -> list[LoraCatalogEntry]:
-    """The merged catalog (curated + local), optionally family-filtered.
-
-    Cheap: one directory scan plus the in-memory curated list. Network is only touched on
-    resolve(), when a hub adapter is selected.
-    """
+    """Merged curated and local catalog, optionally family-filtered; cheap (one directory scan plus
+    the in-memory curated list), with network touched only by resolve() for a hub adapter."""
     merged = [e for e in list(_CURATED) + _scan_local() if include_copies or not e.copy_of]
     if family:
         fam = family.strip().lower()
@@ -345,11 +342,9 @@ def _staging_name(dest_dir: Path, stem: str) -> str:
 
 
 def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
-    """Copy a local adapter into ``dest_dir`` with a ``<stem>.json`` sidecar carrying the image LoRA marker.
-
-    Takes a catalog id, never a path, so only listed image LoRAs can be read. Returns the copied weight
-    file; a stem already used by other bytes, another weight format or a foreign ``.json`` gets a suffix.
-    """
+    """Copy a listed local adapter (by catalog id, never a path) into dest_dir with an image LoRA
+    <stem>.json sidecar; returns the weight file; a stem used by other bytes, another weight
+    format or a foreign .json gets a suffix."""
     import filecmp
     import shutil
 

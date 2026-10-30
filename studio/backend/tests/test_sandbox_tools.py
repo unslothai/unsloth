@@ -1647,9 +1647,7 @@ class TestUnreadableNetworkHost:
 
 
 class TestRebindingDropsStaleAliases:
-    """An alias stops naming its module the moment the name is bound to something else. Keeping the
-    stale entry rewrote `requests.get` to `socket.get`, which matches no network prefix, so shadowing
-    an alias with the real import was enough to walk a hardcoded host past the screen."""
+    """Rebinding must drop the alias: a stale `requests.get` rewrites to `socket.get`, past the screen."""
 
     @pytest.mark.parametrize(
         "code",
@@ -1840,8 +1838,7 @@ class TestDestinationWhereverTheCallCarriesIt:
 
 
 class TestAliasResolutionOnlyEverAddsCandidates:
-    """Alias resolution only adds candidates; a nested never-called binding must not replace a known
-    name."""
+    """Aliases only add candidates; an uncalled nested binding must not replace a known name."""
 
     @pytest.mark.parametrize(
         "code",
@@ -2540,8 +2537,7 @@ class TestUploadDenylist:
 
 
 class TestSandboxEnvIsolation:
-    """Sandbox env is built from a whitelist, so credential-shaped parent
-    vars stay absent regardless of operator config (Linux/macOS/WSL/Windows)."""
+    """Env is a whitelist, so credential-shaped vars stay absent whatever operators set."""
 
     _SECRET_KEYS = (
         "HF_TOKEN",
@@ -2643,8 +2639,7 @@ class TestSandboxEnvIsolation:
         return prog, bin_dir
 
     def test_bash_userland_dirs_precede_system32(self, monkeypatch, tmp_path):
-        # `bash -c` is non-login, so Git's usr\bin never joins PATH (ls/cat/grep
-        # missing) and must sort ahead of System32's DOS twins (FIND.EXE).
+        # Non-login bash never adds Git usr/bin to PATH; it must precede System32's FIND.EXE.
         from core.inference.tools import _build_safe_env
 
         prog, bin_dir = self._trusted_git_bash(monkeypatch, tmp_path)
@@ -2687,8 +2682,7 @@ class TestSandboxEnvIsolation:
         assert _build_safe_env(str(tmp_path))["PATH"] == before
 
     def test_temp_and_tmp_point_inside_the_workdir_on_windows(self, monkeypatch, tmp_path):
-        # Windows reads TEMP/TMP, not TMPDIR; without them a child writes
-        # outside the sandbox workdir.
+        # Windows reads TEMP/TMP, not TMPDIR; else a child writes outside the sandbox workdir.
         from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _build_safe_env
 
         self._trusted_git_bash(monkeypatch, tmp_path)
@@ -2783,9 +2777,7 @@ class TestSandboxEnvIsolation:
         assert _sandbox_temp_dir(str(tmp_path)) == str(tmp_path)
 
     def test_temp_dir_refuses_an_unwritable_existing_directory(self, tmp_path):
-        """tempfile abandons an unwritable TMPDIR for the platform default,
-        putting the child's temporary data outside the session sandbox.
-        """
+        """tempfile drops an unwritable TMPDIR for the platform default, so temp data leaves the sandbox."""
         from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
 
         scratch = tmp_path / _SANDBOX_TEMP_DIRNAME
@@ -2799,8 +2791,7 @@ class TestSandboxEnvIsolation:
             scratch.chmod(0o700)
 
     def test_the_scratch_dir_does_not_spend_a_path_segment(self, tmp_path):
-        """The scratch dir must not spend a path segment, or a deeper result path drops off the
-        artifact card."""
+        """Scratch dir adds no path segment, so a deeper result still gets an artifact card."""
         from core.inference.tools import (
             _SANDBOX_TEMP_DIRNAME,
             _sandbox_temp_dir,
@@ -2817,8 +2808,7 @@ class TestSandboxEnvIsolation:
         ]
 
     def test_scratch_files_are_still_offered_as_artifacts(self, tmp_path):
-        """Scratch files must still get artifact cards; a dot-named scratch dir would be skipped by
-        the walk."""
+        """A dot-named scratch dir is skipped by the walk, so its files lose artifact cards."""
         from core.inference.tools import (
             _SANDBOX_TEMP_DIRNAME,
             _sandbox_temp_dir,
@@ -2862,8 +2852,7 @@ class TestSandboxEnvIsolation:
         assert parts.index(str(git_dir)) > 0
 
     def test_host_path_dirs_not_inherited(self, monkeypatch, tmp_path):
-        """Host PATH dirs (user-writable, git-lookalike) are never inherited;
-        only the resolved git dir is. No git resolved -> nothing appended."""
+        """Host PATH dirs are not inherited (user-writable); only the resolved git dir joins."""
         _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         venv_scripts = tmp_path / "venv" / "Scripts"
         venv_scripts.mkdir(parents = True)
@@ -2880,8 +2869,7 @@ class TestSandboxEnvIsolation:
         assert str(fake_git) not in parts
 
     def test_git_cmd_shim_extension_added_to_pathext(self, monkeypatch, tmp_path):
-        """A host git resolved as a .cmd shim under a trusted root stays
-        resolvable under the restricted PATHEXT (cwd lookup disabled)."""
+        """A trusted-root git .cmd shim must stay resolvable under the restricted PATHEXT."""
         _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         prog = tmp_path / "Program Files"
         monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
@@ -2893,8 +2881,7 @@ class TestSandboxEnvIsolation:
         assert env["PATHEXT"] == ".EXE;.COM;.CMD"
 
     def test_user_writable_git_dir_refused(self, monkeypatch, tmp_path):
-        """Git resolved from a per-user manager (Scoop shims) is NOT trusted:
-        an attacker could drop rg.exe beside it and hit the auto-approve gate."""
+        """Per-user git (Scoop shims) is untrusted: a dropped rg.exe could auto-approve."""
         _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         monkeypatch.setattr(
             tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")]
@@ -2907,8 +2894,7 @@ class TestSandboxEnvIsolation:
         assert env["PATHEXT"] == ".EXE;.COM"
 
     def test_trust_uses_known_folder_not_env_override(self, monkeypatch, tmp_path):
-        """Trust is driven by the resolved Program Files roots, so a git under
-        an attacker-overridden %ProgramFiles% env value is still refused."""
+        """Trust follows resolved Program Files roots, not the %ProgramFiles% env value."""
         _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         real_prog = tmp_path / "RealProgramFiles"
         (real_prog).mkdir()
@@ -2945,8 +2931,7 @@ class TestSandboxEnvIsolation:
         assert str(real_git) in parts
 
     def test_windows_temp_git_dir_refused(self, monkeypatch, tmp_path):
-        """A git under a world-writable %SystemRoot% subdir (Windows\\Temp) is
-        NOT trusted, even though it sits under the Windows root."""
+        """Git under world-writable Windows Temp is refused though under the Windows root."""
         _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         monkeypatch.setattr(
             tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")]
@@ -2958,8 +2943,7 @@ class TestSandboxEnvIsolation:
         assert str(temp_git) not in env["PATH"].split(os.pathsep)
 
     def test_trusted_program_dir_matches_via_realpath(self, monkeypatch, tmp_path):
-        """The trust check canonicalizes paths, so a symlinked/short alias of
-        Program Files still matches (stand-in for 8.3 PROGRA~1 on Windows)."""
+        """Paths are canonicalized, so a symlinked Program Files alias still matches."""
         _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         real_prog = tmp_path / "Program Files"
         (real_prog / "Git" / "cmd").mkdir(parents = True)
@@ -2976,8 +2960,7 @@ class TestSandboxEnvIsolation:
         assert os.path.normcase(str(real_prog / "Git" / "cmd")) in parts
 
     def test_scan_past_untrusted_git_shim(self, monkeypatch, tmp_path):
-        """When an untrusted shim sorts first on PATH, the scan still finds a
-        later trusted Program Files git."""
+        """An untrusted shim first on PATH must not stop the scan finding a later trusted git."""
         _build_safe_env, tools_mod = _shared_setup_1(monkeypatch)
         prog = tmp_path / "Program Files"
         trusted_git = prog / "Git" / "cmd"
@@ -2996,9 +2979,8 @@ class TestSandboxEnvIsolation:
         assert str(shim) not in parts
 
     def test_program_roots_fails_closed_without_known_folder_api(self, monkeypatch):
-        """When the known-folder API is unavailable, no roots are trusted: env
-        vars (even %SystemDrive%) are caller-overrideable, so we never derive a
-        trusted root from them."""
+        """Without the known-folder API no roots are trusted: env vars like %SystemDrive% can be
+        overridden."""
         import ctypes
 
         import core.inference.tools as tools_mod
@@ -3015,8 +2997,7 @@ class TestSandboxEnvIsolation:
         assert tools_mod._windows_program_roots() == []
 
     def test_augment_native_program_roots_derives_native_sibling(self):
-        """A 32-bit process only sees the x86 root; the native sibling is
-        derived by stripping the ` (x86)` suffix."""
+        """A 32-bit process sees only the x86 root; the native sibling drops the (x86) suffix."""
         import core.inference.tools as tools_mod
 
         roots = tools_mod._augment_native_program_roots([r"C:\Program Files (x86)"])
@@ -3559,8 +3540,7 @@ class TestBashBlocklistPosition:
         assert fourth_expected in self._find()(fourth_command)
 
     def test_sed_comment_ends_at_newline(self):
-        # A sed comment runs to a real newline, so an `e` on the line after one
-        # is a command; with a literal `;` it is still all comment.
+        # A sed comment ends at a real newline, so an `e` on the next line is a command.
         assert "rm" in self._find()("sed '# harmless\ne rm -f victim' input")
         assert "curl" in self._find()("sed 's/a/b/w out.txt\ne curl https://x' input")
         assert self._find()("sed '# harmless;e rm -f victim' input") == set()
@@ -4220,8 +4200,7 @@ class TestBashBlocklistNewlineCommandPosition:
 
 
 class TestHfUploadImportGate:
-    """Upload-method blocking requires an HF import in scope, so paramiko /
-    boto3 / internal SDKs with the same method names don't false-positive."""
+    """Upload blocking needs an HF import in scope; same-named paramiko or boto3 methods pass."""
 
     @pytest.mark.parametrize(
         "code",
@@ -4280,9 +4259,7 @@ class TestHfUploadImportGate:
 
 
 class TestHfUploadSandboxLocalPaths:
-    """HF upload gate allows only files in the sandbox workdir. Absolute paths,
-    `..` traversal, home expansion, and Windows drives are rejected (they could
-    lift secrets from outside the sandbox)."""
+    """Only sandbox-workdir files may upload; absolute paths, `..`, ~ and drives could lift secrets."""
 
     @pytest.mark.parametrize(
         "code",
@@ -4532,8 +4509,7 @@ class TestHfUploadSandboxLocalPaths:
                 ")",
                 id = "shadowed_no_read_constructor_blocked",
             ),
-            # preupload_lfs_files ships the bytes to the LFS store by itself, so it
-            # exfiltrates without a create_commit ever running.
+            # preupload_lfs_files uploads bytes itself: exfiltration needs no create_commit.
             pytest.param(
                 "import huggingface_hub\n"
                 "from huggingface_hub import CommitOperationAdd\n"
@@ -4597,9 +4573,7 @@ class TestHfUploadSandboxLocalPaths:
 
 
 class TestHfUploadEnvAndSecretLeakBlock:
-    """HF upload gate rejects any arg sourced from os.environ / os.getenv /
-    subprocess env reads, since a script can reach the parent env directly
-    despite the safe-env shell wrapper."""
+    """Args read from os.environ, os.getenv or subprocess env are rejected; scripts reach the parent env."""
 
     @pytest.mark.parametrize(
         "code",
@@ -4910,9 +4884,7 @@ class TestUrllib3RequestCarriesItsDestinationSecond:
 
 
 class TestTheFastPathChangesNothing:
-    """The screen skips its alias machinery for a tree that cannot name a network module. That is
-    an argument about reachability, so these pin both halves of it: the gate says yes for every
-    route to a recognised call, and the verdicts are the same either side of it."""
+    """The gate must say yes for every route to a recognised call, and verdicts match either side."""
 
     @staticmethod
     def _gate():

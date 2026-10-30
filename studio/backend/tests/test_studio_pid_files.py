@@ -116,8 +116,7 @@ def test_remove_pid_file_only_removes_our_own(tmp_path, monkeypatch):
 
 
 def test_the_legacy_pointer_moves_to_a_live_sibling(tmp_path):
-    # Only one server owns studio.pid. Deleting it on our way out would leave an
-    # older CLI, which reads nothing else, unable to stop the sibling still up.
+    # studio.pid belongs to one server; older CLIs read only it, so exit must not delete it.
     run._write_pid_file(8901)
     (tmp_path / "studio-8902-8600.pid").write_text("8600", encoding = "utf-8")
 
@@ -147,8 +146,7 @@ def test_remove_pid_file_leaves_a_reused_entry_alone(tmp_path):
 
 
 def test_windows_liveness_does_not_call_every_pid_alive(monkeypatch):
-    # os.kill(pid, 0) raises OSError for every pid on Windows, so without the
-    # tasklist fallback a stale record would block its port forever.
+    # os.kill(pid, 0) errors for every pid on Windows, so tasklist is the liveness check.
     import subprocess
 
     monkeypatch.setattr(run, "_pid_alive", _REAL_PID_ALIVE)
@@ -207,8 +205,7 @@ def test_read_pid_record_rejects_a_corrupt_file(tmp_path):
 
 
 def test_graceful_shutdown_drops_the_record_last(monkeypatch):
-    # Cleanup can take seconds while the server is still alive. Dropping the record
-    # first leaves a retried `stop` or a new launch unable to find it.
+    # Drop the record last: cleanup takes seconds, and a retried stop must still find it.
     order = []
     monkeypatch.setattr(run, "_remove_pid_file", lambda: order.append("remove_record"))
 
@@ -222,8 +219,7 @@ def test_graceful_shutdown_drops_the_record_last(monkeypatch):
 
 
 def test_own_studio_on_port_is_found_without_psutil(tmp_path, monkeypatch):
-    # psutil is optional; a listener scan finds nothing without it, so detection
-    # must come from our own records or we silently start a duplicate.
+    # Without psutil, detection must use our own records or a duplicate starts silently.
     monkeypatch.setitem(sys.modules, "psutil", None)
     (tmp_path / "studio-8901-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
 
@@ -334,8 +330,7 @@ def test_the_untimed_legacy_record_does_not_cancel_a_timed_one(monkeypatch):
 
 
 def test_a_legacy_server_on_the_port_is_recognised(tmp_path, monkeypatch):
-    # Pre-upgrade servers wrote only studio.pid. Falling back past one strands it
-    # and then overwrites its record.
+    # Pre-upgrade servers wrote only studio.pid, so skipping it strands and overwrites it.
     monkeypatch.setattr(run, "_get_pid_on_port", lambda p: (8550, "python"))
     (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
 
@@ -377,8 +372,7 @@ def test_a_stale_per_port_record_does_not_mask_a_legacy_server(tmp_path, monkeyp
 
 
 def test_a_current_server_elsewhere_does_not_block_a_foreign_port(tmp_path, monkeypatch):
-    # Current builds write studio.pid too. Without psutil the legacy check can't
-    # see the listener, so it must not claim our 8901 server holds jupyter's 8888.
+    # Without psutil, the legacy check cannot see listeners, so it must not claim port 8888.
     monkeypatch.setattr(run, "_get_pid_on_port", lambda p: None)
     (tmp_path / "studio-8901-5000.pid").write_text("5000\n\n127.0.0.1", encoding = "utf-8")
     (tmp_path / "studio.pid").write_text("5000", encoding = "utf-8")
@@ -395,8 +389,7 @@ def test_a_per_port_record_is_preferred_over_the_legacy_one(tmp_path, monkeypatc
 
 
 def test_our_studio_on_another_bind_address_does_not_abort(tmp_path):
-    # Our server holds ::1:8889; binding 127.0.0.1:8889 is not a conflict with us,
-    # so fall through to the next port instead of refusing.
+    # Our ::1:8889 server is no conflict for 127.0.0.1:8889; fall through to the next port.
     (tmp_path / "studio-8889-8550.pid").write_text("8550\n\n::1", encoding = "utf-8")
 
     assert run._own_studio_on_port(8889, "127.0.0.1") is None
@@ -422,8 +415,7 @@ def test_every_wildcard_alias_collides_with_a_specific_bind(wildcard):
 
 
 def test_a_hostname_resolves_the_same_way_the_bind_does(tmp_path):
-    # `localhost` and the address _is_port_free actually binds must agree, or a
-    # recorded server is missed and a duplicate starts.
+    # localhost must resolve to the same addresses _is_port_free binds, or a duplicate starts.
     recorded = ",".join(sorted(run._bind_addresses("localhost", 8889)))
 
     assert run._addresses_collide(recorded, "localhost", 8889) is True
@@ -542,8 +534,7 @@ def test_a_free_loopback_port_is_reported_without_a_long_wait():
 
 
 def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
-    # `localhost` binds 127.0.0.1 AND ::1. Recording only the first lets a later
-    # launch on the other literal miss us and start a duplicate.
+    # localhost binds 127.0.0.1 and ::1, so record both or a later launch misses us.
     addrs = run._bind_addresses("localhost", 8889)
     recorded = ",".join(sorted(addrs))
 
@@ -653,8 +644,7 @@ def test_the_requested_port_is_kept_when_it_is_free(monkeypatch):
 def test_our_own_server_on_the_requested_port_aborts_rather_than_falling_back(
     tmp_path, monkeypatch
 ):
-    # The reported bug: 8888 is ours, so falling back to 8889 is the duplicate
-    # that leaves 8888 serving with nothing recording it.
+    # Reported bug: with 8888 ours, falling back to 8889 leaves 8888 serving and unrecorded.
     monkeypatch.setattr(run, "_is_port_free", lambda host, p: p != 8888)
     (tmp_path / "studio-8888-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
 
@@ -696,8 +686,7 @@ def test_a_server_started_on_a_hostname_is_found_again_by_ip(tmp_path):
 
 
 def test_bind_addresses_keeps_every_family_a_hostname_resolves_to(monkeypatch):
-    # Independent oracle: the sibling test derives its expectation from this
-    # function's own output, so dropping a family would pass it.
+    # Independent oracle; the sibling test would pass even if this function dropped a family.
     import socket
     monkeypatch.setattr(
         socket,
@@ -726,8 +715,7 @@ def test_the_legacy_file_is_written_even_when_the_per_port_record_fails(tmp_path
 
 
 def test_a_record_whose_pid_is_not_ascii_digits_is_discarded(tmp_path):
-    # A superscript two passes isdigit() but int() rejects it, so that gate alone
-    # let a ValueError escape into every caller of _read_pid_record.
+    # isdigit() passes superscript two, but int() rejects it and ValueError escapes callers.
     (tmp_path / "r.pid").write_text("²", encoding = "utf-8")
 
     assert run._read_pid_record(tmp_path / "r.pid") is None
@@ -754,8 +742,7 @@ def test_the_legacy_file_is_taken_over_from_a_dead_server(tmp_path, monkeypatch)
 @pytest.mark.parametrize(
     "filename, contents",
     [
-        # The compiled cache is install-tree relative, so a second backend of this
-        # install must not wipe it out from under the first.
+        # The compiled cache is install-tree relative, so a second backend must not wipe it.
         pytest.param(
             "studio-8888-8550.pid",
             "8550\n\n127.0.0.1",
@@ -824,8 +811,7 @@ def test_our_own_startup_marker_is_not_a_sibling(tmp_path):
 
 
 def test_a_startup_marker_is_invisible_to_the_pid_file_glob(tmp_path):
-    # Everything reading PID_FILE_GLOB expects a port in the name; a process
-    # that has not bound yet has none, so `stop` and _legacy_heir must skip it.
+    # PID_FILE_GLOB readers need a port in the name; stop and _legacy_heir skip unbound ones.
     (tmp_path / "studio-starting-8550.marker").write_text("8550\n", encoding = "utf-8")
 
     assert list(tmp_path.glob(run.PID_FILE_GLOB)) == []
@@ -876,8 +862,7 @@ def test_an_older_timed_record_does_not_veto_a_newer_legacy_one(tmp_path, monkey
 
 
 def test_a_timed_record_for_another_pid_leaves_the_legacy_one_alone(tmp_path, monkeypatch):
-    # Corroboration is per PID: a dead record for a different server says nothing
-    # about the pre-upgrade one, which is recorded in studio.pid and nowhere else.
+    # Corroboration is per PID: a dead record for another server says nothing about studio.pid.
     monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
     monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
     (tmp_path / "studio-8888-8551.pid").write_text("8551\n111.5\n127.0.0.1", encoding = "utf-8")
@@ -936,8 +921,7 @@ def test_a_busy_cache_lock_keeps_the_cache_without_probing(tmp_path, monkeypatch
 
 
 def test_a_lock_that_cannot_be_taken_at_all_still_clears(tmp_path, monkeypatch):
-    # An unwritable temp dir or a filesystem without flock must not mean the
-    # cache is never cleared again on that machine; fall back to the plain probe.
+    # No usable lock must not mean the cache is never cleared; fall back to the plain probe.
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding = "utf-8")
     monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: blocked / "lock")

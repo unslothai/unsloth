@@ -48,9 +48,8 @@ def _hip_sees(
     count,
     totals = None,
 ):
-    """Declare HIP's own inventory: how many devices it opens, and the total memory
-    it reports per physical id. Empty totals mean torch could not describe the
-    devices, which the probe fails open on."""
+    """Sets HIP's device count and total memory per physical id; empty totals mean torch cannot
+    describe the devices, so the probe fails open."""
     monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_device_count", staticmethod(lambda: count))
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -98,8 +97,7 @@ class TestGpuDeviceOrdinalIsHonoured:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
     def test_a_full_ordinal_list_defers_too(self, two_cards, monkeypatch):
-        """Every card is still visible, but the variable also REORDERS them, so the
-        ids this branch would hand the child are not the ones it named."""
+        """GPU_DEVICE_ORDINAL reorders visible cards, so the child gets wrong ids."""
         monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1,0")
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
@@ -111,8 +109,7 @@ class TestGpuDeviceOrdinalIsHonoured:
 
 
 class TestTheInventoryMustBeTheOneHipOpens:
-    """A count HIP does not agree with means something outside the visibility
-    variables filtered the device set."""
+    """Mismatch with HIP means something outside the visibility variables filtered devices."""
 
     def test_a_device_cgroup_container_defers_to_torch(self, two_cards, monkeypatch):
         """One renderD node, no env var: amd-smi lists both host cards, HIP opens
@@ -173,8 +170,7 @@ class TestAnApuTheClassifierMisses:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
     def test_the_probe_still_reports_the_pool_the_model_runs_in(self, phoenix, monkeypatch):
-        """End to end: _get_gpu_memory keeps the torch branch's figures, which is
-        what it returned before this branch existed."""
+        """_get_gpu_memory keeps the torch figures, unchanged from before this branch existed."""
         monkeypatch.setattr(
             LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary: False)
         )
@@ -196,23 +192,20 @@ class TestAnApuTheClassifierMisses:
         assert LlamaCppBackend._get_gpu_memory() == [(0, 12288, 16384)]
 
     def test_a_partitioned_card_defers_the_other_way_round(self, rocm, monkeypatch):
-        """The mismatch is symmetric: an MI300 partition reports a slice to HIP
-        while amd-smi reports the whole card."""
+        """An MI300 partition gives HIP a slice but amd-smi the whole card, so this defers."""
         monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 4096, 196608)), None))
         _hip_sees(monkeypatch, 1, {0: 24576})
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
     def test_two_readings_of_one_pool_are_accepted(self, rocm, monkeypatch):
-        """amd-smi and HIP do not report a card's total to the byte (reserved pages,
-        MB against MiB), so the comparison has the same 10% margin the System tab's
-        overlay uses."""
+        """amd-smi and HIP totals differ (reserved pages, MB against MiB), so the comparison uses
+        the System tab's 10% margin."""
         monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 4096, 24576)), None))
         _hip_sees(monkeypatch, 1, {0: 24400})
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]
 
     def test_a_device_torch_cannot_describe_fails_open(self, rocm, monkeypatch):
-        """A device torch cannot describe is omitted, so missing evidence must not count against the
-        branch."""
+        """Undescribed devices are omitted; missing evidence cannot count against the branch."""
         monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 4096, 24576)), None))
         _hip_sees(monkeypatch, 1, {})
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]

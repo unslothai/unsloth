@@ -23,8 +23,7 @@ def _version_tuple(text: str) -> tuple[int, ...]:
 
 
 def _activate_sidecar(venv_dir: str) -> None:
-    # A transformers already imported here (a parent __main__ re-imported by spawn) shadows the sidecar; the version
-    # check in _load then names the problem.
+    # Already-imported transformers shadow the sidecar; the version check names the problem.
     if not venv_dir or not os.path.isdir(venv_dir):
         raise RuntimeError(f"the transformers 5.10 sidecar is missing at '{venv_dir}'")
     if venv_dir not in sys.path:
@@ -206,9 +205,8 @@ def _dense_scale_vs_bf16(dtype: Any) -> float:
 
 
 def _require_room_for_dense(config: dict, exc: Exception) -> None:
-    """The load was planned at the hosted file's size: refuse the dense fallback when free memory cannot hold the
-    dense encoder, rather than let the OS kill the process mid-read (on Apple Silicon the same pool as the DiT).
-    ``dense_te_gb`` is bf16; a float32 load (fp16 promoted without bf16) needs twice that."""
+    """Refuses the dense fallback if free memory cannot hold it, rather than an OS kill mid-read;
+    dense_te_gb is bf16, so a float32 load needs twice that"""
     need = (
         float(config.get("dense_te_gb") or 0.0)
         * 1000**3
@@ -438,9 +436,7 @@ def quantize_int8_convrot_(
     device: Any = "cpu",
     resident: bool = False,
 ) -> int:
-    """Swap every decoder-layer projection for the ConvRot INT8 linear in place; the number swapped. ``resident``
-    quantizes layer by layer on the card. Otherwise mapped bf16 pages are released per projection; if any cannot be,
-    host tensors are copied out of the map so it can close."""
+    """Swaps decoder projections for ConvRot INT8 in place; mapped pages are released or copied out."""
     import torch
     from torch import nn
 

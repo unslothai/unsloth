@@ -1216,9 +1216,7 @@ def _swapped_unfused(ff):
 def test_swiglu_mlp_fuses_the_product_into_the_down_quant_eager_and_compiled(
     h16_rotq, monkeypatch, version
 ):
-    """The patched MLP: gate / value share one act quant, the down projection takes its codes from the halves.
-    Output within the stock MLP's own int8 rounding (codes_close upstream), compiled fullgraph, one graph, no
-    recompile on a second input, uninstall restores the class forward."""
+    """Patched MLP: gate/value share one act quant, down takes the halves' codes; one fullgraph graph."""
     from torch._dynamo.utils import counters
 
     if not cq._SWIGLU_DEVICE.get(torch.cuda.current_device()):
@@ -1482,8 +1480,7 @@ def test_replaced_activation_declines_the_swiglu_fusion(monkeypatch):
 
 
 def test_codes_close_rejects_non_finite_scales():
-    """NaN compares false against every tolerance: a NaN / inf scale on one row (e.g. the probe's all-zero row) must
-    still fail, on either side."""
+    """NaN compares false to all tolerances: NaN or inf scales must still fail, on either side."""
     rq = torch.randint(-120, 120, (64, 1024), dtype = torch.int8)
     rs = torch.rand(64) + 0.5
     for bad in (float("nan"), float("inf"), float("-inf")):
@@ -1495,8 +1492,7 @@ def test_codes_close_rejects_non_finite_scales():
 
 @needs_cuda
 def test_h16_probe_covers_the_one_pass_branch_and_rejects_nan_scales(forced):
-    """The per-device probe runs both ``rotq_h16`` branches (one pass, two pass) on v1 / v2, and a kernel that returns
-    a NaN scale on one row is refused."""
+    """Per-device probe runs both rotq_h16 branches and refuses a kernel returning a NaN scale."""
     index = torch.cuda.current_device()
     real = cq._h16_launch
     seen = set()

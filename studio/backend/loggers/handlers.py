@@ -168,10 +168,8 @@ _CHAT_LIST_POST_READ_PATHS = frozenset({"/api/chat/sidebar/rows"})
 
 
 def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) -> bool:
-    """GET-only, plus the listed POST reads. Suppress a 2xx poll line that carries no signal, plus a chat list
-    poll's transient pre-auth 401 (only in the bootstrap window before the first successful token refresh).
-    Mutations, real (post-refresh) auth failures, and all other errors always log. --verbose disables the whole
-    suppressor, except for the log viewer's own reads."""
+    """Quiet 2xx polls and pre-refresh 401s of chat list POSTs; mutations always log; --verbose
+    disables this, except the log viewer's own reads."""
     if method == "POST" and path in _CHAT_LIST_POST_READ_PATHS:
         if _VERBOSE_ACCESS_LOG:
             return False
@@ -222,9 +220,7 @@ class _DropDuplicateAsgiException(logging.Filter):
 
 
 def install_uvicorn_duplicate_exception_filter() -> None:
-    """Attach the duplicate-traceback filter to uvicorn's error logger. Same logger-level filter technique as
-    run.py's startup-line rewrite; safe to call more than once because a second identical install only re-checks
-    the same records."""
+    """Safe to call more than once: a second install only re-checks the same records."""
     logging.getLogger("uvicorn.error").addFilter(_DropDuplicateAsgiException())
 
 

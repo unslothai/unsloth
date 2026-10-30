@@ -293,8 +293,7 @@ def _mapped(
     config: dict,
     quantize: bool = False,
 ) -> bool:
-    """A table mlx-vlm reads row by row from the checkpoint rather than holding it: DeepSeek
-    V4.1's Engram, unless the load quantizes it."""
+    """DeepSeek V4.1 Engram table is read row by row from the checkpoint unless quantized."""
     return not quantize and _maps_engram(config) and ".engram.embed." in name
 
 
@@ -715,9 +714,7 @@ def _deferrable(evaluate):
 
 @contextlib.contextmanager
 def weightless_forward():
-    """Defer ``mx.eval`` / ``mx.async_eval`` on this thread while a weightless tower runs. Model code
-    evaluates mid-forward (mlx-vlm's per-layer ``async_eval``), which on random weights materializes
-    the whole model; the probes read only shapes, which need no evaluation."""
+    """Defers mx.eval and async_eval during weightless towers, which would materialize random weights."""
     import mlx.core as mx
 
     with _DEFERRABLE_LOCK:
@@ -1131,8 +1128,7 @@ def _refused_by_its_own_tensors(model_dir: str, config: dict) -> Optional[str]:
 
 @functools.lru_cache(maxsize = 1)
 def mlx_offload_planner():
-    """unsloth_zoo's offload planner, or None when the installed unsloth_zoo cannot offload as
-    Studio prices it."""
+    """unsloth_zoo's offload planner, or None if it cannot offload as Studio prices it."""
     import inspect
 
     try:
@@ -1592,6 +1588,5 @@ def mlx_offload_plan(
 
 
 def mlx_fit_context(model_dir: str, **kwargs) -> Optional[int]:
-    """Largest context whose estimated footprint stays inside ``budget_bytes``; None when the ceiling
-    already fits or nothing can be said."""
+    """Largest context whose footprint fits budget_bytes; None when the ceiling already fits."""
     return mlx_fit_outcome(model_dir, **kwargs)[1]

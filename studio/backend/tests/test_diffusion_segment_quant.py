@@ -520,8 +520,7 @@ def test_an_override_folder_holds_the_reported_variants_file(tmp_path, monkeypat
 
 
 def test_no_prequant_reader_means_no_quantized_file_counts(tmp_path, monkeypatch):
-    """No torchao (or the Windows ROCm stub): a cached INT8 file cannot even be dequantized, so it is not a
-    download and bf16 is offered."""
+    """No torchao or Windows ROCm stub: cached INT8 cannot be dequantized, so bf16 is offered."""
     from core.inference import prequant_safetensors as pst
 
     _cuda(monkeypatch, (9, 0))

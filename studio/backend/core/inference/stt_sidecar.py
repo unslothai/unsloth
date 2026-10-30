@@ -1107,8 +1107,7 @@ def _av_open(av, source, **extra):
     except TypeError as exc:
         if "metadata_errors" not in str(exc):
             raise
-        # format = None is PyAV's own default (probe the container); spelling it keeps this call
-        # distinguishable from Path.open for the text-encoding lint.
+        # format = None is PyAV's default; spelled out so the lint tells it from Path.open.
         return av.open(source, mode = "r", format = None, **extra)
 
 

@@ -1062,8 +1062,7 @@ def test_a_selective_clear_does_not_abort_a_fetch_for_an_image_it_spared(monkeyp
 
 
 def test_a_selective_clear_still_aborts_the_fetch_for_an_image_it_reaped(monkeypatch, tmp_path):
-    """The other half. Publishing here would write back a thumbnail the clear just deleted,
-    and the cache-first read would go on serving it."""
+    """Publishing a reaped image's thumbnail would be served again by the cache-first read."""
     doomed = search_images.register_images(RAW_IMAGES)[0]
     real_lookup = search_images._lookup_locked
 
@@ -1146,8 +1145,7 @@ def test_a_lookup_already_running_when_a_clear_starts_publishes_nothing(monkeypa
 
 
 def test_a_lookup_that_starts_after_the_clear_boundary_still_registers(monkeypatch, tmp_path):
-    """The complement. A chat created after the clear is exactly what the snapshot spares,
-    so its lookups must go through untouched."""
+    """Lookups after the clear boundary are spared by the snapshot, so they still register."""
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path)
 
     search_images.snapshot_and_fence_registrations()
@@ -1158,9 +1156,8 @@ def test_a_lookup_that_starts_after_the_clear_boundary_still_registers(monkeypat
 
 
 def test_the_fence_does_not_abort_an_in_flight_fetch(monkeypatch, tmp_path):
-    """The fence moves the generation, and fetch invalidation is per id now, so a fetch
-    already running for an image the clear will spare must be unaffected. Reading the bare
-    generation here would undo the per-id work."""
+    """The fence bumps the generation, but invalidation is per id, so spared fetches keep running;
+    reading the bare generation here would undo the per-id work."""
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path)
     started_at = search_images.cache_generation()
 

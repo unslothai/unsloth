@@ -26,9 +26,8 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "qwen-image": ("--qwen2vl",),
     "qwen-image-edit": ("--qwen2vl",),
     "qwen-image-layered": ("--qwen2vl",),
-    # 2.1 conditions on Qwen3-VL, which sd-cli takes through --llm. --qwen2vl is an alias of --llm
-    # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
-    # reach the same field.
+    # 2.1 conditions on Qwen3-VL via --llm; --qwen2vl also enables Qwen2-VL's vision, the wrong
+    # door.
     "qwen-image-2.1": ("--llm",),
     # Qwen3-VL-4B through --llm, as qwen-image-2.1.
     "flux.3-klein": ("--llm",),
@@ -76,8 +75,7 @@ class SdCppGenParams:
 
     prompt: str
     negative_prompt: Optional[str] = None
-    # None = unset: an image-conditioned run lets sd.cpp derive the size from the input; a plain txt2img falls back to
-    # 1024x1024.
+    # None: unset, so image runs let sd.cpp derive size; plain txt2img defaults to 1024x1024.
     width: Optional[int] = None
     height: Optional[int] = None
     steps: Optional[int] = None
@@ -311,10 +309,8 @@ def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
 
 
 def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
-    """True when sd.cpp runs the diffusion model on Apple Metal (macOS; an explicit ``--backend`` for it decides,
-    else an Apple Silicon machine whose GPU is not paravirtual).
-
-    Direct conv is not used there: ggml-metal's CONV_2D trips the GPU watchdog on an SD1.5 UNet."""
+    """True when sd.cpp runs diffusion on Apple Metal (an explicit --backend decides, else Apple
+    Silicon not paravirtual); direct conv stays off since CONV_2D trips the GPU watchdog."""
     import sys
 
     if sys.platform != "darwin":

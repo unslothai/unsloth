@@ -84,8 +84,7 @@ def _backend(monkeypatch, calls_seen):
 
 
 def test_an_api_initiated_image_load_opens_the_cache_and_downloads_nothing(monkeypatch, tmp_path):
-    """The whole promise, end to end: every helper the image staging phase reaches either stays off
-    the Hub or asks it for a cached file only."""
+    """Each staging helper either stays off the Hub or asks it for cached files only."""
     calls = _Calls()
     _install_sentinels(monkeypatch, calls, tmp_path, offline = True)
     seen: dict = {}

@@ -50,8 +50,7 @@ def _params_text(meta: dict[str, Any]) -> str:
 
     # A Hires fix image is written the way A1111 writes one: Size is the base pass, Hires upscale the factor.
     meta = infotext_meta(meta)
-    # The caption the model encoded (FLUX.3 prompt upsampler): other tools reproduce the image from this line. The
-    # typed prompt stays in the Unsloth chunk.
+    # The enhanced prompt the model encoded; other tools reproduce the image from this line.
     lines = [str(meta.get("enhanced_prompt") or meta.get("prompt", ""))]
     negative = meta.get("negative_prompt")
     if negative:
@@ -169,8 +168,7 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
     meta = _recipe(meta)
-    # Encoded before the folder is looked up: a Settings move during the encode would otherwise
-    # finish first, and the image land in the folder it left.
+    # Encoded before the folder lookup so a mid-encode Settings move cannot misfile the image.
     data = _encoded_ahead(image, meta)
     if data is None:
         data = _png_bytes(image, meta)
@@ -192,10 +190,7 @@ def _encoded_ahead(image: Any, meta: dict[str, Any]) -> Optional[bytes]:
 
 
 def save_many(items: Iterable[tuple[Any, dict[str, Any]]]) -> Iterator[dict[str, Any]]:
-    """``save`` each (image, meta) in order, with every PNG encoded concurrently up front.
-
-    Each ``save`` still writes its file and builds its record in turn, so the bytes, the gallery
-    order and what a failure leaves behind are those of a plain loop of ``save``."""
+    """Saves each item in order with PNGs encoded concurrently up front; results match a plain save loop."""
     items = list(items)
     cpus = getattr(os, "process_cpu_count", os.cpu_count)() or 1
     workers = min(len(items), cpus, _MAX_ENCODE_WORKERS)
@@ -406,9 +401,8 @@ def set_flags(
     pinned: Optional[bool] = None,
     archived: Optional[bool] = None,
 ) -> Optional[dict[str, Any]]:
-    """Patch one image's pin/archive flags and return its updated record, or None when the id is
-    not an Unsloth-owned image. Ownership-gated like delete: a guessed stem for a hand-dropped
-    foreign PNG must not become flaggable (and so listable under a shelf we own)."""
+    """Returns None unless the id is Unsloth-owned, so a hand-dropped foreign PNG cannot become
+    flaggable."""
     # Check and write under one lock so a concurrent clear cannot delete the file between them.
     with gallery_flags.exclusive(gallery_dir()):
         path = owned_image_path(image_id)
@@ -422,9 +416,8 @@ def set_flags(
 
 
 def move(image_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
-    """Move an active image to just after ``after_id`` (None = front) and return its record.
-
-    None if the id is not an owned, active image. Raises KeyError if ``after_id`` is not on the shelf."""
+    """Moves an owned, active image after after_id (None = front) and returns its record, or None if
+    the id is not owned and active; KeyError if after_id is not on the shelf."""
     with gallery_flags.exclusive(gallery_dir()):
         path = owned_image_path(image_id)
         if path is None:

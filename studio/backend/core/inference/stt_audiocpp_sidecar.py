@@ -738,8 +738,7 @@ class AudioCppSttSidecar:
         if current is None:
             return False
         try:
-            # Row ids on both sides: a legacy key and its folder id name the same model,
-            # and hub ids match case-insensitively.
+            # Legacy keys and folder ids name one model; hub ids match case-insensitively.
             return current.casefold() == acm_row_id(expected).casefold()
         except Exception:  # noqa: BLE001 - an unresolvable name is not this model
             return False

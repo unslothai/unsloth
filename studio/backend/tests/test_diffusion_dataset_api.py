@@ -563,8 +563,7 @@ def test_upload_rejects_exact_duplicate_name_within_one_batch(client, ds_root):
 def test_upload_rejects_case_only_duplicate_on_a_case_insensitive_filesystem(
     client, ds_root, monkeypatch
 ):
-    # 'Cat.png' and 'cat.png' are one destination on NTFS / APFS; Linux keeps both, so the
-    # rejection is gated on a real probe of the datasets root, faked here.
+    # Cat.png and cat.png collide on NTFS and APFS, so the rejection is gated on a real probe.
     import routes.training as training
 
     monkeypatch.setattr(training, "_dataset_folder_is_case_insensitive", lambda folder: True)
@@ -898,9 +897,8 @@ def test_import_replaces_a_pre_existing_file_the_import_also_writes(client, ds_r
 
 
 def test_a_second_concurrent_import_of_the_same_name_is_refused(client, ds_root, monkeypatch):
-    """The training interlock counts mutations rather than excluding them, so two imports into the
-    same empty name both got through; the loser then merged its files into the winner's folder and
-    produced a dataset built from two sources. The second request is refused instead."""
+    """The training interlock counts mutations rather than excluding them, so two imports into one
+    empty name both passed and merged; the second is refused."""
     import routes.training as training_route
 
     _install_fake_load_dataset(monkeypatch, n_rows = 3)

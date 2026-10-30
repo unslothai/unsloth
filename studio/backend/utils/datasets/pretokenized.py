@@ -12,8 +12,7 @@ _TOKEN_COLUMNS = (
     "completion_mask",
     "assistant_masks",
 )
-# Per-token masks TRL applies to the labels when a row has none of its own: a missing value or a
-# length other than input_ids' fails mid-training.
+# Fallback masks TRL applies to labels; a missing or wrong-length one fails mid-training.
 _MASK_COLUMNS = ("completion_mask", "assistant_masks")
 
 

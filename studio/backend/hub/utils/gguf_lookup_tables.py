@@ -215,8 +215,7 @@ def _scan_shards(
     max_shards: Optional[int] = MAX_SHARDS_READ,
     known_arch: Optional[str] = None,
 ):
-    """(architecture, lazy table bytes under ``mode``), stopping at the first shard carrying the
-    table."""
+    """Returns (architecture, table bytes); stops at the first shard that carries the table."""
     arch: Optional[str] = None
     order = names[:max_shards]
     hinted = lazy_architecture(known_arch) and len(names) > 1

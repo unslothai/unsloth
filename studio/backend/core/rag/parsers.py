@@ -348,9 +348,8 @@ _PDF_INCOMPLETE_MIN_LETTERS = 200
 
 
 def _markdown_corrupted(text: str) -> bool:
-    """True when pymupdf4llm's glyph reconstruction mangled the text: shaped RTL
-    Presentation Forms or U+FFFD replacements above a small floor/ratio (so a lone
-    legitimate shaped glyph does not force the fallback)."""
+    """True when pymupdf4llm mangled glyphs: shaped RTL forms or U+FFFD above a small floor and
+    ratio, so a lone legitimate shaped glyph does not force the fallback."""
     if not text:
         return False
     threshold = max(_PDF_FALLBACK_MIN_BAD_GLYPHS, _PDF_FALLBACK_BAD_GLYPH_RATIO * len(text))
@@ -397,9 +396,8 @@ def _image_covers_a_corner(doc, number: int) -> bool:
 
 
 def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
-    """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
-    i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
-    page count does not line up, so the caller falls back to plain PyMuPDF text."""
+    """Per-page Markdown via pymupdf4llm (index i is page i+1); None when unavailable or misaligned,
+    so the caller falls back to plain PyMuPDF text."""
     try:
         import pymupdf4llm
     except Exception:
@@ -679,9 +677,8 @@ def render_pdf_figure_tiles(
     fullpage: bool = True,
     max_tiles: int = 24,
 ) -> list[ParsedImage]:
-    """Render figure-bearing pages as overlapping high-DPI tiles (plus an optional full
-    page), each a ``ParsedImage`` keyed by page number. Tiling keeps small labels legible
-    and covers every sub-figure without exact region detection. Any failure yields []."""
+    """Renders figure pages as overlapping high-DPI tiles (plus an optional full page), each a
+    ParsedImage keyed by page number; any failure yields []."""
     wanted = [int(n) for n in page_numbers]
     if not wanted:
         return []

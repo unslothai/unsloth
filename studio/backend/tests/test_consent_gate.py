@@ -693,8 +693,7 @@ class TestStructuredFindingsForDialog:
         )
 
     def test_scan_route_reports_all_scan_created_repos(self, monkeypatch):
-        """A LoRA scan that pulls both adapter and base into cache reports every created
-        repo, so a decline purges all of them, not just the primary."""
+        """A LoRA scan's created repos include the base, so a decline must purge all of them."""
         adapter, base = "someone/lora-adapter", "someone/base-model"
         payload = self._run_scan_route(
             monkeypatch, adapter = adapter, base = base, in_cache = lambda _n: False
@@ -999,8 +998,7 @@ class TestStructuredFindingsForDialog:
         assert payload["scan_created_repos"] == []
 
     def test_scan_route_purges_remote_adapter_downloaded_by_base_resolution(self, monkeypatch):
-        """A remote adapter counts as scan-created, since base resolution caches it, so decline
-        purges it."""
+        """A remote adapter is scan-created when base resolution caches it, so decline purges it."""
         import asyncio
 
         import routes.models as models_route

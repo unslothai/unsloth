@@ -564,17 +564,15 @@ This model was converted to GGUF format using [Unsloth](https://github.com/unslo
 
 # Local bookkeeping whose base model can be a local path; keep it out of the Hub upload, including the GGUF push
 _HUB_UPLOAD_IGNORE = ["export_metadata.json", "._*"]
-# REAP's report: uploaded with a pruned export, and deleted from a reused repo by any other merged
-# or base upload (GGUF files carry one each) (upload_folder never removes remote files on its own; one it uploads in the
-# same commit is kept).
+# Uploaded with a pruned export; other merged or base uploads to a reused repo delete it, unless in
+# the same commit.
 _REAP_REPORT = "reap_report.json"
 
 _STAGING_PREFIX = "unsloth-hub-upload-"
 
 
 def _card_base_model(model) -> str:
-    """The base a Hub card names: after REAP the config points at a staging copy, so the id the
-    pruned model came from is used instead."""
+    """After REAP the config points at a staging copy, so the card names the original model id."""
     source = getattr(model, "_unsloth_reap_source", None)
     if source:
         return source
@@ -653,8 +651,7 @@ def _push_mlx_merged(
     with contextlib.ExitStack() as stack:
         upload_dir = output_path
         if not output_is_fresh:
-            # A reused folder can hold leftovers, so upload a clean second save; without a
-            # local save this is the only one.
+            # A reused folder can hold leftovers, so a clean second save is uploaded.
             upload_dir = stack.enter_context(
                 _staging_dir(Path(output_path).parent)
                 if output_path
@@ -698,8 +695,7 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
 
 
 def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
-    """Why a local checkpoint must not load now: a pinned adapter base it no longer names, or
-    weight entries that point outside the folder."""
+    """Refused when the pinned adapter base changed, or weights point outside the folder."""
     from core.export.decision import adapter_base_changed
     from utils.security.file_security import escaping_weight_references
 
@@ -1254,8 +1250,7 @@ class ExportBackend:
         return False, "Decision models export to GGUF only.", None
 
     def _sync_gguf_reap_reports(self, folder, ggufs) -> List[str]:
-        """One report beside each GGUF this export wrote (a reused folder keeps other files);
-        returns their names, written or removed."""
+        """One report beside each GGUF this export wrote; returns names written or removed."""
         try:
             from core.export.reap import gguf_report_name, sync_reap_report
 
@@ -2171,8 +2166,7 @@ class ExportBackend:
         repo_id: Optional[str],
         allow_mtp: bool = True,
     ) -> None:
-        """Ship the drafter trained with this fine-tune next to a merged export (best-effort: the
-        merged model is valid without it)."""
+        """Best-effort: ship the drafter beside a merged export, which is valid without it."""
         try:
             from core.export.drafter_export import package_merged
             info = package_merged(

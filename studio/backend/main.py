@@ -365,8 +365,7 @@ _STUDIO_ROOT_ID_CACHE: str = _read_studio_install_id()
 
 
 def _studio_root_id() -> str:
-    """Same-install discriminator for /api/health (cached at import). Empty when no installer token is
-    present."""
+    """Same-install id for /api/health, cached at import; empty without an installer token."""
     return _STUDIO_ROOT_ID_CACHE
 
 
@@ -644,9 +643,7 @@ def _start_post_warm_thread() -> bool:
 
 
 def _stop_post_warm_thread() -> None:
-    """Retire whatever worker is current; never wait for it. Joining would hold shutdown for the rest of the ML
-    stack import, the stall this path exists to avoid; bumping the generation suffices, since the worker
-    re-reads it after its join."""
+    """Never join the worker (would stall shutdown on the ML import); bumping the generation retires it."""
     global _post_warm_generation
     with _post_warm_lock:
         _post_warm_generation += 1
@@ -754,9 +751,7 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
 
 
 def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
-    """Clear the compiled cache unless a sibling backend of this install is live. The decision lives in
-    cache_cleanup, next to the paths it clears and the lock that serializes it against a sibling's startup;
-    run_server puts the probe on app.state because main.py must not import run.py back."""
+    """Skip clearing the compiled cache while a sibling backend is live; main.py must not import run.py."""
     _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
 
 
@@ -917,9 +912,8 @@ async def lifespan(app: FastAPI):
         _lifespan_log.warning("--models-dir registration failed at startup: %s", exc)
 
     try:
-        # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
-        # keeps serving needs the same reconciliation on an interval, bounded to runs whose progress lease has
-        # expired.
+        # Boot pass settles only orphaned runs; a wedged run is swept on an interval once its lease
+        # expires.
         from core.inference.chat_generation_runs import start_lease_sweeper
         start_lease_sweeper(app)
     except Exception as exc:
@@ -1149,8 +1143,7 @@ def _decisions_on_at_startup() -> bool:
     return systemone_settings.get_enabled()
 
 
-# Built on first request, or at startup when switched on: fastmcp is most of a second of import.
-# Mounted ahead of /mcp, which would otherwise swallow this path.
+# Built lazily since fastmcp is slow to import; mounted ahead of /mcp, which would swallow it.
 _decisions_mcp_app = LazyLifespanApp(
     _build_decisions_mcp_app, wanted_at_startup = _decisions_on_at_startup
 )
@@ -2357,11 +2350,8 @@ def _schedule_shutdown(request: Request) -> dict:
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
         if trigger is not None:
-            # On its own thread, like the signal path: the cleanup waits seconds on subprocesses
-            # (llama-server alone up to 5 s SIGTERM + 5 s SIGKILL), and run on this loop it kept
-            # uvicorn from closing the port until all of it was done. The main thread still waits
-            # for it (_shutdown_event) before the process exits. One cleanup per launch: keyed by
-            # the trigger, since an embedded host's next run_server() installs a new one.
+            # Runs cleanup on its own thread so uvicorn can close the port; main thread still waits
+            # on _shutdown_event before exit; one cleanup per shutdown trigger.
             with _shutdown_thread_lock:
                 state = request.app.state
                 if getattr(state, "_shutdown_trigger", None) is not trigger:
@@ -2584,8 +2574,7 @@ _dense_quant_scheme_ladder: list[str] = []
 
 
 def _refresh_dense_quant_capability() -> bool:
-    """Resolve the dense-quant bit and cache it. Imports torch and torchao; never call from a route
-    that has not already got them."""
+    """Caches dense-quant support; imports torch/torchao, so only call where they are loaded."""
     global _dense_quant_capability, _dense_quant_scheme_ladder
     _dense_quant_capability = _probe_dense_quant_supported()
     _dense_quant_scheme_ladder = _probe_dense_quant_schemes() if _dense_quant_capability else []

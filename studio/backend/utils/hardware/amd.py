@@ -1041,8 +1041,7 @@ def the_vulkan_loader_can_only_load_amd() -> bool:
 
 
 def _loadable_icd_manifests(paths: "list[str] | None" = None) -> "list[str]":
-    """The manifests the loader would both find here and load; ``paths`` asks of a
-    candidate list instead of this host's."""
+    """Manifests the loader would find and load here; paths checks a candidate list instead."""
     return [
         path
         for path in (_vulkan_icd_manifest_paths() if paths is None else paths)

@@ -2211,9 +2211,7 @@ def test_a_record_written_before_the_cards_were_named_still_diverts(fake_setting
 
 
 def test_evidence_no_card_was_named_for_survives_a_later_card_tally(fake_settings, monkeypatch):
-    """A failure recorded without a card applies to every card. A later failure naming card A must
-    add to it, not hide it: before, A's fresh one-strike tally replaced it for A, and the new card
-    list excluded every other card from it, a proven host-wide record included."""
+    """A card-less failure applies to every card, so a later card failure must add to it, not replace it."""
     from core.inference import sd_cpp_backend
 
     sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = False)
@@ -2465,9 +2463,7 @@ def test_the_h3_load_scopes_its_record_lookup_to_the_card_it_selected(fake_setti
 
 
 def test_a_cancelled_workers_card_does_not_leak_into_the_replacement_load(fake_settings):
-    """``unload`` clears ``_loading`` before the cancelled worker exits, so a replacement load's
-    thread can write this while the old worker is still inside ``_run_load``; shared, whichever
-    wrote last decided the accelerator for both."""
+    """unload clears _loading before the old worker exits, so a shared card lets the last writer decide."""
     from core.inference import sd_cpp_backend
 
     backend = sd_cpp_backend.SdCppDiffusionBackend.__new__(sd_cpp_backend.SdCppDiffusionBackend)
@@ -2527,8 +2523,7 @@ class TestRocmRuntimePreflight:
         assert sd_backend.accelerator_probe_failure_is_decisive("rocm") is False
 
     def test_windows_is_left_to_the_exit_status(self, monkeypatch):
-        """On Windows the same condition is already decisive from the real binary's 0xC0000135, so
-        the preflight declines to guess at DLL search order."""
+        """On Windows the binary's 0xC0000135 decides it, so the preflight does not guess."""
         monkeypatch.setattr(sd_backend.os, "name", "nt")
         assert sd_backend.rocm_runtime_resolvable() is None
 
@@ -2606,9 +2601,7 @@ class TestSelectedCardIndexSpaces:
         assert sd_cpp_backend.selected_card_identity(0) == sd_cpp_backend._card_identity(devices[0])
 
     def test_a_cold_inventory_still_names_the_selected_card_off_the_event_loop(self, monkeypatch):
-        """On a host whose torch works nothing reads the inventory at startup, so the first load met
-        the non-blocking "unknown" answer and recorded its failure against every card. A worker
-        thread reads it blocking; the event loop still never does."""
+        """A cold inventory answers unknown, so the worker reads it blocking; the event loop never does."""
         import asyncio
 
         from core.inference import sd_cpp_backend
@@ -2848,9 +2841,7 @@ class TestTheRouterRecordsTheBundleNotTheServer:
 
 
 def test_the_download_plan_predicts_for_the_card_the_load_will_select():
-    """Card-scoped records mean a card-less prediction reads a per-card failure as host-wide. Selection
-    is given the ordinal and clears the working card, so the two disagree and the plan stages the
-    diffusers files a native load never opens."""
+    """The download plan must predict for the card the load selects, or it stages unused diffusers files."""
     from core.inference import diffusion_engine_router as router
 
     assert "gpu_ordinal" in inspect.signature(router.predict_engine).parameters
@@ -2877,9 +2868,7 @@ def test_both_routes_predict_with_the_ordinal_they_already_resolved():
 
 
 def test_an_unmasked_ordinal_is_still_a_hip_id_not_an_inventory_row(monkeypatch):
-    """Unmasked does not make the ordinal the inventory position. HIP orders by node id and amd-smi
-    by discovery row, so counting same-name cards in torch order names the OTHER card of a matched
-    pair and pins Vulkan to a GPU the request never selected."""
+    """An unmasked ordinal is a HIP id, not an inventory row; torch-order counting names the wrong card."""
     from core.inference import video as video_mod
 
     _no_visibility_mask(monkeypatch)
@@ -2898,8 +2887,7 @@ def test_an_unmasked_ordinal_is_still_a_hip_id_not_an_inventory_row(monkeypatch)
 
 
 def test_an_unmasked_ordinal_still_counts_when_no_mapping_exists(monkeypatch):
-    """amd-smi missing, or older than the ROCm 6.4 that added ``list -e``: the torch-order count is
-    the only answer there is, and it stays the answer."""
+    """Without amd-smi or pre-6.4 ROCm (no list -e), the torch-order count is the only answer."""
     from core.inference import video as video_mod
     from utils.hardware import amd, hardware
 
@@ -2930,9 +2918,7 @@ def test_the_loading_card_does_not_outlive_the_load_on_a_pooled_thread(monkeypat
 
 
 def test_constructing_the_backend_does_not_claim_a_card_for_its_thread():
-    """``__init__`` runs on whichever executor thread built the backend. An explicit None written
-    there would be that thread's own answer for the life of the process, so a generate later
-    scheduled onto the same worker would read None rather than the committed card."""
+    """__init__ runs on an executor thread; a None written there would be that thread's answer for good."""
     import inspect
 
     from core.inference import sd_cpp_backend
@@ -2967,9 +2953,7 @@ def test_the_loading_card_store_exists_before_any_load():
     ],
 )
 def test_the_server_probe_refuses_a_windows_loader_death(monkeypatch, returncode, runnable):
-    """A ROCm sd-server with no HIP DLLs exits 0xC0000135 with no output. Read as runnable, the
-    router never recorded it, and the load's start failure had nothing to classify, so every
-    forced-native image load retried the same build instead of ever reaching Vulkan."""
+    """A ROCm sd-server with no HIP DLLs exits 0xC0000135 silently; the probe must not call it runnable."""
     import subprocess
 
     from core.inference import sd_cpp_backend

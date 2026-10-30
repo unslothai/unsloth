@@ -83,8 +83,7 @@ class TestTheCanonicalModel:
         assert estimate.quant_file_bytes != _BREAKDOWN.weights_bytes
 
     def test_the_two_figures_are_reported_as_given(self):
-        """Quant and resident figures come from different places, so neither is clamped to match the
-        other."""
+        """Quant and resident figures have separate sources, so neither is clamped to match."""
         out = build_memory_estimate(_BREAKDOWN, quant_file_bytes = 9_999_999_999)
         assert out.quant_file_bytes == 9_999_999_999
         assert out.resident_files_bytes == _BREAKDOWN.weights_bytes
@@ -127,8 +126,7 @@ class TestTheRouteOverrides:
         assert (none_out.compute_bytes, none_out.total_bytes, none_out.n_ctx) == (0, 0, 0)
 
     def test_the_route_does_not_mutate_the_model_after_building_it(self):
-        """Pydantic skips validation on assignment, so the route must build the model rather than
-        mutate it."""
+        """Assignment skips validation, so the route must build a model rather than mutate it."""
         from pathlib import Path
 
         source = (Path(__file__).resolve().parent.parent / "routes" / "models.py").read_text(

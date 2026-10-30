@@ -47,13 +47,10 @@ from core.inference.tools import _bash_exec, _python_exec
 from test_llama_cpp_tool_loop import _done, _make_backend, _sse
 
 
-# Grandchild-survival probes: the grandchild spins on a test-owned gate file, so it
-# outlives any timeout; a survivor of the group kill writes its sentinel within one
-# poll interval of the gate opening, a killed one never can.
+# The grandchild writes its sentinel only if it survived the group kill; a killed one never can.
 
 _GATE_POLL_S = 0.02
-# How long a surviving grandchild is given to notice the gate and write. Two
-# orders of magnitude over its own poll interval; a leak shows up in ~20ms.
+# Leak window is two orders of magnitude over the gate poll; a leak shows up in ~20ms.
 _LEAK_WINDOW_S = 1.0
 
 
@@ -214,8 +211,7 @@ def test_generator_close_cancels_observing_tool():
 
 
 def test_generator_close_is_bounded_for_cancel_ignoring_tool(monkeypatch):
-    # A tool that ignores cancel_event must not stall teardown: gen.close() waits
-    # at most the bounded join, not the tool's full runtime.
+    # A tool ignoring cancel_event must not stall gen.close(); the join is bounded.
     monkeypatch.setattr("core.inference.tool_stream_exec._WORKER_JOIN_TIMEOUT_S", 0.2)
     release = threading.Event()
 
@@ -239,8 +235,7 @@ def test_generator_close_is_bounded_for_cancel_ignoring_tool(monkeypatch):
 
 
 def test_cancel_event_not_set_on_clean_finish():
-    # cancel_event is shared across a turn; a clean finish must leave it unset so
-    # the next tool in the same turn is not aborted.
+    # cancel_event spans a turn; a clean finish must leave it unset for the next tool.
     cancel_event = threading.Event()
 
     def tool(_cb):
@@ -487,8 +482,7 @@ def test_python_exec_timeout_message_identical_with_streaming():
 
 
 def test_python_exec_timeout_keeps_output_already_printed():
-    # The run printed a progress line before it overran the timeout. That text was
-    # captured; it must reach the model instead of only the status line.
+    # Output printed before a timeout must still reach the model, not only the status line.
     code = "import sys, time\nprint('progress')\nsys.stdout.flush()\ntime.sleep(30)\n"
     baseline = _python_exec(code, timeout = 1)
     streamed = _python_exec(code, timeout = 1, output_callback = lambda _t: None)
@@ -810,8 +804,7 @@ def test_gguf_loop_final_tool_message_unchanged_by_streaming(monkeypatch):
 
     # Streaming is observational: the model-visible tool message must be byte-identical.
     assert _tool_messages(payloads_streaming) == _tool_messages(payloads_plain)
-    # The budget-exhausted instruction rides the last tool result: templates gate replayed
-    # reasoning on the newest user turn.
+    # Budget note rides the last tool result; a newer user turn would gate replayed reasoning.
     assert _tool_messages(payloads_streaming) == [
         {
             "role": "tool",
@@ -1061,8 +1054,7 @@ def test_missing_path_hint_respects_project_workdir():
 
 
 def test_missing_path_hint_project_workdir_under_convention_prefix():
-    # A project under a convention prefix like /workspace: an in-project miss must not
-    # be flattened to its basename.
+    # In-project misses under /workspace must keep their full path, not the basename.
     workdir = "/workspace/proj"
     nested = "/workspace/proj/sub/data.csv"
     output = f"FileNotFoundError: [Errno 2] No such file or directory: '{nested}'"
@@ -1105,8 +1097,7 @@ def test_code_tool_descriptions_mention_relative_paths():
 
 
 def test_python_exec_mnt_data_open_is_remapped_into_workdir():
-    # The shim remaps open()/os.makedirs() on /mnt/data into the sandbox CWD and
-    # prints a one-line stderr notice, identically with and without streaming.
+    # Shim remaps /mnt/data into the sandbox CWD with one stderr notice, streaming or not.
     fname = f"remap_{_uuid.uuid4().hex}.txt"
     code = (
         "import os\n"
@@ -1130,8 +1121,7 @@ def test_python_exec_mnt_data_open_is_remapped_into_workdir():
 
 
 def test_python_exec_pathlib_write_text_is_remapped_into_workdir():
-    # pathlib.Path.open / write_text / read_text call io.open directly,
-    # bypassing the builtins.open patch, so the shim must remap io.open too.
+    # pathlib uses io.open directly, bypassing builtins.open, so the shim remaps io.open too.
     fname = f"remap_{_uuid.uuid4().hex}.txt"
     code = (
         "from pathlib import Path\n"
@@ -1176,8 +1166,7 @@ def test_python_exec_hallucinated_absolute_write_is_remapped_into_workdir():
 
 
 def test_python_exec_unremapped_mnt_data_failure_gets_hint():
-    # os.listdir is deliberately not remapped: the failure carries the retry hint
-    # instead, identically with and without streaming.
+    # os.listdir is deliberately not remapped; its failure carries the retry hint instead.
     import re as _re
 
     code = "import os\nos.listdir('/mnt/data/nonexistent_dir_xyz')\n"
@@ -1295,8 +1284,7 @@ def test_accepts_output_callback_signature_detection():
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_path):
-    # Non-streaming cancel: the leader exits at once while a grandchild holds stdout;
-    # the drain must kill the captured group.
+    # The leader exits while a grandchild holds stdout; the drain must still kill the group.
     sentinel = tmp_path / "grandchild_ran"
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"

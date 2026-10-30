@@ -180,8 +180,7 @@ def _unhydrated_gguf_task(name_hints: tuple[Optional[str], ...]) -> Optional[str
 def _audio_cpp_classification(
     path: Optional[str | Path], name_hints: tuple[Optional[str], ...]
 ) -> tuple[str, Optional[str]]:
-    """``(task, audio_type)`` of an audio.cpp GGUF: its family from the header when a path is given,
-    else from the names, mapped to the page that runs it."""
+    """(task, audio_type) of an audio.cpp GGUF: family from header if a path, else from names."""
     try:
         from core.inference import audio_cpp_models as acm
     except Exception:
@@ -255,8 +254,7 @@ def _gguf_file_task(path: str | Path, name_hints: tuple[Optional[str], ...]) -> 
 
 
 def _whole_pipeline_gguf_task(path: str | Path) -> Optional[str]:
-    """Images task for a whole-pipeline SDXL GGUF: sd.cpp ``convert`` writes no architecture, so the name fallback
-    would call it a chat model."""
+    """Images task: sd.cpp convert writes no architecture, so the name fallback says chat."""
     try:
         from core.inference.diffusion_content import whole_pipeline_gguf_family
 
@@ -639,8 +637,7 @@ def _local_model_classification_for_task(
 
 
 def local_audio_workflows(model, audio_type: Optional[str]) -> Optional[list[str]]:
-    """The audio.cpp family's own workflows for a local speech row (a clone-only one is not
-    Speak); None keeps the task-derived default."""
+    """audio.cpp family's workflows; clone-only is not Speak; None keeps the task default."""
     if audio_type != "audiocpp_tts":
         return None
     model = _local_probe_model(model)

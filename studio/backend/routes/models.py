@@ -414,9 +414,7 @@ def _local_pipeline_index(d: Path) -> bool:
 
 
 def _servable_gguf_names(directory: Path) -> list[str]:
-    """The ``.gguf`` names in *directory* that count as a model being present there. An imatrix is
-    calibration data, not a model artifact; mmproj and MTP drafters DO count, since they are
-    companions of a real model and presence is all they decide."""
+    """.gguf names that count as model presence; imatrix is excluded, mmproj and MTP drafters count."""
     from core.inference.diffusion_lora import is_image_lora_file
     return [
         p.name
@@ -2098,8 +2096,7 @@ def browse_folders(
 
 
 def _looks_like_mlx_repo(model_id: str) -> bool:
-    """Name heuristic for unloaded models (mirrors the -GGUF suffix check);
-    tokenized so MLX only matches as a whole name segment."""
+    """Name heuristic for unloaded models; tokenized so MLX matches only as a whole name segment."""
     if model_id.lower().startswith("mlx-community/"):
         return True
     tail = model_id.split("/")[-1]
@@ -3244,9 +3241,8 @@ def _loading_model_matches_deleted_path(loading_model: object, deleted_path: Pat
 
 
 def _active_diffusion_backend():
-    """The live Images engine, or None when this install has no diffusion stack. Fails OPEN on import: a
-    chat-only install (no diffusers) must still be able to delete its fine-tuned models. Reading the
-    returned backend's state is what fails closed."""
+    """Fails open on import so chat-only installs can still delete models; reading its state fails
+    closed."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
         return get_active_diffusion_engine()
@@ -4802,9 +4798,8 @@ def _default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
 
 
 def _gguf_copy_is_usable(repo_info, load_id: Optional[str], active_root: Optional[Path]) -> bool:
-    """Whether this copy of the repo holds a quant a load can reach. A pinned copy names a complete
-    snapshot; an unpinned copy must be in the active cache and have an id that resolves onto a whole
-    quant, which is exactly what withheld the pin."""
+    """A pinned copy is usable; an unpinned one must sit in the active cache and resolve to a whole
+    quant."""
     if load_id:
         return True
     if active_root is None:
@@ -4901,8 +4896,7 @@ def _normalized_quant_label(label: str) -> str:
 
 
 def _repo_has_mmproj(repo_info) -> bool:
-    """True if the repo ships a GGUF vision adapter (mmproj), so it can
-    take image inputs. Cheap: scans already-listed file names only."""
+    """True if the repo ships a GGUF mmproj vision adapter; cheap, scans only already-listed file names."""
     return any(
         _is_mmproj_filename(f.file_name)
         for revision in repo_info.revisions
@@ -4911,9 +4905,7 @@ def _repo_has_mmproj(repo_info) -> bool:
 
 
 def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
-    """Whether the copy this row loads ships a projector. The loader opens the projector out of the snapshot it
-    loads from, so one in a revision the load never reaches is not vision support. Judged per snapshot, not
-    per file: a split quant can sit in a subdirectory while the projector sits at the root."""
+    """Judge vision per snapshot: the projector must sit in the snapshot the load opens from."""
     if load_id:
         return _snapshot_has_gguf_projector(load_id)
     # No projector in any revision means none to reach, and saves a cache walk.
@@ -4954,8 +4946,7 @@ def _repo_gguf_size_bytes(repo_info) -> int:
 
 
 def _repo_has_gguf_files(repo_info) -> bool:
-    """True when any revision in a cached repo has a primary GGUF weight file; an mmproj-only repo is
-    not one."""
+    """True when any revision has a primary GGUF weight file; an mmproj-only repo does not count."""
     return _repo_gguf_size_bytes(repo_info) > 0
 
 
@@ -4998,9 +4989,7 @@ def snapshot_has_complete_variants(snapshot: str) -> bool:
 
 
 def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
-    """Snapshot dir holding the newest primary GGUF, for a repo outside the active hub cache that does
-    not resolve by id. ``None`` when the id works or no snapshot is recorded, since the repo dir itself
-    is not loadable."""
+    """Snapshot dir of the newest primary GGUF for a repo outside active cache; None if the id resolves."""
     from hub.utils.hf_cache_state import snapshot_selection_key
 
     repo_path = getattr(repo_info, "repo_path", None)
@@ -5034,9 +5023,7 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
 def _preferred_gguf_copy(
     rows: dict, ranks: dict, key: str, candidate: tuple[bool, bool], size: int
 ) -> bool:
-    """Whether this copy should replace the one already kept for *key*, in the order the Hub inventory
-    deduplicates by: a copy that cannot load loses to one that can, then the active cache wins, then
-    the larger download."""
+    """Replace the kept copy if loadable beats not, then active cache wins, then the larger download."""
     existing = rows.get(key)
     if existing is None:
         return True
@@ -5452,9 +5439,7 @@ async def delete_cached_model(
 
 
 def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
-    """Absolute path of a cached repo (newest snapshot dir) or, with *variant*, that quant's main GGUF file
-    (first split of a sharded quant). Paths come from the HF cache scan only, so callers cannot probe
-    arbitrary paths."""
+    """Paths come only from the HF cache scan, so callers cannot probe arbitrary filesystem paths."""
 
     cache_scans = _all_hf_cache_scans()
 

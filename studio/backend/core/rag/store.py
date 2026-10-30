@@ -74,8 +74,7 @@ _QUOTED = re.compile(r"\"([^\"\n]+)\"|\u201c([^\u201d\n]+)\u201d|'([^'\n]+)'|`([
 
 
 def _match_query(query: str) -> str:
-    """User text -> safe FTS5 OR-of-quoted-terms query; quoting defuses FTS5
-    operators. "" (no tokens) means no lexical results."""
+    """FTS5 OR of quoted terms; quoting defuses operators, and no tokens means no hits."""
     toks = _TOKEN.findall(query.lower())
     return " OR ".join(f'"{t}"' for t in toks)
 
@@ -400,9 +399,7 @@ def add_chunks(
     vectors,
     regions = None,
 ) -> None:
-    """Incrementally index one document's chunks into chunks + FTS5 + vec0.
-    ``vectors`` parallels ``chunks``; optional ``regions`` (also parallel) holds
-    per-chunk PDF highlight rects, stored as JSON."""
+    """Indexes chunks into FTS5 and vec0; ``vectors`` parallels chunks, ``regions`` holds PDF rects."""
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]), document_id)
     epoch_before = vec_cache.read_epoch(conn, scope) if vec_cache.enabled() else None
@@ -475,11 +472,7 @@ def replace_document_vectors(
     identity: str,
     model_name: str,
 ) -> bool:
-    """Swap a document's vectors in place and stamp ``identity``, keeping its id and chunk ids.
-
-    Writes only while the row is still the one that was encoded: present, still under
-    ``stale_model``, with the same chunks, and ``model_name`` still the configured model. A delete,
-    a re-upload, another re-embed or a model switch in between wins, and False is returned."""
+    """Swaps vectors in place only while the row is unchanged since encoding; otherwise returns False."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
@@ -672,8 +665,7 @@ def copy_documents(
     *,
     thread_id: str,
 ) -> dict[str, str]:
-    """Copy completed documents, paired with their file copies, into ``scope`` without
-    committing. Returns the source-to-copy document id map."""
+    """Copies completed documents into ``scope`` without committing; returns the id map."""
     document_ids: dict[str, str] = {}
     chunk_ids: dict[str, str] = {}
     for source, stored_path in documents:
@@ -898,8 +890,7 @@ def _drop_incompatible(
     embedding_model: str | None,
     untagged: str | None,
 ) -> list[tuple[str, float]]:
-    """Keep the KNN candidates whose document is still live and whose vectors this
-    query can be compared against."""
+    """Keeps KNN candidates whose document is live and whose vectors suit this query's model."""
     valid: set[str] = set()
     ids = [cid for cid, _ in candidates]
     for start in range(0, len(ids), _ID_BATCH):
@@ -952,9 +943,7 @@ def chunks_by_id(conn: sqlite3.Connection, ids) -> dict:
 
 
 def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
-    """Every completed-document chunk for a scope, ordered document-then-index and
-    joined with the document filename. Backs whole-document context injection, so
-    it does no retrieval or embedding."""
+    """Completed chunks for a scope in document order with filenames; no retrieval or embedding."""
     scopes = _scopes(scope)
     if not scopes:
         return []
@@ -977,9 +966,7 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
 
 
 def scope_token_estimate(conn: sqlite3.Connection, scope) -> int:
-    """Upper-bound token total for a scope's completed chunks without hydrating text.
-    Mirrors ``all_chunks_for_scope`` + whole-document token budgeting (unique stored
-    count, else full stored count, else length/4), so the budget can be checked before loading text."""
+    """Upper bound on scope tokens, mirroring whole-document budgeting, checked before loading text."""
     scopes = _scopes(scope)
     if not scopes:
         return 0

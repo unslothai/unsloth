@@ -173,8 +173,7 @@ def test_kimi_two_sections_in_one_stream_both_parse():
 
 
 def test_kimi_bare_counter_id_is_dropped():
-    """Bare-digit id (``3``) is dropped (matches vLLM); SGLang infers
-    name from schema, which we don't have at parse time."""
+    """Bare-digit id is dropped to match vLLM; SGLang infers the name from a schema we lack."""
     text = (
         "<|tool_calls_section_begin|>"
         "<|tool_call_begin|>3"
@@ -187,17 +186,13 @@ def test_kimi_bare_counter_id_is_dropped():
 
 
 def test_deepseek_v3_1_huge_truncated_body_is_linear():
-    """Adversarial input: DeepSeek envelope with no JSON brace and a long
-    body. A regex-based ``[^\\n<]+?`` name capture is O(N^2) here; the
-    parser uses ``str.find`` on the sep marker so it stays linear."""
+    """A regex name capture is O(N^2) on a long body with no brace, so the parser uses str.find."""
     build = lambda n: "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn<｜tool▁sep｜>" + "x" * n
     assert assert_linear(parse_tool_calls_from_text, build, "V3", 50_000) == []
 
 
 def test_deepseek_r1_huge_fenceless_body_is_linear():
-    """R1 detection used a greedy ``([^\\n]+)\\n```json`` regex that is O(N^2) on a
-    fence-less body of repeated ``function<sep>`` tokens. The parser now scans with
-    ``str.find``."""
+    """A greedy newline-capture regex was O(N^2) on fence-less R1 bodies; the parser now uses str.find."""
     build = lambda n: "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * n
     assert assert_linear(parse_tool_calls_from_text, build, "R1", 10_000) == []
 

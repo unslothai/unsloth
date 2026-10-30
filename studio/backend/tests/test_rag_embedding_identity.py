@@ -105,9 +105,7 @@ def test_re_uploading_after_a_backend_change_reindexes_instead_of_deduping(
 def test_re_resolved_backend_reindexes_before_the_stale_backend_is_rebuilt(
     rag_home, stub_embeddings, monkeypatch, tmp_path
 ):
-    """Saving a new backend changes the next encode before that encode rebuilds
-    the resident backend. Admission must predict the replacement or identical
-    bytes dedupe against the old vector space and never reach the rebuild."""
+    """Admission must predict a saved replacement backend, or identical bytes dedupe against the old one."""
     choice = {"backend": "sentence-transformers"}
     monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
     monkeypatch.setattr(
@@ -141,8 +139,7 @@ def test_re_resolved_backend_reindexes_before_the_stale_backend_is_rebuilt(
 def test_ingestion_records_the_backend_that_took_over_mid_job(
     rag_home, stub_embeddings, monkeypatch, tmp_path
 ):
-    """The row is created before the encode, and an ST encode failure swaps the
-    process to llama-server, so the identity is only correct once vectors exist."""
+    """A mid-job swap to llama-server means the identity is only known once the vectors exist."""
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     swapped = {"done": False}
     real_encode = embeddings.encode
@@ -167,9 +164,8 @@ def test_ingestion_records_the_backend_that_took_over_mid_job(
 def test_legacy_rows_keep_answering_and_are_reported(
     rag_home, stub_embeddings, monkeypatch, tmp_path
 ):
-    """Rows written before the tag existed could be either backend's. Dropping them
-    would empty dense search over every corpus indexed so far, and re-embedding one
-    unasked is not kinder, so they are still served and counted instead."""
+    """Untagged legacy rows may come from either backend; dropping them would empty dense search,
+    and re-embedding unasked is not kinder, so they keep answering and are counted."""
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     scope = store.kb_scope("K6")
     document_id = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
@@ -292,8 +288,7 @@ def _put(conn, scope, document_id, texts, embedding_model):
 
 
 def test_a_local_model_path_survives_the_identity_round_trip():
-    """Colons separate the identity's segments and a Windows path carries one, so the
-    model used to read back as ``C``."""
+    """A Windows path has a colon, which split the identity so the model read back as C."""
     st = config.embedding_identity("sentence-transformers", WINDOWS_MODEL)
     llama = config.embedding_identity(
         "llama-server", WINDOWS_MODEL, gguf_repo = WINDOWS_MODEL + "-GGUF"
@@ -319,9 +314,7 @@ def test_a_local_path_model_keeps_answering_its_legacy_rows(rag_conn):
 
 
 def test_stale_backend_chunks_do_not_starve_the_current_backend(rag_conn):
-    """What a partial reindex leaves: both backends in one scope. The other one's
-    distances come from another space, so they can fill every fetched candidate slot
-    while the compatible chunks sit further down the KNN list."""
+    """Other-backend chunks in one scope can fill every KNN candidate slot and starve current ones."""
     stale = config.embedding_identity("llama-server", MODEL, gguf_repo = "r")
     current = config.embedding_identity("sentence-transformers", MODEL)
     for i in range(40):
@@ -364,8 +357,7 @@ def test_the_identity_comes_from_the_encode_not_from_the_process_after_it(rag_co
 def test_a_swap_between_batches_re_embeds_the_document(
     rag_home, stub_embeddings, monkeypatch, tmp_path
 ):
-    """A document whose batches straddle the swap would hold vectors from two spaces
-    under one identity, so it restarts under the backend that took over."""
+    """A swap between batches mixes two spaces under one identity, so the document re-embeds."""
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     monkeypatch.setattr(ingestion, "_EMBED_BATCH", 1)
     monkeypatch.setattr(config, "CHUNK_TOKENS", 3)

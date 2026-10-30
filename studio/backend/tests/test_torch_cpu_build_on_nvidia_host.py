@@ -194,8 +194,7 @@ def test_a_probe_that_cannot_answer_returns_a_result_rather_than_raising(
             raise failure
 
         monkeypatch.setattr(nvidia.subprocess, "run", _raise)
-    # This suite runs on a real NVIDIA host, so pin procfs empty: the case under test is a
-    # machine with no NVIDIA driver at all.
+    # Runs on a real NVIDIA host, so procfs is pinned to zero GPUs to simulate no driver.
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
 
@@ -278,8 +277,7 @@ def test_an_untagged_wheel_is_only_a_cpu_build_when_it_names_no_runtime(monkeypa
 @pytest.mark.parametrize("var", ["CUDA_VISIBLE_DEVICES"])
 @pytest.mark.parametrize("mask", ["", " ", "-1"])
 def test_a_deliberately_emptied_mask_is_not_a_broken_install(monkeypatch, var, mask):
-    # Hiding the GPUs produces exactly the shape this feature keys on (torch sees none,
-    # nvidia-smi sees them all) without anything being broken.
+    # Masked GPUs look like torch seeing none while nvidia-smi sees all, with nothing broken.
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
@@ -457,8 +455,7 @@ def test_export_and_video_stop_saying_no_accelerator_was_found(monkeypatch):
 
 def test_a_genuinely_gpu_less_host_keeps_the_old_wording(monkeypatch):
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
-    # This suite runs on a real NVIDIA box, so without these the verdict refresh correctly
-    # notices the accelerator this test is pretending not to have.
+    # Real NVIDIA box: without these stubs the refresh sees the GPU this test pretends away.
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
     monkeypatch.setattr(hw, "_torch_reports_a_usable_accelerator", lambda: False)
     monkeypatch.setattr(hw, "classify_torch_build", lambda **_kw: None)
@@ -725,8 +722,7 @@ def test_the_chat_only_verdict_follows_the_inventory(monkeypatch):
 
 @pytest.mark.parametrize("frozen", ["mlx_unavailable", "detection_failed", "intel_mac", None])
 def test_the_other_verdicts_are_left_exactly_as_detection_set_them(monkeypatch, frozen):
-    # A 60 second probe cannot change any of these, and re-deriving them would fight
-    # detect_hardware() rather than follow it.
+    # A 60 second probe cannot change these; re-deriving them would fight detect_hardware().
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", frozen)
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "whatever detection recorded")
     monkeypatch.setattr(
@@ -795,12 +791,7 @@ def test_windows_intel_adapters_are_inventoried_too(monkeypatch):
 
 
 def test_a_transient_probe_failure_does_not_retire_a_settled_mismatch(monkeypatch):
-    """nvidia-smi timing out is not the GPU going away.
-
-    The aggregate probe returns a structured empty result rather than raising, so the
-    refreshed verdict read it as "no cards" and handed the user the opposite advice for
-    a whole cache interval.
-    """
+    """A timed-out nvidia-smi is not the GPU going away; it must not retire a settled mismatch."""
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
     monkeypatch.setattr(hw, "classify_torch_build", lambda **_kw: "torch_cpu_build")
@@ -848,8 +839,7 @@ def test_only_uncertainty_about_the_mismatched_vendor_holds_the_verdict(monkeypa
     _inventory(["amd"])
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
 
-    # An unknown that names nobody is a cold cache, which is silent about who could not
-    # answer rather than saying everyone did.
+    # An empty inventory is a cold cache, silent about who failed to answer, not an all-clear.
     _inventory([])
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
 
@@ -1320,8 +1310,7 @@ def test_the_recovery_actually_starts_a_detection_pass(monkeypatch):
     hw.torch_build_snapshot()
     hw.current_chat_only_verdict()
 
-    # Order matters: discarding after the pass started would race it, and starting before
-    # the discard is the no-op this fixes.
+    # Discard must come before the pass starts; starting first makes the discard a no-op.
     assert calls == ["epoch", "discard", "start"]
 
 
@@ -1709,8 +1698,7 @@ def test_the_supported_arch_set_matches_the_installer(monkeypatch):
     install_sh = (root / "install.sh").read_text(encoding = "utf-8")
     block = install_sh[install_sh.index("_amd_arch_index_family_for_gfx()") :]
     block = block[: block.index("esac")]
-    # Only the case LABELS: the values on the right are index families (gfx103X-all), whose
-    # prefixes a bare regex over the block would collect.
+    # Only case LABELS: right-hand values are index families a bare regex would collect.
     shipped = {
         gfx
         for line in block.splitlines()
@@ -2256,8 +2244,7 @@ def test_a_disk_classified_detection_failure_transitions_when_the_probe_recovers
 
 
 def test_a_detection_failure_never_degrades_into_no_gpu(monkeypatch):
-    """A host that never measured cannot be told it has no GPU; that IS the claim
-    detect_hardware() refused to make for it."""
+    """A detection failure must never read as no GPU: that is a claim it never measured."""
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "detection_failed")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", OSError("boom"))

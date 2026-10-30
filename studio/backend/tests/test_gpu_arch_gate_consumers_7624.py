@@ -26,9 +26,7 @@ _REAL_POPEN = subprocess.Popen
 
 @pytest.fixture
 def vulkan_probe(monkeypatch):
-    """A Vulkan build with one discrete device and one iGPU, and every ROCm
-    arch helper booby-trapped: reaching one of them means the gate ran on a
-    code path that has no gfx arches to speak of."""
+    """Vulkan build, discrete GPU and iGPU; any ROCm arch helper call means the gate ran off-ROCm."""
 
     def _explode(*_args, **_kwargs):
         raise AssertionError("ROCm arch gate consulted on a Vulkan build")
@@ -248,8 +246,7 @@ class TestRagAutoStaysUnfiltered:
 
 
 class TestEmbedLlamaServerOptsIn:
-    """The GGUF embedding backend IS a llama-server process, so it is the one
-    RAG-side probe that must be gated."""
+    """The GGUF embedding backend is llama-server itself, so it is the one RAG probe to gate."""
 
     def test_gpu_available_opts_in(self, monkeypatch):
         import utils.hardware as uh
@@ -346,8 +343,7 @@ class TestArchCrashRetryEdgeCases:
     def test_every_answer_differs_from_the_set_that_crashed(
         self, selected, enumerated, unified, monkeypatch
     ):
-        """The one guarantee the single retry needs: the respawn is never the
-        launch that just died. Either a different device set, or nothing."""
+        """The retry never respawns the crashed launch: a different device set, or nothing."""
         _unified(monkeypatch, unified)
         out = LlamaCppBackend._arch_crash_retry_gpu_ids(selected, enumerated)
         assert not out or set(out) != set(
@@ -355,16 +351,14 @@ class TestArchCrashRetryEdgeCases:
         ), f"retry would respawn the identical selection {sorted(set(selected))}"
 
     def test_the_decision_is_stateless_and_so_must_not_be_looped(self, monkeypatch):
-        """Arch-crash retry GPU mapping is stateless and swaps 0 and 1, so it must be applied
-        exactly once."""
+        """Retry mapping is stateless and swaps 0 and 1, so it must be applied exactly once."""
         _unified(monkeypatch, set())
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0], [0, 1]) == [1]
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([1], [0, 1]) == [0]
 
 
 class TestKernelImageInvalidDoesNotFalsePositive:
-    """The marker gates a device-narrowing respawn, so a false positive would
-    silently move an unrelated failure onto a different card."""
+    """A false marker match would move an unrelated failure onto a different card on respawn."""
 
     @pytest.mark.parametrize(
         "output",
@@ -435,8 +429,7 @@ class TestKernelImageInvalidDoesNotFalsePositive:
 
 
 class TestArchCrashRetryFiresAtMostOnce:
-    """The recovery is one straight-line ``if`` in the launch path, not a loop.
-    Pinned here so a future refactor into a retry loop has to notice."""
+    """Recovery is one straight-line if, not a loop; this pins a refactor into a retry loop."""
 
     def test_source_has_a_single_archfallback_spawn(self):
         source = Path(LlamaCppBackend.__module__.replace(".", "/"))
@@ -530,9 +523,7 @@ class TestArchRetryDropsTensorSplit:
 
 
 class TestArchRetryRestoresTheMemoryPolicy:
-    """The --fit retry appends a page-lock to its OWN argv and records it, but the
-    arch-crash respawn starts from `cmd`, which never carried it, so without a restore
-    the backend reports page-locking on an unlocked child."""
+    """Arch-crash respawn starts from cmd, so the --fit page-lock the retry added must be restored."""
 
     @staticmethod
     def _source():
@@ -588,9 +579,7 @@ class TestArchRetryRestoresTheMemoryPolicy:
 
 
 class TestEmbedLlamaServerPinsTheGatedGpus:
-    """Knowing a supported GPU EXISTS is not the same as launching on it: the child
-    enumerates every ROCm agent, and that enumeration is what dies, so a mixed host
-    passes the gate and still crashes unless the survivors reach the launch env."""
+    """The child enumerates every ROCm agent, so the survivors must reach its launch env."""
 
     @staticmethod
     def _probes(
@@ -723,9 +712,7 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
 
 
 class TestTheGateNeverRewritesAnUnmappableMask:
-    """ROCr and CUDA accept UUID/MIG tokens, which resolve to no physical ids, so the
-    probe falls back to torch ordinals. Fine for RANKING, unusable as a PIN since the
-    runtime resolves them against the whole host, so the survivor pin fails open."""
+    """ROCr/CUDA UUID and MIG tokens resolve to no physical id, so ordinals rank but the pin fails open."""
 
     @staticmethod
     def _rocm_host(monkeypatch, *, gated, everything):
@@ -802,8 +789,7 @@ class TestCpuSentinelDropsAnInheritedDevicePick:
 
     @pytest.mark.parametrize("pinned", ["0", "1,2", ""])
     def test_a_real_pin_keeps_it(self, pinned):
-        """Only the CPU sentinel clears the pick. With devices visible the
-        inherited selection is still the user's, and it still resolves."""
+        """Only the CPU sentinel clears the pick; a real inherited selection still resolves."""
         env = {"LLAMA_ARG_DEVICE": "HIP0"}
         LlamaCppBackend._emit_child_gpu_visibility(env, pinned)
         assert env["LLAMA_ARG_DEVICE"] == "HIP0"
@@ -833,9 +819,7 @@ class TestCpuSentinelDropsAnInheritedDevicePick:
 
 
 class TestArchForcedCpuHoldsNoVram:
-    """An arch-gated launch is a zero-VRAM launch arriving through an AUTOMATIC
-    request, exactly what routes/inference.py:8206 describes. Without it in
-    holds_no_vram the CPU-only server keeps the CHAT claim and blocks a pipeline."""
+    """Arch-gated launches are zero-VRAM; without holds_no_vram the CPU server keeps the CHAT claim."""
 
     def _backend(self):
         backend = LlamaCppBackend()
@@ -894,8 +878,7 @@ _GATED_REQUEST = dict(
 
 
 def _post_gate_backend(dropped, *, live_split = None):
-    """Live state after a manual-split launch the arch gate normalized: the ratio
-    left the argv (``_tensor_split`` is None), and the drop was recorded."""
+    """The gate drops the manual split: _tensor_split is None and the drop is recorded."""
     backend = LlamaCppBackend()
     backend._process = _StubProcess()
     backend._healthy = True
@@ -926,8 +909,7 @@ class TestGatedSplitStillDeduplicates:
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**changed)) is False
 
     def test_a_launch_that_dropped_nothing_records_nothing(self):
-        """No recorded drop means no excuse: a live server with no split must
-        still reload for a request that asks for one."""
+        """No recorded drop means no excuse: an unsplit live server must reload for a split."""
         backend = _post_gate_backend(None)
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**_GATED_REQUEST)) is False
 
@@ -940,8 +922,7 @@ class TestGatedSplitStillDeduplicates:
 
 
 class TestGatedTensorModeStillDeduplicates:
-    """Same rule for the split MODE: without the record an identical Apply reloads the
-    same normalized model."""
+    """Same rule for split MODE: without the record, an identical Apply reloads the model."""
 
     def _backend(self, dropped_mode):
         backend = _post_gate_backend((0.5, 0.5))
@@ -955,8 +936,7 @@ class TestGatedTensorModeStillDeduplicates:
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**request)) is True
 
     def test_a_launch_that_dropped_nothing_still_reloads(self):
-        """No recorded drop means no excuse: a layer server has to reload for a
-        request that genuinely asks for tensor parallelism."""
+        """No drop recorded, no excuse: a layer server must reload for tensor parallelism."""
         request = dict(_GATED_REQUEST, tensor_parallel = True)
         backend = self._backend(False)
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**request)) is False
@@ -990,8 +970,7 @@ class TestArchRetryAsksResidencyTheSameWayTheLaunchDid:
         assert all("_mem_probe_for_dio" in gate for gate in gates), gates
 
     def test_the_residency_arm_records_from_the_argv(self):
-        """The residency arm must record from the argv, since rebuilding from parts misses the
-        DirectIO flags."""
+        """Residency arm records from argv; rebuilding from parts misses DirectIO flags."""
         src = self._load_model_source()
         marker = "Arch-crash retry changed where the weights live"
         assert marker in src
