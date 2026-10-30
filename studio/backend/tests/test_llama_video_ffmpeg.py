@@ -49,11 +49,12 @@ def _no_tools(monkeypatch):
     monkeypatch.setattr(llama_mod, "video_tools", lambda _dir = None: None)
 
 
-def _props_backend(video, ffmpeg_dir = None):
+def _props_backend(video, ffmpeg_dir = None, search_path = None):
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._has_video_input = False
     b._video_needs_ffmpeg = False
     b._video_ffmpeg_dir = ffmpeg_dir
+    b._video_search_path = search_path
     b._query_server_props = lambda: {
         "modalities": {"video": video},
         "default_generation_settings": {"n_ctx": 4096},
@@ -90,6 +91,25 @@ def test_the_gate_looks_where_llama_server_was_told_to(monkeypatch):
     monkeypatch.setattr(llama_mod, "video_tools", lambda d = None: asked.append(d))
     _props_backend(True, ffmpeg_dir = "/custom/ffmpeg")._query_server_n_ctx()
     assert asked == ["/custom/ffmpeg"]
+
+
+def test_the_gate_searches_the_path_llama_server_was_given(monkeypatch, tmp_path):
+    # e.g. ffmpeg.exe beside llama-server.exe on Windows, where only the child's PATH has it.
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    folder = _tool_dir(tmp_path, "ffmpeg", "ffprobe")
+    b = _props_backend(True, search_path = os.pathsep.join([str(tmp_path / "none"), str(folder)]))
+    b._query_server_n_ctx()
+    assert b._has_video_input is True
+    assert b._video_needs_ffmpeg is False
+
+
+def test_a_launch_pins_the_ffmpeg_on_the_child_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    folder = _tool_dir(tmp_path, "ffmpeg", "ffprobe")
+    assert _video_ffmpeg_dir_flags(_CAPS, env = {}, search_path = str(folder)) == (
+        ["--video-ffmpeg-dir", str(folder)],
+        str(folder),
+    )
 
 
 def test_a_launch_pins_the_ffmpeg_studio_found(monkeypatch):
