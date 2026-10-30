@@ -319,7 +319,9 @@ def test_wrapper_training_calls_add_no_sequence_guard(monkeypatch):
     "requested,backend",
     [({"BACKEND": "AUTO"}, "TRITON"), ({"BACKEND": "FLASH"}, "FLASH")],
 )
-def test_wrapper_forced_short_prompt_never_sends_backend_with_force(monkeypatch, requested, backend):
+def test_wrapper_forced_short_prompt_never_sends_backend_with_force(
+    monkeypatch, requested, backend
+):
     # torch 2.10+ rejects BACKEND together with the legacy FORCE_USE_FLEX_ATTENTION ("BACKEND
     # cannot be combined with legacy FORCE_USE_FLEX_ATTENTION"). AUTO leaves the kernel to us, so the
     # forced main kernel becomes BACKEND="TRITON"; an explicit backend is kept.
