@@ -8,6 +8,9 @@ import { registerStoreStubResolver } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
 
+// The transport settings store announces changes on window.
+(globalThis as { window?: EventTarget }).window ??= new EventTarget();
+
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 const {
   clearDownloadTransportCapabilitiesCache,
@@ -15,6 +18,9 @@ const {
 } = await import("../src/features/hub/download-manager/api.ts");
 const { updateHubSource } = await import(
   "../src/features/settings/api/hub-settings.ts"
+);
+const { subscribeDownloadTransportSettings } = await import(
+  "../src/features/settings/api/download-transport.ts"
 );
 
 const CAPS_URL = "/api/studio/download-transport-capabilities";
@@ -39,6 +45,16 @@ setAuthFetchHandler((input, init) => {
         available: xet,
         reason: xet ? null : "ModelScope does not offer Xet",
       },
+      auto_resolves_to: xet ? "xet" : "http",
+      auto_reason: null,
+    });
+  }
+  if (url === "/api/settings/download-transport") {
+    const xet = source === "huggingface";
+    return json({
+      mode: "auto",
+      xet_available: xet,
+      xet_unavailable_reason: xet ? null : "ModelScope does not offer Xet",
       auto_resolves_to: xet ? "xet" : "http",
       auto_reason: null,
     });
@@ -77,4 +93,20 @@ test("an answer that lands after the switch is not cached", async () => {
   await stale;
 
   assert.equal((await getDownloadTransportCapabilities()).xet.available, true);
+});
+
+test("switching the model source refreshes mounted transport controls", async () => {
+  source = "modelscope";
+  const seen: boolean[] = [];
+  const unsubscribe = subscribeDownloadTransportSettings((settings) => {
+    seen.push(settings.xetAvailable);
+  });
+  await updateHubSource("huggingface");
+  unsubscribe();
+
+  assert.deepEqual(
+    seen,
+    [true],
+    "the Settings row and hub toggle kept the ModelScope verdict",
+  );
 });

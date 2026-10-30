@@ -7,6 +7,7 @@ import { clearDownloadTransportCapabilitiesCache } from "@/features/hub";
 import { markRemoteNetworkOnline } from "@/features/hub/lib/network";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type { HubSource } from "@/lib/hf-endpoint";
+import { loadDownloadTransportSettings } from "./download-transport";
 
 export type HubSettings = {
   hfEndpoint: string;
@@ -61,6 +62,8 @@ export async function updateHubSource(source: HubSource): Promise<HubSettings> {
   }
   const saved = fromApi(await res.json());
   clearDownloadTransportCapabilitiesCache();
+  // Its event also refreshes the hub's mounted transport toggle.
+  await loadDownloadTransportSettings({ refresh: true }).catch(() => undefined);
   await followSavedEndpoints();
   return saved;
 }
