@@ -72,7 +72,7 @@ def _checkpoint(tmp, arch = "llama"):
 def _full(t):
     from torch.distributed.tensor import DTensor
 
-    return (t.full_tensor() if isinstance(t, DTensor) else t).detach().float().clone()
+    return (t.full_tensor() if isinstance(t, DTensor) else t).detach().float().cpu().clone()
 
 
 def _block_compile_on_cpu(model):
@@ -101,6 +101,7 @@ def _block_compile_on_cpu(model):
 def _case_train(
     rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = True, keep = False, compile = False,
     arch = "llama", router_aux = False, attn = "sdpa", ungate = False, mode = "lora", trl_aux = False,
+    device = "cpu",
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -118,7 +119,19 @@ def _case_train(
 
     patch_gradient_accumulation_fix(transformers.Trainer)
     cpm.patch_sft_trainer()
-    cpm.DEVICE_TYPE_TORCH = "cpu"
+    if device == "cpu":
+        cpm.DEVICE_TYPE_TORCH = "cpu"
+    else:  # NCCL ranks under torchrun (scripts/local_correctness.py): one GPU each
+        torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
+        # fp32 like the CPU reference: no TF32 matmuls / convolutions (Unsloth may have allowed them).
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.set_float32_matmul_precision("highest")
+        # The math SDPA kernel: deterministic fp32 (the fused ones differ in the last bits per head count).
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
+        torch.backends.cuda.enable_cudnn_sdp(False)
+        torch.use_deterministic_algorithms(True, warn_only = True)
     # The test seam: CPU ranks run the Hugging Face attention through the Ulysses wrapper.
     cpm._supports_context_parallel = lambda model, backend = "ring": True
     if ungate:
@@ -128,7 +141,7 @@ def _case_train(
         parallel_capabilities._gated = lambda query: False
     from unsloth.utils import attention_dispatch
 
-    attention_dispatch.HAS_XFORMERS = False  # CUDA only: torch SDPA on the CPU ranks
+    attention_dispatch.HAS_XFORMERS = False  # torch SDPA on every rank (fp32: flash / xformers take 16-bit)
     attention_dispatch.HAS_FLASH_ATTENTION = False
     layout = tp_env.env_layout()
 
@@ -203,7 +216,7 @@ def _case_train(
         logging_steps = 1,
         save_strategy = "no",
         report_to = [],
-        use_cpu = True,
+        use_cpu = device == "cpu",
         seed = 0,
         dataloader_drop_last = True,
         remove_unused_columns = False,
