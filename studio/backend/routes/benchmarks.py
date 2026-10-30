@@ -274,6 +274,10 @@ class BenchmarkTrafficMiddleware:
                 finally:
                     _load_done(holder)
                 return
-            if _lease is not None and _is_inference_path(path) and not path.endswith(_NOT_GENERATIONS):
+            if (
+                _lease is not None
+                and _is_inference_path(path)
+                and not path.endswith(_NOT_GENERATIONS)
+            ):
                 note_inference_request(holder)
         await self.app(scope, receive, send)
