@@ -120,12 +120,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.13 full run, plus 3.11 for the files with a pre-3.12 sys.version_info branch.
-        #
-        # Shards root at `tests/` and differ only in ignores: `--ignore=FILE` does not filter explicit arguments.
-        # Shard 3 is the remainder, so new files land in exactly one shard (test_ci_backend_pytest_shards.py).
-        # a-f / g-r, not a-k / l-r: a-k's parallel step reached 1024-1264 s against the 1500 s backstop,
-        # and hit it twice on 2026-10-23, while l-r took 590-867 s (705 files each side now).
+        # 3.13 runs the full suite, 3.11 the pre-3.12 sys.version_info files; shards root at tests/
+        # and differ only in ignores (--ignore does not filter explicit args); a-f and g-r replace
+        # a-k and l-r, which hit the 1500 s backstop; new files land in exactly one shard
+        # (test_ci_backend_pytest_shards.py)
         include:
           - python: '3.13'
             scope: full
@@ -171,12 +169,9 @@ jobs:
             studio/backend/requirements/*.txt
 
       - name: Install bubblewrap, so the sandbox tests run instead of skipping
-        # Bound apt retries; 25 minutes covers both calls' 1450s worst case.
-        #
-        # Background: apt (system packages) and the pip install below (this job's
-        # Python) touch nothing in common, so the ~10 s of apt overlaps the ~80 s of
-        # pip. Collected right before the first pytest step, which is the first thing
-        # that needs bwrap.
+        # Apt retries are bounded so 25 minutes covers both calls' 1450 s worst case; apt and the
+        # pip install share nothing, so apt runs in the background and is collected before the first
+        # pytest step, which needs bwrap.
         id: bubblewrap
         background: true
         timeout-minutes: 25
@@ -228,17 +223,9 @@ jobs:
       - name: Backend tests
         if: matrix.scope == 'full'
         working-directory: studio/backend
-        # The one deselection needs a live llama.cpp process. The GPU-selection, KV-cache and
-        # CUDA-util tests mock torch.cuda and the device probe, so they run here on CPU torch.
-        #
-        # -n 4 verified order-independent (same failure set as serial).
-        #
-        # test_streaming_stripper is ignored here and run serially below, for the reason
-        # Wall-clock-bound files run isolated; the isolation guard catches new tight bounds.
-        #
-        # Outer `timeout` catches a wedged xdist controller that per-test --timeout cannot; SIGINT dumps the stuck frame.
-        #
-        # Shared selection lives here so every shard inherits one list; shards differ only in matrix.selection.
+        # One deselection needs live llama.cpp; -n 4 is order-independent; GPU tests mock torch.cuda
+        # so run on CPU torch; wall-clock-bound files like test_streaming_stripper run serially;
+        # outer timeout catches a wedged xdist controller; selection is shared via matrix.selection.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
           python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --timeout=330 \
@@ -357,11 +344,9 @@ jobs:
               --ignore-glob=tests/test_fsdp2*.py
               --ignore-glob=tests/test_[!f]*gloo*.py
               --ignore-glob=tests/test_f[!s]*gloo*.py
-          # The catch-all then ran 1213 to 2092 s of its 2100 s cap on 2026-10-29 (median about
-          # 1750 s), and was interrupted after passing on a slow runner. Measured per file, the
-          # diffusion, kaggle and security folders plus top-level test_d/i/m/s/u files are about
-          # half of it. No *gloo* or fsdp2 file starts with d, i, m, s or u, so the glob cannot
-          # take a file another shard also names (tests/test_ci_repo_cpu_shards.py checks it).
+          # rest-2 takes the diffusion, kaggle and security folders plus test_d/i/m/s/u files, about
+          # half the catch-all's time; no gloo or fsdp2 file starts with d, i, m, s or u, so the
+          # glob cannot take a file another shard names (test_ci_repo_cpu_shards.py checks it).
           - shard: rest-2
             selection: >-
               tests/diffusion
@@ -370,14 +355,9 @@ jobs:
               tests/test_[dimsu]*.py
               --deselect tests/test_model_registry.py::test_model_registration
               --deselect tests/test_model_registry.py::test_all_model_registration
-          # Native FSDP2's gloo tests spawn 2 to 4 ranks each: about ten minutes of this
-          # runner on their own, which pushed the catch-all to the 2100 s step cap. They run
-          # beside it instead.
-          # They then grew to 2092 s of the same cap on their own (364 tests by 2026-10-28)
-          # and were interrupted after passing, so they are split in two by file name: native_d
-          # onwards is about 55% of the measured time, everything else about 45%. Each glob
-          # must match a file, or bash hands pytest the literal pattern
-          # (tests/test_ci_repo_cpu_shards.py checks both).
+          # Native FSDP2 gloo tests run beside the catch-all, split by file name (native_d onwards)
+          # to balance time; each glob must match a file or bash passes the literal pattern
+          # (test_ci_repo_cpu_shards.py checks both).
           - shard: fsdp2
             selection: >-
               tests/test_fsdp2_[!n]*.py
@@ -386,22 +366,18 @@ jobs:
           - shard: fsdp2-native
             selection: >-
               tests/test_fsdp2_native_[!abc]*.py
-          # The other multi-rank gloo suites (tensor, pipeline and context parallel, float8 and
-          # fp8 under FSDP2) did the same again: with them the catch-all hit the 2100 s cap and was
-          # interrupted at 74 to 98% on most runs. Locally on 4 cores they are 578 s of the
-          # catch-all's 1258 s. The two globs are every *gloo* file except test_fs*, which is
-          # fsdp2's: an explicit file root cannot be filtered by --ignore, so the split is done in
-          # the globs themselves.
+          # The other multi-rank gloo suites (tensor, pipeline and context parallel, float8 and fp8
+          # under FSDP2) pushed the catch-all to its cap; the globs take every gloo file except the
+          # test_fs files, which are fsdp2's, since --ignore cannot filter an explicit file root.
           - shard: gloo
             selection: >-
               tests/test_[!fpt]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_p[!p]*gloo*.py
               tests/test_tp_[!n]*gloo*.py
-          # The gloo shard then ran 1331 to 2058 s of the same cap on 2026-10-29. Measured per
-          # file, native tensor parallel plus pipeline parallel are about 51% of it, everything
-          # else about 49%. A *gloo* file named test_t[!p]* or test_tp[!_]* would match neither
-          # shard; tests/test_ci_repo_cpu_shards.py reports it as dropped.
+          # The gloo shard is split again: native tensor and pipeline parallel are about half its
+          # time and run as gloo-tp-pp; a gloo file named test_t[!p]* or test_tp[!_]* would match
+          # neither shard (test_ci_repo_cpu_shards.py reports it)
           - shard: gloo-tp-pp
             selection: >-
               tests/test_tp_n*gloo*.py

@@ -203,12 +203,9 @@ def _meets_node_floor(version: str) -> bool:
 
 
 def select_node_version(index: list[dict], *, channel: str, min_major: int) -> str:
-    """Pick a concrete Node version from the Node dist index.json.
-
-    channel='lts'    -> newest LTS release line whose major >= min_major.
-    channel='latest' -> newest release overall whose major >= min_major.
-    Otherwise the channel is treated as an explicit version string.
-    """
+    """Picks a concrete Node version from index.json: channel lts takes the newest LTS line and
+    latest the newest overall, both with major >= min_major; any other channel is an explicit
+    version string."""
     if channel not in {"lts", "latest"}:
         return channel.lstrip("v")
 
@@ -766,12 +763,9 @@ _PREBUILT_FULL_CHECK_ENV = "UNSLOTH_PREBUILT_FULL_CHECK"
 
 
 def prebuilt_full_check_requested() -> bool:
-    """The escape hatch for the recorded-runtime shortcut, spelled as llama and whisper spell it.
-
-    Defined here rather than imported: this installer bootstraps the managed Node runtime and must
-    not depend on the llama module. A user told to set one variable to force a full revalidation
-    would otherwise still get Node answered from its marker.
-    """
+    """Escape hatch forcing a full Node revalidation past the recorded-runtime shortcut; defined
+    here rather than imported from the llama module so this installer stays independent, spelled
+    as llama and whisper spell it."""
     return os.environ.get(_PREBUILT_FULL_CHECK_ENV, "").strip().lower() in (
         "1",
         "true",
@@ -791,21 +785,9 @@ def _file_record(path: Path) -> dict | None:
 
 
 def _file_record_matches(path: Path, recorded: object) -> bool:
-    """Whether *path* is still the file *recorded* describes.
-
-    size and mtime_ns only. The digest is recorded too, and deliberately not compared here:
-    this runs on every launch of the installer and node is ~110 MB, so hashing it would cost
-    more than the `node -v` spawn the record exists to avoid. The digest is there so a support
-    log can say which binary this is.
-
-    What that gives up is narrower than it looks, in both directions. A node that no longer
-    RUNS is still caught, because npm-cli.js is run BY the node binary and that probe is never
-    skipped, so the case an update can actually repair is not the case being skipped. And the
-    record was never a tamper defence: it sits in a marker beside the binary, writable by
-    anyone who could rewrite the binary in place, so an edit careful enough to restore the
-    byte count and the nanosecond timestamp is an edit that can restore the record too. The
-    check before this one, `node -v`, could not prove any more than that either.
-    """
+    """Compares only size and mtime_ns: hashing the node binary on every launch would cost more than
+    the node -v spawn it avoids; a node that no longer runs is still caught by the npm-cli.js
+    probe, and the record was never a tamper defence."""
     if not isinstance(recorded, dict):
         return False
     try:
@@ -1261,12 +1243,8 @@ def _report_access_denied(exc: OSError, install_dir: Path) -> int:
 
 
 def _within(path: str, root: Path) -> bool:
-    """Whether path is root or sits under it, by spelling alone.
-
-    Both sides come from the same --install-dir string, so normalizing without
-    resolving links keeps them comparable; resolving would need the very access
-    that was just denied.
-    """
+    """Whether path is root or under it, by spelling alone; both sides come from the same
+    --install-dir string, and resolving links would need the access that was just denied."""
     normalized = os.path.normcase(os.path.abspath(path))
     base = os.path.normcase(os.path.abspath(root))
     return normalized == base or normalized.startswith(base.rstrip(os.sep) + os.sep)

@@ -93,10 +93,9 @@ def rows(tokenizer, count):
 
 
 def head_parity(model, batch, amp):
-    # Same hidden states into the batched and the per-record head. Each is scored against the
-    # per-record head with autocast off (fp32 head, the oracle): under bf16 autocast both heads
-    # round their matmuls, so the batched head passes when its error is at most 1.5x the
-    # per-record head's plus one bf16 rounding step (kernel_verify_workflow step 2).
+    # Each head is scored against the per-record fp32 oracle with autocast off, since under bf16
+    # autocast both round their matmuls; batched passes if its error is at most 1.5x per-record plus
+    # one bf16 rounding step
     backbone = model._backbone()
     text_model = getattr(backbone.model, "language_model", backbone.model)
     with torch.no_grad():
