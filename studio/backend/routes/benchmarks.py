@@ -4,6 +4,7 @@
 """Benchmark run storage, backed by studio.db. The frontend runs the sweep and posts
 the run here as it goes, so a run survives a reload and shows up on every device."""
 
+import asyncio
 import threading
 import time
 from typing import Any, Literal, Optional
@@ -221,14 +222,24 @@ def _loads_pending(holder: Optional[str]) -> bool:
     return any(n > 0 for h, n in _loads_in_flight.items() if h != holder)
 
 
-def _admit_load(holder: Optional[str]) -> bool:
+def _admit_load(holder: Optional[str]) -> Optional[bool]:
     """A load reloads the one llama-server, so mid-sweep it would run the next rows under other
-    settings. Checked and counted under one lock, so a lease can't slip in between."""
+    settings. Checked and counted under one lock, so a lease can't slip in between. None: the
+    holder's previous load is still running (a stopped variant left detached), so wait for it."""
     with _lease_lock:
         if _sweep_holds_against(holder):
             return False
+        if holder is not None and _loads_in_flight.get(holder):
+            return None
         _loads_in_flight[holder] = _loads_in_flight.get(holder, 0) + 1
         return True
+
+
+async def _admit_load_in_turn(holder: Optional[str]) -> bool:
+    """A runner's restore after Stop must land after the variant load it abandoned, not race it."""
+    while (admitted := _admit_load(holder)) is None:
+        await asyncio.sleep(0.1)
+    return admitted
 
 
 def _load_done(holder: Optional[str]) -> None:
@@ -298,7 +309,7 @@ class BenchmarkTrafficMiddleware:
                 refused = None
                 if _eval_running() and not _holds_lease(holder):
                     refused = "An eval is running on this model."
-                elif not _admit_load(holder):
+                elif not await _admit_load_in_turn(holder):
                     refused = "A benchmark is running on this model."
                 if refused:
                     from starlette.responses import JSONResponse

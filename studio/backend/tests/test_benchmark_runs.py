@@ -419,3 +419,53 @@ def test_a_load_left_running_by_its_client_still_holds_off_a_lease(monkeypatch):
     assert benchmarks_routes._loads_in_flight == {}
     client = _client()
     assert client.post("/api/benchmarks/lease", json = mine).status_code == 200
+
+
+def test_a_holders_restore_waits_for_the_load_it_abandoned(monkeypatch):
+    # Stop aborts a variant load whose work carries on detached; the runner's restore with the
+    # same lease must not race it to the load gate.
+    import asyncio
+
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    monkeypatch.setattr(benchmarks_routes, "_loads_in_flight", {})
+    monkeypatch.setattr(inference_routes, "_TUNNEL_KEEPALIVE_AFTER_S", 0.01)
+    order = []
+
+    async def main():
+        finish = asyncio.Event()
+
+        async def variant_load():
+            await finish.wait()
+            order.append("variant")
+            return {"ok": True}
+
+        async def endpoint(scope, receive, send):
+            if scope["path"] == "/api/inference/load":
+                await inference_routes._tunnel_safe_json(variant_load(), label = "Model load")
+            else:
+                order.append("restore")
+
+        app = benchmarks_routes.BenchmarkTrafficMiddleware(endpoint)
+        headers = [(b"authorization", b"Bearer t"), (b"x-unsloth-bench-lease", b"tab-aaaaaaaa")]
+        await app(
+            {"type": "http", "method": "POST", "path": "/api/inference/load", "headers": headers},
+            None,
+            None,
+        )
+        restore = asyncio.ensure_future(
+            app(
+                {"type": "http", "method": "POST", "path": "/models/load", "headers": headers},
+                None,
+                None,
+            )
+        )
+        await asyncio.sleep(0.3)
+        assert order == []
+        finish.set()
+        await asyncio.wait_for(restore, 5)
+
+    asyncio.run(main())
+    assert order == ["variant", "restore"]
+    assert benchmarks_routes._loads_in_flight == {}
