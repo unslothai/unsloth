@@ -522,3 +522,29 @@ def test_embedding_notebooks_with_another_loss_are_reported():
     assert doc is None and any("CosineSimilarityLoss" in line for line in report["unsupported"])
     doc, _ = notebook_import.read_notebook(emb("MultipleNegativesRankingLoss"), "x.ipynb")
     assert doc is not None
+
+
+def test_lora_settings_studio_cannot_forward_are_reported():
+    def read(peft_args):
+        nb = _nb(
+            "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
+            f"model = FastLanguageModel.get_peft_model(model, r = 16, lora_alpha = 32{peft_args})",
+            "dataset = load_dataset('mlabonne/FineTome-100k', split = 'train')",
+        )
+        doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+        assert doc is not None and report["unsupported"] == []
+        return [line for line in report["approximated"] if "LoRA" in line or "rslora" in line]
+
+    custom = read(", target_modules = ['q_proj'], lora_dropout = 0.1, use_rslora = True")
+    assert len(custom) == 3
+    assert any("target_modules" in line for line in custom)
+    assert any("dropout" in line for line in custom)
+    assert any("use_rslora" in line for line in custom)
+    # The standard notebook settings match Studio's defaults and stay quiet.
+    assert (
+        read(
+            ", target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', "
+            "'down_proj'], lora_dropout = 0, use_rslora = False"
+        )
+        == []
+    )

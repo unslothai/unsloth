@@ -61,6 +61,21 @@ _ARGS = {
     "weight_decay": "weight_decay",
 }
 _QUANTS = {"q4_k_m", "q5_k_m", "q8_0", "f16"}
+# What Studio's training request uses when a flow sets nothing: a notebook asking for other LoRA placement,
+# dropout or scaling trains a different adapter, so say so instead of dropping it silently.
+_STUDIO_TARGETS = frozenset(
+    {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+)
+_MISSING = object()
+
+
+def _literal(node: ast.AST) -> Any:
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return _MISSING
+
+
 _MAGIC = re.compile(r"^\s*[!%]")
 
 
@@ -190,6 +205,7 @@ class _Reader(ast.NodeVisitor):
             alpha = self.kw(node, "lora_alpha")
             if isinstance(alpha, int) and not isinstance(alpha, bool):
                 self.tune["lora_alpha"] = alpha
+            self._lora_settings(node)
         elif fn == "load_dataset" and "dataset" not in self.found and _local_files(self, node):
             self.unsupported.add("a dataset loaded from local files (data_files)")
         elif fn == "load_dataset" and "dataset" in self.found:
@@ -231,6 +247,34 @@ class _Reader(ast.NodeVisitor):
             if k.arg == "reward_funcs":
                 self.unsupported.add("custom reward functions")
         self.generic_visit(node)
+
+    def _lora_settings(self, call: ast.Call) -> None:
+        for k in call.keywords:
+            if k.arg not in ("target_modules", "lora_dropout", "use_rslora"):
+                continue
+            value = _literal(k.value)
+            if value is _MISSING and isinstance(k.value, ast.Name):
+                value = self.consts.get(k.value.id, _MISSING)
+            if k.arg == "target_modules":
+                same = isinstance(value, (list, tuple, set)) and set(value) == _STUDIO_TARGETS
+                what = "LoRA target_modules"
+                studio = "q/k/v/o/gate/up/down projections"
+            elif k.arg == "lora_dropout":
+                same = (
+                    isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0
+                )
+                what = "LoRA dropout"
+                studio = "0"
+            else:
+                same = value is False or value is None
+                what = "use_rslora"
+                studio = "off"
+            if not same:
+                shown = ast.unparse(k.value)[:80]
+                self.approximated.append(
+                    f"{what} = {shown}: Studio's fine-tune uses its default ({studio}), "
+                    "so the adapter differs from the notebook's"
+                )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if "format" in node.name.lower():
