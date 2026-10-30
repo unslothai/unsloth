@@ -339,6 +339,7 @@ def test_cp2_alone_matches_one_process():
     ref = _ref(2)
     assert ref["seen_lengths"] == [SEQ] and ref["ulysses_calls"] == 0
     for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2)):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
         assert res["cp_group"] == [0, 1]
         assert res["seen_lengths"] == [SEQ // 2] and res["ulysses_calls"] >= N_LAYERS
         _close(res, ref, what = rank)
