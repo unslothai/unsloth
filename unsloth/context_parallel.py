@@ -712,6 +712,33 @@ def _check_cp_model(
         )
 
 
+# Encoders and projectors a text-only batch never runs; context parallelism only takes text batches.
+_MEDIA_TOWER_NAMES = frozenset(
+    (
+        "visual",
+        "vision_tower",
+        "vision_model",
+        "vision_encoder",
+        "multi_modal_projector",
+        "mm_projector",
+        "embed_vision",
+        "audio_tower",
+        "audio_model",
+        "embed_audio",
+    )
+)
+
+
+def _trainable_media_tower_parameters(model) -> list:
+    if not isinstance(model, torch.nn.Module):
+        return []
+    return [
+        name
+        for name, param in model.named_parameters()
+        if param.requires_grad and not _MEDIA_TOWER_NAMES.isdisjoint(name.split("."))
+    ]
+
+
 def _check_cp_trainer(
     self,
     size: int,
@@ -743,6 +770,21 @@ def _check_cp_trainer(
         )
     if fsdp2:
         _check_fsdp2_parallelism_config(accelerator)
+    elif (
+        distributed_type.startswith("MULTI_")
+        and (getattr(accelerator, "num_processes", 2) or 2) > 1
+    ):
+        # Image / video batches are refused per step, so a trainable vision tower never gets a gradient,
+        # and DDP (find_unused_parameters = False, which reentrant checkpointing needs) fails at step 2.
+        for model in models:
+            unused = _trainable_media_tower_parameters(model)
+            if unused:
+                raise NotImplementedError(
+                    "Unsloth: context parallelism trains on text-only batches, so the trainable "
+                    f"vision / audio tower ({len(unused)} parameters, e.g. {unused[0]}) never gets a "
+                    "gradient and DDP fails at the second step. Freeze it (for LoRA, "
+                    "finetune_vision_layers = False) or train with FSDP2."
+                )
     if getattr(accelerator, "dispatch_batches", None):
         raise NotImplementedError("Unsloth: context parallelism does not support dispatch_batches.")
     _refuse_iterable_datasets(

@@ -222,6 +222,79 @@ def test_qwen3_5_checkpoint_with_a_vision_config_passes_the_gate():
     cp._check_cp_model(model, 2, "ulysses")
 
 
+def _ddp_text_only_worker(rank, world, freeze_vision):
+    # What _install_accelerator_state sets up under DDP: find_unused_parameters = False.
+    from torch.nn.parallel import DistributedDataParallel
+
+    ad.HAS_FLASH_ATTENTION = False
+    ad.HAS_XFORMERS = False
+    model = _vlm()
+    _force_torch_kernels(model)
+    if freeze_vision:
+        model.model.visual.requires_grad_(False)
+    manager = _manager(world, rank)
+    manager.mesh = types.SimpleNamespace(
+        get_group = lambda: dist.group.WORLD, get_local_rank = lambda: rank
+    )
+    manager.attach_attention_hooks(model)
+    ddp = DistributedDataParallel(model, find_unused_parameters = False)
+    for step in range(2):
+        ids = torch.randint(0, 64, (2, 13), generator = torch.Generator().manual_seed(step))
+        shift = F.pad(ids, (0, 1), value = -100)[:, 1:]
+        inputs = {"input_ids": ids, "shift_labels": shift}
+        manager._prepare_inputs(inputs)
+        with manager.apply(inputs):
+            out = ddp(
+                input_ids = inputs["input_ids"], position_ids = inputs["position_ids"], use_cache = False
+            )
+            _loss(out.logits, inputs["shift_labels"], shift.ne(-100).sum()).backward()
+
+
+@pytest.mark.skipif(
+    not hasattr(transformers, "Qwen3_5Config"), reason = "transformers without Qwen3.5"
+)
+def test_ddp_text_only_fails_at_step_two_with_a_trainable_vision_tower():
+    # Why the trainer refuses this setup: the vision tower is unused, so DDP's reduction never finishes.
+    with pytest.raises(Exception, match = "finished reduction in the prior iteration"):
+        _spawn(_ddp_text_only_worker, 2, False)
+    _spawn(_ddp_text_only_worker, 2, True)
+
+
+def _cp_trainer(
+    model,
+    distributed_type,
+    num_processes = 2,
+    fsdp_version = None,
+):
+    plugin = None if fsdp_version is None else types.SimpleNamespace(fsdp_version = fsdp_version)
+    accelerator = types.SimpleNamespace(
+        distributed_type = types.SimpleNamespace(name = distributed_type),
+        num_processes = num_processes,
+        state = types.SimpleNamespace(fsdp_plugin = plugin, parallelism_config = None),
+        dispatch_batches = None,
+    )
+    return types.SimpleNamespace(accelerator = accelerator, model = model)
+
+
+@pytest.mark.skipif(
+    not hasattr(transformers, "Qwen3_5Config"), reason = "transformers without Qwen3.5"
+)
+def test_ddp_refuses_a_trainable_vision_tower_but_not_fsdp2_frozen_or_one_process():
+    pytest.importorskip("accelerate", minversion = "1.10.0")
+    model = _vlm()
+    trainer = _cp_trainer(model, "MULTI_CPU")
+    with pytest.raises(NotImplementedError, match = "finetune_vision_layers = False"):
+        cp._check_cp_trainer(trainer, 2, "ulysses", [model], allow_fsdp2 = True)
+    # FSDP2 reduces unused parameters as zeros; no DDP reducer runs without several processes.
+    fsdp2 = _cp_trainer(model, "FSDP", fsdp_version = 2)
+    assert cp._check_cp_trainer(fsdp2, 2, "ulysses", [model], allow_fsdp2 = True)
+    for single in (_cp_trainer(model, "NO"), _cp_trainer(model, "MULTI_CPU", num_processes = 1)):
+        cp._check_cp_trainer(single, 2, "ulysses", [model], allow_fsdp2 = True)
+    # A frozen vision tower (finetune_vision_layers = False) is fine under DDP.
+    model.model.visual.requires_grad_(False)
+    cp._check_cp_trainer(trainer, 2, "ulysses", [model], allow_fsdp2 = True)
+
+
 @pytest.mark.parametrize(
     "key", ["pixel_values", "pixel_values_videos", "image_grid_thw", "video_grid_thw"]
 )
