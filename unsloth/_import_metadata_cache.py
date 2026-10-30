@@ -48,15 +48,56 @@ def _copy(mapping):
     return {name: list(dists) for name, dists in mapping.items()}
 
 
-def install():
-    """Wrap `importlib.metadata.packages_distributions`; returns a token for `uninstall`, else None."""
+def _live(scope):
+    """True while the window `install` opened is still open."""
+    if not scope["open"]:
+        return False
+    owner = scope["owner"]
+    # A failed import drops its module from sys.modules; uninstall never ran.
+    return owner is None or sys.modules.get(scope["name"]) is owner
+
+
+def _close(wrapper):
+    """End the window: forget the memo and put the original back if nothing wrapped it since."""
+    wrapper._unsloth_metadata_scope["open"] = False
+    wrapper._unsloth_metadata_cache[0] = None
+    if getattr(_metadata, "packages_distributions", None) is wrapper:
+        restored = wrapper.__wrapped__
+        _metadata.packages_distributions = restored
+        # An outer window that already closed (its uninstall found this one on top): unwrap it too.
+        scope = getattr(restored, "_unsloth_metadata_scope", None)
+        if scope is not None and not _live(scope):
+            _close(restored)
+
+
+def install(owner = None):
+    """Wrap `importlib.metadata.packages_distributions`; returns a token for `uninstall`, else None.
+
+    `owner` is the module whose import opens the window: if that import raises, the wrapper closes
+    itself on its next call (and the next `install` unwraps it) instead of staying for good.
+    """
     with _lock:
         original = getattr(_metadata, "packages_distributions", None)
+        # Left behind by an earlier attempt whose import raised: take it out, never stack on it.
+        scope = getattr(original, "_unsloth_metadata_scope", None)
+        if scope is not None and not _live(scope):
+            _close(original)
+            original = getattr(_metadata, "packages_distributions", None)
         if original is None:
             return None
         cache = [None]
+        scope = {
+            "open": True,
+            "owner": owner,
+            "name": getattr(owner, "__name__", None),
+        }
 
         def packages_distributions():
+            if not _live(scope):
+                # Window over (or its import failed): behave exactly like the original.
+                with _lock:
+                    _close(packages_distributions)
+                return original()
             key = _fingerprint()
             with _lock:
                 hit = cache[0]
@@ -65,21 +106,24 @@ def install():
             result = original()
             # Keyed on the state before the call: a change while it ran misses next time.
             with _lock:
-                cache[0] = (key, _copy(result))
+                if scope["open"]:
+                    cache[0] = (key, _copy(result))
             return result
 
         packages_distributions.__wrapped__ = original
         packages_distributions.__doc__ = getattr(original, "__doc__", None)
         packages_distributions._unsloth_metadata_cache = cache
+        packages_distributions._unsloth_metadata_scope = scope
         _metadata.packages_distributions = packages_distributions
         return packages_distributions
 
 
 def uninstall(token):
-    """Put back what `install` replaced, unless something wrapped it since (then leave both)."""
+    """Put back what `install` replaced, unless something wrapped it since (then leave both).
+
+    Either way the wrapper stops caching: a reference kept past the window reaches the original.
+    """
     if token is None:
         return
     with _lock:
-        token._unsloth_metadata_cache[0] = None
-        if getattr(_metadata, "packages_distributions", None) is token:
-            _metadata.packages_distributions = token.__wrapped__
+        _close(token)

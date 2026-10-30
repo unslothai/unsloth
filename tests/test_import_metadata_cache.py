@@ -191,9 +191,76 @@ def test_uninstall_leaves_a_later_wrapper_in_place(cache_module, counted):
     metadata.packages_distributions = outer
     cache_module.uninstall(token)
     assert metadata.packages_distributions is outer
-    # Still correct while it stays reachable: it rescans after uninstall forgot the result.
+    # Still reachable, but the window is over: every call is the real scan, nothing memoised.
     metadata.packages_distributions()
     metadata.packages_distributions()
+    assert len(counted) == 2
+
+
+def test_a_reference_kept_past_the_window_reaches_the_original(cache_module, counted):
+    token = cache_module.install()
+    bound = metadata.packages_distributions  # e.g. `from importlib.metadata import ...` meanwhile
+    bound()
+    cache_module.uninstall(token)
+    bound()
+    bound()
+    assert len(counted) == 3
+    assert token._unsloth_metadata_cache[0] is None
+
+
+def _fake_owner(monkeypatch, name = "_unsloth_metadata_owner_under_test"):
+    import types
+
+    owner = types.ModuleType(name)
+    monkeypatch.setitem(sys.modules, name, owner)
+    return owner
+
+
+def test_a_failed_import_does_not_leave_the_wrapper(cache_module, counted, monkeypatch):
+    # `import unsloth` raised midway: uninstall never ran and the module left sys.modules.
+    real = metadata.packages_distributions
+    owner = _fake_owner(monkeypatch)
+    token = cache_module.install(owner)
+    metadata.packages_distributions()
+    metadata.packages_distributions()
+    assert len(counted) == 1
+    del sys.modules[owner.__name__]
+    assert metadata.packages_distributions is token
+    metadata.packages_distributions()  # the first call after the failure restores the original
+    assert metadata.packages_distributions is real
+    assert len(counted) == 2
+    token()  # a kept reference passes through
+    assert len(counted) == 3
+
+
+def test_retrying_a_failed_import_does_not_stack(cache_module, counted, monkeypatch):
+    real = metadata.packages_distributions
+    first = _fake_owner(monkeypatch)
+    cache_module.install(first)
+    del sys.modules[first.__name__]  # failed, nobody called the wrapper since
+    second = _fake_owner(monkeypatch)
+    token = cache_module.install(second)
+    assert token.__wrapped__ is real
+    metadata.packages_distributions()
+    metadata.packages_distributions()
+    assert len(counted) == 1
+    cache_module.uninstall(token)
+    assert metadata.packages_distributions is real
+
+
+def test_inner_failure_inside_an_outer_window(cache_module, counted, monkeypatch):
+    # Studio's worker window is open; unsloth's import inside it raises; the worker's finally runs.
+    real = metadata.packages_distributions
+    outer = cache_module.install()
+    inner_module = _load("_unsloth_import_metadata_cache_inner_fail")
+    owner = _fake_owner(monkeypatch)
+    inner = inner_module.install(owner)
+    assert inner.__wrapped__ is outer
+    del sys.modules[owner.__name__]
+    cache_module.uninstall(outer)  # inner is still on top: left in place
+    assert metadata.packages_distributions is inner
+    metadata.packages_distributions()  # inner closes, finds outer closed too, unwraps both
+    assert metadata.packages_distributions is real
     assert len(counted) == 1
 
 
@@ -263,7 +330,7 @@ def test_init_installs_first_and_removes_last():
     ]
     assert "_install_metadata_cache" in calls and "_uninstall_metadata_cache" in calls
     lines = source.splitlines()
-    install = next(i for i, l in enumerate(lines) if "_install_metadata_cache()" in l)
+    install = next(i for i, l in enumerate(lines) if "_install_metadata_cache(sys.modules" in l)
     uninstall = next(i for i, l in enumerate(lines) if "_uninstall_metadata_cache(" in l)
     first_import = next(
         i
@@ -293,6 +360,41 @@ _COUNT_SCRIPT = textwrap.dedent(
         "trl": "trl" in sys.modules, "transformers": "transformers" in sys.modules}))
     """
 )
+
+
+_FAILED_IMPORT_SCRIPT = textwrap.dedent(
+    """
+    import importlib.metadata as md, json, sys
+    real = md.packages_distributions
+    sys.modules["unsloth_zoo"] = None  # any failure partway through unsloth/__init__.py
+    try:
+        import unsloth
+        failed = False
+    except ImportError:
+        failed = True
+    md.packages_distributions()
+    print("R12FAIL " + json.dumps({"failed": failed, "restored": md.packages_distributions is real}))
+    """
+)
+
+
+def test_import_unsloth_that_raises_gives_the_function_back():
+    env = dict(os.environ, PYTHONWARNINGS = "ignore", UNSLOTH_DISABLE_AUTO_UPDATES = "1")
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(_REPO), env.get("PYTHONPATH")]))
+    result = subprocess.run(
+        [sys.executable, "-c", _FAILED_IMPORT_SCRIPT],
+        env = env,
+        cwd = str(_REPO),
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
+    lines = [l for l in result.stdout.splitlines() if l.startswith("R12FAIL ")]
+    assert lines, (result.returncode, result.stderr[-4000:])
+    import json
+
+    report = json.loads(lines[-1].split(" ", 1)[1])
+    assert report == {"failed": True, "restored": True}, report
 
 
 def _scan_callers_at_import():
