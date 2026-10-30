@@ -67,7 +67,6 @@ test("the minimum size keeps the header and every port row", () => {
   assert.ok(CARD_MIN_WIDTH >= 200);
   const src = readSrc("features/flows/editor/flow-node.tsx");
   assert.match(src, /minWidth: CARD_MIN_WIDTH, minHeight, onResizeEnd/);
-  assert.match(src, /<CardResizer id=\{id\} minHeight=\{cardMinHeight\(spec\)\} \/>/);
 });
 
 test("the canvas draws resizes live and commits nothing until release", () => {
@@ -96,4 +95,45 @@ test("a resized card clips its content top to bottom only, so the port dots on i
   assert.match(view, /group-data-\[sized\]\/node:\[overflow-y:clip\]/);
   assert.doesNotMatch(view, /group-data-\[sized\]\/node:overflow-(hidden|clip)\b/);
   assert.match(readSrc("features/flows/editor/node-card.tsx"), /corner-squircle group\/node min-w-0 overflow-visible/);
+});
+
+test("a card's floor covers its header, ports, fields and error; only the output preview gives way", async () => {
+  const { cardContentMinHeight } = await import("../src/features/flows/editor/card-size.ts");
+  type Fake = { offsetHeight: number; clientHeight?: number; children: Fake[]; attrs: string[]; style?: Record<string, string> };
+  const el = (offsetHeight: number, attrs: string[] = [], children: Fake[] = [], style: Record<string, string> = {}): Fake =>
+    ({ offsetHeight, children, attrs, style });
+  const body = el(999, ["data-card-body"], [
+    el(48), // ports
+    el(22), // BIOME field row
+    el(24), // "Show inputs"
+    el(400, ["data-card-grow"]), // output preview
+    el(52), // error
+  ], { paddingTop: "8px", paddingBottom: "8px", rowGap: "6px" });
+  const cardEl: Fake = {
+    offsetHeight: 300,
+    clientHeight: 298, // 1px border top and bottom
+    attrs: [],
+    children: [el(8, [], [], { position: "absolute" }), el(64), body],
+  };
+  const asDom = (f: Fake): unknown => ({
+    offsetHeight: f.offsetHeight,
+    clientHeight: f.clientHeight ?? f.offsetHeight,
+    children: f.children.map(asDom),
+    hasAttribute: (a: string) => f.attrs.includes(a),
+    _style: f.style ?? {},
+  });
+  const styleOf = (e: Element) => {
+    const s = (e as unknown as { _style: Record<string, string> })._style;
+    return { position: s.position ?? "static", rowGap: s.rowGap ?? "0", paddingTop: s.paddingTop ?? "0", paddingBottom: s.paddingBottom ?? "0" };
+  };
+  // border 2 + header 64 + padding 16 + 4 gaps 24 + ports/field/disclosure/error 146 + preview floor 24
+  assert.equal(cardContentMinHeight(asDom(cardEl) as HTMLElement, styleOf as never), 276);
+});
+
+test("the resize handles and a saved size both respect the measured floor", () => {
+  const view = readSrc("features/flows/editor/flow-node.tsx");
+  assert.match(view, /minHeight=\{Math\.max\(cardMinHeight\(spec\), contentMin\)\}/);
+  assert.match(view, /style=\{node\.size && !collapsed && contentMin \? \{ minHeight: contentMin \} : undefined\}/);
+  assert.match(view, /data-card-body=\{true\}/);
+  assert.match(view, /data-card-grow=\{true\}\s*className="flow-detail/);
 });

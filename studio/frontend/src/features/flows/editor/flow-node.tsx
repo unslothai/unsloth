@@ -10,7 +10,7 @@ import {
   ResizeControlVariant,
   useStore,
 } from "@xyflow/react";
-import { memo } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
 import {
@@ -25,7 +25,7 @@ import {
   inHandle,
   outHandle,
 } from "./connection-rules";
-import { CARD_MIN_WIDTH, cardMinHeight } from "./card-size";
+import { CARD_MIN_WIDTH, cardContentMinHeight, cardMinHeight } from "./card-size";
 import type { RfNode } from "./derive-rf";
 import { nodeIcon } from "./icons";
 import { LLM_SETTINGS_NODES } from "./llm-settings";
@@ -297,6 +297,15 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
   const portColors = useCatalogStore((s) => s.catalog?.port_colors);
   const runtime = useRuntimeStore((s) => s.nodes[id]) ?? IDLE_RUNTIME;
   const lowDetail = useStore(lowDetailSelector);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [contentMin, setContentMin] = useState(0);
+  // Re-measured each render: an error or a new field row grows the floor without resizing the card.
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    const next = cardContentMinHeight(card);
+    if (next !== contentMin) setContentMin(next);
+  });
   if (!node) return null;
   if (!spec) {
     return (
@@ -338,9 +347,17 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
       lowDetail={lowDetail}
       sized={!!node.size && !collapsed}
       data-node-id={id}
+      ref={cardRef}
+      // A card saved smaller than its fields (or that later grew an error) still shows them.
+      style={node.size && !collapsed && contentMin ? { minHeight: contentMin } : undefined}
     >
       {/* First, so the port handles paint above the side handles. */}
-      {!collapsed && <CardResizer id={id} minHeight={cardMinHeight(spec)} />}
+      {!collapsed && (
+        <CardResizer
+          id={id}
+          minHeight={Math.max(cardMinHeight(spec), contentMin)}
+        />
+      )}
       <NodeCardHeader
         icon={look.icon?.(node) ?? nodeIcon(spec.icon)}
         tone={look.tone ? look.tone(node) : CATEGORY_TONES[spec.category]}
@@ -366,7 +383,10 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
           />
         )
       ) : (
-        <div className="flex flex-col gap-1.5 py-2 group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:[overflow-y:clip]">
+        <div
+          data-card-body={true}
+          className="flex flex-col gap-1.5 py-2 group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:[overflow-y:clip]"
+        >
           {Ports ? (
             <Ports node={node} collapsed={false} />
           ) : (
@@ -392,7 +412,9 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
             runtime.partial ||
             runtime.text ||
             runtime.preview) && (
-            <div className="flow-detail px-3 group-data-[sized]/node:flex group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:flex-col">
+            <div
+              data-card-grow={true}
+              className="flow-detail px-3 group-data-[sized]/node:flex group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:flex-col">
               <OutputPreview
                 runtime={runtime}
                 spec={spec}
