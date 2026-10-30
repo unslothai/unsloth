@@ -452,10 +452,10 @@ export const BUDGET = {
   // Sample answers (#12999): +1,175 B raw / +371 B transfer over #12995 (5,406,904 -> 5,408,079 B raw,
   // 1,672,405 -> 1,672,776 B transfer, Node 26): the sample card's strings in the eager catalog and the
   // run's objective in the run-config override. Raised by that growth.
-  // Format warm-up (#13000): +2,195 B raw / +707 B transfer over #12999 (5,408,079 -> 5,410,274 B raw,
-  // 1,672,776 -> 1,673,483 B transfer, Node 26): the reasoning-format and warm-up strings in the eager catalog
+  // Format warm-up (#13000): +2,195 B raw / +733 B transfer over #12999 (5,408,079 -> 5,410,274 B raw,
+  // 1,672,776 -> 1,673,509 B transfer, Node 26): the reasoning-format and warm-up strings in the eager catalog
   // and their defaults in the training store. Raised by that growth.
-  transferBytes: 1_861_975,
+  transferBytes: 1_862_001,
   rawBytes: 6_027_812,
 };
 

@@ -29,10 +29,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { GRPO_REASONING_SYSTEM_PROMPT } from "@/config/training";
 import {
   type RewardPreviewResponse,
   type RewardRecord,
   type RuleType,
+  configuredSystemPrompt,
   deleteReward,
   exportReward,
   importReward,
@@ -507,7 +509,12 @@ export function RewardsSection(): ReactElement {
       const { prompt, systemPrompt } = previewPrompt(
         previewRow,
         mapping,
-        grpoSystemPrompt,
+        // An empty prompt can survive turning the reasoning format on; training adds its prompt.
+        configuredSystemPrompt(
+          grpoSystemPrompt,
+          reasoning,
+          GRPO_REASONING_SYSTEM_PROMPT,
+        ),
       );
       const res = await previewRewards(
         rewards,
@@ -549,6 +556,7 @@ export function RewardsSection(): ReactElement {
     answerColumn,
     mapping,
     grpoSystemPrompt,
+    reasoning,
     isolationMode,
     selectedRules,
   ]);

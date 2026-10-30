@@ -66,3 +66,14 @@ test("the reasoning format offers no 'no system prompt' preset, since training w
   assert.match(src, /value: "none",\s*label: presetLabel\("none"\),[^}]*disabled: s\.reasoning/);
   assert.match(src, /effectiveSystemPrompt\(previewRow, s\.mapping, configured\)/);
 });
+
+test("Try it previews rewards with the prompt training gets under the reasoning format", () => {
+  const src = readFileSync(
+    new URL("../src/features/studio/sections/rl/rewards-section.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /previewPrompt\(\s*previewRow,\s*mapping,[\s\S]{0,160}configuredSystemPrompt\(\s*grpoSystemPrompt,\s*reasoning,/,
+  );
+});
