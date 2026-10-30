@@ -13,7 +13,7 @@ const src = readFileSync(
 test("a finished card keeps the plain border; green is hover and selection", () => {
   const table = src.slice(src.indexOf("const STATUS_BORDER"), src.indexOf("const LOUD_STATUS"));
   assert.doesNotMatch(table, /emerald/);
-  assert.match(src, /hover:border-emerald-500\/60 \[\.react-flow\\\\_\\\\_node\.selected_&\]:border-emerald-500\/80/);
+  assert.match(src, /"hover:border-emerald-500\/60 in-\[\.selected\]:border-emerald-500\/80"/);
 });
 
 test("failed, waiting and running keep their own border on hover", () => {

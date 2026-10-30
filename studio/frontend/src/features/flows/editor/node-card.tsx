@@ -101,8 +101,9 @@ export function NodeCard({
         "corner-squircle group/node min-w-0 overflow-visible border-border/60 shadow-sm",
         sized ? "flex h-full w-full flex-col" : "w-65",
         !LOUD_STATUS.has(runtime.status) &&
-          "hover:border-emerald-500/60 [.react-flow\\_\\_node.selected_&]:border-emerald-500/80",
-        "[.react-flow\\_\\_node.selected_&]:ring-2 [.react-flow\\_\\_node.selected_&]:ring-emerald-500/25",
+          "hover:border-emerald-500/60 in-[.selected]:border-emerald-500/80",
+        // React Flow marks the wrapper .selected; BaseNode's escaped [.react-flow\_\_node.selected_&] form never matched.
+        "in-[.selected]:ring-2 in-[.selected]:ring-emerald-500/25",
         STATUS_BORDER[runtime.status],
         disabled && "opacity-45",
         lowDetail && "[&_.flow-detail]:invisible",
