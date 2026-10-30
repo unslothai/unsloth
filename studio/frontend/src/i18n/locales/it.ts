@@ -5078,6 +5078,12 @@ export const it = {
         none: "Nessun prompt di sistema",
         custom: "Personalizzato",
       },
+      presetHints: {
+        notebook: "Chiede il ragionamento in <reasoning> e la risposta in <answer>, i tag letti dalle ricompense incluse.",
+        none: "Non invia alcun messaggio di sistema, quindi le ricompense sui tag non assegnano punti finché il modello non scrive i tag da solo.",
+        custom: "Scrivi il tuo. Mantieni i tag richiesti allineati alle tue ricompense.",
+        reasoningTags: "Chiede il procedimento tra i tag <start_working_out> e la risposta in <SOLUTION>, il formato letto dalle ricompense di ragionamento.",
+      },
       systemPrompt: "Prompt di sistema",
       previewTitle: "Cosa vede il modello, riga 1",
       system: "system",

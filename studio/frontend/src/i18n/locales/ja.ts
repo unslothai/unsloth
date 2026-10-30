@@ -4951,6 +4951,12 @@ export const ja = {
         none: "システムプロンプトなし",
         custom: "カスタム",
       },
+      presetHints: {
+        notebook: "推論を <reasoning> に、答えを <answer> に書くよう求めます。同梱の報酬が読むタグです。",
+        none: "システムメッセージを送らないため、モデルが自分でタグを書くまでタグの報酬は点を与えません。",
+        custom: "自分で書きます。求めるタグを報酬と揃えてください。",
+        reasoningTags: "解き方を <start_working_out> タグの間に、答えを <SOLUTION> に書くよう求めます。推論用の報酬が読む形式です。",
+      },
       systemPrompt: "システムプロンプト",
       previewTitle: "モデルに見える内容（1行目）",
       system: "system",
