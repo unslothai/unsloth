@@ -4,6 +4,10 @@
 import { toast } from "sonner";
 import { AUTH_SESSION_MARK_KEY, hasAuthToken } from "@/features/auth";
 import { getApiBase, isTauri } from "@/lib/api-base";
+import {
+  isBackendDownForDesktopUpdate,
+  isSilencedDesktopUpdateFailure,
+} from "@/lib/desktop-update-activity";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { createChatPinsApi } from "./api/chat-pins-api";
 import {
@@ -35,6 +39,17 @@ function scope(): string {
   return `${server}|${mark}`;
 }
 
+/** A request in flight when the update stopped the backend; the API's 10s abort is that same silence. */
+function failedUnderDesktopUpdate(error: unknown): boolean {
+  const down = isBackendDownForDesktopUpdate();
+  return (
+    isSilencedDesktopUpdateFailure(error, down) ||
+    (down &&
+      error instanceof Error &&
+      (error.name === "AbortError" || error.name === "TimeoutError"))
+  );
+}
+
 function createRuntime(sessionScope: string) {
   const controller = new AbortController();
   const journal = createPinnedChatsJournal(localStorage, sessionScope);
@@ -62,10 +77,12 @@ function createRuntime(sessionScope: string) {
     writePending: journal.writePending,
     isRetryable: isRetryablePinError,
     publish: (pinnedIds) => usePinnedChatsStore.setState({ pinnedIds }),
-    onError: () =>
+    onError: (error) => {
+      if (failedUnderDesktopUpdate(error)) return;
       toast.error("Could not sync pinned chats. Try again when connected.", {
         id: "pinned-chats-sync-error",
-      }),
+      });
+    },
   });
   // Every delete path unpins what it removed, so a never-imported comparison's pin cannot block.
   const stopWatchingDeletes = onChatThreadsDeleted((threadIds, pairIds) => {
