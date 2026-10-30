@@ -125,7 +125,10 @@ function fitNotes(graph: DocGraph): Record<string, number> {
       ".overflow-y-auto",
     );
     if (!body) continue;
-    const height = Math.min(480, Math.max(60, body.scrollHeight + 4));
+    // The body fills the note, so measure what is in it (plus its py-2 padding and the border).
+    let content = 16 + 4;
+    for (const child of body.children) content += (child as HTMLElement).offsetHeight;
+    const height = Math.min(480, Math.max(60, content));
     if (Math.abs(height - graph.notes[id].rect[3]) > 6) out[id] = height;
   }
   return out;
