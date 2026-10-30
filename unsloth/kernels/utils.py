@@ -1981,8 +1981,11 @@ def _lora_fused_ok(W, W_quant, dtype):
     # A DTensor's placements would be lost in the plain accumulator.
     if isinstance(W, _LORA_DTENSOR):
         return False
-    # A sparse base cannot be the dense operand of the in-place accumulate (eager and export: a compiled
-    # backward bans reading `layout`).
+    # A sparse base cannot be the dense operand of the in-place accumulate. A compiled backward bans reading
+    # `layout`, but `is_sparse` / `is_sparse_csr` trace everywhere, so torch 2.6 export (no is_exporting) is
+    # covered too.
+    if W.is_sparse or W.is_sparse_csr:
+        return False
     if (not _is_compiling() or _is_exporting()) and W.layout != torch.strided:
         return False
     if type(W_quant) is Int4QuantState or _is_packed_state(W_quant):

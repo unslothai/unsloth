@@ -659,8 +659,8 @@ def test_a_3d_precomputed_xa_is_flattened_with_x(on, monkeypatch):
 def test_sparse_base_weight_keeps_the_base_then_lora_order_under_export(monkeypatch):
     # torch.export traces with is_compiling() True: the layout check must still run there.
     _set(monkeypatch, True)
-    if not hasattr(torch.compiler, "is_exporting") or not hasattr(torch, "export"):
-        pytest.skip("torch.export / torch.compiler.is_exporting is not available")
+    if not hasattr(torch, "export"):
+        pytest.skip("torch.export is not available")
 
     class M(torch.nn.Module):
         def __init__(self):
