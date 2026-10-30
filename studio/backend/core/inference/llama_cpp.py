@@ -40739,29 +40739,18 @@ class LlamaCppBackend:
                     ] + template_messages
 
                 # Guard against oversized payloads: /apply-template times out (503)
-                # or errors (500) when the JSON body is too large.  Measure the
-                # actual UTF-8 byte count of the message content (exact, language-
-                # independent) and bail out with an estimate if it exceeds a
-                # conservative threshold.  The fit loop will drop messages and
-                # re-count; by then the list is small enough for an exact count.
+                # or errors (500) when the JSON body is too large.  Estimate the
+                # token count with the dense heuristic (4 chars/tok ASCII, 1
+                # char/tok non-ASCII: exact for English, where it matches the
+                # per-message estimator the truncation uses, CJK-corrected) and
+                # bail out with the estimate if it exceeds the context limit.  The
+                # fit loop's keep_ratio then lands the first cut at the trim
+                # target, and the re-count goes through the exact path below.
                 _cap_nctx = self._effective_context_length or self._max_context_length
                 if _cap_nctx:
-                    _content_bytes = 0
-                    for _msg in template_messages:
-                        _c = _msg.get("content", "")
-                        if isinstance(_c, str):
-                            _content_bytes += len(_c.encode("utf-8"))
-                        elif isinstance(_c, list):
-                            for _b in _c:
-                                if isinstance(_b, dict):
-                                    _t = _b.get("text", "")
-                                    if isinstance(_t, str):
-                                        _content_bytes += len(_t.encode("utf-8"))
-                                elif isinstance(_b, str):
-                                    _content_bytes += len(_b.encode("utf-8"))
-                    # 4 bytes/token covers English (4), CJK (3), and code (2-3).
-                    if _content_bytes > _cap_nctx * 4:
-                        return _content_bytes // 3
+                    _est = estimate_messages_tokens_dense(template_messages)
+                    if _est > _cap_nctx:
+                        return _est
 
                 def _render_count(render_messages) -> tuple[Optional[int], bool]:
                     """(count or None, refused). Only a 500 is a template refusal; 503 = loading or no slot."""

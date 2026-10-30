@@ -12,7 +12,7 @@ import pytest
 
 import core.inference.llama_cpp as llama_cpp
 from core.inference.checkpoint import fit_checkpoint_context
-from core.inference.context_window import fit_rolling_context
+from core.inference.context_window import estimate_messages_tokens_dense, fit_rolling_context
 
 # The reporter's llama-server: 11.1 s to tokenize a 1.68M-token prompt.
 SERVER_CHARS_PER_S = 600_000
@@ -104,12 +104,14 @@ def _strict_count(backend):
 
 
 def test_oversized_payload_returns_estimate_without_http_call(backend):
-    """A payload above n_ctx * 4 bytes bypasses /apply-template entirely."""
-    # 7.2M chars >> 16384 * 4 = 65536 bytes, so the guard triggers.
+    """A transcript whose estimated tokens exceed n_ctx bypasses /apply-template
+    entirely: the fit loop gets a same-heuristic estimate, truncates, and the
+    re-count goes through the exact path."""
+    # ~1.8M estimated tokens >> 16384, so the guard triggers.
+    est = estimate_messages_tokens_dense(LONG)
+    assert est > backend._effective_context_length
     result = backend.count_chat_tokens(LONG, strict = True)
-    # Estimate is bytes // 3, not an exact count.
-    content_bytes = sum(len(m["content"].encode("utf-8")) for m in LONG)
-    assert result == content_bytes // 3
+    assert result == est
     # No HTTP client was created (the guard returned before the with block).
     assert len(backend.clients) == 0
 
