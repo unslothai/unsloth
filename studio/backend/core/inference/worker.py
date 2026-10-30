@@ -1845,12 +1845,13 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             )
             logger.info("Finished audio separation for request_id=%s", request_id)
             return
-        # Only audio.cpp and Orpheus (voice) models take per-model options; others never see the keyword.
-        extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
-        # Run fields reach only a backend that takes them: a Speak run on a native TTS model carries a
-        # workflow its backend has no keyword for.
         params = inspect.signature(backend.generate_audio_response).parameters
         takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        extra = (
+            {"audio_options": cmd["audio_options"]}
+            if cmd.get("audio_options") and (takes_any or "audio_options" in params)
+            else {}
+        )
         for key in ("workflow", "audio_inputs", "reference_text", "speed", "convert", "edit"):
             if cmd.get(key) is None:
                 continue

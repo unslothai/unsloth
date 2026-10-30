@@ -2064,9 +2064,15 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while decoding), so delegate after normalization but before it.
     _clear_generation_caches(self)
+    # Custom-code generate (LFM3) raises on any cache field it lists as unsupported; leave them unset.
+    # Inline, not a helper: tests exec this function's source with a hand-built namespace.
+    unsupported_fields = getattr(self, "_generation_fields_unsupported", None)
+    rejects_cache_fields = (
+        isinstance(unsupported_fields, dict) and "cache_implementation" in unsupported_fields
+    )
     if _uses_flash_attention_for_generation(self.config):
         # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
-        if kwargs.get("past_key_values") is None:
+        if kwargs.get("past_key_values") is None and not rejects_cache_fields:
             kwargs["cache_implementation"] = "dynamic"
         try:
             with _get_inference_mode_context_manager(self), autocaster:
@@ -2118,6 +2124,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if force_dynamic_cache:
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
+    if rejects_cache_fields:
+        cache_implementation = None
+        force_dynamic_cache = False
 
     generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
     compile_decode = (

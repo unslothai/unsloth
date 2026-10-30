@@ -281,6 +281,8 @@ _QWENIMAGE_TEXT_STREAM_INT8 = (
     "to_add_out",
     "txt_mlp",
 )
+# Streamed-only int8 weight-only; W8A8 would also round the timestep row per row.
+_QWENIMAGE_MOD_WEIGHT_ONLY = ("img_mod", "txt_mod")
 # Families whose activation ranges break specific schemes at the MODEL level (the smoke probe only proves the GEMM
 # runs). Measured with the 28-pair prequant accuracy gate on B200: qwen-image + mxfp8 does semantic damage at 1024px,
 # + nvfp4 is unusable (LPIPS 0.51). Neither has a known fix, so both stay denied and auto falls through to int8
@@ -873,6 +875,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         profile = FamilyProfile(
             int8_exclude_tokens = _QWENIMAGE_INT8_EXCLUDES,
             int8_runtime_quant_tokens = _QWENIMAGE_TEXT_STREAM_INT8,
+            int8_streamed_weight_only_tokens = _QWENIMAGE_MOD_WEIGHT_ONLY,
             scheme_deny = _QWENIMAGE_SCHEME_DENY,
             train_scheme_deny = _QWENIMAGE_TRAIN_SCHEME_DENY,
             auto_prefer = _GATED_AUTO_PREFER,
@@ -2096,12 +2099,12 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream", 50, 5.0),
     # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
-    # MOSS-Image: ComfyUI workflow, 50 steps at CFG 3.
-    ("moss-image", 50, 3.0),
-    ("moss_image", 50, 3.0),
-    ("mossimage", 50, 3.0),
-    # SDXL: Turbo distilled; base wants ~30 steps + CFG ~7. "sdxl-turbo" precedes "sdxl".
-    ("sdxl-turbo", 3, 0.0),
+    # MOSS-Image: the SFT and Base t2i templates both run 25 steps at CFG 2.5.
+    ("moss-image", 25, 2.5),
+    ("moss_image", 25, 2.5),
+    ("mossimage", 25, 2.5),
+    # SDXL-Turbo: 1 step, CFG 1. "sdxl-turbo" must precede "sdxl".
+    ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
 )

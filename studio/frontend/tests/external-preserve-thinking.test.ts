@@ -70,3 +70,12 @@ test("kimi-k3 replays reasoning whatever the preserve toggle says; k2.6 does not
     );
   }
 });
+
+test("minimax replays reasoning whatever the preserve toggle says", () => {
+  for (const enabled of [true, false]) {
+    assert.deepEqual(
+      evaluate(providerSupportsPreserveThinking, {providerType: "minimax"}, {preserveThinking: enabled}, true, "MiniMax-M3.1-Flash"),
+      {replay: true, fields: {}},
+    );
+  }
+});

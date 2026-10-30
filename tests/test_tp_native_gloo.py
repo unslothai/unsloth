@@ -1067,10 +1067,15 @@ def test_fused_lora_functions_read_local_shards():
             plain["calls"],
             fused["calls"],
         )
-        # The fused kernels round the LoRA term before the base GEMM accumulates onto it (PEFT adds the two
-        # rounded products), so fp32 results differ by summation order, not by shard: a wrong shard is O(1).
-        torch.testing.assert_close(fused["O"], plain["O"], rtol = 1e-4, atol = 1e-5)
-        torch.testing.assert_close(fused["dX"], plain["dX"], rtol = 1e-4, atol = 1e-5)
+        for key in ("O", "dX"):
+            # fp32 sums err by an ulp of their largest term, so a small element that cancels out of large ones
+            # (dX here peaks near 1e3, where one ulp is 1.2e-4) needs an atol at the tensor's scale.
+            atol = max(1e-5, 1e-6 * plain[key].abs().max().item())
+            torch.testing.assert_close(
+                fused[key], plain[key], rtol = 1e-5, atol = atol, msg = lambda m, key = key: f"{key}: {m}"
+            )
+        # The fused order rounds the LoRA term before the base GEMM accumulates onto it, so it may differ from
+        # PEFT's two rounded products, but never move further from a float64 reference.
         ref = res["ref64"]
         for key in ("O", "dX"):
             err_fused = (fused[key].double() - ref[key]).abs().max().item()
