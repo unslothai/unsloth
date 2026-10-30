@@ -2149,10 +2149,8 @@ def _packed_row_varlen_kwargs(query, attention_mask, kwargs):
 
 
 def _packed_row_boundaries_eager(kwargs, device, total):
-    """Host-side boundaries for a packed row of `total` tokens. Run outside any compiled graph,
-    so compiled and eager calls take the same decision and the maximum document length reaches
-    a compiled caller as a call result, not as a guarded constant read from the metadata cache
-    (which recompiled once per distinct length)."""
+    """Host-side packed-row boundaries, outside any compiled graph: max_seqlen as a guarded
+    constant recompiled once per distinct length."""
     from .utils.packing import cover_padded_cu_seqlens, get_packed_info_from_kwargs
 
     info = get_packed_info_from_kwargs(kwargs, device)
@@ -2165,9 +2163,7 @@ def _packed_row_boundaries_eager(kwargs, device, total):
         checked[:] = [cu_seqlens, total, int(cu_seqlens[-1]) <= total]
     if not checked[2]:
         return None
-    # A collator padding the flattened row (pad_to_multiple_of) leaves a tail past the documents:
-    # it gets its own segment, as in Unsloth's own attention dispatch, so no document sees it and
-    # flash varlen writes every row.
+    # A pad_to_multiple_of tail gets its own segment so no document attends to it.
     cu_seqlens, max_seqlen = cover_padded_cu_seqlens(info, total)
     return {
         "cu_seq_lens_q": cu_seqlens,
