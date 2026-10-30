@@ -290,6 +290,9 @@ def test_images_late_in_a_chat_column_are_found():
         dataset = Dataset.from_dict({"messages": [text] * 150 + [image]})
         assert tmod._image_columns(dataset) == ["messages"], block
         assert tmod._image_columns(dataset.select(range(150))) == []
+        # One message per cell instead of a list of them.
+        cells = Dataset.from_dict({"chosen": [text[0]] * 150 + [image[0]]})
+        assert tmod._image_columns(cells) == ["chosen"], block
     late_bytes = [b"plain"] * 150 + [b"\x89PNG\r\n"]
     assert tmod._image_columns(Dataset.from_dict({"blob": late_bytes})) == ["blob"]
 

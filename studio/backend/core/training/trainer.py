@@ -346,6 +346,8 @@ _IMAGE_BLOCK_TYPES = ("image", "image_url", "input_image")
 
 
 def _holds_image_blocks(value) -> bool:
+    if isinstance(value, dict):
+        value = [value]  # one message per cell, as the RL formatter reads it
     if not isinstance(value, list):
         return False
     for message in value:
