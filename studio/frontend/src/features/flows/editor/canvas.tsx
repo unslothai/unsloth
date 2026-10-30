@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useNativeFileDrop } from "@/features/native-intents/use-native-file-drop";
+import { useTheme } from "@/features/settings/stores/theme-store";
 import {
   Background,
   BackgroundVariant,
@@ -13,14 +14,17 @@ import {
   MiniMap,
   type NodeChange,
   type OnConnectStartParams,
+  type ReactFlowState,
   ReactFlow,
   SelectionMode,
   useReactFlow,
+  useStoreApi,
 } from "@xyflow/react";
 import {
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -44,6 +48,22 @@ import {
   type RfNode,
 } from "./derive-rf";
 import { addFileNodes } from "./file-drop";
+import { rememberSizes } from "./layout";
+import {
+  OpenSuperCards,
+  SuperCardCombineToolbar,
+  SuperCardView,
+  useSuperCardView,
+} from "./super-card-node";
+import {
+  isApplePlatform,
+  multiSelectKeys,
+  SUPER_PREFIX,
+  type SuperCardData,
+  boxCovers,
+  superCardDragMembers,
+  toggledSelection,
+} from "./super-cards";
 import { FlowEdgeView } from "./flow-edge";
 import { FlowNodeView } from "./flow-node";
 import { GroupFrame, NoteFrame } from "./frame-nodes";
@@ -51,6 +71,7 @@ import { NODE_DRAG_MIME, addNodeConnected, tryConnect } from "./node-factory";
 import { SelectedNodeToolbar } from "./node-toolbar";
 
 const NODE_TYPES = {
+  flowSuperCard: SuperCardView,
   flowNode: FlowNodeView,
   flowGroup: GroupFrame,
   flowNote: NoteFrame,
@@ -60,8 +81,45 @@ const SNAP_GRID: [number, number] = [16, 16];
 const VISIBLE_ONLY_THRESHOLD = 300;
 const PRO_OPTIONS = { hideAttribution: true };
 const DELETE_KEYS = ["Delete", "Backspace"];
-const MULTI_SELECT_KEYS = ["Meta", "Control", "Shift"];
+const PLATFORM = typeof navigator === "undefined" ? "" : navigator.platform;
+const MULTI_SELECT_KEYS = multiSelectKeys(PLATFORM);
+const APPLE = isApplePlatform(PLATFORM);
 const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.1 };
+
+// React Flow reports box-selection changes before it stores the new rect, so read the pointer ourselves.
+const pointer = { x: 0, y: 0 };
+const pressed = { x: 0, y: 0 };
+
+/** Whether the box from `from` to the pointer (client coords) encloses the whole frame `id`. */
+function boxHoldsGroup(
+  state: ReactFlowState<RfNode, RfEdge>,
+  id: string,
+  from: { x: number; y: number },
+): boolean {
+  const node = state.nodeLookup.get(id);
+  const pane = state.domNode?.getBoundingClientRect();
+  if (!node || !pane) return false;
+  return boxCovers(
+    {
+      x: Math.min(pointer.x, from.x) - pane.left,
+      y: Math.min(pointer.y, from.y) - pane.top,
+      width: Math.abs(pointer.x - from.x),
+      height: Math.abs(pointer.y - from.y),
+    },
+    state.transform,
+    {
+      ...node.internals.positionAbsolute,
+      width: node.measured.width ?? 0,
+      height: node.measured.height ?? 0,
+    },
+  );
+}
+
+/** A selection box drawn inside a group touches it; only a box around the whole group takes it. */
+function boxSkips(state: ReactFlowState<RfNode, RfEdge>, id: string): boolean {
+  if (!id.startsWith(GROUP_PREFIX) || !state.userSelectionRect) return false;
+  return !boxHoldsGroup(state, id, pressed);
+}
 
 type Size = { width: number; height: number };
 type Positions = Record<string, { x: number; y: number }>;
@@ -74,10 +132,10 @@ function portTypeOf(edge: FlowEdge): string {
 }
 
 function minimapColor(node: RfNode): string {
-  if (node.type !== "flowNode") return "#27272a";
+  if (node.type !== "flowNode") return "var(--muted)";
   const doc = useDocStore.getState().graph.nodes[node.id];
   const spec = doc ? getSpec(doc.type) : undefined;
-  return spec ? categoryColor(spec.category) : "#52525b";
+  return spec ? categoryColor(spec.category) : "var(--muted-foreground)";
 }
 
 function insideRect(
@@ -119,11 +177,13 @@ function groupMembership(
 }
 
 export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
+  const colorMode = useTheme().resolved;
   const graph = useDocStore((s) => s.graph);
   const selectedNodes = useUiStore((s) => s.selectedNodes);
   const selectedEdges = useUiStore((s) => s.selectedEdges);
   const snapToGrid = useUiStore((s) => s.snapToGrid);
   const { screenToFlowPosition } = useReactFlow();
+  const store = useStoreApi<RfNode, RfEdge>();
 
   const deriver = useRef<RfDeriver | null>(null);
   deriver.current ??= new RfDeriver();
@@ -137,6 +197,10 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const connectStart = useRef<OnConnectStartParams | null>(null);
   const sizesRef = useRef(sizes);
   sizesRef.current = sizes;
+  useEffect(() => {
+    rememberSizes(sizes);
+    return () => rememberSizes(new Map());
+  }, [sizes]);
   const dragRef = useRef<Positions | null>(null);
   dragRef.current = drag;
 
@@ -188,6 +252,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
             });
           }
         } else if (change.type === "select") {
+          if (change.selected && boxSkips(store.getState(), change.id))
+            continue;
           selection ??= { add: new Set(), remove: new Set() };
           (change.selected ? selection.add : selection.remove).add(change.id);
         }
@@ -222,11 +288,22 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     }
   }, []);
 
+  const view = useSuperCardView(nodes, edges, selectedSet);
+
   const onNodeDragStart = useCallback(
     (_: ReactMouseEvent, node: RfNode) => {
       dragMembers.current = null;
-      if (!node.id.startsWith(GROUP_PREFIX)) return;
       const doc = useDocStore.getState().graph;
+      const folded = superCardDragMembers(node, doc);
+      if (folded) {
+        dragMembers.current = {
+          groupRfId: node.id,
+          origin: node.position,
+          members: folded,
+        };
+        return;
+      }
+      if (!node.id.startsWith(GROUP_PREFIX)) return;
       const group = doc.groups[node.id.slice(GROUP_PREFIX.length)];
       if (!group) return;
       const members = new Map<string, { x: number; y: number }>();
@@ -246,17 +323,36 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     },
     [],
   );
+  // React Flow only reports a box's changes when its picked set changes, so a frame dropped while the
+  // box only touched it is never offered again; settle every frame against the final box.
+  const onSelectionEnd = useCallback(() => {
+    const state = store.getState();
+    const ui = useUiStore.getState();
+    const next = new Set(ui.selectedNodes);
+    for (const id of state.nodeLookup.keys()) {
+      if (!id.startsWith(GROUP_PREFIX)) continue;
+      if (boxHoldsGroup(state, id, pressed)) next.add(id);
+      else next.delete(id);
+    }
+    ui.setSelection([...next], ui.selectedEdges);
+  }, [store]);
+
 
   const onNodeDragStop = useCallback(() => {
+    const card = dragMembers.current?.groupRfId.startsWith(SUPER_PREFIX);
     dragMembers.current = null;
     const current = dragRef.current;
     if (current) {
       const positions: Record<string, [number, number]> = {};
       for (const [id, p] of Object.entries(current))
         positions[id] = [Math.round(p.x), Math.round(p.y)];
+      // A super card moves its blocks without changing which group they are in.
       useDocStore
         .getState()
-        .moveNodes(positions, groupMembership(positions, sizesRef.current));
+        .moveNodes(
+          positions,
+          card ? undefined : groupMembership(positions, sizesRef.current),
+        );
     }
     setDrag(null);
   }, []);
@@ -356,12 +452,18 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         groups: [] as string[],
         notes: [] as string[],
       };
-      for (const node of rfNodes) {
-        if (node.id.startsWith(GROUP_PREFIX))
-          ids.groups.push(node.id.slice(GROUP_PREFIX.length));
-        else if (node.id.startsWith(NOTE_PREFIX))
-          ids.notes.push(node.id.slice(NOTE_PREFIX.length));
-        else ids.nodes.push(node.id);
+      // A closed super card goes with its blocks and everything folded into it.
+      const removed = rfNodes.flatMap((node) => {
+        if (!node.id.startsWith(SUPER_PREFIX)) return [node.id];
+        const data = node.data as unknown as SuperCardData;
+        return [...data.memberIds, ...data.folded.map((f) => f.id)];
+      });
+      for (const id of removed) {
+        if (id.startsWith(GROUP_PREFIX))
+          ids.groups.push(id.slice(GROUP_PREFIX.length));
+        else if (id.startsWith(NOTE_PREFIX))
+          ids.notes.push(id.slice(NOTE_PREFIX.length));
+        else ids.nodes.push(id);
       }
       useDocStore.getState().removeElements(ids);
       useUiStore.getState().setSelection([], []);
@@ -439,6 +541,14 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       ref={setWrapper}
       className="relative h-full w-full"
       onDoubleClick={onDoubleClick}
+      onPointerDownCapture={(event) => {
+        pressed.x = pointer.x = event.clientX;
+        pressed.y = pointer.y = event.clientY;
+      }}
+      onPointerMoveCapture={(event) => {
+        pointer.x = event.clientX;
+        pointer.y = event.clientY;
+      }}
       onDragEnter={fileDrop.dragHandlers.onDragEnter}
       onDragOver={(event) => {
         if (dragHasFiles(Array.from(event.dataTransfer.types)))
@@ -450,8 +560,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       data-testid="flows-canvas"
     >
       <ReactFlow<RfNode, RfEdge>
-        nodes={nodes}
-        edges={edges}
+        nodes={view.nodes}
+        edges={view.edges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
         onNodesChange={onNodesChange}
@@ -469,6 +579,14 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         connectionMode={ConnectionMode.Strict}
         deleteKeyCode={readOnly ? null : DELETE_KEYS}
         multiSelectionKeyCode={MULTI_SELECT_KEYS}
+        selectionKeyCode={MULTI_SELECT_KEYS}
+        onSelectionEnd={onSelectionEnd}
+        onNodeContextMenu={(event, node) => {
+          if (!APPLE || !event.ctrlKey) return;
+          event.preventDefault();
+          const ui = useUiStore.getState();
+          ui.setSelection(toggledSelection(ui.selectedNodes, node.id), ui.selectedEdges);
+        }}
         selectionMode={SelectionMode.Partial}
         selectionOnDrag={false}
         panOnDrag={true}
@@ -481,30 +599,32 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         onlyRenderVisibleElements={nodes.length > VISIBLE_ONLY_THRESHOLD}
         nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
-        colorMode="dark"
+        colorMode={colorMode}
         proOptions={PRO_OPTIONS}
         fitView={true}
         fitViewOptions={FIT_VIEW_OPTIONS}
-        className="flows-canvas bg-zinc-950"
+        className="flows-canvas bg-background"
       >
         <Background
           variant={BackgroundVariant.Dots}
           gap={20}
           size={1.2}
-          color="#3f3f46"
+          color="color-mix(in oklab, var(--foreground) 28%, transparent)"
         />
         <MiniMap
           pannable={true}
           zoomable={true}
           nodeColor={minimapColor}
           nodeStrokeWidth={0}
-          maskColor="rgba(9,9,11,0.7)"
-          className="!rounded-lg !border !border-white/10 !bg-zinc-900"
+          maskColor="color-mix(in oklab, var(--background) 70%, transparent)"
+          className="!rounded-lg !border !border-border !bg-card"
         />
         <Controls
           showInteractive={false}
-          className="!rounded-lg !border !border-white/10 !shadow-none"
+          className="!rounded-lg !border !border-border !shadow-none"
         />
+        <SuperCardCombineToolbar readOnly={readOnly} />
+        <OpenSuperCards readOnly={readOnly} />
         <SelectedNodeToolbar readOnly={readOnly} />
       </ReactFlow>
     </div>
