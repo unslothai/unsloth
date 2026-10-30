@@ -117,6 +117,33 @@ def _strictify(text: str) -> Optional[str]:
     return "".join(out)
 
 
+def relaxed_object_end(text: str, start: int) -> Optional[int]:
+    """Index of the ``}`` closing the object at ``start``, skipping single- and double-quoted strings as
+    ``_strictify`` reads them, so a brace inside a single-quoted argument never ends the call."""
+    depth = 0
+    quote = None
+    i, n = start, len(text)
+    while i < n:
+        c = text[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = None
+        elif c == '"' or c == "'":
+            quote = c
+        elif c in "{[":
+            depth += 1
+        elif c in "}]":
+            depth -= 1
+            if depth == 0:
+                return i if c == "}" else None
+            if depth < 0:
+                return None
+        i += 1
+    return None
+
+
 def relaxed_json_object(text: Any) -> Optional[dict]:
     """The argument object ``text`` spells, or None. Strict JSON first; a JSON string holding an object
     (arguments encoded once or twice) is unwrapped; then the syntax repair above."""

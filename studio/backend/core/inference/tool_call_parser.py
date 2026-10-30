@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 # Qwen/Hermes, Qwen3.5 XML and Gemma 4 live in core.tool_healing; this module adds the rest
 from core import tool_healing as _tool_healing
-from core.inference.relaxed_json import relaxed_json_object
+from core.inference.relaxed_json import relaxed_json_object, relaxed_object_end
 
 # Shared with tool_healing so every markerless parse path applies the same guard; wrapped and marker forms are unaffected.
 _markerless_promotable = _tool_healing._markerless_promotable
@@ -2635,7 +2635,7 @@ def _parse_llama3_python_tag(
                 except (json.JSONDecodeError, ValueError):
                     obj = None
                     if brace >= relaxed_from:
-                        close = _balanced_brace_end(content, brace)
+                        close = relaxed_object_end(content, brace)
                         relaxed_from = len(content) if close is None else close + 1
                         if close is not None:
                             obj = relaxed_json_object(content[brace : close + 1])
@@ -2905,7 +2905,7 @@ def _parse_mistral_array(
         brace = body.find("{", pos)
         if brace < 0:
             break
-        end = _balanced_brace_end(body, brace)
+        end = relaxed_object_end(body, brace)
         if end is None:
             break  # truncated mid-object: nothing after it can balance
         _consume_mistral_call(body[brace : end + 1], out, id_offset, relaxed = allow_incomplete)

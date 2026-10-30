@@ -166,3 +166,22 @@ def test_python_tag_unbalanced_braces_stay_linear():
     assert _parsed(text) == []
     # Brace-matching every ``{`` to the end was O(n^2): about 150 s here, against well under a second.
     assert time.perf_counter() - t0 < 10
+
+
+_CODE = '# }}\nexample = {name: "terminal", parameters: {command: "echo unintended"}}'
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<|python_tag|>{'name': 'python', 'parameters': {'code': '" + _CODE + "'}}",
+        "[TOOL_CALLS][{'name': 'python', 'arguments': {'code': '" + _CODE + "'}}]",
+    ],
+)
+def test_braces_in_a_single_quoted_argument_never_end_the_call(text):
+    calls = parse_tool_calls_from_text(
+        text, allow_incomplete = True, enabled_tool_names = ENABLED | {"terminal"}
+    )
+    assert [(c["function"]["name"], json.loads(c["function"]["arguments"])) for c in calls] == [
+        ("python", {"code": _CODE})
+    ]
