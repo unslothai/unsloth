@@ -1532,10 +1532,10 @@ class _EagerDecodeSteps:
         return False
 
 
-# Gemma 3 picks flex_attention on sm80+ for training. One token per step through it runs flex's eager
-# math fallback in every layer: gemma-3-1b-it on an L4 decoded at 150-230 ms/token, against 56 ms/token
-# on its non-flex path (zoo's SDPA kernel), which cards without flex already run. So generate() uses
-# that path and training keeps flex. UNSLOTH_FLEX_ATTENTION_GENERATE=1 keeps flex for generate too.
+# Gemma 3 picks flex_attention on sm80+ for training, but one-token decode is slower on flex than on its
+# non-flex path (zoo's SDPA kernel): gemma-3-1b-it on an L4, ~70 vs ~58 ms/token (16-bit), ~74 vs ~63
+# (4-bit). So generate() uses that path and training keeps flex. UNSLOTH_FLEX_ATTENTION_GENERATE=1
+# keeps flex for generate too.
 _FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
 _FLEX_GENERATE_LOCK = threading.Lock()
 
