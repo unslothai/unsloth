@@ -95,7 +95,7 @@ def test_loader_tile_mlp_installs_and_reports(capsys):
     model = _model()
     assert tiling.loader_tile_mlp(model, False) is None and not registry.tiled_modules(model)
     report = tiling.loader_tile_mlp(model, True)
-    assert len(report.tiled) == 2 and "Tiled MLP (arctic) on 2 modules" in capsys.readouterr().out
+    assert len(report.tiled) == 2 and "Tiled MLP (auto) on 2 modules" in capsys.readouterr().out
 
 
 def test_tile_mlp_and_untile_mlp():
@@ -119,7 +119,7 @@ def test_tile_mlp_and_untile_mlp():
 @pytest.mark.parametrize("off", ["0", "false", "OFF", "no", "none"])
 def test_tile_mlp_ignores_a_disabled_environment(monkeypatch, off):
     monkeypatch.setenv("UNSLOTH_TILED_MLP", off)
-    assert _tiling().tile_mlp(_model(), verbose = False).plan.mode == "arctic"
+    assert _tiling().tile_mlp(_model(), verbose = False).plan.mode == "auto"
     monkeypatch.setenv("UNSLOTH_TILED_MLP", "rows:4")
     assert _tiling().tile_mlp(_model(), verbose = False).plan.rows == 4
 

@@ -76,7 +76,8 @@ def tile_mlp(
     """Tile every eligible MLP / MoE / projector in `model`; idempotent. Returns the coverage report.
 
     rows: fixed rows per tile. target_gb: activation budget per tile in GB. Neither: `mode`, which defaults to
-    UNSLOTH_TILED_MLP or "arctic" (rows per tile = hidden size); "auto" sizes tiles from free memory.
+    UNSLOTH_TILED_MLP or "auto" (tiles from free memory, one tile when tiling would not lower the peak); "arctic"
+    always tiles with rows per tile = hidden size.
     modules: name or class patterns; only matching modules are tiled.
     """
     _refuse_mlx(model)
