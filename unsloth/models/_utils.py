@@ -1189,6 +1189,16 @@ def _wrap_flex_attention_forward(flex_attention_forward):
                 kwargs["attention_mask"] = _causal_block_mask(query, key)
         elif _FLEX_MASKLESS_SDPA_ENABLED:
             _count_flex_reroute("flex")
+        requested = kwargs.get("kernel_options") or {}
+        requested_backend = requested.get("BACKEND") if isinstance(requested, dict) else None
+        # Where flex_decoding cannot compile, the main kernel replaces it unless the caller pinned a kernel itself
+        # (a BACKEND other than AUTO, or FORCE_USE_FLEX_ATTENTION=False).
+        decode_replaced = (
+            decoding_unavailable
+            and isinstance(requested, dict)
+            and requested_backend in (None, "AUTO")
+            and requested.get("FORCE_USE_FLEX_ATTENTION") is not False
+        )
         try:
             # Some vision callers reuse the interface with a non-4D query.
             kernel_options = (
@@ -1211,7 +1221,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and (
                 _flex_call_needs_backward(query, key, value)
                 or _flex_main_kernel_forced(kwargs)
-                or decoding_unavailable
+                or decode_replaced
                 or query.shape[2] >= 128
             )
             and _flex_tuned_bwd_fits(
@@ -1232,15 +1242,22 @@ def _wrap_flex_attention_forward(flex_attention_forward):
         # padded batch stride (comprehensive_padding) that the backward template ignores, so every
         # batch row after the first reads a shifted LSE and the gradients blow up. Where flex_decoding cannot compile
         # here, short no-grad queries take the main kernel too.
-        if (
+        # An explicit BACKEND="AUTO" can still pick flex_decoding; it becomes TRITON (the main kernel), since torch
+        # refuses BACKEND together with FORCE_USE_FLEX_ATTENTION.
+        auto_to_triton = False
+        if requested_backend in (None, "AUTO") and (
             decoding_unavailable or _flex_call_needs_backward(query, key, value)
-        ) and "BACKEND" not in (kwargs.get("kernel_options") or {}):
+        ):
             kernel_options = kernel_options or {}
-            kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
+            if requested_backend is None:
+                kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
+            else:
+                auto_to_triton = requested.get("FORCE_USE_FLEX_ATTENTION") is not False
         if kernel_options is not None:
             # A caller that already asked for something keeps it: only fill the gaps.
-            requested = kwargs.get("kernel_options") or {}
             kernel_options.update(requested)
+            if auto_to_triton:
+                kernel_options["BACKEND"] = "TRITON"
             kwargs["kernel_options"] = kernel_options
         return flex_attention_forward(module, query, key, value, *args, **kwargs)
 

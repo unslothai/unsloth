@@ -18,6 +18,8 @@ def _wrapped_call(
     unavailable,
     q_len = 1,
     needs_backward = False,
+    small_ok = False,
+    head_dim = 64,
     **kwargs,
 ):
     import torch
@@ -28,17 +30,17 @@ def _wrapped_call(
         seen["kernel_options"] = kw.get("kernel_options")
         return query
 
-    monkeypatch.setattr(u, "_flex_decoding_unavailable", lambda: unavailable)
+    monkeypatch.setattr(u, "_flex_decoding_unavailable", lambda: unavailable, raising = False)
     monkeypatch.setattr(u, "_flex_tuned_bwd_device_ok", lambda: False)
-    monkeypatch.setattr(u, "_flex_small_smem_device_ok", lambda: False)
+    monkeypatch.setattr(u, "_flex_small_smem_device_ok", lambda: small_ok)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: needs_backward)
     wrapped = u._wrap_flex_attention_forward(fake_flex)
 
     class M(torch.nn.Module):
         is_causal = True
 
-    q = torch.randn(1, 2, q_len, 64)
-    k = torch.randn(1, 2, 128, 64)
+    q = torch.randn(1, 2, q_len, head_dim)
+    k = torch.randn(1, 2, 128, head_dim)
     wrapped(M(), q, k, k.clone(), object(), **kwargs)
     return seen["kernel_options"]
 
@@ -88,3 +90,36 @@ def test_an_unsloth_zoo_without_the_check_keeps_auto(monkeypatch):
     stub = types.ModuleType("unsloth_zoo.flex_attention.utils")
     monkeypatch.setitem(sys.modules, "unsloth_zoo.flex_attention.utils", stub)
     assert u._flex_decoding_unavailable() is False
+
+
+@pytest.mark.parametrize("needs_backward", [False, True])
+def test_an_explicit_auto_backend_takes_the_main_kernel_too(monkeypatch, needs_backward):
+    # torch refuses BACKEND together with FORCE_USE_FLEX_ATTENTION, so AUTO becomes TRITON.
+    opts = _wrapped_call(monkeypatch, True, 1, needs_backward, kernel_options = {"BACKEND": "AUTO"})
+    assert opts == {"BACKEND": "TRITON"}
+    opts = _wrapped_call(monkeypatch, False, 1, needs_backward, kernel_options = {"BACKEND": "AUTO"})
+    assert opts == ({"BACKEND": "TRITON"} if needs_backward else {"BACKEND": "AUTO"})
+    opts = _wrapped_call(
+        monkeypatch, True, 1, kernel_options = {"BACKEND": "AUTO", "FORCE_USE_FLEX_ATTENTION": False}
+    )
+    assert opts == {"BACKEND": "AUTO", "FORCE_USE_FLEX_ATTENTION": False}
+
+
+@pytest.mark.parametrize(
+    "requested, main_kernel",
+    [
+        (None, True),
+        ({"BACKEND": "AUTO"}, True),
+        ({"FORCE_USE_FLEX_ATTENTION": False}, False),
+        ({"BACKEND": "TRITON_DECODE"}, False),
+    ],
+)
+def test_small_memory_tiles_follow_the_kernel_that_runs(monkeypatch, requested, main_kernel):
+    # The fitted tiles are main-kernel tiles: a caller that keeps flex_decoding must not get them.
+    kwargs = {} if requested is None else {"kernel_options": dict(requested)}
+    opts = _wrapped_call(monkeypatch, True, 1, small_ok = True, head_dim = 256, **kwargs) or {}
+    tiles = {k: opts.get(k) for k in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS}
+    if main_kernel:
+        assert tiles == u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
+    else:
+        assert all(v is None for v in tiles.values()) and opts == requested
