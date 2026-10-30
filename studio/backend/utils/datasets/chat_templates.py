@@ -363,6 +363,36 @@ def _thinking_as_reasoning_content(tokenizer, conversation):
     ]
 
 
+def _render_with_empty_call_content(tokenizer, messages, tools_kwargs):
+    # Unsloth's qwen3 reads content unguarded; kept only if every call still renders.
+    from core.inference.chat_template_helpers import _normalize_tool_call_arguments
+
+    def is_null_call(message):
+        return isinstance(message, dict) and message.get("tool_calls") and message.get("content") is None
+
+    if not any(is_null_call(message) for message in messages):
+        return None
+    filled = [{**message, "content": ""} if is_null_call(message) else message for message in messages]
+    names = []
+    for message in filled:
+        for call in (message.get("tool_calls") if isinstance(message, dict) else None) or ():
+            if isinstance(call, dict):
+                function = call.get("function")
+                name = (function if isinstance(function, dict) else call).get("name")
+                if isinstance(name, str):
+                    names.append(name)
+    for attempt in (_normalize_tool_call_arguments(filled), filled):
+        try:
+            text = tokenizer.apply_chat_template(
+                attempt, tokenize = False, add_generation_prompt = False, **tools_kwargs
+            )
+        except Exception:
+            continue
+        if all(name in text for name in names):
+            return text
+    return None
+
+
 def _render_messages(tokenizer, conversation, tools = None, fallback_without_tools = True):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
@@ -383,6 +413,9 @@ def _render_messages(tokenizer, conversation, tools = None, fallback_without_too
             # allow DeepSeek V3 None content; prefer cleaned errors when loaders add None keys.
             if first_error is None:
                 first_error = error
+    text = _render_with_empty_call_content(tokenizer, _drop_none_values(conversation), tools_kwargs)
+    if text is not None:
+        return text
     if tools and fallback_without_tools:
         return _render_messages(tokenizer, conversation)
     raise first_error

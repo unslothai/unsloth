@@ -260,6 +260,46 @@ def test_mixed_sharegpt_native_tool_calls_render(content):
     assert "<|start_header_id|>ipython<|end_header_id|>\n\n21C" in text
 
 
+_UNGUARDED_CONTENT_TEMPLATE = """
+{%- for message in messages %}
+{{- '<|im_start|>' + message.role + '\\n' + message.content.split('</think>')[-1] }}
+{%- if render_calls %}
+{%- for tool_call in message.tool_calls or [] %}
+{{- '<tool_call>' + tool_call.function.name + '</tool_call>' }}
+{%- endfor %}
+{%- endif %}
+{{- '<|im_end|>\\n' }}
+{%- endfor %}
+"""
+
+
+@pytest.mark.parametrize("sharegpt", [False, True])
+@pytest.mark.parametrize("render_calls", [True, False])
+def test_null_call_content_falls_back_to_empty_only_when_the_call_renders(sharegpt, render_calls):
+    messages = _tool_call_row('{"city": "Paris"}')
+    messages[1]["content"] = None
+    if sharegpt:
+        messages[0] = {"from": "human", "value": "Weather in Paris?"}
+        messages[-1] = {"from": "gpt", "value": "It is 21C in Paris."}
+    template = _UNGUARDED_CONTENT_TEMPLATE.replace("render_calls", str(render_calls).lower())
+    rows = [{"conversations": _plain_row()} for _ in range(3)] + [{"conversations": messages}]
+
+    result = format_and_template_dataset(
+        Dataset.from_list(rows),
+        model_name = "stub-model",
+        tokenizer = _JinjaTokenizer(template),
+        num_proc = 1,
+    )
+
+    texts = [row["text"] for row in result["dataset"]]
+    if render_calls:
+        assert len(texts) == 4
+        assert "<tool_call>get_weather</tool_call>" in texts[-1]
+    else:
+        # A template that cannot show the call keeps dropping the row instead of training without it.
+        assert len(texts) == 3
+
+
 def test_sharegpt_function_call_and_observation_train_as_tool_turns():
     call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
 
