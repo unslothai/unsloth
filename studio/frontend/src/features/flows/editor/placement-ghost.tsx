@@ -3,6 +3,7 @@
 
 import { useStore } from "@xyflow/react";
 import { createPortal } from "react-dom";
+import type { RerouteDir } from "../stores/reroute-graph";
 import type { NodeSpec } from "../types";
 import { nodeIcon } from "./icons";
 import { NodeIconTile } from "./node-card";
@@ -44,11 +45,19 @@ export function ShapeGhost({
   type,
   x,
   y,
-}: { type: string; x: number; y: number }) {
+  dir = "right",
+}: { type: string; x: number; y: number; dir?: RerouteDir }) {
   const zoom = useStore((s) => s.transform[2]);
-  const shape = PLACE_SHAPES[type];
-  if (!shape) return null;
+  const base = PLACE_SHAPES[type];
+  if (!base) return null;
   const reroute = type === "reroute";
+  const shape =
+    reroute && dir !== "right"
+      ? {
+          size: [base.size[1], base.size[0]],
+          grab: [base.grab[1], base.grab[0]],
+        }
+      : base;
   return createPortal(
     <div
       className={`pointer-events-none fixed z-[1000] border-2 border-dashed border-primary/60 bg-primary/5 opacity-80 ${reroute ? "rounded-full" : "rounded-lg"}`}
@@ -59,6 +68,7 @@ export function ShapeGhost({
         height: shape.size[1] * zoom,
       }}
       data-testid="flows-placement-ghost"
+      data-dir={reroute ? dir : undefined}
     >
       {!reroute && (
         <span className="absolute top-1 left-2 font-medium text-muted-foreground text-xs">

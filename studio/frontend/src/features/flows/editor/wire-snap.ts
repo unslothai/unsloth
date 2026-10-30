@@ -9,6 +9,14 @@ export function nearestOnPath(
   at: (distance: number) => Point,
   p: Point,
 ): Point {
+  return at(nearestLength(length, at, p));
+}
+
+function nearestLength(
+  length: number,
+  at: (distance: number) => Point,
+  p: Point,
+): number {
   const dist = (q: Point) => (q.x - p.x) ** 2 + (q.y - p.y) ** 2;
   const coarse = Math.max(8, Math.ceil(length / 8));
   let best = 0;
@@ -26,7 +34,7 @@ export function nearestOnPath(
     const d = dist(at(s));
     if (d < bestD) [best, bestD] = [s, d];
   }
-  return at(best);
+  return best;
 }
 
 /** The wire (edge id) under a screen point, skipping `ignore`. */
@@ -42,15 +50,25 @@ export function wireUnder(
   return null;
 }
 
-/** Where on wire `id` a reroute dropped at flow point `p` sits, in flow coordinates. */
-export function snapToWire(id: string, p: Point): Point | null {
+/** Where on wire `id` a reroute dropped at flow point `p` sits, in flow coordinates, and which way
+ *  the wire runs there. */
+export function snapToWire(
+  id: string,
+  p: Point,
+): (Point & { tangent: Point }) | null {
   const path = document.querySelector<SVGPathElement>(
     `.react-flow__edge[data-id="${CSS.escape(id)}"] path.react-flow__edge-path`,
   );
   if (!path) return null;
-  return nearestOnPath(
-    path.getTotalLength(),
-    (d) => path.getPointAtLength(d),
-    p,
-  );
+  const length = path.getTotalLength();
+  const at = (d: number) => path.getPointAtLength(d);
+  const l = nearestLength(length, at, p);
+  const point = at(l);
+  const before = at(Math.max(0, l - 4));
+  const after = at(Math.min(length, l + 4));
+  return {
+    x: point.x,
+    y: point.y,
+    tangent: { x: after.x - before.x, y: after.y - before.y },
+  };
 }

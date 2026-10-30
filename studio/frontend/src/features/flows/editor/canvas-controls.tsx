@@ -8,6 +8,7 @@ import { MiniMap, Panel, useReactFlow } from "@xyflow/react";
 import { memo, useEffect, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { newId, useDocStore } from "../stores/doc-store";
+import type { RerouteDir } from "../stores/reroute-graph";
 import { useUiStore } from "../stores/ui-store";
 import { FIT_MIN_ZOOM } from "./canvas-rules";
 import type { RfNode } from "./derive-rf";
@@ -24,11 +25,18 @@ import {
   placeableTarget,
   placedRect,
   placementPosition,
+  snapPoint,
   stopPlacement,
   usePlacement,
 } from "./placement";
 import { PlacementGhost, ShapeGhost } from "./placement-ghost";
-import { REROUTE_SIZE, REROUTE_TYPE, addReroute } from "./reroutes";
+import {
+  REROUTE_TYPE,
+  addReroute,
+  dirAlong,
+  flippedStyle,
+  nextRerouteDir,
+} from "./reroutes";
 import { snapToWire, wireUnder } from "./wire-snap";
 
 // React Flow Controls' fit (default padding), animated.
@@ -87,7 +95,9 @@ function placeArmed(
   }
   const doc = useDocStore.getState();
   if (type === REROUTE_TYPE) {
-    useUiStore.getState().setSelection([addReroute([rect[0], rect[1]])], []);
+    const [x, y] = snapPoint([flow.x, flow.y], snap);
+    const dir = usePlacement.getState().rerouteDir;
+    useUiStore.getState().setSelection([addReroute({ x, y }, { dir })], []);
   } else if (type === PLACE_GROUP) {
     doc.groupNodes(
       { id: newId("g"), label: "Group", color: "#8b5cf6", rect },
@@ -103,13 +113,17 @@ function rerouteTarget(
   clientX: number,
   clientY: number,
   toFlow: (p: { x: number; y: number }) => { x: number; y: number },
-): { wire: string; at: { x: number; y: number } } | null {
+): {
+  wire: string;
+  at: { x: number; y: number };
+  dir: RerouteDir;
+} | null {
   const wire = wireUnder(clientX, clientY);
   const graph = useDocStore.getState().graph;
   if (!wire || !(graph.wires[wire] || graph.edges[wire]?.kind === "data"))
     return null;
   const at = snapToWire(wire, toFlow({ x: clientX, y: clientY }));
-  return at ? { wire, at } : null;
+  return at ? { wire, at, dir: dirAlong(at.tangent) } : null;
 }
 
 /** While a Nodes panel item or a toolbar Group, Note or Reroute is armed: each click on empty canvas, a group or a note places one;
@@ -120,7 +134,12 @@ function ArmedPlacement() {
     armed ? s.catalog?.nodes.find((n) => n.type === armed) : undefined,
   );
   const { screenToFlowPosition, flowToScreenPosition } = useReactFlow();
-  const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
+  const [pointer, setPointer] = useState<{
+    x: number;
+    y: number;
+    dir?: RerouteDir;
+  } | null>(null);
+  const rerouteDir = usePlacement((s) => s.rerouteDir);
 
   useEffect(() => stopPlacement, []);
 
@@ -138,14 +157,19 @@ function ArmedPlacement() {
       if (e.button !== 0 || e.detail > 1) return;
       const hit = onWire(e);
       if (hit) {
-        // Centred on the wire, not the grid: snapping off it would kink the wire.
-        const id = addReroute(
-          [
-            Math.round(hit.at.x - REROUTE_SIZE.width / 2),
-            Math.round(hit.at.y - REROUTE_SIZE.height / 2),
-          ],
-          hit.wire,
-        );
+        // Centred on the wire, not the grid: snapping off it would kink the wire. Shift pins the
+        // cut wire to the other style.
+        const id = addReroute(hit.at, {
+          splitId: hit.wire,
+          dir: hit.dir,
+          style: e.shiftKey
+            ? flippedStyle(
+                useDocStore.getState().graph,
+                hit.wire,
+                useUiStore.getState().wireStyle,
+              )
+            : undefined,
+        });
         useUiStore.getState().setSelection([id], []);
         return;
       }
@@ -166,10 +190,20 @@ function ArmedPlacement() {
     };
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") stopPlacement();
+      else if (
+        armed === REROUTE_TYPE &&
+        (e.key === "r" || e.key === "R") &&
+        !(e.metaKey || e.ctrlKey || e.altKey)
+      ) {
+        e.preventDefault();
+        usePlacement.setState((s) => ({
+          rerouteDir: nextRerouteDir(s.rerouteDir),
+        }));
+      }
     };
     const move = (e: PointerEvent) => {
       const hit = onWire(e);
-      if (hit) setPointer(flowToScreenPosition(hit.at));
+      if (hit) setPointer({ ...flowToScreenPosition(hit.at), dir: hit.dir });
       else setPointer(onPane(e) ? { x: e.clientX, y: e.clientY } : null);
     };
     canvas.classList.add("flows-armed");
@@ -194,14 +228,21 @@ function ArmedPlacement() {
     <>
       <Panel position="top-center" className="m-3" style={PANEL_STYLE}>
         <span className="rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground shadow-sm">
-          Click to place · Esc to stop
+          {armed === REROUTE_TYPE
+            ? "Click to place · R turns it · Shift on a wire flips bus/curved · Esc to stop"
+            : "Click to place · Esc to stop"}
         </span>
       </Panel>
       {pointer &&
         (spec ? (
           <PlacementGhost spec={spec} x={pointer.x} y={pointer.y} />
         ) : (
-          <ShapeGhost type={armed} x={pointer.x} y={pointer.y} />
+          <ShapeGhost
+            type={armed}
+            x={pointer.x}
+            y={pointer.y}
+            dir={pointer.dir ?? rerouteDir}
+          />
         ))}
     </>
   );

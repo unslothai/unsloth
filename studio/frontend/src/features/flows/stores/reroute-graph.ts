@@ -11,9 +11,15 @@ import type { FlowEdge } from "../types";
 export const REROUTE_IN = "in";
 export const REROUTE_OUT = "out";
 
+/** Which way a reroute passes its wire: in on the left and out on the right, or top to bottom, or bottom to top. */
+export type RerouteDir = "right" | "down" | "up";
+export const REROUTE_DIRS: RerouteDir[] = ["right", "down", "up"];
+
 export interface FlowReroute {
   id: string;
   pos: [number, number];
+  /** Absent means "right". */
+  dir?: RerouteDir;
 }
 
 /** A wire segment with a reroute on at least one end. The reroute side's port is "in" or "out". */
@@ -23,6 +29,8 @@ export interface RerouteWire {
   source_port: string;
   target: string;
   target_port: string;
+  /** Pins this segment to one wire style whatever the toolbar says. */
+  style?: "bus" | "curved";
 }
 
 export interface RerouteGraph {
@@ -195,7 +203,11 @@ export function reroutesFromEditor(
   for (const item of rawReroutes as Partial<FlowReroute>[]) {
     if (!item || typeof item.id !== "string" || !isPos(item.pos)) continue;
     if (reroutes[item.id] || nodes[item.id]) continue;
-    reroutes[item.id] = { id: item.id, pos: [item.pos[0], item.pos[1]] };
+    reroutes[item.id] = {
+      id: item.id,
+      pos: [item.pos[0], item.pos[1]],
+      ...(item.dir === "down" || item.dir === "up" ? { dir: item.dir } : {}),
+    };
     rerouteOrder.push(item.id);
   }
   const wires: Record<string, RerouteWire> = {};
@@ -221,6 +233,9 @@ export function reroutesFromEditor(
       source_port: item.source_port,
       target: item.target as string,
       target_port: item.target_port,
+      ...(item.style === "bus" || item.style === "curved"
+        ? { style: item.style }
+        : {}),
     };
     wireOrder.push(item.id);
   }

@@ -82,8 +82,8 @@ function CurvedEdgeImpl({
 const CurvedEdge = memo(CurvedEdgeImpl);
 
 function FlowEdgeViewImpl(props: EdgeProps<RfEdge>) {
-  const bus = useUiStore((s) => s.wireStyle === "bus");
-  return bus ? <BusEdge {...props} /> : <CurvedEdge {...props} />;
+  const global = useUiStore((s) => s.wireStyle);
+  return (props.data?.wireStyle ?? global) === "bus" ? <BusEdge {...props} /> : <CurvedEdge {...props} />;
 }
 
 export const FlowEdgeView = memo(FlowEdgeViewImpl);

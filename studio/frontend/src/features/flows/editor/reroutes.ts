@@ -5,7 +5,9 @@ import { findPort, getSpec } from "../stores/catalog-store";
 import { type DocGraph, newId, useDocStore } from "../stores/doc-store";
 import {
   type PortRef,
+  REROUTE_DIRS,
   REROUTE_IN,
+  type RerouteDir,
   REROUTE_OUT,
   type RerouteWire,
   rerouteDownstream,
@@ -26,6 +28,31 @@ export const REROUTE_TYPE = "reroute";
 export const REROUTE_IN_HANDLE = "ri";
 export const REROUTE_OUT_HANDLE = "ro";
 export const REROUTE_SIZE = { width: 28, height: 16 };
+
+export function rerouteSize(dir: RerouteDir = "right") {
+  return dir === "right"
+    ? REROUTE_SIZE
+    : { width: REROUTE_SIZE.height, height: REROUTE_SIZE.width };
+}
+
+export function nextRerouteDir(dir: RerouteDir = "right"): RerouteDir {
+  return REROUTE_DIRS[(REROUTE_DIRS.indexOf(dir) + 1) % REROUTE_DIRS.length];
+}
+
+/** The way a reroute cut into a wire should face: along the wire where it lands. */
+export function dirAlong(tangent: { x: number; y: number }): RerouteDir {
+  if (Math.abs(tangent.y) <= Math.abs(tangent.x) * 1.5) return "right";
+  return tangent.y > 0 ? "down" : "up";
+}
+
+/** The other wire style from the one wire `id` draws with now (Shift while cutting it). */
+export function flippedStyle(
+  graph: DocGraph,
+  id: string,
+  current: "bus" | "curved",
+): "bus" | "curved" {
+  return (graph.wires[id]?.style ?? current) === "bus" ? "curved" : "bus";
+}
 
 const ANY: PortSpec = { id: "any", label: "Any", type: "any" } as PortSpec;
 
@@ -206,8 +233,53 @@ export function connectThroughReroute(req: RerouteRequest): string | null {
   return null;
 }
 
-export function addReroute(pos: [number, number], splitId?: string): string {
+/** Adds a reroute centred on `centre`, cutting `splitId` if given. */
+export function addReroute(
+  centre: { x: number; y: number },
+  opts: {
+    splitId?: string;
+    style?: RerouteWire["style"];
+    dir?: RerouteDir;
+  } = {},
+): string {
   const id = newId("rr");
-  useDocStore.getState().addReroute({ id, pos }, splitId);
+  const dir = opts.dir ?? "right";
+  const size = rerouteSize(dir);
+  const pos: [number, number] = [
+    Math.round(centre.x - size.width / 2),
+    Math.round(centre.y - size.height / 2),
+  ];
+  useDocStore
+    .getState()
+    .addReroute(
+      { id, pos, ...(dir === "right" ? {} : { dir }) },
+      opts.splitId,
+      opts.style,
+    );
   return id;
+}
+
+/** Turns reroutes to their next direction about their centres. */
+export function turnReroutes(ids: string[]): boolean {
+  const { graph, replaceReroutes } = useDocStore.getState();
+  const turned = ids.flatMap((id) => {
+    const reroute = graph.reroutes[id];
+    if (!reroute) return [];
+    const from = rerouteSize(reroute.dir);
+    const dir = nextRerouteDir(reroute.dir);
+    const to = rerouteSize(dir);
+    const { dir: _dir, ...rest } = reroute;
+    return [
+      {
+        ...rest,
+        ...(dir === "right" ? {} : { dir }),
+        pos: [
+          reroute.pos[0] + (from.width - to.width) / 2,
+          reroute.pos[1] + (from.height - to.height) / 2,
+        ] as [number, number],
+      },
+    ];
+  });
+  if (turned.length) replaceReroutes(turned);
+  return turned.length > 0;
 }

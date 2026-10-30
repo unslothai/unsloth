@@ -57,7 +57,7 @@ import { useWireReconnect } from "./use-wire-reconnect";
 import { wheelScrollsInside } from "./wheel-scroll";
 import { addFileNodes } from "./file-drop";
 import { FlowEdgeView } from "./flow-edge";
-import { wireUnder } from "./wire-snap";
+import { snapToWire, wireUnder } from "./wire-snap";
 import { FlowNodeView } from "./flow-node";
 import { GroupFrame, NoteFrame } from "./frame-nodes";
 import { NODE_DRAG_MIME, addNodeConnected, tryConnect } from "./node-factory";
@@ -66,7 +66,9 @@ import { SelectedNodeToolbar } from "./node-toolbar";
 import { RerouteNode } from "./reroute-node";
 import {
   REROUTE_OUT_HANDLE,
-  REROUTE_SIZE,
+  dirAlong,
+  flippedStyle,
+  rerouteSize,
   addReroute,
   checkRerouteConnection,
   reroutePort,
@@ -170,6 +172,9 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const selectedEdges = useUiStore((s) => s.selectedEdges);
   const snapToGrid = useUiStore((s) => s.snapToGrid);
   const bus = useUiStore((s) => s.wireStyle === "bus");
+  const pinnedBus = useDocStore((s) =>
+    s.graph.wireOrder.some((id) => s.graph.wires[id].style === "bus"),
+  );
   const flowId = useDocStore((s) => s.flowId);
   const { screenToFlowPosition, flowToScreenPosition } = useReactFlow();
   const { props: wireReconnect, reconnecting } =
@@ -385,13 +390,37 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       const reroute = doc.reroutes[node.id];
       if (!reroute || hasWires(doc, node.id)) return;
       // A free reroute dropped on a wire threads itself into it.
+      const size = rerouteSize(reroute.dir);
       const centre = flowToScreenPosition({
-        x: reroute.pos[0] + REROUTE_SIZE.width / 2,
-        y: reroute.pos[1] + REROUTE_SIZE.height / 2,
+        x: reroute.pos[0] + size.width / 2,
+        y: reroute.pos[1] + size.height / 2,
       });
       const wire = wireUnder(centre.x, centre.y, node.id);
-      if (wire && (doc.wires[wire] || doc.edges[wire]?.kind === "data"))
-        useDocStore.getState().addReroute(reroute, wire);
+      if (!(wire && (doc.wires[wire] || doc.edges[wire]?.kind === "data")))
+        return;
+      // Turned to run along the wire where it lands, and centred on it.
+      const at = snapToWire(wire, {
+        x: reroute.pos[0] + size.width / 2,
+        y: reroute.pos[1] + size.height / 2,
+      });
+      const dir = at ? dirAlong(at.tangent) : (reroute.dir ?? "right");
+      const fit = rerouteSize(dir);
+      const { dir: _dir, ...rest } = reroute;
+      useDocStore.getState().addReroute(
+        {
+          ...rest,
+          ...(dir === "right" ? {} : { dir }),
+          ...(at
+            ? {
+                pos: [
+                  Math.round(at.x - fit.width / 2),
+                  Math.round(at.y - fit.height / 2),
+                ] as [number, number],
+              }
+            : {}),
+        },
+        wire,
+      );
     },
     [flowToScreenPosition],
   );
@@ -599,13 +628,18 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     (event: ReactMouseEvent, edge: RfEdge) => {
       if (readOnly || edge.data?.kind !== "data") return;
       const flow = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-      const id = addReroute(
-        [
-          Math.round(flow.x - REROUTE_SIZE.width / 2),
-          Math.round(flow.y - REROUTE_SIZE.height / 2),
-        ],
-        edge.id,
-      );
+      const at = snapToWire(edge.id, flow);
+      const id = addReroute(at ?? flow, {
+        splitId: edge.id,
+        dir: at ? dirAlong(at.tangent) : undefined,
+        style: event.shiftKey
+          ? flippedStyle(
+              useDocStore.getState().graph,
+              edge.id,
+              useUiStore.getState().wireStyle,
+            )
+          : undefined,
+      });
       useUiStore.getState().setSelection([id], []);
     },
     [readOnly, screenToFlowPosition],
@@ -699,7 +733,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         />
         <CanvasControls readOnly={readOnly} />
         <SelectedNodeToolbar readOnly={readOnly} />
-        {bus && (
+        {(bus || pinnedBus) && (
           <WireRouterController scope={flowId ?? ""} moving={moving} />
         )}
       </ReactFlow>

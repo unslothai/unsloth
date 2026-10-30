@@ -2,10 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import type { RerouteDir } from "../stores/reroute-graph";
 
-/** The Nodes panel's placement tool: the node type armed for click-to-place, if any. */
-export const usePlacement = create<{ armed: string | null }>(() => ({
+/** The Nodes panel's placement tool: the node type armed for click-to-place, if any, and which way
+ *  the next free reroute faces (R turns it). */
+export const usePlacement = create<{
+  armed: string | null;
+  rerouteDir: RerouteDir;
+}>(() => ({
   armed: null,
+  rerouteDir: "right",
 }));
 
 /** Clicking the armed item again disarms it; another item switches to that one. */

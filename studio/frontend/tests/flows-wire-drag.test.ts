@@ -60,6 +60,6 @@ test("each wire of a fan-in has its own × point before the shared leg", () => {
 });
 
 test("a reroute's wire segments have no draggable end; they move with the reroute", () => {
-  assert.match(src("derive-rf.ts"), /reconnectable: false,\s*data: \{ kind: "data", portType: info\.portType, ends: info\.ends \}/);
+  assert.match(src("derive-rf.ts"), /reconnectable: false,\s*data: \{\s*kind: "data",\s*portType: info\.portType,\s*ends: info\.ends,/);
   assert.match(src("use-wire-reconnect.ts"), /isWireSegment\(before\.graph, old\.id\)/);
 });

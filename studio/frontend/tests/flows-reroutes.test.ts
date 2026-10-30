@@ -453,3 +453,50 @@ test("an empty reroute into an `any` input connects, and Quick Add offers what t
   assert.equal(rerouteTakes(graph(), "r3", text), false);
   assert.equal(rerouteTakes(graph(), "r3", anyOut), true);
 });
+
+test("Shift-cutting a wire pins both halves to the other style, and it saves", async () => {
+  fresh();
+  const { flippedStyle } = await import("../src/features/flows/editor/reroutes.ts");
+  const style = flippedStyle(graph(), "e1", "bus");
+  assert.equal(style, "curved");
+  useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] }, "e1", style);
+  const halves = Object.values(graph().wires);
+  assert.equal(halves.length, 2);
+  assert.ok(halves.every((w) => w.style === "curved"));
+  // A later cut of a pinned half keeps the pin unless Shift flips it back.
+  useDocStore.getState().addReroute({ id: "r2", pos: [200, 10] }, halves[0].id);
+  assert.ok(Object.values(graph().wires).every((w) => w.style === "curved"));
+  assert.equal(flippedStyle(graph(), halves[0].id, "bus"), "bus");
+  const saved = documentFromState(useDocStore.getState());
+  const back = graphFromDocument(saved);
+  assert.ok(Object.values(back.wires).every((w) => w.style === "curved"));
+});
+
+test("reroutes face along the wire they land on, and R turns them about their centre", async () => {
+  fresh();
+  const { dirAlong, rerouteSize, turnReroutes } = await import(
+    "../src/features/flows/editor/reroutes.ts"
+  );
+  assert.equal(dirAlong({ x: 8, y: 0.5 }), "right");
+  assert.equal(dirAlong({ x: 0, y: 8 }), "down");
+  assert.equal(dirAlong({ x: 1, y: -8 }), "up");
+  assert.equal(dirAlong({ x: 6, y: 6 }), "right", "a diagonal stays horizontal");
+  assert.deepEqual(rerouteSize("down"), { width: 16, height: 28 });
+  useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] }, "e1");
+  const centre = (r: { pos: [number, number]; dir?: "right" | "down" | "up" }) => {
+    const size = rerouteSize(r.dir);
+    return [r.pos[0] + size.width / 2, r.pos[1] + size.height / 2];
+  };
+  const before = centre(graph().reroutes.r1);
+  assert.equal(turnReroutes(["r1"]), true);
+  assert.equal(graph().reroutes.r1.dir, "down");
+  assert.deepEqual(centre(graph().reroutes.r1), before);
+  turnReroutes(["r1"]);
+  assert.equal(graph().reroutes.r1.dir, "up");
+  turnReroutes(["r1"]);
+  assert.equal(graph().reroutes.r1.dir, undefined, "back to right, stored as the default");
+  assert.equal(turnReroutes(["llm"]), false, "cards do not turn");
+  turnReroutes(["r1"]);
+  const back = graphFromDocument(documentFromState(useDocStore.getState()));
+  assert.equal(back.reroutes.r1.dir, "down");
+});

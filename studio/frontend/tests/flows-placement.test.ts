@@ -96,7 +96,7 @@ test("a reroute is centred on the pointer, groups and notes hang from it", () =>
 test("armed toolbar shapes place through placedRect and show their own ghost", () => {
   const src = readFileSync(new URL("../src/features/flows/editor/canvas-controls.tsx", import.meta.url), "utf8");
   assert.match(src, /placeArmed\(\s*armed,\s*screenToFlowPosition/);
-  assert.match(src, /<ShapeGhost type=\{armed\}/);
+  assert.match(src, /<ShapeGhost\s+type=\{armed\}/);
 });
 
 test("a reroute dropped near a wire lands on the wire's nearest point", async () => {
@@ -112,7 +112,7 @@ test("a reroute dropped near a wire lands on the wire's nearest point", async ()
 test("an armed reroute threads into the wire under the pointer, and the wire's × hides", () => {
   const read = (f: string) => readFileSync(new URL(`../src/features/flows/editor/${f}`, import.meta.url), "utf8");
   const controls = read("canvas-controls.tsx");
-  assert.match(controls, /addReroute\(\s*\[[\s\S]*?hit\.wire,\s*\)/);
-  assert.match(controls, /setPointer\(flowToScreenPosition\(hit\.at\)\)/);
+  assert.match(controls, /addReroute\(hit\.at, \{\s*splitId: hit\.wire,\s*dir: hit\.dir,/);
+  assert.match(controls, /setPointer\(\{ \.\.\.flowToScreenPosition\(hit\.at\), dir: hit\.dir \}\)/);
   assert.match(read("wire-delete.tsx"), /if \(!show \|\| rerouting\) return null;/);
 });

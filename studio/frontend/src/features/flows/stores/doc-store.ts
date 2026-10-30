@@ -90,7 +90,13 @@ export interface DocState {
   }) => void;
   connect: (edge: FlowEdge, replaceSingleInput: boolean) => void;
   /** Adds (or moves) a reroute and threads it into `splitId`, a plain edge or a wire segment. */
-  addReroute: (reroute: FlowReroute, splitId?: string) => void;
+  addReroute: (
+    reroute: FlowReroute,
+    splitId?: string,
+    style?: RerouteWire["style"],
+  ) => void;
+  /** Replaces existing reroutes (turning one keeps its centre, so its box moves too). */
+  replaceReroutes: (reroutes: FlowReroute[]) => void;
   /** Connects a wire with a reroute on at least one end. */
   connectWire: (wire: RerouteWire, replaceSingleInput: boolean) => void;
   insertFragment: (fragment: GraphFragment) => void;
@@ -541,7 +547,7 @@ export const useDocStore = create<DocState>((set, get) => {
         };
       }),
 
-    addReroute: (reroute, splitId) =>
+    addReroute: (reroute, splitId, style) =>
       commit((s) => {
         if (s.graph.nodes[reroute.id]) return null;
         const exists = !!s.graph.reroutes[reroute.id];
@@ -556,6 +562,8 @@ export const useDocStore = create<DocState>((set, get) => {
         const plain = splitId && !wire ? s.graph.edges[splitId] : undefined;
         const cut = wire ?? (plain?.kind === "data" ? plain : undefined);
         if (cut) {
+          const pinned = style ?? wire?.style;
+          const pin = pinned ? { style: pinned } : {};
           // The far half keeps the id, so the plain edge the compiler sees keeps its id too.
           const near: RerouteWire = {
             id: newId("w"),
@@ -563,6 +571,7 @@ export const useDocStore = create<DocState>((set, get) => {
             source_port: cut.source_port,
             target: reroute.id,
             target_port: REROUTE_IN,
+            ...pin,
           };
           const far: RerouteWire = {
             id: cut.id,
@@ -570,6 +579,7 @@ export const useDocStore = create<DocState>((set, get) => {
             source_port: REROUTE_OUT,
             target: cut.target,
             target_port: cut.target_port,
+            ...pin,
           };
           const wires = { ...graph.wires, [near.id]: near, [far.id]: far };
           const wireOrder = wire
@@ -581,6 +591,15 @@ export const useDocStore = create<DocState>((set, get) => {
           graph = syncRerouteEdges(graph, s.graph.wireOrder);
         }
         return { graph };
+      }),
+
+    replaceReroutes: (list) =>
+      commit((s) => {
+        const known = list.filter((r) => s.graph.reroutes[r.id]);
+        if (!known.length) return null;
+        const reroutes = { ...s.graph.reroutes };
+        for (const reroute of known) reroutes[reroute.id] = reroute;
+        return { graph: { ...s.graph, reroutes } };
       }),
 
     connectWire: (wire, replaceSingleInput) =>

@@ -13,6 +13,8 @@ import {
 import { useUiStore } from "../stores/ui-store";
 import type { FlowEdge, FlowNode } from "../types";
 import { addFileNodes } from "./file-drop";
+import { usePlacement } from "./placement";
+import { turnReroutes } from "./reroutes";
 import { runFlow } from "./run-controller";
 import { historyAction } from "./history-keys";
 import { flushSave } from "./use-autosave";
@@ -211,6 +213,9 @@ export function useEditorShortcuts(active: boolean): void {
         const [only, ...rest] = ui.selectedNodes;
         if (only && !rest.length && doc.graph.nodes[only]) ui.toggleInspector(only);
         else if (ui.inspectorNodeId) ui.openInspector(null);
+      } else if (!mod && key === "r" && !usePlacement.getState().armed) {
+        if (turnReroutes(useUiStore.getState().selectedNodes))
+          event.preventDefault();
       } else if (!mod && key === "f") {
         event.preventDefault();
         void fitView({ padding: 0.2, duration: 300, maxZoom: 1.1 });

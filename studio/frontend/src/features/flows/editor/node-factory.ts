@@ -17,7 +17,6 @@ import {
 import {
   REROUTE_IN_HANDLE,
   REROUTE_OUT_HANDLE,
-  REROUTE_SIZE,
   REROUTE_TYPE,
   addReroute,
   connectThroughReroute,
@@ -96,10 +95,7 @@ export function addNodeConnected(
   port?: string,
 ): FlowNode | null {
   if (type === REROUTE_TYPE) {
-    const id = addReroute([
-      Math.round(pos[0] + 130 - REROUTE_SIZE.width / 2),
-      Math.round(pos[1] + 20 - REROUTE_SIZE.height / 2),
-    ]);
+    const id = addReroute({ x: pos[0] + 130, y: pos[1] + 20 });
     if (from?.kind === "data") {
       tryConnect(
         from.side === "out"

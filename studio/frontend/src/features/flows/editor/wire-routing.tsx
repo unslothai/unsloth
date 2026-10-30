@@ -5,6 +5,7 @@ import {
   BaseEdge,
   type EdgeProps,
   type InternalNode,
+  Position,
   getBezierPath,
   useStore,
   useStoreApi,
@@ -12,6 +13,7 @@ import {
 import { type CSSProperties, memo, useEffect } from "react";
 import { create } from "zustand";
 import { useCatalogStore } from "../stores/catalog-store";
+import { useUiStore } from "../stores/ui-store";
 import type { RfEdge, RfNode } from "./derive-rf";
 import { portInk } from "./theme-colors";
 import { WireDelete, WireHalo, useWireHover } from "./wire-delete";
@@ -23,6 +25,7 @@ import {
   type WirePoint,
   type WireRect,
   type WireRoute,
+  type WireSide,
   buildWirePath,
   routeWires,
   wireEmphasis,
@@ -106,6 +109,17 @@ function handleCenter(
   return bounds ? bounds.y + bounds.height / 2 : undefined;
 }
 
+/** The side a handle sits on: a turned reroute's are on its top and bottom. */
+function handleSide(
+  node: InternalNode<RfNode> | undefined,
+  handleId: string | null | undefined,
+  kind: "source" | "target",
+): WireSide | undefined {
+  return node?.internals.handleBounds?.[kind]?.find(
+    (handle) => handle.id === (handleId ?? null),
+  )?.position as WireSide | undefined;
+}
+
 function buildRequest(
   lookup: Map<string, InternalNode<RfNode>>,
   edges: RfEdge[],
@@ -137,8 +151,8 @@ function buildRequest(
       id: edge.id,
       source: edge.source,
       target: edge.target,
-      sourceSide: "right",
-      targetSide: "left",
+      sourceSide: handleSide(lookup.get(edge.source), edge.sourceHandle, "source") ?? "right",
+      targetSide: handleSide(lookup.get(edge.target), edge.targetHandle, "target") ?? "left",
       sourceOffset: handleCenter(
         lookup.get(edge.source),
         edge.sourceHandle,
@@ -155,6 +169,11 @@ function buildRequest(
     });
   }
   return { rects, zones, edges: wires };
+}
+
+/** The wires drawn as bus lines: the toolbar's style unless a wire is pinned to one. */
+function busEdges(edges: RfEdge[], global: "bus" | "curved"): RfEdge[] {
+  return edges.filter((edge) => (edge.data?.wireStyle ?? global) === "bus");
 }
 
 let worker: Worker | null = null;
@@ -229,6 +248,7 @@ export const WireRouterController = memo(function WireRouterController({
   moving?: ReadonlySet<string> | null;
 }) {
   const store = useStoreApi<RfNode, RfEdge>();
+  const global = useUiStore((s) => s.wireStyle);
   // Sizes live in the lookup: a view-built node (a closed super card) never gets them back in s.nodes.
   const nodesKey = useStore((s) => routingKey([...s.nodeLookup.values()]));
   const edges = useStore((s) => s.edges);
@@ -243,7 +263,10 @@ export const WireRouterController = memo(function WireRouterController({
         if (!node.hidden && !(node.measured.width && node.measured.height))
           return;
     if (moving?.size) {
-      const live = wiresToReroute(store.getState().edges, moving);
+      const live = wiresToReroute(
+        busEdges(store.getState().edges, global),
+        moving,
+      );
       // A note or a frame on its own moves no wire.
       if (!live.length) return;
       pending = () => ({
@@ -253,7 +276,7 @@ export const WireRouterController = memo(function WireRouterController({
         partial: true,
         ...buildRequest(
           store.getState().nodeLookup,
-          wiresToReroute(store.getState().edges, moving),
+          wiresToReroute(busEdges(store.getState().edges, global), moving),
         ),
       });
       pumpNextFrame();
@@ -263,10 +286,13 @@ export const WireRouterController = memo(function WireRouterController({
       id: ++nextId,
       scope,
       hopRadius: HOP_RADIUS,
-      ...buildRequest(store.getState().nodeLookup, store.getState().edges),
+      ...buildRequest(
+        store.getState().nodeLookup,
+        busEdges(store.getState().edges, global),
+      ),
     });
     pump();
-  }, [nodesKey, edges, scope, store, moving]);
+  }, [nodesKey, edges, scope, store, moving, global]);
 
   useEffect(
     () => () => {
@@ -284,25 +310,33 @@ function alignToHandles(
   sourceY: number,
   targetX: number,
   targetY: number,
+  sourceUpright = false,
+  targetUpright = false,
 ): WirePoint[] | null {
   const points = route.points;
   if (points.length < 2) return null;
   const first = points[0];
   const last = points[points.length - 1];
+  // The port's own axis may be off by a few pixels; across it, barely at all.
+  const fits = (p: WirePoint, x: number, y: number, upright: boolean) =>
+    upright
+      ? Math.abs(x - p.x) <= ENDPOINT_TOLERANCE && Math.abs(y - p.y) <= 12
+      : Math.abs(y - p.y) <= ENDPOINT_TOLERANCE && Math.abs(x - p.x) <= 12;
   if (
-    Math.abs(sourceY - first.y) > ENDPOINT_TOLERANCE ||
-    Math.abs(targetY - last.y) > ENDPOINT_TOLERANCE ||
-    Math.abs(sourceX - first.x) > 12 ||
-    Math.abs(targetX - last.x) > 12
+    !fits(first, sourceX, sourceY, sourceUpright) ||
+    !fits(last, targetX, targetY, targetUpright)
   )
     return null;
   // Stretch the ends out to the handles, keeping the first and last legs straight.
   return [
-    { x: sourceX, y: first.y },
+    sourceUpright ? { x: first.x, y: sourceY } : { x: sourceX, y: first.y },
     ...points.slice(1, -1),
-    { x: targetX, y: last.y },
+    targetUpright ? { x: last.x, y: targetY } : { x: targetX, y: last.y },
   ];
 }
+
+const upright = (position: Position) =>
+  position === Position.Top || position === Position.Bottom;
 
 /** A routed wire: rounded bus corners, hops over crossings, a dot where a wire fans out. */
 function BusEdgeImpl({
@@ -357,11 +391,22 @@ function BusEdgeImpl({
   // A blocked route is a straight line through cards: draw the curve instead.
   const exact =
     route && !route.blocked
-      ? alignToHandles(route, sourceX, sourceY, targetX, targetY)
+      ? alignToHandles(
+          route,
+          sourceX,
+          sourceY,
+          targetX,
+          targetY,
+          upright(sourcePosition),
+          upright(targetPosition),
+        )
       : null;
   const points =
     exact ??
-    (route && !route.blocked
+    (route &&
+    !route.blocked &&
+    !upright(sourcePosition) &&
+    !upright(targetPosition)
       ? stretchToHandles(route.points, sourceX, sourceY, targetX, targetY)
       : null);
   const remove = (x: number, y: number) => (
