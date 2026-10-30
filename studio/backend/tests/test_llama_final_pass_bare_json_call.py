@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The final pass after the tool cap sends tool_choice "none", so llama-server leaves a Llama 3.x bare-JSON
-call in the answer text (Llama-3.2-1B-Instruct writes one there). It must not be shown as the answer."""
+"""tool_choice "none" leaves a Llama 3.x bare-JSON call in the final-pass text; it must not be shown."""
 
 from __future__ import annotations
 
@@ -97,7 +96,6 @@ def test_final_pass_answers_are_unchanged(monkeypatch, text):
 
 
 def test_final_pass_keeps_blocked_execution_call_visible(monkeypatch):
-    """Bare text never promotes an exec-class tool; such JSON stays visible as before."""
     text = '{"name": "python", "parameters": {"code": "print(1)"}}'
     shown = _final_pass(monkeypatch, text, tools = [_web_search_tool(), _python_tool()])
     assert shown[-1] == text
