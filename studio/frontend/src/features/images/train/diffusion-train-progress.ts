@@ -85,8 +85,7 @@ export function diffusionTrainingProgress(status: Status | null) {
     }
     const load = status?.model_load_progress;
     const stage = status?.model_load_stage;
-    // Active transfers are displayed by the shared download manager. Do not present
-    // a retained tensor count as current progress while another file is downloading.
+    // A retained tensor count is stale while the download manager shows a transfer.
     const downloading = status?.download_progress != null;
     const measured = status?.in_model_load && !downloading && load &&
       Number.isFinite(load.done) && Number.isFinite(load.total) &&

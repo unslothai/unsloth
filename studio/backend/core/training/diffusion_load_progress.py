@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Measured loading counters, scoped to the disposable diffusion training worker.
-
-Diffusers has no per-weight callback. Observe its tensor-placement and quantizer calls
-without changing their inputs or results; count only successful returns. The hooks are
-restored even when loading fails. Library component/shard counters cover other loaders.
-Percentages describe completed items, never elapsed time or an estimated overall run.
-"""
+"""Loader progress for the spawned diffusion training worker: diffusers has no per-weight callback, so observe
+tensor placement / quantizer calls and library tqdm bars, crediting only successful returns; hooks always restored."""
 
 from contextlib import contextmanager
 from functools import wraps
@@ -28,7 +23,6 @@ def report_model_load_progress(on_event):
         from diffusers.models import modeling_utils
         from diffusers.utils import logging as diffusion_logging
     except ImportError:
-        # Optional loader internals may be absent in older versions or test stubs.
         yield
         return
     from transformers.utils import logging as transformer_logging
@@ -117,9 +111,8 @@ def report_model_load_progress(on_event):
     class CountedTqdm(tqdm):
         def __init__(self, *args, unit, label, **kwargs):
             self.progress_unit, self.progress_label = unit, label
-            # Quiet logging may disable upstream tqdm entirely. Keep its counter active,
-            # but display() below ensures it never prints to the worker's terminal.
-            kwargs["disable"] = False
+            # Count even when quiet logging disabled the bar; display() is muted and leave=False stops close() writing "\n".
+            kwargs["disable"], kwargs["leave"] = False, False
             super().__init__(*args, **kwargs)
             emit(self.n, self.total, unit, label)
 
@@ -135,8 +128,7 @@ def report_model_load_progress(on_event):
             try:
                 for item in self.iterable:
                     yield item
-                    # Runs after the loader finishes the yielded item. Failed items
-                    # and partially consumed iterators never get credited.
+                    # Credited on resume: an item whose load raised is never counted.
                     self.update(1)
             finally:
                 self.close()
@@ -172,7 +164,7 @@ def report_model_load_progress(on_event):
             patch(modeling_utils, "load_model_dict_into_meta", load_meta)
         patch(diffusion_logging, "tqdm", ProgressFactory(diffusion_logging.tqdm))
         patch(transformer_logging, "tqdm", ProgressFactory(transformer_logging.tqdm))
-        # Transformers 5 imports the counter directly, instead of through logging.
+        # Transformers 5 imports tqdm by name.
         if core_model_loading is not None and hasattr(core_model_loading, "tqdm"):
             patch(core_model_loading, "tqdm", ProgressFactory(core_model_loading.tqdm))
         yield
