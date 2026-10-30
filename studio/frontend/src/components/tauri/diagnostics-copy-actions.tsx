@@ -2,16 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useT } from "@/i18n";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
 import { useState } from "react";
 
-/**
- * The action row every failure state ends in: copy the support report, plus whatever
- * recovery buttons that state offers, passed as children so the caller keeps ownership
- * of them. When the clipboard refuses — a headless session, a denied permission — the
- * report is rendered into a selectable textarea so the user can still hand it over.
- */
+/** Falls back to a selectable textarea when the clipboard refuses. */
 export function DiagnosticsCopyActions({
   onCopyDiagnostics,
   children,
@@ -19,6 +15,7 @@ export function DiagnosticsCopyActions({
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
   children: React.ReactNode;
 }) {
+  const t = useT();
   const [copying, setCopying] = useState(false);
   const [manualReport, setManualReport] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState<string | null>(null);
@@ -32,11 +29,11 @@ export function DiagnosticsCopyActions({
         setManualMessage(null);
       } else {
         setManualReport(result.report);
-        setManualMessage(result.error ?? "Clipboard copy failed. Select and copy the diagnostics below.");
+        setManualMessage(result.error ?? t("desktopStartup.diagnostics.clipboardFailed"));
       }
     } catch (error) {
       setManualReport(null);
-      setManualMessage(`Diagnostics copy failed: ${String(error)}`);
+      setManualMessage(t("desktopStartup.diagnostics.copyFailed", { error: String(error) }));
     } finally {
       setCopying(false);
     }
@@ -50,7 +47,7 @@ export function DiagnosticsCopyActions({
           size="hero"
           onClick={() => void handleCopyDiagnostics()}
         >
-          {copying ? "Copying..." : "Copy Diagnostics"}
+          {copying ? t("desktopStartup.diagnostics.copying") : t("desktopStartup.diagnostics.copy")}
         </Button>
         {children}
       </div>
@@ -58,8 +55,6 @@ export function DiagnosticsCopyActions({
         <p className="max-w-md text-center text-xs text-destructive">{manualMessage}</p>
       )}
       {manualReport && (
-        // text-left, not the inherited centering: a diagnostics report is read line by
-        // line, and both screens center everything else in their column.
         <textarea
           readOnly
           value={manualReport}

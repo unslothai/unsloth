@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Triton-fused GroupNorm / channel RMS norm for eagerly decoded image and video VAEs.
-
-CUDA GroupNorm has no channels-last kernel, so every norm copies NHWC <-> NCHW; these kernels read any layout,
-write channels-last with fp32 statistics. ``install(vae)`` patches instances (never classes), each falling back
-to stock on a new exception. NVIDIA CUDA + Triton >= 3.3 only; ``UNSLOTH_VAE_FUSED=0`` disables.
-"""
+"""Triton GroupNorm/RMS norm for eager VAE decode (NVIDIA CUDA, Triton>=3.3); patches instances
+never classes; falls back to stock on new exception; UNSLOTH_VAE_FUSED=0 off"""
 
 from __future__ import annotations
 
@@ -53,8 +49,7 @@ def _toolchain_ok() -> bool:
         return True
 
 
-# Loop-bound-only args are not specialized (else ~70 JIT variants on a tiled Wan decode); strides and C stay
-# specialized so channel-contiguous loads vectorize.
+# Loop-bound args not specialized (avoids ~70 JIT variants); strides and C stay specialized so channel-contiguous loads vectorize.
 _SHAPE_ARGS = {
     "_rms_act": ("T", "H", "W", "Ho", "Wo", "ph", "pw", "To", "front", "n_cache"),
     "_bias_residual": ("P", "T", "HW", "W"),
@@ -903,9 +898,7 @@ def _fast_wan_attention(block: Any) -> Any:
     def fast(x: Any) -> Any:
         identity = x
         b, c, t, h, w = x.shape
-        y = rms_norm_act(
-            x, block.norm, False
-        )  # (b, c, t, h, w) channels-last_3d: (b, t, h, w, c) in memory
+        y = rms_norm_act(x, block.norm, False)
         y = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)  # a channels-last view, no copy
         qkv = F.conv2d(y, block.to_qkv.weight, block.to_qkv.bias)
         qkv = qkv.permute(0, 2, 3, 1).reshape(b * t, h * w, 3 * c)
@@ -994,10 +987,7 @@ def _guard(
     logger: Any,
     oom_stock: bool = False,
 ) -> None:
-    """``module.forward = fast`` until it raises something ``stock`` does not; then stock for good.
-
-    Causal-cache state is snapshotted and restored before the stock retry so a half-failed fast path cannot desync
-    the decode. ``oom_stock``: an OOM retries stock for that call only."""
+    """Falls back to stock for good once fast raises what stock does not; causal-cache state is restored before the stock retry; OOM retries stock once."""
 
     def forward(*args, **kwargs):
         if getattr(module, "_unsloth_vae_fused_failed", False):
@@ -1167,7 +1157,6 @@ def uninstall(vae: Any) -> None:
 
 
 _WAN_VAES = frozenset({"AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"})
-_CACHE_T = 2
 
 
 def _is_rms(norm: Any) -> bool:
@@ -1630,9 +1619,7 @@ def _wan_batched_tiled_decode(
     if patch is not None:
         from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
         dec = unpatchify(dec, patch_size = patch)
-    if (
-        clamp
-    ):  # as the class's stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
+    if clamp:  # as stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
         dec = torch.clamp(dec, min = -1.0, max = 1.0)
     if not return_dict:
         return (dec,)

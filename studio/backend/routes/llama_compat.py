@@ -1,19 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Answer engine discovery probes with JSON, or with a 404, but never with the app.
-
-Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props`` returned 200 and a page
-of HTML. That is worse than a 404: a probe reads the status before the body. Served here: ``/props``,
-``/v1/props``, ``/version``, a passthrough to the resident llama-server for ``GET /metrics``, ``GET /slots``,
-``POST /tokenize`` and ``POST /detokenize`` (#11705), owner only, and Open WebUI's llama.cpp model management
-(``GET /models``, ``POST /models/load``, ``POST /models/unload``, #10610). Everything else in llama-server's
-table gets an explicit 404, on its real method as well as GET.
-
-Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes a client select Ollama
-and then fail on ``/api/chat``, which Studio does not implement; the reporting user's client instead fell back
-to the OpenAI surface and worked. Advertising a protocol we do not have is the HTML 200 again, one layer up.
-"""
+"""Engine probes answer JSON or 404, never SPA HTML: /props, /v1/props, /version, owner-only GET
+/metrics, GET /slots, POST /tokenize, POST /detokenize, GET /models, POST /models/load,
+/models/unload; other llama-server routes 404; Ollama /api/tags and /api/show not served."""
 
 from __future__ import annotations
 
@@ -35,8 +25,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-# llama-server's table (tools/server/server.cpp) minus /props, so the set is complete
-# rather than growing per complaint. Bare only, so it cannot shadow /api/ or /v1/.
+# llama-server route table minus /props; bare paths only, so it cannot shadow /api/ or /v1/
 _ENGINE_PROBE_PATHS = frozenset(
     {
         "apply-template",
@@ -165,9 +154,7 @@ def _server_props() -> dict:
     if public_id:
         props["model_path"] = public_id
 
-    # These describe the CHILD's route table and web UI, not ours: Studio launches with --metrics, so
-    # endpoint_metrics arrives true while public /metrics 404s here (tools/server/server-context.cpp puts all three
-    # flags in the payload).
+    # These describe the child's routes/UI, not ours (Studio passes --metrics).
     for _child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         props.pop(_child_only, None)
     props["endpoint_props"] = False
@@ -175,8 +162,7 @@ def _server_props() -> dict:
     props["endpoint_slots"] = passthrough and props.get("endpoint_slots") is True
     props["endpoint_metrics"] = passthrough and props.get("endpoint_metrics") is True
 
-    # Only when llama-server owns the resident model: with MLX loaded, reading the
-    # unloaded llama backend describes a serving model as having no context or slots.
+    # With MLX loaded, the unloaded llama backend would report no context or slots.
     if llama_loaded:
         props.setdefault("default_generation_settings", {})
         settings = props["default_generation_settings"]
@@ -196,8 +182,7 @@ def _server_props() -> dict:
     return props
 
 
-# Slash forms too: FastAPI's redirect never fires. The catch-all fully matches "/props/" and returns
-# index.html; routes/inference.py registers "/v1/models/" likewise.
+# Slash forms too: the catch-all would serve index.html for "/props/".
 @router.get("/props", include_in_schema = False)
 @router.get("/props/", include_in_schema = False)
 @router.get("/v1/props", include_in_schema = False)
@@ -351,9 +336,7 @@ for _method, _path in sorted(_PASSTHROUGH_ROUTES):
 @router.get("/version", include_in_schema = False)
 @router.get("/version/", include_in_schema = False)
 async def studio_version(current_subject: str = Depends(get_current_subject)):
-    """Bare /version only: Ollama spells it /api/version, and answering there is part
-    of claiming to be Ollama."""
-    # Threaded like /props: the first call resolves the version.
+    """Threaded like /props because the first call resolves the version."""
     return {"version": await asyncio.to_thread(_studio_version)}
 
 
@@ -576,9 +559,7 @@ async def _probe_not_found():
     raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
 
-# Without these a POST hit the GET-only catch-all and returned 405, reading as "exists, wrong method". HEAD is
-# here because Starlette does not admit it on a GET route (measured, fastapi 0.141.1); GET stays with the catch-all
-# so its asset lookup wins, and OPTIONS is untouched for CORS preflight.
+# Else POST hits the GET-only catch-all and 405s. GET stays out so assets win; HEAD is not admitted
 _PROBE_DENIED_METHODS = ["HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
 

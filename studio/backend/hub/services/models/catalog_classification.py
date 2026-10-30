@@ -33,9 +33,7 @@ _PLACEHOLDER_DIFFUSION_GGUF_ARCHS = _gguf_archs.PLACEHOLDER_DIFFUSION_GGUF_ARCHS
 _VIDEO_GGUF_ARCHS = _gguf_archs.VIDEO_GGUF_ARCHS
 _VIDEO_GEN_TASK = "text-to-video"
 
-# TTS-only GGUF archs llama.cpp cannot load, tagged speech so the chat picker keeps them out of
-# llama-server. One shared definition rather than a copy per layer: the chat gate, this classifier
-# and the media preflight all have to agree.
+# Shared definition: chat gate, this classifier and media preflight must agree.
 _SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
 _SPEECH_TASK = "text-to-speech"
 # An audio.cpp GGUF of a kind Studio has no page for (separation, diarization, ...): not chat either.
@@ -91,9 +89,7 @@ def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
 
 
 def _gguf_architecture(path: str) -> Optional[str]:
-    # Every read inventory classification makes goes through here, so this is where "never open a
-    # cloud placeholder" holds: opening one recalls its whole payload. Load-time inspection calls
-    # read_gguf_architecture directly and still hydrates, on purpose.
+    # Never open a cloud placeholder here: it recalls the whole payload.
     if not file_contents_available_locally(path):
         return None
     from utils.models.gguf_metadata import read_gguf_architecture
@@ -147,12 +143,7 @@ def _hint_leaf(hint: str) -> str:
 def _name_hint_media_task(
     name_hints: tuple[Optional[str], ...], unmatched: Optional[str]
 ) -> Optional[str]:
-    """Media task from name and path hints alone, for a GGUF whose header settles nothing.
-
-    Both callers are files whose architecture cannot answer the question: a denoiser that
-    declares a placeholder arch, and a cloud file we must not open. They differ only in what
-    an unrecognised name means, hence *unmatched*.
-    """
+    """Last, so a real asset wins: unserved engine endpoints must 404, not render the app shell, which a status-first client reads as supported."""
     from core.inference.video_families import detect_video_family
     from core.inference.video_moe_pair import moe_pick_pairs
 
@@ -173,25 +164,12 @@ def _name_hint_media_task(
 
 
 def _unhydrated_gguf_task(name_hints: tuple[Optional[str], ...]) -> Optional[str]:
-    """Task for a GGUF still held as a cloud placeholder, read from its name alone.
-
-    The pickers filter On Device rows on an exact task, so an unclassified denoiser drops out
-    of Images and Video -- the pages whose pick is what would hydrate it -- and lists in Chat
-    instead, where a background auto-load recalls it into llama.cpp. The name is the only
-    evidence available, and it is the same evidence _arch_to_task already routes a
-    placeholder-arch denoiser on.
-
-    Speech stays out on purpose. A row tagged automatic-speech-recognition is dropped from
-    every filesystem list, and a text-to-speech GGUF row whose codec is unknown fails Audio's
-    routing check closed, so guessing either from a name hides the model outright. Unknown
-    keeps it in Chat, which is where a GGUF with nothing but a name belongs.
-    """
+    """Name-only task for a cloud placeholder; speech is never guessed, since a wrong tag hides the row."""
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
     from core.inference.video_families import detect_video_family
 
-    # Leaves only: family detection matches a keyword in ANY path segment, so a chat GGUF under
-    # .../FLUX.1-dev-GGUF/extra/ read as text-to-image.
+    # Leaves only: family keywords in parent segments misclassified chat GGUFs.
     leaves = tuple(_hint_leaf(hint) for hint in name_hints if hint)
     # H3 denoisers matched by prefix above; any other H3 name (qwen3vl_32b_minimax_h3-*) is the conditioner.
     if any(getattr(detect_video_family(leaf), "name", None) == "minimax-h3" for leaf in leaves):
@@ -403,8 +381,7 @@ def _gguf_folder_task(
     fallback: Optional[str] = None
     try:
         scored: list[tuple[tuple[str, str], Path]] = []
-        # Recorded as the tail is dropped, never inferred from scored afterwards: trimming cuts back to the
-        # cap, so an overflowing folder would be indistinguishable from one that fit.
+        # Recorded as the tail is dropped; trimming hides overflow afterwards.
         overflowed = False
         for path in _iter_gguf_paths(root, deadline):
             name = path.name
@@ -437,8 +414,7 @@ def _gguf_folder_task(
             if file_contents_available_locally(path):
                 task = _gguf_file_task(path, hints)
             else:
-                # Its header stays unread, so a name that says nothing leaves the candidate unclassified rather than
-                # voting text-generation for the whole folder.
+                # Unread header: a name that says nothing stays unclassified instead of voting text-generation.
                 task = _unhydrated_gguf_task(hints)
         except Exception:
             # Unread, so unranked: this file might have been the runnable sibling.
@@ -450,8 +426,7 @@ def _gguf_folder_task(
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
             return task
-        # Speech is last resort: nothing here runs a llama-csm GGUF, so answering speech while a sibling is
-        # loadable hides that sibling.
+        # Speech is last resort: answering speech hides a loadable sibling.
         if task == _SPEECH_TASK:
             if speech is None:
                 speech = task
@@ -538,7 +513,7 @@ def _local_name_needles(model) -> list[Optional[str]]:
 def _local_family_needles(model) -> tuple[str, ...]:
     needles = _local_name_needles(model)
     try:
-        from core.inference.diffusion import resolve_local_single_file
+        from core.inference.diffusion_local_files import resolve_local_single_file
         single = resolve_local_single_file(model.path)
         if single:
             needles.append(single)
@@ -580,7 +555,6 @@ def _local_model_task(model) -> Optional[str]:
     if not _local_is_diffusers(model):
         return None
     try:
-        from core.inference.video import _is_trusted_video_repo
         from core.inference.video_families import (
             detect_video_family,
             unsupported_video_checkpoint_reason,
@@ -590,7 +564,11 @@ def _local_model_task(model) -> Optional[str]:
         if not unsupported_video_checkpoint_reason(*_local_name_needles(model), path):
             for needle in _local_family_needles(model):
                 family = detect_video_family(needle)
-                if family is None or not _is_trusted_video_repo(path):
+                if family is None:
+                    continue
+                from core.inference.video import _is_trusted_video_repo
+
+                if not _is_trusted_video_repo(path):
                     continue
                 if _pipeline_only_video_family(family) and not _is_diffusers_pipeline_dir(
                     Path(path)
@@ -715,9 +693,7 @@ def _repo_is_diffusers(repo_info, selected: Optional[Path] = None) -> bool:
             return True
     except Exception:
         pass
-    # _cached_repo_task returns None for an unbuildable video repo, so a single-file video checkpoint
-    # with no pipeline index carried no task and no diffusers flag, and an inconclusive config leaves
-    # can_chat set: the video weights reach the text loader.
+    # Unbuildable video repos get no task, so guard against reaching the text loader.
     try:
         from core.inference.video_families import detect_video_family
         family = detect_video_family(repo_id)
@@ -753,11 +729,11 @@ def _untrusted_repo_single_files_loadable(repo_info, selected: Optional[Path] = 
 def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[str]:
     repo_id = getattr(repo_info, "repo_id", "") or ""
     try:
-        from core.inference.video import _is_trusted_video_repo
         from core.inference.video_families import detect_video_family
-
         family = detect_video_family(repo_id)
         if family is not None:
+            from core.inference.video import _is_trusted_video_repo
+
             if _pipeline_only_video_family(family):
                 # Generator-first: nvidia/Cosmos3-Edge also has a reasoner root config.json but lists as video.
                 trusted = _is_trusted_video_repo(repo_id) and _repo_has_pipeline_index(

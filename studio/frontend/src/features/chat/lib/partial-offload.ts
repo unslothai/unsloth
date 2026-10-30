@@ -5,14 +5,13 @@ import { formatGiB } from "../../../lib/memory/format";
 import type { LoadedPlacement } from "../stores/chat-runtime-store";
 import { cpuFallbackMessage } from "../utils/mmproj-fallback";
 
-// React-free so node:test can import it; shared by every model load path.
+// React-free so node:test can import it.
 
 export interface OffloadCounts {
   offloaded?: number | null;
   total?: number | null;
   gpuMemoryMode?: string | null;
   gpuLayers?: number | null;
-  /** The user's own `-ngl` in llama-server extras, which Auto mode respects. */
   offloadOverridden?: boolean | null;
   cpuFallbackReason?: string | null;
   gpuBackendUnavailable?: boolean | null;
@@ -28,7 +27,6 @@ export interface OffloadCountsSource {
   gpu_backend_unavailable?: boolean | null;
 }
 
-/** Pick the split out of a load response, so the load paths cannot drift. */
 export function offloadCountsFrom(
   response: OffloadCountsSource,
 ): OffloadCounts {
@@ -44,7 +42,6 @@ export function offloadCountsFrom(
 }
 
 export interface OffloadWarning {
-  /** Appended to the loaded title, e.g. "Qwen3 loaded, partly on CPU". */
   titleSuffix: string;
   description: string;
 }
@@ -69,11 +66,10 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
       description: cpuFallbackDescription,
     };
   }
-  // An unrecognised reason is still a reason: say nothing rather than guess at it.
   if (cpuFallbackReason) return null;
   if (typeof offloaded !== "number" || typeof total !== "number") return null;
   if (total <= 0 || offloaded >= total) return null;
-  // Before the pin check: a GPU backend that failed to load is never what was asked for.
+  // Before the pin check: a failed GPU backend is never what was asked for.
   if (offloaded <= 0 && gpuBackendUnavailable && gpuLayers !== 0) {
     return {
       titleSuffix: ", on CPU",

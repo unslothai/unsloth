@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { resetChatBackground } from "@/features/chat-background";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -34,7 +35,7 @@ import {
   type NotificationChannel,
 } from "@/hooks/use-notification-frequency";
 import { useHfTokenValidation } from "@/hooks";
-import { LOCALE_STORAGE_KEY, type TranslationKey, useT } from "@/i18n";
+import { LOCALE_STORAGE_KEY, getLocale, translate, type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
   SPELLCHECK_STORAGE_KEY,
@@ -121,7 +122,6 @@ const UPDATE_REMINDER_CHANNELS: {
 // would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
 // unsloth_auth_must_change_password are excluded).
 const PREFS_KEYS: string[] = [
-  // Appearance
   "theme",
   "palette",
   "unsloth_appearance_customization",
@@ -136,15 +136,12 @@ const PREFS_KEYS: string[] = [
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
   LIBRARY_CHATS_PREFS_STORAGE_KEY,
-  // Grouping, sort and the manual row order.
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
-  // Rebound chords. Without this a reset leaves the user on shortcuts they asked to throw away, and
-  // a chord bound to something unusable has no escape hatch from this button.
+  // Rebound chords, so a bad binding has an escape hatch.
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
-  // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
-  // transport changes made elsewhere.
+  // Outranks the install-wide setting, so it must be cleared too.
   TRANSPORT_MODE_STORAGE_KEY,
   DOWNLOAD_DIR_STORAGE_KEY,
   // Chat runtime prefs
@@ -167,29 +164,20 @@ const PREFS_KEYS: string[] = [
   "unsloth_load_settings",
   "unsloth_model_advanced_settings",
   "unsloth_chat_load_on_selection",
-  // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
-  // The memory bar's opt-in. Reset All advertises restoring defaults and this feature's default is
-  // off, so leaving the key out left it switched on across a reset that said it had turned
-  // everything back. Spelled out rather than imported as CHAT_SHOW_MEMORY_BAR_KEY, for the same
-  // reason the note above gives: it lives in chat-runtime-store, which is in an import cycle with
-  // this file, so the constant would still be in its temporal dead zone when this module-scope list
-  // is built. A test pins this literal against the store's constant so the two cannot drift apart
-  // silently.
+  // Spelled out, not CHAT_SHOW_MEMORY_BAR_KEY: chat-runtime-store is in an import cycle with this
+  // file. A test pins this literal against the store's constant.
   "unsloth_chat_show_memory_bar",
   "unsloth_models_fit_on_device_only",
-  // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
   "unsloth_chat_system_prompts",
   "unsloth_chat_system_prompts_migrated",
-  // Training UI prefs
   "unsloth_training_config_v1",
   "unsloth_prev_max_steps",
   "unsloth_prev_save_steps",
   ...TRAINING_UI_PREFERENCE_KEYS,
-  // Profile personalization
   "unsloth_user_profile",
   "unsloth_profile_activity_chart",
   // Guided tour flags
@@ -205,15 +193,18 @@ const PREFS_KEYS: string[] = [
   ...Object.values(FLOATING_PANEL_POSITION_KEYS),
   // Voice settings
   "unsloth_voice_settings",
-  // Retired keys. The onboarding wizard is gone, but installs that ran it still
-  // carry its flag, so a reset has to clear it or the orphan outlives the app.
+  // Retired keys: installs that ran the old onboarding wizard still carry its flag.
   "unsloth_onboarding_done",
 ];
 
-// Set by resetAllPrefs so the unmount-commit effect skips writing back the in-memory draft.
+// Set by resetAllPrefs so the unmount commit skips writing back the in-memory draft.
 let resetInProgress = false;
 
-function resetAllPrefs() {
+async function resetAllPrefs() {
+  if (!(await resetChatBackground())) {
+    toast.error(translate("chatBackground.storageError", {}, getLocale()));
+    return;
+  }
   resetInProgress = true;
   for (const key of PREFS_KEYS) {
     try {
@@ -293,7 +284,7 @@ export function GeneralTab() {
     draftRef.current = draftToken;
   }, [draftToken]);
 
-  // Commit on unmount (dialog close / tab switch), skipped during the reset-prefs flow.
+  // Commit on unmount (dialog close / tab switch), skipped during reset.
   useEffect(() => {
     return () => {
       if (resetInProgress || !tokenEditedRef.current) return;
@@ -359,8 +350,7 @@ export function GeneralTab() {
     setHfToken("");
   };
 
-  // Only show the success tick after the authenticated validation endpoint confirms this token:
-  // a saved token alone may still be malformed, expired, or revoked.
+  // Only after the validation endpoint confirms the token: a saved one may be expired or revoked.
   const tokenIsCurrent =
     draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
   const tokenValidation = useHfTokenValidation(hfToken ?? "");
@@ -455,7 +445,7 @@ export function GeneralTab() {
     try {
       const settings = await updatePreviewSharing(enabled);
       setPreviewSharing(settings);
-      // Toggling sharing changes whether /api/train/runs returns preview_sig, so refresh the grid.
+      // Sharing toggles whether /api/train/runs returns preview_sig.
       emitTrainingRunsChanged();
     } catch (error) {
       setPreviewSharingError(
@@ -472,7 +462,7 @@ export function GeneralTab() {
     setIsRevokingPreview(true);
     try {
       await rotatePreviewLinks();
-      // The secret rotated, so any preview_sig the history grid holds is stale.
+      // The secret rotated, so held preview_sig values are stale.
       emitTrainingRunsChanged();
       setRevokePreviewOpen(false);
       toast.success(t("settings.general.previewSharing.revoked"));
@@ -580,7 +570,6 @@ export function GeneralTab() {
                 )}
               />
               {tokenValidated ? (
-                // Decorative: pointer-events-none lets clicks reach the input underneath.
                 <span
                   className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
                   role="img"
@@ -673,7 +662,7 @@ export function GeneralTab() {
             <div
               key={channel}
               data-settings-label={name}
-              className="flex items-center justify-between gap-4 py-1.5"
+              className="flex items-start justify-between gap-4 py-1.5"
             >
               <div className="flex min-w-0 items-baseline gap-2">
                 <span className="text-sm text-foreground">{name}</span>
@@ -692,7 +681,6 @@ export function GeneralTab() {
         </div>
       </SettingsSection>
 
-      {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
       {isOwner ? (
         <>
       <SettingsSection
@@ -716,7 +704,6 @@ export function GeneralTab() {
           />
         </SettingsRow>
         <SettingsRow
-          destructive={true}
           label={t("settings.general.previewSharing.revokeLabel")}
           description={t("settings.general.previewSharing.revokeDescription")}
         >

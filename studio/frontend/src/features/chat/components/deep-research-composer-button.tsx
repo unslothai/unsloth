@@ -28,7 +28,6 @@ import {
   type ResearchMcpTool,
 } from "../api/mcp-servers-api";
 import {
-  DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
   MAX_RESEARCH_MCP_SOURCES,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -42,6 +41,7 @@ import type {
 const MAX_RESEARCH_MODEL_TIMEOUT_MINUTES = Math.floor(
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS / 60,
 );
+const LIMITED_RESEARCH_MODEL_TIMEOUT_SECONDS = 15 * 60;
 
 function normalizeDomain(raw: string): string | null {
   const value = raw.trim();
@@ -112,7 +112,6 @@ function DomainList({
           {description}
         </p>
       </div>
-      {/* One Input-styled field with the domains as chips. A click anywhere focuses it. */}
       <div
         onClick={(event) => event.currentTarget.querySelector("input")?.focus()}
         className={cn(
@@ -220,6 +219,7 @@ function McpSourceList({
               ) : null}
             </span>
             <Switch
+              className="mt-[var(--ui-title-cap-inset)]"
               checked={values.some((value) => matches(tool, value))}
               disabled={
                 !values.some((value) => matches(tool, value)) &&
@@ -308,7 +308,6 @@ export function DeepResearchComposerButton({
         <HugeiconsIcon icon={Cancel01Icon} className="composer-pill-x" />
       </span>
       <span>Deep research</span>
-      {/* Same caret as the other composer pills, so the arrows match. */}
       <HugeiconsIcon
         icon={ChevronDownStandardIcon}
         strokeWidth={1.5}
@@ -377,11 +376,10 @@ function DeepResearchWebsiteAccessContent({
   const [draft, setDraft] = useState<ResearchWebsitePolicy>(policy);
   const [mcpDraft, setMcpDraft] = useState<ResearchMcpSource[]>(mcpSources);
   const [unlimited, setUnlimited] = useState(modelTimeoutSeconds === 0);
-  // re-enabling the limit from unlimited starts at the default.
   const [timeoutMinutes, setTimeoutMinutes] = useState(
     String(
       Math.ceil(
-        (modelTimeoutSeconds || DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS) / 60,
+        (modelTimeoutSeconds || LIMITED_RESEARCH_MODEL_TIMEOUT_SECONDS) / 60,
       ),
     ),
   );
@@ -391,7 +389,6 @@ function DeepResearchWebsiteAccessContent({
   return (
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        {/* Icon and title, as in the Skills dialog. */}
         <div className="flex items-center gap-2">
           <HugeiconsIcon icon={Telescope02Icon} strokeWidth={1.75} className="size-5 text-primary" />
           <DialogTitle>Deep research</DialogTitle>
@@ -413,10 +410,9 @@ function DeepResearchWebsiteAccessContent({
                   : "Maximum time for each model request, so a run of many requests can take longer. Output stall safeguards stay active."}
               </p>
             </div>
-            {/* A switch: it is a state, so its label never flips. */}
             <label
               htmlFor="research-no-time-limit"
-              className="flex shrink-0 cursor-pointer items-center gap-2 pt-0.5 text-sm text-muted-foreground"
+              className="mt-[var(--ui-title-cap-inset)] flex shrink-0 cursor-pointer items-center gap-2 text-sm text-muted-foreground"
             >
               No limit
               <Switch
@@ -471,16 +467,16 @@ function DeepResearchWebsiteAccessContent({
             setPolicy(draft);
             setMcpSources(mcpDraft);
             const minutes = Number(timeoutMinutes);
-            // typed values bypass max; clamp to avoid a short default timeout.
-            setModelTimeoutSeconds(
-              unlimited
-                ? 0
-                : !timeoutEdited
-                  ? modelTimeoutSeconds
+            // An untouched value stays unstored so it follows the default; typed values bypass max, so clamp.
+            if (timeoutEdited) {
+              setModelTimeoutSeconds(
+                unlimited
+                  ? 0
                   : Number.isSafeInteger(minutes) && minutes >= 1
                     ? Math.min(minutes, MAX_RESEARCH_MODEL_TIMEOUT_MINUTES) * 60
-                    : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
-            );
+                    : LIMITED_RESEARCH_MODEL_TIMEOUT_SECONDS,
+              );
+            }
             onClose();
           }}
         >

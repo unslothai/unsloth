@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A tab's menu, shared by its right-click in the tab strip and by a pinned page in the sidebar
-// (its 3-dot menu and its right-click), which offer the same actions.
-
 import {
   ContextMenuItem,
   ContextMenuSeparator,
@@ -27,20 +24,20 @@ import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Add01Icon,
   BubbleChatAddIcon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
-  Copy01Icon,
   Link01Icon,
   LinkSquare02Icon,
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
+  PlusSignIcon,
+  Refresh01Icon,
   VolumeHighIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
-import { ReloadIcon } from "@/lib/reload-icon";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { type ComponentType, Fragment, type ReactNode } from "react";
@@ -81,13 +78,11 @@ export const DROPDOWN_TAB_MENU: TabMenuParts = {
   SubContent: DropdownMenuSubContent,
 };
 
-/** The address a tab shows, for a web page; null for files, new tabs and internal pages. */
 export function tabAddress(tab: BrowserTab | undefined): string | null {
   const entry = tab ? currentEntry(tab) : null;
   return entry?.kind === "web" ? (tab?.displayUrl ?? entry.url) : null;
 }
 
-/** The tab showing a pinned page, if one is open. */
 export function usePinnedTab(pinnedId: string | undefined): BrowserTab | undefined {
   return useBrowserStore((state) =>
     pinnedId ? chatTabs(state).find((tab) => tab.pinnedId === pinnedId) : undefined,
@@ -123,7 +118,6 @@ export function unpinPage(pinnedId: string): void {
   for (const tab of store.tabs) if (tab.pinnedId === pinnedId) store.setTabPinned(tab.id, null);
 }
 
-/** Names the tab, and the sidebar pin it shows; empty gives both back their page's title. */
 export function renameTabTo(tab: BrowserTab | undefined, pinned: PinnedPage | undefined, title: string): void {
   if (tab) useBrowserStore.getState().renameTab(tab.id, title);
   const pinnedId = pinned?.id ?? tab?.pinnedId;
@@ -141,7 +135,6 @@ export function focusRenameField(selector: string): void {
 
 type Navigate = ReturnType<typeof useNavigate>;
 
-/** A new chat (temporary or not) with a copy of the tab, or the page, open beside it. */
 function forkToChat(navigate: Navigate, source: { tab?: BrowserTab; url: string }, temporary: boolean): void {
   resetToNewChat();
   if (temporary) useChatRuntimeStore.getState().setIncognito(true);
@@ -176,8 +169,7 @@ function Row({
   );
 }
 
-/** Menu rows. `strip` adds tab strip actions; `pinned` acts on the pinned page's open tab. Rows that
- *  don't apply are omitted, not disabled. */
+/** `strip` adds strip actions; `pinned` acts on the pinned tab. Inapplicable rows are omitted. */
 export function TabMenuItems({
   P,
   tab,
@@ -218,12 +210,12 @@ export function TabMenuItems({
     ],
     [
       strip && tab ? (
-        <Row key="newTabRight" P={P} icon={Add01Icon} onSelect={() => store.newTabAfter(tab.id)}>
+        <Row key="newTabRight" P={P} icon={PlusSignIcon} onSelect={() => store.newTabAfter(tab.id)}>
           {t("browser.tabMenu.newTabRight")}
         </Row>
       ) : null,
       tab && kind !== "newtab" ? (
-        <Row key="reload" P={P} icon={ReloadIcon} onSelect={() => reloadTab(tab)}>
+        <Row key="reload" P={P} icon={Refresh01Icon} onSelect={() => reloadTab(tab)}>
           {t("browser.reload")}
         </Row>
       ) : null,

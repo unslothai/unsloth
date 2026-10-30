@@ -7,8 +7,7 @@ import {
   Download01Icon,
   DragDropVerticalIcon,
   FlimSlateIcon,
-  Folder01Icon,
-  Image03Icon,
+  Image01Icon,
   LibrariesIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -16,6 +15,7 @@ import {
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { Reorder, useDragControls } from "motion/react";
 import { Switch } from "@/components/ui/switch";
 import { AiSpeechIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -35,10 +35,10 @@ const ITEM_META: Record<
   SidebarNavItemPref["id"],
   { icon: IconSvgElement; labelKey: TranslationKey }
 > = {
-  projects: { icon: Folder01Icon, labelKey: "shell.navigation.projects" },
+  projects: { icon: ProjectIcon, labelKey: "shell.navigation.projects" },
   library: { icon: LibrariesIcon, labelKey: "shell.navigation.library" },
   hub: { icon: DashboardCircleIcon, labelKey: "shell.navigation.hub" },
-  images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
+  images: { icon: Image01Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
   audio: { icon: AiSpeechIcon, labelKey: "shell.navigation.audio" },
@@ -74,8 +74,7 @@ function MovableRow({
     (s) => s.customization.sidebarNavAuto,
   );
   const meta = ITEM_META[item.id];
-  // What the sidebar is doing now, which for a row on its rule is not what `pinned` says.
-  // Flipping the switch is a decision, so the rule is dropped.
+  // For a row on its rule the sidebar state differs from `pinned`; flipping drops the rule.
   const pinned = sidebarNavRowPinned(item, sidebarNavAuto, {
     projectsSectionShowing,
   });
@@ -85,7 +84,6 @@ function MovableRow({
       dragListener={false}
       dragControls={controls}
       layout="position"
-      // The dragged row lifts above its siblings so it stays readable.
       whileDrag={{
         backgroundColor: "var(--popover)",
         boxShadow: "0 4px 16px rgb(0 0 0 / 0.18)",
@@ -133,7 +131,7 @@ function MovableRow({
   );
 }
 
-/** Pin and reorder the sidebar nav rows. Unpinned rows collect in the "More" flyout; a single unpinned row is hidden instead of getting a menu of one. New chat is static: an action, not a destination. */
+/** A single unpinned row is hidden rather than given a More menu of one. */
 export function SidebarNavCustomizer() {
   const t = useT();
   const sidebarNav = useAppearanceCustomStore((s) => s.customization.sidebarNav);
@@ -141,7 +139,7 @@ export function SidebarNavCustomizer() {
     (s) => s.customization.sidebarNavAuto,
   );
   const patch = useAppearanceCustomStore((s) => s.patch);
-  // The sidebar's inputs minus the route: this panel describes the sidebar in general.
+  // Without the route: this panel describes the sidebar in general.
   const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
   const { projects } = useChatProjects();
   const projectsSectionShowing =
@@ -173,7 +171,6 @@ export function SidebarNavCustomizer() {
           />
         ))}
       </Reorder.Group>
-      {/* Mirrors the sidebar: More only exists at two or more. */}
       {unpinnedCount > 1 && (
         <>
           <div className="mx-2 my-1 border-t border-border/70" />

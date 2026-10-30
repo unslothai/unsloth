@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Minimal HTML-to-Markdown converter using only the standard library.
-
-Replaces the external ``html2text`` (GPL-3.0) dependency with a ~250-line
-``html.parser.HTMLParser`` subclass. Covers headings, links, bold/italic,
-lists, tables, blockquotes, code blocks, and entity decoding.
-
-``main_content=True`` also applies a readability-style heuristic: scope
-conversion to the page's ``<article>`` (else ``<main>``) subtree when it
-carries substantial text, and strip known boilerplate fragments (skip-links,
-error placeholders, session banners, cookie prompts) from the result.
-"""
+"""Stdlib HTML-to-Markdown (replaces GPL html2text); main_content=True scopes to article/main."""
 
 from __future__ import annotations
 
@@ -44,10 +33,7 @@ _SKIP_TAGS = frozenset(
         "datalist",
     }
 )
-# <aside> is NOT skipped: docs use it for admonition callouts (real content); page-furniture asides are excluded by the
-# main-content scoping pass instead.
-
-# void elements never produce an end tag, so they must not join the open-element stack used to bound hidden subtrees
+# The aside element is not skipped (docs use it for callouts); the main-content scoping pass excludes page-furniture asides instead
 _VOID_TAGS = frozenset(
     {
         "area",
@@ -69,10 +55,7 @@ _VOID_TAGS = frozenset(
 
 
 def _style_hides_element(style: str) -> bool:
-    """True when an inline ``style`` sets ``display:none`` / ``visibility:hidden``.
-
-    Parsed per property so an unrelated value that merely contains ``none`` is
-    not misread as hidden."""
+    """Checks display:none and visibility:hidden per declaration, so a value that merely contains none is not read as hidden"""
     lowered = style.lower()
     if "none" not in lowered and "hidden" not in lowered:
         return False
@@ -91,10 +74,7 @@ def _style_hides_element(style: str) -> bool:
 
 
 def _is_hidden_element(attr_dict: dict) -> bool:
-    """True when the element is not rendered: ``hidden`` attribute,
-    ``aria-hidden="true"``, or an inline ``style`` hiding it. Such JS-only
-    placeholders ship in the HTML but must not reach the output. ``hidden`` is
-    enumerated: any present value (even ``hidden="false"``) means not rendered."""
+    """Any present hidden attribute counts, even hidden=false, since presence means not rendered; aria-hidden=true and inline hiding styles count too"""
     if "hidden" in attr_dict:
         return True
     if (attr_dict.get("aria-hidden") or "").strip().lower() == "true":
@@ -111,17 +91,11 @@ def _span_attr(attr_dict: dict, name: str) -> int:
 
 
 def _is_aria_heading(attr_dict: dict) -> bool:
-    """True for ``role="heading"``, which titles a page just as ``h1``-``h6`` does.
-
-    ``role`` is a token list authors use for fallbacks (``role="future-role
-    heading"``), so any token counts. WAI-ARIA takes the first token naming a
-    real role, which would need the whole role table; matching anywhere is the
-    safe direction, since keeping a stray title beats dropping a real one."""
+    """Any role token counts: WAI-ARIA's first-token rule needs the full role table, so match loosely."""
     return "heading" in (attr_dict.get("role") or "").lower().split()
 
 
-# HTML5 optional end tags: a listed start tag implicitly closes an open element of the key type (as browsers do), else
-# an unclosed ``<p hidden>``/``<li hidden>`` swallows every following sibling. Keys: closable elements; values: closers.
+# HTML5 optional end tags: a listed start tag implicitly closes an open element of the key type, else an unclosed p hidden swallows later siblings
 _P_CLOSING_TAGS = frozenset(
     {
         "address",
@@ -178,9 +152,7 @@ _IMPLICIT_CLOSERS: dict = {
 }
 
 
-# Item tag -> container tags that re-scope it: a nested container makes an inner item a descendant, not an
-# optional-close sibling, so recovery must stop there rather than close (and un-hide) the outer item and leak its
-# nested content.
+# A nested container makes an inner item a descendant, so recovery must stop there.
 _CLOSE_BARRIERS: dict = {
     "li": frozenset({"ul", "ol", "menu"}),
     "dt": frozenset({"dl"}),
@@ -362,6 +334,7 @@ _MAX_REPEATED_CELL_CHARS = 200
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -534,8 +507,7 @@ class _HeaderFrame:
         # Tallied on emit; re-cleaning each parent's buffer would be quadratic.
         self.rendered_chars: int = 0
         self.heading_chars: int = 0
-        # Buffers open now enclose the frame, later ones nest. Link/cell sequence numbers, not flags: an inner one
-        # replaces the outer in the renderer's single slot.
+        # Store link/cell sequence numbers, not flags, since an inner one replaces the outer in one slot
         self.outer_list_depth = list_depth
         self.outer_link_seq = link_seq
         self.outer_cell_seq = cell_seq
@@ -552,10 +524,7 @@ class _HeaderFrame:
         closed_by_own_tag: bool,
         strip: bool | None = None,
     ) -> str:
-        """The buffer, or only its headings when the header is link furniture.
-
-        Without a matching ``</header>`` the header may have adopted the page
-        body, so keep it whole."""
+        """Returns the buffer, or only its headings when the header is link furniture; without a closing header tag, keep it whole"""
         self.stripped = False
         if not closed_by_own_tag:
             return "".join(self.parts)
@@ -830,6 +799,7 @@ class _MarkdownRenderer(HTMLParser):
         page_span_limit: int | None = None,
     ):
         super().__init__(convert_charrefs = False)
+        self._record: list | None = None
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
         self._title_scan: _TitleButtonScan | None = None
@@ -868,8 +838,7 @@ class _MarkdownRenderer(HTMLParser):
         self._dropped_chars: int = 0
         self._seg_dropped_start: int = 0
         self.scope_dropped: list[int] = []
-        # Heading text per segment: role="heading", hgroup and linked h1 render as prose, so ATX reparsing alone
-        # cannot keep them out of the gate.
+        # Track heading text per segment: role="heading", hgroup and linked h1 render as prose ATX misses
         self._seg_heading_texts: list[str] = []
         self.scope_heading_prose: list[int] = []
         # Open-tag indices of headings, unwound with _hidden_marks.
@@ -927,11 +896,7 @@ class _MarkdownRenderer(HTMLParser):
         ] = []
 
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
-        """True when a side buffer opened *inside* *frame* still holds content.
-
-        Such a buffer emits into the frame when it closes; an enclosing one
-        (already open at ``<header>``) must not capture it."""
-        # Only the buffer _emit would pick matters, in its order; OR-ing them calls an enclosing one nested.
+        """An enclosing buffer opened before the header must not capture the frame's content."""
         if self._in_link:
             return self._link_seq != frame.outer_link_seq
         if self._in_cell:
@@ -946,8 +911,7 @@ class _MarkdownRenderer(HTMLParser):
         if text:
             self._li_marker_pending = False
         frame = self._header_stack[-1] if self._header_stack else None
-        # Tee wherever the text routes, so a heading in a nested buffer is captured. A link opened inside the frame
-        # delivers twice, so tee only the formatted form; an enclosing link, once.
+        # Tee wherever text routes; a link inside the frame arrives twice, so tee only its formatted form
         in_nested_link = (
             self._in_link and self._link_seq != frame.outer_link_seq if frame else False
         )
@@ -1105,7 +1069,7 @@ class _MarkdownRenderer(HTMLParser):
     def _prefix_blockquote(self, content: str) -> str:
         """Prefix every line of *content* with ``> ``."""
         content = re.sub(r"[ \t]+$", "", content, flags = re.MULTILINE)
-        content = re.sub(r"\n{3,}", "\n\n", content).strip()
+        content = _BLANK_LINE_RUN.sub("\n\n", content).strip()
         if not content:
             return ""
         lines = content.split("\n")
@@ -1296,13 +1260,7 @@ class _MarkdownRenderer(HTMLParser):
             self._sup_starts.pop()
 
     def _close_implicit(self, tag: str) -> None:
-        """HTML5 optional-end-tag recovery for a start tag about to open.
-
-        Pops each implicitly-closed ancestor (and its hidden marks), scanning the
-        whole stack so an open ``<p>``/``<li>`` still closes under an unclosed inline
-        ``<span>``. Stops at a ``_CLOSE_BARRIERS`` container so recovery never crosses
-        a nested list/table/dl and leaks the outer item's hidden content. Runs even
-        for skipped ``<nav>``/``<footer>``, which also close ``<p>``."""
+        """Recovery stops at _CLOSE_BARRIERS containers so an outer item hidden content cannot leak; runs even for skipped nav and footer, which also close p"""
         if not self._closable_open:
             return
         barriers = _IMPLICIT_CLOSE_BARRIERS.get(tag, frozenset())
@@ -1355,10 +1313,7 @@ class _MarkdownRenderer(HTMLParser):
             closed_by_own_tag = False
 
     def _finalize_nested_buffers(self, frame: _HeaderFrame) -> None:
-        """Close side buffers opened inside *frame* whose end tags the page omitted.
-
-        Their content is the header's, so it has to land in the frame before the
-        strip is judged; otherwise it is emitted afterwards and escapes."""
+        """Closes side buffers opened in the frame whose end tags were omitted; their content must reach the frame before the strip is judged"""
         if self._in_link and self._link_seq != frame.outer_link_seq:
             # the header boundary proves this anchor did not adopt the body: its text is furniture
             frame.link_chars += self._link_header_chars
@@ -1506,16 +1461,13 @@ class _MarkdownRenderer(HTMLParser):
         return True
 
     def _exit_tag(self, tag: str) -> bool:
-        """Pop to the matching open tag; return True when the end tag should
-        be rendered (False = it closed inside a hidden / out-of-scope region)."""
-        # Recover an <a> left open before the segment is recorded, or its text is stranded.
+        """Recovers an open a element before the segment is recorded, or its text is stranded"""
         if self._in_link and self._scope_tags is not None and tag in self._scope_tags:
             self._finish_link()
         suppressed = bool(self._hidden_marks) or (
             self._scope_tags is not None and self._scope_depth == 0
         )
-        # An element that IS the heading emits when its buffer closes, after the mark pops; flush it here while the tee
-        # still recognises it.
+        # Flush the heading here while the tee still recognises it; it emits only after its mark pops
         if self._in_link and tag == "a" and self._heading_marks:
             self._finish_link()
         if tag not in _VOID_TAGS:
@@ -1616,6 +1568,8 @@ class _MarkdownRenderer(HTMLParser):
                 self._close_rendered_tag(section[1])
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._record is not None:
+            self._record.append((0, (tag, tuple(attrs), *self.getpos())))
         tag = tag.lower()
         if self._title_scan is not None:
             self._title_scan.starttag(tag, attrs, self.getpos())
@@ -1807,6 +1761,8 @@ class _MarkdownRenderer(HTMLParser):
             return
 
     def handle_endtag(self, tag: str) -> None:
+        if self._record is not None:
+            self._record.append((1, tag))
         tag = tag.lower()
         if self._title_scan is not None:
             self._title_scan.endtag(tag)
@@ -1997,6 +1953,8 @@ class _MarkdownRenderer(HTMLParser):
         return self._scope_tags is not None and self._scope_depth == 0
 
     def handle_data(self, data: str) -> None:
+        if self._record is not None:
+            self._record.append((2, data))
         if self._title_scan is not None:
             self._title_scan.data(data)
         if self._text_suppressed():
@@ -2012,8 +1970,7 @@ class _MarkdownRenderer(HTMLParser):
             return
         # Collapse all whitespace (including newlines) per HTML rules.
         text = re.sub(r"\s+", " ", data)
-        # Sized after collapsing, as the reader sees it: raw spaces in a link cleared the floor at ~100% density and
-        # dropped the byline.
+        # Count after collapsing: raw spaces in a link inflated it past the floor.
         self._count_header_text(text)
         # Suppress whitespace-only nodes between table elements (source indentation).
         if self._in_table and not self._in_cell and not text.strip():
@@ -2024,6 +1981,8 @@ class _MarkdownRenderer(HTMLParser):
         self._emit(text)
 
     def handle_entityref(self, name: str) -> None:
+        if self._record is not None:
+            self._record.append((3, name))
         text = html.unescape(f"&{name};")
         if self._title_scan is not None:
             self._title_scan.data(text)
@@ -2033,6 +1992,8 @@ class _MarkdownRenderer(HTMLParser):
         self._emit(text)
 
     def handle_charref(self, name: str) -> None:
+        if self._record is not None:
+            self._record.append((4, name))
         text = html.unescape(f"&#{name};")
         if self._title_scan is not None:
             self._title_scan.data(text)
@@ -2041,10 +2002,25 @@ class _MarkdownRenderer(HTMLParser):
         self._count_header_text(text)
         self._emit(text)
 
+    def replay(self, events: list) -> None:
+        """Re-run recorded handler calls in order, restoring ``getpos()`` at each start tag."""
+        start, end, data = self.handle_starttag, self.handle_endtag, self.handle_data
+        for kind, arg in events:
+            if kind == 2:
+                data(arg)
+            elif kind == 0:
+                tag, attrs, self.lineno, self.offset = arg
+                start(tag, list(attrs))
+            elif kind == 1:
+                end(arg)
+            elif kind == 3:
+                self.handle_entityref(arg)
+            else:
+                self.handle_charref(arg)
+
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
-        # Headers first: a frame finalizes its inner buffers, then emits into the enclosing link or cell, which must
-        # still be open here; it is finalized below.
+        # Headers first: a frame emits into the enclosing link or cell, which must still be open.
         self._flush_header_frames()
 
         if self._in_link:
@@ -2072,9 +2048,7 @@ class _MarkdownRenderer(HTMLParser):
             else:
                 self._out.append("\n\n" + prefixed + "\n\n")
 
-        # A scope left open by truncated HTML never reached _exit_tag, so its output never joined scope_segments and
-        # would score 0. Flush the still-open segment here (after the side-buffers) so a truncated main-content page is
-        # scored.
+        # Flushes a scope left open by truncated HTML after the side-buffers, else the page scores 0
         if self._scope_seg_start is not None:
             self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
             self.scope_dropped.append(self._dropped_chars - self._seg_dropped_start)
@@ -2115,8 +2089,7 @@ def _cleanup(text: str) -> str:
     return "\n".join(out).strip()
 
 
-# Known boilerplate fragments stripped from main-content conversions, matched only against short lines. Sources:
-# GitHub page furniture / client-side error placeholders, skip-links, cookie banners.
+# Boilerplate removed from main content; matched only on short lines (GitHub, skip-links, cookies)
 _BOILERPLATE_FRAGMENTS = (
     "skip to content",
     "skip to main content",
@@ -2146,11 +2119,7 @@ _BOILERPLATE_NORMALIZED = frozenset(
 
 
 def _line_is_boilerplate(line: str) -> bool:
-    """True only when a whole line is composed of known furniture phrases.
-
-    Splits on sentence terminators and requires every segment to be furniture, so a
-    line stacking several phrases is dropped while prose that merely quotes one is
-    kept (its other words leave a non-furniture segment)."""
+    """Every sentence segment must be furniture, so prose that merely quotes one phrase is kept."""
     normalized = re.sub(r"\s+", " ", line).strip().casefold()
     if not normalized:
         return False
@@ -2172,10 +2141,7 @@ def _fence_state(line: str, fence: int) -> int:
 
 
 def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> str:
-    """Drop short lines that consist entirely of known page-furniture phrases.
-
-    Fenced code blocks are preserved verbatim: boilerplate never renders
-    inside ``<pre>``, while READMEs legitimately quote error strings."""
+    """Fenced code is kept verbatim: boilerplate never renders in pre, and READMEs quote error strings."""
     out: list[str] = []
     fence = 0
     for line in text.split("\n"):
@@ -2193,7 +2159,20 @@ def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> 
             continue
         out.append(line)
     # Collapse blank runs the dropped lines may have left behind.
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return _BLANK_LINE_RUN.sub("\n\n", "\n".join(out)).strip()
+
+
+class _TokenLog:
+    """Handler calls of one document, recorded by the first fed pass and replayed by later ones.
+    Sound only while the renderer overrides just these five handlers and reads parser state only
+    via ``getpos()`` in ``handle_starttag``."""
+
+    __slots__ = ("events", "armed")
+
+    def __init__(self, armed: bool) -> None:
+        self.events: list | None = None
+        # record only when html_to_markdown knows another pass follows
+        self.armed = armed
 
 
 def _new_renderer(
@@ -2203,6 +2182,7 @@ def _new_renderer(
     site_links: SiteLinks | None = None,
     span_char_limit: int | None = None,
     header_decisions: list[bool] | None = None,
+    tokens: _TokenLog | None = None,
 ) -> _MarkdownRenderer:
     def build(
         title_buttons: frozenset[tuple[int, int]], scan: _TitleButtonScan | None
@@ -2217,8 +2197,16 @@ def _new_renderer(
         )
         renderer.title_buttons = title_buttons
         renderer._title_scan = scan
-        renderer.feed(source_html)
-        renderer.close()
+        if tokens is None:
+            renderer.feed(source_html)
+            renderer.close()
+        elif tokens.events is None:
+            renderer._record = [] if tokens.armed else None
+            renderer.feed(source_html)
+            renderer.close()
+            tokens.events, renderer._record = renderer._record, None
+        else:
+            renderer.replay(tokens.events)
         renderer.flush_pending()
         return renderer
 
@@ -2253,6 +2241,7 @@ def _select_main_scope_render(
     tag: str,
     site_links: SiteLinks | None,
     span_char_limit: int | None = None,
+    tokens: _TokenLog | None = None,
 ) -> tuple[int, str, int, int]:
     """return the best eligible score, subtree, count, and visible length; cap header credit at retained prose."""
     renderer = _new_renderer(
@@ -2261,6 +2250,7 @@ def _select_main_scope_render(
         strip_header = True,
         site_links = site_links,
         span_char_limit = span_char_limit,
+        tokens = tokens,
     )
     # generated span cells must not lift a scope past the content gate or rank; only span pages pay this second pass
     scoring = (
@@ -2270,6 +2260,7 @@ def _select_main_scope_render(
             strip_header = True,
             span_char_limit = 0,
             header_decisions = renderer.header_decisions,
+            tokens = tokens,
         )
         if renderer._has_generated_spans
         else renderer
@@ -2279,7 +2270,11 @@ def _select_main_scope_render(
     best_visible = 0
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg), site_links)
-        scored = _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
+        scored = (
+            rendered
+            if scoring is renderer
+            else _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
+        )
         if site_links is not None:
             scored = site_links.clean(scored)
         visible = _visible_chars(scored)
@@ -2300,9 +2295,12 @@ def _select_main_scope_render(
 
 
 def _render_main_document(
-    source_html: str, site_links: SiteLinks | None, span_char_limit: int
+    source_html: str,
+    site_links: SiteLinks | None,
+    span_char_limit: int,
+    tokens: _TokenLog | None = None,
 ) -> tuple[int, str]:
-    renderer = _new_renderer(source_html, None, True, site_links, span_char_limit)
+    renderer = _new_renderer(source_html, None, True, site_links, span_char_limit, tokens = tokens)
     rendered = _strip_boilerplate_lines(_cleanup("".join(renderer._out)), site_links)
     scoring = (
         _new_renderer(
@@ -2311,11 +2309,16 @@ def _render_main_document(
             True,
             span_char_limit = 0,
             header_decisions = renderer.header_decisions,
+            tokens = tokens,
         )
         if renderer._has_generated_spans
         else renderer
     )
-    scored = _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    scored = (
+        rendered
+        if scoring is renderer
+        else _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    )
     if site_links is not None:
         scored = site_links.clean(scored)
     return _visible_chars(scored), rendered
@@ -2326,22 +2329,27 @@ def _visible_chars(text: str) -> int:
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
+_BACKTICK_RUN = re.compile(r"`+")
+
+
 def _fence_for(raw: str) -> str:
     """Fence long enough to survive backticks in *raw*, as CommonMark requires:
     a literal ``` line inside the block would otherwise close it early."""
-    longest = run = 0
-    for char in raw:
-        run = run + 1 if char == "`" else 0
-        longest = max(longest, run)
-    return "`" * max(3, longest + 1)
+    if "`" not in raw:
+        return "```"
+    return "`" * max(3, max(map(len, _BACKTICK_RUN.findall(raw))) + 1)
 
 
 def _visible_len(line: str) -> int:
     """Length of *line* without Markdown link destinations. A tracking URL is not
     prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
-    characters off 4 and displaced the article. Scanned, so no backtracking."""
+    characters off 4 and displaced the article. Linear: once a destination fails to
+    close, the rest are answered from one table instead of a rescan each."""
+    if "[" not in line and "\\" not in line:
+        return len(line)
     total, i, n = 0, 0, len(line)
     open_bracket = False
+    closes = None
     while i < n:
         if line[i] == "\\":
             total += 2
@@ -2351,15 +2359,22 @@ def _visible_len(line: str) -> int:
             open_bracket = True
         # With no opening bracket, "](" is literal and the parens after it are prose.
         if open_bracket and line[i] == "]" and i + 1 < n and line[i + 1] == "(":
-            # Destinations may hold balanced or escaped parens, so the first ) does not end them.
-            j, depth = i + 2, 1
-            while j < n and depth:
-                char = line[j]
-                if char == "\\":
-                    j += 2
-                    continue
-                depth += (char == "(") - (char == ")")
-                j += 1
+            if closes is None:
+                # Destinations may hold balanced or escaped parens, so the first ) does not end them.
+                j, depth = i + 2, 1
+                while j < n and depth:
+                    char = line[j]
+                    if char == "\\":
+                        j += 2
+                        continue
+                    depth += (char == "(") - (char == ")")
+                    j += 1
+                if depth:
+                    # Unclosed: later candidates would rescan this tail, so index it once.
+                    closes = _destination_ends(line)
+            else:
+                j = closes.get(i + 2, -1)
+                depth = j < 0
             if depth:
                 total += 1
                 i += 1
@@ -2372,9 +2387,41 @@ def _visible_len(line: str) -> int:
     return total
 
 
-# A scoped conversion below this size is judged not to be the page's main content (e.g. an empty <article> stub) and the
-# next candidate is tried.
+def _destination_ends(line: str) -> dict:
+    """End of the destination scan from each reachable position, for scans that close. All scans
+    step over the same positions, so a scan from p closes where the paren-depth prefix sum first
+    drops below its value at p."""
+    steps: list[int] = []
+    sums: list[int] = []
+    depth, k, n = 0, 0, len(line)
+    while k < n:
+        steps.append(k)
+        sums.append(depth)
+        char = line[k]
+        if char == "\\":
+            k += 2
+            continue
+        depth += (char == "(") - (char == ")")
+        k += 1
+    ends: dict = {}
+    first_at: dict = {}  # prefix sum -> earliest later step index
+    sums.append(depth)
+    for m in range(len(steps), -1, -1):
+        if m < len(steps):
+            after = first_at.get(sums[m] - 1)
+            if after is not None:
+                ends[steps[m]] = steps[after - 1] + 1
+        first_at[sums[m]] = m
+    return ends
+
+
+# Scoped conversions shorter than this are rejected as main content, e.g. an empty article stub
 _MIN_MAIN_CONTENT_CHARS = 200
+# absent text = no such tag can tokenize, so that scope finds nothing and its pass is skipped
+_ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
+_MAIN_START = re.compile(r"<main", re.IGNORECASE)
+# absent text = no generated span cells, so a pass needs no span-free scoring re-render
+_SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
 
 
 def html_to_markdown(
@@ -2392,16 +2439,27 @@ def html_to_markdown(
     rendered = ""
     full_rendered = ""
     if main_content:
-        length, rendered, articles, article_visible = _select_main_scope_render(
-            source_html, "article", site_links, span_limit
-        )
-        if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
-            main_length, main_rendered, _, main_visible = _select_main_scope_render(
-                source_html, "main", site_links, span_limit
+        has_article = _ARTICLE_START.search(source_html) is not None
+        # without <article> the first pass may be followed by a title rescan or the whole-page pass
+        tokens = _TokenLog(armed = not has_article)
+        if has_article:
+            length, rendered, articles, article_visible = _select_main_scope_render(
+                source_html, "article", site_links, span_limit, tokens
             )
+        else:
+            length, rendered, articles, article_visible = 0, "", 0, 0
+        if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
+            if _MAIN_START.search(source_html) is not None:
+                main_length, main_rendered, _, main_visible = _select_main_scope_render(
+                    source_html, "main", site_links, span_limit, tokens
+                )
+            else:
+                main_length, main_rendered, main_visible = 0, "", 0
+                # the whole-page pass follows and re-renders span pages to score them
+                tokens.armed = tokens.armed or _SPAN_ATTR.search(source_html) is not None
             if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
                 main_length, full_rendered = _render_main_document(
-                    source_html, site_links, span_limit
+                    source_html, site_links, span_limit, tokens
                 )
                 main_rendered = full_rendered
                 main_visible = main_length
@@ -2411,7 +2469,9 @@ def html_to_markdown(
                 length, rendered = main_length, main_rendered
         if length < _MIN_MAIN_CONTENT_CHARS:
             if not full_rendered:
-                _, full_rendered = _render_main_document(source_html, site_links, span_limit)
+                _, full_rendered = _render_main_document(
+                    source_html, site_links, span_limit, tokens
+                )
             rendered = full_rendered
     else:
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)

@@ -11,7 +11,6 @@ if multiprocessing.parent_process() is not None or getattr(
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
-import socket  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 
@@ -36,9 +35,8 @@ _ADAM_EPS = 1e-6
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _grads(model):
@@ -116,8 +114,11 @@ def _case_parity(
     tpn.apply_tensor_parallel(model, mesh["tp"], plan = plan)
     assert tpn.is_tensor_parallel(model)
     assert tpn.apply_tensor_parallel(model, mesh["tp"]) is model  # idempotent
-    with pytest.raises(RuntimeError, match = "generation is not supported"):
-        model.generate(input_ids = torch.zeros(1, 2, dtype = torch.long))
+    # The training forward below releases the generate replica, so parity also covers that release.
+    generated = model.generate(
+        input_ids = torch.zeros(1, 2, dtype = torch.long), max_new_tokens = 2, pad_token_id = 0
+    )
+    assert generated.shape == (1, 4), generated.shape
     from test_fsdp2_native_units import _load_native
 
     try:
@@ -189,7 +190,7 @@ def _case_guards(rank, world, tmp):
     import transformers
     from torch.distributed.device_mesh import init_device_mesh
     from unsloth import FastLanguageModel, FastModel
-    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models import fsdp2_native, tp_native, tp_replica
     from unsloth.models._utils import patch_gradient_accumulation_fix
 
     patch_gradient_accumulation_fix(transformers.Trainer)
@@ -217,9 +218,14 @@ def _case_guards(rank, world, tmp):
                 lambda: fsdp2_native._refuse_tensor_parallel_model(level)
             )
             res[f"for_inference:{name}"] = _raised(lambda: FastLanguageModel.for_inference(level))
+            res[f"replica_released:{name}"] = tp_replica.release_replica(level)
             res[f"FastModel.for_inference:{name}"] = _raised(lambda: FastModel.for_inference(level))
+            tp_replica.release_replica(level)
             if name != "decoder":
-                res[f"generate:{name}"] = _raised(lambda: level.generate(input_ids = ids))
+                res[f"generate:{name}"] = _raised(
+                    lambda: level.generate(input_ids = ids, max_new_tokens = 2, pad_token_id = 0)
+                )
+                tp_replica.release_replica(level)
                 res[f"trainer:{name}"] = _raised(
                     lambda: transformers.Trainer(model = level, args = args)
                 )
@@ -776,6 +782,149 @@ def _case_sharded_lora_init(rank, world, tmp, ckpt):
     return out
 
 
+def _case_sampler(rank, world, tmp, dp, strategy):
+    """Rows each rank's dataloader yields under a length-aware sampler, after a rank-local RNG draw."""
+    import transformers
+
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    fields = transformers.TrainingArguments.__dataclass_fields__
+    if strategy == "batch_rebalance" and "train_sampling_strategy" not in fields:
+        return {"skip": "this transformers has no train_sampling_strategy = 'batch_rebalance'"}
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    tp = world // dp
+    model = build(LLAMA)
+    mesh = init_device_mesh("cpu", (dp, tp), mesh_dim_names = ("dp", "tp"))
+    tp_native.apply_tensor_parallel(model, mesh["tp"])
+    if dp > 1:
+        try:
+            fsdp2_native.shard_model(
+                model, fsdp2_native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
+            )
+        except Exception as e:
+            if "torch < 2.7" in str(e) or "torch 2.7+" in str(e):
+                return {"skip": "torch < 2.7: tensor parallel x FSDP2 is refused"}
+            raise
+    g = torch.Generator().manual_seed(1)
+    rows = []
+    for i in range(48):
+        ids = torch.randint(3, 100, (4 + int(torch.randint(0, 9, (1,), generator = g)),), generator = g)
+        ids[0] = 3 + i
+        rows.append(ids)
+
+    def collate(features):
+        n = max(len(f["input_ids"]) for f in features)
+        ids = torch.zeros(len(features), n, dtype = torch.long)
+        for i, f in enumerate(features):
+            ids[i, : len(f["input_ids"])] = f["input_ids"]
+        return {"input_ids": ids, "labels": ids.clone()}
+
+    if strategy == "group_by_length" and "train_sampling_strategy" not in fields:
+        overrides = {"group_by_length": True}
+    else:
+        overrides = {"train_sampling_strategy": strategy}
+    trainer = transformers.Trainer(
+        model = model,
+        args = _trainer_args(tmp, 2, dataloader_drop_last = False, **overrides),
+        train_dataset = _Rows(rows),
+        data_collator = collate,
+    )
+    torch.rand(1 + 5 * rank)
+    seen = []
+    for step, batch in enumerate(trainer.get_train_dataloader()):
+        if step == 6:
+            break
+        seen.append([int(r[0]) - 3 for r in batch["input_ids"]])
+    return {"seen": seen}
+
+
+def _case_sampler_resume(rank, world, tmp, dp, strategy):
+    """Rows per rank for an uninterrupted run vs resumes at epoch boundaries and mid epoch."""
+    import transformers
+
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    fields = transformers.TrainingArguments.__dataclass_fields__
+    if strategy == "batch_rebalance" and "train_sampling_strategy" not in fields:
+        return {"skip": "this transformers has no train_sampling_strategy = 'batch_rebalance'"}
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth.models import fsdp2_native, tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    tp = world // dp
+    mesh = init_device_mesh("cpu", (dp, tp), mesh_dim_names = ("dp", "tp"))
+    g = torch.Generator().manual_seed(1)
+    rows = []
+    for i in range(12 * dp):  # 3 optimizer steps per epoch on every layout
+        ids = torch.randint(3, 100, (4 + int(torch.randint(0, 9, (1,), generator = g)),), generator = g)
+        ids[0] = 3 + i
+        rows.append(ids)
+
+    def collate(features):
+        n = max(len(f["input_ids"]) for f in features)
+        ids = torch.zeros(len(features), n, dtype = torch.long)
+        for i, f in enumerate(features):
+            ids[i, : len(f["input_ids"])] = f["input_ids"]
+        return {"input_ids": ids, "labels": ids.clone()}
+
+    if strategy == "group_by_length" and "train_sampling_strategy" not in fields:
+        overrides = {"group_by_length": True}
+    else:
+        overrides = {"train_sampling_strategy": strategy}
+    ckpt = os.path.join(tmp, "ckpt")
+
+    def run(resume = None):
+        model = build(LLAMA)
+        tp_native.apply_tensor_parallel(model, mesh["tp"])
+        if dp > 1:
+            try:
+                fsdp2_native.shard_model(
+                    model, fsdp2_native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"])
+                )
+            except Exception as e:
+                if "torch < 2.7" in str(e) or "torch 2.7+" in str(e):
+                    return None
+                raise
+        args = _trainer_args(
+            ckpt,
+            2,
+            max_steps = 8,
+            dataloader_drop_last = False,
+            save_strategy = "steps",
+            save_steps = 1,
+            logging_steps = 100,
+            **overrides,
+        )
+        trainer = transformers.Trainer(
+            model = model, args = args, train_dataset = _Rows(rows), data_collator = collate
+        )
+        seen = []
+        training_step = trainer.training_step
+
+        def record(model, inputs, *args, **kwargs):
+            seen.append([int(r[0]) - 3 for r in inputs["input_ids"]])
+            return training_step(model, inputs, *args, **kwargs)
+
+        trainer.training_step = record
+        torch.rand(1 + 5 * rank)  # a rank-local draw on the global RNG
+        trainer.train(resume_from_checkpoint = resume)
+        return seen
+
+    full = run()
+    if full is None:
+        return {"skip": "torch < 2.7: tensor parallel x FSDP2 is refused"}
+    # 3 steps per epoch, 2 micro-batches per step: 3 / 6 are epoch boundaries, 4 / 7 mid epoch 1 / 2.
+    resumed = {k: run(os.path.join(ckpt, f"checkpoint-{k}")) for k in (3, 4, 6, 7)}
+    return {"full": full, "resumed": resumed}
+
+
 CASES = {
     "parity": _case_parity,
     "save_subgroup": _case_save_subgroup,
@@ -788,6 +937,8 @@ CASES = {
     "tp_fsdp2": _case_tp_fsdp2,
     "tp_fsdp2_trainable_norms": _case_tp_fsdp2_trainable_norms,
     "trainer": _case_trainer,
+    "sampler": _case_sampler,
+    "sampler_resume": _case_sampler_resume,
 }
 
 
@@ -913,8 +1064,13 @@ def test_fused_lora_functions_read_local_shards():
             plain["calls"],
             fused["calls"],
         )
-        torch.testing.assert_close(fused["O"], plain["O"], rtol = 1e-5, atol = 1e-5)
-        torch.testing.assert_close(fused["dX"], plain["dX"], rtol = 1e-5, atol = 1e-5)
+        for key in ("O", "dX"):
+            # fp32 sums err by an ulp of their largest term, so a small element that cancels out of large ones
+            # (dX here peaks near 1e3, where one ulp is 1.2e-4) needs an atol at the tensor's scale.
+            atol = max(1e-5, 1e-6 * plain[key].abs().max().item())
+            torch.testing.assert_close(
+                fused[key], plain[key], rtol = 1e-5, atol = atol, msg = lambda m, key = key: f"{key}: {m}"
+            )
         assert set(fused["grads"]) == set(plain["grads"]) and plain["grads"]
         for name in plain["grads"]:
             torch.testing.assert_close(
@@ -970,7 +1126,7 @@ def test_tp2_tied_norm_weight_is_summed_once():
     _check_parity(_spawn("parity", 2, arch = "qwen3", tie_norms = True), 2)
 
 
-def test_tp2_entry_points_outside_the_regions_are_refused():
+def test_tp2_entry_points_outside_the_regions_are_refused_or_gather():
     results = _spawn("guards", 2)
     if "skip" in results[0]:
         pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
@@ -986,14 +1142,14 @@ def test_tp2_entry_points_outside_the_regions_are_refused():
                         key,
                         value,
                     )
-                elif "for_inference" in key:
-                    assert value and "for_inference is not supported" in value, (
+                elif "for_inference" in key or key.startswith("generate:"):
+                    assert value is None, (
                         applied,
                         key,
                         value,
-                    )
-                elif key.startswith("generate:"):
-                    assert value and "generation is not supported" in value, (applied, key, value)
+                    )  # gathered a replica (tp_replica.py)
+                elif key.startswith("replica_released:"):
+                    assert value is True, (applied, key, value)
                 elif key.startswith("model_init:"):
                     assert value and "cannot be trained by the Trainer" in value, (
                         applied,
@@ -1001,12 +1157,9 @@ def test_tp2_entry_points_outside_the_regions_are_refused():
                         value,
                     )
                 elif key.startswith("trainer:"):
-                    # The Trainer trains a tensor parallel model, but not with checkpoints (default args).
-                    assert value and "does not support Trainer checkpoints" in value, (
-                        applied,
-                        key,
-                        value,
-                    )
+                    # The Trainer takes a tensor parallel model with its default args (save_strategy "steps":
+                    # per-rank checkpoints).
+                    assert value is None, (applied, key, value)
                 elif key.startswith("cached:"):
                     assert value and "cached decoding" in value, (applied, key, value)
 
@@ -1068,6 +1221,13 @@ def test_sharded_loading_refuses_quantized_loads():
             )
 
 
+# Per-step grad norms over 3 AdamW steps. phi3's fused qkv / gate_up shards add reduction-order noise that the
+# optimizer compounds: on the CI runners its step-3 norm lands 6.9e-5 / 7.7e-5 relative off one process
+# (1.5e-6 at step 1), while this host stays inside 1e-5. The step-1 per-gradient check in the test
+# (rtol 1e-4, atol 1e-6) is what catches a real tp error such as a missed all-reduce, and it is unchanged.
+_TP_FSDP2_NORM_REL = {"phi3": 2e-4}
+
+
 @pytest.mark.parametrize(
     "arch,fit_layout,lora_kwargs",
     [
@@ -1103,7 +1263,9 @@ def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
             res["losses"],
             res["ref_losses"],
         )
-        assert res["norms"] == pytest.approx(res["ref_norms"], rel = 1e-5), (
+        assert res["norms"] == pytest.approx(
+            res["ref_norms"], rel = _TP_FSDP2_NORM_REL.get(arch, 1e-5)
+        ), (
             res["norms"],
             res["ref_norms"],
         )
@@ -1155,6 +1317,13 @@ def test_trainer_splits_mixed_optimizer_groups_for_tp_only():
             res["losses"],
             ref["losses"],
         )
+        # transformers 5.x would clip mixed DTensor / plain gradients itself (_mixed_mesh_grad_norm). The
+        # reference norm is torch's CPU fp32 vector_norm over the plain lm_head gradient: ~2e-4 off.
+        assert res["grad_norms"] == pytest.approx(ref["grad_norms"], rel = 1e-3), (
+            rank,
+            res["grad_norms"],
+            ref["grad_norms"],
+        )
 
 
 @pytest.mark.parametrize("dp,tp", [(1, 2), (2, 2)])
@@ -1181,9 +1350,10 @@ def test_trainer_trains_a_tensor_parallel_model_like_one_process(dp, tp):
         for key, value in ref["state"].items():
             torch.testing.assert_close(res["state"][key], value, rtol = 1e-4, atol = 1e-6, msg = key)
         refusals = res["refusals"]
-        assert "does not support Trainer checkpoints" in (refusals["checkpoints"] or ""), refusals
+        # Checkpoints are per rank, bitsandbytes AdamW steps local shards (or switches to torch's AdamW).
+        assert refusals["checkpoints"] is None, refusals
         assert "evaluation during training" in (refusals["eval"] or ""), refusals
-        assert "optim = 'adamw_bnb_8bit'" in (refusals["optim_8bit"] or ""), refusals
+        assert refusals["optim_8bit"] is None, refusals
         assert "Trainer.evaluate is not supported" in (refusals["evaluate"] or ""), refusals
         if dp > 1:
             assert "covers 2 of 4 ranks" in (refusals["no_shard_model"] or ""), refusals
@@ -1197,3 +1367,34 @@ def test_trainer_trains_a_tensor_parallel_model_like_one_process(dp, tp):
     assert set(saved) == set(saved_ref)
     for key in saved_ref:
         torch.testing.assert_close(saved[key], saved_ref[key], rtol = 1e-4, atol = 1e-6, msg = key)
+
+
+@pytest.mark.parametrize("strategy", ["batch_rebalance", "group_by_length"])
+@pytest.mark.parametrize("dp", [1, 2])
+def test_trainer_length_samplers_give_tp_peers_the_same_rows(dp, strategy):
+    results = _spawn("sampler", 2 * dp, dp = dp, strategy = strategy)
+    if "skip" in results[0]:
+        pytest.skip(results[0]["skip"])
+    for rank, res in enumerate(results):
+        assert res["seen"] and res["seen"] == results[rank ^ 1]["seen"], (
+            rank,
+            res,
+            results[rank ^ 1],
+        )
+    if dp > 1:
+        replicas = [{i for batch in results[r]["seen"] for i in batch} for r in (0, 2)]
+        assert not replicas[0] & replicas[1], replicas
+
+
+@pytest.mark.parametrize("strategy", ["batch_rebalance", "group_by_length"])
+@pytest.mark.parametrize("dp", [1, 2])
+def test_trainer_length_samplers_resume_like_an_uninterrupted_run(dp, strategy):
+    results = _spawn("sampler_resume", 2 * dp, dp = dp, strategy = strategy)
+    if "skip" in results[0]:
+        pytest.skip(results[0]["skip"])
+    for rank, res in enumerate(results):
+        peer = results[rank ^ 1]
+        assert res["full"] == peer["full"], (rank, res["full"], peer["full"])
+        for k, seen in res["resumed"].items():
+            assert seen == peer["resumed"][k], (rank, k, seen, peer["resumed"][k])
+            assert seen == res["full"][2 * k :], (rank, k, seen, res["full"][2 * k :])

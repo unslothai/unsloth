@@ -157,7 +157,7 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
   );
 }
 
-// The desktop owner signs in with a local secret, so this password is for remote browsers only.
+// The desktop owner uses a local secret, so this password is for remote browsers only.
 function RemotePasswordRow({
   status,
   onDone,
@@ -197,8 +197,7 @@ export function RemoteAccessSection() {
     usePlatformStore.setState({ cloudflareUrl: next.url });
   }, []);
 
-  // A password change rotates credentials outside this section's requests;
-  // discard any in-flight poll and re-read so the block resolves at once.
+  // A password change rotates credentials, so drop in-flight polls and re-read.
   const refreshStatus = useCallback(() => {
     mutationEpoch.current += 1;
     setPollEnabled(true);
@@ -282,8 +281,7 @@ export function RemoteAccessSection() {
     } finally {
       setBusy(null);
       pollSuppressed.current = false;
-      // A stop through the tunnel latches polling off when its own origin dies.
-      // Any later action means the user is on a reachable origin, so resume.
+      // A tunnel stop latches polling off; any later action means the origin is reachable.
       setPollEnabled(true);
       setPollRevision((revision) => revision + 1);
     }
@@ -327,7 +325,7 @@ export function RemoteAccessSection() {
       data-settings-label="Remote access"
       className="overflow-hidden rounded-xl border border-border/70"
     >
-      <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
+      <div className="flex items-start justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
             <HugeiconsIcon
@@ -352,7 +350,8 @@ export function RemoteAccessSection() {
           type="button"
           size="sm"
           variant={stopAction ? "outline" : "dark"}
-          className="shrink-0"
+          // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
+          className="mt-[calc(var(--text-base)*0.372)] shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Audio the user gives the Audio page, kept for a day under the account's ``<gallery_dir>/inputs``.
-
-Requests name an input, a gallery clip or a saved voice by id only; this module resolves the id
-inside the current account, so no client ever names a file."""
+"""Audio page inputs kept a day under <gallery_dir>/inputs; requests name an input, clip or voice by
+id, resolved in the current account, never a file path."""
 
 from __future__ import annotations
 
@@ -163,11 +161,7 @@ def transcode(
     max_seconds: Optional[float] = None,
     cut: bool = False,
 ) -> dict[str, Any]:
-    """Decode ``src`` into a 16-bit WAV at ``dst``: at ``rate`` (default the source's), mono, two
-    channels (``stereo``) or at most two channels. Past ``max_seconds`` it is cut when ``cut``, else refused with 413.
-
-    Streams frame by frame through FFmpeg's resampler (a voice reference must not alias) into a
-    temporary file renamed in at the end."""
+    """Streams through the FFmpeg resampler so a voice reference does not alias; past max_seconds it is cut if cut is set, else refused with 413."""
     import av
 
     max_seconds = MAX_SECONDS if max_seconds is None else max_seconds
@@ -183,7 +177,7 @@ def transcode(
                 raise AudioInputError(
                     413, f"Audio is longer than {int(max_seconds // 60)} minutes."
                 )
-            out.writeframes(block.to_ndarray().reshape(-1)[: take * channels].tobytes())
+            out.writeframesraw(block.to_ndarray().reshape(-1)[: take * channels].tobytes())
             frames += take
             if cut and frames >= ceiling:
                 return True
@@ -309,10 +303,7 @@ async def save_stream(
     *,
     max_bytes: Optional[int] = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Stream an upload to disk, then decode it; ``(record, created)``.
-
-    The byte cap is checked as each chunk lands, so an oversize body is refused without being read
-    whole. The same audio (sha256) uploaded again within the TTL returns the existing record."""
+    """The byte cap is checked per chunk, so an oversize upload is refused before it is read whole."""
     import asyncio
 
     cap = AUDIO_INPUT_MAX_BYTES if max_bytes is None else max_bytes
@@ -360,6 +351,7 @@ def save_from_media(
         rate = info["sample_rate"]
         with wave.open(str(full), "rb") as reader:
             total = reader.getnframes()
+            channels = reader.getnchannels()
             first = int(start_s * rate)
             if first >= total:
                 raise AudioInputError(
@@ -368,14 +360,31 @@ def save_from_media(
                     "Unsloth Studio can only cut inside the track.",
                 )
             last = total if end_s is None else min(total, max(first + 1, int(end_s * rate)))
-            reader.setpos(first)
-            data = reader.readframes(last - first)
-            with wave.open(str(cut), "wb") as writer:
-                writer.setparams(reader.getparams())
-                writer.writeframes(data)
-        payload = cut.read_bytes()
+            whole = not first and last == total
+            if not whole:
+                reader.setpos(first)
+                with wave.open(str(cut), "wb") as writer:
+                    writer.setparams(reader.getparams())
+                    writer.writeframes(reader.readframes(last - first))
+        if whole:
+            os.replace(full, cut)
+        digest = hashlib.sha256()
+        with open(cut, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                digest.update(chunk)
+        # transcode() wrote this WAV, so transcoding it again would only rewrite the same bytes.
+        prepared = {
+            "duration_s": round((last - first) / rate, 3),
+            "sample_rate": rate,
+            "channels": channels,
+        }
         return _finish_upload(
-            directory, cut, hashlib.sha256(payload).hexdigest(), _clean_name(name), len(payload)
+            directory,
+            cut,
+            digest.hexdigest(),
+            _clean_name(name),
+            os.stat(cut).st_size,
+            prepared = prepared,
         )
     finally:
         full.unlink(missing_ok = True)
@@ -394,8 +403,15 @@ def _find_by_sha(directory: Path, sha: str) -> Optional[tuple[str, dict[str, Any
 
 
 def _finish_upload(
-    directory: Path, tmp: Path, sha: str, name: str, size: int
+    directory: Path,
+    tmp: Path,
+    sha: str,
+    name: str,
+    size: int,
+    *,
+    prepared: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], bool]:
+    """``prepared``: ``tmp`` is already a ``transcode`` output with this info, so it is moved in as is."""
     existing = _find_by_sha(directory, sha)
     if existing is not None:
         input_id, meta = existing
@@ -405,7 +421,11 @@ def _finish_upload(
     input_id = uuid.uuid4().hex
     wav = directory / f"{input_id}.wav"
     try:
-        info = transcode(tmp, wav)
+        if prepared is None:
+            info = transcode(tmp, wav)
+        else:
+            os.replace(tmp, wav)
+            info = prepared
         now = _now()
         meta = {
             "name": name,
@@ -473,6 +493,31 @@ def _derived(directory: Path, stem: str) -> list[Path]:
         return []
 
 
+def _derived_index(directory: Path) -> Optional[dict[str, list[Path]]]:
+    """``_derived`` for every id from one listing (an id has no dot); None where pathlib's case folding cannot be matched exactly."""
+    fold = os.path.normcase
+    insensitive = fold("A") != "A"
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return None
+    index: dict[str, list[Path]] = {}
+    for name in names:
+        if insensitive and not name.isascii():
+            return None
+        folded = fold(name)
+        key, dot, _rest = folded.partition(".")
+        if dot and folded.endswith(".wav") and len(folded) >= len(key) + 5:
+            index.setdefault(key, []).append(directory / name)
+    return index
+
+
+def _derived_from(index: Optional[dict[str, list[Path]]], directory: Path, stem: str) -> list[Path]:
+    if index is None or not _valid_id(stem):
+        return _derived(directory, stem)
+    return index.get(os.path.normcase(stem), [])
+
+
 def _remove(directory: Path, input_id: str) -> bool:
     wav = directory / f"{input_id}.wav"
     existed = wav.is_file()
@@ -518,6 +563,7 @@ def sweep(
         now = _now()
         removed = 0
         live: list[tuple[float, str, int]] = []
+        derived = _derived_index(directory)
         for sidecar in directory.glob("*.json"):
             input_id = sidecar.stem
             meta = _read_sidecar(sidecar)
@@ -527,7 +573,7 @@ def sweep(
                 removed += _remove(directory, input_id)
                 continue
             size = _size(directory / f"{input_id}.wav") + sum(
-                _size(p) for p in _derived(directory, input_id)
+                _size(p) for p in _derived_from(derived, directory, input_id)
             )
             live.append((_touched(meta), input_id, size))
         live.sort(reverse = True)
@@ -610,7 +656,7 @@ def resolve_source(ref: dict[str, Any]) -> Source:
         path = audio_gallery.owned_audio_path(source_id) if _valid_id(source_id) else None
         if path is None:
             raise AudioInputError(404, "That clip is no longer in your history.")
-        meta = audio_gallery._read_meta(audio_gallery._sidecar_path(source_id)) or {}
+        meta = audio_gallery._read_meta(audio_gallery._sidecar_path(source_id, path.parent)) or {}
         prompt = " ".join(str(meta.get("prompt") or "").split())
         return Source("clip", source_id, path, (prompt[:60] or "Clip"))
     from core.inference import audio_voices
@@ -628,11 +674,7 @@ def prepared_path(
     max_seconds: Optional[float] = None,
     stereo: bool = False,
 ) -> Path:
-    """A cached copy of ``source`` at ``rate`` (mono, or stereo for music edits), cut to
-    ``max_seconds``, in this account's inputs.
-
-    An input's copies sit beside it as ``{id}.{rate}.{mono|stereo}[.m{n}].wav`` and go when it
-    goes; a clip's or voice's as ``c-``/``v-`` files the sweep removes after the TTL."""
+    """Input copies go with their input; clip and voice copies (c-/v- files) are swept after the TTL."""
     prefix = {"input": "", "clip": "c-", "voice": "v-"}[source.kind]
     cap = f".m{max_seconds:g}" if max_seconds is not None else ""
     layout = "stereo" if stereo else "mono"

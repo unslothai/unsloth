@@ -22,6 +22,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import textwrap
 import threading
 import time
 
@@ -290,13 +291,104 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     assert f"user.home = {tmp_path}" in properties, properties
 
 
-def test_pip_gets_a_writable_target_inside_the_workdir(prepared):
+def test_pip_gets_a_writable_prefix_inside_the_workdir(prepared):
     argv = prepared.argv
     packages = os.path.join(prepared.workdir, sandbox_linux.SESSION_PACKAGES_RELPATH)
-    assert argv[argv.index("PIP_TARGET") + 1] == packages
+    assert argv[argv.index("PIP_PREFIX") + 1] == packages
+    assert argv[argv.index("PIP_IGNORE_INSTALLED") + 1] == "1"
+    assert "PIP_TARGET" not in argv
     pythonpath = argv[argv.index("PYTHONPATH") + 1].split(os.pathsep)
-    assert packages in pythonpath
     assert pythonpath[-1] == packages
+    assert (
+        sysconfig.get_path("purelib", vars = {"base": packages, "platbase": packages}) in pythonpath
+    )
+
+
+def test_prefix_dirs_ignore_scheme_paths_on_another_drive(monkeypatch):
+    from core.inference import os_sandbox
+
+    real = os_sandbox.sysconfig.get_paths
+
+    def get_paths(scheme, vars):
+        # relpath raises on nt for a path on another drive; None makes it raise here too.
+        return {**real(scheme, vars = vars), "stdlib": None, "include": None}
+
+    monkeypatch.setattr(os_sandbox.sysconfig, "get_paths", get_paths)
+    assert os_sandbox._pip_prefix_dirs() == (
+        os_sandbox._PIP_PREFIX_LIB_DIRS,
+        os_sandbox._PIP_PREFIX_SCRIPTS_DIR,
+    )
+
+
+def test_commands_follow_the_prefix_schemes_scripts_dir(monkeypatch):
+    from core.inference import os_sandbox
+
+    monkeypatch.setattr(os_sandbox, "_PIP_PREFIX_SCRIPTS_DIR", os.path.join("local", "bin"))
+    path = sandbox_linux._path(_plan("/w"), "/w/p").split(os.pathsep)
+    assert path == ["/usr/bin", "/w/p/local/bin", "/w/p/bin"]
+
+
+def _wheel(directory, name, version):
+    info = f"{name}-{version}.dist-info"
+    files = {
+        f"shared/{name}.py": f"VERSION = {version!r}\ndef main():\n    print(VERSION)\n",
+        f"{info}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        f"{info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        f"{info}/entry_points.txt": f"[console_scripts]\n{name} = shared.{name}:main\n",
+    }
+    import zipfile
+
+    with zipfile.ZipFile(directory / f"{name}-{version}-py3-none-any.whl", "w") as wheel:
+        for path, text in files.items():
+            wheel.writestr(path, text)
+        wheel.writestr(f"{info}/RECORD", "".join(f"{p},,\n" for p in [*files, f"{info}/RECORD"]))
+
+
+def test_successive_pip_installs_in_the_jail_keep_every_command_module_and_version(tmp_path):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    workdir = tmp_path / "session"
+    wheels = workdir / "wheels"
+    wheels.mkdir(parents = True)
+    for name, version in (("alpha", "1.0"), ("beta", "1.0"), ("beta", "2.0")):
+        _wheel(wheels, name, version)
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "PYTHONPATH": os.path.join(os.path.dirname(sandbox_linux.__file__), "sandbox_site"),
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+    }
+
+    def run(*argv):
+        launch = sandbox_linux.prepare(ToolLaunchPlan(argv = argv, workdir = str(workdir), env = env))
+        try:
+            return subprocess.run(
+                launch.argv,
+                env = launch.env,
+                pass_fds = launch.pass_fds,
+                preexec_fn = launch.preexec_fn,
+                capture_output = True,
+                text = True,
+                timeout = 180,
+            )
+        finally:
+            launch.cleanup()
+
+    if run("/bin/true").returncode != 0:
+        pytest.skip("bubblewrap cannot create a sandbox on this host")
+    if run(sys.executable, "-m", "pip", "--version").returncode != 0:
+        pytest.skip(
+            reason = "pip is not installed in this interpreter, so there is no install to run"
+        )
+    for spec in ("alpha", "beta==1.0", "beta==2.0"):
+        done = run(
+            sys.executable, "-m", "pip", "install", "--no-index", "--find-links", str(wheels), spec
+        )
+        assert done.returncode == 0, done.stdout + done.stderr
+    probe = "import shared.alpha, shared.beta, importlib.metadata as m; print(shared.beta.VERSION, m.version('beta'))"
+    seen = run(sys.executable, "-c", probe)
+    assert seen.stdout.split() == ["2.0", "2.0"], seen.stdout + seen.stderr
+    commands = run("/bin/sh", "-c", "alpha && beta")
+    assert commands.stdout.split() == ["1.0", "2.0"], commands.stdout + commands.stderr
 
 
 def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):
@@ -1077,12 +1169,15 @@ def test_the_probe_launch_sets_no_new_privs_like_a_real_one(tmp_path):
 
     assert sandbox_probe._PR_SET_NO_NEW_PRIVS == 38
     source = inspect.getsource(sandbox_probe._run_probe)
-    assert "preexec_fn = _no_new_privs" in source
-    assert not [
-        node
-        for node in ast.walk(ast.parse(inspect.getsource(sandbox_probe._no_new_privs)))
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-    ]
+    assert "preexec_fn = _probe_preexec" in source
+    assert "_no_new_privs()" in inspect.getsource(sandbox_probe._probe_preexec)
+    for hook in (sandbox_probe._no_new_privs, sandbox_probe._probe_preexec):
+        # Runs between fork and exec: an import there can deadlock on the import lock.
+        assert not [
+            node
+            for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(hook))))
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
 
 
 def test_the_pip_targets_script_directory_is_last_on_path(prepared):

@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GPU arbiter for Unsloth's heavy GPU consumers.
-
-The chat backends, diffusion, and video share the GPUs. Before taking them each calls
-``acquire_for(owner)``. Under the default policy that evicts every other resident, so two large
-models never sit in VRAM at once. Under "always" (Keep multiple models loaded set to Always) it
-refuses instead of evicting a chat, image or video model. The arbiter only sequences residency
-(freeing is each backend's teardown); eviction runs under the lock, so a transfer is atomic vs
-other acquires.
-
-Residents are tracked in ``_residents`` with the physical GPU ids each one uses (None when not
-known). ``_owner`` stays the last claimant, and tests may still set it directly: while it
-disagrees with ``_residents``, ``_owner`` wins.
-"""
+"""GPU arbiter: default evicts other residents, 'always' refuses instead; eviction runs under lock"""
 
 from __future__ import annotations
 
@@ -139,9 +127,7 @@ def _evict_chat() -> None:
 
     unload_extra_models(strict = True)
     llama = get_llama_cpp_backend()
-    # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is
-    # not healthy. chat_load_active too, since an HF load has no process until its GGUF downloaded. unload_model sets
-    # the cancel event the download loop polls, so it aborts.
+    # is_active, not is_loaded: a model still starting holds VRAM. chat_load_active covers HF GGUF downloads.
     if llama.is_active or chat_load_active():
         # unload_model clears the identity, so read it first for the pre-swap KV save.
         unloaded = _chat_identity(llama)
@@ -149,10 +135,11 @@ def _evict_chat() -> None:
         _commit_swap_kv(unloaded)
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
+        unloaded = _mlx_chat_identity(orchestrator)
         orchestrator.unload_model(orchestrator.active_model_name)
-    # An in-flight safetensors load has no active_model_name yet (published only on success), so the unload above misses
-    # it and it would finish onto the GPU we just granted away. cancel_load discards the loading marker BEFORE tearing
-    # the worker down, and runs off the lifecycle gate.
+        if unloaded is not None:
+            _commit_swap_kv(unloaded)
+    # In-flight loads lack active_model_name; cancel_load must drop the loading marker before teardown.
     for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
         orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
@@ -162,8 +149,7 @@ def _evict_chat() -> None:
         raise RuntimeError(
             "The inference engine did not stop; GPU ownership cannot be transferred."
         )
-    # The driver reclaims the killed VRAM asynchronously, so wait for it to settle before diffusion allocates, else a
-    # warm handoff can transiently OOM.
+    # The driver reclaims killed VRAM asynchronously; wait or a warm handoff can transiently OOM.
     llama._wait_for_vram_settle(since_kill = time.monotonic())
     from hub.services.models.account_access import clear_resident
 
@@ -174,6 +160,14 @@ def _chat_identity(llama):
     try:
         from core.inference.llama_keepwarm import _loaded_identity
         return _loaded_identity(llama)
+    except Exception:
+        return None
+
+
+def _mlx_chat_identity(orchestrator):
+    try:
+        from core.inference.chat_swap_kv import mlx_chat_identity
+        return mlx_chat_identity(orchestrator)
     except Exception:
         return None
 
@@ -850,6 +844,9 @@ def would_evict(
             in_flight = getattr(gpu_residency, "chat_load_in_flight", None)
             if callable(in_flight) and in_flight():
                 return True  # coreside_locked evicts a chat that is still loading
+            unpriced = getattr(gpu_residency, "chat_growth_unpriced", None)
+            if callable(unpriced) and unpriced():
+                return True
             answer = fits(owner, need_mib)
             ok, info = answer if isinstance(answer, tuple) else (answer, {})
             return not (ok or _idle_media_frees_room(gpu_residency, owner, info))

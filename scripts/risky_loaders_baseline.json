@@ -331,6 +331,14 @@
       "reason": "Iterates two fixed module:attr strings for the active diffusion and video engines."
     },
     {
+      "file": "studio/backend/routes/inference.py",
+      "rule": "trust-remote-code",
+      "sink": "item",
+      "digest": "c47fdb9c09e7e0a3",
+      "count": 1,
+      "reason": "Auto-switch sets it only with a fingerprint of code this account approved, recomputed from disk; the worker consent gate rescans and enforces it."
+    },
+    {
       "file": "studio/backend/routes/training.py",
       "rule": "trust-remote-code",
       "sink": "item",
@@ -475,6 +483,14 @@
       "reason": "Loads unsloth/dataprep/ebooks.py from a fixed path derived from this package's __file__ on MLX to avoid importing torch through dataprep; never an ebook-provided or downloaded code path."
     },
     {
+      "file": "unsloth/_cpu_init.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "4aa05e0119cd9062",
+      "count": 1,
+      "reason": "Loads unsloth/dataprep/raw_text.py and ebooks.py on the CPU backend from a fixed path derived from this package's __file__, with only those two constant names passed and the helper deleted after import, to skip dataprep/__init__ (which needs a GPU device type); never a dataset-provided or downloaded code path."
+    },
+    {
       "file": "unsloth/_gpu_init.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
@@ -511,8 +527,8 @@
       "rule": "dynamic-import",
       "sink": "import_module",
       "digest": "59e72c01edb14c86",
-      "count": 3,
-      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES and the transformers symbol homes); remote code can only name an attribute, which resolves inside an already installed transformers module."
+      "count": 4,
+      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES, _TORCHAO_IMPORT_TIME_MODULES and the transformers symbol homes); remote code can only name an attribute, which resolves inside an already installed transformers module."
     },
     {
       "file": "unsloth/import_fixes.py",
@@ -627,6 +643,14 @@
       "reason": "Falls back to the auto class unless the caller passed trust_remote_code; revision pinned to the config commit hash."
     },
     {
+      "file": "unsloth/models/fsdp2_save.py",
+      "rule": "unsafe-deserialize",
+      "sink": "pickle.loads",
+      "digest": "bf2d3c412d57fd50",
+      "count": 1,
+      "reason": "_share_from_writer: unpickles only what the export's writer rank stored under an unsloth_fsdp2_export_* key in the job's own default c10d store; a party able to write that store already controls the job's collectives."
+    },
+    {
       "file": "unsloth/models/loader.py",
       "rule": "dynamic-import",
       "sink": "import_module",
@@ -691,6 +715,14 @@
       "reason": "Reached only after the trust_remote_code gate in _resolve_module_class raises for an untrusted non sentence_transformers class."
     },
     {
+      "file": "unsloth/models/tp_replica.py",
+      "rule": "unsafe-deserialize",
+      "sink": "pickle.loads",
+      "digest": "bf2d3c412d57fd50",
+      "count": 1,
+      "reason": "Reads the result rank 0 published to this job's own torch.distributed c10d store (the same trust boundary as broadcast_object_list); no file or network payload from outside the process group."
+    },
+    {
       "file": "unsloth/save.py",
       "rule": "trust-remote-code",
       "sink": "setdefault",
@@ -747,6 +779,14 @@
       "reason": "Iterates a fixed tuple of torch wrapper classes (DataParallel, FSDP, OptimizedModule)."
     },
     {
+      "file": "unsloth_cli/__init__.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "59e72c01edb14c86",
+      "count": 1,
+      "reason": "Module-level __getattr__ for the lazily loaded command names: the module name comes only from the literal _LAZY_ATTRIBUTES table of unsloth_cli.commands.* modules, and an unknown name raises AttributeError before any import."
+    },
+    {
       "file": "unsloth_cli/_studio_deps.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
@@ -758,9 +798,9 @@
       "file": "unsloth_cli/commands/eval.py",
       "rule": "unsafe-deserialize",
       "sink": "yaml.load",
-      "digest": "99bb2a156edb2dfc",
+      "digest": "7a94da1fd84a23da",
       "count": 1,
-      "reason": "_TaskYamlLoader subclasses yaml.SafeLoader; it only adds a tag for lm-eval's !function references."
+      "reason": "_task_yaml_loader() returns a yaml.SafeLoader subclass; it only adds a tag for lm-eval's !function references."
     },
     {
       "file": "unsloth_cli/commands/studio.py",

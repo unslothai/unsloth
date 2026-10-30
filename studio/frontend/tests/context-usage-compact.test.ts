@@ -18,7 +18,7 @@ test("the bar hands every input to the state, batching flags included", () => {
   const bar = readSrc("features/chat/components/context-usage-bar.tsx");
   assert.match(
     bar,
-    /\(\{ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2\.5, ringFirst = false, \.\.\.input \}\) => \{\s*const pin = useClickPin\(pinOnClick\);\s*const state = deriveContextUsageBar\(input\);/,
+    /\(\{ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2\.5, ringFirst = false, fitContent = false, \.\.\.input \}\) => \{\s*const pin = useClickPin\(pinOnClick\);\s*const state = deriveContextUsageBar\(input\);/,
   );
 });
 

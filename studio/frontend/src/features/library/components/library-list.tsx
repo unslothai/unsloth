@@ -4,7 +4,7 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Folder01Icon } from "@hugeicons/core-free-icons";
+import { FolderClosedIcon } from "@/lib/folder-icons";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
@@ -23,7 +23,6 @@ function targetKey(target: LibraryTarget): string {
 }
 
 const ROW_INSET = "pl-4 pr-6";
-// Gap, not padding, so each row's hover area keeps its width.
 export const LIST_ROW_GAP = "gap-1";
 
 const CELL = "hidden text-ui-13 text-muted-foreground sm:block";
@@ -201,7 +200,6 @@ export function LibraryList({
   sort: LibrarySortState;
   onSortChange: (key: LibrarySortKey) => void;
   activity: boolean;
-  /** Rows listed first, with own menus and no selection (Favorites' starred chats). */
   leading?: ReactNode;
   favoriteMarks?: boolean;
 }) {
@@ -216,7 +214,6 @@ export function LibraryList({
 
   return (
     <div>
-      {/* The padding sits outside the row, so the checkbox centers on the column titles. */}
       <div className="pb-2">
         <div
           className={cn(
@@ -224,7 +221,6 @@ export function LibraryList({
             ROW_INSET,
           )}
         >
-          {/* Ticked only once everything is: a partial tick read as every row being selected. */}
           <GutterCheckbox
             checked={allSelected}
             visible={selecting}
@@ -262,7 +258,7 @@ export function LibraryList({
             onOpen={() => actions.openFolder(folder.id)}
             tile={
               <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60">
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className="size-5" />
+                <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.5} className="size-5" />
               </div>
             }
             name={

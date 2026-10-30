@@ -261,7 +261,6 @@ const FEED_LIST_CHANNEL_ID: ChannelId = "unsloth-latest";
 
 type DiscoverMode = "feed" | "channel-list" | "search";
 
-// Focused list heading stays "Models"/"Datasets" regardless of filters; only search relabels it.
 function buildFocusedHeading({
   query,
   channel,
@@ -417,15 +416,11 @@ export function ModelsPage() {
   const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const gpu = useGpuInfo();
-  // The saved VRAM Budget the loader admits against. The "Fits on device" filter scored against
-  // the 0.97 default without it, so lowering the setting moved the badges and not the filter.
+  // Use the saved VRAM budget so the fit filter matches the badges.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const inferenceGpu = useInferenceGpuInfo();
-  // One fit answer for every Hub row, picked the way the task pickers pick it: by the runtime that
-  // PLACES the row. An image or video repo goes to the diffusion planner, on one torch device,
-  // under the media rule, so judging it by llama.cpp's budget kept a 52 GiB media GGUF that clears
-  // 62.1 GiB on a 64 GiB Mac and blows the planner's 44.8. Everything else keeps the GGUF
-  // backend's own inventory, which is the one thing llama.cpp rows must be judged against.
+  // Judge fit by the runtime that places the row: media repos use the diffusion planner's rule,
+  // everything else the GGUF backend's inventory.
   const rowFitsDevice = useCallback(
     (result: HfModelResult) => {
       const mediaRow = studioPageForTask(result.pipelineTag) !== undefined;
@@ -442,10 +437,7 @@ export function ModelsPage() {
     },
     [budgetFraction, gpu, inferenceGpu],
   );
-  // Browser reachability, which is what every client here asks about: the
-  // selected model's metadata and the cached feed each issue their own request.
-  // On the discovery phase they would stay blocked at "probing" until a
-  // *listing* succeeded, and the Downloaded tab has no Retry to make that happen.
+  // Browser reachability, not listing success, or the Downloaded tab stays stuck at "probing".
   const online = useOnlineStatus();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const hubSearch = useSearch({ from: "/hub" });
@@ -460,6 +452,7 @@ export function ModelsPage() {
       ? checkpoint
       : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const loadingModel = useChatRuntimeStore((s) => s.loadingModelPick);
   const [initialResidentStatusSettled, setInitialResidentStatusSettled] =
@@ -503,9 +496,7 @@ export function ModelsPage() {
           const store = useChatRuntimeStore.getState();
           adoptResidentModelStatus(
             {
-              // The loadable identifier: a GGUF off disk loads by path, and two files sharing a stem collapse.
-              // Null for a speech model: this page is the other writer of params.checkpoint,
-              // so adopting one here made it the chat model just as the mount sync did.
+              // Null for speech models: this page also writes params.checkpoint and would make it the chat model.
               checkpointId: isSpeechOnlyStatus(status)
                 ? null
                 : resolveInferenceCheckpointId(status),
@@ -693,7 +684,6 @@ export function ModelsPage() {
     (view: AllModelsView) => {
       setAllModelsViewState(view);
       writeAllModelsViewPreference(view);
-      // Leaving split view drops the inline preview so the user lands on the full hub list.
       if (view !== "split") {
         autoPreviewIdRef.current = null;
         void navigate({
@@ -786,7 +776,7 @@ export function ModelsPage() {
       setUploaderPick(null);
       setFirstPickArmed(true);
       setSortBrowseActive(false);
-      // Clear search: an active query outranks the section in `mode`, hiding the curated list.
+      // An active query outranks the section in `mode`, hiding the curated list.
       setQuery("");
       void navigate({
         to: "/hub",
@@ -828,7 +818,7 @@ export function ModelsPage() {
     setSortBrowseActive(false);
     void navigate({
       to: "/hub",
-      // Assert the tab here too: it fires alongside setModelsTab's navigation, and spreading prev would restore the old tab.
+      // Set the tab explicitly: spreading prev would restore the old tab.
       search: (prev) => ({
         ...prev,
         tab: "discover",
@@ -860,7 +850,6 @@ export function ModelsPage() {
     setFirstPickArmed(false);
     void navigate({
       to: "/hub",
-      // Discover models, whatever tab or kind the link carried.
       search: (prev) => ({
         ...prev,
         tab: "discover",
@@ -1013,7 +1002,6 @@ export function ModelsPage() {
   } = useDiscoverSearch({
     debouncedQuery,
     accessToken: apiHfToken,
-    // The NPU list replaces the Hub results, so they are not fetched behind it.
     isDiscoverTab: isDiscoverTab && !showNpuCatalog,
     isDatasetMode,
     sortBy: effectiveSort,
@@ -1173,7 +1161,7 @@ export function ModelsPage() {
                 matchesHubAudioTask(row.result.pipelineTag, linkedAudioTask)),
           )) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
-        // Models already on disk stay visible regardless of device fit, matching the chat selector.
+        // Models on disk stay visible regardless of fit, matching the chat selector.
         (!fitOnDeviceOnly ||
           row.isAvailableOnDevice ||
           rowFitsDevice(row.result)),
@@ -1262,7 +1250,7 @@ export function ModelsPage() {
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
     [isDiscoverTab, deferredDebouncedQuery],
   );
-  // Server cache rows already apply variant-aware infra hiding; optimistic rows are not confirmed.
+  // Server rows already apply variant-aware infra hiding; optimistic rows are not confirmed.
   const isVisibleInventoryRow = useCallback(
     (row: CachedInventoryRow | LocalInventoryRow) => {
       if (row.kind === "cache") {
@@ -1277,7 +1265,6 @@ export function ModelsPage() {
             ))
         );
       }
-      // Local rows may lack a repo id, so also check path and title.
       return (
         !isHiddenModelId(row.id, row.repoId, row.path, row.title) ||
         (inventoryTokens.length > 0 &&
@@ -1286,15 +1273,13 @@ export function ModelsPage() {
     },
     [hiddenEmbeddingModelIds, inventoryTokens],
   );
-  // Format filter is a deliberate scope narrowing, so hard-filter it out. The text query instead
-  // drives dim-not-filter on On Device so selection survives typing; matches sort to the top.
+  // The text query dims rather than filters on On Device so selection survives typing.
   const filteredCachedRows = useMemo(
     () =>
       partitionByMatch(
         effectiveCachedRows.filter(
           (row) =>
-            // Hidden-model filtering is model-only; datasets bypass it (and the format filter) as Discover
-            // does, so a dataset whose id/title/path contains an infra needle is not dropped.
+            // Datasets bypass hidden-model and format filtering, as Discover does.
             isDatasetMode ||
             (deferredFormatFilter !== "unsloth" &&
               matchesFormat(inventoryRowFormat(row), deferredFormatFilter) &&
@@ -1318,8 +1303,6 @@ export function ModelsPage() {
       partitionByMatch(
         effectiveLocalRows.filter(
           (row) =>
-            // Hidden-model filtering is model-only; datasets bypass it (and the format filter) as Discover
-            // does, so a dataset whose id/title/path contains an infra needle is not dropped.
             isDatasetMode ||
             ((deferredFormatFilter === "unsloth"
               ? row.source === "unsloth"
@@ -1339,9 +1322,7 @@ export function ModelsPage() {
     ],
   );
 
-  // Header tallies exclude infra/hidden models so the count matches the On Device list (a fresh
-  // install with only the bge embedder cached reads 0, not 1 over an empty list). Reuse
-  // isVisibleInventoryRow so a search-revealed row is counted, and datasets keep their full count.
+  // Exclude infra/hidden models so the header count matches the On Device list.
   const visibleCachedCount = useMemo(
     () =>
       effectiveCachedRows.filter(
@@ -1434,13 +1415,11 @@ export function ModelsPage() {
     fetchMoreManually: fetchMoreDiscoverManually,
   } = useHubInfiniteScroll(
     fetchMore,
-    // Re-evaluate off the raw fetched count, not the filtered one: aggressive filters can reject
-    // every row, stalling filteredDiscoverRows.length while results grow.
+    // Use the raw fetched count: aggressive filters can stall the filtered length while results grow.
     scannedCount,
     {
       enabled: online && isDiscoverTab && hasMore,
-      // No phase gate: the footer renders on hasMore and so outlives the failed
-      // page, and fetchMoreDiscoverManual clears the backoff itself.
+      // No phase gate: the footer outlives the failed page and the manual fetch clears the backoff.
       isFetching: isLoading || isLoadingMore,
       resultCount: filteredDiscoverRows.length,
       maxAutoFillFetches: 5,
@@ -1594,7 +1573,6 @@ export function ModelsPage() {
     urlModel,
   ]);
 
-  // Track the last non-split layout so leaving split mode restores it.
   useEffect(() => {
     if (allModelsView !== "split") {
       lastNonSplitViewRef.current = allModelsView;
@@ -1731,7 +1709,6 @@ export function ModelsPage() {
     },
     [navigate, setModelsTab],
   );
-  // A new chat opens with the model's run settings, where Load starts it.
   const openRunSettingsInChat = useCallback(
     (request: ModelConfigHandoffRequest) => {
       const chatRuntime = useChatRuntimeStore.getState();
@@ -1862,6 +1839,10 @@ export function ModelsPage() {
         inferenceGpu.systemRamAvailableGb > 0
           ? inferenceGpu.systemRamAvailableGb
           : undefined,
+      unifiedLoadBudgetGb:
+        (!keepModelsLoaded && residentCheckpoint
+          ? inferenceGpu.unifiedLoadCeilingGb
+          : inferenceGpu.unifiedLoadBudgetGb) ?? null,
     }),
     [
       isActive,
@@ -1872,6 +1853,10 @@ export function ModelsPage() {
       inferenceGpu.memoryTotalGb,
       inferenceGpu.deviceCount,
       inferenceGpu.systemRamAvailableGb,
+      inferenceGpu.unifiedLoadBudgetGb,
+      inferenceGpu.unifiedLoadCeilingGb,
+      keepModelsLoaded,
+      residentCheckpoint,
     ],
   );
 
@@ -2105,7 +2090,6 @@ export function ModelsPage() {
   // NPU rows have no detail view; one left open would cover their list.
   const detailOpen = urlModel !== null && !showNpuCatalog;
   const splitMode = allModelsView === "split" && !showNpuCatalog;
-  // Unreachable under the full-page detail overlay.
   const catalogCovered = detailOpen && !splitMode;
 
   const catalogPaneRef = useRef<HTMLDivElement>(null);
@@ -2171,7 +2155,6 @@ export function ModelsPage() {
       <div
         className={cn(
           "relative flex min-h-0 min-w-0 flex-1 basis-0",
-          // Split mode shares the top bar's centered --hub-measure column so the list lines up.
           splitMode
             ? "flex-col lg:mx-auto lg:w-full lg:max-w-[var(--hub-measure)] lg:flex-row"
             : "flex-col",
@@ -2182,8 +2165,6 @@ export function ModelsPage() {
           data-tour="hub-catalog"
           className={cn(
             "flex min-h-0 flex-col",
-            // Split mode keeps the catalog as a master pane that grows off a 460px floor; otherwise it
-            // fills the area and the detail view overlays it.
             splitMode
               ? cn(
                   "flex-1 lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60",
@@ -2192,7 +2173,7 @@ export function ModelsPage() {
                     : HUB_SPLIT_CUSTOM_WIDTH_CLASS,
                 )
               : "flex-1",
-            // A full-bleed opaque overlay, so the catalog leaves the tab order; else tabbing walks behind it.
+            // Opaque overlay: remove the catalog from the tab order.
             catalogCovered && "pointer-events-none",
           )}
           style={splitMode ? splitWidth.style : undefined}

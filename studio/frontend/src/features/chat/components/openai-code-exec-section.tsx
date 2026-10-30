@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Settings-sheet section for OpenAI shell-tool container management. Renders only for OpenAI
- *  cloud with a gpt-5.5 / gpt-5.5-pro model. Controls: default container idle-timeout
- *  (persisted on the provider record), a container picker for the active thread, and an
- *  inline create form with per-row refresh and delete. TTL persists to
- *  ExternalProviderConfig.openaiContainerTtlMinutes and the active container to
- *  ThreadRecord.openaiCodeExecContainerId; the list is held in component state. */
+/** OpenAI shell-tool container management (OpenAI cloud, gpt-5.5 models only). */
 
 "use client";
 
@@ -47,20 +42,16 @@ import { PlusSignIcon } from "@hugeicons/core-free-icons";
 const DEFAULT_TTL_MINUTES = 20;
 const TTL_MIN = 1;
 const TTL_MAX = 20; // OpenAI hard cap on expires_after.minutes
-// Re-fetch cadence while mounted. OpenAI's TTL flips at minute granularity, so 30s drops an
-// expired container's ACTIVE pill without hammering /v1/containers.
+// OpenAI TTL flips at minute granularity, so 30s is enough.
 const REFRESH_POLL_MS = 30_000;
 
 function shortContainerId(id: string): string {
-  // Mid-truncate keeps the "cntr_" prefix readable and still shows the tail digits users copy
-  // off OpenAI's dashboard.
   if (id.length <= 18) return id;
   return `${id.slice(0, 12)}…${id.slice(-4)}`;
 }
 
 function isContainerRunning(c: OpenAIContainerSummary): boolean {
-  // OpenAI reports `status: "running"` while idle TTL is valid and "expired" after. A missing
-  // status counts as running so older payloads do not false-positive.
+  // A missing status counts as running so older payloads do not false-positive.
   return c.status == null || c.status === "running";
 }
 
@@ -84,24 +75,16 @@ export function OpenAICodeExecSection({
   const [creating, setCreating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
-  // Ids deleted this session. A tombstoned id stays hidden for the page's lifetime: OpenAI's
-  // list can keep returning a freshly-deleted id for a variable time. A refresh resets it.
+  // Deleted ids stay hidden for the page lifetime because OpenAI list lags; a refresh resets them.
   const [tombstones, setTombstones] = useState<Set<string>>(() => new Set());
-  // Ids optimistically inserted after a create but not yet confirmed by a list. That endpoint
-  // is eventually consistent, so the row renders at once with a "Creating" pill and is
-  // dropped once a refresh sees the id.
+  // Optimistic inserts not yet seen by the eventually consistent list endpoint.
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
-  // Ref mirror so `refresh()` reads the current pending set without re-binding when it changes
-  // (the callback is a useEffect dep).
+  // Ref mirror so refresh() does not re-bind when pending changes (it is an effect dep).
   const pendingIdsRef = useRef<Set<string>>(pendingIds);
   useEffect(() => {
     pendingIdsRef.current = pendingIds;
   }, [pendingIds]);
-  // One-shot follow-up refresh after a create, for when the server list lags the create
-  // response. Tracked so we clear it on unmount.
   const pendingRetryRef = useRef<number | null>(null);
-  // Target row for the delete-confirmation dialog. Held in state, not window.confirm, so the
-  // dialog sits inside the settings sheet.
   const [pendingDelete, setPendingDelete] =
     useState<OpenAIContainerSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -135,14 +118,11 @@ export function OpenAICodeExecSection({
     };
   }, [activeThreadId]);
 
-  // Hide just-deleted containers even if OpenAI's list still returns them. Single chokepoint:
-  // every downstream view derives from visibleContainers.
   const visibleContainers = useMemo(() => {
     if (tombstones.size === 0) return containers;
     return containers.filter((c) => !tombstones.has(c.id));
   }, [containers, tombstones]);
 
-  // Newest-first by lastActiveAt so the dropdown default (auto-bind target) shows up first.
   const sortedContainers = useMemo(
     () =>
       [...visibleContainers].sort(
@@ -151,15 +131,12 @@ export function OpenAICodeExecSection({
     [visibleContainers],
   );
 
-  // First running container by lastActiveAt: the auto-bind target and what we surface visually before Dexie catches up.
   const firstRunningContainer = useMemo(
     () => sortedContainers.find(isContainerRunning) ?? null,
     [sortedContainers],
   );
 
-  // What the picker treats as "active" now. Decoupled from `activeContainerId` (Dexie state) so
-  // the user sees the most-recent running container while the auto-bind write propagates. If
-  // the bound container expired, fall back to the first running candidate.
+  // Decoupled from Dexie state so the auto-bind write can propagate; expired falls back.
   const boundContainer = useMemo(
     () => sortedContainers.find((c) => c.id === activeContainerId) ?? null,
     [sortedContainers, activeContainerId],
@@ -181,8 +158,6 @@ export function OpenAICodeExecSection({
       });
       const serverIds = new Set(list.map((c) => c.id));
       setContainers((prev) => {
-        // Preserve optimistic inserts the server has not acknowledged yet so they do not disappear on
-        // the reconciling refresh.
         const orphans = prev.filter(
           (c) => !serverIds.has(c.id) && pendingIdsRef.current.has(c.id),
         );
@@ -206,8 +181,6 @@ export function OpenAICodeExecSection({
     }
   }, [apiKey, hasCredential, provider.baseUrl, provider.id]);
 
-  // Fetch on mount or provider change, then poll on a low cadence so an expired container's
-  // ACTIVE pill clears without a manual refresh. Also re-fetch on tab visibility.
   useEffect(() => {
     void refresh();
     const interval = window.setInterval(() => {
@@ -231,11 +204,7 @@ export function OpenAICodeExecSection({
     };
   }, [refresh]);
 
-  // Auto-bind the active thread to the most-recently-active container when it has none. Sorting
-  // by `lastActiveAt` matches what feels "most recent". `ensureThreadRecord` materializes the
-  // thread row so the bind lands before the first message. This creates nothing at OpenAI, so
-  // a fresh container is still not created until first send; with none, the picker shows an
-  // empty state and the adapter mints the first on send.
+  // Auto-bind an unbound thread to the newest container; nothing is created at OpenAI here.
   useEffect(() => {
     if (
       !activeThreadId ||
@@ -275,9 +244,6 @@ export function OpenAICodeExecSection({
 
   const onPick = async (value: string) => {
     if (!activeThreadId || !value) return;
-    // value is always a container id now; "Auto-create per thread" was removed in favour of
-    // defaulting to the most-recently-active container. The adapter still lazy-creates when
-    // none exist. ensureThreadRecord materializes the row so the update lands before send.
     try {
       await ensureThreadRecord({ threadId: activeThreadId, modelType: "base" });
       const updated = await updateStoredChatThread(activeThreadId, {
@@ -300,8 +266,6 @@ export function OpenAICodeExecSection({
       toast.error("Container name is required");
       return;
     }
-    // TTL inherits from the section-level "Idle timeout" control. Read at submit time so a
-    // last-second change applies.
     const ttlMinutes =
       provider.openaiContainerTtlMinutes ?? DEFAULT_TTL_MINUTES;
     setCreating(true);
@@ -313,8 +277,6 @@ export function OpenAICodeExecSection({
       toast.success(`Created container ${name}`);
       setCreateName("");
       setCreateOpen(false);
-      // Optimistic insert plus "Creating" pill. The list is eventually consistent and can omit the
-      // new container for seconds; without this the row only appears on the next poll.
       setContainers((prev) =>
         prev.some((c) => c.id === created.id) ? prev : [created, ...prev],
       );
@@ -324,8 +286,6 @@ export function OpenAICodeExecSection({
         next.add(created.id);
         return next;
       });
-      // Follow-up refresh ~5s later to reconcile the optimistic row. One shot; the poll covers a
-      // longer tail.
       if (pendingRetryRef.current != null) {
         window.clearTimeout(pendingRetryRef.current);
       }
@@ -333,8 +293,6 @@ export function OpenAICodeExecSection({
         pendingRetryRef.current = null;
         void refresh();
       }, 5000);
-      // Auto-bind the new container to the active thread. ensureThreadRecord first so the bind
-      // lands even if no message has been sent.
       if (activeThreadId) {
         try {
           await ensureThreadRecord({
@@ -354,8 +312,7 @@ export function OpenAICodeExecSection({
       );
     } finally {
       setCreating(false);
-      // Refresh even on failure: the request may have partially succeeded (container created,
-      // response lost); a re-fetch keeps the picker in sync.
+      // Refresh even on failure: the create may have succeeded with the response lost.
       await refresh();
     }
   };
@@ -369,14 +326,12 @@ export function OpenAICodeExecSection({
         { providerId: provider.id, apiKey, baseUrl: provider.baseUrl || null },
         id,
       );
-      // Tombstone the id so the picker hides it at once even if OpenAI's list keeps returning it for a while.
       setTombstones((prev) => {
         if (prev.has(id)) return prev;
         const next = new Set(prev);
         next.add(id);
         return next;
       });
-      // Clear any thread bindings pointing at the now-deleted id.
       const affected = (
         await listStoredChatThreads({ includeArchived: true })
       ).filter((t) => t.openaiCodeExecContainerId === id);
@@ -393,8 +348,6 @@ export function OpenAICodeExecSection({
     } finally {
       setDeleting(false);
       setPendingDelete(null);
-      // Always refresh so a stale list entry, deleted elsewhere or expired, is purged even when the
-      // delete call errored.
       await refresh();
     }
   };
@@ -403,7 +356,6 @@ export function OpenAICodeExecSection({
 
   return (
     <div className="flex flex-col gap-3">
-      {/* TTL */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <label
@@ -428,8 +380,6 @@ export function OpenAICodeExecSection({
         />
       </div>
 
-      {/* Container list. Clicking a row binds it to the active thread; the
-          ACTIVE pill marks which one (no separate picker). */}
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-2">
           <span className="text-ui-11 uppercase tracking-wider text-muted-foreground">
@@ -495,8 +445,6 @@ export function OpenAICodeExecSection({
                         : undefined
                   }
                 >
-                  {/* min-w-0 + truncate keeps long container ids from
-                      spilling under the trash button on narrow sheets. */}
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <div className="flex min-w-0 items-center gap-1.5">
                       <span className="min-w-0 truncate font-medium">
@@ -547,9 +495,6 @@ export function OpenAICodeExecSection({
         )}
       </div>
 
-      {/* Create new: inline single-row edit echoing a container card. TTL is
-          inherited from the top "Idle timeout" control (no per-container
-          override), keeping the form light. */}
       {createOpen ? (
         <div className="flex items-center gap-1 rounded-full border border-border/60 bg-muted/20 px-1.5 py-1">
           <Input

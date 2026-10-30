@@ -3,8 +3,7 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 
-// Message action bar glyphs, rescaled about the centre (stroke unchanged) so they match the stock
-// ones' optical size. Hugeicons (MIT).
+// Rescaled about the centre (stroke unchanged) to match the stock icons. Hugeicons (MIT).
 
 const path = (d: string, key: string) =>
   ["path", { d, stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", key }] as const;
@@ -25,7 +24,7 @@ export const ReadAloudIcon = [
   ),
 ] as unknown as IconSvgElement;
 
-// arrow-right-02 at 1.25x: the stock one draws small and thin beside the other icons.
+// arrow-right-02 at 1.25x: the stock one draws small and thin.
 export const ContinueArrowIcon = [
   path("M20.125 12L3.25 12", "0"),
   path("M13.25 19.5C13.25 19.5 20.75 13.9764 20.75 12C20.75 10.0235 13.25 4.5 13.25 4.5", "1"),

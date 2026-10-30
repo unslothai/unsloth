@@ -17,14 +17,19 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  isHalloweenSeason,
+  pickHalloweenTheme,
+} from "@/features/halloween/halloween-store";
+import {
   COLOR_THEMES,
   FLAVOR_THEME_IDS,
+  HALLOWEEN_THEME_IDS,
   type ColorThemeId,
   UNSLOTH_THEME_IDS,
+  isHalloweenThemeId,
 } from "../lib/color-themes";
 import { usePalette, useTheme } from "../stores/theme-store";
 
-/** "Aa" swatch in the theme's background and accent. */
 function ThemeChip({
   colors,
 }: {
@@ -64,7 +69,9 @@ export function ColorThemeSelect() {
   const renderItem = (id: ColorThemeId) => (
     <DropdownMenuItem
       key={id}
-      onSelect={() => setPalette(id)}
+      onSelect={() =>
+        isHalloweenThemeId(id) ? pickHalloweenTheme(id) : setPalette(id)
+      }
       data-palette-value={id}
       aria-checked={palette === id}
       role="menuitemradio"
@@ -106,13 +113,27 @@ export function ColorThemeSelect() {
               {t("settings.appearance.palette.moreThemes")}
             </span>
           </DropdownMenuSubTrigger>
-          {/* Cap height and scroll an inner viewport to keep rounded corners. */}
           <DropdownMenuSubContent className="flex max-h-[min(--spacing(112),var(--radix-dropdown-menu-content-available-height))] w-56 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
               {FLAVOR_THEME_IDS.map(renderItem)}
             </div>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
+        {isHalloweenSeason() && (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="gap-2.5">
+              <ThemeChip colors={null} />
+              <span className="flex-1 whitespace-nowrap">
+                {t("settings.appearance.palette.halloween")}
+              </span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="flex max-h-[min(--spacing(112),var(--radix-dropdown-menu-content-available-height))] w-56 flex-col">
+              <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+                {HALLOWEEN_THEME_IDS.map(renderItem)}
+              </div>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -95,6 +95,22 @@ def test_auto_takes_every_cached_kind_in_preference_order(cache):
     assert _resolve("ngram-mod").speculative
 
 
+def test_an_auto_offload_plan_makes_room_for_a_modes_first_drafter(cache, tmp_path):
+    cache({"a/Qwen3.5-4B-DFlash": _DFLASH, "g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
+    target = str(tmp_path / "org--Qwen3.5-4B-4bit")
+    drafter = lambda mode, named = None: spec.offload_drafter(
+        mode, named, model_dir = target, target_name = _TARGET
+    )
+    assert drafter("mtp") == (target, True)  # the head, before the cached assistant
+    assert drafter("mtp", "g/Qwen3.5-4B-assistant") == (
+        str(tmp_path / "g--Qwen3.5-4B-assistant"),
+        False,
+    )
+    assert drafter("dflash") == (str(tmp_path / "a--Qwen3.5-4B-DFlash"), False)
+    assert drafter("auto") == (target, True)
+    assert [drafter(mode) for mode in ("off", "ngram", "dspark")] == [None] * 3
+
+
 def test_cached_drafters_are_matched_by_shape_and_weights_then_marked_by_name(cache, tmp_path):
     shaped = {**_DFLASH, "hidden_size": 8, "num_target_layers": 4}
     narrow = {"target_hidden_size": 8, "transformer_layer_config": {"hidden_size": 2}}
@@ -151,11 +167,36 @@ def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeyp
     assert (draft.controller.max_depth, draft.controller.max_copy) == (6, 0)
     for d, n, e in ((object(), 3, True), (object(), 4, False), (draft.drafter, 15, True)):
         assert spec._draft(d, False, n).controller.fixed_depth is e
-    draft, kind, reason, _ = spec.build_draft(
-        None, spec.SpecResolution("dflash", sources[:1], copies = True), fits = fits
+
+    def chosen(
+        picked,
+        fit,
+        stretch = lambda _: (None, None),
+    ):
+        built.clear()
+        result = spec.build_draft(
+            None, spec.SpecResolution("dflash", picked, copies = True), fits = fit, stretch = stretch
+        )
+        return result[1:] + (built[:],)
+
+    assert chosen(sources[::2], fits) == ("dflash", spec.DRAFTER_NO_MEMORY, 4096, ["ok"])
+    assert chosen(sources[:1], fits) == ("dflash", None, None, ["big"])
+    assert chosen(sources[:1], lambda _: (None, None)) == ("dflash", None, None, ["big"])
+    assert chosen(sources[:1], fits, lambda _: (True, 2048)) == ("dflash", None, 2048, ["big"])
+    # Past MLX's own cap a chosen drafter is still passed over, as is one nothing can stretch.
+    for stretch in (lambda _: (False, None), None):
+        assert chosen(sources[:1], fits, stretch) == ("ngram", spec.DRAFTER_NO_MEMORY, None, [])
+    assert chosen(sources[:2], fits) == ("dflash", spec.DRAFTER_INCOMPATIBLE, None, ["big"])
+    assert chosen(sources[1:2], lambda _: (False, 4096)) == (
+        "ngram",
+        spec.DRAFTER_INCOMPATIBLE,
+        None,
+        [],
     )
-    assert (draft.drafter, kind, reason) == (None, "ngram", spec.DRAFTER_NO_MEMORY)
-    assert (draft.controller.max_depth, draft.controller.max_copy) == (0, 16)
+    draft, *_ = spec.build_draft(
+        None, spec.SpecResolution("dflash", sources[1:2], copies = True), fits = lambda _: (False, 4096)
+    )
+    assert (draft.drafter, draft.controller.max_depth, draft.controller.max_copy) == (None, 0, 16)
     auto = spec.SpecResolution("auto", sources[:1], copies = True)
     unfit = [spec.build_draft(None, auto, fits = lambda _: (ok, None)) for ok in (False, None)]
     assert unfit == [(None, None, spec.AUTO_CONTEXT_COST, None), (None,) * 4]

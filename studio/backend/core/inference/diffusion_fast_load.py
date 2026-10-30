@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cold-start I/O for the image load path, byte-for-byte neutral: ``start_load_prefetch`` warms the page
-cache with the files the load reads next (parallel slice reads beat mmap page faults); ``fast_upload``
-moves plain host tensors (and the inner tensors of torchao-style wrapper subclasses) through a pinned
-ring and hands them to the existing ``.to`` via a ``TorchFunctionMode``, so placement semantics stay
-the module's own. Kill switches
-``UNSLOTH_DIFFUSION_PREFETCH=0`` / ``UNSLOTH_DIFFUSION_FAST_UPLOAD=0``.
-"""
+"""Byte-neutral image-load I/O. Off: UNSLOTH_DIFFUSION_PREFETCH=0, UNSLOTH_DIFFUSION_FAST_UPLOAD=0."""
 
 from __future__ import annotations
 
@@ -116,10 +110,7 @@ def start_prefetch(
     threads: int = _PREFETCH_THREADS,
     min_bytes: int = _PREFETCH_MIN_BYTES,
 ) -> Optional[LoadPrefetch]:
-    """Read the uncached parts of ``paths`` into the page cache on worker threads, in the given order.
-
-    None when switched off, when nothing needs it, or when the uncached bytes exceed half the available
-    host RAM (the reads would evict what the load itself needs). Never raises."""
+    """Prefetches uncached paths in order, skipping when uncached bytes exceed half of host RAM; never raises."""
     if not prefetch_enabled():
         return None
     try:
@@ -521,11 +512,7 @@ def fast_upload(
     *,
     logger: Any = None,
 ) -> Iterator[int]:
-    """Inside the block, ``Tensor.to(device)`` on the modules' plain CPU tensors returns a ring-uploaded copy.
-
-    Wrap the existing placement call (``module.to(device)`` / ``pipe.to(device)``): it still decides
-    what moves and how parameters are re-wrapped; only the bytes arrive faster. Yields how many tensors
-    were staged (0 = the block runs exactly as without this wrapper)."""
+    """Inside the block, Tensor.to from CPU goes through a ring upload; placement itself is unchanged."""
     staged: dict[int, tuple[Any, Any]] = {}
     mode = None
     try:

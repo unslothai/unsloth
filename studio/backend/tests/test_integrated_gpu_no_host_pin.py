@@ -464,6 +464,15 @@ _REACHED_THROUGH_A_GATE = {
         "core/inference/video_minimax_h3_te.py",
         "pin_module_in_place",
     ): "h3_te_pin_allowed / stream_h3_text_encoder",
+    (
+        "core/inference/video_minimax_h3_te.py",
+        "_pinned_arena",
+    ): "pin_module_in_place",
+    (
+        "core/inference/video_minimax_h3_residency.py",
+        "_pin_host_tensor",
+    ): "_H3BlockPinner._run only, built by defer_streamed_block_pins behind _background_pin_enabled / "
+    "_fast_pin_supported / h3_te_pin_allowed (the admit too), all on the target device",
     ("core/inference/diffusion_preview.py", "_device_map"): "exempt: tiny, async preview",
     (
         "core/inference/diffusion_preview.py",
@@ -531,3 +540,165 @@ def test_every_cuda_group_offload_stream_asks_the_predicate():
             if "'cuda'" in text and "host_pinning_allowed" not in text and "pinning" not in text:
                 loose.append(f"{path.name}:{getattr(value, 'lineno', '?')} {text}")
     assert not loose, loose
+
+
+def test_the_h3_block_pin_helper_is_reached_only_through_the_gated_deferral():
+    # _pin_host_tensor has no gate of its own: its one caller is _H3BlockPinner, built only by the deferral.
+    tree = ast.parse(
+        (BACKEND / "core/inference/video_minimax_h3_residency.py").read_text(encoding = "utf-8")
+    )
+    funcs = {
+        n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    def users(name):
+        return sorted(
+            f
+            for f, node in funcs.items()
+            if f != name and any(isinstance(x, ast.Name) and x.id == name for x in ast.walk(node))
+        )
+
+    assert users("_pin_host_tensor") == ["_h3_block_pinner_cls", "_run"]
+    assert users("_h3_block_pinner_cls") == ["defer_streamed_block_pins"]
+    gate = ast.unparse(funcs["defer_streamed_block_pins"])
+    for asked in (
+        "_background_pin_enabled(device)",
+        "_fast_pin_supported(device)",
+        "h3_te_pin_allowed(group_payload_bytes(lazy[0]), device)",
+    ):
+        assert asked in gate
+    assert gate.index("_fast_pin_supported(device)") < gate.index("_h3_block_pinner_cls()")
+
+
+# Mixed hosts: the current device (0) and the target (1) differ, one integrated and one discrete.
+@pytest.fixture
+def mixed_gpu(monkeypatch):
+    """``mixed_gpu(current_integrated, target_integrated)``: device 0 is current, device 1 is the target."""
+
+    def make(current_integrated: bool, target_integrated: bool) -> None:
+        props = {0: _props(current_integrated), 1: _props(target_integrated)}
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+        monkeypatch.setattr(torch.cuda, "get_device_properties", lambda i, *a, **k: props[int(i)])
+        _forget_answers()
+
+    yield make
+    _forget_answers()
+
+
+_MIXED = [(True, False), (False, True)]
+_TARGET = "cuda:1"
+
+
+@pytest.mark.parametrize("current_integrated, target_integrated", _MIXED)
+def test_keep_cpu_weights_follow_the_target_device(
+    monkeypatch, mixed_gpu, pins, current_integrated, target_integrated
+):
+    mixed_gpu(current_integrated, target_integrated)
+    monkeypatch.delenv(dm.OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 64 << 10)
+    monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: 128 << 10)
+    lin = torch.nn.Linear(8, 8)
+    pinned = dm._pin_host_weights(lin, _host_of(lin), device = _TARGET)
+    if target_integrated:
+        assert pinned == 0 and pins == []
+    else:
+        assert pinned > 0 and pins
+
+
+@pytest.mark.parametrize("current_integrated, target_integrated", _MIXED)
+def test_pin_planners_follow_the_target_device(
+    monkeypatch, mixed_gpu, current_integrated, target_integrated
+):
+    from core.inference import video_minimax_h3_te as te
+
+    mixed_gpu(current_integrated, target_integrated)
+    allowed = not target_integrated
+    monkeypatch.delenv(dm.BACKGROUND_PIN_ENV, raising = False)
+    monkeypatch.delenv(dm.FAST_PIN_ENV, raising = False)
+    monkeypatch.delenv(dm.PARTIAL_ENCODER_PIN_ENV, raising = False)
+    monkeypatch.delenv(dm.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(dm.sys, "platform", "linux")
+    monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: False)
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 1 << 20)
+    cudart = types.SimpleNamespace(cudaHostRegister = lambda *a: 0, cudaHostUnregister = lambda *a: 0)
+    monkeypatch.setattr(torch.cuda, "cudart", lambda: cudart)
+    assert dm._streamed_pin_plan(1024, 1024, device = _TARGET) == (allowed, allowed)
+    assert (dm._streamed_pin_leftover_mib(0, False, _TARGET) > 0) is allowed
+    assert dm._background_pin_enabled(_TARGET) is allowed
+    assert dm._fast_pin_supported(_TARGET) is allowed
+    assert te.h3_te_pin_allowed(1 << 20, _TARGET) is allowed
+    pipe = types.SimpleNamespace(**{dm._ENCODER_PIN_REQUEST_ATTR: True})
+    assert dm._encoder_background_pin_wanted(pipe, _TARGET) is allowed
+    # forced on: the user's switch never overrides an integrated target
+    monkeypatch.setenv(dm.GROUP_OFFLOAD_PIN_ENV, "1")
+    assert dm._streamed_pin_plan(1024, 1024, device = _TARGET) == (allowed, allowed)
+    assert te.h3_te_pin_allowed(1 << 20, _TARGET) is allowed
+
+
+@pytest.mark.parametrize("current_integrated, target_integrated", _MIXED)
+def test_top_level_group_pins_follow_the_target_device(
+    monkeypatch, mixed_gpu, current_integrated, target_integrated
+):
+    from core.inference import diffusion_offload_prefetch as op
+
+    mixed_gpu(current_integrated, target_integrated)
+    monkeypatch.delenv(dm.PIN_TOP_GROUP_ENV, raising = False)
+    monkeypatch.delenv(dm.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    looked: list = []
+    module = types.SimpleNamespace(
+        _diffusers_hook = types.SimpleNamespace(get_hook = lambda name: looked.append(name))
+    )
+    assert dm._pin_top_level_group(module, device = _TARGET) is False
+    assert bool(looked) is (not target_integrated)
+    asked: list = []
+    monkeypatch.setattr(op, "_go", lambda: asked.append(1) or types.SimpleNamespace())
+    assert op._adopt_top_group(types.SimpleNamespace(), object(), device = _TARGET) is None
+    assert bool(asked) is (not target_integrated)
+
+
+@pytest.mark.parametrize("current_integrated, target_integrated", _MIXED)
+def test_streamed_text_encoders_pin_by_the_target_device(
+    monkeypatch, mixed_gpu, current_integrated, target_integrated
+):
+    pytest.importorskip("diffusers")
+    mixed_gpu(current_integrated, target_integrated)
+    monkeypatch.setenv(dm.GROUP_OFFLOAD_PIN_ENV, "1")
+    seen = _record_group_offload(monkeypatch)
+    monkeypatch.setattr(dm, "_pin_vision_embedding_device", lambda module: 0)
+    pipe = types.SimpleNamespace(components = {"text_encoder": torch.nn.Linear(4, 4)})
+    assert dm.stream_text_encoders_onto(pipe, _TARGET) == ["text_encoder"]
+    (kwargs,) = seen
+    assert kwargs["use_stream"] is (not target_integrated)
+    if not target_integrated:
+        # a forced pin on a discrete target pins up front instead of re-pinning on every onload
+        assert kwargs["low_cpu_mem_usage"] is False
+
+
+def test_only_deviceless_sites_ask_the_predicate_without_a_device():
+    # Every other site knows its onload target; asking the current device there misclassifies mixed hosts.
+    allowed = {
+        # probes and keys the current device by contract
+        ("core/inference/diffusion_memory.py", "_offload_cost_measurements"),
+        # device == "cuda" (the current device) is checked first
+        ("core/training/diffusion_dit_trainer.py", "_build_latent_cache"),
+        ("core/training/diffusion_dit_trainer.py", "_load_warm_conditioning"),
+        ("core/training/diffusion_lora_trainer.py", "_build_sdxl_latent_cache"),
+    }
+    bare = set()
+    for path in sorted((BACKEND / "core").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding = "utf-8"))
+        rel = path.relative_to(BACKEND).as_posix()
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "host_pinning_allowed"
+                    and not node.args
+                    and not node.keywords
+                ):
+                    bare.add((rel, fn.name))
+    assert bare <= allowed, sorted(bare - allowed)

@@ -175,6 +175,8 @@ test("defaults follow ComfyUI's official templates for the same model", () => {
     // diffusers Z-Image guidance g equals ComfyUI cfg g + 1.
     ["Tongyi-MAI/Z-Image", { steps: 25, guidance: 3 }],
     ["stabilityai/stable-diffusion-xl-base-1.0", { steps: 25, guidance: 7 }],
+    ["stabilityai/sdxl-turbo", { steps: 1, guidance: 0 }],
+    ["unsloth/sdxl-turbo", { steps: 1, guidance: 0 }],
     ["ideogram-ai/ideogram-4-fp8", { steps: 20, guidance: 7 }],
   ] as const) {
     assert.deepEqual(defaultsFor(id), want, id);
@@ -304,18 +306,18 @@ test("an explicit FLUX.3 family decides the recipe over a name that reads as the
   );
 });
 
-test("MOSS-Image SFT and Base get ComfyUI's MOSS recipe", () => {
+test("MOSS-Image SFT and Base get the reference workflow's 25 / 2.5 recipe", () => {
   for (const id of [
     "OpenMOSS-Team/MOSS-Image-SFT",
     "OpenMOSS-Team/MOSS-Image-Base",
     "someone/moss_image_sft_merge",
     "moss-image",
   ]) {
-    assert.deepEqual(defaultsFor(id), { steps: 50, guidance: 3 }, id);
+    assert.deepEqual(defaultsFor(id), { steps: 25, guidance: 2.5 }, id);
   }
   const key = defaultsKeyFor("/models/my-model", "moss-image");
   assert.equal(key, "moss-image");
-  assert.deepEqual(defaultsFor(key), { steps: 50, guidance: 3 });
+  assert.deepEqual(defaultsFor(key), { steps: 25, guidance: 2.5 });
 });
 
 test("a GGUF filename naming Krea 2 Raw outranks its multi-checkpoint repo", () => {
