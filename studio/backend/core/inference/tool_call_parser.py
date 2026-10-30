@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 # Qwen/Hermes, Qwen3.5 XML and Gemma 4 live in core.tool_healing; this module adds the rest
 from core import tool_healing as _tool_healing
+from core.inference.relaxed_json import relaxed_allowed_at, relaxed_json_object, relaxed_object_end
 
 # Shared with tool_healing so every markerless parse path applies the same guard; wrapped and marker forms are unaffected.
 _markerless_promotable = _tool_healing._markerless_promotable
@@ -2418,6 +2419,30 @@ def _parse_closed_call_unescaped_quotes(content: str, *, id_offset: int) -> list
         )
 
 
+def _loads_call_object(text: str, *, relaxed: bool = True):
+    """A wrapped call's JSON object: strict first; near-JSON a model sampled (single quotes, a trailing comma,
+    True/None, unquoted keys) only when strict fails and healing is on. None when neither reads an object."""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return relaxed_json_object(text) if relaxed else None
+
+
+def _call_object_end(
+    text: str,
+    start: int,
+    relaxed: bool = True,
+) -> "tuple[int | None, bool]":
+    """The call object's closing brace, and whether near-JSON may still be read. A relaxed read matches
+    single-quoted strings too, so a brace in one never ends the call and scanning never resumes inside its
+    argument; an object that never closes that way gets JSON brace matching, strict for the rest of the text."""
+    if relaxed and relaxed_allowed_at(text, start):
+        end = relaxed_object_end(text, start)
+        if end is not None:
+            return end, True
+    return _balanced_brace_end(text, start), False
+
+
 def _parse_tool_call_json(
     content: str,
     *,
@@ -2425,17 +2450,17 @@ def _parse_tool_call_json(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     out: list[dict] = []
+    relaxed = allow_incomplete
     for m in _TC_JSON_START_RE.finditer(content):
         brace_start = m.end() - 1
-        end = _balanced_brace_end(content, brace_start)
+        end, relaxed = _call_object_end(content, brace_start, relaxed)
         if end is None:
             continue
         # Strict: a body that never closed ``<tool_call>`` is truncated; trailing prose is tolerated.
         if not allow_incomplete and not content[end + 1 :].lstrip().startswith("</tool_call>"):
             continue
-        try:
-            obj = json.loads(content[brace_start : end + 1])
-        except (json.JSONDecodeError, ValueError):
+        obj = _loads_call_object(content[brace_start : end + 1], relaxed = relaxed)
+        if not isinstance(obj, dict):
             continue
         name = obj.get("name", "")
         args = obj.get("arguments")
@@ -2691,6 +2716,8 @@ def _parse_llama3_python_tag(
     # 2. ``<|python_tag|>{json}``; raw_decode peels ``;``-separated objects.
     if not out:
         decoder = json.JSONDecoder()
+        # Relaxed spans already tried never overlap, so every char is brace-matched at most once (no O(n^2)).
+        relaxed_from = 0 if allow_incomplete else len(content)
         idx = content.find(_LLAMA3_PYTHON_TAG)
         while idx >= 0:
             search_from = idx + len(_LLAMA3_PYTHON_TAG)
@@ -2706,8 +2733,16 @@ def _parse_llama3_python_tag(
                 try:
                     obj, end_offset = decoder.raw_decode(content[brace:])
                 except (json.JSONDecodeError, ValueError):
-                    cursor = brace + 1
-                    continue
+                    obj = None
+                    if brace >= relaxed_from and relaxed_allowed_at(content, brace):
+                        close = relaxed_object_end(content, brace)
+                        relaxed_from = len(content) if close is None else close + 1
+                        if close is not None:
+                            obj = relaxed_json_object(content[brace : close + 1])
+                    if obj is None:
+                        cursor = brace + 1
+                        continue
+                    end_offset = close + 1 - brace
                 if not isinstance(obj, dict):
                     cursor = brace + end_offset
                     continue
@@ -2863,14 +2898,15 @@ def _parse_mistral_tool_calls(
     if content[k] == "[":
         return _parse_mistral_array(content, k, id_offset, allow_incomplete = allow_incomplete)
 
+    relaxed = allow_incomplete
     if content[k] == "{":
         # Pre-v11 single ``{"name":...}``; fall through without a ``name`` so v11+ still runs.
-        end = _balanced_brace_end(content, k)
+        end, relaxed = _call_object_end(content, k, relaxed)
         if end is not None:
             try:
-                obj = json.loads(content[k : end + 1])
+                obj = _loads_call_object(content[k : end + 1], relaxed = relaxed)
                 if isinstance(obj, dict) and obj.get("name"):
-                    _consume_mistral_call(content[k : end + 1], out, id_offset)
+                    _consume_mistral_call(content[k : end + 1], out, id_offset, relaxed = relaxed)
                     return out
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -2893,14 +2929,10 @@ def _parse_mistral_tool_calls(
         if after_name >= len(content) or content[after_name] != "{":
             pos = content.find(_MISTRAL_TRIGGER, cur)
             continue
-        end = _balanced_brace_end(content, after_name)
+        end, relaxed = _call_object_end(content, after_name, relaxed)
         if end is None:
             break
-        try:
-            args = json.loads(content[after_name : end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = content.find(_MISTRAL_TRIGGER, end + 1)
-            continue
+        args = _loads_call_object(content[after_name : end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = content.find(_MISTRAL_TRIGGER, end + 1)
             continue
@@ -2968,23 +3000,27 @@ def _parse_mistral_array(
     # Advance past each balanced object instead of rescanning from every ``{`` (ReDoS).
     pos = 0
     blen = len(body)
+    relaxed = allow_incomplete
     while pos < blen:
         brace = body.find("{", pos)
         if brace < 0:
             break
-        end = _balanced_brace_end(body, brace)
+        end, relaxed = _call_object_end(body, brace, relaxed)
         if end is None:
             break  # truncated mid-object: nothing after it can balance
-        _consume_mistral_call(body[brace : end + 1], out, id_offset)
+        _consume_mistral_call(body[brace : end + 1], out, id_offset, relaxed = relaxed)
         pos = end + 1
     return out
 
 
-def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> None:
-    try:
-        obj = json.loads(obj_text)
-    except (json.JSONDecodeError, ValueError):
-        return
+def _consume_mistral_call(
+    obj_text: str,
+    out: list[dict],
+    id_offset: int,
+    *,
+    relaxed: bool = True,
+) -> None:
+    obj = _loads_call_object(obj_text, relaxed = relaxed)
     if not isinstance(obj, dict):
         return
     name = obj.get("name") or ""
@@ -3776,6 +3812,7 @@ def _parse_deepseek_tool_calls(
         return out
     scan_end = end_pos if end_pos >= 0 else len(content)
     body = content[scan_start:scan_end]
+    relaxed = allow_incomplete
 
     pos = 0
     while pos < len(body):
@@ -3794,14 +3831,10 @@ def _parse_deepseek_tool_calls(
         if json_start >= len(body) or body[json_start] != "{":
             pos = json_start
             continue
-        brace_end = _balanced_brace_end(body, json_start)
+        brace_end, relaxed = _call_object_end(body, json_start, relaxed)
         if brace_end is None:
             break
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
@@ -3844,7 +3877,7 @@ def _parse_deepseek_tool_calls(
         if json_start >= len(body) or body[json_start] != "{":
             pos = sep_pos + len(_DEEPSEEK_SEP)
             continue
-        brace_end = _balanced_brace_end(body, json_start)
+        brace_end, relaxed = _call_object_end(body, json_start, relaxed)
         if brace_end is None:
             break
         if not allow_incomplete:
@@ -3854,11 +3887,7 @@ def _parse_deepseek_tool_calls(
             if not body.startswith(_DEEPSEEK_CALL_END, after):
                 pos = brace_end + 1
                 continue
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
@@ -4025,6 +4054,7 @@ def _parse_kimi_section_body(
     """Parse one Kimi K2 section body (between begin / end markers)."""
     out: list[dict] = []
     pos = 0
+    relaxed = allow_incomplete
     while pos < len(body):
         call_start = body.find(_KIMI_CALL_BEGIN, pos)
         if call_start < 0:
@@ -4059,7 +4089,7 @@ def _parse_kimi_section_body(
         if json_start >= len(body) or body[json_start] != "{":
             pos = arg_begin + len(_KIMI_ARG_BEGIN)
             continue
-        brace_end = _balanced_brace_end(body, json_start)
+        brace_end, relaxed = _call_object_end(body, json_start, relaxed)
         if brace_end is None:
             # Skip a malformed call but keep parsing later ones (vLLM recovers them).
             nxt = body.find(_KIMI_CALL_BEGIN, json_start)
@@ -4067,11 +4097,7 @@ def _parse_kimi_section_body(
                 break
             pos = nxt
             continue
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
