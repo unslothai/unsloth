@@ -907,6 +907,24 @@ def _measurement_roots(definition: CacheDefinition) -> list[Path]:
     return unique
 
 
+def _nested_active_roots(definition: CacheDefinition, measured: list[Path]) -> list[Path]:
+    """Active roots that _measurement_roots folded into a remembered ancestor."""
+    protected = protected_paths()
+    nested: list[Path] = []
+    for root in _resolve_roots(definition):
+        resolved = _safe_resolve(root)
+        if resolved is None or resolved in measured or resolved in nested:
+            continue
+        if not any(_is_within(resolved, parent) for parent in measured):
+            continue
+        try:
+            assert_purgeable_root(root, protected = protected, trees = set(), keep = {})
+        except CachePurgeRefused:
+            continue
+        nested.append(resolved)
+    return nested
+
+
 def _system_disk_device():
     # The volume /api/system and models_disk_usage report, wherever Studio lives.
     try:
@@ -978,11 +996,17 @@ def cache_breakdown(key: str) -> dict:
         raise ValueError("Only Hugging Face caches have a directory breakdown.")
     rows = []
     occupancy = _OccupancyLedger()
-    for root in _measurement_roots(definition_for(key)):
+    definition = definition_for(key)
+    measured = _measurement_roots(definition)
+    nested = _nested_active_roots(definition, measured)
+    # Nested active roots go first so their copies are listed (and sized) under the active root.
+    for root in nested + measured:
         try:
             with os.scandir(root) as scan:
                 for entry in scan:
                     if entry.is_symlink() or _is_junction(entry.path):
+                        continue
+                    if root not in nested and _safe_resolve(Path(entry.path)) in nested:
                         continue
                     before = occupancy.bytes
                     if entry.is_dir(follow_symlinks = False):
@@ -1060,6 +1084,13 @@ def describe_cache(definition: CacheDefinition) -> dict:
             entries += count
             if clearable:
                 clear_entries += count
+        # An active root nested inside a remembered one was folded into its ancestor's walk.
+        measured_keys = {_safe_resolve(root) for root in measured_paths}
+        for root in measurable if purgeable else []:
+            if _safe_resolve(root) in measured_keys:
+                continue
+            _, count = _measure_root(root, patterns = patterns, ledger = clear_ledger)
+            clear_entries += count
         total = occupancy.bytes
         clear_size = clear_ledger.freeable_bytes()
         system_disk_bytes = _system_disk_occupancy(occupancy)
