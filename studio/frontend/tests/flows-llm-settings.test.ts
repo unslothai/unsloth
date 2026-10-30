@@ -311,3 +311,13 @@ test("a card switched to another model never shows the last model's saved load",
   assert.match(hook, /setSaved\(\{ at, load:/);
   assert.match(hook, /return saved\?\.at === at \? saved\.load : null;/);
 });
+
+test("the reload hint's resident model is read from the server when a flow opens and after each run", () => {
+  const sync = readSrc("features/flows/editor/resident-sync.ts");
+  assert.match(sync, /import\("@\/features\/chat\/hooks\/use-chat-model-runtime"\)/);
+  assert.match(sync, /syncInferenceStatusToStore\(\{ includeLoras: false, quiet: true \}\)/);
+  const page = readSrc("features/flows/editor/flows-editor-page.tsx");
+  assert.match(page, /syncResidentModel\(\);\s*return subscribeResidentStatusRefresh\(syncResidentModel\);/);
+  const runs = readSrc("features/flows/editor/run-controller.ts");
+  assert.match(runs, /if \(controller\.signal\.aborted\) return;\s*\/\/[^\n]*\n\s*syncResidentModel\(\);/);
+});

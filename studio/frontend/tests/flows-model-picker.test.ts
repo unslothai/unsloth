@@ -65,3 +65,17 @@ test("Fine-tune's Recommended leads with the Train page's own picks", () => {
   assert.match(picker, /priorityTrainingModels\(deviceType\)/);
   assert.match(picker, /if \(kind === "train"\)\s*setModels\(trainModels\(deviceType, all\)\)/);
 });
+
+test("Fine-tune's Recommended shows the Train page's picks as their own group, not as GGUF rows", () => {
+  const picker = readSrc("features/flows/editor/model-picker-field.tsx");
+  assert.match(picker, /moreModels=\{\s*kind === "train" \? \{ label: "For fine-tuning", models \} : undefined\s*\}/);
+  // Unmarked rows count as GGUF in the "More" group, so the priority ids must say they aren't.
+  assert.match(picker, /priorityTrainingModels\(deviceType\)\.map\(\(id\) => \(\{\s*id,\s*name: id,\s*isGguf: false,/);
+});
+
+test("a loaded model the picker's rowFilter rejects is not pinned at the top of Recommended", () => {
+  const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+  const loaded = pickers.slice(pickers.indexOf("const loadedRows = useMemo"), pickers.indexOf("const loadedRowIds"));
+  assert.match(loaded, /!rowFilter \|\| rowFilter\(\{ id: m\.id \}\)/);
+  assert.match(loaded, /\[isChatPicker, section, debouncedQuery, loadedModels, rowFilter\]/);
+});

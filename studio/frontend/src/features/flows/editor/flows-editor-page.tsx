@@ -23,6 +23,7 @@ import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { getFlow } from "../api";
 import { ensureCatalog } from "../stores/catalog-loader";
+import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
 import { needsNewerStudio } from "../stores/catalog-store";
 import { documentSignature, useDocStore } from "../stores/doc-store";
 import { usePinsStore } from "../stores/pins-store";
@@ -35,6 +36,7 @@ import { Palette } from "./palette";
 import { placementPosition } from "./placement";
 import { QuickAdd } from "./quick-add";
 import { detachRun, hydrateRuntime } from "./run-controller";
+import { syncResidentModel } from "./resident-sync";
 import { RunBar } from "./run-bar";
 import { RunDrawer } from "./run-drawer";
 import { Toolbar } from "./toolbar";
@@ -151,6 +153,11 @@ function EditorBody({
 
 export function FlowsEditorPage({ flowId }: { flowId: string }): ReactElement {
   const [state, setState] = useState<LoadState>({ status: "loading" });
+
+  useEffect(() => {
+    syncResidentModel();
+    return subscribeResidentStatusRefresh(syncResidentModel);
+  }, []);
 
   useEffect(() => {
     let alive = true;

@@ -100,18 +100,26 @@ export function FlowModelPicker({
       className="nodrag h-8 w-full max-w-full justify-between rounded-md px-2.5 text-ui-12"
       contentClassName="nodrag nowheel"
       {...KIND_PROPS[kind]}
+      // Recommended lists GGUF on a GPU, which `rowFilter` drops; the Train page's picks fill it.
+      moreModels={
+        kind === "train" ? { label: "For fine-tuning", models } : undefined
+      }
     />
   );
 }
 
-function trainModels(
+export function trainModels(
   deviceType: string | null | undefined,
   local: ModelOption[],
 ): ModelOption[] {
   const seen = new Set<string>();
   const out: ModelOption[] = [];
   for (const m of [
-    ...priorityTrainingModels(deviceType).map((id) => ({ id, name: id })),
+    ...priorityTrainingModels(deviceType).map((id) => ({
+      id,
+      name: id,
+      isGguf: false,
+    })),
     ...local.filter((m) => !(m as { isGguf?: boolean }).isGguf),
   ]) {
     const key = m.id.toLowerCase();
