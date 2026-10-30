@@ -276,3 +276,33 @@ def test_a_coded_route_error_reaches_the_node_as_its_message():
     from core.flows.caller import route_detail
     body = b'{"detail": {"code": "hf_model_verification_failed", "message": "The Hugging Face model could not be verified."}}'
     assert route_detail(body) == "The Hugging Face model could not be verified."
+
+
+def test_local_holdout_streams_only_the_slice_and_checks_the_cap_first(tmp_path, monkeypatch):
+    import datasets
+
+    from core.flows.nodes import data
+
+    csv = tmp_path / "rows.csv"
+    csv.write_text("q,a\n" + "".join(f"q{i},a{i}\n" for i in range(20)))
+    folder = tmp_path / "recipe"
+    folder.mkdir()
+    datasets.Dataset.from_dict({"q": [f"q{i}" for i in range(20)]}).to_parquet(
+        str(folder / "a.parquet")
+    )
+    real = datasets.load_dataset
+
+    def streamed_only(*a, streaming = False, **k):
+        assert streaming, "a whole local file loaded"
+        return real(*a, streaming = True, **k)
+
+    monkeypatch.setattr(datasets, "load_dataset", streamed_only)
+    monkeypatch.setattr(training, "HOLDOUT_MAX_ROWS", 5)
+    monkeypatch.setattr(data, "local_seed_path", lambda ref: ref)
+    for path in (str(csv), f"{folder}/*.parquet"):
+        local = {"source": "local", "ref": path}
+        assert [r["q"] for r in training._load_rows(local, None, 3)] == ["q0", "q1", "q2", "q3"]
+        with pytest.raises(FlowNodeError, match = "More than 5"):
+            training._load_rows(local, None, None)
+        with pytest.raises(FlowNodeError, match = "10 rows"):
+            training._load_rows(local, None, 9)
