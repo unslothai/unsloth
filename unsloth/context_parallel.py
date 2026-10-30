@@ -630,7 +630,11 @@ def _model_parallel_axes(model) -> list:
 
     axes = []
     raw = str(os.environ.get("UNSLOTH_TP_SIZE", "")).strip()
-    if raw.isdigit() and int(raw) > 1:
+    try:
+        tp = int(raw) if raw else 1  # as tp_env._int_env, which raises its own error on a bad value
+    except ValueError:
+        tp = 1
+    if tp > 1:
         axes.append(f"tensor parallel (UNSLOTH_TP_SIZE={raw})")
     if isinstance(model, torch.nn.Module):
         try:

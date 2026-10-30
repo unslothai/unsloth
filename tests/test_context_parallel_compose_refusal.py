@@ -107,3 +107,31 @@ def test_cp_alone_with_fsdp2_and_tp_without_cp_are_not_refused(clean_env, monkey
     except Exception:
         pass
     assert len(inits) == 1
+
+
+@pytest.mark.parametrize("raw", ["+2", " 2 ", "02", "4"])
+def test_cp_with_any_tp_env_spelling_tp_env_accepts_is_refused(clean_env, raw):
+    """tp_env reads UNSLOTH_TP_SIZE with int(): every value it turns into tp > 1 is refused beside CP."""
+    from unsloth.models import tp_env
+
+    clean_env.setenv("UNSLOTH_TP_SIZE", raw)
+    assert tp_env._int_env("UNSLOTH_TP_SIZE") > 1
+    inits = []
+    Trainer = _fake(clean_env, inits, "sft")
+    with pytest.raises(NotImplementedError, match = "does not compose with"):
+        Trainer(model = torch.nn.Linear(2, 2), args = _config(2))
+    assert inits == []
+
+
+@pytest.mark.parametrize("raw", ["\u00b2", "2.0", "abc"])
+def test_cp_with_a_tp_env_value_tp_env_rejects_is_left_to_tp_env(clean_env, monkeypatch, raw):
+    """A value tp_env refuses is not parsed into a crash here: tp_env names it itself."""
+    clean_env.setenv("UNSLOTH_TP_SIZE", raw)
+    monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a, **k: None)
+    inits = []
+    Trainer = _fake(clean_env, inits, "sft")
+    try:
+        Trainer(model = torch.nn.Linear(2, 2), args = _config(2))
+    except Exception:
+        pass
+    assert len(inits) == 1
