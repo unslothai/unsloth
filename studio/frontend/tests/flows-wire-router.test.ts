@@ -576,3 +576,102 @@ test("unrelated wires never meet end to end on one line, so neither reads as the
         `runs meet on y=${a.y}: ${JSON.stringify([a, b])}`,
       );
 });
+
+// An image card feeding two Preview cards in a row, plus a trunk from a card up-left into the first.
+function previewRow(rows: Array<[string, number, number, number]>, images = true) {
+  const rects = rows.map(([id, x, y, height]) => card(id, x, y, 260, height));
+  const port = (source: string, target: string, handle: string, from: number): EdgeIn => ({
+    id: `${source}:${handle}->${target}`,
+    source,
+    target,
+    sourceSide: "right",
+    targetSide: "left",
+    sourceOffset: from,
+    targetOffset: 65,
+    net: `${source}:${handle}`,
+    sink: `${target}:value`,
+  });
+  const edges = [
+    port("gen", "mid", "image", 65),
+    port("gen", "right", "image", 65),
+    port("top", "mid", "text", 65),
+    ...(images ? [port("gen", "right", "images", 85)] : []),
+  ];
+  return { rects, edges, routes: routeWires(rects, edges, { hopRadius: 4 }).routes };
+}
+
+test("a wire into the next card in a row goes around the card between, not under it", () => {
+  // The right card's input stub lands in the middle card's clearance band (40px gap).
+  const { rects, edges, routes } = previewRow([
+    ["top", -345, -296, 97],
+    ["gen", 0, 0, 363],
+    ["mid", 316, 34, 340],
+    ["right", 616, 53, 211],
+  ]);
+  const mid = rects.find((rect) => rect.id === "mid") as Rect;
+  for (const edge of edges) {
+    const route = routes.get(edge.id) as Route;
+    assert.equal(route.blocked, false, `${edge.id} routes`);
+    for (const [a, b] of segments(route.points)) {
+      assert.ok(edge.target === "mid" || !hitsInterior(a, b, mid), `${edge.id} passes under mid`);
+    }
+  }
+});
+
+function assertCleanHops(routes: Map<string, Route>, radius = 4): void {
+  const all = [...routes.values()];
+  const junctions = all.flatMap((route) => route.junctions);
+  for (const route of all) {
+    const hops = [...route.hops].sort((a, b) => a.y - b.y || a.x - b.x);
+    for (let k = 1; k < hops.length; k += 1) {
+      assert.ok(
+        hops[k].y !== hops[k - 1].y || hops[k].x - hops[k - 1].x > radius * 2,
+        `${route.id} stacks two hops at ${hops[k].x},${hops[k].y}`,
+      );
+    }
+    for (const hop of hops) {
+      assert.ok(
+        !junctions.some((j) => Math.abs(j.x - hop.x) <= radius * 2 && Math.abs(j.y - hop.y) <= radius),
+        `${route.id} hops over a junction dot at ${hop.x},${hop.y}`,
+      );
+      // The crossed wire runs well past the arc on both sides: a real crossing, not a lane jog.
+      const crossed = all.some(
+        (other) =>
+          other !== route &&
+          segments(other.points).some(
+            ([a, b]) =>
+              Math.abs(a.x - hop.x) < 0.01 &&
+              Math.abs(b.x - hop.x) < 0.01 &&
+              Math.min(a.y, b.y) < hop.y - radius &&
+              Math.max(a.y, b.y) > hop.y + radius,
+          ),
+      );
+      assert.ok(crossed, `${route.id} hops at ${hop.x},${hop.y} where nothing crosses it`);
+    }
+  }
+}
+
+test("a hop over wires that merge into one input is drawn once", () => {
+  const { routes } = previewRow([
+    ["top", -188, -158, 85],
+    ["gen", 0, 0, 240],
+    ["mid", 306, 59, 235],
+    ["right", 650, 61, 348],
+  ]);
+  assertCleanHops(routes);
+  for (const route of routes.values()) {
+    const path = buildWirePath(route.points, route.hops, 4, 10);
+    // A hop inside a rounded corner is left out, so at most one arc per hop.
+    assert.ok((path.match(/ A /g)?.length ?? 0) <= route.hops.length, `${route.id} draws each hop once`);
+  }
+});
+
+test("no hop where a wire forks or joins right on the line it would hop", () => {
+  const { routes } = previewRow([
+    ["top", -377, -227, 93],
+    ["gen", 0, 0, 277],
+    ["mid", 353, 11, 335],
+    ["right", 793, -20, 343],
+  ]);
+  assertCleanHops(routes);
+});
