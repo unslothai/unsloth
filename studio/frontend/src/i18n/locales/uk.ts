@@ -4840,6 +4840,8 @@ export const uk = {
     edit: "Редагувати",
     options: "Параметри завдання",
     schedule: {
+      hourly: "Щогодини",
+      everyHours: "Кожні {hours} год",
       once: "Одноразово, {date} о {time}",
       daily: "Щодня о {time}",
       weekdays: "Щобудня о {time}",
@@ -4847,6 +4849,9 @@ export const uk = {
       monthly: "Щомісяця, день {day}, о {time}",
     },
     form: {
+      hourly: "Щогодини",
+      intervalHours: "Інтервал (години)",
+      hourlyNote: "Перший запуск відбудеться через один інтервал після збереження. Зміна інтервалу або відновлення починає очікування заново.",
       createTitle: "Запланувати завдання",
       editTitle: "Редагувати заплановане завдання",
       name: "Назва",

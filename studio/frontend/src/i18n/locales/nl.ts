@@ -4852,6 +4852,8 @@ export const nl = {
     edit: "Bewerken",
     options: "Taakopties",
     schedule: {
+      hourly: "Elk uur",
+      everyHours: "Elke {hours} uur",
       once: "Eenmalig, {date} om {time}",
       daily: "Elke dag om {time}",
       weekdays: "Elke werkdag om {time}",
@@ -4859,6 +4861,9 @@ export const nl = {
       monthly: "Elke maand op dag {day} om {time}",
     },
     form: {
+      hourly: "Elk uur",
+      intervalHours: "Interval (uren)",
+      hourlyNote: "De eerste uitvoering vindt één interval na het opslaan plaats. Het interval wijzigen of hervatten start de wachttijd opnieuw.",
       createTitle: "Een taak plannen",
       editTitle: "Geplande taak bewerken",
       name: "Naam",

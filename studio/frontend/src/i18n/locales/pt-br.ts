@@ -4487,6 +4487,8 @@ export const ptBR = {
     edit: "Editar",
     options: "Opções da tarefa",
     schedule: {
+      hourly: "A cada hora",
+      everyHours: "A cada {hours} horas",
       once: "Uma vez, em {date} às {time}",
       daily: "Todos os dias às {time}",
       weekdays: "Em dias úteis às {time}",
@@ -4494,6 +4496,9 @@ export const ptBR = {
       monthly: "Todo mês no dia {day} às {time}",
     },
     form: {
+      hourly: "A cada hora",
+      intervalHours: "Intervalo (horas)",
+      hourlyNote: "A primeira execução ocorre um intervalo após salvar. Alterar o intervalo ou retomar reinicia a espera.",
       createTitle: "Agendar uma tarefa",
       editTitle: "Editar tarefa agendada",
       name: "Nome",

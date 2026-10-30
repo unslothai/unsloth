@@ -4358,6 +4358,8 @@ export const zhCN = {
     edit: "编辑",
     options: "任务选项",
     schedule: {
+      hourly: "每小时",
+      everyHours: "每 {hours} 小时",
       once: "仅一次，{date} {time}",
       daily: "每天 {time}",
       weekdays: "工作日 {time}",
@@ -4365,6 +4367,9 @@ export const zhCN = {
       monthly: "每月 {day} 日 {time}",
     },
     form: {
+      hourly: "每小时",
+      intervalHours: "间隔（小时）",
+      hourlyNote: "保存后经过一个间隔执行第一次任务。更改间隔或恢复任务会重新开始等待。",
       createTitle: "安排任务",
       editTitle: "编辑定时任务",
       name: "名称",
