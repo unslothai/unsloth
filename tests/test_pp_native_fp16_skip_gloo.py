@@ -12,6 +12,7 @@ if multiprocessing.parent_process() is not None or getattr(
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
+import pickle  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 
@@ -46,9 +47,15 @@ def _one_step(rank, world, recipe, inf_rank):
     scaler.step(opt)
     scaler.update()
     after = [p.detach().clone() for p in pp.parameters()]
+    try:
+        pickle.loads(pickle.dumps(scaler))  # torch.amp allows pickling a GradScaler after update()
+        picklable = "ok"
+    except Exception as exc:
+        picklable = f"{type(exc).__name__}: {exc}"
     return {
         "unchanged": all(torch.equal(a, b) for a, b in zip(before, after)),
         "scale": float(scaler.get_scale()),
+        "picklable": picklable,
     }
 
 
@@ -79,6 +86,28 @@ def _clip_before_unscale(rank, world):
     return out
 
 
+def _clip_after_step(rank, world):
+    """Gradients are unscaled once scaler.step ran (it unscales first) and stay so after update():
+    a grad-norm read there (logging) is correct usage and must not be refused."""
+    from torch.distributed.device_mesh import init_device_mesh
+
+    model = build(LLAMA)
+    ids, labels = batch(model)
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))
+    pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 2)
+    scaler = torch.amp.GradScaler("cpu", init_scale = 1024.0)
+    opt = torch.optim.SGD(pp.parameters(), lr = 1.0)
+    out = {}
+    pp.step(ids, labels, scaler = scaler)
+    for where, action in (("after_step", lambda: scaler.step(opt)), ("after_update", scaler.update)):
+        action()
+        try:
+            out[where] = float(pp.clip_grad_norm_(1e9))
+        except ValueError as exc:
+            out[where] = str(exc)
+    return out
+
+
 def _worker(rank, world, port, tmp, case, kwargs):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
@@ -97,7 +126,7 @@ def _worker(rank, world, port, tmp, case, kwargs):
         "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 180)
     )
     try:
-        fn = _one_step if case == "step" else _clip_before_unscale
+        fn = {"step": _one_step, "clip": _clip_before_unscale, "clip_after": _clip_after_step}[case]
         res = fn(rank, world, **kwargs)
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
     finally:
@@ -149,3 +178,14 @@ def test_pp2_clip_before_unscale_is_refused():
     for r in _spawn("clip"):
         assert r["scaled_clip"] is not None and "unscale_" in r["scaled_clip"], r
         assert r["unscaled_clip"] > 0 and r["no_scaler_clip"] > 0, r
+
+
+def test_pp2_scaler_still_pickles_after_update():
+    """pp.step(scaler = ...) must not leave the scaler unpicklable (torch.save(scaler) after scaler.update())."""
+    results = _spawn("step", recipe = "scaler_step_only", inf_rank = -1)
+    assert [r["picklable"] for r in results] == ["ok", "ok"], results
+
+
+def test_pp2_clip_after_scaler_step_is_allowed():
+    for r in _spawn("clip_after"):
+        assert all(isinstance(v, float) and v > 0 for v in r.values()), r

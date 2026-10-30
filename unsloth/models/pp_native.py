@@ -1239,12 +1239,16 @@ class PipelineParallel:
         self._agree_found_inf(scaler, optimizer)
 
     def _bind_scaler(self, scaler):
-        """Make scaler.unscale_ / scaler.step agree found_inf over every stage, or one stage steps while another skips."""
+        """Make scaler.unscale_ / scaler.step agree found_inf over every stage, or one stage steps while another skips.
+        Bound until scaler.update(), so the scaler pickles again where torch.amp allows it and holds no pipeline."""
         import weakref
 
-        if getattr(scaler, "_unsloth_pp_agree", None) is self:
+        bound = scaler.__dict__.get("_unsloth_pp_agree")
+        if bound is not None and bound() is self:
             return
-        unscale = type(scaler).unscale_.__get__(scaler)
+        cls = type(scaler)
+        unscale = cls.unscale_.__get__(scaler)
+        update = cls.update.__get__(scaler)
         pipeline = weakref.ref(self)
 
         def unscale_(optimizer):
@@ -1253,8 +1257,19 @@ class PipelineParallel:
             if pp is not None and scaler.is_enabled():
                 pp._agree_found_inf(scaler, optimizer)
 
+        def update_(new_scale = None):
+            try:
+                return update(new_scale)
+            finally:
+                for name in ("unscale_", "update", "_unsloth_pp_agree"):
+                    scaler.__dict__.pop(name, None)
+                pp = pipeline()
+                if pp is not None and pp._step_scaler is scaler:
+                    pp._step_scaler = None  # this step's gradients were unscaled (update follows step)
+
         scaler.unscale_ = unscale_
-        scaler._unsloth_pp_agree = self
+        scaler.update = update_
+        scaler._unsloth_pp_agree = pipeline
 
     def _check_unscaled(self):
         """clip_grad_norm_ on gradients still multiplied by the loss scale clips the wrong norm."""
@@ -1266,8 +1281,8 @@ class PipelineParallel:
         except ImportError:
             return
         states = getattr(scaler, "_per_optimizer_states", {}) or {}
-        if any(state.get("stage") is OptState.UNSCALED for state in states.values()):
-            return
+        if any(state.get("stage") in (OptState.UNSCALED, OptState.STEPPED) for state in states.values()):
+            return  # scaler.step unscales first: STEPPED gradients are unscaled too
         raise ValueError(
             "Unsloth: PipelineParallel.clip_grad_norm_ got gradients still multiplied by the float16 "
             "loss scale. Call scaler.unscale_(optimizer) (or pp.unscale_(scaler, optimizer)) first, as "
