@@ -10,9 +10,9 @@ export const MAX_HELD_CHARS = 256;
 export type StreamPublishGate = ((streamed: number) => boolean) & {
   /** Resolves when the gate reopens while text it refused is still unpublished; null when nothing is held. */
   heldUntilReopen(): Promise<void> | null;
-  /** The held text went out through a publish the gate did not pace. */
+  /** An unpaced publish sent the held text. */
   published(): void;
-  /** Cancels the pending frame and timer; the gate stays usable and open. */
+  /** Cancels the pending frame and timer; the gate stays open. */
   dispose(): void;
 };
 
@@ -88,7 +88,6 @@ export function createStreamPublishGate(): StreamPublishGate {
     },
     dispose() {
       cancelCycle?.();
-      // Nothing waits on a disposed gate; dropping the waiter lets its awaiters be collected.
       reopenWaiter = null;
       wakeWaiter = null;
       held = false;
@@ -96,13 +95,9 @@ export function createStreamPublishGate(): StreamPublishGate {
   });
 }
 
-/** Marks a gate reopening while text is held, so the caller can publish it without waiting for a chunk. */
 export const TRAILING_PUBLISH: unique symbol = Symbol("trailing publish");
 
-/**
- * Yields `source` unchanged, plus TRAILING_PUBLISH when the gate reopens while text is held and the
- * next item has not arrived yet. An item that is ready always wins, so arrivals keep their order.
- */
+/** Adds TRAILING_PUBLISH when the gate reopens with text held; a ready item always wins, so order holds. */
 export async function* withTrailingPublish<T>(
   source: AsyncIterable<T>,
   gate: StreamPublishGate,
@@ -132,14 +127,13 @@ export async function* withTrailingPublish<T>(
       yield next.value;
     }
   } catch (error) {
-    // A rejected next() ends the source; there is nothing left to return.
     exhausted = true;
     throw error;
   } finally {
     gate.dispose();
     if (!exhausted) {
       if (pending) {
-        // A read is in flight: return() would queue behind it, so do not hold the caller's exit on it.
+        // return() would queue behind the in-flight read, so don't block the caller's exit on it.
         const inFlight = pending;
         void inFlight
           .then(

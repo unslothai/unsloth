@@ -7103,7 +7103,6 @@ export function createOpenAIStreamAdapter(
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
-            // Held text goes out when the gate reopens, not when the next chunk happens to arrive.
             const stream = withTrailingPublish(sourceStream, canPublish);
 
             for await (const chunk of stream) {
@@ -8488,7 +8487,6 @@ export function createOpenAIStreamAdapter(
               }
 
               if (assistantContent.length > 0) {
-                // A replay delta skips the gate, so its publish must clear the held text too.
                 canPublish.published();
                 yield {
                   content: assistantContent,
