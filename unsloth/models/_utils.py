@@ -985,6 +985,22 @@ _FLEX_SMALL_SMEM_KERNEL_OPTIONS = {
 _FLEX_SMALL_SMEM_MIN_SHARED_MEMORY = 101376
 _FLEX_SMALL_SMEM_CAPABILITY_MAJOR = 8
 _FLEX_SMALL_SMEM_ENV_VAR = "UNSLOTH_FLEX_SMALL_SMEM_TILES"
+# flex_decoding (no-grad query below 128) holds next_pow2(q_len * query heads per kv head) query rows
+# in one tile. At head_dim 256 on these cards up to 64 rows fit (one-token decode: 16), 128 need
+# 114688 B. A short prompt's prefill (Gemma 3 1B: 28 tokens x 4 heads) then fails to compile,
+# unsloth_zoo's suppress_errors hides it, and Dynamo marks flex_attention as skipped for the rest
+# of the process, so every later call, long prompts and decode included, runs the eager fallback.
+_FLEX_SMALL_SMEM_DECODE_MAX_ROWS = 64
+
+
+def _flex_decode_rows(query, key):
+    """Query rows flex_decoding would put in one tile for this call (transformers repeats K / V
+    for a head count that is not a power of two, so each kv head then serves one query head)."""
+    q_heads, kv_heads = query.shape[1], key.shape[1]
+    group = 1
+    if kv_heads > 0 and q_heads % kv_heads == 0 and (q_heads & (q_heads - 1)) == 0:
+        group = q_heads // kv_heads
+    return query.shape[2] * group
 
 
 def _flex_small_smem_device_ok():
@@ -1193,13 +1209,14 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and small_smem_device_ok
             and hasattr(query, "dim")
             and query.dim() == 4
-            # Short no-grad queries go to flex_decoding, whose own tiles are left alone, unless the
-            # caller (the block compile hook, also for no-grad checkpoint forwards) forces the main
-            # kernel. Shape last, so training calls add no seq >= 128 guard.
+            # Short no-grad queries go to flex_decoding, whose own tiles are left alone while they
+            # fit, unless the caller (the block compile hook, also for no-grad checkpoint forwards)
+            # forces the main kernel. Shape last, so training calls add no seq >= 128 guard.
             and (
                 _flex_call_needs_backward(query, key, value)
                 or _flex_main_kernel_forced(kwargs)
                 or query.shape[2] >= 128
+                or _flex_decode_rows(query, key) > _FLEX_SMALL_SMEM_DECODE_MAX_ROWS
             )
             and _flex_tuned_bwd_fits(
                 args, kwargs, _FLEX_SMALL_SMEM_KERNEL_OPTIONS, ("fwd_", "bwd_", "BLOCK_", "num_")

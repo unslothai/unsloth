@@ -197,6 +197,48 @@ def test_wrapper_no_grad_prefill_gets_tiles_decode_does_not(monkeypatch):
     assert seen == {}  # flex_decoding keeps its own config
 
 
+def _gqa_qkv(
+    q_len,
+    q_heads,
+    kv_heads,
+    head_dim = 256,
+):
+    import torch
+    q = torch.randn(1, q_heads, q_len, head_dim)
+    return [q, torch.randn(1, kv_heads, q_len, head_dim), torch.randn(1, kv_heads, q_len, head_dim)]
+
+
+@pytest.mark.parametrize(
+    "q_len,q_heads,kv_heads,tiled",
+    [
+        (1, 4, 1, False),  # Gemma 3 1B decode step: 16 rows, flex_decoding fits
+        (16, 4, 1, False),  # 64 rows still fit
+        (17, 4, 1, True),  # 68 rows -> a 128-row tile: 114688 B
+        (28, 4, 1, True),  # Gemma 3 1B / 270M chat prompt
+        (28, 8, 4, False),  # Gemma 3 4B: 2 query heads per kv head, 56 rows
+        (40, 8, 4, True),
+        (127, 2, 2, True),
+        (28, 6, 2, False),  # not a power of two: transformers repeats K / V, 28 rows
+    ],
+)
+def test_wrapper_short_prompt_whose_decode_tile_does_not_fit_gets_tiles(
+    monkeypatch, q_len, q_heads, kv_heads, tiled
+):
+    # A failed compile here pinned flex_attention to the eager fallback for the whole process.
+    wrapped, seen = _wrapped(monkeypatch)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    wrapped(_Causal(), *_gqa_qkv(q_len, q_heads, kv_heads), object())
+    if tiled:
+        assert {
+            k: seen.get(k) for k in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
+        } == u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
+    else:
+        assert seen == {}
+    wrapped, seen = _wrapped(monkeypatch, small_ok = False)
+    wrapped(_Causal(), *_gqa_qkv(q_len, q_heads, kv_heads), object())
+    assert seen == {}  # other cards keep the defaults
+
+
 def test_wrapper_untouched_off_class_and_outside_range(monkeypatch):
     wrapped, seen = _wrapped(monkeypatch, small_ok = False)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: True)
