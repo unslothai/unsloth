@@ -3,6 +3,7 @@
 
 import { fetchDeviceType } from "@/config/env";
 import { authFetch } from "@/features/auth";
+import { clearDownloadTransportCapabilitiesCache } from "@/features/hub";
 import { markRemoteNetworkOnline } from "@/features/hub/lib/network";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type { HubSource } from "@/lib/hf-endpoint";
@@ -59,6 +60,7 @@ export async function updateHubSource(source: HubSource): Promise<HubSettings> {
     throw new Error(await readFastApiError(res, "Failed to switch the model source"));
   }
   const saved = fromApi(await res.json());
+  clearDownloadTransportCapabilitiesCache();
   await followSavedEndpoints();
   return saved;
 }
