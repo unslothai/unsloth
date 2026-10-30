@@ -186,65 +186,8 @@ def _kill_tree(proc) -> None:
         pass
 
 
-_JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x100
-_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
-
-
-def _limit_job_memory(kernel32, handle, limit_bytes: Optional[int]) -> bool:
-    """RLIMIT_AS for the Windows reward job: a per-process commit cap on every process in it.
-    Windows has nothing like RLIMIT_FSIZE, so there is no file-size cap there."""
-    if not limit_bytes or not handle:
-        return False
-    import ctypes
-    from ctypes import wintypes
-
-    class _Basic(ctypes.Structure):
-        _fields_ = [
-            ("PerProcessUserTimeLimit", ctypes.c_int64),
-            ("PerJobUserTimeLimit", ctypes.c_int64),
-            ("LimitFlags", wintypes.DWORD),
-            ("MinimumWorkingSetSize", ctypes.c_size_t),
-            ("MaximumWorkingSetSize", ctypes.c_size_t),
-            ("ActiveProcessLimit", wintypes.DWORD),
-            ("Affinity", ctypes.c_size_t),
-            ("PriorityClass", wintypes.DWORD),
-            ("SchedulingClass", wintypes.DWORD),
-        ]
-
-    class _Io(ctypes.Structure):
-        _fields_ = [
-            (n, ctypes.c_uint64)
-            for n in (
-                "ReadOperationCount",
-                "WriteOperationCount",
-                "OtherOperationCount",
-                "ReadTransferCount",
-                "WriteTransferCount",
-                "OtherTransferCount",
-            )
-        ]
-
-    class _Extended(ctypes.Structure):
-        _fields_ = [
-            ("BasicLimitInformation", _Basic),
-            ("IoInfo", _Io),
-            ("ProcessMemoryLimit", ctypes.c_size_t),
-            ("JobMemoryLimit", ctypes.c_size_t),
-            ("PeakProcessMemoryUsed", ctypes.c_size_t),
-            ("PeakJobMemoryUsed", ctypes.c_size_t),
-        ]
-
-    info = _Extended()
-    info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_PROCESS_MEMORY
-    info.ProcessMemoryLimit = int(limit_bytes)
-    return bool(
-        kernel32.SetInformationJobObject(
-            handle,
-            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
-            ctypes.byref(info),
-            ctypes.sizeof(info),
-        )
-    )
+_JOB_OBJECT_LIMIT_PROCESS_MEMORY = _worker_io._JOB_OBJECT_LIMIT_PROCESS_MEMORY
+_limit_job_memory = _worker_io._limit_job_memory
 
 
 def _windows_job(proc):
@@ -405,7 +348,11 @@ class RewardWorker:
             # Only now: the worker waits for this before it runs any reward code.
             _worker_io.put(
                 os.path.join(self._workdir, "rewards.json"),
-                {"specs": self.specs, "unsloth_helpers": _unsloth_helpers_path()},
+                {
+                    "specs": self.specs,
+                    "unsloth_helpers": _unsloth_helpers_path(),
+                    "memory_limit_bytes": _reward_as_bytes,
+                },
             )
             record = self._prepared.execution_record
             self.isolation = {
