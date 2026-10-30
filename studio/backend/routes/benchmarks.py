@@ -25,6 +25,8 @@ LEASE_TTL_SECONDS = 150
 
 _lease_lock = threading.Lock()
 _lease: Optional[dict[str, Any]] = None
+# Admitted loads still running, by lease header: a new lease waits them out.
+_loads_in_flight: dict[Optional[str], int] = {}
 
 
 def _redact_run(run: dict[str, Any], *, via_api_key: bool) -> dict[str, Any]:
@@ -170,6 +172,15 @@ def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current
                     "Stop it or let it finish first.",
                 },
             )
+        if _loads_pending(lease.holder) and not (_lease and _lease["holder"] == lease.holder):
+            # It passed the fence before this lease existed and would land after the run's first load.
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "error": "model_loading",
+                    "message": "A model is loading. Start the run once it finishes.",
+                },
+            )
         outside = _lease["outside"] if _lease and _lease["holder"] == lease.holder else 0
         _lease = {
             "holder": lease.holder,
@@ -206,10 +217,27 @@ def _sweep_holds_against(holder: Optional[str]) -> bool:
     )
 
 
-def load_refused(holder: Optional[str]) -> bool:
-    """A load reloads the one llama-server, so mid-sweep it would run the next rows under other settings."""
+def _loads_pending(holder: Optional[str]) -> bool:
+    return any(n > 0 for h, n in _loads_in_flight.items() if h != holder)
+
+
+def _admit_load(holder: Optional[str]) -> bool:
+    """A load reloads the one llama-server, so mid-sweep it would run the next rows under other
+    settings. Checked and counted under one lock, so a lease can't slip in between."""
     with _lease_lock:
-        return _sweep_holds_against(holder)
+        if _sweep_holds_against(holder):
+            return False
+        _loads_in_flight[holder] = _loads_in_flight.get(holder, 0) + 1
+        return True
+
+
+def _load_done(holder: Optional[str]) -> None:
+    with _lease_lock:
+        n = _loads_in_flight.get(holder, 0) - 1
+        if n > 0:
+            _loads_in_flight[holder] = n
+        else:
+            _loads_in_flight.pop(holder, None)
 
 
 def _holds_lease(holder: Optional[str]) -> bool:
@@ -245,7 +273,7 @@ class BenchmarkTrafficMiddleware:
         if (
             scope.get("type") == "http"
             and scope.get("method") == "POST"
-            and (_lease is not None or (path.rstrip("/") in LOAD_PATHS and _eval_running()))
+            and (_lease is not None or path.rstrip("/") in LOAD_PATHS)
         ):
             from core.inference.llama_keepwarm import (
                 _carries_bearer_credentials,
@@ -261,22 +289,27 @@ class BenchmarkTrafficMiddleware:
                 None,
             )
             # Uncredentialed calls go on to the route's own 401.
-            refused = None
             if path.rstrip("/") in LOAD_PATHS and _carries_bearer_credentials(scope, path):
-                if load_refused(holder):
-                    refused = "A benchmark is running on this model."
-                elif _eval_running() and not _holds_lease(holder):
+                refused = None
+                if _eval_running() and not _holds_lease(holder):
                     refused = "An eval is running on this model."
-            if refused:
-                from starlette.responses import JSONResponse
-                await JSONResponse(
-                    {
-                        "detail": f"{refused} Stop it on the Benchmarks page or let it finish, "
-                        "then try again."
-                    },
-                    status_code = 409,
-                )(scope, receive, send)
+                elif not _admit_load(holder):
+                    refused = "A benchmark is running on this model."
+                if refused:
+                    from starlette.responses import JSONResponse
+                    await JSONResponse(
+                        {
+                            "detail": f"{refused} Stop it on the Benchmarks page or let it finish, "
+                            "then try again."
+                        },
+                        status_code = 409,
+                    )(scope, receive, send)
+                    return
+                try:
+                    await self.app(scope, receive, send)
+                finally:
+                    _load_done(holder)
                 return
-            if _is_inference_path(path) and not path.endswith(_NOT_GENERATIONS):
+            if _lease is not None and _is_inference_path(path) and not path.endswith(_NOT_GENERATIONS):
                 note_inference_request(holder)
         await self.app(scope, receive, send)
