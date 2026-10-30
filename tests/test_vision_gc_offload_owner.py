@@ -262,19 +262,32 @@ def test_no_zoo_hooks_falls_back_to_cpu_offload(G):
     assert torch.equal(x.grad, 2 * x)
 
 
-def _tiny_llama():
+def _tiny_causal_lm(arch):
     transformers = pytest.importorskip("transformers")
-    config = transformers.LlamaConfig(
-        vocab_size = 64,
-        hidden_size = 16,
-        intermediate_size = 32,
-        num_hidden_layers = 2,
-        num_attention_heads = 2,
-        num_key_value_heads = 2,
-        max_position_embeddings = 32,
-    )
+    if arch == "llama":
+        config = transformers.LlamaConfig(
+            vocab_size = 64,
+            hidden_size = 16,
+            intermediate_size = 32,
+            num_hidden_layers = 2,
+            num_attention_heads = 2,
+            num_key_value_heads = 2,
+            max_position_embeddings = 32,
+        )
+        cls = transformers.LlamaForCausalLM
+    else:  # OPTForCausalLM calls self.model.decoder(...), never self.model
+        config = transformers.OPTConfig(
+            vocab_size = 64,
+            hidden_size = 16,
+            ffn_dim = 32,
+            word_embed_proj_dim = 16,
+            num_hidden_layers = 2,
+            num_attention_heads = 2,
+            max_position_embeddings = 32,
+        )
+        cls = transformers.OPTForCausalLM
     torch.manual_seed(0)
-    model = transformers.LlamaForCausalLM(config)
+    model = cls(config)
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
     model.train()
     return model
@@ -287,16 +300,17 @@ def _install_checkpoint(model, checkpoint):
         m._gradient_checkpointing_func = checkpoint
 
 
+@pytest.mark.parametrize("arch", ["llama", "opt"])
 @pytest.mark.parametrize("peft_wrapped", [False, True])
-def test_owner_forward_hook_fires_under_peft(G, monkeypatch, peft_wrapped):
+def test_owner_forward_hook_fires_under_peft(G, monkeypatch, peft_wrapped, arch):
     # post_patch_model runs on the bare model and again on the PEFT model; both must own the
     # module every forward calls through its hooks (PEFT's BaseTuner calls .forward() directly).
     phase, labels, made = ["A"], weakref.WeakKeyDictionary(), []
     monkeypatch.setattr(
         G, "_new_activation_offloader", _labelling_offloader(G, phase, labels, made)
     )
-    model = _tiny_llama()
-    backbone = model.model
+    model = _tiny_causal_lm(arch)
+    backbone = model.model if arch == "llama" else model.model.decoder
     ns, _ = _vision_ns(G)
     assert ns["_gc_offload_owner"](model) is backbone
     if peft_wrapped:

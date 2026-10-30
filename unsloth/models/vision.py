@@ -3334,14 +3334,43 @@ def _offload_activation_unpack(packed):
 
 
 def _gc_offload_owner(model):
-    # The owner's forward pre-hook marks each forward. PEFT 0.18's BaseTuner calls the wrapped model's
-    # .forward() directly, skipping its hooks, so unwrap PEFT and own by the backbone, which the model
-    # calls as a module. Same object before and after get_peft_model, so one offloader and one hook.
+    # The owner's forward pre-hook marks each forward, so it must be a module every forward calls as
+    # a module. PEFT 0.18's BaseTuner calls the wrapped model's .forward() directly, skipping its hooks,
+    # so unwrap PEFT first: the same object is then chosen before and after get_peft_model.
     get_base_model = getattr(model, "get_base_model", None)
     if callable(get_base_model):
         base = get_base_model()
         if isinstance(base, torch.nn.Module):
             model = base
+    # Deepest module holding every checkpointed layer (text and vision towers). OPT / Bart / Whisper
+    # *ForCausalLM call self.model.decoder(...), never self.model, so .model alone is not enough.
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except ImportError:
+        GradientCheckpointingLayer = None
+    if GradientCheckpointingLayer is not None:
+        names = [
+            n for n, m in model.named_modules() if n and isinstance(m, GradientCheckpointingLayer)
+        ]
+        outer = [n for n in names if not any(n.startswith(o + ".") for o in names)]
+        if outer:
+            common = None
+            for n in outer:
+                parts = n.split(".")[:-1]
+                if common is None:
+                    common = parts
+                else:
+                    k = 0
+                    while k < min(len(common), len(parts)) and common[k] == parts[k]:
+                        k += 1
+                    common = common[:k]
+            owner = model.get_submodule(".".join(common)) if common else model
+            # A ModuleList / ModuleDict is iterated, never called.
+            while common and isinstance(owner, (torch.nn.ModuleList, torch.nn.ModuleDict)):
+                common = common[:-1]
+                owner = model.get_submodule(".".join(common)) if common else model
+            if owner is not model:
+                return owner
     backbone = getattr(model, "model", None)
     return backbone if isinstance(backbone, torch.nn.Module) else model
 
