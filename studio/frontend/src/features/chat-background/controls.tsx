@@ -67,12 +67,12 @@ export function ChatBackgroundControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.title")}
-			actionAlign="text"
 			action={
 				<div className="flex max-w-full flex-wrap items-center justify-end gap-1">
 					{value && (
 						<Button
-							className="text-foreground"
+							// Same hover wash as the outline (btn-fill) Replace button beside it.
+							className="text-foreground hover:bg-[color-mix(in_srgb,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_srgb,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]"
 							type="button"
 							variant="ghost"
 							size="sm"
@@ -158,12 +158,12 @@ export function ChatBackgroundControls() {
 				}}
 			/>
 			{error && (
-				<p role="alert" className="mb-3 text-sm text-destructive">
+				<p role="alert" className="mt-3 mb-3 text-sm text-destructive">
 					{t(errors[error])}
 				</p>
 			)}
 			<div
-				className="grid grid-cols-1 gap-3 sm:grid-cols-2"
+				className={`${error ? "" : "mt-3 "}grid grid-cols-1 gap-3 sm:grid-cols-2`}
 				data-wallpaper-previews=""
 			>
 				{[false, true].map((conversation) => (
@@ -201,7 +201,7 @@ export function ChatBackgroundControls() {
 			</div>
 			{value && (
 				<>
-					<SettingsRow label={t("chatBackground.effect")}>
+					<SettingsRow label={t("chatBackground.effect")} className="items-start">
 						<Select
 							disabled={!value || busy}
 							value={adjustments.effect}
@@ -224,7 +224,7 @@ export function ChatBackgroundControls() {
 							</SelectContent>
 						</Select>
 					</SettingsRow>
-					<SettingsRow label={t("chatBackground.sizing")}>
+					<SettingsRow label={t("chatBackground.sizing")} className="items-start">
 						<Select
 							disabled={!value || busy}
 							value={adjustments.sizing}
@@ -250,6 +250,7 @@ export function ChatBackgroundControls() {
 					{(["visibility", "blur", "zoom"] as const).map((key) => (
 						<SettingsRow
 							key={key}
+							className="items-start"
 							label={t(
 								key === "zoom"
 									? "chatBackground.zoom"
@@ -281,7 +282,7 @@ export function ChatBackgroundControls() {
 							</div>
 						</SettingsRow>
 					))}
-					<SettingsRow label={t("chatBackground.outline")}>
+					<SettingsRow label={t("chatBackground.outline")} className="items-start">
 						<Switch
 							aria-label={t("chatBackground.outline")}
 							checked={adjustments.outline}
@@ -289,7 +290,7 @@ export function ChatBackgroundControls() {
 							onCheckedChange={(outline) => patchBackground({ outline })}
 						/>
 					</SettingsRow>
-					<SettingsRow label={t("chatBackground.fade")}>
+					<SettingsRow label={t("chatBackground.fade")} className="items-start">
 						<Switch
 							aria-label={t("chatBackground.fade")}
 							checked={adjustments.fade}
