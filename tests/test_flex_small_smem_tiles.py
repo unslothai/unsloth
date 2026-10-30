@@ -263,7 +263,10 @@ def test_short_query_tiles_torch_gate(monkeypatch, version, expected):
     "q_len,q_heads,kv_heads,forced",
     [
         (1, 4, 1, False),  # Gemma 3 1B decode step: tiles, flex_decoding stays eligible
+        (4, 4, 1, False),  # 16 rows: flex_decoding's own BLOCK_M would be 16
+        (8, 4, 1, False),  # 32 rows
         (16, 4, 1, False),  # 64 rows
+        (16, 8, 4, False),  # Gemma 3 4B 16-token prompt, 32 rows
         (28, 8, 4, False),  # Gemma 3 4B prompt, 56 rows
         (28, 6, 2, False),  # repeated K / V, 28 rows
         (17, 4, 1, True),  # 68 rows: main kernel, as in the default gate
@@ -285,6 +288,8 @@ def test_wrapper_short_no_grad_queries_get_tiles_before_torch_2_14(
         k: seen.get(k) for k in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
     } == u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
     assert seen.get("FORCE_USE_FLEX_ATTENTION") is (True if forced else None)
+    # flex_decoding derives SAFE_M_BOUNDARY from plain BLOCK_M, not fwd_BLOCK_M (torch < 2.14).
+    assert seen.get("BLOCK_M") == (None if forced else 64)
     wrapped, seen = _wrapped(monkeypatch, small_ok = False, short_tiles = True)
     wrapped(_Causal(), *qkv, object())
     assert seen == {}  # other cards keep the defaults

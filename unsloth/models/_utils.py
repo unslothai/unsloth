@@ -1262,9 +1262,15 @@ def _wrap_flex_attention_forward(flex_attention_forward):
                 and not _flex_call_needs_backward(query, key, value)
                 and not _flex_main_kernel_forced(kwargs)
                 and query.shape[2] < 128
-                and _flex_decode_rows(query, key) > _FLEX_SMALL_SMEM_DECODE_MAX_ROWS
             ):
-                kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
+                if _flex_decode_rows(query, key) > _FLEX_SMALL_SMEM_DECODE_MAX_ROWS:
+                    kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
+                else:
+                    # Before torch 2.14 flex_decoding sets SAFE_M_BOUNDARY from its own BLOCK_M
+                    # (16 / 32 at 16 / 32 rows) and only then lets fwd_BLOCK_M 64 replace it, so the
+                    # 64-row tile skips its row masks and its rowmax / sumexp stores overwrite other
+                    # heads. Plain BLOCK_M is the one it checks; the main kernel takes fwd_BLOCK_M.
+                    kernel_options["BLOCK_M"] = kernel_options["fwd_BLOCK_M"]
         if (
             kernel_options is None
             and tuned_bwd_device_ok
