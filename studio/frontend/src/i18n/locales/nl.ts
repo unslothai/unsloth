@@ -3792,7 +3792,7 @@ export const nl = {
       mcp: {
         title: "Agenttoegang (MCP)",
         description:
-          "Laat codeeragents zoals Claude Code en Codex Unsloth gebruiken via MCP. Agents loggen in met een Unsloth-API-sleutel van deze pagina.",
+          "Laat codeeragents zoals Claude Code en Codex Unsloth gebruiken via MCP.",
         enable: "Agentverbindingen toestaan",
         enableDescription:
           "Biedt /mcp/ aan voor verzoeken met een Unsloth-API-sleutel.",
@@ -3801,7 +3801,7 @@ export const nl = {
         saveError: "Kan de instelling voor agenttoegang niet opslaan.",
         agent: "Agent",
         exportKeyHint:
-          "Stel {name} in op een Unsloth-API-sleutel van deze pagina voordat je de agent start.",
+          "Stel {name} in op een Unsloth-API-sleutel voordat je de agent start.",
         configFileHint: "Voeg dit toe aan {path}.",
         keywords:
           "mcp model context protocol agents claude codex tools toegang verbinding",

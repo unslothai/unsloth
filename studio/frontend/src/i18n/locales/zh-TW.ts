@@ -3557,7 +3557,7 @@ export const zhTW = {
       mcp: {
         title: "代理程式存取（MCP）",
         description:
-          "讓 Claude Code 和 Codex 等程式設計代理程式透過 MCP 使用 Unsloth。代理程式會使用此頁面中的 Unsloth API 金鑰登入。",
+          "讓 Claude Code 和 Codex 等程式設計代理程式透過 MCP 使用 Unsloth。",
         enable: "允許代理程式連線",
         enableDescription: "為帶有 Unsloth API 金鑰的請求提供 /mcp/ 服務。",
         lockedByEnv: "由 {name} 設定。",
@@ -3565,7 +3565,7 @@ export const zhTW = {
         saveError: "無法儲存代理程式存取設定。",
         agent: "代理程式",
         exportKeyHint:
-          "啟動代理程式前，請將 {name} 設為此頁面中的 Unsloth API 金鑰。",
+          "啟動代理程式前，請將 {name} 設為 Unsloth API 金鑰。",
         configFileHint: "將此內容加入 {path}。",
         keywords:
           "mcp model context protocol 模型上下文協定 agents 代理程式 claude codex tools 工具",

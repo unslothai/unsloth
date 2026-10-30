@@ -3746,7 +3746,7 @@ export const id = {
       mcp: {
         title: "Akses agen (MCP)",
         description:
-          "Izinkan agen coding seperti Claude Code dan Codex menggunakan Unsloth melalui MCP. Agen masuk dengan kunci API Unsloth dari halaman ini.",
+          "Izinkan agen coding seperti Claude Code dan Codex menggunakan Unsloth melalui MCP.",
         enable: "Izinkan koneksi agen",
         enableDescription:
           "Melayani /mcp/ untuk permintaan yang membawa kunci API Unsloth.",
@@ -3755,7 +3755,7 @@ export const id = {
         saveError: "Tidak dapat menyimpan pengaturan akses agen.",
         agent: "Agen",
         exportKeyHint:
-          "Atur {name} ke kunci API Unsloth dari halaman ini sebelum Anda memulai agen.",
+          "Atur {name} ke kunci API Unsloth sebelum Anda memulai agen.",
         configFileHint: "Tambahkan ini ke {path}.",
         keywords:
           "mcp model context protocol agents claude codex tools agen alat",
@@ -3797,7 +3797,7 @@ export const id = {
         unloadModel: "Lepas model",
         planLoad: "Rencanakan pemuatan",
         downloadModel: "Unduh model",
-        chat: "Obrolan",
+        chat: "Chat",
         embed: "Sematkan teks",
         systemOne: "Model keputusan",
         generateImage: "Hasilkan gambar",

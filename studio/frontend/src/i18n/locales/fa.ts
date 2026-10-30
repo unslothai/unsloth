@@ -3732,7 +3732,7 @@ export const fa = {
       mcp: {
         title: "دسترسی عامل (MCP)",
         description:
-          "به عامل‌های برنامه‌نویسی مانند Claude Code و Codex اجازه دهید از طریق MCP از Unsloth استفاده کنند. عامل‌ها با یک کلید API مربوط به Unsloth از همین صفحه وارد می‌شوند.",
+          "به عامل‌های برنامه‌نویسی مانند Claude Code و Codex اجازه دهید از طریق MCP از Unsloth استفاده کنند.",
         enable: "اجازهٔ اتصال عامل‌ها",
         enableDescription:
           "/mcp/ را به درخواست‌هایی که کلید API مربوط به Unsloth دارند ارائه می‌دهد.",
@@ -3741,7 +3741,7 @@ export const fa = {
         saveError: "ذخیرهٔ تنظیم دسترسی عامل ممکن نشد.",
         agent: "عامل",
         exportKeyHint:
-          "پیش از شروع عامل، {name} را برابر با یک کلید API مربوط به Unsloth از همین صفحه قرار دهید.",
+          "پیش از شروع عامل، {name} را برابر با یک کلید API مربوط به Unsloth قرار دهید.",
         configFileHint: "این را به {path} اضافه کنید.",
         keywords:
           "mcp model context protocol عامل‌ها پروتکل زمینهٔ مدل claude codex ابزارها",
