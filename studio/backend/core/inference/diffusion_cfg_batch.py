@@ -32,7 +32,6 @@ STATELESS_CLASSES = frozenset(
         "HunyuanImageTransformer2DModel",
         "HunyuanVideo15Transformer3DModel",
         "Krea2Transformer2DModel",
-        "Lumina2Transformer2DModel",
         "QwenImageTransformer2DModel",
         "WanTransformer3DModel",
     }
@@ -53,6 +52,11 @@ NOT_BATCHABLE: dict[str, str] = {
     "MOSSImageTransformer": "the negative branch skips block 22 (uncond_skip_layers): per-branch compute",
     "Cosmos3OmniTransformer": "each branch packs its own variable-length token sequence",
     "MiniMaxH3Transformer3DModel": "one denoiser call per step (no guidance pair to batch)",
+    # Measured (Colab L4, 1024x1024, 8 steps): 1.817 vs 1.454 s/step eager, 1.312 vs 1.078 compiled. A single call
+    # packs each prompt at its own caption length with no mask; the doubled call pads both to the longer one and runs
+    # masked attention.
+    "Lumina2Transformer2DModel": "measured slower batched: the doubled call pads both captions and runs masked "
+    "attention (L4 +25% eager, +22% compiled)",
 }
 
 # Arguments that are one entry per sample (a doubled call needs both branches' entries); compared, not concatenated.
@@ -606,6 +610,8 @@ class CfgBatchRouter:
             )
         if self.render_checked:
             self.renders += 1
+        if self._displaced():
+            self._retake_slot()
         if self.pending_disable is not None:
             self.disable(self.pending_disable)
         self.pair_t0 = None
@@ -646,6 +652,26 @@ class CfgBatchRouter:
     def _displaced(self) -> bool:
         module = self.module_ref()
         return module is None or module.__dict__.get("forward") is not self
+
+    def _retake_slot(self) -> bool:
+        """Back in the forward slot after a diffusers hook removal wrote the class forward over it. A streamed
+        (``use_stream``) group offload drops its lazy-prefetch hook from the root after the first forward and restores
+        ``module.forward`` to the bound class forward, which bypassed the router for the rest of the load. Only that
+        exact slot is retaken (a CUDA graph or another layer that took the slot is left alone)."""
+        module = self.module_ref()
+        if module is None:
+            return False
+        slot = module.__dict__.get("forward")
+        if slot is self or getattr(slot, "__self__", None) is not module:
+            return False
+        if getattr(slot, "__func__", None) is not getattr(type(module), "forward", None):
+            return False
+        self.orig_forward = slot
+        module.__dict__["forward"] = self
+        self.stats["retaken"] = self.stats.get("retaken", 0) + 1
+        if self.logger is not None:
+            self.logger.info("diffusion.cfg_batch: back in the forward slot (a removed offload hook restored the class forward)")
+        return True
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if self._is_compiling():
@@ -816,7 +842,10 @@ class CfgBatchRouter:
 
     def _plain(self, args: tuple, kwargs: dict) -> Any:
         self.stats["plain_calls"] += 1
-        return self.orig_forward(*args, **kwargs)
+        out = self.orig_forward(*args, **kwargs)
+        if self.offloaded and self.stats["plain_calls"] <= 2 and self._displaced():
+            self._retake_slot()
+        return out
 
     def _sync(self, latent: Any) -> bool:
         if getattr(latent.device, "type", None) != "cuda":

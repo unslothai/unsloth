@@ -70,8 +70,8 @@ class _Calls(torch.nn.Module):
         self.calls = []
 
 
-class Lumina2Transformer2DModel(_Calls):
-    """Lumina2Pipeline call: 4-D latents, per-sample text with ``encoder_attention_mask``."""
+class Krea2Transformer2DModel(_Calls):
+    """A masked-text call (Krea2 / Lumina2 shape): 4-D latents, per-sample text with ``encoder_attention_mask``."""
 
     def forward(self, hidden_states, timestep, encoder_hidden_states, encoder_attention_mask, attention_kwargs = None,
                 return_dict = True):
@@ -107,7 +107,7 @@ class HunyuanImageTransformer2DModel(_Calls):
         return (hidden_states * 0.9 + (t1.mean(-1) + t2.mean(-1)).view(-1, 1, 1, 1) + timestep.view(-1, 1, 1, 1),)
 
 
-for _cls in (Lumina2Transformer2DModel, Flux3Transformer2DModel, HunyuanImageTransformer2DModel):
+for _cls in (Krea2Transformer2DModel, Flux3Transformer2DModel, HunyuanImageTransformer2DModel):
     _cls.__module__ = "diffusers.models.fake"
 
 
@@ -150,7 +150,7 @@ def _loop(model, kind, steps = 6, neg_len = None):
 @pytest.mark.parametrize(
     "cls, kind",
     [
-        (Lumina2Transformer2DModel, "lumina2"),
+        (Krea2Transformer2DModel, "lumina2"),
         (Flux3Transformer2DModel, "flux3"),
         (HunyuanImageTransformer2DModel, "hunyuanimage"),
     ],
@@ -193,11 +193,11 @@ def test_lumina2_unequal_text_lengths_pad_with_its_attention_mask():
     assert "encoder_hidden_states_mask" not in kw
 
 
-@pytest.mark.parametrize("name", ["QwenImage21Transformer2DModel", "Ideogram4Transformer2DModel",
+@pytest.mark.parametrize("name", ["QwenImage21Transformer2DModel", "Ideogram4Transformer2DModel", "Lumina2Transformer2DModel",
                                   "ZImageTransformer2DModel", "HiDreamImageTransformer2DModel"])
 def test_classified_but_not_router_batched_classes_decline_with_their_reason(monkeypatch, name):
     monkeypatch.delenv(cb.CFG_BATCH_ENV, raising = False)
-    cls = type(name, (Lumina2Transformer2DModel,), {})
+    cls = type(name, (Krea2Transformer2DModel,), {})
     cls.__module__ = "diffusers.models.fake"
     reason = cb.cfg_batch_decline(_Pipe(_offloaded(cls())), offload_policy = "group")
     assert reason == {**cb.PIPELINE_BATCHED, **cb.NOT_BATCHABLE}[name]
@@ -205,25 +205,25 @@ def test_classified_but_not_router_batched_classes_decline_with_their_reason(mon
 
 def test_a_measured_slower_card_keeps_two_calls_unless_forced(monkeypatch):
     monkeypatch.delenv(cb.CFG_BATCH_ENV, raising = False)
-    monkeypatch.setitem(cb.MEASURED_SLOWER, ("Lumina2Transformer2DModel", "Tesla T4", "eager"), "1.04x slower")
+    monkeypatch.setitem(cb.MEASURED_SLOWER, ("Krea2Transformer2DModel", "Tesla T4", "eager"), "1.04x slower")
     monkeypatch.setattr(cb, "_cuda_latent", lambda latent: True)
     monkeypatch.setattr(cb, "_card_name", lambda latent: "Tesla T4")
     monkeypatch.setattr(cb.CfgBatchRouter, "_memory_ok", lambda self, latent, shape: True)
-    model = _offloaded(Lumina2Transformer2DModel())
+    model = _offloaded(Krea2Transformer2DModel())
     pipe = _Pipe(model)
     assert cb.install_cfg_batch(pipe, offload_policy = "group") is None
     _loop(model, "lumina2")
     assert set(model.calls) == {1}
     assert "measured slower batched on this card (1.04x slower)" in cb.router_for(pipe).describe()["shape_off"]
     monkeypatch.setattr(cb, "_card_name", lambda latent: "NVIDIA L4")
-    other = _offloaded(Lumina2Transformer2DModel())
+    other = _offloaded(Krea2Transformer2DModel())
     opipe = _Pipe(other)
     assert cb.install_cfg_batch(opipe, offload_policy = "group") is None
     _loop(other, "lumina2")
     assert other.calls[-1] == 2
     monkeypatch.setattr(cb, "_card_name", lambda latent: "Tesla T4")
     monkeypatch.setenv(cb.CFG_BATCH_ENV, "force")
-    forced = _offloaded(Lumina2Transformer2DModel())
+    forced = _offloaded(Krea2Transformer2DModel())
     fpipe = _Pipe(forced)
     assert cb.install_cfg_batch(fpipe, offload_policy = "group") is None
     _loop(forced, "lumina2")
@@ -233,8 +233,8 @@ def test_a_measured_slower_card_keeps_two_calls_unless_forced(monkeypatch):
 def test_the_memory_gate_still_keeps_a_render_plain_without_a_trial(monkeypatch):
     monkeypatch.delenv(cb.CFG_BATCH_ENV, raising = False)
     monkeypatch.setattr(cb.CfgBatchRouter, "_memory_ok", lambda self, latent, shape: False)
-    ref, _ = _loop(Lumina2Transformer2DModel(), "lumina2")
-    model = _offloaded(Lumina2Transformer2DModel())
+    ref, _ = _loop(Krea2Transformer2DModel(), "lumina2")
+    model = _offloaded(Krea2Transformer2DModel())
     pipe = _Pipe(model)
     assert cb.install_cfg_batch(pipe, offload_policy = "group") is None
     got, _ = _loop(model, "lumina2")
@@ -303,3 +303,42 @@ def test_real_diffusers_class_batched_matches_two_calls(monkeypatch, name):
     assert status["batched_steps"] == 3 and status["misses"] == 0, status
     for a, b in zip(got, ref):
         torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-5)
+
+
+def test_a_streamed_offload_hook_removal_does_not_end_batching(monkeypatch):
+    """diffusers' use_stream group offload removes its lazy-prefetch hook after the first forward and writes the bound
+    class forward over ``module.forward``: the router takes its slot back and the render still batches."""
+    monkeypatch.delenv(cb.CFG_BATCH_ENV, raising = False)
+    model = _offloaded(HunyuanImageTransformer2DModel())
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "group") is None
+    router = cb.router_for(pipe)
+    real = router.orig_forward
+    state = {"n": 0}
+
+    def lazy_hook(*a, **k):  # the root hook: runs once, then restores the class forward
+        state["n"] += 1
+        out = real(*a, **k)
+        if state["n"] == 1:
+            model.__dict__["forward"] = types.MethodType(type(model).forward, model)
+        return out
+
+    router.orig_forward = lazy_hook
+    ref, _ = _loop(HunyuanImageTransformer2DModel(), "hunyuanimage")
+    got, _ = _loop(model, "hunyuanimage")
+    torch.testing.assert_close(got, ref)
+    assert model.__dict__["forward"] is router and router.stats["retaken"] == 1
+    assert model.calls == [1, 1] + [2] * 5
+
+
+def test_a_slot_taken_by_another_layer_is_not_retaken(monkeypatch):
+    monkeypatch.delenv(cb.CFG_BATCH_ENV, raising = False)
+    model = _offloaded(HunyuanImageTransformer2DModel())
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "group") is None
+    router = cb.router_for(pipe)
+    graphed = lambda *a, **k: router.orig_forward(*a, **k)  # noqa: E731 - a CUDA graph layer took the slot
+    model.__dict__["forward"] = graphed
+    _loop(model, "hunyuanimage")
+    cb.end_cfg_batch_render(pipe)
+    assert model.__dict__["forward"] is graphed and "retaken" not in router.stats
