@@ -5672,6 +5672,29 @@ def requested_video_fps(
     return rate if rate > 0 else None
 
 
+def _video_tools_reachable(
+    cmd: Sequence[str],
+    env: Optional[Mapping[str, str]] = None,
+    cwd: Optional[str] = None,
+) -> bool:
+    """Whether the child can launch ffmpeg and ffprobe, which /props' video modality never checks (#16065)."""
+    source = os.environ if env is None else env
+    try:
+        bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}))
+    except Exception:
+        return True
+    bin_dir = bin_dir or source.get("LLAMA_ARG_VIDEO_FFMPEG_DIR")
+    names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
+    if bin_dir:
+        return all(os.path.isfile(os.path.join(bin_dir, name)) for name in names)
+    search = source.get("PATH", os.defpath)
+    if sys.platform == "win32":
+        # CreateProcess also searches the binary's folder and the working directory.
+        launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
+        search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
+    return all(shutil.which(name, path = search) for name in names)
+
+
 def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
     """Presence, not value, decides: LLAMA_ARG_NO_MMPROJ_OFFLOAD= counts, as llama.cpp tests with getenv."""
     source = os.environ if env is None else env
@@ -32359,6 +32382,13 @@ class LlamaCppBackend:
                 self._has_video_input = False
                 # Use _extra_args_as_requested: the drafter-drop snapshot would restore the Metal zero-context strip.
                 self._reconcile_effective_ctx_with_server(ctx_override or 0)
+                if self._has_video_input:
+                    self._has_video_input = _video_tools_reachable(_last_spawn_cmd, env, _spawn_cwd)
+                    if not self._has_video_input:
+                        logger.warning(
+                            "Video input disabled: llama-server decodes video with ffmpeg and "
+                            "ffprobe, and neither --video-ffmpeg-dir nor PATH provides both."
+                        )
                 if self._kv_cache_context_total is not None:
                     self._n_ubatch = min(
                         self._n_ubatch,
