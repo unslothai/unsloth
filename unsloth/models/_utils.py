@@ -1297,11 +1297,14 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
             kernel_options.update(requested)
             # torch 2.10+ rejects BACKEND with the legacy FORCE_USE_FLEX_ATTENTION. AUTO leaves the
-            # kernel to us: TRITON is the main kernel FORCE picks; an explicit backend is kept.
+            # kernel to us: TRITON is the main kernel FORCE picks. Any other backend is the caller's
+            # choice, and our main-kernel tiles (64 query rows) do not apply to it.
             if ours_forced and "BACKEND" in kernel_options:
-                kernel_options.pop("FORCE_USE_FLEX_ATTENTION")
-                if kernel_options["BACKEND"] == "AUTO":
+                if kernel_options["BACKEND"] in ("AUTO", "TRITON"):
+                    kernel_options.pop("FORCE_USE_FLEX_ATTENTION")
                     kernel_options["BACKEND"] = "TRITON"
+                else:
+                    kernel_options = dict(requested)
             kwargs["kernel_options"] = kernel_options
         return flex_attention_forward(module, query, key, value, *args, **kwargs)
 
