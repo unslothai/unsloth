@@ -7,8 +7,10 @@ Each token-local module (dense MLPs, top-k MoE blocks, VLM projectors) runs over
 one tile's intermediate activations are alive at a time. Which modules qualify, and how their outputs are put back
 together, is decided by `unsloth_zoo.tiling_registry`.
 
-Parallelism rule: tiling is per rank. It splits only the rows this rank holds; under Ulysses context parallel the MLP
-sees the local sequence shard, so the tiles are planned on the shard. DDP, FSDP2 and TP need nothing extra.
+Parallelism rule (unsloth_zoo.tiling_registry.PARALLEL_RULE): tiling is per rank. It splits only the rows this rank
+holds; under Ulysses context parallel the MLP sees the local sequence shard, so the tiles are planned on the shard.
+DDP and FSDP2 need nothing extra. Tensor parallel modules are left untiled (a row-parallel all-reduce would run once
+per tile) unless UNSLOTH_TILED_MLP_TP=1.
 """
 
 import os
