@@ -2073,12 +2073,12 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream", 50, 5.0),
     # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
-    # MOSS-Image: ComfyUI workflow, 50 steps at CFG 3.
-    ("moss-image", 50, 3.0),
-    ("moss_image", 50, 3.0),
-    ("mossimage", 50, 3.0),
-    # SDXL: Turbo distilled; base wants ~30 steps + CFG ~7. "sdxl-turbo" precedes "sdxl".
-    ("sdxl-turbo", 3, 0.0),
+    # MOSS-Image: the SFT and Base t2i templates both run 25 steps at CFG 2.5.
+    ("moss-image", 25, 2.5),
+    ("moss_image", 25, 2.5),
+    ("mossimage", 25, 2.5),
+    # SDXL-Turbo: 1 step, CFG 1. "sdxl-turbo" must precede "sdxl".
+    ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
 )

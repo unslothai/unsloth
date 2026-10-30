@@ -786,6 +786,26 @@ def _mistral_thinking_spec(model: str) -> _MistralThinkingSpec:
     return _MistralThinkingSpec(models = (), style = "disabled")
 
 
+_MINIMAX_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _apply_minimax_reasoning_controls(
+    body: dict[str, Any],
+    model: str,
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+) -> None:
+    """M3.1-Flash 400s on thinking off; M3 can disable it."""
+    body["reasoning_split"] = True
+    normalized = model.strip().lower()
+    if normalized.startswith("minimax-m3.1"):
+        effort = (reasoning_effort or "").strip().lower()
+        if effort in _MINIMAX_EFFORTS:
+            body["reasoning_effort"] = effort
+    elif normalized == "minimax-m3" and enable_thinking is False:
+        body["thinking"] = {"type": "disabled"}
+
+
 def _apply_mistral_reasoning_controls(
     body: dict[str, Any],
     model: str,
@@ -1762,8 +1782,8 @@ class ExternalProviderClient:
         if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
             body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
-            # Newer OpenAI models (gpt-4o, gpt-5.x) reject max_tokens
-            if self.provider_type == "openai":
+            # Newer OpenAI models reject max_tokens; MiniMax counts thinking against it.
+            if self.provider_type in ("openai", "minimax"):
                 body["max_completion_tokens"] = max_tokens
             else:
                 body["max_tokens"] = max_tokens
@@ -1800,6 +1820,8 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
+        elif self.provider_type == "minimax":
+            _apply_minimax_reasoning_controls(body, model, enable_thinking, reasoning_effort)
         elif self.provider_type == "deepseek":
             _apply_deepseek_reasoning_controls(body, enable_thinking, reasoning_effort)
         elif self.provider_type in ("qwen", "qwencloud"):

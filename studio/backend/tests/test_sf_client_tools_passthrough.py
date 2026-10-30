@@ -314,6 +314,46 @@ def test_xml_healed_to_tool_calls_non_streaming(monkeypatch):
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
 
 
+_CUT_XML = "<tool_call><function=lookup><parameter=q>line1\nli"
+_LENGTH_STATS = {"finish_reason": "length"}
+
+
+def test_call_cut_at_length_stays_text_non_streaming(monkeypatch):
+    backend = _ScriptedBackend(_fixed(_CALL_XML + _CUT_XML), stats = _LENGTH_STATS)
+    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    choice = _json_body(_call(payload, monkeypatch, backend))["choices"][0]
+    assert choice["finish_reason"] == "length"
+    (call,) = choice["message"]["tool_calls"]
+    assert json.loads(call["function"]["arguments"]) == {"q": "cats"}
+    assert choice["message"]["content"] == _CUT_XML
+
+
+def test_call_cut_at_length_stays_text_streaming(monkeypatch):
+    backend = _ScriptedBackend(_fixed(_CALL_XML + _CUT_XML), stats = _LENGTH_STATS)
+    payload = _request(tools = [LOOKUP_TOOL], stream = True)
+    objs = _sse_objects(_collect_sse(_call(payload, monkeypatch, backend)))
+    choices = [o["choices"][0] for o in objs if o.get("choices")]
+    deltas = [c.get("delta") or {} for c in choices]
+    (call,) = [tc for d in deltas for tc in d.get("tool_calls") or []]
+    assert json.loads(call["function"]["arguments"]) == {"q": "cats"}
+    assert "".join(d.get("content") or "" for d in deltas) == _CUT_XML
+    assert [c["finish_reason"] for c in choices if c.get("finish_reason")] == ["length"]
+
+
+def test_nudge_retry_cut_at_length_keeps_the_cut(monkeypatch):
+    replies = iter(['<tool_call>{"name": "lookup"', _CALL_XML + _CUT_XML])
+    backend = _ScriptedBackend(
+        lambda messages, tools: [next(replies)], stats = [{"finish_reason": "stop"}, _LENGTH_STATS]
+    )
+    payload = _request(tools = [LOOKUP_TOOL], stream = False, nudge_tool_calls = True)
+    choice = _json_body(_call(payload, monkeypatch, backend))["choices"][0]
+    assert len(backend.calls) == 2
+    assert choice["finish_reason"] == "length"
+    (call,) = choice["message"]["tool_calls"]
+    assert json.loads(call["function"]["arguments"]) == {"q": "cats"}
+    assert choice["message"]["content"] == _CUT_XML
+
+
 def test_undeclared_call_stays_text(monkeypatch):
     xml = '<tool_call>{"name": "other", "arguments": {}}</tool_call>'
     backend = _ScriptedBackend(_fixed(xml))
