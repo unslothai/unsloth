@@ -182,6 +182,57 @@ _CHECKS = textwrap.dedent(
                 gy = Wgu @ rms64(residual, big)
                 act_ref = torch.nn.functional.silu(gy[:I]) * gy[I:]
                 assert torch.isfinite(act).all() and rel(act, act_ref) < tol, ("big residual", rank)
+    # Qwen2 (qkv bias) and Qwen3 (per-head q / k RMSNorm before RoPE) on the qkv site.
+    for dt, tol in ((torch.bfloat16, 2e-2), (torch.float16, 4e-3)):
+        for rank in (0, R):
+            g = torch.Generator().manual_seed(31 + rank)
+            qkv, Wqkv = site("qkv", [NH * D, NKV * D, NKV * D], H, g, rank)
+            ln1 = (1 + 0.1 * torch.randn(H, generator = g)).to(dt).to(device)
+            emb = torch.randn(H, generator = g).to(dt).to(device)
+            ang = torch.arange(L)[:, None].double() * (1.0 / 10000 ** (torch.arange(0, D, 2).double() / D))[None]
+            ang = torch.cat((ang, ang), -1)
+            cos, sin = ang.cos().to(dt).to(device), ang.sin().to(dt).to(device)
+            pos_i, slot_i = 7, 3
+            pos = torch.tensor([pos_i], device = device)
+            slot = torch.tensor([slot_i], device = device)
+            c64, s64 = cos[pos_i].double(), sin[pos_i].double()
+            xn = rms64(emb, ln1)
+            biases = [(0.5 * torch.randn(n, generator = g)).to(dt).to(device) for n in (NH * D, NKV * D, NKV * D)]
+            # Qwen2: bias added before RoPE.
+            paged = torch.zeros((L, 2, 1, NKV, D), dtype = dt, device = device)
+            kc, vc = paged[:, 0], paged[:, 1]
+            q_out = torch.empty(NH * D, dtype = dt, device = device)
+            F.fused_site(qkv, emb.float().clone(), q_out, epi = F.EPI_ROPE_KV, pre = F.PRE_INLOOP, capability = CAP,
+                         norm_weight = ln1, eps = EPS, k_cache = kc, v_cache = vc,
+                         cache_strides = (kc.stride(2), kc.stride(0)), cos = cos, sin = sin, pos = pos, slot = slot,
+                         head_dim = D, bias = biases)
+            y = Wqkv @ xn + torch.cat(biases).double()
+            assert rel(q_out, rot(y[: NH * D].view(NH, D), c64, s64).reshape(-1)) < tol, ("q bias", dt, rank)
+            kr = rot(y[NH * D : NH * D + NKV * D].view(NKV, D), c64, s64)
+            assert rel(kc[slot_i, 0], kr) < tol, ("k bias", dt, rank)
+            assert rel(vc[slot_i, 0], y[NH * D + NKV * D :].view(NKV, D)) < tol, ("v bias", dt, rank)
+            # Qwen3: raw q|k|v, then the per-head norm + RoPE + cache-write launch.
+            paged = torch.zeros((L, 2, 1, NKV, D), dtype = dt, device = device)
+            kc, vc = paged[:, 0], paged[:, 1]
+            raw = torch.empty(qkv.N, dtype = dt, device = device)
+            F.fused_site(qkv, emb.float().clone(), raw, epi = F.EPI_PLAIN, pre = F.PRE_INLOOP, capability = CAP,
+                         norm_weight = ln1, eps = EPS)
+            y = Wqkv @ xn
+            assert rel(raw, y) < tol, ("raw qkv", dt, rank)
+            wq = (1 + 0.1 * torch.randn(D, generator = g)).to(dt).to(device)
+            wk = (1 + 0.1 * torch.randn(D, generator = g)).to(dt).to(device)
+            F.qk_norm_rope_kv(raw, q_out, wq, wk, 1e-6, 1e-6, cos, sin, pos, slot, kc, vc, NH, NKV, D)
+            r64 = raw.double()
+
+            def hn(x, w):
+                return x * torch.rsqrt(x.pow(2).mean(-1, keepdim = True) + 1e-6) * w.double()
+
+            qr = rot(hn(r64[: NH * D].view(NH, D), wq), c64, s64).reshape(-1)
+            kr = rot(hn(r64[NH * D : NH * D + NKV * D].view(NKV, D), wk), c64, s64)
+            assert rel(q_out, qr) < tol, ("q norm", dt, rank, rel(q_out, qr))
+            assert rel(kc[slot_i, 0], kr) < tol, ("k norm", dt, rank)
+            assert torch.equal(vc[slot_i, 0], raw[NH * D + NKV * D :].view(NKV, D)), ("v copy", dt, rank)
+            assert kc[slot_i - 1].abs().max() == 0 and vc[slot_i + 1].abs().max() == 0, "cache row must be `slot`"
     print("FUSED OK")
     """
 )

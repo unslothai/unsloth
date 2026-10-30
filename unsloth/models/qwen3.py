@@ -358,6 +358,10 @@ def Qwen3Attention_fast_forward_inference(
 _decode_graphs.register_attention(Qwen3Attention_fast_forward_inference)
 
 
+# The fused 4bit decode (UNSLOTH_DECODE_FUSED_NF4) reproduces this attention, q / k norm included.
+Qwen3Attention_fast_forward_inference._unsloth_fused_nf4 = True
+
+
 class FastQwen3Model(FastLlamaModel):
     @staticmethod
     def pre_patch():
