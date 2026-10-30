@@ -694,6 +694,18 @@ class _StopSequenceStreamer:
             abort()
 
 
+# LFM3's custom generate raises on these; it marks itself with _generation_fields_unsupported.
+_CUSTOM_GENERATE_REJECTED_KWARGS = ("logits_processor", "stopping_criteria")
+
+
+def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
+    """Drops kwargs a custom-code generate rejects: no presence penalty, prefill timing or early
+    cancel there, but the reply still streams and stop sequences are still trimmed."""
+    if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
+        return generation_kwargs
+    return {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
+
+
 # LlamaModel_fast_forward cuts input_ids at max_seq_length, so decoding past it crashes; FastModel's stock forward does not.
 def _truncates_past_window(model) -> bool:
     return any(
@@ -2281,7 +2293,7 @@ class InferenceBackend:
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        gen_outputs["sequences"] = model.generate(**generation_kwargs)
+                        gen_outputs["sequences"] = model.generate(**_supported_generate_kwargs(model, generation_kwargs))
                     except Exception as e:
                         err["msg"] = str(e)
                         stop_streamer.abort()
@@ -2478,7 +2490,7 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        gen_outputs["sequences"] = model.generate(**generation_kwargs)
+                        gen_outputs["sequences"] = model.generate(**_supported_generate_kwargs(model, generation_kwargs))
                     except Exception as e:
                         err["msg"] = str(e)
                         logger.error(f"Audio input generation error in thread: {e}")
@@ -2870,7 +2882,7 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact token count.
-                        gen_outputs["sequences"] = model.generate(**generation_kwargs)
+                        gen_outputs["sequences"] = model.generate(**_supported_generate_kwargs(model, generation_kwargs))
                     except Exception as e:
                         err["msg"] = str(e)
                         stop_streamer.abort()
