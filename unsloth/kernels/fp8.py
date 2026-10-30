@@ -2248,9 +2248,6 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
         X.requires_grad or weight.requires_grad or weight_scale.requires_grad
     ):
         return None
-    # The compiled path dequantizes inside autocast's GEMM; a buffer in another dtype could overflow first.
-    if torch.is_autocast_enabled("cuda") and torch.get_autocast_dtype("cuda") != X.dtype:
-        return None
     if not (
         _FP8_ROWWISE_DIRECT
         and X.is_cuda
@@ -2279,6 +2276,10 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
         or weight_scale.device != weight.device
         or _fp8_e4m3fn_unsupported_in_trace(weight)
     ):
+        return None
+    # The compiled path dequantizes inside autocast's GEMM; a buffer in another dtype could overflow first.
+    # Checked after the cheap gates (it costs a few hundred ns per call); no-argument is_autocast_enabled is CUDA's.
+    if torch.is_autocast_enabled() and torch.get_autocast_dtype("cuda") != X.dtype:
         return None
     backend = _fp8_rowwise_backend(X.device)
     if backend == "fbgemm" and N % 8 == 0 and K % 8 == 0:
