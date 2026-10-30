@@ -1474,7 +1474,9 @@ def _cgroup_memory_bytes() -> tuple[Optional[int], Optional[int]]:
                     for ln in (node / "memory.stat").read_text(encoding = "utf-8").splitlines()
                     if ln.strip()
                 )
-                avail = max(0, limit - used + int(stat.get("file", 0)))
+                # ``file`` counts tmpfs / shared memory too (cgroup-v2 docs); only the rest is reclaimable page cache.
+                reclaimable = max(0, int(stat.get("file", 0)) - int(stat.get("shmem", 0)))
+                avail = max(0, limit - used + reclaimable)
                 if best[1] is None or avail < best[1]:
                     best = (limit, avail)
         except (OSError, ValueError):
