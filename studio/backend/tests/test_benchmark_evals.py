@@ -709,3 +709,9 @@ def test_an_eval_and_a_sweep_never_share_the_server(monkeypatch):
     assert client.post("/api/benchmarks/lease", json = sweep).status_code == 409
     lease_routes.release_run_lease("evals-test")
     assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200
+    client.delete("/api/benchmarks/lease", params = {"holder": sweep["holder"]})
+    # A load that passed the fence before the Eval started would land mid-run.
+    monkeypatch.setattr(lease_routes, "_loads_in_flight", {None: 1})
+    assert not lease_routes.claim_run_lease("evals-test", "evals")
+    monkeypatch.setattr(lease_routes, "_loads_in_flight", {})
+    assert lease_routes.claim_run_lease("evals-test", "evals")

@@ -413,8 +413,8 @@ async def run_benchmark(
         if not claim_run_lease(f"evals-{run_seq}", "evals"):
             raise HTTPException(
                 status_code = 409,
-                detail = "Another benchmark is running in another tab or on another device. "
-                "Stop it or let it finish first.",
+                detail = "Another benchmark is running, or a model is still loading. "
+                "Let it finish, then try again.",
             )
         lease_holder = f"evals-{run_seq}"
 

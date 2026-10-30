@@ -142,7 +142,7 @@ def claim_run_lease(holder: str, kind: str) -> bool:
     """For a run the server drives itself (Evals): held until release_run_lease, no renewals."""
     global _lease
     with _lease_lock:
-        if _held_by_other(holder, time.monotonic()):
+        if _held_by_other(holder, time.monotonic()) or _loads_pending(holder):
             return False
         _lease = {"holder": holder, "kind": kind, "expires": float("inf"), "outside": 0}
         return True
