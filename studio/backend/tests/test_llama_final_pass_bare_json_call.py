@@ -37,8 +37,8 @@ def _python_tool():
     }
 
 
-def _content_stream(text: str) -> list[str]:
-    return [_sse({"content": text[i : i + 3]}) for i in range(0, len(text), 3)] + [
+def _content_stream(text: str, step: int = 3) -> list[str]:
+    return [_sse({"content": text[i : i + step]}) for i in range(0, len(text), step)] + [
         _finish("stop"),
         _done(),
     ]
@@ -48,11 +48,12 @@ def _final_pass(
     monkeypatch,
     final_text: str,
     tools = None,
+    step: int = 3,
 ):
     payloads: list[dict] = []
     streams = [
         [_tool_call_sse("web_search", {"query": "a"}, "c1"), _finish("tool_calls"), _done()],
-        _content_stream(final_text),
+        _content_stream(final_text, step),
     ]
     backend = _make_backend(monkeypatch, streams, payloads)
     _record_tool_calls(monkeypatch, "RESULT_OK")
@@ -72,11 +73,14 @@ def _final_pass(
         '{"name": "web_search", "parameters": {"query": "again"}}',
         '{"type": "function", "function": "web_search", "parameters": {"query": "again"}}',
         '{"name": "web_search", "parameters": {"query": "a"}}; {"name": "web_search", "parameters": {"query": "b"}}',
+        '{"name": "web_search", "parameters": {"query": "a"}}\n{"name": "web_search", "parameters": {"query": "b"}}',
     ],
 )
-def test_final_pass_does_not_show_a_bare_json_call(monkeypatch, text):
-    shown = _final_pass(monkeypatch, text)
-    assert not any('"web_search"' in s for s in shown), shown
+@pytest.mark.parametrize("step", [1, 3])
+def test_final_pass_does_not_show_a_bare_json_call(monkeypatch, text, step):
+    shown = _final_pass(monkeypatch, text, step = step)
+    # No fragment either: a chained peer whose name has not arrived yet must not stream.
+    assert not any("{" in s or "web_search" in s for s in shown), shown
 
 
 @pytest.mark.parametrize(

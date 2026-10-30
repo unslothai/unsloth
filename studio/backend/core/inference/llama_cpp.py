@@ -37074,21 +37074,23 @@ class LlamaCppBackend:
             *,
             at_end: bool = False,
         ):
-            """The final pass sends tool_choice "none", so llama-server leaves a Llama 3.x bare-JSON call
-            (no marker) in the answer text. Hold an answer that opens with ``{`` until its first object
-            closes, then drop a leading call to an enabled tool, as the tool rounds do; blocked exec-class
-            calls and ordinary JSON stay visible. None means hold."""
+            """tool_choice "none" leaves a Llama 3.x bare-JSON call in the answer text: hold while a leading
+            ;-chain of objects has an open peer (its name may not have arrived), then drop the enabled calls
+            as the tool rounds do. None means hold."""
             if not _enabled_names_gate or not cleaned.endswith(answer):
                 return cleaned
             probe = strip_llama3_leading_sentinels(answer.lstrip())
             if not probe.startswith("{"):
                 return cleaned
-            if (
-                not at_end
-                and len(probe) < _MAX_BARE_JSON_BUFFER
-                and _balanced_brace_end(probe, 0) is None
-            ):
-                return None
+            if not at_end and len(probe) < _MAX_BARE_JSON_BUFFER:
+                chain = probe
+                while chain.startswith("{"):
+                    end = _balanced_brace_end(chain, 0)
+                    if end is None:
+                        return None
+                    chain = strip_llama3_leading_sentinels(chain[end + 1 :].lstrip()).lstrip(
+                        " \t\n\r;"
+                    )
             kept = strip_leading_bare_json_call(answer, _enabled_names_gate)
             if kept == answer:
                 return cleaned
