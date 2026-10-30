@@ -194,3 +194,73 @@ test("a saved world's models load from the files handed in; an unknown one stays
   assert.ok(three);
   layer.dispose();
 });
+
+function skinnedTriangleGlb(): ArrayBuffer {
+  const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const joints = new Uint16Array(12);
+  const weights = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
+  const bin = new Uint8Array(108);
+  bin.set(new Uint8Array(positions.buffer), 0);
+  bin.set(new Uint8Array(joints.buffer), 36);
+  bin.set(new Uint8Array(weights.buffer), 60);
+  const doc = {
+    asset: { version: "2.0" },
+    scene: 0,
+    scenes: [{ nodes: [0, 1] }],
+    nodes: [{ mesh: 0, skin: 0 }, { name: "joint" }],
+    skins: [{ joints: [1], skeleton: 1 }],
+    meshes: [
+      { primitives: [{ attributes: { POSITION: 0, JOINTS_0: 1, WEIGHTS_0: 2 } }] },
+    ],
+    buffers: [{ byteLength: bin.length }],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 36 },
+      { buffer: 0, byteOffset: 36, byteLength: 24 },
+      { buffer: 0, byteOffset: 60, byteLength: 48 },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [0, 0, 0], max: [1, 1, 0] },
+      { bufferView: 1, componentType: 5123, count: 3, type: "VEC4" },
+      { bufferView: 2, componentType: 5126, count: 3, type: "VEC4" },
+    ],
+  };
+  let json = JSON.stringify(doc);
+  while (json.length % 4) json += " ";
+  const j = new TextEncoder().encode(json);
+  const out = new ArrayBuffer(28 + j.length + bin.length);
+  const dv = new DataView(out);
+  const u8 = new Uint8Array(out);
+  dv.setUint32(0, 0x46546c67, true);
+  dv.setUint32(4, 2, true);
+  dv.setUint32(8, out.byteLength, true);
+  dv.setUint32(12, j.length, true);
+  dv.setUint32(16, 0x4e4f534a, true);
+  u8.set(j, 20);
+  dv.setUint32(20 + j.length, bin.length, true);
+  dv.setUint32(24 + j.length, 0x004e4942, true);
+  u8.set(bin, 28 + j.length);
+  return out;
+}
+
+test("a placed skinned model follows its prop, not the template skeleton", async () => {
+  const layer = S.createPropLayer(() => 0);
+  await layer.addModel("sha256:skin", skinnedTriangleGlb());
+  layer.sync([
+    { id: "a", kind: "model", x: 10.5, y: 10.5, asset: { kind: "model", ref: "sha256:skin" } } as Prop,
+  ]);
+  layer.root.updateMatrixWorld(true);
+  let mesh: InstanceType<typeof three.SkinnedMesh> | undefined;
+  layer.root.traverse((o) => {
+    if ((o as InstanceType<typeof three.SkinnedMesh>).isSkinnedMesh)
+      mesh = o as InstanceType<typeof three.SkinnedMesh>;
+  });
+  assert.ok(mesh);
+  const placed = new Set<unknown>();
+  layer.root.traverse((o) => placed.add(o));
+  assert.ok(placed.has(mesh.skeleton.bones[0]), "the copy is bound to its own bones");
+  mesh.skeleton.update();
+  const v = mesh.localToWorld(mesh.getVertexPosition(0, new three.Vector3()));
+  // The model is recentred on its footprint, so the vertex sits within a tile of the prop.
+  assert.ok(Math.abs(v.x - 10.5) <= 1 && Math.abs(v.z - 10.5) <= 1, `vertex at ${v.toArray()}`);
+  layer.dispose();
+});

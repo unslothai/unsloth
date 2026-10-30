@@ -3,6 +3,7 @@
 
 
 import * as three from "three";
+import { clone as cloneSkinned } from "three/addons/utils/SkeletonUtils.js";
 
 import type { WorldProp3d, WorldPropKind } from "../../types";
 
@@ -52,6 +53,15 @@ export interface PropLayer {
   addModel(ref: string, data: ArrayBuffer): Promise<void>;
   modelCount(): number;
   dispose(): void;
+}
+
+// clone(true) leaves a skinned copy bound to the template's bones, so it would be drawn where the template is.
+export function instantiate(tpl: three.Object3D): three.Object3D {
+  let skinned = false;
+  tpl.traverse((o) => {
+    if ((o as three.SkinnedMesh).isSkinnedMesh) skinned = true;
+  });
+  return skinned ? cloneSkinned(tpl) : tpl.clone(true);
 }
 
 /**
@@ -305,7 +315,7 @@ export function createPropLayer(
           if (p.kind === "model") {
             const ref = p.asset?.ref ?? "";
             const tpl = templates.get(ref);
-            shape = tpl ? tpl.clone(true) : placeholder();
+            shape = tpl ? instantiate(tpl) : placeholder();
             if (!tpl && pending[ref])
               void load(ref, pending[ref]).catch(() => undefined);
           } else shape = build(p.kind);
