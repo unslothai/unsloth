@@ -121,3 +121,18 @@ def test_local_datasets_hash_their_bytes(tmp_path, monkeypatch):
     first = training._content_hash(f"{folder}/*.parquet")
     (folder / "a.parquet").write_bytes(b"two")
     assert training._content_hash(f"{folder}/*.parquet") != first
+
+
+@run_async
+async def test_a_reward_saved_again_under_its_name_trains_again(world, monkeypatch):
+    from core.training import rewards
+
+    rule = {"answer": "exact"}
+    monkeypatch.setattr(rewards, "get_reward", lambda name: {"kind": "rule", "rule": dict(rule, name = name)})
+    eng = _engine(world)
+    await _run(eng, _flow(objective = "grpo"))
+    await _run(eng, _flow(objective = "grpo"))
+    assert len(world["trained"]) == 1
+    rule["answer"] = "numeric"
+    await _run(eng, _flow(objective = "grpo"))
+    assert len(world["trained"]) == 2

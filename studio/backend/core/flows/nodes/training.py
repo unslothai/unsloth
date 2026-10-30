@@ -388,8 +388,32 @@ def _content_hash(path: str) -> str:
 
 
 async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
-    """What the dataset holds now, so a cached adapter is reused only for the same rows.
+    """What the params can't show: the dataset's content and, for GRPO, the reward rules.
     None (an unreachable Hub, a missing file) means train again rather than guess."""
+    found = await dataset_material(ctx)
+    if found is None:
+        return None
+    if str(ctx.params.get("objective") or "sft") == "grpo":
+        # A reward can be saved again under the same name, so the key holds what each rule checks.
+        found["rewards"] = reward_rules(ctx.params.get("rewards"))
+    return found
+
+
+def reward_rules(rewards: Any) -> list:
+    from core.training.rewards import get_reward
+
+    rules = []
+    for r in rewards or []:
+        name = str((r or {}).get("name") or "").strip() if isinstance(r, dict) else ""
+        try:
+            record = get_reward(name)
+            rules.append([name, record.get("kind"), record.get("rule")])
+        except Exception:
+            rules.append([name, None])
+    return rules
+
+
+async def dataset_material(ctx: NodeContext) -> Optional[dict]:
     from core.flows.nodes.data import local_seed_path, recipe_artifact
     from core.training.account_jobs import account_hf_token
 
