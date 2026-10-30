@@ -2344,6 +2344,7 @@ def load_prequantized_transformer(
                     transformer = transformer_cls.from_config(config)
                 if prepare_model is not None:
                     prepare_model(transformer, metadata)
+                _prepare_outlier_buffers(transformer, state_dict)
                 transformer.load_state_dict(state_dict, strict = True, assign = True)
             if into is None and _has_meta_tensors(transformer):
                 # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
@@ -2353,6 +2354,7 @@ def load_prequantized_transformer(
                 # mismatches.
                 if prepare_model is not None:
                     prepare_model(transformer, metadata)
+                _prepare_outlier_buffers(transformer, state_dict)
                 transformer.load_state_dict(state_dict, strict = True, assign = True)
 
             # Online half of the rotation, applied here so no route skips it: after load_state_dict (meta retry rebuilds), before small-M padding reparents Linears.
@@ -2406,6 +2408,7 @@ def load_prequantized_transformer(
             apply_small_m_padding,
             apply_zero_row_guard,
             quantize_runtime_leftovers,
+            quantize_streamed_weight_only,
         )
 
         # Must run before padding (it reparents Linears); a failure keeps the artifact, leftovers stay dense.
@@ -2421,6 +2424,14 @@ def load_prequantized_transformer(
             )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, f"{scheme}:runtime leftovers", exc)
+        # Streamed scope only; a no-op on an artifact whose modulations are already weight-only. Never raises.
+        quantize_streamed_weight_only(
+            transformer,
+            scheme,
+            metadata.get("family") or family,
+            min_features = int(metadata.get("min_features") or min_features or 512),
+            logger = logger,
+        )
 
         apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
         apply_zero_row_guard(transformer, scheme, metadata.get("family"), logger = logger)
@@ -2975,6 +2986,20 @@ def _validate_checkpoint(
                 ),
             )
             return False
+    # Weight-only modulations are a streamed-build layout: refuse them where this runtime keeps them dense.
+    ckpt_weight_only = meta.get("weight_only_name_tokens")
+    if ckpt_weight_only:
+        from .diffusion_transformer_quant import streamed_weight_only_tokens_for_scheme
+        allowed = set(streamed_weight_only_tokens_for_scheme(scheme, meta.get("family")))
+        if not isinstance(ckpt_weight_only, (list, tuple)) or not set(ckpt_weight_only) <= allowed:
+            _warn(
+                logger,
+                scheme,
+                ValueError(
+                    f"checkpoint stores {ckpt_weight_only!r} weight-only; this load keeps them dense"
+                ),
+            )
+            return False
     # Verify recorded require_bf16 so a _REQUIRE_BF16_SCHEMES change can't load old-filter checkpoints.
     ckpt_require_bf16 = meta.get("require_bf16")
     if ckpt_require_bf16 is not None:
@@ -3299,6 +3324,11 @@ class PrequantIntoError(RuntimeError):
     """The module is neither dense nor fully loaded."""
 
 
+def _prepare_outlier_buffers(transformer: Any, state_dict: dict) -> int:
+    from .diffusion_int8_gemv import prepare_outlier_buffers
+    return prepare_outlier_buffers(transformer, state_dict)
+
+
 def _load_into_dense(transformer: Any, state_dict: dict, prepare_model: Optional[Any]) -> None:
     """ValueError leaves the module untouched; PrequantIntoError means it was partly assigned."""
     if prepare_model is not None:
@@ -3306,6 +3336,16 @@ def _load_into_dense(transformer: Any, state_dict: dict, prepare_model: Optional
             "prepare_model reshapes a fresh skeleton; it cannot run on an existing transformer"
         )
     own = transformer.state_dict()
+    from .diffusion_int8_gemv import OUTLIER_IDX, OUTLIER_WEIGHT
+
+    # A streamed weight-only artifact also stores each modulation's dense outlier columns; the skeleton gets them below.
+    outlier_keys = {
+        k
+        for k in state_dict
+        if k.endswith((f".{OUTLIER_WEIGHT}", f".{OUTLIER_IDX}")) and k not in own
+    }
+    for name in outlier_keys:
+        own[name] = state_dict[name]
     if set(own) != set(state_dict):
         missing = sorted(set(own) - set(state_dict))[:3]
         extra = sorted(set(state_dict) - set(own))[:3]
@@ -3320,6 +3360,8 @@ def _load_into_dense(transformer: Any, state_dict: dict, prepare_model: Optional
             )
     del own
     try:
+        if outlier_keys:
+            _prepare_outlier_buffers(transformer, state_dict)
         transformer.load_state_dict(state_dict, strict = True, assign = True)
     except Exception as exc:  # noqa: BLE001
         raise PrequantIntoError(f"{type(exc).__name__}: {exc}") from exc
