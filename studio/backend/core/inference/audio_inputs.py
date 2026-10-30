@@ -493,6 +493,31 @@ def _derived(directory: Path, stem: str) -> list[Path]:
         return []
 
 
+def _derived_index(directory: Path) -> Optional[dict[str, list[Path]]]:
+    """``_derived`` for every id from one listing (an id has no dot); None where pathlib's case folding cannot be matched exactly."""
+    fold = os.path.normcase
+    insensitive = fold("A") != "A"
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return None
+    index: dict[str, list[Path]] = {}
+    for name in names:
+        if insensitive and not name.isascii():
+            return None
+        folded = fold(name)
+        key, dot, _rest = folded.partition(".")
+        if dot and folded.endswith(".wav") and len(folded) >= len(key) + 5:
+            index.setdefault(key, []).append(directory / name)
+    return index
+
+
+def _derived_from(index: Optional[dict[str, list[Path]]], directory: Path, stem: str) -> list[Path]:
+    if index is None or not _valid_id(stem):
+        return _derived(directory, stem)
+    return index.get(os.path.normcase(stem), [])
+
+
 def _remove(directory: Path, input_id: str) -> bool:
     wav = directory / f"{input_id}.wav"
     existed = wav.is_file()
@@ -538,6 +563,7 @@ def sweep(
         now = _now()
         removed = 0
         live: list[tuple[float, str, int]] = []
+        derived = _derived_index(directory)
         for sidecar in directory.glob("*.json"):
             input_id = sidecar.stem
             meta = _read_sidecar(sidecar)
@@ -547,7 +573,7 @@ def sweep(
                 removed += _remove(directory, input_id)
                 continue
             size = _size(directory / f"{input_id}.wav") + sum(
-                _size(p) for p in _derived(directory, input_id)
+                _size(p) for p in _derived_from(derived, directory, input_id)
             )
             live.append((_touched(meta), input_id, size))
         live.sort(reverse = True)
@@ -630,7 +656,7 @@ def resolve_source(ref: dict[str, Any]) -> Source:
         path = audio_gallery.owned_audio_path(source_id) if _valid_id(source_id) else None
         if path is None:
             raise AudioInputError(404, "That clip is no longer in your history.")
-        meta = audio_gallery._read_meta(audio_gallery._sidecar_path(source_id)) or {}
+        meta = audio_gallery._read_meta(audio_gallery._sidecar_path(source_id, path.parent)) or {}
         prompt = " ".join(str(meta.get("prompt") or "").split())
         return Source("clip", source_id, path, (prompt[:60] or "Clip"))
     from core.inference import audio_voices

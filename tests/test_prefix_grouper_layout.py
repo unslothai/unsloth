@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 _UTILS = Path(__file__).resolve().parents[1] / "unsloth" / "utils"
 
@@ -196,7 +197,8 @@ def test_device_tensor_creations_do_not_grow_with_groups():
     assert _factory_calls(1, 8) == _factory_calls(6, 8) == _factory_calls(6, 2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+# Not torch.cuda.is_available(): the CUDA spoof makes it answer True on CPU runners.
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_cuda_layout_reads_the_device_once_and_copies_once():
     import warnings
 

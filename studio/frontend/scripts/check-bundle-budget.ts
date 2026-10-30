@@ -439,20 +439,24 @@ export const BUDGET = {
   // (5,942,150 -> 5,972,134 B raw, 1,836,750 -> 1,847,702 B transfer, ed9857c0c3 -> 39b8a6ce13, Node 24,
   // 85 chunks): its color themes are read by the theme store at startup, and loading its dialog on first
   // open saves 3 KB transfer but adds five startup chunks. Raised by that growth.
-  // DPO, ORPO and GRPO in Studio (#12601): +29,272 B raw / +9,131 B transfer over main at fa7ad0d60 (5,984,705 ->
-  // 6,013,977 B raw, 1,845,111 -> 1,854,242 B transfer, Node 26, 78 chunks): the RL strings in the eager catalog
+  // The GPU rendering setting (#15482) adds 1,948 B raw / 637 B transfer (5,977,895 -> 5,979,843 B raw,
+  // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
+  // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
+  // the eager English catalog and its search rows. Raised by that.
+  // DPO, ORPO and GRPO in Studio (#12601): +29,649 B raw / +9,389 B transfer over main at 4089c57a82 (5,373,852 ->
+  // 5,403,501 B raw, 1,661,918 -> 1,671,307 B transfer, Node 26, 78 chunks): the RL strings in the eager catalog
   // and the RL settings and role mapping in the eager training store. Raised by that growth.
-  // Python rewards (#12995): +4,199 B raw / +1,422 B transfer over #12601 (6,013,977 -> 6,018,176 B raw,
-  // 1,854,242 -> 1,855,664 B transfer, Node 26): the isolation switch, Start gating and per-reward Try it
+  // Python rewards (#12995): +4,369 B raw / +1,522 B transfer over #12601 (5,403,501 -> 5,407,870 B raw,
+  // 1,671,307 -> 1,672,829 B transfer, Node 26): the isolation switch, Start gating and per-reward Try it
   // errors in the eager rewards section and catalog. Raised by that growth.
-  // Sample answers (#12999): +1,165 B raw / +339 B transfer over #12995 (6,018,176 -> 6,019,341 B raw,
-  // 1,855,664 -> 1,856,003 B transfer, Node 26): the sample card's strings in the eager catalog and the
+  // Sample answers (#12999): +1,151 B raw / +353 B transfer over #12995 (5,407,870 -> 5,409,021 B raw,
+  // 1,672,829 -> 1,673,182 B transfer, Node 26): the sample card's strings in the eager catalog and the
   // run's objective in the run-config override. Raised by that growth.
-  // Format warm-up (#13000): +1,971 B raw / +734 B transfer over #12999 (6,019,341 -> 6,021,312 B raw,
-  // 1,856,003 -> 1,856,737 B transfer, Node 26): the reasoning-format and warm-up strings in the eager catalog
+  // Format warm-up (#13000): +2,008 B raw / +690 B transfer over #12999 (5,409,021 -> 5,411,029 B raw,
+  // 1,673,182 -> 1,673,872 B transfer, Node 26): the reasoning-format and warm-up strings in the eager catalog
   // and their defaults in the training store. Raised by that growth.
-  transferBytes: 1_861_399,
-  rawBytes: 6_026_049,
+  transferBytes: 1_862_364,
+  rawBytes: 6_028_567,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

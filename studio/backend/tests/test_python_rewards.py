@@ -5,6 +5,7 @@ import gc
 import json
 import os
 import signal
+import sys
 import threading
 import time
 import weakref
@@ -1079,3 +1080,62 @@ def test_no_memory_limit_set_means_no_windows_job_limit():
     kernel32 = _RecordingKernel()
     assert python_rewards._limit_job_memory(kernel32, 77, None) is False
     assert kernel32.calls == []
+
+
+class _SelfJobKernel(_RecordingKernel):
+    def __init__(self):
+        super().__init__()
+        self.assigned = None
+
+    def CreateJobObjectW(self, attributes, name):
+        return 55
+
+    def GetCurrentProcess(self):
+        return -1
+
+    def AssignProcessToJobObject(self, job, process):
+        self.assigned = (job, process)
+        return 1
+
+
+def test_the_reward_worker_puts_itself_in_a_capped_job():
+    # Under MXC the host's job may hold only the launcher, so the worker caps itself as well.
+    from core.training import reward_worker_main as worker_main
+
+    kernel32 = _SelfJobKernel()
+    assert worker_main._cap_own_memory(8 * 1024**3, kernel32 = kernel32) is True
+    assert kernel32.calls == [(55, 9, worker_main._JOB_OBJECT_LIMIT_PROCESS_MEMORY, 8 * 1024**3)]
+    assert kernel32.assigned == (55, -1)
+    assert worker_main._cap_own_memory(None, kernel32 = _SelfJobKernel()) is False
+
+
+def test_the_worker_caps_itself_before_loading_any_reward(monkeypatch, tmp_path):
+    from core.training import reward_worker_main as worker_main
+
+    order = []
+    monkeypatch.setattr(sys, "stdout", sys.stdout)
+    monkeypatch.setattr(sys, "stderr", sys.stderr)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(worker_main, "_cap_own_memory", lambda limit: order.append(("cap", limit)))
+
+    def load(specs):
+        order.append(("load", len(specs)))
+        (tmp_path / "stop").touch()
+        return {}, {}
+
+    monkeypatch.setattr(worker_main, "_load", load)
+    (tmp_path / "alive").touch()
+    (tmp_path / "rewards.json").write_text(
+        json.dumps({"specs": [{}], "memory_limit_bytes": 1024}), encoding = "utf-8"
+    )
+    assert worker_main.main() == 0
+    assert order == [("cap", 1024), ("load", 1)]
+
+
+def test_the_host_hands_the_worker_its_memory_limit(worker_factory, monkeypatch):
+    from utils import sandbox_memory_limit
+
+    monkeypatch.setattr(sandbox_memory_limit, "memory_limit_bytes", lambda: 3 * 1024**3)
+    worker = worker_factory([_spec("one", "def reward(completions, **kw):\n    return [1.0]\n")])
+    setup = json.loads(Path(worker._workdir, "rewards.json").read_text(encoding = "utf-8"))
+    assert setup["memory_limit_bytes"] == 3 * 1024**3

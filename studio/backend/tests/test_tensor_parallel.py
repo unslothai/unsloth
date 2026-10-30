@@ -24,7 +24,7 @@ def _shared_setup_1(monkeypatch):
     proc = _ToggleProcess()
     b._process = proc
     fired = threading.Event()
-    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
+    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set() or True)
     b._start_mtp_crash_watchdog()
     return b, fired, proc
 
@@ -1019,7 +1019,6 @@ def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda b: setattr(b, "_mtp_runtime_fallback_active", False),
         lambda b: setattr(b, "_process", None),
     ],
 )

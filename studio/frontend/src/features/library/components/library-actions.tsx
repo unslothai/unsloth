@@ -18,11 +18,9 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Folder01Icon,
-  FolderAddIcon,
-  FolderExportIcon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon, FolderAddIcon, FolderClosedIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
 import { useMemo, useState } from "react";
@@ -180,7 +178,7 @@ export function LibraryActionsMenu({
                 onSelect={() => actions.moveTo(target, folder.id)}
                 style={{ paddingLeft: `${12 + depth * 14}px` }}
               >
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className={ICON} />
+                <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.75} className={ICON} />
                 <span className="truncate">{folder.name}</span>
               </DropdownMenuItem>
             ))}
