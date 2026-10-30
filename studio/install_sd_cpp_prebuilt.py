@@ -24,11 +24,13 @@ from typing import Optional, Sequence
 
 if __package__:
     from .backend.utils.auth_safe import auth_safe_open
+    from .backend.utils.subprocess_compat import windows_loader_error_boxes_suppressed
 else:
     _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
     if _STUDIO_DIR not in sys.path:
         sys.path.insert(0, _STUDIO_DIR)
     from backend.utils.auth_safe import auth_safe_open
+    from backend.utils.subprocess_compat import windows_loader_error_boxes_suppressed
 
 # GPU hosts run diffusers, so only CPU/Apple assets are needed.
 DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
@@ -784,31 +786,10 @@ def _probe_env(binary: Path) -> dict:
 
 
 def _windows_error_mode_suppressed():
-    """On Windows, suppress the missing-DLL dialog so a refusal returns an exit status."""
-    import contextlib
-
-    @contextlib.contextmanager
-    def _cm():
-        if sys.platform != "win32":
-            yield
-            return
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
-            previous = kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
-        except Exception:  # noqa: BLE001 -- best effort; the probe still runs
-            yield
-            return
-        try:
-            yield
-        finally:
-            try:
-                kernel32.SetErrorMode(previous)
-            except Exception:  # noqa: BLE001
-                pass
-
-    return _cm()
+    """On Windows, suppress the missing-DLL dialog so a refusal returns an exit status. Shares the
+    backend's process-wide record, since the backend's own probes can run during an install."""
+    # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
+    return windows_loader_error_boxes_suppressed(0x0001 | 0x0002 | 0x8000)
 
 
 def probe_binary_starts(binary: Path, *, timeout: float = 30.0) -> Optional[str]:
