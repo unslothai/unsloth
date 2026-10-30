@@ -211,7 +211,13 @@ def test_hub_rows_with_timestamps_still_upload(monkeypatch):
         {"q": f"q{i}", "a": f"a{i}", "at": datetime.datetime(2026, 1, 1, i), "x": float("nan")}
         for i in range(10)
     ]
-    monkeypatch.setattr(datasets, "load_dataset", lambda *a, **k: datasets.Dataset.from_list(rows))
+    monkeypatch.setattr(
+        datasets,
+        "load_dataset",
+        lambda *a, streaming = False, **k: datasets.Dataset.from_list(rows).to_iterable_dataset()
+        if streaming
+        else datasets.Dataset.from_list(rows),
+    )
     monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: 1 / 0)
     loaded = training._load_rows({"source": "hf", "ref": "org/ds"}, None, None)
     assert loaded[0]["at"] == "2026-01-01 00:00:00" and loaded[0]["x"] is None
@@ -306,3 +312,20 @@ def test_local_holdout_streams_only_the_slice_and_checks_the_cap_first(tmp_path,
             training._load_rows(local, None, None)
         with pytest.raises(FlowNodeError, match = "10 rows"):
             training._load_rows(local, None, 9)
+
+
+def test_hub_holdout_of_unknown_size_streams_at_most_the_cap(monkeypatch):
+    from types import SimpleNamespace
+
+    import datasets
+
+    def no_download(*a, streaming = False, **k):
+        assert streaming, "a full split download"
+        return SimpleNamespace(take = lambda n: [{"q": i} for i in range(min(n, 20))])
+
+    monkeypatch.setattr(datasets, "load_dataset", no_download)
+    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: 1 / 0)
+    assert len(training._load_rows({"source": "hf", "ref": "org/ds"}, None, None)) == 20
+    monkeypatch.setattr(training, "HOLDOUT_MAX_ROWS", 5)
+    with pytest.raises(FlowNodeError, match = "More than 5"):
+        training._load_rows({"source": "hf", "ref": "org/ds"}, None, None)

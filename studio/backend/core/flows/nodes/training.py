@@ -272,21 +272,26 @@ def _stream_rows(streamed: Any, end: Optional[int]) -> Any:
 
 def _hub_rows(dataset: dict, token: Any, end: Optional[int]) -> Any:
     """A Hub split, without downloading more than the hold-out can use: a slice streams just its
-    rows, and a split the Hub says is over the cap is refused before anything is fetched."""
-    from datasets import Dataset, load_dataset, load_dataset_builder
+    rows, a split the Hub says is over the cap is refused before anything is fetched, and one of
+    unknown size streams at most the cap plus one row."""
+    from datasets import load_dataset, load_dataset_builder
 
     ref, subset = str(dataset["ref"]), dataset.get("subset") or None
     split = dataset.get("split") or "train"
-    if end is not None:
-        if end + 1 > HOLDOUT_MAX_ROWS:
-            raise _too_many(end + 1)
+
+    def stream() -> Any:
         streamed = load_dataset(ref, subset, split = split, token = token, streaming = True)
-        return Dataset.from_list(list(streamed.take(end + 1)))
+        return _stream_rows(streamed, end)
+
+    if end is not None:
+        return stream()
     try:
         known = load_dataset_builder(ref, subset, token = token).info.splits[split].num_examples
     except Exception:
         known = None
-    if known and known > HOLDOUT_MAX_ROWS:
+    if not known:
+        return stream()
+    if known > HOLDOUT_MAX_ROWS:
         raise _too_many(known)
     return load_dataset(ref, subset, split = split, token = token)
 
