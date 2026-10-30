@@ -249,6 +249,35 @@ test("deleting a column from the inspector or Ctrl+X takes its {{ reference }} o
   assert.ok(Object.values(graph.edges).every((e) => e.source !== prompt.id));
 });
 
+test("deleting reference wires from two recipe frames at once clears both frames' wires", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { disconnectColumns } = await import("../src/features/flows/recipe/recipe-actions.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const a = sqlGroup();
+  const b = sqlGroup();
+  const other = b.nodes.map((n) => ({ ...n, id: `b_${n.id}`, group: "recipe_b" }));
+  const edges = [...referenceEdges(a.nodes), ...referenceEdges(other)];
+  useDocStore.getState().load({
+    ...doc([...a.nodes, ...other], edges),
+    groups: [a.group, { ...b.group, id: "recipe_b" }],
+  });
+  const graph = useDocStore.getState().graph;
+  const wire = (nodes: FlowNode[]) => {
+    const target = byName(nodes, "sql").id;
+    const id = graph.edgeOrder.find(
+      (e) => graph.edges[e].target === target && graph.edges[e].source === byName(nodes, "sql_prompt").id,
+    );
+    assert.ok(id);
+    return id;
+  };
+  const picked = [wire(a.nodes), wire(other)];
+  assert.deepEqual(disconnectColumns(picked).sort(), [...picked].sort());
+  const after = useDocStore.getState().graph;
+  for (const id of picked) assert.equal(after.edges[id], undefined, id);
+  for (const nodes of [a.nodes, other])
+    assert.doesNotMatch(JSON.stringify(after.nodes[byName(nodes, "sql").id].params.column), /sql_prompt/);
+});
+
 async function loadCatalog() {
   const { useCatalogStore } = await import("../src/features/flows/stores/catalog-store.ts");
   const catalog = JSON.parse(

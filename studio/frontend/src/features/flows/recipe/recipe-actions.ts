@@ -34,9 +34,9 @@ export function recipeConnectionError(
   return null;
 }
 
-/** Upsert columns and the group in one undo step, then redraw the group's reference wires. */
+/** Upsert columns and the group in one undo step, then redraw the groups' reference wires. */
 export function commitRecipe(
-  groupId: string,
+  groupId: string | string[],
   nodes: FlowNode[],
   group: FlowGroup | null,
   coalesceKey?: string,
@@ -53,7 +53,13 @@ export function commitRecipe(
       ...nodes.filter((n) => !doc.graph.nodes[n.id]).map((n) => n.id),
     ],
   };
-  const diff = referenceEdgeDiff(after, groupColumns(after, groupId));
+  const diffs = [groupId].flat().map((id) =>
+    referenceEdgeDiff(after, groupColumns(after, id)),
+  );
+  const diff = {
+    add: diffs.flatMap((d) => d.add),
+    remove: diffs.flatMap((d) => d.remove),
+  };
   if (!nodes.length && !group && !diff.add.length && !diff.remove.length)
     return;
   doc.patchGraph(
@@ -93,7 +99,7 @@ export function disconnectColumns(edgeIds: string[]): string[] {
   const graph = useDocStore.getState().graph;
   const changed = new Map<string, FlowNode>();
   const handled: string[] = [];
-  let groupId: string | null = null;
+  const groupIds = new Set<string>();
   for (const id of edgeIds) {
     const edge = graph.edges[id];
     const source = edge && graph.nodes[edge.source];
@@ -101,12 +107,12 @@ export function disconnectColumns(edgeIds: string[]): string[] {
       edge && (changed.get(edge.target) ?? graph.nodes[edge.target]);
     if (source?.type !== COLUMN_TYPE || target?.type !== COLUMN_TYPE) continue;
     handled.push(id);
-    groupId = target.group ?? null;
+    if (target.group) groupIds.add(target.group);
     const column = withoutReference(columnOf(target), columnName(source));
     changed.set(target.id, { ...target, params: { ...target.params, column } });
   }
   // A wire whose reference survives (a sampler's parent) is drawn again by the sync.
-  if (groupId) commitRecipe(groupId, [...changed.values()], null);
+  if (groupIds.size) commitRecipe([...groupIds], [...changed.values()], null);
   return handled;
 }
 
