@@ -1963,9 +1963,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             is_ring_context_parallel
             or ulysses_packing_blocker is not None
             or boundary_blocker is not None
-        ) and getattr(
-            config_arg, "eval_packing", None
-        ):
+        ) and getattr(config_arg, "eval_packing", None):
             setattr(config_arg, "eval_packing", False)
 
         if blocked and requested_pack:
