@@ -2342,6 +2342,19 @@ class UnslothTrainer:
         )
         return result_dataset
 
+    @staticmethod
+    def _resolve_audio_vlm_image_column(dataset, custom_format_mapping, audio_col):
+        cols = dataset.column_names
+        for col, role in (custom_format_mapping or {}).items():
+            if role == "image" and col in cols:
+                return col
+        from hub.utils.dataset_format import detect_multimodal_dataset
+
+        candidates = [
+            c for c in detect_multimodal_dataset(dataset)["multimodal_columns"] if c != audio_col
+        ]
+        return candidates[0] if candidates else None
+
     def _format_audio_vlm_dataset(
         self,
         dataset,
@@ -2361,14 +2374,29 @@ class UnslothTrainer:
             )
 
         self._audio_vlm_audio_col = audio_col
+        image_col = self._resolve_audio_vlm_image_column(dataset, custom_format_mapping, audio_col)
+        self._audio_vlm_image_col = image_col
 
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = 16000))
+        if image_col:
+            from datasets import Image
+
+            if not isinstance(dataset.features.get(image_col), Image):
+                dataset = dataset.cast_column(image_col, Image())
+            logger.info(f"Audio VLM dataset also has images in '{image_col}'; training on both\n")
 
         def format_messages(samples):
             formatted = {"messages": []}
             for idx in range(len(samples[audio_col])):
                 audio = samples[audio_col][idx]["array"]
                 label = str(samples[text_col][idx])
+                user_content = [
+                    {"type": "audio", "audio": audio},
+                    {"type": "text", "text": "Please transcribe this audio."},
+                ]
+                if image_col:
+                    # The collator passes the image itself; the template only needs the slot.
+                    user_content.insert(0, {"type": "image"})
                 message = [
                     {
                         "role": "system",
@@ -2379,13 +2407,7 @@ class UnslothTrainer:
                             }
                         ],
                     },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "audio", "audio": audio},
-                            {"type": "text", "text": "Please transcribe this audio."},
-                        ],
-                    },
+                    {"role": "user", "content": user_content},
                     {"role": "assistant", "content": [{"type": "text", "text": label}]},
                 ]
                 formatted["messages"].append(message)
@@ -2975,10 +2997,12 @@ class UnslothTrainer:
         if eval_dataset is None:
             return None
         train_audio_col = getattr(self, "_audio_vlm_audio_col", None)
+        train_image_col = getattr(self, "_audio_vlm_image_col", None)
         formatted = self._preprocess_audio_eval_split(
             eval_dataset, self._format_audio_vlm_dataset, custom_format_mapping
         )
         eval_audio_col = getattr(self, "_audio_vlm_audio_col", None)
+        eval_image_col = getattr(self, "_audio_vlm_image_col", None)
         if formatted is not None and eval_audio_col != train_audio_col:
             self._record_warning(
                 f"The eval dataset stores audio in '{eval_audio_col}' but the training dataset "
@@ -2986,7 +3010,15 @@ class UnslothTrainer:
                 "same audio column name."
             )
             formatted = None
+        elif formatted is not None and eval_image_col != train_image_col:
+            self._record_warning(
+                f"The eval dataset's image column ('{eval_image_col}') does not match the training "
+                f"dataset's ('{train_image_col}'), so this run has no evaluation. Give both splits "
+                "the same image column."
+            )
+            formatted = None
         self._audio_vlm_audio_col = train_audio_col
+        self._audio_vlm_image_col = train_image_col
         return formatted
 
     def _audio_eval_config(self, training_args):
@@ -4584,6 +4616,7 @@ class UnslothTrainer:
                 processor = self.tokenizer
 
                 audio_col_name = getattr(self, "_audio_vlm_audio_col", "audio")
+                image_col_name = getattr(self, "_audio_vlm_image_col", None)
                 if training_args.get("train_on_completions", False) and not training_args.get(
                     "is_cpt", False
                 ):
@@ -4614,6 +4647,7 @@ class UnslothTrainer:
                 def audio_vlm_collate_fn(examples):
                     texts = []
                     audios = []
+                    images = []
                     for example in examples:
                         text = processor.apply_chat_template(
                             example["messages"],
@@ -4622,8 +4656,18 @@ class UnslothTrainer:
                         ).strip()
                         texts.append(text)
                         audios.append(example[audio_col_name]["array"])
+                        if image_col_name:
+                            image = example[image_col_name]
+                            images.append([image.convert("RGB") if hasattr(image, "convert") else image])
 
-                    batch = processor(text = texts, audio = audios, return_tensors = "pt", padding = True)
+                    image_kwargs = {"images": images} if image_col_name else {}
+                    batch = processor(
+                        text = texts,
+                        audio = audios,
+                        return_tensors = "pt",
+                        padding = True,
+                        **image_kwargs,
+                    )
 
                     labels = batch["input_ids"].clone()
                     labels[labels == processor.tokenizer.pad_token_id] = -100
