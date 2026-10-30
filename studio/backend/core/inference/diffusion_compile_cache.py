@@ -227,7 +227,7 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_DIFFUSION_INT8_FUSED": "on",
     "UNSLOTH_DIFFUSION_INT8_TEXT_STREAM": "on",
     "UNSLOTH_DIFFUSION_INT8_MODULATION": "on",
-    # Count of dense outlier channels (0 = none, clamped to 16, junk = the default), keyed on the value the reader uses.
+    # Keyed on the clamped count the reader uses (0 = none).
     "UNSLOTH_DIFFUSION_INT8_MOD_OUTLIERS": "count:8",
     "UNSLOTH_DIFFUSION_INT8_GEMV": "on",
     "UNSLOTH_DIFFUSION_ZIMAGE_FUSED": "on",

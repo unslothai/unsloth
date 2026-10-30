@@ -1,17 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused int8 weight-only GEMV for small-M Linears (the per-block AdaLN modulations, M = batch).
+"""Fused int8 weight-only GEMV for small-M Linears (AdaLN modulations, M = batch).
 
-torchao's weight-only ``Int8Tensor`` linear casts the whole int8 weight to bf16 on every call (``qdata.t().to(bf16)``,
-then ``mm``, then ``* scale``, then ``+ bias``, each rounding to bf16). On a 3072 x 18432 modulation that is a
-113 MB bf16 temporary per call for a GEMV that only needs to read the 57 MB of int8 codes once. This kernel reads the
-codes and the scales directly, accumulates in float32 and rounds once at the end, so it is never slower than that
-path and slightly more accurate. Per-row (``block_size [1, K]``) and per-group (``block_size [1, G]``) symmetric
-scales are both handled; anything else (zero points, activation quant, odd K) keeps torchao's own forward.
-
-The op is opaque to Inductor (``torch.library.custom_op`` with a fake impl), and M is the batch, independent of the
-prompt length, so it adds no recompiles and no CUDA-graph re-captures.
+torchao's weight-only linear materialises a bf16 copy of the whole weight per call; this reads the int8 codes and
+scales directly with one float32 accumulate. Per-row and per-group symmetric scales only; anything else keeps
+torchao's forward. Opaque to Inductor and M is the batch, so no recompiles or CUDA-graph re-captures.
 """
 
 from __future__ import annotations
@@ -22,23 +16,20 @@ from functools import lru_cache
 from typing import Any, Optional
 
 INT8_GEMV_ENV = "UNSLOTH_DIFFUSION_INT8_GEMV"
-# Largest flattened row count the GEMV takes; above it the stock dequant + GEMM path is the faster one.
+# Above this many rows the stock dequant + GEMM is faster.
 MAX_ROWS = 4
-# Input channels kept dense beside the int8 codes (``OUTLIER_*`` buffers); the kernel pads them to 16.
 MAX_OUTLIERS = 16
 OUTLIER_IDX = "outlier_idx"
 OUTLIER_WEIGHT = "outlier_weight"
 _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_wo_gemv"
-# (BLOCK_N, BLOCK_K, warps, stages), first that launches on a card wins. 128 x 128 x 3 stages needs ~40 KB of shared
-# memory (RTX PRO 6000: 15 us per 3072 x 18432 call at M = 2, torchao's weight-only path 208 us, bf16 33 us); the
-# second fits any CUDA card Triton supports.
+# (BLOCK_N, BLOCK_K, warps, stages), first that launches wins; the first needs ~40 KB smem, the second fits any card.
 _CONFIGS = ((128, 128, 8, 3), (64, 64, 4, 2))
 _DEVICE_CFG: dict = {}
 _LOCK = threading.Lock()
-# Kernel launches since import (read by benches as engagement evidence).
+# Engagement evidence for benches.
 COUNTS = {"gemv": 0, "fallback": 0}
-# Resolved once by ``install`` (outside any trace): the op, or None when the kernel is off / unavailable.
+# Resolved once by ``install``, outside any trace.
 _OP_HANDLE: Any = None
 
 

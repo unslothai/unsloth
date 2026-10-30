@@ -109,13 +109,11 @@ def runtime_quant_tokens_for_scheme(scheme: str, family: Optional[str] = None) -
     return _INT8_FAMILY_RUNTIME_QUANT_TOKENS.get(str(family or "").strip().lower(), ())
 
 
-# Streamed-only int8 WEIGHT-ONLY Linears (``FamilyProfile.int8_streamed_weight_only_tokens``): generic-excluded
-# M = batch modulations, kept out of the W8A8 pass and the pad list; the prequant-cache key carries them.
 _INT8_FAMILY_STREAMED_WO_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
     "int8_streamed_weight_only_tokens", quant = True
 )
-# Kill switch: UNSLOTH_DIFFUSION_INT8_MODULATION=0 keeps the streamed modulations bf16 (the layout, cache key and
-# graph of a build without this path). UNSLOTH_DIFFUSION_INT8_GEMV=0 keeps them int8 on torchao's own forward.
+# Kill switches (=0): UNSLOTH_DIFFUSION_INT8_MODULATION keeps modulations bf16, UNSLOTH_DIFFUSION_INT8_GEMV uses
+# torchao's forward, UNSLOTH_DIFFUSION_INT8_MOD_OUTLIERS keeps no dense outlier columns.
 INT8_MODULATION_ENV = "UNSLOTH_DIFFUSION_INT8_MODULATION"
 
 

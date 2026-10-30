@@ -59,7 +59,7 @@ class FamilyProfile:
     int8_exclude_tokens: tuple[str, ...] = ()
     # Subset of ``int8_exclude_tokens`` a STREAMED build quantises anyway (``int8_text_stream_scope``).
     int8_runtime_quant_tokens: tuple[str, ...] = ()
-    # Generic-excluded M = batch Linears a STREAMED build stores int8 WEIGHT-ONLY (same scope; bf16 activations).
+    # Generic-excluded Linears a STREAMED build stores int8 weight-only.
     int8_streamed_weight_only_tokens: tuple[str, ...] = ()
     # Name tokens left dense for EVERY transformer-quant scheme (int8 / fp8 / mxfp8 / nvfp4), on top of the int8
     # tokens above. For layers whose quantisation error is measured to dominate the image delta regardless of the
