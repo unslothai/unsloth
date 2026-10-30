@@ -795,7 +795,9 @@ def _capture_ulysses_config(monkeypatch, backend):
         return q.transpose(1, 2)
 
     monkeypatch.setattr(uh, "ulysses_attention", capture)
-    monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False, dropout_p = 0.0: backend)
+    monkeypatch.setattr(
+        ad, "select_attention_backend", lambda use_varlen = False, dropout_p = 0.0: backend
+    )
     return uh, seen
 
 
