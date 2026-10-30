@@ -688,6 +688,17 @@ def _trim_param_value(val: str) -> str:
     return val
 
 
+def _json_object_body(body: str) -> dict | None:
+    """Arguments of a Hermes/XML mix ``<function=NAME>{json}</function>``; a heal, so Auto-Heal only."""
+    if not body.lstrip().startswith("{"):
+        return None
+    try:
+        value = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
     """Unbalanced braces cover to EOF; a closeless balanced call covers only braces, so siblings survive."""
     n = len(content)
@@ -915,6 +926,8 @@ def parse_tool_calls_from_text(
                 arguments[param_name] = _trim_param_value(val)
             if not valid_params:
                 continue
+        if allow_incomplete and not param_starts:
+            arguments = _json_object_body(body) or arguments
 
         span_start = fm.start()
         wrap_open = re.search(r"<tool_call>\s*$", content[:span_start])
