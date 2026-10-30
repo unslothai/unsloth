@@ -29,6 +29,8 @@ const CONNECTION_LOGO_PATHS = new Map([
   ["llama_cpp", "/provider-logos/llama_cpp.svg"],
   ["liquid", "/provider-logos/liquid.svg"],
   ["typesafe", "/provider-logos/typesafe.svg"],
+  ["opencode", "/provider-logos/opencode.svg"],
+  ["opencode_go", "/provider-logos/opencode.svg"],
 ]);
 
 export function providerLogoPath(
