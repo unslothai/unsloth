@@ -12,6 +12,7 @@ import sys
 import types
 import zipfile
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -123,6 +124,68 @@ def test_the_loader_refusal_is_read_from_the_exit_status_and_output():
     assert sdmod.loader_refusal(None) is None
 
 
+def test_a_glibc_symbol_version_failure_is_a_loader_refusal():
+    """Regression: glibc's version check exits before main without the shared-libraries prefix."""
+    assert sdmod.loader_refusal(
+        1,
+        "./sd-cli: /opt/sd/libstable-diffusion.so: version `LIBDEMO_2' not found "
+        "(required by ./sd-cli)",
+    )
+    assert sdmod.loader_refusal(
+        1,
+        "./sd-cli: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by ./sd-cli)",
+    )
+    # Application output mentioning "not found" is still not a refusal.
+    assert sdmod.loader_refusal(1, "error: model file not found") is None
+
+
+def _build_version_mismatch(tmp: Path) -> Optional[Path]:
+    """A real ELF needing LIBDEMO_2 next to a same-named library exporting only LIBDEMO_1."""
+    import shutil
+    import subprocess
+
+    cc = shutil.which("cc") or shutil.which("gcc")
+    if _WIN or sys.platform == "darwin" or not cc:
+        return None
+    (tmp / "v1.map").write_text("LIBDEMO_1 { global: demo; local: *; };\n")
+    (tmp / "v2.map").write_text("LIBDEMO_2 { global: demo; local: *; };\n")
+    (tmp / "lib.c").write_text("int demo(void) { return 0; }\n")
+    (tmp / "main.c").write_text("int demo(void);\nint main(void) { return demo(); }\n")
+    build = tmp / "build"
+    build.mkdir()
+    try:
+        for ver, out in (("v2.map", build / "libdemo.so"), ("v1.map", tmp / "libdemo.so")):
+            subprocess.run(
+                [
+                    cc,
+                    "-shared",
+                    "-fPIC",
+                    f"-Wl,--version-script={tmp / ver}",
+                    "-o",
+                    str(out),
+                    str(tmp / "lib.c"),
+                ],
+                check = True,
+                capture_output = True,
+            )
+        exe = tmp / _CLI
+        subprocess.run(
+            [cc, "-o", str(exe), str(tmp / "main.c"), f"-L{build}", "-ldemo"],
+            check = True,
+            capture_output = True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return exe
+
+
+def test_probe_refuses_a_real_elf_whose_library_lacks_the_needed_version(tmp_path):
+    exe = _build_version_mismatch(tmp_path)
+    if exe is None:
+        pytest.skip("needs a Linux C toolchain")
+    assert sdmod.probe_binary_starts(exe)
+
+
 def test_probe_reports_a_refused_binary_and_passes_a_starting_one(tmp_path):
     bad = tmp_path / "bad" / _CLI
     good = tmp_path / "good" / _CLI
@@ -151,6 +214,24 @@ def test_a_bundle_that_cannot_start_never_replaces_the_working_one(tmp_path, mon
     assert not (root / _CLI).exists() and not (root / _SERVER).exists()
     assert sdmod.read_install_record(root).get("accelerator") == "vulkan"
     assert not list(root.parent.glob(".sd-cpp-verify-*"))
+
+
+@pytest.mark.skipif(_WIN, reason = "glibc loader message")
+def test_a_symbol_version_refusal_never_replaces_the_working_one(tmp_path, monkeypatch):
+    root = _managed_root(tmp_path, monkeypatch)
+    old_server = _working_vulkan_install(root)
+    before = old_server.read_bytes()
+    refused = (
+        b"#!/bin/sh\necho \"$0: /opt/libstable-diffusion.so: version \\`LIBDEMO_2' not found "
+        b'(required by $0)" >&2\nexit 1\n'
+    )
+    _stub_release(monkeypatch, {"rocm": _bundle(refused)})
+
+    with pytest.raises(sdmod.UnrunnableBuildError):
+        sdmod.install(install_dir = root, accelerator = "rocm")
+
+    assert old_server.is_file() and old_server.read_bytes() == before
+    assert sdmod.read_install_record(root).get("accelerator") == "vulkan"
 
 
 def test_the_refusal_names_what_was_asked_for(tmp_path, monkeypatch):
