@@ -1638,7 +1638,10 @@ class AudioCppVariant:
 
 
 def _single_file_variants(
-    files: Sequence[RepoFile], folder: str, *, unloadable: bool = False
+    files: Sequence[RepoFile],
+    folder: str,
+    *,
+    unloadable: bool = False,
 ) -> list[AudioCppVariant]:
     """One variant per GGUF; files audio.cpp cannot load only when ``unloadable``."""
     prefix = f"{folder}/" if folder else ""
@@ -3122,7 +3125,11 @@ def cached_folder_target(
     keys = [gguf_variant_key(v.primary) for v in chosen if v.primary]
     if wanted and keys:
         return AUDIO_CPP_REPO, keys
-    if wanted and model is not None and _on_disk_quant_named(model.cache_variants, wanted, ref.folder):
+    if (
+        wanted
+        and model is not None
+        and _on_disk_quant_named(model.cache_variants, wanted, ref.folder)
+    ):
         return AUDIO_CPP_REPO, []
     # A quant cancelled before any file finished has only download state; the variant delete clears it.
     partial = _folder_state_keys(ref.folder)
@@ -3375,7 +3382,11 @@ def _scan_downloaded(task: Optional[str]) -> list[AudioCppModel]:
                 out.append(model.with_variant(ready))
                 continue
             spare = next(
-                (v for v in model.unloadable if audio_cpp_files.cached_files(model.with_variant(v))),
+                (
+                    v
+                    for v in model.unloadable
+                    if audio_cpp_files.cached_files(model.with_variant(v))
+                ),
                 None,
             )
             if spare is not None:
