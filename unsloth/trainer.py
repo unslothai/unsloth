@@ -1910,8 +1910,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
         is_ring_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1 and (
             getattr(config_arg, "context_parallel_backend", None) or "ring"
         ) == "ring"
-        # DeepSeek V4 compressors (and ZAYA / RecurrentGemma mixers) read across packed documents whatever
-        # position_ids say, so packed rows would train on cross-document attention.
         boundary_blocker = packing_boundary_blocker(model, model_types)
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
@@ -1931,7 +1929,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
         if boundary_blocker is not None:
-            # One line when it is the only reason padding-free stays off (packing=True warns below).
             if (
                 not blocked
                 and not requested_pack

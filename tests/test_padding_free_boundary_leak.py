@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""SFT must not pick padding-free for attention that mixes tokens across packed documents.
-
-DeepSeek V4's CSA / HCA compressors pool KV over fixed windows of the flattened row and gate them by
-position_ids, so on a padding-free row the second document attends to the first one's compressed
-entries. Dense attention (Llama / Qwen3) honours the restart in position_ids and keeps padding-free."""
-
 from types import SimpleNamespace
 
 import pytest
@@ -25,7 +19,6 @@ except ImportError:
 
 @pytest.fixture(autouse = True)
 def _return_logits_unset(monkeypatch):
-    # UNSLOTH_RETURN_LOGITS=1 blocks padding-free outright, which would hide the gate under test.
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     monkeypatch.delenv("UNSLOTH_PADDING_CHOICE", raising = False)
 
@@ -54,7 +47,6 @@ def _tiny(model_type):
             qk_rope_head_dim = 16,
             index_n_heads = 2,
             index_head_dim = 16,
-            # Every compressed entry is selected, so the indexer's top-k ties cannot add noise.
             index_topk = 4096,
             sliding_window = 16,
             compress_rates = {"compressed_sparse_attention": 4, "heavily_compressed_attention": 8},
@@ -83,7 +75,6 @@ def _tiny_or_skip(model_type):
 
 
 def _second_document_error(model):
-    """Relative error of the second document on a padding-free row vs the document alone."""
     g = torch.Generator().manual_seed(1)
     a = torch.randint(3, 250, (1, 48), generator = g)
     b = torch.randint(3, 250, (1, 40), generator = g)
@@ -129,7 +120,6 @@ def _build_sft(monkeypatch, model, args):
 
 
 def test_deepseek_v4_packed_row_leaks_and_dense_does_not():
-    """Why the gate exists: the leak is in V4's attention, not in how Unsloth builds the row."""
     v4 = _tiny_or_skip("deepseek_v4")
     assert _second_document_error(v4) > 1e-2
     assert _second_document_error(_tiny("llama")) < 1e-5
@@ -140,7 +130,6 @@ def test_sft_keeps_padding_free_off_for_deepseek_v4(monkeypatch, capsys):
     args = _build_sft(monkeypatch, v4, _sft_args())
     assert args.padding_free is False and args.packing is False
     assert "mixes tokens across packed documents" in capsys.readouterr().out
-    # An explicit request is overridden too, and packed evaluation with it.
     args = _build_sft(monkeypatch, v4, _sft_args(padding_free = True, eval_packing = True))
     assert args.padding_free is False and args.eval_packing is False
     args = _build_sft(monkeypatch, v4, _sft_args(packing = True))
@@ -171,6 +160,5 @@ def test_boundary_blocker_matches_modules_and_string_model_types(name):
     model = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Sequential(inner))
     assert packing_boundary_blocker(model) == name
     assert packing_boundary_blocker(torch.nn.Linear(2, 2)) is None
-    # A string `model=` only has its config's model types.
     assert packing_boundary_blocker("org/repo", ["deepseek_v4"]) == "deepseek_v4"
     assert packing_boundary_blocker("org/repo", ["deepseek_v3"]) is None
