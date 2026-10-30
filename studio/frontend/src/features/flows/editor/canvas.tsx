@@ -24,6 +24,7 @@ import {
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -196,6 +197,10 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const connectStart = useRef<OnConnectStartParams | null>(null);
   const sizesRef = useRef(sizes);
   sizesRef.current = sizes;
+  useEffect(() => {
+    rememberSizes(sizes);
+    return () => rememberSizes(new Map());
+  }, [sizes]);
   const dragRef = useRef<Positions | null>(null);
   dragRef.current = drag;
 
@@ -254,10 +259,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         }
       }
       if (nextDrag) setDrag(nextDrag);
-      if (nextSizes) {
-        setSizes(nextSizes);
-        rememberSizes(nextSizes);
-      }
+      if (nextSizes) setSizes(nextSizes);
       if (selection) {
         const ui = useUiStore.getState();
         const next = new Set(ui.selectedNodes);

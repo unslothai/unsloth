@@ -407,6 +407,11 @@ test("auto layout moves a note a wide block folded, after the block left React F
   });
   assert.deepEqual(result.b, [400, 50]);
   assert.deepEqual(result["note:n1"], [800, 300]);
+  // The sizes belong to the mounted canvas: another flow's canvas, or none, brings its own.
+  rememberSizes(new Map([["a", { width: 260, height: 140 }]]));
+  assert.equal(lookup("b"), undefined);
+  rememberSizes(new Map());
+  assert.equal(lookup("a"), undefined);
 });
 
 test("notes and reroutes drawn among a card's blocks fold with it", () => {

@@ -30,14 +30,15 @@ function getWorker(): Worker {
   return worker;
 }
 
-// A closed card's blocks leave React Flow, so it no longer knows their sizes; the canvas keeps
-// the last ones here so layout folds the same notes the card does.
-const remembered = new Map<string, { width: number; height: number }>();
+// A closed card's blocks leave React Flow, so it no longer knows their sizes; layout reads the
+// mounted canvas's own size map, so it folds the same notes the card does.
+let remembered: ReadonlyMap<string, { width: number; height: number }> =
+  new Map();
 
 export function rememberSizes(
   sizes: ReadonlyMap<string, { width: number; height: number }>,
 ): void {
-  for (const [id, size] of sizes) remembered.set(id, size);
+  remembered = sizes;
 }
 
 export function sizeLookup(
