@@ -117,6 +117,19 @@ def test_a_second_model_loads_alongside_and_requests_name_it(monkeypatch, mode):
     assert len(loads) == 1 and asyncio.run(_body(again))["model"] == f"{SMALL}:Q4_K_M"
 
 
+def test_a_model_loaded_alongside_is_recorded_for_unload_after_run(monkeypatch):
+    _fakes(monkeypatch, "always", [BIG])
+    noted = []
+    ctx = _Ctx()
+    ctx.note_loaded = lambda slot, repo: noted.append((slot, repo))
+    asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL}))
+    assert noted == [("llm", SMALL)]
+    kept = _Ctx()
+    kept.note_loaded = lambda slot, repo: noted.append((slot, repo))
+    asyncio.run(_common.ensure_model(kept, "chat", {"repo": SMALL}))
+    assert noted == [("llm", SMALL)]
+
+
 def test_two_quantizations_of_one_model_are_refused(monkeypatch):
     loads, _ = _fakes(monkeypatch, "fit", [BIG, SMALL], kept_variant = "Q8_0")
     with pytest.raises(FlowNodeError, match = "already loaded alongside as Q8_0"):
