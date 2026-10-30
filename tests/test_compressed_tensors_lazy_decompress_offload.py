@@ -114,6 +114,28 @@ def test_real_offload_is_left_alone():
     assert _caches(model) == 2
 
 
+def test_split_device_model_keeps_the_input_transfer():
+    # A device_map spanning two cards: compressed-tensors' from_accelerate replaces accelerate's
+    # hooks with one same-device OffloadCache per module, whose forward wrapper is then the only
+    # thing moving activations from one card to the next. Unwrapping them breaks the forward.
+    model = _Tiny()
+    for module in model.modules():
+        if module._parameters:
+            offload_module_lib.offload_module(module, torch.device("cpu"), torch.device("cpu"))
+    # Pretend the norm sits on cuda:0 and the projection on cuda:1 (no GPU needed for the decision).
+    for module, device in ((model.norm, "cuda:0"), (model.proj, "cuda:1")):
+        for cache in (module._parameters, module._buffers):
+            cache.onload_device = torch.device(device)
+            cache.offload_device = torch.device(device)
+    from unsloth.models.loader_utils import _remove_same_device_compressed_tensors_offload
+
+    assert _remove_same_device_compressed_tensors_offload(model) == 0
+    assert _caches(model) == 2
+    assert hasattr(model.proj, "_original_forward_func")
+    # Each module on its own is still a single device, so per-module unwraps keep working.
+    assert _remove_same_device_compressed_tensors_offload(model.proj) == 1
+
+
 def test_installed_quantizer_hook_registers_the_unwrap(monkeypatch):
     quantizer_lib = pytest.importorskip("transformers.quantizers.quantizer_compressed_tensors")
     cls = quantizer_lib.CompressedTensorsHfQuantizer
