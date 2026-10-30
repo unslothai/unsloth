@@ -1033,6 +1033,16 @@ def _flex_call_needs_backward(query, key, value):
         return False
 
 
+def _flex_decoding_unavailable():
+    """unsloth_zoo's import-time answer: torch's flex_decoding cannot compile against the installed Triton (Triton 3.9
+    removed the block pointers torch 2.9 - 2.12's decode template builds). False on an unsloth_zoo without the check."""
+    try:
+        from unsloth_zoo.flex_attention.utils import FLEX_DECODING_UNAVAILABLE
+    except Exception:
+        return False
+    return FLEX_DECODING_UNAVAILABLE is True
+
+
 def _flex_main_kernel_forced(kwargs):
     """True when the caller's kernel_options force the main flex kernel over flex_decoding."""
     requested = kwargs.get("kernel_options") or {}
@@ -1161,6 +1171,8 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
     tuned_bwd_device_ok = _flex_tuned_bwd_device_ok()
     small_smem_device_ok = _flex_small_smem_device_ok()
+    # A failed flex_decoding compile makes Dynamo run flex eagerly for the rest of the process (full score matrix).
+    decoding_unavailable = _flex_decoding_unavailable()
 
     @functools.wraps(flex_attention_forward)
     def unsloth_flex_attention_forward(module, query, key, value, *args, **kwargs):
@@ -1199,6 +1211,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and (
                 _flex_call_needs_backward(query, key, value)
                 or _flex_main_kernel_forced(kwargs)
+                or decoding_unavailable
                 or query.shape[2] >= 128
             )
             and _flex_tuned_bwd_fits(
@@ -1217,10 +1230,11 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             kernel_options = _flex_tuned_bwd_kernel_options(query.shape[-1], tuned_bwd_device_ok)
         # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
         # padded batch stride (comprehensive_padding) that the backward template ignores, so every
-        # batch row after the first reads a shifted LSE and the gradients blow up.
-        if _flex_call_needs_backward(query, key, value) and "BACKEND" not in (
-            kwargs.get("kernel_options") or {}
-        ):
+        # batch row after the first reads a shifted LSE and the gradients blow up. Where flex_decoding cannot compile
+        # here, short no-grad queries take the main kernel too.
+        if (
+            decoding_unavailable or _flex_call_needs_backward(query, key, value)
+        ) and "BACKEND" not in (kwargs.get("kernel_options") or {}):
             kernel_options = kernel_options or {}
             kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
         if kernel_options is not None:
