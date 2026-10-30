@@ -654,8 +654,25 @@ def real_apple_metal_budget(monkeypatch):
 
 # Below the ephemeral range on Linux (32768+), macOS and Windows (49152+), one block per xdist worker.
 _ENGINE_PORT_BASE = 21000
+_ENGINE_PORT_SPAN = 10000
 _ENGINE_PORTS_PER_WORKER = 250
 _engine_port_counter = itertools.count()
+
+
+def _engine_port_block(worker, worker_count):
+    """(first port, block size) for an xdist worker. Past 40 workers the blocks shrink so every
+    worker still gets its own block inside the span."""
+    index = int(worker[2:]) if worker[2:].isdigit() else 0
+    count = max(worker_count, index + 1, 1)
+    size = min(_ENGINE_PORTS_PER_WORKER, _ENGINE_PORT_SPAN // count)
+    if size < 1:
+        raise RuntimeError(f"{count} xdist workers do not fit {_ENGINE_PORT_SPAN} engine ports")
+    return _ENGINE_PORT_BASE + index * size, size
+
+
+@pytest.fixture
+def engine_port_block():
+    return _engine_port_block
 
 
 @pytest.fixture(autouse = True)
@@ -669,13 +686,14 @@ def _engine_ports_no_other_worker_can_take(monkeypatch):
         return
     import socket
 
-    worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
-    index = int(worker[2:]) if worker[2:].isdigit() else 0
-    base = _ENGINE_PORT_BASE + (index % 40) * _ENGINE_PORTS_PER_WORKER
+    count = os.environ.get("PYTEST_XDIST_WORKER_COUNT", "")
+    base, size = _engine_port_block(
+        os.environ.get("PYTEST_XDIST_WORKER", "gw0"), int(count) if count.isdigit() else 1
+    )
 
     def _worker_port(limit = None):
-        for _ in range(_ENGINE_PORTS_PER_WORKER):
-            port = base + next(_engine_port_counter) % _ENGINE_PORTS_PER_WORKER
+        for _ in range(size):
+            port = base + next(_engine_port_counter) % size
             with socket.socket() as sock:
                 try:
                     sock.bind(("127.0.0.1", port))
