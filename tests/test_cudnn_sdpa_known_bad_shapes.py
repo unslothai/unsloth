@@ -318,11 +318,102 @@ class TestWrapper:
         out = torch.compile(fn, backend = backend, fullgraph = True)(q)
         torch.testing.assert_close(out, real(q, q, q))
         code = "\n".join(graphs)
-        # cuDNN-free set before the call, the caller's full set restored after it.
-        first_switch = code.index("_sdpa_kernel(")
+        # cuDNN switched off before the call and back after it, by graph calls (not trace-time).
+        first_switch = code.index("_sdpa_cudnn_off(")
         call = code.index("_nn.scaled_dot_product_attention(")
-        assert first_switch < call < code.index("'CUDNN_ATTENTION'"), code
+        assert first_switch < call < code.index("_sdpa_cudnn_restore("), code
         torch._dynamo.reset()
+
+
+def test_cudnn_off_tests_the_key_length_value():
+    with sdpa_kernel(ALL_BACKENDS):
+        for length, off in ((192, True), (256, False), (None, True)):
+            fixes._sdpa_cudnn_off(length)
+            assert torch.backends.cuda.cudnn_sdp_enabled() is not off
+            fixes._sdpa_cudnn_restore()
+            assert torch.backends.cuda.cudnn_sdp_enabled()
+    with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):  # cuDNN-only: left alone
+        fixes._sdpa_cudnn_off(192)
+        assert torch.backends.cuda.cudnn_sdp_enabled()
+        fixes._sdpa_cudnn_restore()
+
+
+@pytest.fixture
+def cpu_dq_nan(monkeypatch):
+    """Real CPU SDPA standing in for an affected H100: the device check is mocked (Dynamo reads
+    is_cuda from the fake tensor), the rest of the dQ-NaN rule, key-length test included, is real."""
+    import torch.nn.functional as F
+
+    # Before the key-length helper existed the test was inline: s_kv % 128 == 64.
+    length = getattr(fixes, "_sdpa_cudnn_dq_nan_length", lambda k: k.shape[-2] % 128 == 64)
+
+    def known_bad(decode, dq, query, key, is_causal):
+        hit = not is_causal and query.requires_grad and torch.is_grad_enabled() and length(key)
+        return fixes._SDPA_CUDNN_DQ_NAN if hit else None
+
+    real = torch._C._nn.scaled_dot_product_attention
+    monkeypatch.setattr(F, "scaled_dot_product_attention", real)
+    monkeypatch.setattr(fixes, "_sdpa_cudnn_known_bad_devices", lambda: (D0, D0))
+    monkeypatch.setattr(fixes, "_sdpa_cudnn_known_bad", known_bad)
+    monkeypatch.delenv("UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA", raising = False)
+    fixes.fix_cudnn_sdpa_known_bad_shapes()
+    wrapped = F.scaled_dot_product_attention
+    assert wrapped is not real
+    torch._dynamo.reset()
+    yield wrapped
+    torch._dynamo.reset()
+
+
+def _qkv(s_kv):
+    q = torch.randn(1, 2, 8, 16, dtype = torch.float16, requires_grad = True)
+    k = torch.randn(1, 2, s_kv, 16, dtype = torch.float16, requires_grad = True)
+    return q, k, torch.randn_like(k, requires_grad = True)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_compiled_dynamic_key_length_is_not_specialized(cpu_dq_nan, strict):
+    # Lengths on and off 64 mod 128 must share one graph (no s_kv % 128 guard), and a strict
+    # mark_dynamic key length must still compile.
+    wrapped = cpu_dq_nan
+    graphs = []
+
+    def backend(gm, example_inputs):
+        graphs.append(gm)
+        return gm.forward
+
+    fn = torch.compile(lambda q, k, v: wrapped(q, k, v).float().sum(), backend = backend,
+                       fullgraph = True, dynamic = True)  # fmt: skip
+    with sdpa_kernel([SDPBackend.MATH, SDPBackend.CUDNN_ATTENTION]):
+        for s_kv in (192, 256, 320, 384, 448):
+            q, k, v = _qkv(s_kv)
+            if strict:
+                torch._dynamo.mark_dynamic(k, 2, min = 128, max = 512)
+                torch._dynamo.mark_dynamic(v, 2, min = 128, max = 512)
+            fn(q, k, v).backward()
+    assert len(graphs) == 1
+    # The cuDNN switch is in the graph: the wrapper engaged.
+    assert any(name in graphs[0].code for name in ("_sdpa_cudnn_off(", "_sdpa_kernel("))
+
+
+def test_compiled_call_reads_policy_at_call_time(cpu_dq_nan):
+    # Compiled under one policy, called under another: the caller's later policy decides the
+    # backend, and exactly that policy is left in place afterwards.
+    wrapped = cpu_dq_nan
+    fn = torch.compile(lambda q, k, v: wrapped(q, k, v), backend = lambda gm, ex: gm.forward,
+                       fullgraph = True)  # fmt: skip
+    q, k, v = _qkv(192)
+    cuda = torch.backends.cuda
+    with sdpa_kernel(ALL_BACKENDS):
+        fn(q, k, v).sum().backward()
+    with sdpa_kernel([SDPBackend.MATH, SDPBackend.CUDNN_ATTENTION]):
+        fn(q, k, v)
+        assert (cuda.flash_sdp_enabled(), cuda.math_sdp_enabled(), cuda.cudnn_sdp_enabled()) == (
+            False, True, True,
+        )  # fmt: skip
+    with sdpa_kernel([SDPBackend.CUDNN_ATTENTION]):  # cuDNN-only: left alone, as unwrapped SDPA
+        with pytest.raises(RuntimeError, match = "No viable backend"):
+            fn(q, k, v)
+        assert not cuda.math_sdp_enabled() and cuda.cudnn_sdp_enabled()
 
 
 def test_opt_out_and_unaffected_host(monkeypatch):
