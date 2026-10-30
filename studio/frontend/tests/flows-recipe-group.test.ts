@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -498,7 +498,7 @@ test("setup links are the flow's own edge type, dashed as references, so they fo
   assert.match(css, new RegExp(`\\.${REFERENCE_EDGE_CLASS} \\.react-flow__edge-path[^}]*stroke-dasharray`));
 });
 
-test("a note is at least its stored height and grows with its text instead of clipping", async () => {
+test("a note keeps the size it was given whatever its text; long text scrolls inside", async () => {
   const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
   const { RfDeriver } = await import("../src/features/flows/editor/derive-rf.ts");
   const { doc } = await import("./flows-editor-fixtures.ts");
@@ -509,7 +509,10 @@ test("a note is at least its stored height and grows with its text instead of cl
   const note = new RfDeriver()
     .nodes(useDocStore.getState().graph, new Set(), null)
     .find((n) => n.type === "flowNote");
-  assert.deepEqual(note?.style, { width: 320, minHeight: 200 });
+  assert.deepEqual(note?.style, { width: 320, height: 200 });
+  const frames = readSrc("features/flows/editor/frame-nodes.tsx");
+  assert.match(frames, /fieldSizing="fixed"/);
+  assert.match(frames, /<BaseNodeContent className="nowheel h-full overflow-y-auto px-3 py-2">/);
 });
 
 async function recipeOverlaps(sizes: Map<string, { width: number; height: number }>) {
