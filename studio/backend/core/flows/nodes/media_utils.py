@@ -192,11 +192,36 @@ def edit_video(
     source = av.open(io.BytesIO(data))
     vstream = source.streams.video[0]
     rate = Fraction(vstream.average_rate or 24).limit_denominator(1000)
+    # A variable-frame-rate clip averages below its real frame rate: resample on the finer stream rate.
+    fine = getattr(vstream, "base_rate", None)
+    if fine and rate < fine <= 120:
+        rate = Fraction(fine).limit_denominator(1000)
     own_sound = bool(source.streams.audio)
     out_buf = io.BytesIO()
     out = vout = aout = None
     # Frames stream straight from the decoder to the encoder: holding a decoded 4K clip would need tens of GB.
+    # Output frames sit on a constant-rate grid over the source timeline (output frame n shows the source at
+    # base + n * speed / rate, sample and hold), so variable-frame-rate footage keeps its pacing.
     kept = emitted = decoded = 0
+    step = speed / float(rate)
+    slack = 0.01 / float(rate)
+    base = held = held_t = None
+    frame_s = 1.0 / float(rate)
+
+    def emit_until(limit: float) -> None:
+        nonlocal emitted
+        picture = None
+        while base + emitted * step + slack < limit:
+            if emitted >= 4 * MAX_VIDEO_FRAMES:
+                raise FlowNodeError("The clip is too long to edit here")
+            if picture is None:
+                picture = av.VideoFrame.from_ndarray(
+                    held[: vout.height, : vout.width], format = "rgb24"
+                )
+            for packet in vout.encode(picture):
+                out.mux(packet)
+            emitted += 1
+
     try:
         if start_s > 0 and vstream.time_base:
             source.seek(int(start_s / vstream.time_base), stream = vstream, backward = True)
@@ -220,14 +245,16 @@ def edit_video(
                 vout.pix_fmt = "yuv420p"
                 if audio is not None or (speed == 1.0 and own_sound):
                     aout = out.add_stream("aac", rate = 44100)
-            while int(emitted * speed) == kept:
-                picture = av.VideoFrame.from_ndarray(
-                    array[: vout.height, : vout.width], format = "rgb24"
-                )
-                for packet in vout.encode(picture):
-                    out.mux(packet)
-                emitted += 1
+                base = t
+            else:
+                emit_until(t)
+            if getattr(frame, "duration", None) and frame.time_base:
+                frame_s = float(frame.duration * frame.time_base) or frame_s
+            held, held_t = array, t
             kept += 1
+        if out is not None:
+            last = held_t + frame_s
+            emit_until(min(last, end_s) if end_s is not None else last)
         if out is None:
             raise FlowNodeError("Nothing is left of the clip after trimming")
         for packet in vout.encode():
