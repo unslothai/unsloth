@@ -2302,6 +2302,12 @@ def _video_index_repo(base: str, *, local_files_only: bool = False) -> str:
     return mirror
 
 
+def _video_offline_cache_miss(exc: BaseException) -> bool:
+    """A forced-offline load failed on something missing from the cache: an OSError here, or the LTX-2.5 encoder
+    worker's load failing on one (it crosses the process boundary as a flagged TextEncoderWorkerError)."""
+    return isinstance(exc, OSError) or bool(getattr(exc, "cache_miss", False))
+
+
 def _video_cached_while_hub_unreachable(
     base_local: Optional[str],
     base_repo: Optional[str],
@@ -5623,11 +5629,13 @@ class VideoBackend:
                     "from the cache",
                     kwargs["repo_id"],
                 )
+            retry_online = False
             try:
                 _load(True if forced_offline else local_files_only)
-            except OSError as exc:
+            except Exception as exc:
                 if (
                     not forced_offline
+                    or not _video_offline_cache_miss(exc)
                     or self._load_token != token
                     or (cancel_event is not None and cancel_event.is_set())
                 ):
@@ -5635,8 +5643,22 @@ class VideoBackend:
                 logger.info(
                     "video.hub_unreachable: %s is not fully cached (%s); retrying online",
                     kwargs["repo_id"],
-                    exc,
+                    str(exc),
                 )
+                retry_online = True
+            if retry_online:
+                # Outside the except clause, so the failed attempt's traceback (whose frames hold the transformer and
+                # experts it built) is gone: free those, its encoder worker and its speed globals before the online
+                # attempt allocates its own copy.
+                self._close_pending_ltx25_encoder(token)
+                self._rollback_precommit_globals(token)
+                import gc
+
+                gc.collect()
+                try:
+                    clear_gpu_cache()
+                except Exception:  # noqa: BLE001 -- cleanup is best-effort
+                    pass
                 _load(False)
             with self._lock:
                 if self._load_token == token:

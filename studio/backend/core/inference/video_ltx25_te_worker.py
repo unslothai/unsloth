@@ -697,6 +697,8 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
             {
                 "type": "error",
                 "error": f"LTX-2.5 text encoder failed to load: {exc}",
+                # A local_files_only miss (an OSError) lets an offline-first load retry online.
+                "cache_miss": isinstance(exc, OSError),
                 "stack": traceback.format_exc(limit = 20),
             }
         )
