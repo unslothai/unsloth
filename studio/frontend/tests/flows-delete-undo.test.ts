@@ -83,3 +83,15 @@ test("the card toolbar deletes through the same path as the Delete key", () => {
   assert.match(src, /below \? Position\.Bottom : Position\.Top/);
   assert.match(read("editor/canvas.tsx"), /onDelete=\{onDelete\}/);
 });
+
+test("notes and groups carry their own top-right trash, through the canvas delete", () => {
+  const src = read("editor/frame-nodes.tsx");
+  assert.match(src, /void deleteElements\(\{ nodes: \[\{ id \}\] \}\)/);
+  assert.match(src, /<FrameDelete\s*id=\{id\}\s*label="Delete group \(its blocks stay\)"/);
+  assert.match(src, /<FrameDelete\s*id=\{id\}\s*label="Delete note"\s*className="absolute top-1 right-1 z-10"/);
+  // Hidden until the frame is hovered or selected.
+  assert.match(src, /opacity-0[^"]*group-hover\/frame:opacity-100 group-data-\[selected\]\/frame:opacity-100/);
+  const canvas = read("editor/canvas.tsx");
+  assert.match(canvas, /node\.id\.startsWith\(NOTE_PREFIX\)\)\s*ids\.notes\.push/);
+  assert.match(canvas, /node\.id\.startsWith\(GROUP_PREFIX\)\)\s*ids\.groups\.push/);
+});
