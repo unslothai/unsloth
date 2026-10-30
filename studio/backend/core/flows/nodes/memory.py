@@ -86,9 +86,26 @@ def _set_vectors(records: list[dict], vectors: Optional[list], model: Optional[s
         record["embed_model"] = model
 
 
+# Studio's /v1/embeddings takes at most this many inputs per request (routes/inference.py
+# _STUDIO_EMBED_MAX_INPUTS); a stream holds up to 5000 records, so larger batches are split.
+EMBED_BATCH = 2048
+
+
 async def _embed(ctx: NodeContext, texts: list[str]) -> Optional[tuple[list, Optional[str]]]:
     if not texts:
         return [], None
+    vectors: list = []
+    model: Optional[str] = None
+    for start in range(0, len(texts), EMBED_BATCH):
+        got = await _embed_batch(ctx, texts[start : start + EMBED_BATCH])
+        if got is None or (start and got[1] != model):
+            return None
+        vectors += got[0]
+        model = got[1]
+    return vectors, model
+
+
+async def _embed_batch(ctx: NodeContext, texts: list[str]) -> Optional[tuple[list, Optional[str]]]:
     try:
         answer = await ctx.call(
             "POST", "/v1/embeddings", json = {"model": EMBED_MODEL, "input": texts}
