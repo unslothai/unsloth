@@ -17,6 +17,58 @@ from core.inference.diffusion_memory import (
     OFFLOAD_NONE,
     OFFLOAD_SEQUENTIAL,
 )
+from core.inference.diffusion_sampler import (
+    AUTOMATIC_SCHEDULE,
+    DEFAULT_SAMPLER,
+    SAMPLERS,
+    resolve_schedule,
+)
+
+# Public Images IDs mapped to the names accepted by the pinned sd.cpp build.
+_SD_CPP_SAMPLERS = {
+    DEFAULT_SAMPLER: None,
+    "euler": "euler",
+    "euler_a": "euler_a",
+    "dpmpp_2m": "dpm++2m",
+    "dpmpp_2m_sde": "dpm++2m_sde",
+}
+_SD_CPP_SCHEDULES = {
+    "uniform": "discrete",
+    "karras": "karras",
+    "exponential": "exponential",
+}
+
+
+def sd_cpp_sampler_options() -> list[dict]:
+    """Return native choices for the existing Images selector, with fresh lists for each status response."""
+    return [
+        {
+            "id": sampler,
+            "label": SAMPLERS[sampler][0],
+            "schedule_types": [AUTOMATIC_SCHEDULE, *_SD_CPP_SCHEDULES],
+        }
+        for sampler in _SD_CPP_SAMPLERS
+    ]
+
+
+def resolve_sd_cpp_sampling(
+    sampler: Optional[str], schedule_type: Optional[str]
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Map public request IDs to native method, native schedule, and public resolved schedule.
+
+    None for a native value keeps the loaded model's default. Automatic follows the shared
+    per-sampler policy, so metadata describes the schedule actually sent to either native transport.
+    Unsupported IDs raise before starting generation.
+    """
+    sampler = sampler or DEFAULT_SAMPLER
+    schedule_type = schedule_type or AUTOMATIC_SCHEDULE
+    if sampler not in _SD_CPP_SAMPLERS:
+        raise ValueError(f"Unknown native sampler '{sampler}'.")
+    if schedule_type != AUTOMATIC_SCHEDULE and schedule_type not in _SD_CPP_SCHEDULES:
+        raise ValueError(f"Unknown native schedule type '{schedule_type}'.")
+    resolved = resolve_schedule(sampler, schedule_type)
+    return _SD_CPP_SAMPLERS[sampler], _SD_CPP_SCHEDULES.get(resolved), resolved
+
 
 # Text-encoder flags per family, in supply order; keyed by DiffusionFamily.name, not sd.cpp.
 _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
@@ -94,6 +146,8 @@ class SdCppGenParams:
     lora_apply_mode: Optional[str] = None
     # Qwen-Image-Layered layer count; sd.cpp returns layers + 1 images (first = input reconstruction). None = its default 3.
     qwen_image_layers: Optional[int] = None
+    # Appended to preserve the positional order of the existing generation fields.
+    scheduler: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -717,7 +771,11 @@ def build_sd_cpp_command(
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
-    """``extra_args`` go last because sd.cpp's parser is last-wins, so a user can override any flag."""
+    """Build one image-generation argv from resolved native settings, omitting unset controls.
+
+    ``extra_args`` go last because sd.cpp's parser is last-wins, so a user can override any flag.
+    The scheduler is request-local; an unset value leaves the native model's schedule unchanged.
+    """
     if not files.diffusion_model:
         raise ValueError("diffusion_model path is required")
     if not (params.prompt or "").strip():
@@ -773,6 +831,8 @@ def build_sd_cpp_command(
         cmd += ["--guidance", _fmt_float(params.guidance)]
     if params.sampling_method:
         cmd += ["--sampling-method", str(params.sampling_method)]
+    if params.scheduler:
+        cmd += ["--scheduler", str(params.scheduler)]
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     if params.batch_count and params.batch_count != 1:
@@ -1021,8 +1081,13 @@ def build_img_gen_request(
     qwen_image_layers: Optional[int] = None,
     custom_sigmas: Optional[list[float]] = None,
     hires: Optional[dict] = None,
+    scheduler: Optional[str] = None,
 ) -> dict:
-    """Guidance is split: FLUX distilled values go to distilled_guidance, real CFG scales to txt_cfg."""
+    """Build the sd-server image request, omitting unset sampling settings to preserve model defaults.
+
+    Sampler/scheduler names are already resolved to native IDs by the caller. FLUX distilled
+    guidance goes to distilled_guidance, while real CFG scales go to txt_cfg.
+    """
     if not str(prompt).strip():
         raise ValueError("prompt is required")
 
@@ -1037,6 +1102,8 @@ def build_img_gen_request(
         sample_params["sample_steps"] = int(steps)
     if sample_method:
         sample_params["sample_method"] = str(sample_method)
+    if scheduler:
+        sample_params["scheduler"] = str(scheduler)
     if flow_shift is not None:
         sample_params["flow_shift"] = float(flow_shift)
     if custom_sigmas:

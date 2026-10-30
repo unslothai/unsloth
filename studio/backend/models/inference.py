@@ -6161,8 +6161,9 @@ class DiffusionStatusResponse(BaseModel):
     samplers: list[Dict[str, Any]] = Field(
         default_factory = list,
         description = "Samplers the loaded model can run, each {id, label, schedule_types}; the "
-        "first is 'default' (the shipped scheduler). Empty when there is no choice: flow-matching "
-        "models, the native and MLX engines, or nothing loaded.",
+        "first is 'default' (the shipped scheduler). The native sd.cpp engine also offers these "
+        "choices; Uniform maps to its discrete schedule. Empty when the engine or model offers "
+        "no alternatives, or nothing is loaded.",
     )
     sd_controls: Optional[Dict[str, Any]] = Field(
         None,
