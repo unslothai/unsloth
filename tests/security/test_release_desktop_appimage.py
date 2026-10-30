@@ -514,6 +514,47 @@ def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
     assert "@APPDIR@" not in materialized.read_text(encoding = "utf-8")
 
 
+def _apprun_env(tmp_path, appdir, **env):
+    result = subprocess.run(
+        [appdir / "AppRun"],
+        check = True,
+        capture_output = True,
+        text = True,
+        env = {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": str(tmp_path / "state"), **env},
+    )
+    return result.stdout.splitlines()
+
+
+def test_apprun_turns_the_bundled_atk_bridge_off_on_kde(tmp_path):
+    """The bundled web process aborts on Plasma with AT-SPI active (#15260)."""
+
+    appdir = _apprun_mount(tmp_path)
+    for desktop in ("KDE", "ubuntu:KDE"):
+        printed = _apprun_env(tmp_path, appdir, XDG_CURRENT_DESKTOP = desktop)
+        assert "NO_AT_BRIDGE=1" in printed
+        assert "UNSLOTH_APPIMAGE_NO_AT_BRIDGE=1" in printed
+
+
+def test_apprun_leaves_the_atk_bridge_alone_off_kde(tmp_path):
+    """Screen readers elsewhere keep seeing the window."""
+
+    appdir = _apprun_mount(tmp_path)
+    for env in ({}, {"XDG_CURRENT_DESKTOP": "GNOME"}, {"XDG_CURRENT_DESKTOP": "ubuntu:GNOME"}):
+        printed = _apprun_env(tmp_path, appdir, **env)
+        assert not [line for line in printed if line.startswith("NO_AT_BRIDGE=")]
+        assert not [line for line in printed if line.startswith("UNSLOTH_APPIMAGE_NO_AT_BRIDGE=")]
+
+
+def test_apprun_keeps_an_operator_choice_of_atk_bridge(tmp_path):
+    """NO_AT_BRIDGE=0 is how a screen reader user keeps the bridge; any set value stands."""
+
+    appdir = _apprun_mount(tmp_path)
+    for value in ("0", "", "1"):
+        printed = _apprun_env(tmp_path, appdir, XDG_CURRENT_DESKTOP = "KDE", NO_AT_BRIDGE = value)
+        assert f"NO_AT_BRIDGE={value}" in printed
+        assert not [line for line in printed if line.startswith("UNSLOTH_APPIMAGE_NO_AT_BRIDGE=")]
+
+
 def test_apprun_retires_only_the_font_policies_whose_mount_is_gone(tmp_path):
     """A later launch preserves live-mount policies and removes departed ones."""
 

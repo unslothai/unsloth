@@ -43,6 +43,20 @@ if [ "${LD_LIBRARY_PATH+x}" = x ]; then
   unset LD_LIBRARY_PATH
 fi
 
+# On KDE Plasma with AT-SPI active the bundled WebKit's web process aborts on first input
+# (#15260); keeping the bundled atk-bridge off avoids it. Other desktops keep the bridge (an AT-SPI
+# client there does not crash it), and NO_AT_BRIDGE=0 turns it back on. The marker lets process.rs
+# hand host browsers and file managers their accessibility back.
+case ":${XDG_CURRENT_DESKTOP:-}:" in
+*:KDE:*)
+  if [ "${NO_AT_BRIDGE+x}" != x ]; then
+    NO_AT_BRIDGE=1
+    UNSLOTH_APPIMAGE_NO_AT_BRIDGE=1
+    export NO_AT_BRIDGE UNSLOTH_APPIMAGE_NO_AT_BRIDGE
+  fi
+  ;;
+esac
+
 # WebKitGTK resolves its helpers relative to its /usr prefix.
 cd "$APPDIR/usr"
 
