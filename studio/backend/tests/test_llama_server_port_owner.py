@@ -173,7 +173,7 @@ def test_an_exited_child_is_never_the_server_that_answered(foreign_listener):
     p = subprocess.Popen([sys.executable, "-c", "pass"])
     p.wait()
     b = _backend(foreign_listener, p)
-    assert b._health_listener_is_ours(p) is False
+    assert b._health_listener_is_ours(p, b._port) is False
 
 
 def test_a_foreign_listener_listed_before_ours_does_not_refuse_us(monkeypatch):
@@ -196,7 +196,7 @@ def test_a_foreign_listener_listed_before_ours_does_not_refuse_us(monkeypatch):
             psutil, "net_connections", lambda kind = "inet": [conn(1, "::"), conn(p.pid, "127.0.0.1")]
         )
         b = _backend(port, p)
-        assert b._health_listener_is_ours(p) is True
+        assert b._health_listener_is_ours(p, b._port) is True
     finally:
         p.kill()
         p.wait()
@@ -242,7 +242,7 @@ def test_our_child_reported_with_status_none_is_ours_on_windows(idle_child, monk
     none = _row(port, pid = idle_child.pid, status = psutil.CONN_NONE)
     _tables(monkeypatch, own = [none], everyone = [none], windows = windows)
 
-    assert _backend(port, idle_child)._health_listener_is_ours(idle_child) is windows
+    assert LlamaCppBackend._health_listener_is_ours(idle_child, port) is windows
 
 
 @pytest.mark.parametrize("windows", [True, False])
@@ -255,7 +255,7 @@ def test_a_listener_owned_by_pid_0_is_unknown_on_windows(idle_child, monkeypatch
         windows = windows,
     )
 
-    assert _backend(port, idle_child)._health_listener_is_ours(idle_child) is windows
+    assert LlamaCppBackend._health_listener_is_ours(idle_child, port) is windows
 
 
 def test_a_connected_socket_on_our_port_is_not_a_listener(idle_child, monkeypatch):
@@ -264,7 +264,7 @@ def test_a_connected_socket_on_our_port_is_not_a_listener(idle_child, monkeypatc
     accepted = _row(port, pid = idle_child.pid, status = psutil.CONN_NONE, raddr = peer)
     _tables(monkeypatch, own = [accepted], everyone = [_row(port, pid = 4242, status = "LISTEN")])
 
-    assert _backend(port, idle_child)._health_listener_is_ours(idle_child) is False
+    assert LlamaCppBackend._health_listener_is_ours(idle_child, port) is False
 
 
 def test_a_named_foreign_listener_still_refuses_on_windows(idle_child, monkeypatch):
@@ -278,7 +278,7 @@ def test_a_named_foreign_listener_still_refuses_on_windows(idle_child, monkeypat
         ],
     )
 
-    assert _backend(port, idle_child)._health_listener_is_ours(idle_child) is False
+    assert LlamaCppBackend._health_listener_is_ours(idle_child, port) is False
 
 
 def test_a_refused_listener_is_not_reported_as_a_bad_gguf(probe, foreign_listener, idle_child):

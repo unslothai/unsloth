@@ -32,9 +32,9 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  Folder01Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotionConfig } from "motion/react";
 import {

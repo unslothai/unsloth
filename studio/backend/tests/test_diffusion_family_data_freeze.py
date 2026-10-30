@@ -38,6 +38,13 @@ def _jsonable(value):
     return value
 
 
+def _streamed(fn, *args):
+    """``fn`` inside a streamed build's scope, where the runtime-quantised tokens apply."""
+    from core.inference import diffusion_transformer_quant as tq
+    with tq.int8_text_stream_scope(True):
+        return list(fn(*args))
+
+
 def _snapshot() -> dict:
     from core.inference import diffusion_transformer_quant as tq
     from core.inference import diffusion_precision as prec
@@ -75,7 +82,8 @@ def _snapshot() -> dict:
         for scheme in schemes:
             variant_repos = [r for r in repos if tq.convrot_prequant_variant_repo(scheme, name, r)]
             row[scheme] = {
-                "exclude": list(tq.exclude_tokens_for_scheme(scheme, name)),
+                "exclude": list(tq.exclude_tokens_for_scheme(scheme, name, baked = True)),
+                "runtime_quant": _streamed(tq.runtime_quant_tokens_for_scheme, scheme, name),
                 "pad": list(tq.pad_tokens_for_scheme(scheme, name)),
                 "zero_row": list(tq.zero_row_tokens_for_scheme(scheme, name)),
                 "convrot_spec": _jsonable(tq.convrot_spec_for_scheme(scheme, name)),
@@ -181,6 +189,7 @@ def _snapshot() -> dict:
 def _clean_env(monkeypatch):
     for var in (
         "UNSLOTH_DIFFUSION_INT8_CONVROT",
+        "UNSLOTH_DIFFUSION_INT8_TEXT_STREAM",
         "UNSLOTH_DIFFUSION_NVFP4",
         "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP",
         "UNSLOTH_VIDEO_VAE_UNTILED",

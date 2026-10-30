@@ -87,7 +87,84 @@ def _json_dumps_value(value: Any) -> str:
     return json.dumps(value, ensure_ascii = False, allow_nan = False)
 
 
+# Deeper rows take the general path, which owns how a too-deep value fails.
+_PLAIN_JSON_MAX_DEPTH = 32
+
+
+class _TooDeep(Exception):
+    pass
+
+
+def _is_plain_json(value: Any, depth: int = 0) -> bool:
+    """Exact str / int / bool / None / finite float leaves under str-keyed dicts and lists, which
+    one ``json.dumps`` writes byte-for-byte as the sanitize + per-value path does."""
+    value_type = type(value)
+    if value_type is str or value_type is int or value_type is bool or value is None:
+        return True
+    if value_type is float:
+        return math.isfinite(value)
+    if depth >= _PLAIN_JSON_MAX_DEPTH:
+        raise _TooDeep
+    if value_type is dict:
+        for key, item in value.items():
+            if type(key) is not str or not _is_plain_json(item, depth + 1):
+                return False
+        return True
+    if value_type is list:
+        for item in value:
+            if not _is_plain_json(item, depth + 1):
+                return False
+        return True
+    return False
+
+
+def _check_depth(value: Any, depth: int) -> None:
+    if isinstance(value, (dict, list, tuple, set)):
+        if depth >= _PLAIN_JSON_MAX_DEPTH:
+            raise _TooDeep
+        for item in value.values() if isinstance(value, dict) else value:
+            _check_depth(item, depth + 1)
+
+
 def _json_dumps_row(row: dict[str, Any]) -> str:
+    if type(row) is dict:
+        try:
+            if _is_plain_json(row):
+                return json.dumps(row, ensure_ascii = False, allow_nan = False)
+            # Non-str keys can collide under str(key): only str-keyed rows go column by column.
+            if all(type(key) is str for key in row):
+                # Sanitize every column before writing any so a failing row raises the same error.
+                columns = []
+                all_plain = True
+                for key, item in row.items():
+                    plain = _is_plain_json(item, 1)
+                    if not plain:
+                        _check_depth(item, 1)
+                        item = _sanitize_json_value(item)
+                        plain = _is_plain_json(item, 1)
+                        all_plain = all_plain and plain
+                    columns.append((key, item, plain))
+                if all_plain:
+                    return json.dumps(
+                        {key: item for key, item, _ in columns},
+                        ensure_ascii = False,
+                        allow_nan = False,
+                    )
+                return (
+                    "{"
+                    + ", ".join(
+                        f"{json.dumps(key, ensure_ascii = False)}: "
+                        + (
+                            json.dumps(item, ensure_ascii = False, allow_nan = False)
+                            if plain
+                            else _json_dumps_value(item)
+                        )
+                        for key, item, plain in columns
+                    )
+                    + "}"
+                )
+        except _TooDeep:
+            pass
     return _json_dumps_value(_sanitize_json_value(row))
 
 

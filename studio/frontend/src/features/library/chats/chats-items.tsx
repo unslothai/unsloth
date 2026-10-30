@@ -44,9 +44,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderAddIcon,
-  Folder02Icon,
-  FolderExportIcon,
   LayerIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -59,7 +56,9 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   ArrowDownIcon,
@@ -82,12 +81,12 @@ const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
   // min-h-0 min-w-0: content must not size the card, or one long card grows its whole tab.
-  "group/chat relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-2xl px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  "group/chat relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-xl px-5 pt-5 pb-4.5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 
-/** Fits the fullest card: tile, two-line title, two-line footer (+1 unit for its icon). */
+// Fits the fullest card; rows grow past it, never to a square.
 export const CHAT_CARD_ROW_MIN =
-  "calc(var(--spacing) * 26 + 2.75 * var(--text-ui-14) + 3 * var(--text-ui-12))";
+  "calc(var(--spacing) * 20 + 2.75 * var(--text-ui-12p5) + 3 * var(--text-ui-11p5))";
 import {
   type ChatContents,
   type ChatSort,
@@ -282,7 +281,7 @@ export function MoveSubmenu({
                 {projectTargets.map((entry) => (
                   <MenuItem
                     key={entry.id}
-                    icon={Folder02Icon}
+                    icon={ProjectIcon}
                     label={entry.name}
                     onSelect={() => onMove({ kind: "project", id: entry.id })}
                   />
@@ -563,29 +562,29 @@ function ChatMenu({
 const TILE =
   "flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
 const TILE_ICON = "size-5";
+const CARD_ICON =
+  "size-4.5 shrink-0 text-foreground/70 transition-colors group-hover/chat:text-primary";
 
 function ChatTile({
   chat,
   className,
+  bare = false,
 }: {
   chat: SidebarItem;
   className?: string;
+  bare?: boolean;
 }) {
-  return (
-    <div className={cn(TILE, className)}>
-      {chat.type === "compare" ? (
-        <Columns2Icon strokeWidth={1.75} className={TILE_ICON} />
-      ) : chat.isFork ? (
-        <GitBranchIcon strokeWidth={1.75} className={TILE_ICON} />
-      ) : (
-        <HugeiconsIcon
-          icon={MessageCircleIcon}
-          strokeWidth={1.75}
-          className={TILE_ICON}
-        />
-      )}
-    </div>
-  );
+  const iconClass = bare ? CARD_ICON : TILE_ICON;
+  const icon =
+    chat.type === "compare" ? (
+      <Columns2Icon strokeWidth={1.75} className={iconClass} />
+    ) : chat.isFork ? (
+      <GitBranchIcon strokeWidth={1.75} className={iconClass} />
+    ) : (
+      <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className={iconClass} />
+    );
+  if (bare) return icon;
+  return <div className={cn(TILE, className)}>{icon}</div>;
 }
 
 function Badge({ children }: { children: ReactNode }) {
@@ -674,7 +673,7 @@ function ChatLocation({
         className={cn(CHIP, "max-w-full")}
       >
         <HugeiconsIcon
-          icon={projectId ? Folder02Icon : LayerIcon}
+          icon={projectId ? ProjectIcon : LayerIcon}
           strokeWidth={1.75}
           className="size-3.5 shrink-0"
         />
@@ -694,7 +693,7 @@ function ChatLocation({
           className={cn(CHIP, "shrink")}
         >
           <HugeiconsIcon
-            icon={Folder02Icon}
+            icon={ProjectIcon}
             strokeWidth={1.75}
             className="size-3.5 shrink-0"
           />
@@ -851,7 +850,7 @@ export function DateHeader({
   const Arrow = active && !desc ? ArrowUpIcon : ArrowDownIcon;
   const label = t(DATE_LABELS[field]);
   return (
-    <span className={cn(DATE_COLUMN, "items-center gap-1 @xl:flex")}>
+    <span className={cn(DATE_COLUMN, "group/datecol items-center gap-1 @xl:flex")}>
       {fields.length > 1 ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -866,7 +865,7 @@ export function DateHeader({
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}
                 strokeWidth={2}
-                className="size-3 opacity-0 transition-opacity group-hover/date:opacity-100 group-focus-visible/date:opacity-100 group-data-[state=open]/date:opacity-100"
+                className="size-3 opacity-0 transition-opacity group-hover/datecol:opacity-100 group-focus-visible/date:opacity-100 group-data-[state=open]/date:opacity-100"
               />
             </button>
           </DropdownMenuTrigger>
@@ -948,7 +947,7 @@ function SelectBox({
 }
 
 const ROW_INSET = "pl-4 pr-6";
-const CELL = "truncate text-ui-13 text-muted-foreground";
+const CELL = "truncate text-ui-12p5 text-muted-foreground";
 const DATE_COLUMN = "hidden w-32 shrink-0 @xl:block";
 const CONTENTS_COLUMN = "hidden w-36 shrink-0 @3xl:block";
 const LOCATION_COLUMN = "hidden w-40 shrink-0 @4xl:block";
@@ -1012,7 +1011,7 @@ export function ChatListHeader({
     <div className="pb-2">
       <div
         className={cn(
-          "group/chat relative flex items-center gap-4 text-ui-13 text-muted-foreground",
+          "group/chat relative flex items-center gap-4 text-ui-12p5 text-muted-foreground",
           ROW_INSET,
         )}
       >
@@ -1106,14 +1105,14 @@ export function ChatRow({
                 if (actions.selection.size > 0) actions.toggleSelected(chat.id, event.shiftKey);
                 else actions.open(chat);
               }}
-              className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="truncate rounded-full text-left text-ui-13 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {chatTitle(chat, t)}
             </button>
             <ChatBadges chat={chat} />
           </span>
           {model && (
-            <span className="truncate text-ui-12 text-muted-foreground">
+            <span className="truncate text-ui-11p5 text-muted-foreground">
               {model}
             </span>
           )}
@@ -1185,7 +1184,7 @@ export function ChatCard({
       className={cn(CARD, selected && "ring-2 ring-foreground")}
     >
       <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
-        {showTile && <ChatTile chat={chat} />}
+        {showTile && <ChatTile chat={chat} bare />}
         <ChatBadges chat={chat} marksOnly={showTile} />
       </div>
       <ChatMenu chat={chat} archived={archived} variant="card" />
@@ -1197,7 +1196,7 @@ export function ChatCard({
           if (selecting) actions.toggleSelected(chat.id, event.shiftKey);
           else actions.open(chat);
         }}
-        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
+        className={CARD_TITLE}
       >
         {/* Buttons ignore line-clamp, so clamp an inner span. */}
         <span className="line-clamp-2">{chatTitle(chat, t)}</span>
@@ -1215,23 +1214,22 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
   return (
     <div
       className={cn(
-        "mt-auto flex min-w-0 flex-col items-start gap-1 text-ui-12 text-muted-foreground",
+        "mt-auto flex min-w-0 flex-col items-start gap-1 text-ui-11p5 text-muted-foreground",
         className,
       )}
     >
       {meta && <span className="w-full min-w-0 truncate">{meta}</span>}
-      <span className="truncate">{date}</span>
+      <span className="truncate text-ui-10p5">{date}</span>
     </div>
   );
 }
 
-// Without a tile, the empty marks row collapses and the title clears the corner menu.
+// The hover menu overlays the full-width title.
 const TILELESS_ROW = "empty:hidden pe-8";
-const TILELESS_TITLE = "pe-6";
-const TILELESS_ROW_NAME = "min-h-13";
+const TILELESS_ROW_NAME = "min-h-10";
 
 const CARD_TITLE =
-  "block w-full rounded-md text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
+  "block w-full rounded-md text-left font-medium text-ui-12p5 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
 export function GroupHeading({
   children,
@@ -1244,16 +1242,17 @@ export function GroupHeading({
 }) {
   const t = useT();
   return (
-    <h3 className="mb-1 mt-7 flex items-baseline gap-2 pl-4 font-sans text-ui-13 first:mt-3">
-      <span className="font-medium text-foreground">{children}</span>
-      <span className="text-ui-12 text-muted-foreground">
+    <h3 className="mb-2 mt-3 flex items-baseline gap-2 border-b border-border pb-2 pl-4 font-sans text-ui-12">
+      <span className="font-medium text-muted-foreground">{children}</span>
+      <span className="text-ui-11 text-muted-foreground/70">
         {countLabel ?? chatCount(count, t)}
       </span>
     </h3>
   );
 }
 
-function CollectionTile({ icon }: { icon: IconSvgElement }) {
+function CollectionTile({ icon, bare = false }: { icon: IconSvgElement; bare?: boolean }) {
+  if (bare) return <HugeiconsIcon icon={icon} strokeWidth={1.75} className={CARD_ICON} />;
   return (
     <span className={TILE}>
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className={TILE_ICON} />
@@ -1422,7 +1421,7 @@ export function ProjectCard({
       className={CARD}
     >
       <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
-        {showTile && <CollectionTile icon={Folder02Icon} />}
+        {showTile && <CollectionTile icon={ProjectIcon} bare />}
         {actions.favoriteProjects.has(project.id) && <FavoriteMark />}
         {pinned && <PinMark />}
       </div>
@@ -1433,7 +1432,7 @@ export function ProjectCard({
           event.stopPropagation();
           actions.viewProject(project.id);
         }}
-        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
+        className={CARD_TITLE}
       >
         <span className="line-clamp-2">{project.name}</span>
       </button>
@@ -1474,7 +1473,7 @@ export function ProjectRow({
       )}
     >
       <div className={cn("flex min-w-0 flex-1 items-center gap-4 py-2", !showTile && TILELESS_ROW_NAME)}>
-        {showTile && <CollectionTile icon={Folder02Icon} />}
+        {showTile && <CollectionTile icon={ProjectIcon} />}
         <div className="flex min-w-0 flex-col">
           <span className="flex min-w-0 items-center gap-2">
             <button
@@ -1483,7 +1482,7 @@ export function ProjectRow({
                 event.stopPropagation();
                 actions.viewProject(project.id);
               }}
-              className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="truncate rounded-full text-left text-ui-13 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {project.name}
             </button>
@@ -1504,7 +1503,7 @@ export function ProjectRow({
             )}
           </span>
           {project.instructions?.trim() && (
-            <span className="truncate text-ui-12 text-muted-foreground">
+            <span className="truncate text-ui-11p5 text-muted-foreground">
               {project.instructions.trim()}
             </span>
           )}
@@ -1540,26 +1539,6 @@ export function ProjectRow({
         </>
       )}
       <ProjectMenu project={project} variant="row" />
-    </div>
-  );
-}
-
-export function ProjectListHeader({ date }: { date: DateColumn }) {
-  const t = useT();
-  const { dateField } = useChatsActions();
-  return (
-    <div
-      className={cn(
-        "flex items-center gap-4 pb-2 text-ui-13 text-muted-foreground",
-        ROW_INSET,
-      )}
-    >
-      <span className="min-w-0 flex-1">{t("library.list.name")}</span>
-      <span className={CONTENTS_COLUMN}>
-        {t("library.chats.list.contents")}
-      </span>
-      <DateHeader {...date} field={dateField} />
-      <span className="w-8 shrink-0" />
     </div>
   );
 }
@@ -1671,7 +1650,7 @@ export function SectionCard({
       className={CARD}
     >
       <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
-        {showTile && <CollectionTile icon={LayerIcon} />}
+        {showTile && <CollectionTile icon={LayerIcon} bare />}
         {actions.favoriteSections.has(section.id) && <FavoriteMark />}
       </div>
       <SectionMenu section={section} variant="card" />
@@ -1681,7 +1660,7 @@ export function SectionCard({
           event.stopPropagation();
           actions.viewSection(section.id);
         }}
-        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
+        className={CARD_TITLE}
       >
         <span className="line-clamp-2">{section.name}</span>
       </button>
@@ -1725,7 +1704,7 @@ export function SectionRow({
               event.stopPropagation();
               actions.viewSection(section.id);
             }}
-            className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="truncate rounded-full text-left text-ui-13 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {section.name}
           </button>
@@ -1767,7 +1746,7 @@ export function SectionListHeader({ date }: { date: DateColumn }) {
   return (
     <div
       className={cn(
-        "flex items-center gap-4 pb-2 text-ui-13 text-muted-foreground",
+        "flex items-center gap-4 pb-2 text-ui-12p5 text-muted-foreground",
         ROW_INSET,
       )}
     >
@@ -1808,13 +1787,13 @@ function FavoriteTile({
         )}
       >
         <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
-          <p className="line-clamp-2 min-h-[2.75em] break-words font-medium text-ui-13p5 leading-snug text-foreground">
+          <p className="line-clamp-2 min-h-[2.75em] break-words font-medium text-ui-12p5 leading-snug text-foreground">
             {title}
           </p>
           <div className="flex flex-col items-center text-foreground before:flex-5 after:flex-7">
             {icon}
           </div>
-          <p className="truncate pr-6 text-ui-12 text-muted-foreground">
+          <p className="truncate pr-6 text-ui-11p5 text-muted-foreground">
             {showTime && time ? formatCardTime(time, locale) : ""}
           </p>
         </div>
@@ -1863,7 +1842,7 @@ export function FavoriteProjectTile({
       title={project.name}
       icon={
         <HugeiconsIcon
-          icon={Folder02Icon}
+          icon={ProjectIcon}
           strokeWidth={1.5}
           className={FILE_CARD_ICON_CLASS}
         />

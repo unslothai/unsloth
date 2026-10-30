@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Known audio.cpp failures, named so a client can offer the fix. Raw runtime text is only
-classified, never returned: any runtime detail in a message goes through ``sanitize_runtime_tail``."""
+"""Known audio.cpp failures, named so clients can offer a fix; raw runtime text is only classified,
+never returned, and details go through sanitize_runtime_tail."""
 
 from __future__ import annotations
 

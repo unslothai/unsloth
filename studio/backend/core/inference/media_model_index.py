@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which downloaded media model a requested name means, and whether it is the resident one.
-
-Two halves of one question. The index walks the model roots once per few seconds and maps every
-name a downloaded image or video model answers to onto the load spec its route takes. The
-matching half then decides whether the backend already holds that exact build, which is what
-lets a switch be skipped rather than reloading the model that is already serving.
-
-Only downloaded models are indexed. A name that resolves to nothing is refused by the caller
-rather than answered by whichever model happens to be resident.
-"""
+"""Maps downloaded media model names to load specs and flags the resident build; unresolved names
+are refused by the caller, never answered by the resident model."""
 
 from __future__ import annotations
 
@@ -22,6 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 logger = get_logger(__name__)
 
@@ -255,7 +248,7 @@ def _add_gguf_picks(
 
 def _loadable_directory(load_dir: Path) -> bool:
     """Only a full pipeline or one checkpoint is loadable: several with no index is ambiguous."""
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
 
     try:
         if any(
@@ -269,6 +262,7 @@ def _loadable_directory(load_dir: Path) -> bool:
     return sole is not None and _loader_can_open(str(load_dir), sole)
 
 
+@in_scan_memo
 def _build_index(task: str) -> dict[str, MediaModelPick]:
     """Map every name a downloaded *task* model answers to onto its load spec."""
     from routes.models import _local_model_task, collect_local_models

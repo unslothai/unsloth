@@ -448,7 +448,13 @@ async def chat_generation_events(
                 cursor,
                 15,
             )
-            snapshot = await asyncio.to_thread(db.get_run, run_id)
+            # Only non-chunk events carry the run, so a chunk-only batch skips parsing request_json.
+            snapshot = await asyncio.to_thread(
+                db.get_run
+                if any(event["type"] != "chunk" for event in events)
+                else db.get_run_state,
+                run_id,
+            )
             if snapshot is None:
                 return
             for event in events:

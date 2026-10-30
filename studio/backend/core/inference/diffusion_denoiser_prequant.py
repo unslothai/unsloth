@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seed an official image PIPELINE pick with its hosted pre-quantized denoiser.
-
-A ``kind == "pipeline"`` pick assembles every component from one repo, so the only way to run a
-quantised denoiser without materialising the bf16 shards is handing ``from_pretrained`` an
-already-quantised ``transformer=``. Torch-free at import."""
+"""Seeds an official pipeline pick with its hosted pre-quantized transformer to avoid bf16 shards;
+torch-free at import"""
 
 from __future__ import annotations
 
