@@ -27,6 +27,7 @@ from core.inference.tool_call_parser import (  # noqa: E402
     strip_tool_markup,
 )
 from routes.inference import (  # noqa: E402
+    _held_mention_display,
     _hold_pending_mention,
     _ReasoningSpanGuard,
     _StreamingDisplayStrip,
@@ -305,3 +306,222 @@ def test_gguf_tool_loop_to_route_stream_end_to_end(monkeypatch, answer, chunk):
             prev = clean
     assert executed == []
     assert client == answer
+
+
+# A stream that ends while a backticked tag is still held: the closing backticks never come, so it is
+# not a mention, and every streaming path must end on what the one-shot strip keeps.
+UNCLOSED_ENDINGS = [
+    "Pass the JSON after `[ARGS]",
+    "Close it with `</functio",
+    "Close it with `</function>",
+    "Open with `<tool_call>",
+    "Open with ``<function=web_search>",
+    "Open with ` <tool_call> ",
+    "Emit `[TOOL_CALLS]web_search",
+    "Use `<tool_call>` tags, then `<|tool_call",
+]
+
+
+def _route_stream_with_release(text, step = 1):
+    """The route loop: per-event held strip and delta send, then the end-of-turn release."""
+    stream = _RouteStream()
+    prev, client = "", ""
+    cuts = list(range(1, len(text) + 1, step)) + [len(text)]
+    for i in cuts:
+        clean = stream.strip(text[:i])
+        assert clean.startswith(prev), (text[:i], prev, clean)
+        client += clean[len(prev) :]
+        prev = clean
+    final = _held_mention_display(stream._strip, text, True)
+    if final is not None:
+        assert final.startswith(prev), (prev, final)
+        client += final[len(prev) :]
+    return client
+
+
+@pytest.mark.parametrize("text", UNCLOSED_ENDINGS + PROSE_STREAM_CASES)
+def test_route_stream_release_ends_on_the_one_shot_strip(text):
+    assert _route_stream_with_release(text) == _route(text)
+    assert _route_stream_with_release(text, step = 3) == _route(text)
+
+
+@pytest.mark.parametrize("text", STREAM_CASES)
+def test_route_stream_release_leaves_a_real_call_alone(text):
+    # Nothing is held once the turn ends on a real call, so the release adds nothing.
+    strip = _StreamingDisplayStrip(auto_heal_tool_calls = True, enabled_tool_names = NAMES)
+    assert _held_mention_display(strip, text, True) is None
+
+
+def test_release_is_a_no_op_when_nothing_is_held():
+    strip = _StreamingDisplayStrip(auto_heal_tool_calls = True, enabled_tool_names = NAMES)
+    assert _held_mention_display(strip, "Use `<tool_call>` tags.", True) is None
+    assert _held_mention_display(strip, "Open with `<tool_call>", False) is None
+    assert _held_mention_display(strip, "", True) is None
+
+
+def _route_sse_visible(monkeypatch, backend_kind, events):
+    """POST /chat/completions (stream) on a backend that replays ``events``; returns the streamed content."""
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    import routes.inference as inference_route
+
+    sys.path.insert(0, str(BACKEND_ROOT / "tests"))
+    from llama_backend_double import FakeLlamaCppBackend
+
+    selected_tools = [{"type": "function", "function": {"name": "web_search"}}]
+
+    class EventBackend(FakeLlamaCppBackend):
+        supports_tools = True
+        context_length = 8192
+        active_model_name = "sf-model"
+        models = {"sf-model": {"context_length": 8192}}
+
+        def generate_chat_completion_with_tools(self, **kwargs):
+            yield from events
+
+    event_backend = EventBackend()
+    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
+
+    async def select_tools(payload, **kwargs):
+        return selected_tools
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", select_tools)
+    if backend_kind == "gguf":
+        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: event_backend)
+    else:
+        monkeypatch.setattr(
+            inference_route,
+            "get_llama_cpp_backend",
+            lambda: SimpleNamespace(is_loaded = False, supports_tools = False),
+        )
+        monkeypatch.setattr(inference_route, "get_inference_backend", lambda: event_backend)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *args, **kwargs: {"supports_tools": True, "supports_reasoning": False},
+        )
+    app = FastAPI()
+    app.include_router(inference_route.router)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "How do I call tools?"}],
+                "stream": True,
+                "enable_tools": True,
+                "auto_heal_tool_calls": True,
+                "permission_mode": "off",
+                "sandbox_level": "low",
+            },
+        )
+    assert response.status_code == 200, response.text
+    chunks = [
+        json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: {")
+    ]
+    return "".join(
+        choice.get("delta", {}).get("content") or ""
+        for chunk in chunks
+        for choice in chunk.get("choices", [])
+    )
+
+
+def _turn_events(text):
+    return [{"type": "content", "text": text[:i]} for i in range(1, len(text) + 1)]
+
+
+@pytest.mark.parametrize("backend_kind", ["gguf", "safetensors"])
+@pytest.mark.parametrize("text", UNCLOSED_ENDINGS[:4] + ["Use `<tool_call>` tags.\nok"])
+def test_route_sse_stream_releases_a_tag_held_at_the_end(monkeypatch, backend_kind, text):
+    visible = _route_sse_visible(monkeypatch, backend_kind, _turn_events(text))
+    assert visible == _route(text)
+
+
+@pytest.mark.parametrize("backend_kind", ["gguf", "safetensors"])
+@pytest.mark.parametrize("boundary", ["status", "tool_start"])
+def test_route_sse_stream_releases_a_held_tag_at_a_turn_boundary(
+    monkeypatch, backend_kind, boundary
+):
+    first, second = "Checking `[ARGS]", "Done with `<tool_call>"
+    if boundary == "status":
+        reset = [{"type": "status", "text": ""}]
+    else:
+        reset = [
+            {
+                "type": "tool_start",
+                "tool_name": "web_search",
+                "tool_call_id": "c1",
+                "arguments": {},
+            },
+            {"type": "tool_end", "tool_name": "web_search", "tool_call_id": "c1", "result": "ok"},
+        ]
+    events = _turn_events(first) + reset + _turn_events(second)
+    visible = _route_sse_visible(monkeypatch, backend_kind, events)
+    assert visible == _route(first) + _route(second)
+
+
+def _messages_stream_text(events):
+    from core.inference.anthropic_compat import AnthropicStreamEmitter
+    from routes.inference import _AnthropicToolEventRules
+
+    emitter = AnthropicStreamEmitter(parse_think = False)
+    lines = list(emitter.start("msg_1", "test-model"))
+    rules = _AnthropicToolEventRules(emitter, None, False, None)
+    for event in events:
+        lines.extend(rules.feed(event))
+    lines.extend(rules.finish())
+    text = ""
+    for line in lines:
+        for raw in line.split("\n"):
+            if raw.startswith("data: "):
+                delta = json.loads(raw[6:]).get("delta", {})
+                if delta.get("type") == "text_delta":
+                    text += delta["text"]
+    return text
+
+
+def _messages_reduced_text(events):
+    from routes.inference import _anthropic_tool_response_from_events
+    response = _anthropic_tool_response_from_events(
+        events, "msg_1", "test-model", parse_think = False
+    )
+    return "".join(b["text"] for b in json.loads(response.body)["content"] if b["type"] == "text")
+
+
+def _guard_full(text):
+    # The one-shot strip a non-streaming reply gets (no declared tools, so no name gate).
+    full = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True, enabled_tool_names = None)
+    assert (
+        _ReasoningSpanGuard(None).strip(
+            text, auto_heal_tool_calls = True, enabled_tool_names = None, hold = False
+        )
+        == full
+    )
+    return full
+
+
+@pytest.mark.parametrize("collect", [_messages_stream_text, _messages_reduced_text])
+@pytest.mark.parametrize("text", UNCLOSED_ENDINGS + PROSE_STREAM_CASES)
+def test_messages_api_releases_a_tag_held_at_the_end(collect, text):
+    assert collect(_turn_events(text)) == _guard_full(text)
+
+
+@pytest.mark.parametrize("collect", [_messages_stream_text, _messages_reduced_text])
+@pytest.mark.parametrize("boundary", ["status", "tool_end"])
+def test_messages_api_releases_a_held_tag_at_a_turn_boundary(collect, boundary):
+    first, second = "Checking `[ARGS]", "Done with `<tool_call>"
+    if boundary == "status":
+        reset = [{"type": "status", "text": ""}]
+    else:
+        reset = [
+            {"type": "tool_start", "tool_name": "lookup", "tool_call_id": "c1", "arguments": {}},
+            {"type": "tool_end", "tool_name": "lookup", "tool_call_id": "c1", "result": "ok"},
+        ]
+    text = collect(_turn_events(first) + reset + _turn_events(second))
+    assert text == _guard_full(first) + _guard_full(second)
+    # The unclosed `<tool_call> is an opener to the full strip; the released `[ARGS] is shown once.
+    assert text == "Checking `[ARGS]Done with `"

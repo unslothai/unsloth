@@ -6664,6 +6664,14 @@ def _hold_pending_mention(text: str, auto_heal_tool_calls: bool) -> str:
     return text[:cut] if cut >= 0 else text
 
 
+def _held_mention_display(display_strip, raw_text: str, auto_heal_tool_calls: bool):
+    """The display a turn owes when it ends with ``_hold_pending_mention`` still holding a backticked tag, else None.
+    Its closing backticks never came, so it is not a mention: the full strip decides, as for a non-streaming reply."""
+    if not raw_text or not auto_heal_tool_calls or _pending_mention_cut(raw_text) < 0:
+        return None
+    return display_strip.strip(raw_text)
+
+
 class _StreamingDisplayStrip:
     """``_strip_tool_xml_for_display`` for a cumulative buffer that grows one token at a time.
 
@@ -6785,18 +6793,20 @@ class _ReasoningSpanGuard:
         auto_heal_tool_calls: bool,
         enabled_tool_names: Optional[set] = None,
         wrapped_so_far = None,
+        hold: bool = True,
     ) -> str:
+        """``hold=False`` is the end-of-turn strip: a backticked tag still open there is final text."""
         wrap = self._wrap_for(text, wrapped_so_far)
         if wrap is None:
             # Each event carries the turn so far, consumed as deltas: hold a still-open backticked tag.
             return _strip_tool_xml_for_display(
-                _hold_pending_mention(text, auto_heal_tool_calls),
+                _hold_pending_mention(text, auto_heal_tool_calls and hold),
                 auto_heal_tool_calls = auto_heal_tool_calls,
                 enabled_tool_names = enabled_tool_names,
             )
         # Clamp: mid-stream the close tag has not arrived yet, so the whole text is trace.
         end = min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
-        text = text[:end] + _hold_pending_mention(text[end:], auto_heal_tool_calls)
+        text = text[:end] + _hold_pending_mention(text[end:], auto_heal_tool_calls and hold)
         return text[:end] + _strip_tool_xml_for_display(
             text[end:],
             auto_heal_tool_calls = auto_heal_tool_calls,
@@ -32004,10 +32014,38 @@ async def produce_openai_chat_completions(
                         enabled_tool_names = _gguf_display_tool_names,
                     )
                     reasoning_extractor = _new_chat_reasoning_extractor()
+                    # This turn's raw text, for the end-of-turn release of a held backticked tag.
+                    _gguf_turn_raw = ""
                     _stream_usage = None
                     _stream_timings = None
                     _stream_finish = None
                     approval_flush_pending = False
+
+                    def _release_held_mention():
+                        nonlocal prev_text, _gguf_turn_raw
+                        clean = _held_mention_display(
+                            _gguf_display_strip, _gguf_turn_raw, _gguf_auto_heal_tool_calls
+                        )
+                        _gguf_turn_raw = ""
+                        if clean is None:
+                            return []
+                        new_text = clean[len(prev_text) :]
+                        prev_text = clean
+                        chunks = []
+                        if not new_text:
+                            return chunks
+                        reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                        if reasoning_delta:
+                            api_monitor.mark_first_token(monitor_id)
+                            chunks.append(
+                                _gguf_chat_delta_line(
+                                    ChoiceDelta(reasoning_content = reasoning_delta)
+                                )
+                            )
+                        if visible_delta:
+                            api_monitor.append_reply(monitor_id, visible_delta)
+                            chunks.append(_gguf_chat_delta_line(ChoiceDelta(content = visible_delta)))
+                        return chunks
 
                     def _flush_reasoning_extractor():
                         final_reasoning, final_visible = reasoning_extractor.finish()
@@ -32102,7 +32140,7 @@ async def produce_openai_chat_completions(
                         if event["type"] == "status":
                             # Empty status marks an iteration boundary; reset the cumulative cursor.
                             if not event["text"]:
-                                for chunk in _flush_reasoning_extractor():
+                                for chunk in _release_held_mention() + _flush_reasoning_extractor():
                                     yield chunk
                                 prev_text = ""
                                 reasoning_extractor = _new_chat_reasoning_extractor()
@@ -32125,7 +32163,7 @@ async def produce_openai_chat_completions(
                                 # see the card would otherwise report the tool run as its TTFT.
                                 if _ui_events:
                                     api_monitor.mark_first_token(monitor_id, decoded = False)
-                                for chunk in _flush_reasoning_extractor():
+                                for chunk in _release_held_mention() + _flush_reasoning_extractor():
                                     yield chunk
                                 prev_text = ""
                                 reasoning_extractor = _new_chat_reasoning_extractor()
@@ -32178,6 +32216,7 @@ async def produce_openai_chat_completions(
 
                         # Sanitize the full cumulative text then diff, so cross-chunk XML tags are handled.
                         raw_cumulative = event.get("text", "")
+                        _gguf_turn_raw = raw_cumulative
                         clean_cumulative = _gguf_display_strip.strip(
                             _hold_pending_mention(raw_cumulative, _gguf_auto_heal_tool_calls)
                         )
@@ -32195,7 +32234,8 @@ async def produce_openai_chat_completions(
                             api_monitor.append_reply(monitor_id, visible_delta)
                             yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
 
-                    for chunk in _flush_reasoning_extractor():
+                    # Normal end or a stop: a tag still held never got its closing backticks.
+                    for chunk in _release_held_mention() + _flush_reasoning_extractor():
                         yield chunk
 
                     final_chunk = ChatCompletionChunk(
@@ -33873,6 +33913,36 @@ async def produce_openai_chat_completions(
                 )
                 reasoning_extractor = _new_sf_reasoning_extractor()
                 approval_flush_pending = False
+                # This turn's raw text, for the end-of-turn release of a held backticked tag.
+                _sf_turn_raw = ""
+
+                def _sf_release_held_mention():
+                    nonlocal prev_text, _sf_turn_raw
+                    clean = _held_mention_display(
+                        _sf_display_strip, _sf_turn_raw, _sf_auto_heal_tool_calls
+                    )
+                    _sf_turn_raw = ""
+                    if clean is None:
+                        return []
+                    new_text = clean[len(prev_text) :]
+                    prev_text = clean
+                    out = []
+                    if not new_text:
+                        return out
+                    reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                    if reasoning_delta:
+                        api_monitor.mark_first_token(monitor_id)
+                        out.append(
+                            _chat_reasoning_chunk(
+                                completion_id, created, model_name, reasoning_delta
+                            )
+                        )
+                    if visible_delta:
+                        api_monitor.append_reply(monitor_id, visible_delta)
+                        out.append(
+                            _chat_content_chunk(completion_id, created, model_name, visible_delta)
+                        )
+                    return out
 
                 def _sf_flush_reasoning():
                     # Drain the extractor at turn/stream end (mirrors GGUF); only visible text hits the monitor.
@@ -33951,7 +34021,7 @@ async def produce_openai_chat_completions(
                     if event["type"] == "status":
                         if not event["text"]:
                             # Iteration boundary: flush reasoning, then a fresh prefilled extractor for the next turn.
-                            for _c in _sf_flush_reasoning():
+                            for _c in _sf_release_held_mention() + _sf_flush_reasoning():
                                 yield _c
                             prev_text = ""
                             reasoning_extractor = _new_sf_reasoning_extractor()
@@ -33980,7 +34050,7 @@ async def produce_openai_chat_completions(
                             if _ui_events:
                                 api_monitor.mark_first_token(monitor_id, decoded = False)
                             # Flush reasoning before tool_start so the thinking block closes ahead of the card.
-                            for _c in _sf_flush_reasoning():
+                            for _c in _sf_release_held_mention() + _sf_flush_reasoning():
                                 yield _c
                             prev_text = ""
                             reasoning_extractor = _new_sf_reasoning_extractor()
@@ -34001,6 +34071,7 @@ async def produce_openai_chat_completions(
 
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
+                    _sf_turn_raw = raw_cumulative
                     clean_cumulative = _sf_display_strip.strip(
                         _hold_pending_mention(raw_cumulative, _sf_auto_heal_tool_calls)
                     )
@@ -34019,7 +34090,8 @@ async def produce_openai_chat_completions(
                         api_monitor.append_reply(monitor_id, visible_delta)
                         yield _chat_content_chunk(completion_id, created, model_name, visible_delta)
 
-                for _c in _sf_flush_reasoning():
+                # Normal end or a stop: a tag still held never got its closing backticks.
+                for _c in _sf_release_held_mention() + _sf_flush_reasoning():
                     yield _c
                 # Request-scoped holder so concurrent streams cannot read each other's stats.
                 _stats = _sf_stats_holder.get("stats")
@@ -44037,6 +44109,8 @@ class _AnthropicToolEventRules:
         self._tool_blocks_emitted = 0
         self._drop_until_tool_end = False
         self._span_guard = _ReasoningSpanGuard(think_provenance)
+        # This turn's raw text, for the end-of-turn release of a held backticked tag.
+        self._turn_raw = ""
         # Last drop-branch keepalive, seeded to stream start so a chatty tool busy past the
         # stall window still gets one though its events are dropped.
         self._last_drop_keepalive = time.monotonic()
@@ -44055,11 +44129,17 @@ class _AnthropicToolEventRules:
                 self._last_drop_keepalive = _now
                 return [_OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
             return []
+        # The emitter restarts its cumulative cursor here, so a turn's held tag is released first.
+        released = (
+            self._release_held_mention()
+            if etype == "tool_end" or (etype == "status" and not event.get("text"))
+            else []
+        )
         if self._drop_until_tool_end:
             # Skip through the dropped call's tool_end.
             if etype == "tool_end":
                 self._drop_until_tool_end = False
-            return []
+            return released
         if etype == "metadata":
             _fr = event.get("finish_reason")
             if _fr is not None:
@@ -44068,6 +44148,7 @@ class _AnthropicToolEventRules:
         # [TOOL_CALLS] prose, which a raw sub corrupts.
         if etype == "content":
             event = dict(event)
+            self._turn_raw = event["text"]
             event["text"] = self._span_guard.strip(
                 event["text"],
                 auto_heal_tool_calls = True,
@@ -44077,7 +44158,7 @@ class _AnthropicToolEventRules:
         if etype == "tool_start":
             if self._disable_parallel_tool_use and self._tool_blocks_emitted >= 1:
                 self._drop_until_tool_end = True
-                return []
+                return released
             self._ends_on_tool_use = True
         elif etype == "tool_end":
             self._tool_blocks_emitted += 1
@@ -44087,13 +44168,31 @@ class _AnthropicToolEventRules:
             self._ends_on_tool_use = False
         elif etype == "content" and event.get("text"):
             self._ends_on_tool_use = False
-        return self._emitter.feed(event)
+        return released + self._emitter.feed(event)
+
+    def _release_held_mention(self) -> list:
+        """A backticked tag still held when its turn ends never closed: emit what the full strip keeps."""
+        raw, self._turn_raw = self._turn_raw, ""
+        if not raw or _pending_mention_cut(raw) < 0:
+            return []
+        return self._emitter.feed(
+            {
+                "type": "content",
+                "text": self._span_guard.strip(
+                    raw,
+                    auto_heal_tool_calls = True,
+                    enabled_tool_names = self._display_names,
+                    hold = False,
+                ),
+            }
+        )
 
     def finish(self) -> list:
+        released = self._release_held_mention()
         stop_reason = openai_finish_to_anthropic_stop(
             self._finish_reason, had_tool_calls = self._ends_on_tool_use
         )
-        return self._emitter.finish(stop_reason = stop_reason, stop_sequence = None)
+        return released + self._emitter.finish(stop_reason = stop_reason, stop_sequence = None)
 
 
 async def _anthropic_tool_stream(
@@ -44439,29 +44538,54 @@ def _anthropic_tool_response_from_events(
     _span_guard = _ReasoningSpanGuard(think_provenance)
     # Key presence means genuine reasoning; the value may be None if only the count was recorded.
     _block_wrap: dict = {}
+    # This turn's last content event, for the end-of-turn release of a held backticked tag.
+    turn_event = None
+
+    def _add_text(clean: str) -> None:
+        nonlocal prev_text, ends_on_tool_use
+        new = clean[len(prev_text) :]
+        prev_text = clean
+        if new:
+            ends_on_tool_use = False
+            if content_blocks and isinstance(content_blocks[-1], AnthropicResponseTextBlock):
+                content_blocks[-1].text += new
+            else:
+                content_blocks.append(AnthropicResponseTextBlock(text = new))
+                # The wrap belongs to the block that OPENS this turn's span (a client tool_use can interrupt it).
+                if _span_guard.claimed and new.startswith("<think>"):
+                    _block_wrap[len(content_blocks) - 1] = _span_guard.claimed_wrap
+
+    def _release_held_mention() -> None:
+        # A backticked tag still held when its turn ends never closed: keep what the full strip keeps.
+        nonlocal turn_event
+        last, turn_event = turn_event, None
+        if last is None or _pending_mention_cut(last["text"]) < 0:
+            return
+        _add_text(
+            _span_guard.strip(
+                last["text"],
+                auto_heal_tool_calls = True,
+                enabled_tool_names = _display_names,
+                wrapped_so_far = last.get(_WRAPPED_SO_FAR),
+                hold = False,
+            )
+        )
 
     for event in events:
         etype = event.get("type", "")
         if etype == "content":
+            turn_event = event
             # Strip leaked tool XML (protected helper keeps think rehearsal and trailing prose).
-            clean = _span_guard.strip(
-                event["text"],
-                auto_heal_tool_calls = True,
-                enabled_tool_names = _display_names,
-                wrapped_so_far = event.get(_WRAPPED_SO_FAR),
+            _add_text(
+                _span_guard.strip(
+                    event["text"],
+                    auto_heal_tool_calls = True,
+                    enabled_tool_names = _display_names,
+                    wrapped_so_far = event.get(_WRAPPED_SO_FAR),
+                )
             )
-            new = clean[len(prev_text) :]
-            prev_text = clean
-            if new:
-                ends_on_tool_use = False
-                if content_blocks and isinstance(content_blocks[-1], AnthropicResponseTextBlock):
-                    content_blocks[-1].text += new
-                else:
-                    content_blocks.append(AnthropicResponseTextBlock(text = new))
-                    # The wrap belongs to the block that OPENS this turn's span (a client tool_use can interrupt it).
-                    if _span_guard.claimed and new.startswith("<think>"):
-                        _block_wrap[len(content_blocks) - 1] = _span_guard.claimed_wrap
         elif etype == "status" and not event.get("text"):
+            _release_held_mention()
             prev_text = ""
         elif etype == "tool_start":
             tool_call_id = event["tool_call_id"]
@@ -44488,6 +44612,7 @@ def _anthropic_tool_response_from_events(
                 content_blocks.append(tool_block)
             ends_on_tool_use = True
         elif etype == "tool_end":
+            _release_held_mention()
             prev_text = ""
             _span_guard.tool_end()
             # Text-parsed calls restart at call_0 each loop, so a later call may reuse this id; open a new block.
@@ -44508,6 +44633,7 @@ def _anthropic_tool_response_from_events(
             _fr = event.get("finish_reason")
             if _fr is not None:
                 captured_finish_reason = _fr
+    _release_held_mention()
 
     # With provenance use the span guard wrap for that turn, not a re-derived one; else leading-tag rule.
     if parse_think:
