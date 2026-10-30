@@ -100,6 +100,12 @@ def _adapter_state(modules):
     return tuple(_adapter_key(m) for m in modules)
 
 
+def _site_watch(projs):
+    # One PEFT layer per site: adapter toggles / switches apply model-wide. Any projection may
+    # carry it (LoRA on k / v or up only), not just the first.
+    return [p for p in projs if hasattr(p, "lora_A")][:1]
+
+
 def _plan_stale(plan):
     """Adapters toggled, switched, merged or rescaled since the plan was built (also mid-sequence)."""
     return bool(plan.watch) and _adapter_state(plan.watch) != plan.adapter_state
@@ -370,8 +376,7 @@ def _build(model, X):
             site = _site(model, (idx, kind), kind, projs, K)
             if isinstance(site, str):
                 return f"{kind}: {site}"
-            # One PEFT layer per site: adapter toggles / switches apply model-wide.
-            watch.extend(p for p in projs[:1] if hasattr(p, "lora_A"))
+            watch.extend(_site_watch(projs))
             if site.packed.device != device:
                 return "several devices"
             sites[kind] = site
