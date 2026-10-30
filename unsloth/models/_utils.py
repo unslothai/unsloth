@@ -1230,6 +1230,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         except Exception:
             kernel_options = None
+        short_forced = False
         # First: on these cards the default forward tile does not fit, so this full set beats a forced
         # UNSLOTH_FLEX_TUNED_BACKWARD=1 (backward keys only).
         if (
@@ -1265,6 +1266,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             ):
                 if _flex_decode_rows(query, key) > _FLEX_SMALL_SMEM_DECODE_MAX_ROWS:
                     kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
+                    short_forced = True
                 else:
                     # Before torch 2.14 flex_decoding sets SAFE_M_BOUNDARY from its own BLOCK_M
                     # (16 / 32 at 16 / 32 rows) and only then lets fwd_BLOCK_M 64 replace it, so the
@@ -1296,10 +1298,13 @@ def _wrap_flex_attention_forward(flex_attention_forward):
                 and "FORCE_USE_FLEX_ATTENTION" not in requested
             )
             kernel_options.update(requested)
+            if short_forced and requested.get("FORCE_USE_FLEX_ATTENTION") is False:
+                # The caller turned the main kernel off: our main-kernel tiles do not cover flex_decoding.
+                kernel_options = dict(requested)
             # torch 2.10+ rejects BACKEND with the legacy FORCE_USE_FLEX_ATTENTION. AUTO leaves the
             # kernel to us: TRITON is the main kernel FORCE picks. Any other backend is the caller's
             # choice, and our main-kernel tiles (64 query rows) do not apply to it.
-            if ours_forced and "BACKEND" in kernel_options:
+            elif ours_forced and "BACKEND" in kernel_options:
                 if kernel_options["BACKEND"] in ("AUTO", "TRITON"):
                     kernel_options.pop("FORCE_USE_FLEX_ATTENTION")
                     kernel_options["BACKEND"] = "TRITON"
