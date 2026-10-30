@@ -32,11 +32,11 @@ import {
   BubbleChatAddIcon,
   Download01Icon,
   File01Icon,
-  FolderOpenIcon,
   InternetIcon,
   Link01Icon,
   LinkSquare02Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderOpenIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";

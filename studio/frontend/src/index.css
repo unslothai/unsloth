@@ -5052,13 +5052,19 @@ html[data-chat-font] .aui-root {
 	box-shadow: var(--composer-shadow) !important;
 }
 
-/* Icon centred on the first text line, so multi-line toasts keep it level with the title.
-   Title and description line heights are 1.5 and 1.4. */
+/* Icon centred on the first text line; past one line (data-multiline, set in sonner.tsx) its top
+   drops 0.08em to the title's cap height. Title and description line heights are 1.5 and 1.4. */
 [data-sonner-toast][data-styled='true'] [data-icon] {
 	margin: calc((1.5em - var(--ui-icon-size)) / 2) 0 0 !important;
 }
 [data-sonner-toast][data-styled='true']:not(:has([data-title])) [data-icon] {
 	margin-top: calc((1.4em - var(--ui-icon-size)) / 2) !important;
+}
+[data-sonner-toast][data-styled='true'][data-multiline] [data-icon] {
+	margin-top: calc((1.5em - var(--ui-icon-size)) / 2 + 0.08em) !important;
+}
+[data-sonner-toast][data-styled='true'][data-multiline]:not(:has([data-title])) [data-icon] {
+	margin-top: calc((1.4em - var(--ui-icon-size)) / 2 + 0.08em) !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-content] {

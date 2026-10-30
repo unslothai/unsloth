@@ -439,13 +439,17 @@ export const BUDGET = {
   // (5,942,150 -> 5,972,134 B raw, 1,836,750 -> 1,847,702 B transfer, ed9857c0c3 -> 39b8a6ce13, Node 24,
   // 85 chunks): its color themes are read by the theme store at startup, and loading its dialog on first
   // open saves 3 KB transfer but adds five startup chunks. Raised by that growth.
+  // The GPU rendering setting (#15482) adds 1,948 B raw / 637 B transfer (5,977,895 -> 5,979,843 B raw,
+  // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
+  // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
+  // the eager English catalog and its search rows. Raised by that.
   // Chat wallpaper: account-local preferences, reset integration and English settings strings
   // add 6,365 B raw / 3,589 B transfer (5,978,111 -> 5,984,476 B raw,
   // 1,849,582 -> 1,853,171 B transfer, same checkout baseline and Node 24 build,
   // 85 -> 89 eager chunks). Renderer/contrast logic and pixel worker remain lazy.
   // Preserve the existing headroom; no effect/image code is added to startup.
-  transferBytes: 1_853_362,
-  rawBytes: 5_995_807,
+  transferBytes: 1_853_999,
+  rawBytes: 5_997_755,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.
