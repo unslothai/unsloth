@@ -4868,6 +4868,8 @@ export const zhCN = {
       weight: "权重",
       bundled: "内置",
       user: "我的",
+      kindRule: "规则",
+      kindPython: "Python",
       invalid: "无效",
       pythonLocked: "Python 奖励将在后续版本中提供。",
       tryTitle: "试一试",
@@ -4901,6 +4903,7 @@ export const zhCN = {
     prompt: {
       title: "提示格式",
       description: "要求模型写出的内容",
+      presetHint: "在每个提示词之前发送。奖励会读取它要求的标签，所以请保持两者一致。",
       presetLabel: "系统提示预设",
       presets: {
         notebook: "推理 + 答案标签",

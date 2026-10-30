@@ -5260,6 +5260,8 @@ export const sv = {
       weight: "Vikt",
       bundled: "Medföljande",
       user: "Dina",
+      kindRule: "Regel",
+      kindPython: "Python",
       invalid: "Ogiltig",
       pythonLocked: "Python-belöningar kommer i en senare version.",
       tryTitle: "Testa",
@@ -5293,6 +5295,7 @@ export const sv = {
     prompt: {
       title: "Promptformat",
       description: "Vad modellen ombeds skriva",
+      presetHint: "Skickas före varje prompt. Dina belöningar läser taggarna den ber om, så håll dem i takt.",
       presetLabel: "Förinställning för systemprompt",
       presets: {
         notebook: "Resonemang- + svarstaggar",

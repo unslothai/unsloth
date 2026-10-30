@@ -5042,6 +5042,8 @@ export const de = {
       weight: "Gewicht",
       bundled: "Mitgeliefert",
       user: "Deine",
+      kindRule: "Regel",
+      kindPython: "Python",
       invalid: "Ungültig",
       pythonLocked: "Python-Belohnungen kommen in einer späteren Version.",
       tryTitle: "Ausprobieren",
@@ -5075,6 +5077,7 @@ export const de = {
     prompt: {
       title: "Prompt-Format",
       description: "Was das Modell schreiben soll",
+      presetHint: "Wird vor jedem Prompt gesendet. Deine Belohnungen lesen die Tags, die er verlangt, also halte beides abgestimmt.",
       presetLabel: "Vorlage für den Systemprompt",
       presets: {
         notebook: "Begründung + Antwort-Tags",

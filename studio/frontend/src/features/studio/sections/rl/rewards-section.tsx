@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -68,6 +69,10 @@ import {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { RL_LIST_CLASS, RL_PANEL_CLASS } from "./rl-panel";
+
+// Same footprint as NewBadge, without the uppercase.
+const REWARD_TAG_CLASS = "h-4 px-1.5 text-ui-10 font-medium";
 
 const SAMPLE_COMPLETION =
   "<reasoning>\n48 + 24 = 72\n</reasoning>\n<answer>\n72\n</answer>";
@@ -223,9 +228,14 @@ function ImportRewardDialog({
             <div className="min-w-0">
               <p className="font-medium text-foreground">
                 {head.name}
-                <span className="ml-2 rounded-full bg-muted px-1.5 text-ui-10 text-muted-foreground">
-                  {head.kind ?? "rule"}
-                </span>
+                <Badge
+                  variant="secondary"
+                  className={cn("ml-2", REWARD_TAG_CLASS)}
+                >
+                  {head.kind === "python"
+                    ? t("rl.rewards.kindPython")
+                    : t("rl.rewards.kindRule")}
+                </Badge>
               </p>
               {head.description && (
                 <p className="text-ui-11p5 text-muted-foreground">
@@ -401,19 +411,19 @@ export function RewardsSection(): ReactElement {
         </p>
       )}
 
-      <div className="flex flex-col">
-        {rewards.length === 0 && (
-          <p className="text-ui-11p5 text-amber-700 dark:text-amber-300">
-            {t("rl.rewards.empty")}
-          </p>
-        )}
+      {rewards.length === 0 && (
+        <p className="text-ui-11p5 text-amber-700 dark:text-amber-300">
+          {t("rl.rewards.empty")}
+        </p>
+      )}
+      <div className={cn(RL_LIST_CLASS, rewards.length === 0 && "hidden")}>
         {rewards.map((selection) => {
           const record = byName.get(selection.name);
           const type = summarizeRule(record?.rule).type;
           return (
             <div
               key={selection.name}
-              className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto_auto] items-center gap-3 border-b border-border/60 py-2.5"
+              className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto_auto] items-center gap-3 px-4 py-3"
             >
               <span className="flex size-8 items-center justify-center rounded-lg bg-muted/70 text-muted-foreground">
                 <HugeiconsIcon
@@ -424,18 +434,14 @@ export function RewardsSection(): ReactElement {
               <div className="min-w-0">
                 <p className="flex items-center gap-2 text-xs font-medium text-foreground">
                   <span className="truncate">{selection.name}</span>
-                  <span
-                    className={cn(
-                      "rounded-full px-1.5 text-ui-10",
-                      record?.source === "user"
-                        ? "bg-primary/10 text-primary"
-                        : "bg-muted text-muted-foreground",
-                    )}
+                  <Badge
+                    variant={record?.source === "user" ? "accent" : "secondary"}
+                    className={REWARD_TAG_CLASS}
                   >
                     {record?.source === "user"
                       ? t("rl.rewards.user")
                       : t("rl.rewards.bundled")}
-                  </span>
+                  </Badge>
                 </p>
                 <p className="truncate text-ui-11p5 text-muted-foreground/85">
                   <RewardSummaryLine record={record} loaded={libraryLoaded} />
@@ -449,7 +455,7 @@ export function RewardsSection(): ReactElement {
                   min={-10}
                   max={10}
                   aria-label={t("rl.rewards.weight")}
-                  className="h-7 w-[calc(60px*var(--ui-space-scale,1))] text-right text-xs"
+                  className="h-8 w-16 px-2 text-center font-mono text-xs"
                   value={selection.weight}
                   onChange={(e) => {
                     const n = Number(e.target.value);
@@ -554,8 +560,8 @@ export function RewardsSection(): ReactElement {
         </span>
       </div>
 
-      <div className="flex flex-col gap-2.5 rounded-xl border border-border/70 p-3">
-        <div className="flex items-center gap-2">
+      <div className={RL_PANEL_CLASS}>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <HugeiconsIcon
             icon={TestTube01Icon}
             className="size-3.5 text-muted-foreground"
@@ -582,7 +588,7 @@ export function RewardsSection(): ReactElement {
             onChange={(e) => setCompletion(e.target.value)}
           />
           <div className="flex flex-col gap-1.5">
-            <Label className="text-ui-11 font-normal text-muted-foreground">
+            <Label className="text-xs font-medium text-muted-foreground">
               {answerColumn && referenceEdit === null && rowReference
                 ? t("rl.rewards.tryReferenceFromRow", { column: answerColumn })
                 : t("rl.rewards.tryReference")}

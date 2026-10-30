@@ -13,10 +13,12 @@ import {
 import type { ChartConfig } from "@/components/ui/chart";
 import { type RlMetricPoint, rlChartKeys } from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
+import { cn } from "@/lib/utils";
 import { type ReactElement, useMemo } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import {
   CHART_CONTAINER_CLASS,
+  CHART_SYNC_ID,
   DEFAULT_CHART_MARGIN,
   DEFAULT_Y_AXIS_WIDTH,
   formatAxisMetric,
@@ -165,11 +167,12 @@ function RlChartCard({
     });
     return out;
   });
+  const showPoint = rows.length <= 1 ? { r: 3, strokeWidth: 0 } : false;
   const latest =
     data.length > 0 ? data[data.length - 1][spec.series[0].key] : undefined;
 
   return (
-    <Card size="sm">
+    <Card size="sm" className="h-full">
       <CardHeader>
         <CardTitle className="flex items-center justify-between gap-2 text-sm">
           <span className="flex items-center gap-1.5">
@@ -190,6 +193,8 @@ function RlChartCard({
         <ChartContainer config={config} className={CHART_CONTAINER_CLASS}>
           <LineChart
             data={rows}
+            syncId={CHART_SYNC_ID}
+            syncMethod="value"
             accessibilityLayer={true}
             margin={DEFAULT_CHART_MARGIN}
           >
@@ -230,19 +235,20 @@ function RlChartCard({
             {spec.series.map((s, i) => (
               <Line
                 key={s.key}
-                type="monotone"
+                type="linear"
                 dataKey={`s${i}`}
                 stroke={`var(--color-s${i})`}
                 strokeWidth={i === 0 ? 2 : 1.5}
                 strokeDasharray={i === 0 ? undefined : "4 3"}
-                dot={false}
+                dot={showPoint}
+                activeDot={{ r: 3, strokeWidth: 0 }}
                 connectNulls={true}
+                strokeLinecap="round"
+                strokeLinejoin="round"
                 isAnimationActive={false}
               />
             ))}
-            {spec.series.length > 1 && (
-              <ChartLegend content={<ChartLegendContent />} />
-            )}
+            <ChartLegend content={<ChartLegendContent />} />
           </LineChart>
         </ChartContainer>
       </CardContent>
@@ -270,8 +276,17 @@ export function RlChartsGrid({
   }
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      {cards.map((spec) => (
-        <RlChartCard key={spec.id} spec={spec} data={data} />
+      {cards.map((spec, i) => (
+        <div
+          key={spec.id}
+          // An odd last card spans the row rather than leaving half of it empty.
+          className={cn(
+            "min-w-0",
+            cards.length % 2 === 1 && i === cards.length - 1 && "lg:col-span-2",
+          )}
+        >
+          <RlChartCard spec={spec} data={data} />
+        </div>
       ))}
     </div>
   );
