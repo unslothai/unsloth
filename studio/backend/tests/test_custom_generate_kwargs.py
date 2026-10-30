@@ -134,7 +134,11 @@ def test_an_uncancelled_custom_generate_returns_its_sequences():
     streamer = _Recorder()
     out = _generate_supported(
         model,
-        {"streamer": streamer, "max_new_tokens": 4, "stopping_criteria": _criteria(threading.Event())},
+        {
+            "streamer": streamer,
+            "max_new_tokens": 4,
+            "stopping_criteria": _criteria(threading.Event()),
+        },
     )
     assert out == "sequences" and streamer.tokens == [0, 1, 2, 3] and streamer.ended
 

@@ -657,7 +657,6 @@ def test_lfm3_omni_on_the_hub_is_audio_vlm(monkeypatch):
 
 def test_a_speech_only_processor_is_not_audio_vlm():
     from utils.audio_tokens import classify_audio_tokens
-
     assert classify_audio_tokens(_LFM3_AUDIO_PROCESSOR_CONFIG) is None
 
 
