@@ -149,11 +149,16 @@ export function ProjectsPage({
   embedded = false,
   ordered,
   searching = false,
+  orderedDesc,
+  onToggleOrder,
 }: {
   embedded?: boolean;
   /** The Library's filtered, sorted projects; its toolbar owns search and sort when embedded. */
   ordered?: ProjectRecord[];
   searching?: boolean;
+  /** The Updated header's direction and toggle, so it drives the Library's sort when embedded. */
+  orderedDesc?: boolean;
+  onToggleOrder?: () => void;
 } = {}) {
   const t = useT();
   const signalReady = useAppShellReadySignal();
@@ -733,13 +738,12 @@ export function ProjectsPage({
         <div className={embedded ? "mt-6" : "mt-16"}>
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
-            {ordered ? (
-              <span className="shrink-0 sm:w-40">Updated</span>
-            ) : (
             <button
               type="button"
-              onClick={() => setSortDir((dir) => (dir === "desc" ? "asc" : "desc"))}
-              title={sortDir === "desc" ? "Newest first" : "Oldest first"}
+              onClick={() =>
+                onToggleOrder ? onToggleOrder() : setSortDir((dir) => (dir === "desc" ? "asc" : "desc"))
+              }
+              title={(orderedDesc ?? sortDir === "desc") ? "Newest first" : "Oldest first"}
               className="flex shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground sm:w-40"
             >
               Updated
@@ -747,11 +751,10 @@ export function ProjectsPage({
                 strokeWidth={1.75}
                 className={cn(
                   "size-3.5 transition-transform",
-                  sortDir === "asc" && "rotate-180",
+                  !(orderedDesc ?? sortDir === "desc") && "rotate-180",
                 )}
               />
             </button>
-            )}
             <span className="size-7 shrink-0" />
             <span className="size-7 shrink-0" />
             <span className="w-8 shrink-0" />

@@ -1471,7 +1471,22 @@ export function ChatsLibrary({
             {section === "all"
               ? renderAll()
               : section === "projects"
-                ? <ProjectsPage embedded ordered={visibleProjects} searching={query.trim() !== ""} />
+                ? (
+                    <ProjectsPage
+                      embedded
+                      ordered={visibleProjects}
+                      searching={query.trim() !== ""}
+                      orderedDesc={prefs.projectSort.key !== "updated" || prefs.projectSort.desc}
+                      onToggleOrder={() =>
+                        prefs.set({
+                          projectSort: {
+                            key: "updated",
+                            desc: prefs.projectSort.key === "updated" ? !prefs.projectSort.desc : false,
+                          },
+                        })
+                      }
+                    />
+                  )
                 : section === "sections"
                   ? renderSections()
                   : renderChats()}

@@ -111,9 +111,9 @@ test("the Updated column names the list's order and turns it around", () => {
   assert.match(PAGE, /import \{ ArrowDownIcon \} from "lucide-react";/);
   assert.match(
     PAGE,
-    /onClick=\{\(\) => setSortDir\(\(dir\) => \(dir === "desc" \? "asc" : "desc"\)\)\}/,
+    /onToggleOrder \? onToggleOrder\(\) : setSortDir\(\(dir\) => \(dir === "desc" \? "asc" : "desc"\)\)/,
   );
-  assert.match(PAGE, /sortDir === "asc" && "rotate-180",/);
+  assert.match(PAGE, /!\(orderedDesc \?\? sortDir === "desc"\) && "rotate-180",/);
   assert.match(
     PAGE,
     /sortDir === "asc"\n\s*\? projectActivityAt\(a\) - projectActivityAt\(b\)\n\s*: projectActivityAt\(b\) - projectActivityAt\(a\),/,
