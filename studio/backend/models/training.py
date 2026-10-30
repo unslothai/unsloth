@@ -3,6 +3,7 @@
 
 """Pydantic schemas for Training API"""
 
+from core.training.rl_format import WARMUP_DEFAULT_STEPS, WARMUP_MIN_SEQ_LENGTH
 import math
 import re
 from pathlib import Path, PureWindowsPath
@@ -119,6 +120,42 @@ def _resolve_inventory_handle(value: str) -> str:
     except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail a run
         return value
     return resolve_inventory_handle(value)
+
+
+def _normalized_reward_name(name: str) -> str:
+    # The library lookup's normalisation, so EXACT-ANSWER and exact-answer count as one reward.
+    from core.training.rewards import RewardError, normalize_reward_name
+    try:
+        return normalize_reward_name(name)
+    except RewardError:
+        return name
+
+
+class RewardSelection(BaseModel):
+    """One library reward enabled for a GRPO run, with its weight in the summed reward."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    name: str = Field(..., min_length = 1, max_length = 64)
+    weight: float = Field(1.0, ge = -10, le = 10, allow_inf_nan = False)
+
+
+# (key in the stored run config's rl_settings, TrainingStartRequest field)
+_STORED_RL_SETTINGS = (
+    ("beta", "rl_beta"),
+    ("max_prompt_length", "rl_max_prompt_length"),
+    ("num_generations", "grpo_num_generations"),
+    ("max_completion_length", "grpo_max_completion_length"),
+    ("temperature", "grpo_temperature"),
+    ("variant", "grpo_variant"),
+    ("enable_thinking", "grpo_enable_thinking"),
+    ("system_prompt", "rl_system_prompt"),
+    ("mask_truncated_completions", "grpo_mask_truncated_completions"),
+    ("epsilon_high", "grpo_epsilon_high"),
+    ("python_reward_isolation", "grpo_python_reward_isolation"),
+    ("reasoning_format", "grpo_reasoning_format"),
+    ("format_warmup_steps", "grpo_format_warmup_steps"),
+)
 
 
 # The strings trainer.normalize_gradient_checkpointing turns into False.
@@ -254,6 +291,32 @@ class TrainingStartRequest(BaseModel):
         le = _MAX_DATASET_SLICE_INDEX,
         description = "Inclusive end row index for dataset slicing",
     )
+
+    @model_validator(mode = "before")
+    @classmethod
+    def _compat_stored_rl_config(cls, values: Any) -> Any:
+        """A resume posts the stored run config back, which nests the RL fields under rl_settings
+        and reward_specs; lift them into the request fields an explicit value has not set."""
+        if not isinstance(values, dict):
+            return values
+        settings = values.get("rl_settings")
+        specs = values.get("reward_specs")
+        if not isinstance(settings, dict) and not isinstance(specs, list):
+            return values
+        values = dict(values)
+        for stored, field in _STORED_RL_SETTINGS:
+            if isinstance(settings, dict) and stored in settings:
+                values.setdefault(field, settings[stored])
+        if isinstance(specs, list):
+            values.setdefault(
+                "grpo_rewards",
+                [
+                    {"name": s.get("name"), "weight": s.get("weight", 1.0)}
+                    for s in specs
+                    if isinstance(s, dict)
+                ],
+            )
+        return values
 
     @model_validator(mode = "before")
     @classmethod
@@ -563,10 +626,12 @@ class TrainingStartRequest(BaseModel):
             "Global gradient norm clipping threshold. Unset keeps the training "
             "backend's own default; 0 turns global-norm clipping off, which on "
             "MLX leaves per-parameter clipping in force unless max_grad_leaf_norm "
-            "is also 0. Honored on MLX; the CUDA path trains with its own fixed "
-            "thresholds."
+            "is also 0. Honored on MLX and on the CUDA trainer (SFT, DPO, ORPO, GRPO)."
         ),
     )
+    # TRL's AdamW defaults.
+    adam_beta1: float = Field(0.9, ge = 0, lt = 1, allow_inf_nan = False, description = "AdamW beta1")
+    adam_beta2: float = Field(0.999, ge = 0, lt = 1, allow_inf_nan = False, description = "AdamW beta2")
     max_grad_value: Optional[float] = Field(
         None,
         ge = 0,
@@ -650,6 +715,70 @@ class TrainingStartRequest(BaseModel):
         True, description = "Train on assistant completions where supported"
     )
 
+    objective: Literal["sft", "dpo", "orpo", "grpo"] = Field(
+        "sft",
+        description = "Training objective: supervised fine-tuning, or DPO / ORPO / GRPO.",
+    )
+    rl_beta: Optional[float] = Field(
+        None,
+        ge = 0,
+        le = 10,
+        allow_inf_nan = False,
+        description = "DPO/ORPO beta, or the GRPO KL coefficient. Null uses the objective's default.",
+    )
+    rl_max_prompt_length: Optional[int] = Field(
+        None,
+        ge = 16,
+        description = "Prompt token budget for DPO/ORPO/GRPO. Null derives it from max_seq_length.",
+    )
+    grpo_num_generations: int = Field(4, ge = 2, le = 16, description = "Completions sampled per prompt")
+    grpo_max_completion_length: Optional[int] = Field(
+        None, ge = 16, description = "Completion token budget. Null uses what the prompt leaves."
+    )
+    grpo_temperature: float = Field(1.0, gt = 0, le = 2.0, allow_inf_nan = False)
+    grpo_variant: Literal["dapo", "dr_grpo", "bnpo", "grpo", "gspo"] = Field(
+        "dapo",
+        description = "GRPO loss variant; dapo is the TRL and Unsloth default, gspo uses sequence-level ratios",
+    )
+    rl_system_prompt: Optional[str] = Field(
+        None,
+        max_length = 8000,
+        description = "System prompt for rows without one (GRPO notebooks set the answer format here)",
+    )
+    grpo_enable_thinking: Optional[bool] = Field(
+        False,
+        description = "For chat templates with a thinking switch (Qwen3): open a thinking block or not. Null keeps the template default.",
+    )
+    grpo_mask_truncated_completions: bool = Field(
+        False, description = "Leave completions cut off at the length limit out of the loss"
+    )
+    grpo_epsilon_high: Optional[float] = Field(
+        None,
+        gt = 0,
+        le = 1,
+        allow_inf_nan = False,
+        description = "Upper clip bound (DAPO clip-higher). Null uses epsilon.",
+    )
+    grpo_reasoning_format: bool = Field(
+        False,
+        description = "Use the GRPO notebooks' reasoning chat template and answer format (for base models)",
+    )
+    grpo_format_warmup_steps: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 1000,
+        description = "SFT steps on formatted examples before GRPO, so the model already writes the tags. "
+        "0 skips it; null runs the notebooks' 100 when the reasoning format is on and the context fits.",
+    )
+    grpo_python_reward_isolation: Literal["required", "auto"] = Field(
+        "required",
+        description = "Python rewards: 'required' refuses to start without the OS sandbox; 'auto' "
+        "falls back to software safeguards, which do not isolate files, network or processes.",
+    )
+    grpo_rewards: List[RewardSelection] = Field(
+        default_factory = list, max_length = 16, description = "Library rewards for GRPO"
+    )
+
     finetune_vision_layers: bool = Field(False, description = "Finetune vision layers")
     finetune_language_layers: bool = Field(True, description = "Finetune language layers")
     finetune_attention_modules: bool = Field(True, description = "Finetune attention modules")
@@ -721,6 +850,10 @@ class TrainingStartRequest(BaseModel):
             or getattr(self, "format_type", None) in ("raw", "raw_text")
         ):
             self.train_on_completions = False
+        # SFT-only: DPO/ORPO/GRPO build their own batches and losses, whatever the payload says.
+        if getattr(self, "objective", "sft") != "sft":
+            self.packing = False
+            self.train_on_completions = False
         return self
 
     @model_validator(mode = "after")
@@ -736,6 +869,64 @@ class TrainingStartRequest(BaseModel):
                         f"dataset_streaming requires a plain split name in {field_name} "
                         f"(got {split_val!r}); use a name such as 'train' or 'validation'."
                     )
+        return self
+
+    @model_validator(mode = "after")
+    def _validate_objective(self) -> "TrainingStartRequest":
+        objective = getattr(self, "objective", "sft")
+        if self.grpo_format_warmup_steps is None:
+            self.grpo_format_warmup_steps = (
+                WARMUP_DEFAULT_STEPS
+                if objective == "grpo"
+                and self.grpo_reasoning_format
+                and self.max_seq_length >= WARMUP_MIN_SEQ_LENGTH
+                else 0
+            )
+        if objective == "sft":
+            return self
+        if getattr(self, "training_type", None) == "Continued Pretraining":
+            raise ValueError(f"{objective.upper()} cannot be combined with Continued Pretraining.")
+        if self.is_decision:
+            raise ValueError(f"{objective.upper()} cannot train a decision model.")
+        if self.is_dataset_image or self.is_dataset_audio or self.is_embedding:
+            raise ValueError(f"{objective.upper()} supports text datasets only for now.")
+        if getattr(self, "is_decision", False):
+            raise ValueError(f"{objective.upper()} cannot be combined with decision training.")
+        if self.dataset_streaming:
+            raise ValueError(f"{objective.upper()} does not support dataset streaming yet.")
+        # The raw-text path returns before role formatting, so the rows would have no prompt.
+        if self.format_type == "raw":
+            raise ValueError(f"{objective.upper()} needs column roles, not the Raw text format.")
+
+        if self.s3_config is not None:
+            # Column roles are picked from inspected columns, which S3 data can't offer yet.
+            raise ValueError(
+                f"{objective.upper()} can't read column roles from S3 data yet. "
+                "Use a Hugging Face or uploaded dataset."
+            )
+        if objective == "grpo" and not self.grpo_rewards:
+            raise ValueError("GRPO needs at least one reward.")
+        if objective == "grpo" and len(
+            {_normalized_reward_name(r.name) for r in self.grpo_rewards}
+        ) != len(self.grpo_rewards):
+            raise ValueError("Each GRPO reward can only be selected once.")
+        if self.grpo_format_warmup_steps and not (
+            objective == "grpo" and self.grpo_reasoning_format
+        ):
+            raise ValueError("The format warm-up needs GRPO with the reasoning format on.")
+        if self.grpo_format_warmup_steps and self.max_seq_length < WARMUP_MIN_SEQ_LENGTH:
+            raise ValueError(
+                f"The format warm-up needs a max sequence length of {WARMUP_MIN_SEQ_LENGTH} or more; "
+                "its examples are 800+ tokens and only those under half the context are used."
+            )
+        return self
+
+    @model_validator(mode = "after")
+    def _check_preference_beta(self) -> "TrainingStartRequest":
+        # Zero turns DPO's loss constant (no gradient) and drops ORPO's preference term; only
+        # GRPO's KL coefficient may be zero.
+        if self.objective in ("dpo", "orpo") and self.rl_beta == 0:
+            raise ValueError(f"{self.objective.upper()} needs a beta above 0.")
         return self
 
     @model_validator(mode = "after")
@@ -793,6 +984,11 @@ class TrainingStartRequest(BaseModel):
             raise ValueError("drafter training is only available for text generation models.")
         if getattr(self, "training_type", None) == "Continued Pretraining":
             raise ValueError("drafter training is not available for continued pretraining.")
+        if getattr(self, "objective", "sft") != "sft":
+            # The drafter phase reads tokenized SFT rows; RL datasets hold prompts and answers.
+            raise ValueError(
+                f"drafter training is not available with {self.objective.upper()} yet."
+            )
         return self
 
 
@@ -908,6 +1104,9 @@ class TrainingProgress(BaseModel):
     eval_loss: Optional[float] = Field(
         None, description = "Eval loss from the most recent evaluation step"
     )
+    rl_metrics: Optional[Dict[str, Optional[float]]] = Field(
+        None, description = "DPO/ORPO/GRPO metrics from the latest log, keyed as TRL logs them"
+    )
 
 
 class TrainingRunSummary(BaseModel):
@@ -966,6 +1165,8 @@ class TrainingRunMetrics(BaseModel):
     grad_norm_step_history: List[int] = Field(default_factory = list)
     eval_loss_history: List[float] = Field(default_factory = list)
     eval_step_history: List[int] = Field(default_factory = list)
+    # DPO/ORPO/GRPO only: [{"step": n, "<TRL log key>": value, ...}], as /status metric_history.rl.
+    rl_history: List[Dict[str, Optional[float]]] = Field(default_factory = list)
     final_epoch: Optional[float] = None
     final_num_tokens: Optional[int] = None
 
@@ -1477,3 +1678,24 @@ class DiffusionDatasetImportResponse(BaseModel):
     imported: int
     license: str
     source_repo: str
+
+
+class RlSampleItem(BaseModel):
+    completion: str
+    rewards: Dict[str, Optional[float]]
+    total: float
+
+
+class RlSampleGroup(BaseModel):
+    """One prompt's GRPO completions and what each reward gave them."""
+
+    seq: int
+    step: Optional[int] = None
+    prompt: str
+    answer: Optional[str] = None
+    items: List[RlSampleItem]
+
+
+class RlSamplesResponse(BaseModel):
+    job_id: str
+    samples: List[RlSampleGroup]
