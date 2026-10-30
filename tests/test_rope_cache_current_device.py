@@ -627,3 +627,23 @@ def test_stock_call_compiles_as_one_graph():
     ref_cos, ref_sin = _reference(8)
     assert torch.equal(eager_cos[0], ref_cos[3:7]) and torch.equal(eager_sin[0], ref_sin[3:7])
     assert torch.equal(cos[0], ref_cos[4:8]) and torch.equal(sin[0], ref_sin[4:8])
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+def test_compiled_stock_call_serves_every_position_below_max_position(backend):
+    # max_position_embeddings above the 32768-row starting cache, compiled before any eager long
+    # call: positions at or past 32768 must still index valid rows rather than past the cache.
+    max_position = 1 << 16
+    rope = _llama(max_position)
+    torch._dynamo.reset()
+    compiled = torch.compile(rope, backend = backend, fullgraph = True)
+    ref_cos, ref_sin = _reference(max_position)
+    x = torch.zeros(1, 4, DIM)
+    # A short prompt first, then decode steps crossing the 32768 boundary, then the last position.
+    for start in (0, 32766, 32768, max_position - 4):
+        position_ids = torch.arange(start, start + 4)[None]
+        cos, sin = compiled(x, position_ids)
+        assert torch.equal(cos[0], ref_cos[start : start + 4])
+        assert torch.equal(sin[0], ref_sin[start : start + 4])
+    explained = torch._dynamo.explain(lambda x, p: rope(x, p))(x, torch.tensor([[40000, 40001]]))
+    assert explained.graph_break_count == 0, explained.break_reasons

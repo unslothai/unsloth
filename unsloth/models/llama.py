@@ -2424,7 +2424,8 @@ class _PerDeviceRopeCache:
     allocate on their peers. A row depends only on its position, so a shorter cache matches the
     full one row for row."""
 
-    # LongRoPE's factors follow the length asked for, so even a traced stock call must read it.
+    # LongRoPE's factors follow the length asked for, so even a traced stock call must read it
+    # rather than size its cache to max_position_embeddings.
     _rope_rows_pick_factors = False
 
     def _init_rope_cache_state(self, dtype):
@@ -2519,9 +2520,13 @@ class _PerDeviceRopeCache:
         if position_ids is not None and seq_len is None:
             # Stock transformers call (a plain model built after the patch): per-position cos/sin.
             if torch.compiler.is_compiling() and not self._rope_rows_pick_factors:
-                # Rows do not depend on how many are built, so a traced call indexes the whole
-                # current cache: reading max(position_ids) on the host breaks the graph.
-                rows = self.current_rope_size
+                # Reading max(position_ids) on the host breaks the graph, so a traced call builds
+                # every row below max_position_embeddings (as the fast model forward does for
+                # explicit positions) and indexes that: rows depend only on their position.
+                rows = max(
+                    self.current_rope_size,
+                    getattr(self, "max_position_embeddings", None) or 0,
+                )
             else:
                 rows = int(position_ids.max()) + 1
             if rows > self.current_rope_size:
