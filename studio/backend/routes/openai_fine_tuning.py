@@ -147,7 +147,8 @@ def _refuse_message_weights(path: Path, param: str) -> None:
         return
     with open(path, "rb") as handle:
         for number, line in enumerate(handle, start = 1):
-            if b'"weight"' not in line:
+            # Fast path: a key only decodes to "weight" without the literal bytes via a \u escape.
+            if b'"weight"' not in line and b"\\u" not in line:
                 continue
             try:
                 row = json.loads(line)

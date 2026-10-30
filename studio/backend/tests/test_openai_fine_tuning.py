@@ -1569,8 +1569,8 @@ def test_batch_probe_unchanged_for_the_owner(batch_queue, monkeypatch):
     assert touched and len(calls["batch"]) == 1
 
 
-@pytest.mark.parametrize("weight", [0, 0.5])
-def test_a_file_excluding_an_assistant_message_by_weight_is_refused(studio, weight):
+@pytest.mark.parametrize("weight, escaped", [(0, False), (0.5, False), (0, True)])
+def test_a_file_excluding_an_assistant_message_by_weight_is_refused(studio, weight, escaped):
     client, calls, _live = studio
     rows = (
         json.dumps(
@@ -1585,6 +1585,10 @@ def test_a_file_excluding_an_assistant_message_by_weight_is_refused(studio, weig
         ).encode()
         + b"\n"
     )
+    if escaped:
+        # Valid JSON whose key decodes to "weight" without containing the literal bytes.
+        rows = rows.replace(b'"weight"', b'"weigh\\u0074"')
+        assert b'"weight"' not in rows and json.loads(rows)["messages"][1]["weight"] == 0
 
     async def flow():
         weighted = await client.files.create(
@@ -1599,7 +1603,7 @@ def test_a_file_excluding_an_assistant_message_by_weight_is_refused(studio, weig
             try:
                 await client.fine_tuning.jobs.create(model = "unsloth/Qwen3-0.6B", **kwargs)
             except openai.BadRequestError as exc:
-                errors.append(str(exc))
+                errors.append(exc.response.text)
         return errors
 
     errors = _run(flow())
