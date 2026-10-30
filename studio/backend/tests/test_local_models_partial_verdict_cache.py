@@ -409,6 +409,62 @@ def test_a_linked_snapshots_dir_tracks_the_blobs_its_links_reach(hub, tmp_path, 
     assert _partial(rows, "org/moved") is True
 
 
+def _share_blobs(hub: Path, repo: Path) -> list[Path]:
+    """huggingface_hub's shared store: each repo blob becomes a relative link to <hub>/blobs/<xx>/<hash>."""
+    stored = []
+    for blob in sorted((repo / "blobs").iterdir()):
+        target = hub / "blobs" / blob.name[:2] / blob.name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        os.replace(blob, target)
+        blob.symlink_to(Path("..", "..", "blobs", blob.name[:2], blob.name))
+        stored.append(target)
+    return stored
+
+
+def test_shared_store_blobs_are_cached_and_tracked(hub, tmp_path, monkeypatch):
+    models = tmp_path / "models"
+    stored = _share_blobs(hub, hub / "models--org--chat")
+    _settle()
+    rows = _check(models, monkeypatch)
+    assert _partial(rows, "org/chat") is False
+    keys = {key[1] for key in partial_verdict_cache._entries}
+    assert os.fspath(hub / "models--org--chat") in keys
+    # Another repo's delete sweeps a store file: the link chain now dangles.
+    _settle()
+    weight = next(p for p in stored if p.name == hashlib.sha256(b"\0" * 64).hexdigest())
+    weight.unlink()
+    rows = _check(models, monkeypatch)
+    assert _partial(rows, "org/chat") is True
+    # Published again in place.
+    _settle()
+    weight.write_bytes(b"\0" * 64)
+    rows = _check(models, monkeypatch)
+    assert _partial(rows, "org/chat") is False
+
+
+def test_shared_store_blobs_resolve_from_the_real_repo_dir(hub, tmp_path, monkeypatch):
+    """A repo dir linked in from another disk: its blob links reach that disk's store, not the hub's."""
+    models = tmp_path / "models"
+    disk = tmp_path / "disk2"
+    disk.mkdir()
+    real_repo = disk / "models--org--chat"
+    os.replace(hub / "models--org--chat", real_repo)
+    (hub / "models--org--chat").symlink_to(real_repo, target_is_directory = True)
+    stored = _share_blobs(disk, real_repo)
+    # A same-named decoy in the hub's own store, which the links do not reach.
+    for path in stored:
+        decoy = hub / "blobs" / path.parent.name / path.name
+        decoy.parent.mkdir(parents = True, exist_ok = True)
+        decoy.write_bytes(path.read_bytes())
+    _settle()
+    rows = _check(models, monkeypatch)
+    assert _partial(rows, "org/chat") is False
+    _settle()
+    next(p for p in stored if p.name == hashlib.sha256(b"\0" * 64).hexdigest()).unlink()
+    rows = _check(models, monkeypatch)
+    assert _partial(rows, "org/chat") is True
+
+
 def test_cache_is_bounded(hub, tmp_path, monkeypatch):
     monkeypatch.setattr(partial_verdict_cache, "_MAX_ENTRIES", 2)
     _settle()

@@ -15,6 +15,8 @@ containing directory's mtime. So a verdict is kept with a signature of exactly t
 * every file under ``refs/`` (``refs/main`` is rewritten in place);
 * every regular file inside a snapshot and every link target outside ``blobs/`` (both can be
   rewritten in place; blobs are content-addressed and only ever renamed into place);
+* for a blob that links into huggingface_hub's shared store (``<hub>/blobs/<xx>/<xet hash>``),
+  the store file and its directory, since another repo's delete can sweep it;
 * one token per scan over the whole Hub state tree (each manifest and cancel marker, plus the
   state root and the configured cache), so any state write misses every repo.
 
@@ -230,7 +232,9 @@ def _walk_repo(repo_dir: str) -> Optional[tuple[tuple, tuple]]:
                 pending.append(entry.path)
             else:
                 files.append(entry.path)
-    blob_is_file: Optional[dict[str, bool]] = None
+    blob_entries: Optional[dict[str, os.DirEntry]] = None
+    blobs_real: Optional[str] = None
+    linked_blobs: set[str] = set()
     for snapshot in _scandir(snapshots):
         if snapshot.is_symlink():
             return None
@@ -250,15 +254,29 @@ def _walk_repo(repo_dir: str) -> Optional[tuple[tuple, tuple]]:
                     target = os.path.normpath(os.path.join(directory, target))
                     parent = os.path.dirname(target)
                     if parent == blobs:
-                        if blob_is_file is None:
+                        if blob_entries is None:
                             # One listing answers every link; an absent name is a broken link.
-                            blob_is_file = {
-                                blob.name: not (
-                                    blob.is_symlink() or blob.is_dir(follow_symlinks = False)
-                                )
-                                for blob in _scandir(blobs)
-                            }
-                        if not blob_is_file.get(os.path.basename(target), True):
+                            blob_entries = {blob.name: blob for blob in _scandir(blobs)}
+                        blob = blob_entries.get(os.path.basename(target))
+                        if blob is None or blob.path in linked_blobs:
+                            continue
+                        if blob.is_symlink():
+                            # huggingface_hub's shared store: blobs/<etag> links to <hub>/blobs/<xx>/<xet hash>, a file
+                            # that can be swept or replaced from another repo, so it is tracked like an outside target.
+                            # Resolved from where blobs/ really is, as the kernel does for a relative link.
+                            linked_blobs.add(blob.path)
+                            try:
+                                shared = os.readlink(blob.path)
+                            except OSError:
+                                raise _Unstable from None
+                            if blobs_real is None:
+                                blobs_real = os.path.realpath(blobs)
+                            shared = os.path.normpath(os.path.join(blobs_real, shared))
+                            if os.path.islink(shared) or os.path.isdir(shared):
+                                return None
+                            dirs.append(os.path.dirname(shared))
+                            files.append(shared)
+                        elif blob.is_dir(follow_symlinks = False):
                             return None
                     else:
                         if os.path.islink(target) or os.path.isdir(target):
