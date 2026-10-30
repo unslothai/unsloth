@@ -211,3 +211,13 @@ def test_a_call_queued_behind_an_alongside_load_counts_against_the_new_model():
         assert inside == ["first", "second"]
 
     asyncio.run(go())
+
+
+def test_a_card_with_load_settings_still_loads_alongside(monkeypatch):
+    loads, state = _fakes(monkeypatch, "fit", [BIG])
+    ctx = _Ctx()
+    options = {"max_seq_length": 8192, "cache_type_kv": "q8_0"}
+    asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL}, options = options))
+    assert len(loads) == 1 and loads[0]["alongside"] is True
+    assert loads[0]["max_seq_length"] == 8192 and loads[0]["extra_body"] == {"cache_type_kv": "q8_0"}
+    assert state["serving"] == [BIG, SMALL]

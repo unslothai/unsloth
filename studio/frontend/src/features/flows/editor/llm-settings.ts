@@ -211,8 +211,14 @@ export function loadPatch(
 ): Params {
   return {
     ...savedAsParams(saved, spec),
-    ...(savedLoad && hasLoad(spec) && Object.keys(savedLoad).length > 0
-      ? { load: { ...savedLoad } }
+    // No saved load clears the card's own: updateParams merges shallowly, so leaving it out would keep it.
+    ...(hasLoad(spec)
+      ? {
+          load:
+            savedLoad && Object.keys(savedLoad).length > 0
+              ? { ...savedLoad }
+              : null,
+        }
       : {}),
   };
 }

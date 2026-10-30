@@ -238,7 +238,9 @@ def chat_model_name(ctx: Any) -> str:
 MULTI_MODEL_MODES = ("fit", "always")
 
 
-async def _alongside(ctx: Any, repo: str, variant: Optional[str]) -> Optional[dict]:
+async def _alongside(
+    ctx: Any, repo: str, variant: Optional[str], options: Optional[dict] = None
+) -> Optional[dict]:
     """Under Keep multiple models loaded (fit or always), serve ``repo`` from its own slot beside the primary chat
     model instead of replacing it: bind to it when it is already kept alongside, else load it alongside. None means
     the setting is off (or unreadable) and the step loads into the primary slot as before."""
@@ -276,11 +278,12 @@ async def _alongside(ctx: Any, repo: str, variant: Optional[str]) -> Optional[di
             None,
             model = repo,
             variant = variant,
-            max_seq_length = FLOW_CHAT_CONTEXT,
+            max_seq_length = _load_context(options),
             load_in_4bit = True,
             hf_token = None,
             deadline = time.monotonic() + LOAD_DEADLINE_S,
             alongside = True,
+            extra_body = {k: v for k, v in (options or {}).items() if k != "max_seq_length"} or None,
         )
     except FlowNodeError:
         raise
@@ -412,10 +415,10 @@ async def _ensure_model(
     if (
         slot == "llm"
         and model_kind in ("chat", "vision")
-        and not options
         and not (resident and resident.lower() == repo.lower())
     ):
-        kept = await _alongside(ctx, repo, variant)
+        # The card's load settings ride along, so they never cost the resident model its slot.
+        kept = await _alongside(ctx, repo, variant, options)
         if kept is not None:
             return kept
     wanted = (repo.lower(), (variant or "").lower())

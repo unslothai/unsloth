@@ -287,3 +287,8 @@ test("the reload hint names a different GGUF quant of the loaded repo", () => {
   assert.equal(s.reloadHint(card("ud-q4_k_xl"), loaded), null);
   assert.equal(s.reloadHint(card(null), loaded), null);
 });
+
+test("Load model defaults with no saved load clears the card's own load settings", () => {
+  assert.equal(s.loadPatch(SAVED, GENERATE, null).load, null);
+  assert.equal(s.loadPatch(SAVED, GENERATE, {}).load, null);
+});
