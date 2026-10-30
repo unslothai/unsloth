@@ -14,7 +14,7 @@ _TESTS_DIR = Path(__file__).resolve().parent
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
-from core.inference.llama_cpp import _video_tools_reachable  # noqa: E402
+import core.inference.llama_cpp as llama_cpp  # noqa: E402
 from test_mmproj_placement_policy import _backend, _launch  # noqa: E402
 
 _EXE = ".exe" if sys.platform == "win32" else ""
@@ -31,30 +31,34 @@ def _tools_dir(root: Path, *names: str) -> Path:
 
 def test_both_tools_on_path_keep_video(tmp_path):
     bin_dir = _tools_dir(tmp_path / "bin", "ffmpeg", "ffprobe")
-    assert _video_tools_reachable(["llama-server"], {"PATH": str(bin_dir)})
+    assert llama_cpp._video_tools_reachable(["llama-server"], {"PATH": str(bin_dir)})
 
 
 @pytest.mark.parametrize("present", [(), ("ffmpeg",), ("ffprobe",)])
 def test_a_missing_tool_on_path_drops_video(tmp_path, present):
     bin_dir = _tools_dir(tmp_path / "bin", *present)
-    assert not _video_tools_reachable(["llama-server"], {"PATH": str(bin_dir)}, str(tmp_path))
+    assert not llama_cpp._video_tools_reachable(
+        ["llama-server"], {"PATH": str(bin_dir)}, str(tmp_path)
+    )
 
 
 def test_the_ffmpeg_dir_flag_beats_path_and_env(tmp_path):
     good = _tools_dir(tmp_path / "good", "ffmpeg", "ffprobe")
     empty = _tools_dir(tmp_path / "empty")
     env = {"PATH": str(empty), "LLAMA_ARG_VIDEO_FFMPEG_DIR": str(empty)}
-    assert _video_tools_reachable(["llama-server", "--video-ffmpeg-dir", str(good)], env)
-    assert _video_tools_reachable(["llama-server", f"--video-ffmpeg-dir={good}"], env)
+    assert llama_cpp._video_tools_reachable(["llama-server", "--video-ffmpeg-dir", str(good)], env)
+    assert llama_cpp._video_tools_reachable(["llama-server", f"--video-ffmpeg-dir={good}"], env)
     env = {"PATH": str(good), "LLAMA_ARG_VIDEO_FFMPEG_DIR": str(good)}
-    assert not _video_tools_reachable(["llama-server", "--video-ffmpeg-dir", str(empty)], env)
+    assert not llama_cpp._video_tools_reachable(
+        ["llama-server", "--video-ffmpeg-dir", str(empty)], env
+    )
 
 
 def test_the_ffmpeg_dir_env_var_is_read_without_the_flag(tmp_path):
     good = _tools_dir(tmp_path / "good", "ffmpeg", "ffprobe")
     empty = _tools_dir(tmp_path / "empty")
     env = {"PATH": str(empty), "LLAMA_ARG_VIDEO_FFMPEG_DIR": str(good)}
-    assert _video_tools_reachable(["llama-server"], env)
+    assert llama_cpp._video_tools_reachable(["llama-server"], env)
 
 
 def _load_with_video_props(tmp_path, monkeypatch, path, **load_kwargs):
