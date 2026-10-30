@@ -38,7 +38,9 @@ def native_spec(
         "rot_group": int(int8_rotation_group()) if act else 0,
         "scale_dtype": str(scale_dtype) if scale_dtype is not None and not act else None,
         "min_features": DEFAULT_MIN_LINEAR_FEATURES,
-        "exclude_name_tokens": sorted(set(exclude_tokens_for_scheme(scheme, family)) | {"lora_"}),
+        "exclude_name_tokens": sorted(
+            set(exclude_tokens_for_scheme(scheme, family, baked = True)) | {"lora_"}
+        ),
         "require_bf16": True,
     }
 
@@ -687,7 +689,7 @@ def build_from_shards(
                 )
         filter_fn = make_filter_fn(
             int(spec["min_features"]),
-            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family) + ("lora_",),
+            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family, baked = True) + ("lora_",),
             require_bf16 = True,
         )
         quant = {name for name, mod in model.named_modules() if name and filter_fn(mod, name)}

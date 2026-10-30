@@ -3,7 +3,8 @@
 
 """MiniMax-H3 attention fast paths, each off with its env var set to 0: UNSLOTH_H3_STRIDED_ATTN
 (permuted SDPA views, no copies), UNSLOTH_H3_FUSED_QKV (one row-concatenated int8 to_qkv),
-UNSLOTH_H3_ATTN_ARCH (flash only on H3_FLASH_FASTER_ARCHS); the first two are bit-identical."""
+UNSLOTH_H3_SHARED_QKV_QUANT (unfused Q / K / V on one rotation + act quant), UNSLOTH_H3_ATTN_ARCH
+(flash only on H3_FLASH_FASTER_ARCHS); all but the last are bit-identical."""
 
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from .rocm_bf16 import is_rocm_torch
 
 STRIDED_ATTN_ENV = "UNSLOTH_H3_STRIDED_ATTN"
 FUSED_QKV_ENV = "UNSLOTH_H3_FUSED_QKV"
+SHARED_QKV_ENV = "UNSLOTH_H3_SHARED_QKV_QUANT"
 ATTN_ARCH_ENV = "UNSLOTH_H3_ATTN_ARCH"
 
 # Measured at H3's shape (torch 2.11): flash beats cuDNN on sm80 / sm89, ties or loses on sm120; unmeasured keep cuDNN.
@@ -76,6 +78,8 @@ def strided_processor_class() -> Any:
     )
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
+    from . import diffusion_int8_gemm as int8_gemm
+
     def _fusable_norm(norm: Any) -> bool:
         return (
             isinstance(norm, torch.nn.RMSNorm)
@@ -96,6 +100,7 @@ def strided_processor_class() -> Any:
 
     class UnslothH3StridedAttnProcessor(MiniMaxH3AttnProcessor):
         _unsloth_qk_rope = False
+        _unsloth_shared_qkv = False
 
         def __call__(
             self,
@@ -107,12 +112,20 @@ def strided_processor_class() -> Any:
             kernel = kernels.get(_backend_value(self._attention_backend))
             if kernel is None or attention_mask is not None or self._parallel_config is not None:
                 return super().__call__(attn, hidden_states, rotary_emb, attention_mask)
+            qkv = None
             if attn.fused_projections:
                 query, key, value = attn.to_qkv(hidden_states).chunk(3, dim = -1)
             else:
-                query = attn.to_q(hidden_states)
-                key = attn.to_k(hidden_states)
-                value = attn.to_v(hidden_states)
+                if self._unsloth_shared_qkv:
+                    qkv = int8_gemm.shared_rotq_linears(
+                        hidden_states, (attn.to_q, attn.to_k, attn.to_v)
+                    )
+                if qkv is not None:
+                    query, key, value = qkv
+                else:
+                    query = attn.to_q(hidden_states)
+                    key = attn.to_k(hidden_states)
+                    value = attn.to_v(hidden_states)
 
             query = query.unflatten(-1, (attn.heads, -1))
             key = key.unflatten(-1, (attn.heads, -1))
@@ -190,6 +203,7 @@ def install_strided_attention(transformer: Any, logger: Any = None) -> int:
             continue
         new = cls()
         new._unsloth_qk_rope = qk_rope_on
+        new._unsloth_shared_qkv = _enabled(SHARED_QKV_ENV)
         new._attention_backend = getattr(old, "_attention_backend", None)
         new._parallel_config = getattr(old, "_parallel_config", None)
         module.set_processor(new)
@@ -210,6 +224,23 @@ def strided_attention_count(transformer: Any) -> int:
         for m in _h3_attention_modules(transformer)
         if isinstance(getattr(m, "processor", None), cls)
     )
+
+
+def shared_qkv_count(transformer: Any) -> int:
+    """Engagement census: unfused attention modules whose Q / K / V take the shared rotation + act quant."""
+    from .diffusion_int8_gemm import _swapped_rec
+
+    count = 0
+    for m in _h3_attention_modules(transformer):
+        if getattr(m, "fused_projections", False):
+            continue
+        if not getattr(getattr(m, "processor", None), "_unsloth_shared_qkv", False):
+            continue
+        parts = [getattr(m, n, None) for n in ("to_q", "to_k", "to_v")]
+        recs = [None if p is None else _swapped_rec(p) for p in parts]
+        if all(r is not None and r[2] for r in recs) and len({(r[0], r[1]) for r in recs}) == 1:
+            count += 1
+    return count
 
 
 def _per_token_int8(weight: Any) -> bool:

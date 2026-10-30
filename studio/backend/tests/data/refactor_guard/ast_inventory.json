@@ -1726,6 +1726,9 @@
         "kind": "def",
         "signature": "text: str, found: int"
       },
+      "_json_object_body": {
+        "kind": "assign"
+      },
       "_last_bare_call_word": {
         "decorators": [],
         "kind": "def",
@@ -2347,6 +2350,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, start: int=0, enabled_tool_names=None"
+      },
+      "_json_object_body": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str"
       },
       "_loads_wrapped_call": {
         "decorators": [],
