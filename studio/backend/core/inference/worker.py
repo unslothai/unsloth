@@ -1845,7 +1845,6 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             )
             logger.info("Finished audio separation for request_id=%s", request_id)
             return
-        # Run fields and per-model options reach only a backend whose signature takes them.
         params = inspect.signature(backend.generate_audio_response).parameters
         takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
         extra = (
