@@ -220,3 +220,36 @@ def test_retry_bad_json_false_sends_one_request_for_an_unparsable_answer(monkeyp
         True,
         False,
     ], "a server without structured output is still asked once in plain JSON"
+
+
+def test_a_media_variant_reloaded_outside_flows_is_not_reused(monkeypatch):
+    from core.inference import gpu_arbiter
+
+    repo = "unsloth/FLUX.2-klein-4B-GGUF"
+    loads = []
+    counts = {"diffusion": 0}
+
+    async def fake_load_media(caller, ctx, **kwargs):
+        loads.append(kwargs["variant"])
+        counts["diffusion"] += 1
+
+    async def fake_slots(caller):
+        return {"image": [repo]}
+
+    monkeypatch.setattr(loading, "load_media", fake_load_media)
+    monkeypatch.setattr(loading, "resident_slots", fake_slots)
+    monkeypatch.setattr(_common, "_caller", lambda ctx: ctx.caller)
+    monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
+    monkeypatch.setattr(gpu_arbiter, "load_count", lambda owner = None: counts.get(owner, 0))
+    choice = {"repo": repo, "variant": "Q4_K_M"}
+
+    async def run():
+        await _common.ensure_model(_Ctx(), "image", choice)
+        await _common.ensure_model(_Ctx(), "image", choice)
+        assert loads == ["Q4_K_M"]
+        # Studio reloads the same repo as Q8_0 outside Flows.
+        counts["diffusion"] += 1
+        await _common.ensure_model(_Ctx(), "image", choice)
+
+    asyncio.run(run())
+    assert loads == ["Q4_K_M", "Q4_K_M"]
