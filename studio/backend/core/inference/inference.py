@@ -745,6 +745,15 @@ def _generate_supported(model, generation_kwargs: dict):
         return None
 
 
+def _refuse_without_generate(model, model_name: str) -> None:
+    # e.g. LFM3-Audio: the text load builds its bare backbone, and chat would fail on the first turn.
+    if not callable(getattr(model, "generate", None)):
+        raise ValueError(
+            f"{model_name} loads as {type(model).__name__}, which cannot generate text. "
+            "Unsloth Studio has no chat path for this architecture yet."
+        )
+
+
 def _processor_takes_text_first(processor) -> bool:
     """LFM3-Omni's processor is (text, audio, ..., images); the usual VLM order is (images, text)."""
     # unsloth_zoo wraps __call__ as (*args, **kwargs); read the first class that names its arguments.
@@ -1355,6 +1364,8 @@ class InferenceBackend:
                 if loaded_profile:
                     self.models[model_name]["diffusion_lm_profile"] = loaded_profile
                     logger.info(f"Loaded text-diffusion model for chat (profile: {loaded_profile})")
+                else:
+                    _refuse_without_generate(model, model_name)
 
             raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
             self.models[model_name]["context_length"] = runtime_context_length(

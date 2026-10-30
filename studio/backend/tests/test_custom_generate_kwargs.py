@@ -137,3 +137,15 @@ def test_an_uncancelled_custom_generate_returns_its_sequences():
         {"streamer": streamer, "max_new_tokens": 4, "stopping_criteria": _criteria(threading.Event())},
     )
     assert out == "sequences" and streamer.tokens == [0, 1, 2, 3] and streamer.ended
+
+
+def test_a_text_load_without_generate_is_refused_by_name():
+    import pytest
+    from core.inference.inference import _refuse_without_generate
+
+    class Lfm3AudioModel:
+        pass
+
+    with pytest.raises(ValueError, match = "Lfm3AudioModel, which cannot generate text"):
+        _refuse_without_generate(Lfm3AudioModel(), "LiquidAI/LFM3-Audio-2B")
+    _refuse_without_generate(types.SimpleNamespace(generate = lambda **kw: None), "any/causal-lm")

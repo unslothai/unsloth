@@ -609,8 +609,16 @@ _LFM3_OMNI_TOKENIZER_CONFIG = {
 _LFM3_OMNI_PROCESSOR_CONFIG = {
     "audio_token": "<|audio|>",
     "audio_out_token": "<|audio_out|>",
+    "image_processor": {"image_processor_type": "Lfm3OmniImageProcessor"},
     "image_token": "<|image|>",
     "processor_class": "Lfm3OmniProcessor",
+}
+# LFM3-Audio-2B: speech in and out, no image processor, so no VLM load to take audio through.
+_LFM3_AUDIO_PROCESSOR_CONFIG = {
+    "audio_out_token": "<|audio_out|>",
+    "audio_token": "<|audio|>",
+    "feature_extractor": {"feature_extractor_type": "Lfm3AudioFeatureExtractor"},
+    "processor_class": "Lfm3AudioProcessor",
 }
 
 
@@ -645,3 +653,22 @@ def test_lfm3_omni_on_the_hub_is_audio_vlm(monkeypatch):
         model = "LiquidAI/LFM3-Omni-2B",
     )
     assert (audio_type, definitive) == ("audio_vlm", True)
+
+
+def test_a_speech_only_processor_is_not_audio_vlm():
+    from utils.audio_tokens import classify_audio_tokens
+
+    assert classify_audio_tokens(_LFM3_AUDIO_PROCESSOR_CONFIG) is None
+
+
+def test_lfm3_audio_on_the_hub_is_not_routed_as_audio_vlm(monkeypatch):
+    audio_type, definitive = _detect_checked(
+        monkeypatch,
+        [
+            _Resp(200, _LFM3_OMNI_TOKENIZER_CONFIG),
+            _Resp(404),
+            _Resp(200, _LFM3_AUDIO_PROCESSOR_CONFIG),
+        ],
+        model = "LiquidAI/LFM3-Audio-2B",
+    )
+    assert audio_type is None
