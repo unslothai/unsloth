@@ -207,3 +207,37 @@ def test_a_fresh_entry_still_answers_without_a_build(gated_build):
     assert index.available_media_model_ids(TASK) == ["flux-dev"]
     assert index.available_media_model_ids(TASK) == ["flux-dev"]
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("invalidate", ["index", "hf_cache"])
+def test_a_build_overtaken_by_an_invalidation_is_not_cached(monkeypatch, invalidate):
+    """A walk that began before a download finishes after the fresh walk: its answer must not shadow the fresh one."""
+    calls = []
+    started = threading.Event()
+    release = threading.Event()
+
+    def build(task):
+        calls.append(task)
+        if len(calls) == 1:
+            started.set()
+            assert release.wait(10)
+            return {"old": index.MediaModelPick("old", "/models/old", None, None)}
+        return {"new": index.MediaModelPick("new", "/models/new", None, None)}
+
+    monkeypatch.setattr(index, "_build_index", build)
+    index.invalidate_index()
+    results = []
+    first = _ids_in_thread(results)
+    assert started.wait(10)
+    if invalidate == "index":
+        index.invalidate_index()
+    else:
+        inventory_scan.invalidate_hf_cache_scans(sizes = False)
+    assert index.available_media_model_ids(TASK) == ["new"]
+    release.set()
+    first.join(10)
+    index_after = index.available_media_model_ids(TASK)
+    index.invalidate_index()
+    assert results == [["old"]]
+    assert index_after == ["new"]
+    assert len(calls) == 2

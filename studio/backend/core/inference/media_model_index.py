@@ -396,9 +396,12 @@ def _cached_index(task: str) -> dict[str, MediaModelPick]:
             continue  # that build raised: run one here, as a caller arriving alone would
         try:
             built = _mark_ambiguous_builds(_build_index(task))
+            cache_epoch = _hf_cache_epoch()
             with _index_lock:
-                # stamped after the scan, so one slower than the ttl is not already expired
-                _index[key] = (time.monotonic(), built)
+                # An invalidation during the scan: its waiters still get it, but it must not replace a fresher scan.
+                if (_invalidations, cache_epoch) == build.epoch:
+                    # stamped after the scan, so one slower than the ttl is not already expired
+                    _index[key] = (time.monotonic(), built)
             build.result = built
             return built
         finally:
