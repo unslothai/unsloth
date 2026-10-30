@@ -175,6 +175,7 @@ from .diffusion_small_host import (
     host_commit_mib,
     host_ram_mib,
     resolve_snapshot_dir,
+    snapshot_weights_complete,
     spill_capacity_mib,
     stored_components,
     torch_dtype_map as small_host_torch_dtype_map,
@@ -12025,7 +12026,12 @@ class DiffusionBackend:
         if (
             fetch is not None
             and small_host_download_first()
-            and (snapshot is None or not stored_components(snapshot))
+            and (
+                snapshot is None
+                or not stored_components(snapshot)
+                # an interrupted download: sizing only the cached part would hide the missing components
+                or not snapshot_weights_complete(snapshot, skip = tuple(pipe_kwargs))
+            )
         ):
             fetched = fetch()
             snapshot = resolve_snapshot_dir(fetched, None) if fetched else snapshot

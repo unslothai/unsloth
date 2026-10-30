@@ -558,3 +558,70 @@ def test_small_host_fetch_only_for_an_online_unstaged_hub_load():
     assert dif._small_host_fetch(_Pipe, "org/model", kw, None, True) is None
     assert dif._small_host_fetch(_Pipe, "org/model", kw, "/staged", False) is None
     assert dif._small_host_fetch(object, "org/model", kw, None, False) is None
+
+
+def _header_only(root, name, mib, filename = "diffusion_pytorch_model.safetensors"):
+    sub = root / name
+    sub.mkdir(parents = True, exist_ok = True)
+    raw = json.dumps(
+        {"weight": {"dtype": "BF16", "shape": [mib * 1024 * 1024 // 2], "data_offsets": [0, mib * 1024 * 1024]}}
+    ).encode()
+    (sub / filename).write_bytes(struct.pack("<Q", len(raw)) + raw)
+
+
+@pytest.mark.parametrize("cached", ["configs_only", "vae_only", "one_dit_shard"])
+def test_a_partially_cached_snapshot_downloads_before_the_decision(tmp_path, monkeypatch, cached):
+    """An interrupted download leaves some weights cached; sizing them alone hides the large denoiser."""
+    from core.inference import diffusion as dif
+
+    monkeypatch.delenv(sh.DOWNLOAD_FIRST_ENV, raising = False)
+    partial, full = tmp_path / "partial", tmp_path / "full"
+    index = {
+        "_class_name": "Flux2KleinPipeline",
+        "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+        "transformer": ["diffusers", "Flux2Transformer2DModel"],
+        "text_encoder": ["transformers", "Qwen3Model"],
+        "vae": ["diffusers", "AutoencoderKLFlux2"],
+    }
+    for root in (partial, full):
+        root.mkdir()
+        (root / "model_index.json").write_text(json.dumps(index))
+        (root / "scheduler").mkdir()
+        (root / "scheduler" / "scheduler_config.json").write_text("{}")
+    _header_only(full, "transformer", 17317)
+    _header_only(full, "text_encoder", 15623, "model.safetensors")
+    _header_only(full, "vae", 161)
+    if cached == "vae_only":
+        _header_only(partial, "vae", 161)
+    if cached == "one_dit_shard":
+        _header_only(partial, "transformer", 4096, "diffusion_pytorch_model-00001-of-00005.safetensors")
+        (partial / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
+            json.dumps(
+                {"weight_map": {f"w{i}": f"diffusion_pytorch_model-0000{i}-of-00005.safetensors" for i in range(1, 6)}}
+            )
+        )
+    monkeypatch.setattr(dif, "host_ram_mib", lambda: (12977, 11161))
+    monkeypatch.setattr(dif, "host_commit_mib", lambda: None)
+    monkeypatch.setattr(dif, "pread_available", lambda: False)
+    monkeypatch.setattr(dif, "spill_capacity_mib", lambda: 204800)
+    calls = []
+
+    def fetch():
+        calls.append(1)
+        return str(full)
+
+    d = dif.DiffusionBackend()._small_host_decision(
+        str(partial), {}, types.SimpleNamespace(device = "cuda"), torch.float16, lora_active = False, fetch = fetch
+    )
+    assert calls == [1]
+    assert d.engaged and d.int8_spill
+
+
+def test_a_complete_snapshot_with_a_supplied_component_skips_the_download(tmp_path):
+    index = {"transformer": ["diffusers", "X"], "vae": ["diffusers", "Y"], "tokenizer": ["transformers", "T"]}
+    (tmp_path / "model_index.json").write_text(json.dumps(index))
+    _header_only(tmp_path, "vae", 1)
+    (tmp_path / "tokenizer").mkdir()
+    (tmp_path / "tokenizer" / "tokenizer_config.json").write_text("{}")
+    assert sh.snapshot_weights_complete(tmp_path, skip = ("transformer",))
+    assert not sh.snapshot_weights_complete(tmp_path)
