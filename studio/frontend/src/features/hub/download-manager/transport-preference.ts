@@ -171,16 +171,20 @@ export function useDownloadTransportCapabilities(): TransportCapabilitiesState {
 
   useEffect(() => {
     let cancelled = false;
+    let latest = 0;
     const load = () => {
+      // A slower answer from before a source switch must not overwrite the newer one.
+      const request = ++latest;
+      const stale = () => cancelled || request !== latest;
       getDownloadTransportCapabilities()
         .then((capabilities) => {
-          if (cancelled) {
+          if (stale()) {
             return;
           }
           setState({ capabilities, isLoading: false });
         })
         .catch(() => {
-          if (cancelled) {
+          if (stale()) {
             return;
           }
           setState({ capabilities: null, isLoading: false });
