@@ -625,8 +625,7 @@ def _install_accelerator_state(self):
 
 
 def _model_parallel_axes(model) -> list:
-    """The tensor / pipeline parallel axes a trainer would combine with context parallelism: UNSLOTH_TP_SIZE
-    (read without building anything) or a model split by hand."""
+    """Tensor / pipeline parallel axes in use: UNSLOTH_TP_SIZE or a model split by hand."""
     import os
 
     axes = []
@@ -647,10 +646,7 @@ def _model_parallel_axes(model) -> list:
 
 
 def _refuse_model_parallel_cp(size: int, args, kwargs) -> None:
-    """Before the trainer's __init__ touches the model: the CP manager builds its own (world // cp, cp) mesh,
-    whose cp groups are the tensor parallel groups of a tp launch, so the step would run and train on mixed-up
-    shards with no error."""
-    # (model, args, ...) for every Trainer / TRL trainer __init__.
+    """The CP mesh (world // cp, cp) would reuse a tp launch's groups and silently train on mixed-up shards."""
     model = kwargs["model"] if "model" in kwargs else (args[0] if args else None)
     axes = _model_parallel_axes(model)
     if not axes:

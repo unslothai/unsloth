@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Context parallel (Ulysses) beside DDP, native FSDP2 (UNSLOTH_FSDP2=1) and tensor parallel (UNSLOTH_TP_SIZE)
-through SFTTrainer, on a gloo CPU world, vs the same script in one process: losses, per-parameter gradients of the
-first optimizer step and the adapters after the run. cp x tp is refused until the layouts compose.
-
-CPU ranks cannot run Unsloth's fast Llama attention (it needs CUDA), so the attention is the Hugging Face one with
-the Ulysses wrapper hybrids use (utils/ulysses_hybrid.install_hf_attention_wrapper), and the model support check is
-opened for it. Everything else (the env layout, the mesh, tensor parallel, the CP sharding, the token count and
-the gradient reduction) is the production path."""
+"""Ulysses CP beside DDP, FSDP2 and TP through SFTTrainer on gloo CPU ranks vs one process (losses, grads,
+adapters); cp x tp is refused. CPU ranks use the HF attention with the hybrids' Ulysses wrapper, the rest is
+the production path."""
 
 import multiprocessing
 import os
