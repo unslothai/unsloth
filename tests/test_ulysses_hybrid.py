@@ -202,12 +202,16 @@ def test_ulysses_hybrid_gradients_match_one_rank(kind):
     _spawn(_parity_worker, 2, kind, False)
 
 
-@pytest.mark.skipif(not hasattr(transformers, "Qwen3_5Config"), reason = "transformers without Qwen3.5")
+@pytest.mark.skipif(
+    not hasattr(transformers, "Qwen3_5Config"), reason = "transformers without Qwen3.5"
+)
 def test_text_only_qwen3_5_checkpoint_with_a_vision_config_matches_one_rank():
     _spawn(_parity_worker, 2, "qwen3_5_vlm", False)
 
 
-@pytest.mark.skipif(not hasattr(transformers, "Qwen3_5Config"), reason = "transformers without Qwen3.5")
+@pytest.mark.skipif(
+    not hasattr(transformers, "Qwen3_5Config"), reason = "transformers without Qwen3.5"
+)
 def test_qwen3_5_checkpoint_with_a_vision_config_passes_the_gate():
     model = _vlm()
     assert cp._hybrid_config_blocker(model) is None
