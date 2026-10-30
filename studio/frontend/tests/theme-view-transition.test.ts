@@ -20,7 +20,6 @@ test("only the Linux desktop app skips the theme view transition", () => {
   assert.equal(isLinuxDesktopWebKit(true, "", LINUX_WEBKIT), true);
   assert.equal(isLinuxDesktopWebKit(true, "MacIntel", MAC_WEBKIT), false);
   assert.equal(isLinuxDesktopWebKit(true, "Win32", WINDOWS_EDGE), false);
-  // The web UI keeps the animation everywhere, Linux browsers included.
   assert.equal(isLinuxDesktopWebKit(false, "Linux x86_64", LINUX_WEBKIT), false);
   assert.equal(isLinuxDesktopWebKit(false, "Linux armv8l", ANDROID_CHROME), false);
   assert.equal(isLinuxDesktopWebKit(true, "Linux armv8l", ANDROID_CHROME), false);
