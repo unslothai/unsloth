@@ -147,8 +147,7 @@ export function residentDefaultsKey(
 
 export const DEFAULT_RESOLUTION = { width: 1024, height: 1024 } as const;
 
-// Families trained at a smaller canvas, whatever the build (pipeline, single file, GGUF, quantised).
-// SDXL-Turbo is a 512x512 model: its reference workflow and model card render 512x512 in 1 step.
+// Families trained at a smaller canvas on every build (incl. GGUF); SDXL-Turbo is a 512x512 model.
 const NATIVE_CANVAS: Array<{ match: string; width: number; height: number }> = [
   { match: "sdxl-turbo", width: 512, height: 512 },
 ];

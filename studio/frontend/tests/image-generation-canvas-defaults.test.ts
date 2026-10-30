@@ -77,7 +77,6 @@ test("an unloaded or unknown model keeps 1024", () => {
 });
 
 test("SDXL-Turbo defaults to its native 512 on every build", () => {
-  // A 512x512 model (its reference workflow renders 512x512). The canvas follows the family, not the quant.
   for (const repo of [
     "stabilityai/sdxl-turbo",
     "unsloth/sdxl-turbo",
