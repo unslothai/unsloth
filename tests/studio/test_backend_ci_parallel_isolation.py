@@ -81,11 +81,17 @@ def _collects(command: str, path: str) -> bool:
     def under(prefix, candidate):
         return candidate == prefix or candidate.startswith(prefix + "/")
 
+    def rooted(root, candidate):
+        # A glob root (tests/test_fsdp2_*.py) is expanded by bash before pytest sees it.
+        if any(char in root for char in "*?["):
+            return fnmatch.fnmatch(candidate, root)
+        return under(root, candidate)
+
     if any(under(ignore, path) for ignore in ignores):
         return False
     if any(_ignore_glob_hits(pattern, path) for pattern in globs):
         return False
-    return any(under(root, path) for root in roots)
+    return any(rooted(root, path) for root in roots)
 
 
 def _ignore_glob_hits(pattern: str, path: str) -> bool:
@@ -318,15 +324,15 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands()
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 9, (
-        f"expected nine parallel pytest runs, three shards of the backend matrix and six "
+    assert len(parallel) == 11, (
+        f"expected eleven parallel pytest runs, three shards of the backend matrix and eight "
         f"of repo-cpu-tests, got {parallel}. If a job stopped running in parallel, or a "
         f"shard was added or removed, say so here rather than letting this scan quietly "
         f"cover fewer runs."
     )
     root = [command for command in parallel if _over_the_repo_tests(command)]
-    assert len(root) == 6, (
-        f"expected the six repo-root shards, got {root}. The isolation checks above apply "
+    assert len(root) == 8, (
+        f"expected the eight repo-root shards, got {root}. The isolation checks above apply "
         f"to those, and a scan that matched none of them would pass on nothing."
     )
     backend = [command for command in parallel if _over_the_backend(command)]

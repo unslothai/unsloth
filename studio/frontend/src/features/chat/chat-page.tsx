@@ -118,10 +118,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderAttachmentIcon,
-  Folder01Icon,
-  Folder02Icon,
-  FolderExportIcon,
   LayoutAlignRightIcon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
@@ -130,8 +126,10 @@ import {
   PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon, FolderAttachmentIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { useAui } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   SaveTemporaryChatMenu,
@@ -280,6 +278,7 @@ import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import type { ChatSearch } from "./chat-search";
 import {
   type ComparePairReadState,
   checkpointCompareClass,
@@ -2430,7 +2429,7 @@ function ProjectLanding({
                                 }
                               >
                                 <HugeiconsIcon
-                                  icon={Folder01Icon}
+                                  icon={ProjectIcon}
                                   strokeWidth={1.75}
                                   className="size-icon"
                                 />
@@ -2592,22 +2591,6 @@ function ProjectLanding({
       </AlertDialog>
     </>
   );
-}
-
-export type ChatSearch = {
-  thread?: string;
-  compare?: string;
-  new?: string;
-  project?: string;
-};
-
-export function validateChatSearch(search: Record<string, unknown>): ChatSearch {
-  return {
-    thread: typeof search.thread === "string" ? search.thread : undefined,
-    compare: typeof search.compare === "string" ? search.compare : undefined,
-    new: typeof search.new === "string" ? search.new : undefined,
-    project: typeof search.project === "string" ? search.project : undefined,
-  };
 }
 
 type PendingHubAutoLoad = {

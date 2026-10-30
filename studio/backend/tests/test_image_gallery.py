@@ -595,18 +595,33 @@ def _recipe_keys_written() -> set[str]:
             for t in node.targets
             if isinstance(t, ast.Name)
         }
-        for call in ast.walk(fn):
-            if not (
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Attribute)
-                and call.func.attr == "save"
-                and isinstance(call.func.value, ast.Name)
-                and call.func.value.id == "image_gallery"
-                and len(call.args) > 1
-                and isinstance(call.args[1], ast.Dict)
-            ):
-                continue
-            pending = [call.args[1]]
+        calls = [
+            node
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("save", "save_many")
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "image_gallery"
+        ]
+        recipes = [
+            call.args[1]
+            for call in calls
+            if call.func.attr == "save"
+            and len(call.args) > 1
+            and isinstance(call.args[1], ast.Dict)
+        ]
+        if any(call.func.attr == "save_many" for call in calls):
+            # save_many takes (image, recipe) pairs, built in the same function.
+            recipes += [
+                node.elts[1]
+                for node in ast.walk(fn)
+                if isinstance(node, ast.Tuple)
+                and len(node.elts) == 2
+                and isinstance(node.elts[1], ast.Dict)
+            ]
+        for recipe in recipes:
+            pending = [recipe]
             while pending:
                 d = pending.pop()
                 for k, v in zip(d.keys, d.values):
@@ -683,3 +698,110 @@ def test_parameters_chunk_carries_the_encoded_caption():
     text = gallery._params_text(meta)
     assert text.splitlines()[0] == "A tabby cat on a sunlit sill."
     assert gallery._params_text({**_meta(), "prompt": "a cat"}).splitlines()[0] == "a cat"
+
+
+def _batch(n = 4):
+    return [
+        Image.frombytes("RGB", (32, 24), bytes((i * 7 + j) % 256 for j in range(32 * 24 * 3)))
+        for i in range(n)
+    ]
+
+
+def _fixed_ids(monkeypatch):
+    import uuid as _uuid
+    ids = iter(_uuid.UUID(int = i) for i in range(1, 100))
+    monkeypatch.setattr(gallery.uuid, "uuid4", lambda: next(ids))
+
+
+def _many_cpus(monkeypatch):
+    monkeypatch.setattr(gallery.os, "cpu_count", lambda: 8)
+    if hasattr(gallery.os, "process_cpu_count"):
+        monkeypatch.setattr(gallery.os, "process_cpu_count", lambda: 8)
+
+
+def test_save_many_writes_what_a_save_loop_writes(monkeypatch, tmp_path):
+    _many_cpus(monkeypatch)
+    images = _batch()
+    metas = [_meta(seed = i, batch_index = i) for i in range(len(images))]
+    out = {}
+    for name, run in (
+        ("loop", lambda: [gallery.save(im, m) for im, m in zip(images, metas)]),
+        ("many", lambda: list(gallery.save_many(zip(images, metas)))),
+    ):
+        folder = tmp_path / name
+        folder.mkdir()
+        monkeypatch.setattr(gallery, "gallery_dir", lambda folder = folder: folder)
+        _fixed_ids(monkeypatch)
+        records = run()
+        out[name] = (
+            [{k: v for k, v in r.items() if k != "order_at"} for r in records],
+            [(folder / f"{r['id']}.png").read_bytes() for r in records],
+            [r["id"] for r in gallery.list_images()],
+        )
+    assert out["many"] == out["loop"]
+    assert len(set(out["many"][1])) == len(images)
+
+
+def test_save_many_encodes_the_batch_concurrently(monkeypatch):
+    import threading
+
+    _many_cpus(monkeypatch)
+    barrier = threading.Barrier(4, timeout = 10)
+    encode = gallery._png_bytes
+
+    def _encode(image, meta):
+        barrier.wait()  # breaks (and fails the save) unless all four encodes run at once
+        return encode(image, meta)
+
+    monkeypatch.setattr(gallery, "_png_bytes", _encode)
+    records = list(gallery.save_many((im, _meta(batch_index = i)) for i, im in enumerate(_batch())))
+    assert [r["batch_index"] for r in records] == [0, 1, 2, 3]
+
+
+def test_save_many_keeps_the_images_before_a_failed_encode(monkeypatch):
+    _many_cpus(monkeypatch)
+    encode = gallery._png_bytes
+
+    def _encode(image, meta):
+        if meta["batch_index"] == 2:
+            raise OSError("disk full")
+        return encode(image, meta)
+
+    monkeypatch.setattr(gallery, "_png_bytes", _encode)
+    saved = []
+    with pytest.raises(OSError, match = "disk full"):
+        for record in gallery.save_many(
+            (im, _meta(batch_index = i)) for i, im in enumerate(_batch())
+        ):
+            saved.append(record["batch_index"])
+    assert saved == [0, 1]
+    assert sorted(r["batch_index"] for r in gallery.list_images()) == [0, 1]
+
+
+def test_save_many_still_saves_through_save(monkeypatch):
+    _many_cpus(monkeypatch)
+    seen = []
+    real_save = gallery.save
+
+    def _save(image, meta):
+        seen.append(meta["batch_index"])
+        return real_save(image, meta)
+
+    monkeypatch.setattr(gallery, "save", _save)
+    list(gallery.save_many((im, _meta(batch_index = i)) for i, im in enumerate(_batch(3))))
+    assert seen == [0, 1, 2]
+
+
+def test_save_many_keeps_batch_order_when_writes_share_an_mtime(monkeypatch):
+    _many_cpus(monkeypatch)
+    real_replace = os.replace
+
+    def _replace(src, dst):
+        real_replace(src, dst)
+        os.utime(dst, ns = (1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+
+    monkeypatch.setattr(gallery.os, "replace", _replace)
+    records = list(gallery.save_many((im, _meta(batch_index = i)) for i, im in enumerate(_batch())))
+    ranks = [r["order_at"] for r in records]
+    assert ranks == sorted(set(ranks)), ranks
+    assert [r["batch_index"] for r in gallery.list_images()] == [3, 2, 1, 0]
