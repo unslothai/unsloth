@@ -84,7 +84,9 @@ test("a reroute is centred on the pointer, groups and notes hang from it", () =>
   const [, rw, rh] = reroutes.match(/REROUTE_SIZE = \{ width: (\d+), height: (\d+) \}/) ?? [];
   assert.deepEqual(PLACE_SHAPES.reroute.size, [Number(rw), Number(rh)]);
   assert.match(reroutes, /REROUTE_TYPE = "reroute"/);
-  const [x, y, w, h] = placedRect("reroute", { x: 203, y: 97 }, true) ?? [];
+  const rect = placedRect("reroute", { x: 203, y: 97 }, true);
+  assert.ok(rect);
+  const [x, y, w, h] = rect;
   assert.deepEqual([x + w / 2, y + h / 2], [200, 100]);
   assert.deepEqual(placedRect(PLACE_NOTE, { x: 300, y: 300 }, false), [280, 280, 240, 140]);
   assert.deepEqual(placedRect(PLACE_GROUP, { x: 300, y: 300 }, false)?.slice(0, 2), [280, 280]);

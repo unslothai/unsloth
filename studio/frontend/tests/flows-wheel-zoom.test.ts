@@ -17,7 +17,10 @@ const box = (o: Partial<B>, parent: B | null): B => ({
   scrollTop: 0, scrollLeft: 0, scrollHeight: 100, scrollWidth: 100, clientHeight: 100, clientWidth: 100,
   overflowY: "visible", overflowX: "visible", parentElement: parent, ...o,
 });
-const styleOf = (el: B) => ({ overflowY: el.overflowY, overflowX: el.overflowX });
+const styleOf = (el: object) => {
+  const b = el as B;
+  return { overflowY: b.overflowY, overflowX: b.overflowX };
+};
 
 test("over a card or group with nothing to scroll, the wheel zooms", () => {
   const canvas = box({}, null);

@@ -159,11 +159,11 @@ export function historyCard(outputs: Record<string, unknown>): {
   };
 }
 
-/** "just now", "5m ago", "3h ago", then the date. */
-export function historyAgo(iso: string, now = Date.now()): string {
-  const seconds = Math.max(0, (now - Date.parse(iso)) / 1000);
+/** "just now", "5m ago", "3h ago", then the date. `at` is epoch ms, as the history API sends it. */
+export function historyAgo(at: number, now = Date.now()): string {
+  const seconds = Math.max(0, (now - at) / 1000);
   if (seconds < 60) return "just now";
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return new Date(iso).toLocaleDateString();
+  return new Date(at).toLocaleDateString();
 }

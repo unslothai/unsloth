@@ -286,7 +286,7 @@ test("history entries read like small Library cards: type, name and detail", () 
 
 test("history captions say how long ago", () => {
   const now = Date.parse("2026-10-30T12:00:00Z");
-  assert.equal(historyAgo("2026-10-30T11:59:30Z", now), "just now");
-  assert.equal(historyAgo("2026-10-30T11:55:00Z", now), "5m ago");
-  assert.equal(historyAgo("2026-10-30T09:00:00Z", now), "3h ago");
+  assert.equal(historyAgo(Date.parse("2026-10-30T11:59:30Z"), now), "just now");
+  assert.equal(historyAgo(Date.parse("2026-10-30T11:55:00Z"), now), "5m ago");
+  assert.equal(historyAgo(Date.parse("2026-10-30T09:00:00Z"), now), "3h ago");
 });
