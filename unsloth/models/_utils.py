@@ -1224,10 +1224,8 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         ):
             kernel_options = _flex_small_smem_kernel_options(query.shape[-1], small_smem_device_ok)
-            # A short query admitted only for its decode tile runs these tiles on the main kernel:
-            # flex_decoding with fwd_BLOCK_M 64 below its row count computes only the first 64 rows
-            # on torch 2.10 (wrong output) and fails to compile at q_len 127 on 2.11. Shape last, as
-            # above, so training calls add no sequence guard.
+            # Main kernel: flex_decoding with fwd_BLOCK_M 64 below its row count is wrong on 2.10 and
+            # fails to compile on 2.11. Shape last, as above (no training sequence guard).
             if (
                 kernel_options is not None
                 and not _flex_call_needs_backward(query, key, value)
@@ -1264,9 +1262,8 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             if short_forced and requested.get("FORCE_USE_FLEX_ATTENTION") is False:
                 # The caller turned the main kernel off: our main-kernel tiles do not cover flex_decoding.
                 kernel_options = dict(requested)
-            # torch 2.10+ rejects BACKEND with the legacy FORCE_USE_FLEX_ATTENTION. AUTO leaves the
-            # kernel to us: TRITON is the main kernel FORCE picks. Any other backend is the caller's
-            # choice, and our main-kernel tiles (64 query rows) do not apply to it.
+            # torch 2.10+ rejects BACKEND with FORCE_USE_FLEX_ATTENTION: AUTO becomes TRITON (the
+            # main kernel); any other backend keeps the caller's options, which our tiles do not fit.
             elif ours_forced and "BACKEND" in kernel_options:
                 if kernel_options["BACKEND"] in ("AUTO", "TRITON"):
                     kernel_options.pop("FORCE_USE_FLEX_ATTENTION")
