@@ -4991,6 +4991,11 @@ export const ko = {
         none: "시스템 프롬프트 없음",
         custom: "사용자 지정",
       },
+      presetHints: {
+        notebook: "추론은 <reasoning>, 답은 <answer>에 쓰도록 요청합니다. 기본 제공 보상이 읽는 태그입니다.",
+        none: "시스템 메시지를 보내지 않으므로, 모델이 스스로 태그를 쓰기 전까지 태그 보상은 점수를 주지 않습니다.",
+        custom: "직접 작성합니다. 요청하는 태그를 보상과 맞춰 두세요.",
+      },
       systemPrompt: "시스템 프롬프트",
       previewTitle: "모델이 보는 내용, 1행",
       system: "system",
