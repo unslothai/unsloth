@@ -54,6 +54,7 @@
     "_safe_cut": "94cc4fd4cac2a7dbdb65fbb2773fce741b1869b7a528fb1f35e416fe680bd858",
     "_signal_inside_leading_wrapperless_gemma": "e86b5a942f855e7228d865031c7a2d03c60837a0c7d219475013295558ba19c1",
     "_skip_mistral_call_id": "df19f4198fa8e5f7472a47ae59a8efe5aadf15737dacf7c8c0f2d8f367b45f34",
+    "_slot_gemma_values": "897ef6c4225fe041edd6c8064ebbf59ee24bae2a136118a34af93ed71c346360",
     "_string_content_spans": "87ab6652018fa4bd7b4e986eadaa46f29362693f1eca52cb7cae130dd74ff4f1",
     "_strip_function_xml_calls": "88b342ae0b8dad25cfbbaeaf2f77b5f3a1fea9c2553d03f7cad2e19b5230594a",
     "_strip_gemma_wrapperless_calls": "16f797057d8fac12dd00950f3c172ba8a9ab7bad5918e9b905cbf2ffd25382ce",

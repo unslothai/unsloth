@@ -3553,8 +3553,42 @@ def _gemma_strip_quoted_leaves(value: Any) -> Any:
 
 
 _GEMMA_SLOT = "\ue000"
-_GEMMA_QUOTED_STR_RE = re.compile(r'<\|"\|>(.*?)<\|"\|>', re.DOTALL)
 _GEMMA_SLOT_RE = re.compile(_GEMMA_SLOT + r"(\d+)" + _GEMMA_SLOT)
+
+
+def _slot_gemma_values(body: str, raw: list[str]) -> str:
+    """``body`` with each ``<|"|>`` value that opens a value outside an ordinary quoted string replaced by a
+    placeholder, its raw text appended to ``raw``. Quotes open where the quote-less parser opens them."""
+    out: list[str] = []
+    quote = ""
+    prev = ":"
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if quote:
+            if ch == "\\" and i + 1 < n:
+                out.append(body[i : i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif prev in ":{[," and body.startswith(_GEMMA_STR_END, i):
+            end = body.find(_GEMMA_STR_END, i + len(_GEMMA_STR_END))
+            if end < 0:
+                out.append(body[i:])
+                break
+            raw.append(body[i + len(_GEMMA_STR_END) : end])
+            out.append(f'"{_GEMMA_SLOT}{len(raw) - 1}{_GEMMA_SLOT}"')
+            i = end + len(_GEMMA_STR_END)
+            prev = '"'
+            continue
+        elif ch in "\"'" and prev in ":{[(,=":
+            quote = ch
+        out.append(ch)
+        if not ch.isspace():
+            prev = ch
+        i += 1
+    return "".join(out)
 
 
 def _gemma_bare_body_arguments(body: str) -> dict[str, Any]:
@@ -3564,11 +3598,7 @@ def _gemma_bare_body_arguments(body: str) -> dict[str, Any]:
     if _GEMMA_QUOTED_VALUE_RE.search(body) is None or _GEMMA_SLOT in body:
         return _gemma_parse_stripped_body(body)
     raw: list[str] = []
-
-    def slot(m: "re.Match") -> str:
-        raw.append(m.group(1))
-        return f'"{_GEMMA_SLOT}{len(raw) - 1}{_GEMMA_SLOT}"'
-
+    slotted = _slot_gemma_values(body, raw)
     used: list[int] = []
 
     def fill(v: Any) -> Any:
@@ -3585,7 +3615,7 @@ def _gemma_bare_body_arguments(body: str) -> dict[str, Any]:
         return v
 
     try:
-        args = fill(_gemma_parse_stripped_body(_GEMMA_QUOTED_STR_RE.sub(slot, body)))
+        args = fill(_gemma_parse_stripped_body(slotted))
     except ValueError:
         args = None
     if args is None or sorted(used) != list(range(len(raw))):

@@ -48,6 +48,10 @@ def test_literal_marker_inside_a_json_quoted_value_keeps_its_arguments():
     [
         ("query:<|\"|>mars<|\"|>,unit:'celsius'", {"query": "mars", "unit": "celsius"}),
         (
+            'query:<|"|>mars<|"|>,opts:{note:\'<|"|>kept<|"|>\'}',
+            {"query": "mars", "opts": {"note": '<|"|>kept<|"|>'}},
+        ),
+        (
             "query:<|\"|>a, b:c<|\"|>,opts:{unit:'c'},tags:['x','y']",
             {"query": "a, b:c", "opts": {"unit": "c"}, "tags": ["x", "y"]},
         ),
