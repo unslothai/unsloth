@@ -128,7 +128,9 @@ async def test_a_reward_saved_again_under_its_name_trains_again(world, monkeypat
     from core.training import rewards
 
     rule = {"answer": "exact"}
-    monkeypatch.setattr(rewards, "get_reward", lambda name: {"kind": "rule", "rule": dict(rule, name = name)})
+    monkeypatch.setattr(
+        rewards, "get_reward", lambda name: {"kind": "rule", "rule": dict(rule, name = name)}
+    )
     eng = _engine(world)
     await _run(eng, _flow(objective = "grpo"))
     await _run(eng, _flow(objective = "grpo"))
