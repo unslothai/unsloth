@@ -405,7 +405,13 @@ async def run_recipe(
     )
     artifact = status.get("artifact_path") if isinstance(status, dict) else None
     saved = isinstance(artifact, str) and artifact.strip()
-    kept = None if saved else await recipe_rows(ctx, job_id)
+    try:
+        kept = None if saved else await recipe_rows(ctx, job_id)
+    except BaseException as exc:
+        # finish() never runs, so the record would stay running and the Runs pane keep polling.
+        failed = isinstance(exc, FlowNodeError)
+        await history.update(status = "error" if failed else "cancelled", error = str(exc) or None)
+        raise
     await history.finish(ctx, job_id, preview, total, kept)
     if saved:
         ref = f"recipes/{Path(artifact.strip()).name}/parquet-files"

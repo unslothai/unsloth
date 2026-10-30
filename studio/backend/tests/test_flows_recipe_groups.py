@@ -447,6 +447,28 @@ def test_a_failed_run_is_kept_with_its_error(monkeypatch):
     assert saved[-1]["finishedAt"]
 
 
+def test_a_run_whose_rows_cannot_be_read_is_kept_as_failed(monkeypatch):
+    saved = []
+    from storage import flows_db
+
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda f, n, record: saved.append(record))
+    inner = _job_routes("completed")
+
+    def routes(method, path, params, body):
+        out = inner(method, path, params, body)
+        if path.endswith("/status"):
+            out["artifact_path"] = None  # no saved artifact: the rows are read back from the job
+        if path.endswith("/dataset") and params.get("limit") == 500:
+            raise FlowNodeError("dataset fetch failed")
+        return out
+
+    ctx = _FlowCtx(routes, params = {RECIPE_PARAM: _compiled(_flow())})
+    with pytest.raises(FlowNodeError, match = "dataset fetch failed"):
+        asyncio.run(data.recipe_group(ctx))
+    assert saved[-1]["status"] == "error" and saved[-1]["error"] == "dataset fetch failed"
+    assert saved[-1]["finishedAt"]
+
+
 @pytest.fixture
 def client():
     app = FastAPI()
