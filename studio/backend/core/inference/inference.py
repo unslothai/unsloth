@@ -2384,8 +2384,11 @@ class InferenceBackend:
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         extra_audio_arrays: Optional[list] = None,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
-        """Audio goes into the chat messages via processor.apply_chat_template (Gemma 3n pattern)."""
+        """Audio goes into the chat messages via processor.apply_chat_template (Gemma 3n pattern).
+        ``tools`` (a list, empty for tool history alone) renders the catalogue and keeps
+        ``messages`` as sent."""
         import threading
         import numpy as np
 
@@ -2402,7 +2405,7 @@ class InferenceBackend:
 
         # Gemma 3n format: audio goes INTO apply_chat_template, one item per clip in order.
         audio_messages = messages_with_attached_image(
-            alternating_turns(messages),
+            alternating_turns(messages) if tools is None else messages,
             system_prompt = system_prompt,
             fallback_user_text = "Please transcribe this audio.",
             structured_content = True,
@@ -2412,11 +2415,9 @@ class InferenceBackend:
         )
 
         # Direct processor render, so neutralize here with this processor's own profile (#7066).
-        from core.inference.chat_template_helpers import markup_for_tokenizer
+        from core.inference.chat_template_helpers import neutralize_for_render
 
-        audio_messages = neutralize_control_markup_in_messages(
-            audio_messages, None, markup_for_tokenizer(processor)
-        )
+        audio_messages, tools, _ = neutralize_for_render(processor, audio_messages, tools)
 
         inputs = processor.apply_chat_template(
             audio_messages,
@@ -2425,16 +2426,18 @@ class InferenceBackend:
             return_dict = True,
             return_tensors = "pt",
             truncation = False,
+            **({"tools": tools} if tools else {}),
         ).to(model.device)
 
         try:
             from transformers import TextIteratorStreamer
             from queue import Empty
 
+            # As the text path: a rendered catalogue keeps native tool-call tokens for the healer.
             streamer = TextIteratorStreamer(
-                raw_tokenizer,
+                NativeToolTokenDecoder(raw_tokenizer) if tools else raw_tokenizer,
                 skip_prompt = True,
-                skip_special_tokens = True,
+                skip_special_tokens = not tools,
                 timeout = 0.2,
             )
 
