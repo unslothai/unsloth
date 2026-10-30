@@ -1109,7 +1109,7 @@
       "_BLOCKED_BODY_MASK_RUN_RE": "'\\ue000+' flags=32",
       "_DEEPSEEK_BEGIN_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>' flags=32",
       "_DEEPSEEK_R1_CLOSE_RE": "'```[\\\\s\\\\r\\\\n]*<｜tool▁call▁end｜>' flags=32",
-      "_EMBEDDED_MARKER_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>|<\\\\|tool_calls_section_begin\\\\|>|<\\\\|tool_call_begin\\\\|>' flags=32",
+      "_EMBEDDED_MARKER_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>|<\\\\|tool_calls_section_begin\\\\|>|<\\\\|tool_call_begin\\\\|>|<minimax:tool_call>' flags=32",
       "_FENCE_ONLY_RE": "'[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*' flags=32",
       "_FUNC_CLOSE_TAG_RE": "'</function>' flags=32",
       "_GEMMA_BARE_TC_PREFIX_RE": "'(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$' flags=32",
@@ -1128,6 +1128,7 @@
       "_LLAMA3_PY_CALL_HEAD_RE": "'\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
       "_LLAMA3_PY_CALL_RE": "'<\\\\|python_tag\\\\|>\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
       "_LLAMA3_WS_RE": "'\\\\s*' flags=32",
+      "_MINIMAX_INVOKE_OPEN_RE": "'<invoke\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\">' flags=32",
       "_MISTRAL_V11_NAME_RE": "'\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*' flags=32",
       "_OPEN_CALL_WS_RE": "'\\\\s*' flags=32",
       "_OUTER_ENVELOPE_CLOSED_PATS[0]": "'<tool_call>(?:(?!<tool_call>).)*</tool_call>' flags=48",
@@ -1190,6 +1191,7 @@
       "re.compile('<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>', re.DOTALL)": 1,
       "re.compile('<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>.*$', re.DOTALL)": 1,
       "re.compile('<function\\\\s+name=\"')": 1,
+      "re.compile('<invoke\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\">')": 1,
       "re.compile('<tool_call>(?:(?!<tool_call>).)*</tool_call>', re.DOTALL)": 1,
       "re.compile('<tool_call>.*$', re.DOTALL)": 1,
       "re.compile('<tool_call>.*?</tool_call>', re.DOTALL)": 1,
@@ -1216,7 +1218,7 @@
       "re.compile('true|false|null')": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '(?=\\\\s*(?:<｜tool▁call▁begin｜>|function)|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '.*?<｜tool▁calls▁end｜>', re.DOTALL)": 1,
-      "re.compile(_DEEPSEEK_OPEN_RE_SRC + '|' + re.escape(_KIMI_SECTION_BEGIN) + '|' + re.escape(_KIMI_CALL_BEGIN))": 1,
+      "re.compile(_DEEPSEEK_OPEN_RE_SRC + '|' + re.escape(_KIMI_SECTION_BEGIN) + '|' + re.escape(_KIMI_CALL_BEGIN) + '|' + re.escape(_MINIMAX_BLOCK_OPEN))": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC)": 1
     },
     "symbols": {
@@ -1513,6 +1515,18 @@
       "_MAX_GEMMA_PREFIX_TAIL": {
         "kind": "assign"
       },
+      "_MINIMAX_BLOCK_CLOSE": {
+        "kind": "assign"
+      },
+      "_MINIMAX_BLOCK_OPEN": {
+        "kind": "assign"
+      },
+      "_MINIMAX_INVOKE_CLOSE": {
+        "kind": "assign"
+      },
+      "_MINIMAX_INVOKE_OPEN_RE": {
+        "kind": "assign"
+      },
       "_MISTRAL_ARGS_MARKER": {
         "kind": "assign"
       },
@@ -1716,6 +1730,11 @@
         "kind": "def",
         "signature": "content: str, signal: int, enabled_tool_names: Optional[set]"
       },
+      "_inside_minimax_value": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, pos: int"
+      },
       "_inside_open_parameter": {
         "decorators": [],
         "kind": "def",
@@ -1764,6 +1783,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "spans: list"
+      },
+      "_minimax_block_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
       },
       "_mistral_region_end": {
         "decorators": [],
@@ -1836,6 +1860,11 @@
         "signature": "body: str"
       },
       "_parse_llama3_python_tag": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_minimax_tool_calls": {
         "decorators": [],
         "kind": "def",
         "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
@@ -1914,6 +1943,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str"
+      },
+      "_strip_minimax_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, *, final: bool"
       },
       "_strip_mistral_closed_calls": {
         "decorators": [],

@@ -106,7 +106,7 @@ _CONTROL_MARKUP = re.compile(
     # Bare-tag families. <s> and </s> (Llama-2 BOS/EOS) collide with HTML; kept, since a live document boundary beats a space in a rare <s>.
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos|s|sop"
     r"|start_of_image|image_soft_token|audio_soft_token"
-    r"|arg_key|arg_value|function|parameter|param)>"
+    r"|arg_key|arg_value|function|parameter|param|minimax:tool_call)>"
     # Opener halves carry "=value", so the attribute form needs its own alternative beside function=
     r"|(?:function|parameter)=|(?:function|param(?:eter)?)\s+name=\""
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"

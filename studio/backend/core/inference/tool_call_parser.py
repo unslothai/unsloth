@@ -40,6 +40,8 @@ TOOL_XML_SIGNALS = (
     "<|tool_calls_section_begin|>",
     "<|tool_call_begin|>",
     "<|content_invoke_tool_json|>",
+    # MiniMax-M2 / M2.1 block; llama-server leaves it in content when its parser does not run.
+    "<minimax:tool_call>",
 )
 
 
@@ -376,6 +378,12 @@ _KIMI_CALL_BEGIN = "<|tool_call_begin|>"
 _KIMI_ARG_BEGIN = "<|tool_call_argument_begin|>"
 _KIMI_CALL_END = "<|tool_call_end|>"
 _KIMI_ID_RE = re.compile(r"^(?:functions\.)?([\w\.\-]+)(?::(\d+))?$")
+
+# MiniMax-M2 / M2.1: ``<minimax:tool_call><invoke name="NAME"><parameter name="KEY">VALUE</parameter></invoke></minimax:tool_call>``.
+_MINIMAX_BLOCK_OPEN = "<minimax:tool_call>"
+_MINIMAX_BLOCK_CLOSE = "</minimax:tool_call>"
+_MINIMAX_INVOKE_OPEN_RE = re.compile(r'<invoke\s+name="([\w\.\-]+)">')
+_MINIMAX_INVOKE_CLOSE = "</invoke>"
 
 # Gemma 4: ``<|tool_call>call:NAME{...}<tool_call|>``, ``<|"|>`` wraps strings.
 _GEMMA_TC_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w\.\-]+)\s*\{")
@@ -1290,6 +1298,21 @@ def _strip_glm_calls(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
+def _strip_minimax_calls(text: str, *, final: bool) -> str:
+    """Strip ``<minimax:tool_call>`` blocks at the close the parser uses; ``final`` drops a trailing unclosed block."""
+    if _MINIMAX_BLOCK_OPEN not in text:
+        return text
+    out: list[str] = []
+    pos = 0
+    for start, end, closed in _minimax_block_spans(text):
+        if not (closed or final):
+            break  # keep the unclosed block buffered mid-stream
+        out.append(text[pos:start])
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def strip_segment(
     segment: str,
     *,
@@ -1298,6 +1321,7 @@ def strip_segment(
 ) -> str:
     """Strips markup from one non-think segment; seg_final enables end-of-turn arms. routes/inference.py differs, pinned by tests/test_route_strip_drift.py."""
     seg = _strip_mistral_closed_calls(segment)
+    seg = _strip_minimax_calls(seg, final = seg_final)
     # Name-gated: an inactive ``foo[ARGS]{..}`` is prose and is kept.
     seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
     if seg_final:
@@ -1392,6 +1416,7 @@ _STRIP_SENTINELS = (
     "[ARGS]",  # reasoning-model rehearsal
     "<|python_tag|>",  # Llama-3 built-in tools
     "<|content_invoke_tool_json|>",
+    "<minimax:tool_call>",
     "<｜",  # DeepSeek's full-width pipe opens every one of its markers
     "<think",  # reasoning segmentation
     "</think",
@@ -1414,6 +1439,7 @@ _OPEN_CALL_TRIGGERS = (
     "<function",
     "[TOOL_CALLS]",
     "[ARGS]",
+    "<minimax:tool_call>",
     "<｜",
     "<think",
     "</think",
@@ -1839,7 +1865,13 @@ def has_tool_signal(text: str) -> bool:
 
 # A Qwen/Hermes envelope whose args carry DeepSeek/Kimi markers must parse as the outer call.
 _EMBEDDED_MARKER_RE = re.compile(
-    _DEEPSEEK_OPEN_RE_SRC + "|" + re.escape(_KIMI_SECTION_BEGIN) + "|" + re.escape(_KIMI_CALL_BEGIN)
+    _DEEPSEEK_OPEN_RE_SRC
+    + "|"
+    + re.escape(_KIMI_SECTION_BEGIN)
+    + "|"
+    + re.escape(_KIMI_CALL_BEGIN)
+    + "|"
+    + re.escape(_MINIMAX_BLOCK_OPEN)
 )
 # The lookahead mirrors the ``_TOOL_ALL_PATS`` python_tag arm so a prose mention is not one.
 _OUTER_ENVELOPE_OPEN_RE = re.compile(
@@ -2228,9 +2260,11 @@ def parse_tool_calls_from_text(
         _km_section = content.find(_KIMI_SECTION_BEGIN)
         _km_bare = content.find(_KIMI_CALL_BEGIN)
         _km_pos = min(p for p in (_km_section, _km_bare, len(content)) if p >= 0)
+        _mm_pos = content.find(_MINIMAX_BLOCK_OPEN)
         pre_pass = [
             (_ds_pos, _parse_deepseek_tool_calls),
             (_km_pos, _parse_kimi_tool_calls),
+            (_mm_pos if _mm_pos >= 0 else len(content), _parse_minimax_tool_calls),
         ]
         pre_pass.sort(key = lambda pair: pair[0])
         for _pos, parser in pre_pass:
@@ -4008,4 +4042,94 @@ def _parse_kimi_section_body(
             )
         # Seeking <|tool_call_end|> could skip the next call when this one's marker is missing.
         pos = brace_end + 1
+    return out
+
+
+def _inside_minimax_value(text: str, pos: int) -> bool:
+    """A MiniMax tag inside an unclosed ``<parameter>`` value is argument text, not markup."""
+    return _tool_healing._inside_open_parameter(
+        text,
+        pos,
+        param_start_re = _TC_PARAM_START_RE,
+        param_closers = ("</parameter>", "</param>"),
+        func_closers = (_MINIMAX_INVOKE_CLOSE, _MINIMAX_BLOCK_CLOSE),
+    )
+
+
+def _minimax_block_spans(text: str) -> list[tuple[int, int, bool]]:
+    """``(start, end, closed)`` per ``<minimax:tool_call>`` block; an unclosed block runs to the end of the text."""
+    spans: list[tuple[int, int, bool]] = []
+    pos = 0
+    while True:
+        start = text.find(_MINIMAX_BLOCK_OPEN, pos)
+        if start < 0:
+            return spans
+        if _inside_minimax_value(text, start):
+            pos = start + len(_MINIMAX_BLOCK_OPEN)
+            continue
+        close = text.find(_MINIMAX_BLOCK_CLOSE, start + len(_MINIMAX_BLOCK_OPEN))
+        while close >= 0 and _inside_minimax_value(text, close):
+            close = text.find(_MINIMAX_BLOCK_CLOSE, close + 1)
+        if close < 0:
+            spans.append((start, len(text), False))
+            return spans
+        pos = close + len(_MINIMAX_BLOCK_CLOSE)
+        spans.append((start, pos, True))
+
+
+def _parse_minimax_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
+    """Values stay strings as in the ``<function=...>`` form; the tool loop coerces them by schema. A block inside
+    reasoning (a ``<think>`` span, or before a stray ``</think>`` the template opened) is a rehearsal and is skipped."""
+    out: list[dict] = []
+    if _MINIMAX_BLOCK_OPEN not in content:
+        return out
+    think_spans = [m.span() for m in _tool_healing._THINK_TAG_RE.finditer(content)]
+    stray_close = _unmatched_think_closer(content)
+    for start, end, closed in _minimax_block_spans(content):
+        if any(s <= start < e for s, e in think_spans) or end <= stray_close:
+            continue
+        body_end = end - len(_MINIMAX_BLOCK_CLOSE) if closed else end
+        invokes = [
+            m
+            for m in _MINIMAX_INVOKE_OPEN_RE.finditer(content, start, body_end)
+            if not _inside_minimax_value(content, m.start())
+        ]
+        for idx, im in enumerate(invokes):
+            next_invoke = invokes[idx + 1].start() if idx + 1 < len(invokes) else body_end
+            close = content.find(_MINIMAX_INVOKE_CLOSE, im.end(), next_invoke)
+            while close >= 0 and _inside_minimax_value(content, close):
+                close = content.find(_MINIMAX_INVOKE_CLOSE, close + 1, next_invoke)
+            # Strict mode: an invoke without its close tag was cut off; do not heal it.
+            if close < 0 and not allow_incomplete:
+                continue
+            body = content[im.end() : close if close >= 0 else next_invoke]
+            args: dict = {}
+            param_unclosed = False
+            params = [
+                pm
+                for pm in _TC_PARAM_START_RE.finditer(body)
+                if not _inside_minimax_value(body, pm.start())
+            ]
+            for pidx, pm in enumerate(params):
+                next_param = params[pidx + 1].start() if pidx + 1 < len(params) else len(body)
+                raw_val = body[pm.end() : next_param]
+                param_closed = raw_val.rstrip().endswith(("</parameter>", "</param>"))
+                if not param_closed:
+                    param_unclosed = True
+                val = _TC_PARAM_CLOSE_RE.sub("", raw_val) if param_closed else raw_val
+                args[pm.group(1) or pm.group(2)] = _trim_param_value(val)
+            if param_unclosed and not allow_incomplete:
+                continue
+            out.append(
+                {
+                    "id": f"call_{id_offset + len(out)}",
+                    "type": "function",
+                    "function": {"name": im.group(1), "arguments": json.dumps(args)},
+                }
+            )
     return out
