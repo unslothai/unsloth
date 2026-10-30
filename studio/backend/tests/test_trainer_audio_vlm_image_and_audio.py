@@ -209,7 +209,7 @@ class _RecordingProcessor:
         return {"input_ids": torch.ones((len(text), 2), dtype = torch.long)}
 
 
-def _collate(image_col, row_image = None):
+def _collate(image_col, row_image = None, rows = None):
     pytest.importorskip("torch")
     processor = _RecordingProcessor()
     namespace = {
@@ -225,8 +225,8 @@ def _collate(image_col, row_image = None):
     image = PIL_Image.new("L", (4, 4))
     row_image = image if row_image is None else row_image
     examples = [
-        {"messages": [], "audio": {"array": [0.0]}, "image": row_image},
-        {"messages": [], "audio": {"array": [0.0]}, "image": row_image},
+        {"messages": [], "audio": {"array": [0.0]}, "image": r}
+        for r in (rows if rows is not None else [row_image, row_image])
     ]
     namespace["audio_vlm_collate_fn"](examples)
     return processor.calls[0]
@@ -251,3 +251,26 @@ def test_collator_passes_every_image_of_a_list_row():
 
 def test_collator_without_images_does_not_pass_the_kwarg():
     assert "images" not in _collate(None)
+
+
+def test_a_none_image_row_gets_no_slot_and_no_image(audio_vlm_trainer):
+    image = PIL_Image.new("RGB", (8, 8), "red")
+    rows = {
+        "audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * 2,
+        "text": ["one", "two"],
+        "image": [None, image],
+    }
+    schema = datasets.Features({
+        "audio": {"array": datasets.Sequence(datasets.Value("float32")), "sampling_rate": datasets.Value("int64")},
+        "text": datasets.Value("string"),
+        "image": datasets.Image(),
+    })
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(
+        _NoAudioCast(datasets.Dataset.from_dict(rows, features = schema))
+    )
+    users = [next(m for m in row["messages"] if m["role"] == "user") for row in formatted]
+    assert [[p["type"] for p in u["content"]].count("image") for u in users] == [0, 1]
+
+    image = PIL_Image.new("L", (4, 4))
+    assert [len(x) for x in _collate("image", rows = [None, image])["images"]] == [0, 1]
+    assert "images" not in _collate("image", rows = [None, None])

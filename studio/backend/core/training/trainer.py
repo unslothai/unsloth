@@ -2422,7 +2422,11 @@ class UnslothTrainer:
                 if image_col:
                     # The collator passes the images themselves; the template only needs the slots.
                     row_images = samples[image_col][idx]
-                    n_images = len(row_images) if isinstance(row_images, list) else 1
+                    # A partly filled column: a None row (or entry) gets no image slot.
+                    if isinstance(row_images, list):
+                        n_images = sum(1 for i in row_images if i is not None)
+                    else:
+                        n_images = 0 if row_images is None else 1
                     user_content[:0] = [{"type": "image"} for _ in range(n_images)]
                 message = [
                     {
@@ -4687,10 +4691,14 @@ class UnslothTrainer:
                             row = example[image_col_name]
                             row = row if isinstance(row, list) else [row]
                             images.append(
-                                [i.convert("RGB") if hasattr(i, "convert") else i for i in row]
+                                [
+                                    i.convert("RGB") if hasattr(i, "convert") else i
+                                    for i in row
+                                    if i is not None
+                                ]
                             )
 
-                    image_kwargs = {"images": images} if image_col_name else {}
+                    image_kwargs = {"images": images} if any(images) else {}
                     batch = processor(
                         text = texts,
                         audio = audios,
