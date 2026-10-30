@@ -69,3 +69,34 @@ def test_a_repo_blob_pointing_outside_the_shared_store_is_refused(monkeypatch, t
     (tmp_path / "loose").write_bytes(b"")
     pointer = _repo(cache, "private", "../../../loose")
     assert access.cached_model_repo(str(pointer)) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "shared blobs need symlinks")
+@pytest.mark.parametrize("store_entry", ["missing", "directory", "not-a-hash"])
+def test_a_store_entry_huggingface_hub_would_not_use_is_refused(monkeypatch, tmp_path, store_entry):
+    cache = _cache(monkeypatch, tmp_path)
+    if store_entry == "missing":
+        target = f"../../blobs/ab/{'ef' * 32}"
+    elif store_entry == "directory":
+        (cache / "blobs" / "ab" / ("ab" * 31 + "ef")).mkdir()
+        target = f"../../blobs/ab/{'ab' * 31 + 'ef'}"
+    else:
+        (cache / "blobs" / "ab" / "weights.gguf").write_bytes(b"")
+        target = "../../blobs/ab/weights.gguf"
+    pointer = _repo(cache, "private", target)
+    assert access.cached_model_repo(str(pointer)) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "shared blobs need symlinks")
+def test_a_granted_shared_blob_resident_is_visible(monkeypatch, tmp_path):
+    cache = _cache(monkeypatch, tmp_path)
+    pointer = _repo(cache, "private", f"../../blobs/ab/{HASH}")
+    monkeypatch.setattr(access, "managed_account", lambda: True)
+    monkeypatch.setattr(access, "model_allowed", lambda repo_id: True)
+    monkeypatch.setattr(access, "repo_is_public", lambda *args, **kwargs: False)
+    granted = {access._grant_key("org/private", "model")}
+    assert access.model_visible(str(pointer), grants = granted)
+    assert not access.model_visible(str(pointer), grants = set())
+    assert not access.model_visible(
+        str(pointer), grants = {access._grant_key("org/other", "model")}
+    )
