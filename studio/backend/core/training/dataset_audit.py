@@ -261,8 +261,12 @@ def audit_dataset(
         elif retained_tokens:
             full = kept = batch
         elif prompt_completion:
-            full = _prepare_prompt_completion(batch, tokenizer, -1)
-            kept = _prepare_prompt_completion(batch, tokenizer, max_length)
+            # Zoo chooses BOS handling from the dataset head, not each audit batch's head.
+            source = prepared.select([0, *range(start, start + len(batch))])
+            full = _prepare_prompt_completion(source, tokenizer, -1)
+            kept = _prepare_prompt_completion(source, tokenizer, max_length)
+            full = full.select(range(1, len(full)))
+            kept = kept.select(range(1, len(kept)))
         else:
             texts = list(batch["text"])
             full = Dataset.from_dict(dict(tokenizer(texts, add_special_tokens = add_special_tokens)))

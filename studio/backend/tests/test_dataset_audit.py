@@ -420,6 +420,55 @@ def test_batch_size_does_not_change_effective_template_or_counts(tokenizer):
     )
 
 
+@pytest.mark.parametrize("batch_size", [1, 64, 65])
+@pytest.mark.parametrize("head_has_bos", [False, True])
+def test_prompt_completion_batches_keep_trainings_global_bos_policy(
+    tokenizer, batch_size, head_has_bos
+):
+    from types import SimpleNamespace
+    from tokenizers.processors import TemplateProcessing
+    from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
+    from unsloth_zoo.dataset_utils import sft_prepare_dataset
+
+    tokenizer.backend_tokenizer.post_processor = TemplateProcessing(
+        single = "<bos> $A", special_tokens = [("<bos>", tokenizer.bos_token_id)]
+    )
+    prompt = "hello " * 30
+    limit = len(tokenizer(prompt)["input_ids"]) + 1
+    first = (tokenizer.bos_token if head_has_bos else "") + prompt
+    last = ("" if head_has_bos else tokenizer.bos_token) + prompt
+    dataset = Dataset.from_list(
+        [{"prompt": first, "completion": "answer"}] * 64
+        + [{"prompt": last, "completion": "answer"}]
+    )
+    cfg = config(train_on_completions = False, max_seq_length = limit)
+    report = audit_dataset(dataset, tokenizer, cfg, batch_size = batch_size)
+    trainer = SimpleNamespace(
+        data_collator = DataCollatorForLanguageModeling(
+            pad_token_id = tokenizer.pad_token_id, completion_only_loss = True
+        ),
+        completion_only_loss = True,
+    )
+    expected = sft_prepare_dataset(
+        trainer,
+        dataset,
+        tokenizer,
+        SimpleNamespace(max_length = limit, dataset_num_proc = 1),
+        False,
+        None,
+        "train",
+    )
+    targets = [
+        int((trainer.data_collator([row])["labels"][:, 1:] != -100).sum()) for row in expected
+    ]
+    assert report["tokens_after_truncation"] == sum(map(len, expected["input_ids"]))
+    assert report["loss_targets_after_truncation"] == sum(targets)
+    assert report["rows_without_loss_after_truncation"] == targets.count(0)
+    assert report["status"] == ("issues_found" if 0 in targets else "ok")
+    if not head_has_bos:
+        assert targets.count(0) == 1
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -431,12 +480,18 @@ def test_batch_size_does_not_change_effective_template_or_counts(tokenizer):
         "expansion",
         "expansion_and_drop",
         "fallback_template",
+        "bos_boundary",
     ],
 )
 def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path, case):
     model = tmp_path / "tokenizer"
     if case == "fallback_template":
         tokenizer.chat_template = None
+    if case == "bos_boundary":
+        from tokenizers.processors import TemplateProcessing
+        tokenizer.backend_tokenizer.post_processor = TemplateProcessing(
+            single = "<bos> $A", special_tokens = [("<bos>", tokenizer.bos_token_id)]
+        )
     tokenizer.add_special_tokens({"additional_special_tokens": ["<pad>"]})
     tokenizer.save_pretrained(model)
     data = tmp_path / "train.jsonl"
@@ -455,6 +510,8 @@ def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path, case
             {"messages": [{"role": "user", "content": "hello"}]},
         ],
         "fallback_template": [chat()],
+        "bos_boundary": [{"prompt": "hello " * 30, "completion": "answer"}] * 64
+        + [{"prompt": tokenizer.bos_token + "hello " * 30, "completion": "answer"}],
     }[case]
     data.write_text("".join(json.dumps(row) + "\n" for row in rows))
     guard = tmp_path / "guard"
@@ -501,7 +558,7 @@ def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path, case
             if case == "text_metadata"
             else ("alpaca" if case.startswith("expansion") else "auto"),
             "--max-seq-length",
-            "32",
+            str(len(tokenizer("hello " * 30)["input_ids"]) + 1) if case == "bos_boundary" else "32",
             "--full",
             "--json",
         ],
@@ -513,7 +570,14 @@ def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path, case
     )
     assert result.returncode == (
         1
-        if case in ("full_scan", "retained_tokens", "prompt_completion", "expansion_and_drop")
+        if case
+        in (
+            "full_scan",
+            "retained_tokens",
+            "prompt_completion",
+            "expansion_and_drop",
+            "bos_boundary",
+        )
         else 0
     ), (
         result.stdout,
@@ -533,6 +597,9 @@ def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path, case
         assert report["rows_dropped_by_formatter"] == int(case == "expansion_and_drop")
     elif case == "fallback_template":
         assert report["template"]["text"] and report["template"]["sha256"]
+    elif case == "bos_boundary":
+        assert report["loss_targets_after_truncation"] == 64
+        assert report["rows_without_loss_after_truncation"] == 1
     receipts = [json.loads(path.read_text()) for path in guard.glob("*.json")]
     assert len(receipts) >= 2  # CLI parent and tokenizer worker.
     assert all(not receipt["weights"] and not receipt["cuda"] for receipt in receipts)
