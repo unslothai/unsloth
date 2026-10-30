@@ -2103,6 +2103,26 @@ export const it = {
     appearance: {
       title: "Aspetto",
       description: "Come si presenta Unsloth su questo dispositivo.",
+      gpuRendering: {
+        sectionTitle: "Rendering",
+        label: "Rendering GPU",
+        description: "Disegna Unsloth con la scheda grafica. Auto la usa dove è noto che funziona. Le modifiche si applicano al riavvio di Unsloth.",
+        auto: "Auto",
+        on: "Attivo",
+        off: "Disattivo",
+        oldWebkitWarning: "WebKitGTK {version} su Wayland: il rendering GPU può bloccarsi all’avvio su NVIDIA con il ridimensionamento frazionario (WebKit bug 280210). In tal caso Unsloth torna da solo al rendering CPU. Su WebKitGTK 2.50.4 non ha dato alcun miglioramento misurabile (8 fps in entrambi i casi), quindi Attivo qui non è consigliato.",
+        oldDriverWarning:
+          "Driver NVIDIA {version} su X11: Unsloth mantiene disattivato il rendering GPU finché il driver non è 610 o successivo. I driver precedenti perdono un descrittore di file per fotogramma e la finestra smette di disegnare entro pochi minuti.",
+        fallbackNote: "Il rendering GPU si è bloccato all’avvio su questo sistema, quindi Unsloth usa il rendering CPU.",
+        tryAgain: "Riprova con la GPU",
+        envOverride: "Impostato dalla variabile d’ambiente {name}. Questa impostazione non ha effetto finché non viene rimossa.",
+        macNote: "macOS esegue sempre il rendering con la GPU. WebKit non offre un’opzione supportata per disattivarlo.",
+        restartPending: "Riavvia Unsloth per applicare.",
+        restartNow: "Riavvia ora",
+        loadError: "Impossibile caricare l’impostazione del rendering GPU.",
+        saveError: "Impossibile salvare l’impostazione del rendering GPU.",
+        restartError: "Impossibile riavviare Unsloth.",
+      },
       theme: {
         title: "Stile visivo",
         label: "Modalità",

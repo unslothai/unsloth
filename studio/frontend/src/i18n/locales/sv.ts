@@ -2380,6 +2380,26 @@ export const sv = {
     appearance: {
       title: "Utseende",
       description: "Hur Unsloth ser ut på den här enheten.",
+      gpuRendering: {
+        sectionTitle: "Rendering",
+        label: "GPU-rendering",
+        description: "Rita Unsloth med grafikkortet. Auto använder det där det är känt att fungera. Ändringar gäller efter att Unsloth har startats om.",
+        auto: "Auto",
+        on: "På",
+        off: "Av",
+        oldWebkitWarning: "WebKitGTK {version} på Wayland: GPU-rendering kan krascha vid start på NVIDIA med skalning i bråkdelar (WebKit bug 280210). Om det händer byter Unsloth själv tillbaka till CPU-rendering. På WebKitGTK 2.50.4 gav det ingen mätbar förbättring (8 fps i båda fallen), så På rekommenderas inte här.",
+        oldDriverWarning:
+          "NVIDIA-drivrutin {version} på X11: Unsloth håller GPU-rendering avstängd tills drivrutinen är 610 eller nyare. Äldre drivrutiner läcker en filbeskrivare per bildruta, och fönstret slutar ritas inom några minuter.",
+        fallbackNote: "GPU-rendering kraschade vid start på det här systemet, så Unsloth använder CPU-rendering.",
+        tryAgain: "Försök med GPU igen",
+        envOverride: "Anges av miljövariabeln {name}. Den här inställningen har ingen effekt förrän den tas bort.",
+        macNote: "macOS renderar alltid med GPU:n. WebKit har inget stött sätt att stänga av det.",
+        restartPending: "Starta om Unsloth för att tillämpa.",
+        restartNow: "Starta om nu",
+        loadError: "Det gick inte att läsa in inställningen för GPU-rendering.",
+        saveError: "Det gick inte att spara inställningen för GPU-rendering.",
+        restartError: "Det gick inte att starta om Unsloth.",
+      },
       theme: {
         title: "Visuell stil",
         label: "Läge",

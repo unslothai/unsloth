@@ -2307,6 +2307,26 @@ export const he = {
     appearance: {
       title: "מראה",
       description: "כיצד Unsloth נראה במכשיר זה.",
+      gpuRendering: {
+        sectionTitle: "רינדור",
+        label: "רינדור ב-GPU",
+        description: "ציור Unsloth באמצעות כרטיס המסך. מצב אוטומטי משתמש בו במקומות שבהם ידוע שהוא עובד. השינויים יחולו אחרי ש-Unsloth יופעל מחדש.",
+        auto: "אוטומטי",
+        on: "מופעל",
+        off: "כבוי",
+        oldWebkitWarning: "WebKitGTK {version} ב-Wayland: רינדור ב-GPU עלול לקרוס בהפעלה על NVIDIA עם קנה מידה חלקי (WebKit bug 280210). אם זה קורה, Unsloth חוזר מעצמו לרינדור ב-CPU. ב-WebKitGTK 2.50.4 לא נמדדה שום האצה (8 fps בשני המקרים), ולכן לא מומלץ לבחור כאן במצב מופעל.",
+        oldDriverWarning:
+          "מנהל התקן NVIDIA {version} ב-X11: Unsloth משאיר את הרינדור ב-GPU כבוי עד שמנהל ההתקן יהיה 610 ומעלה. מנהלי התקן ישנים יותר מדליפים מתאר קובץ בכל פריים, והחלון מפסיק להצטייר תוך דקות.",
+        fallbackNote: "רינדור ב-GPU קרס בהפעלה במערכת הזו, ולכן Unsloth משתמש ברינדור ב-CPU.",
+        tryAgain: "לנסות שוב עם GPU",
+        envOverride: "נקבע על ידי משתנה הסביבה {name}. להגדרה הזו אין השפעה עד שהוא יוסר.",
+        macNote: "macOS תמיד מרנדר באמצעות ה-GPU. ל-WebKit אין מתג נתמך לכיבוי זה.",
+        restartPending: "יש להפעיל מחדש את Unsloth כדי להחיל.",
+        restartNow: "הפעלה מחדש עכשיו",
+        loadError: "לא ניתן לטעון את הגדרת הרינדור ב-GPU.",
+        saveError: "לא ניתן לשמור את הגדרת הרינדור ב-GPU.",
+        restartError: "לא ניתן להפעיל מחדש את Unsloth.",
+      },
       theme: {
         title: "סגנון חזותי",
         label: "מצב",

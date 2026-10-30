@@ -2203,6 +2203,26 @@ export const ar = {
     appearance: {
       title: "المظهر",
       description: "كيفية ظهور Unsloth على هذا الجهاز.",
+      gpuRendering: {
+        sectionTitle: "العرض",
+        label: "العرض عبر GPU",
+        description: "اعرض Unsloth باستخدام بطاقة الرسومات. يستخدمها الوضع «تلقائي» حيث يُعرف أنها تعمل. تُطبَّق التغييرات بعد إعادة تشغيل Unsloth.",
+        auto: "تلقائي",
+        on: "تشغيل",
+        off: "إيقاف",
+        oldWebkitWarning: "WebKitGTK {version} على Wayland: قد يتعطل العرض عبر GPU عند التشغيل على NVIDIA مع التحجيم الكسري (WebKit bug 280210). إذا حدث ذلك، يعود Unsloth تلقائيًا إلى العرض عبر CPU. على WebKitGTK 2.50.4 لم يُحقق أي تسريع ملموس (8 fps في الحالتين)، لذا لا يُنصح بخيار «تشغيل» هنا.",
+        oldDriverWarning:
+          "برنامج تشغيل NVIDIA {version} على X11: يُبقي Unsloth العرض عبر GPU متوقفًا حتى يصبح برنامج التشغيل 610 أو أحدث. تُسرّب برامج التشغيل الأقدم واصف ملف في كل إطار، فتتوقف النافذة عن الرسم خلال دقائق.",
+        fallbackNote: "تعطّل العرض عبر GPU عند التشغيل على هذا النظام، لذا يستخدم Unsloth العرض عبر CPU.",
+        tryAgain: "جرّب GPU مرة أخرى",
+        envOverride: "مُعيَّن بواسطة متغير البيئة {name}. لا يكون لهذا الإعداد أي تأثير حتى تتم إزالته.",
+        macNote: "يعرض macOS دائمًا باستخدام GPU. لا يوفر WebKit أي خيار مدعوم لإيقاف ذلك.",
+        restartPending: "أعد تشغيل Unsloth للتطبيق.",
+        restartNow: "إعادة التشغيل الآن",
+        loadError: "تعذّر تحميل إعداد العرض عبر GPU.",
+        saveError: "تعذّر حفظ إعداد العرض عبر GPU.",
+        restartError: "تعذّرت إعادة تشغيل Unsloth.",
+      },
       theme: {
         title: "النمط المرئي",
         label: "الوضع",

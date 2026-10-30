@@ -2220,6 +2220,26 @@ export const ptBR = {
     appearance: {
       title: "Aparência",
       description: "A aparência do Unsloth neste dispositivo.",
+      gpuRendering: {
+        sectionTitle: "Renderização",
+        label: "Renderização por GPU",
+        description: "Desenhe o Unsloth com a placa de vídeo. Auto a usa onde se sabe que funciona. As alterações valem depois que o Unsloth reiniciar.",
+        auto: "Auto",
+        on: "Ativado",
+        off: "Desativado",
+        oldWebkitWarning: "WebKitGTK {version} no Wayland: a renderização por GPU pode travar ao iniciar em NVIDIA com escala fracionária (WebKit bug 280210). Se isso acontecer, o Unsloth volta sozinho para a renderização por CPU. No WebKitGTK 2.50.4 não houve ganho de velocidade mensurável (8 fps nos dois casos), então Ativado não é recomendado aqui.",
+        oldDriverWarning:
+          "NVIDIA driver {version} on X11: Unsloth keeps GPU rendering off until the driver is 610 or newer. Older drivers leak a file descriptor per frame, and the window stops drawing within minutes.",
+        fallbackNote: "A renderização por GPU travou ao iniciar neste sistema, então o Unsloth está usando renderização por CPU.",
+        tryAgain: "Tentar a GPU de novo",
+        envOverride: "Definido pela variável de ambiente {name}. Esta configuração não tem efeito até que ela seja removida.",
+        macNote: "O macOS sempre renderiza com a GPU. O WebKit não tem uma opção compatível para desativar isso.",
+        restartPending: "Reinicie o Unsloth para aplicar.",
+        restartNow: "Reiniciar agora",
+        loadError: "Não foi possível carregar a configuração de renderização por GPU.",
+        saveError: "Não foi possível salvar a configuração de renderização por GPU.",
+        restartError: "Não foi possível reiniciar o Unsloth.",
+      },
       theme: {
         title: "Estilo visual",
         label: "Modo",
