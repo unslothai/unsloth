@@ -9277,8 +9277,7 @@ class DiffusionBackend:
                                         self._stop_load_prefetch()
                                 else:
                                     # bf16 -> fp16 conversion materialises in host RAM (35 GB for FLUX.1)
-                                    # The twins the load will read, judged on what pipe_kwargs supplies now: a component
-                                    # supplied since the first check (hosted VAE, native transformer) can complete them.
+                                    # Re-judged on current pipe_kwargs: a since-supplied component can complete the twins.
                                     _decision_variant = (
                                         local_fp16_variant(
                                             _variant_snapshot,
@@ -9298,7 +9297,6 @@ class DiffusionBackend:
                                         fetch = _small_host_fetch(
                                             pipeline_cls,
                                             fetch_base,
-                                            # the layout the load reads: a twins load never fetches the defaults
                                             {**pipe_kwargs, "variant": _decision_variant}
                                             if _decision_variant is not None
                                             else pipe_kwargs,
@@ -12039,7 +12037,7 @@ class DiffusionBackend:
     ) -> Any:
         """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot.
         ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet; ``variant``
-        is the weight layout the load reads (complete ``.fp16`` twins need no default shards)."""
+        is the weight layout the load reads."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
         if (
             fetch is not None
@@ -12047,7 +12045,7 @@ class DiffusionBackend:
             and (
                 snapshot is None
                 or not stored_components(snapshot)
-                # an interrupted download: sizing only the cached part would hide the missing components
+                # interrupted download: sizing only the cached part hides missing components
                 or not snapshot_weights_complete(snapshot, skip = tuple(pipe_kwargs), variant = variant)
             )
         ):

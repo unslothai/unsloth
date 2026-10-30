@@ -685,8 +685,7 @@ def test_complete_fp16_twins_with_an_orphan_default_index_skip_the_download(tmp_
 
 
 def test_twins_completed_by_a_supplied_component_skip_the_early_download(tmp_path, monkeypatch):
-    """A component supplied after the first twins check (hosted VAE, native transformer) is the only one without a
-    twin: the load reads the twins, so the early download must not fetch the default weights the load never opens."""
+    """A since-supplied component completes the twins: the early download must not fetch the default weights."""
     import ast
     import inspect
 
@@ -707,13 +706,11 @@ def test_twins_completed_by_a_supplied_component_skip_the_early_download(tmp_pat
         json.dumps({"weight_map": {"w": "diffusion_pytorch_model-00001-of-00002.safetensors"}})
     )
     pipe_kwargs = {"torch_dtype": torch.float16, "vae": object()}
-    # The pipeline load's own variant pick once the vae is supplied.
     assert (
         local_fp16_variant(str(tmp_path), load_dtype = torch.float16, supplied = tuple(pipe_kwargs))
         == "fp16"
     )
 
-    # Evaluate the variant the pipeline call site hands the decision, from the source's latest assignment to it.
     src = inspect.getsource(dif)
     tree = ast.parse(src)
     call = next(

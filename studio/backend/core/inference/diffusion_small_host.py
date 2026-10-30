@@ -268,9 +268,8 @@ def snapshot_weights_complete(
     skip: Any = (),
     variant: Optional[str] = None,
 ) -> bool:
-    """False when a ``model_index.json`` component is missing or a model folder lacks weights or index-listed shards
-    (an interrupted download); ``skip`` names components the caller supplies. No index: no claim (True).
-    ``variant`` (the ``variant=`` the load passes) checks only that layout's files and indexes."""
+    """False when a ``model_index.json`` component lacks weights or index-listed shards; True without an index.
+    ``skip`` names caller-supplied components; ``variant`` checks only that layout's files."""
     try:
         root = Path(snapshot)
         index = json.loads((root / "model_index.json").read_text(encoding = "utf-8"))
@@ -287,7 +286,6 @@ def snapshot_weights_complete(
         files = list(sub.glob("*.safetensors")) + list(sub.glob("*.bin"))
         shard_indexes = list(sub.glob("*.index.json"))
         if variant:
-            # A variant load never opens the default files: their absent shards are not owed.
             marks = (f".{variant}.", f".{variant}-")
             files = [f for f in files if any(m in f.name for m in marks)]
             shard_indexes = [
