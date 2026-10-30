@@ -28,14 +28,17 @@ def _trl_method_source(name):
 
 def _transform(name):
     from unsloth.models import rl_replacements
-
     return {
         "_generate": rl_replacements.grpo_trainer__generate,
         "_generate_and_score_completions": rl_replacements.grpo_trainer__generate_and_score_completions,
     }[name]
 
 
-def _trainer(max_completion_length, max_model_len = None, via_vllm_generation = False):
+def _trainer(
+    max_completion_length,
+    max_model_len = None,
+    via_vllm_generation = False,
+):
     trainer = types.SimpleNamespace(max_completion_length = max_completion_length, use_vllm = False)
     if max_model_len is not None:
         model_config = types.SimpleNamespace(max_model_len = max_model_len)
@@ -48,7 +51,12 @@ def _trainer(max_completion_length, max_model_len = None, via_vllm_generation = 
     return trainer
 
 
-def _is_truncated(name, completions, trainer, prompts = None):
+def _is_truncated(
+    name,
+    completions,
+    trainer,
+    prompts = None,
+):
     from unsloth.models import rl_replacements
 
     source = _transform(name)(name, _trl_method_source(name))
@@ -103,4 +111,10 @@ def test_completion_cut_by_vllm_context_is_truncated(name, via_vllm_generation):
     trainer = _trainer(128, max_model_len = 512, via_vllm_generation = via_vllm_generation)
     assert _is_truncated(name, completions, trainer, prompts) == [True, False, False, False, True]
     # Without a local engine (HF generate, vLLM server mode) only the completion budget is known.
-    assert _is_truncated(name, completions, _trainer(128), prompts) == [False, False, False, False, True]
+    assert _is_truncated(name, completions, _trainer(128), prompts) == [
+        False,
+        False,
+        False,
+        False,
+        True,
+    ]
