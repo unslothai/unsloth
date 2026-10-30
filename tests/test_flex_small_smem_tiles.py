@@ -335,3 +335,13 @@ def test_wrapper_forced_short_prompt_keeps_explicit_backend_untouched(monkeypatc
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
     wrapped(_Causal(), *_gqa_qkv(28, 4, 1), object(), kernel_options = {"BACKEND": backend})
     assert seen == {"BACKEND": backend}
+
+
+def test_wrapper_forced_short_prompt_keeps_caller_force_off_untouched(monkeypatch):
+    # FORCE_USE_FLEX_ATTENTION=False from the caller sends the call to flex_decoding, which our
+    # main-kernel tiles do not cover (112 rows here).
+    wrapped, seen = _wrapped(monkeypatch)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    requested = {"FORCE_USE_FLEX_ATTENTION": False}
+    wrapped(_Causal(), *_gqa_qkv(28, 4, 1), object(), kernel_options = dict(requested))
+    assert seen == requested
