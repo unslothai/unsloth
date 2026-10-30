@@ -64,11 +64,8 @@ class PPConfig:
 
 class _StageOutput(BaseException):
     """Raised by the pass-through after a non-last stage's last layer: the stage output. A BaseException,
-    so no `except Exception` inside a model forward swallows it."""
-
-    def __init__(self, hidden):
-        super().__init__()
-        self.hidden = hidden
+    so no `except Exception` inside a model forward swallows it. The hidden states ride in `args`:
+    Dynamo cannot trace a custom exception `__init__` (a graph break, an error under fullgraph)."""
 
 
 def _unwrap(model):
@@ -771,7 +768,7 @@ class _PPStageModule(nn.Module):
             kwargs.update(output_attentions = False, output_hidden_states = False)
             out = self.model(input_ids = input_ids, use_cache = False, **kwargs)
         except _StageOutput as stop:
-            hidden = stop.hidden
+            hidden = stop.args[0]
             if hidden.shape[-1] != self._pp_hidden or hidden.dim() != 3:
                 raise RuntimeError(
                     f"Unsloth: pipeline stage output has shape {tuple(hidden.shape)}, expected "
