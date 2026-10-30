@@ -2653,3 +2653,91 @@ def test_model_download_progress_rejects_unknown_byte_counts(progress):
     svc._apply_event({"type": "model_load_started"})
     svc._apply_event({"type": "model_download_progress", "download_progress": progress})
     assert svc.status()["download_progress"] is None
+
+
+def test_model_loading_stage_follows_phase_boundaries():
+    svc = DiffusionTrainingService()
+    assert svc.status()["model_load_stage"] is None
+    svc._apply_event({"type": "model_load_started", "stage": "conditioning"})
+    assert svc.status()["model_load_stage"] == "conditioning"
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 5, "total": 5})
+    assert svc.status()["model_load_stage"] is None
+    svc._apply_event({"type": "model_load_started", "stage": "quantizing"})
+    assert svc.status()["model_load_stage"] == "quantizing"
+    assert svc.status()["preparation"] is None
+    svc._apply_event({"type": "model_load_completed"})
+    assert svc.status()["model_load_stage"] is None
+    assert svc.status()["in_model_load"] is False
+    svc._apply_event({"type": "model_load_started", "stage": "transformer"})
+    assert svc.status()["model_load_stage"] == "transformer"
+    # Trainers that do not emit a stage retain the generic loading fallback.
+    svc._apply_event({"type": "model_load_started"})
+    assert svc.status()["model_load_stage"] is None
+
+
+def test_route_preserves_measured_loading_and_preparation_fields(client):
+    svc = DiffusionTrainingService()
+    client._fake.status = svc.status
+    svc._apply_event({"type": "model_load_started", "stage": "quantizing"})
+    svc._apply_event(
+        {
+            "type": "model_load_progress",
+            "done": 12,
+            "total": 40,
+            "unit": "tensors",
+            "label": "FluxTransformer2DModel",
+        }
+    )
+    response = client.get("/api/train/diffusion/status")
+    assert response.status_code == 200
+    status = response.json()
+    assert status["model_load_stage"] == "quantizing"
+    assert status["model_load_progress"] == {
+        "done": 12,
+        "total": 40,
+        "unit": "tensors",
+        "label": "FluxTransformer2DModel",
+    }
+    svc._apply_event({"type": "preparing", "stage": "cache_latents", "done": 2, "total": 5})
+    status = client.get("/api/train/diffusion/status").json()
+    assert status["model_load_progress"] is None
+    assert status["preparation"] == {"stage": "cache_latents", "done": 2, "total": 5}
+    svc._apply_event({"type": "model_load_started", "stage": "transformer"})
+    status = client.get("/api/train/diffusion/status").json()
+    assert status["preparation"] is None
+    assert status["model_load_progress"] is None
+    svc._apply_event({"type": "model_load_completed"})
+    assert client.get("/api/train/diffusion/status").json()["model_load_stage"] is None
+
+
+@pytest.mark.parametrize(
+    "done,total,unit",
+    [
+        (-1, 2, "tensors"),
+        (3, 2, "tensors"),
+        (0, 0, "tensors"),
+        (1, 2, "seconds"),
+        (float("nan"), 2, "tensors"),
+    ],
+)
+def test_invalid_model_load_counts_are_ignored(done, total, unit):
+    svc = DiffusionTrainingService()
+    svc._apply_event({"type": "model_load_started"})
+    svc._apply_event({"type": "model_load_progress", "done": done, "total": total, "unit": unit})
+    assert svc.status()["model_load_progress"] is None
+
+
+@pytest.mark.parametrize(
+    "terminal", ["complete", "error", "progress", "preparing", "model_load_completed"]
+)
+def test_measured_loading_clears_when_leaving_load_phase(terminal):
+    svc = DiffusionTrainingService()
+    svc._apply_event({"type": "model_load_started", "stage": "quantizing"})
+    event = {"type": "model_load_progress", "done": 1, "total": 2, "unit": "tensors"}
+    svc._apply_event(event)
+    assert svc.status()["model_load_progress"]["done"] == 1
+    svc._apply_event({"type": terminal})
+    assert svc.status()["model_load_progress"] is None
+    assert svc.status()["model_load_stage"] is None
+    svc._apply_event(event)
+    assert svc.status()["model_load_progress"] is None
