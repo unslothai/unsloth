@@ -752,6 +752,9 @@ def test_a_wrapper_subclass_base_keeps_the_base_then_lora_order(monkeypatch):
 @pytest.mark.parametrize("layout", ["csr", "csc", "bsr"])
 def test_compressed_sparse_lora_a_takes_one_product_per_projection(layout):
     # A compressed sparse A cannot be concatenated for the shared X @ [A_1; A_2].t(): one product each.
+    if layout == "bsr" and not torch.backends.mkl.is_available():
+        # CPU dense @ block-sparse needs MKL (the ROCm wheels ship without it); main's product fails the same way.
+        pytest.skip("CPU dense @ block-sparse needs MKL")
     g = torch.Generator().manual_seed(0)
     X = torch.randn(4, 6, generator = g)
     dense = [torch.randn(3, 6, generator = g) for _ in range(2)]
