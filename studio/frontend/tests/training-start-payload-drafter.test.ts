@@ -132,6 +132,32 @@ test("settings the request cannot carry leave the payload exactly as without the
   assert.equal(Object.hasOwn(text, "drafter"), true);
 });
 
+// The drafter section is hidden on the CPU backend, so a drafter ticked in a saved config or an
+// imported YAML must not reach a start the backend refuses with nothing left to untick it.
+test("a saved or imported drafter is not sent on the CPU backend", () => {
+  const cpu = { device_backend: "cpu" } as never;
+  const saved = migrateTrainingConfig(
+    partializeTrainingConfig(
+      config({ ...ON, drafterCapability: capability() }) as never,
+    ),
+    TRAINING_CONFIG_PERSISTENCE_VERSION,
+  ) as unknown as TrainingConfigState;
+  const imported = drafterStateFrom(
+    parseYamlConfig(serializeConfigToYaml(config({ ...ON }), false)).training
+      ?.drafter,
+  );
+  for (const restored of [config(saved), config({ ...imported })]) {
+    assert.equal(restored.drafterEnabled, true);
+    const payload = buildTrainingStartPayload(restored, null, cpu);
+    assert.equal(Object.hasOwn(payload, "drafter"), false);
+    // The same state still carries it where the backend trains drafters.
+    const cuda = buildTrainingStartPayload(restored, null, {
+      device_backend: "cuda",
+    } as never);
+    assert.equal(Object.hasOwn(cuda, "drafter"), true);
+  }
+});
+
 test("an enabled drafter on a supported model adds only the drafter block", () => {
   const off = buildTrainingStartPayload(config(), null);
   const on = buildTrainingStartPayload(
