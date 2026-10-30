@@ -341,6 +341,25 @@ def _string_column_has_image_paths(dataset, name: str) -> Optional[bool]:
         return None
 
 
+# Chat content blocks carrying an image: Studio's own, OpenAI chat and OpenAI responses.
+_IMAGE_BLOCK_TYPES = ("image", "image_url", "input_image")
+
+
+def _holds_image_blocks(value) -> bool:
+    if not isinstance(value, list):
+        return False
+    for message in value:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict)
+            and part.get("type") in _IMAGE_BLOCK_TYPES
+            and (part.get("image") is not None or part.get("image_url") is not None)
+            for part in content
+        ):
+            return True
+    return False
+
+
 def _arrow_may_hold_images(array) -> bool:
     """Vectorised and conservative: False only when no value could pass the per-row image checks."""
     import pyarrow as pa
@@ -357,7 +376,7 @@ def _arrow_may_hold_images(array) -> bool:
     if pa.types.is_string(kind) or pa.types.is_large_string(kind):
         return bool(
             pc.any(pc.match_substring_regex(array, _IMAGE_PATH_PATTERN)).as_py()
-            or pc.any(pc.equal(array, "image")).as_py()  # a content block's "type"
+            or pc.any(pc.is_in(array, pa.array(_IMAGE_BLOCK_TYPES))).as_py()  # a block's "type"
         )
     if pa.types.is_binary(kind) or pa.types.is_large_binary(kind):
         return array.null_count < len(array)
@@ -383,7 +402,10 @@ def _nested_column_has_images(dataset, name: str) -> Optional[bool]:
     # Raw Arrow rows, so nothing is decoded on the way.
     rows = dataset.select_columns([name]).with_format("arrow")
     for batch in rows.iter(batch_size = 1000):
-        if any(_is_image_value(v) or _holds_images(v) for v in batch.column(name).to_pylist()):
+        if any(
+            _is_image_value(v) or _holds_images(v) or _holds_image_blocks(v)
+            for v in batch.column(name).to_pylist()
+        ):
             return True
     return False
 
@@ -425,7 +447,10 @@ def _image_columns(dataset) -> list:
 
         rows = [r for r in itertools.islice(iter(dataset), 100) if isinstance(r, dict)]
         for name in sampled:
-            if any(_is_image_value(r.get(name)) or _holds_images(r.get(name)) for r in rows):
+            if any(
+                _is_image_value(v) or _holds_images(v) or _holds_image_blocks(v)
+                for v in (r.get(name) for r in rows)
+            ):
                 found.append(name)
     except Exception:  # noqa: BLE001 - the checks above still stand
         pass

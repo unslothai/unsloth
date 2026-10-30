@@ -1139,3 +1139,35 @@ def test_the_host_hands_the_worker_its_memory_limit(worker_factory, monkeypatch)
     worker = worker_factory([_spec("one", "def reward(completions, **kw):\n    return [1.0]\n")])
     setup = json.loads(Path(worker._workdir, "rewards.json").read_text(encoding = "utf-8"))
     assert setup["memory_limit_bytes"] == 3 * 1024**3
+
+
+def test_a_windows_worker_that_cannot_cap_itself_loads_no_reward(monkeypatch, tmp_path):
+    import types
+
+    from core.training import reward_worker_main as worker_main
+
+    monkeypatch.setattr(sys, "stdout", sys.stdout)
+    monkeypatch.setattr(sys, "stderr", sys.stderr)
+    monkeypatch.chdir(tmp_path)
+    windows_os = types.ModuleType("os")
+    windows_os.__dict__.update(os.__dict__)
+    windows_os.name = "nt"
+    monkeypatch.setattr(worker_main, "os", windows_os)
+    monkeypatch.setattr(worker_main, "_cap_own_memory", lambda limit: False)
+    loaded = []
+
+    def load(specs):
+        loaded.extend(specs)
+        (tmp_path / "stop").touch()
+        return {}, {}
+
+    monkeypatch.setattr(worker_main, "_load", load)
+    (tmp_path / "alive").touch()
+    (tmp_path / "rewards.json").write_text(
+        json.dumps({"specs": [{"name": "greedy", "code": "x = 1"}], "memory_limit_bytes": 1024}),
+        encoding = "utf-8",
+    )
+    assert worker_main.main() == 0
+    ready = json.loads((tmp_path / "ready.json").read_text(encoding = "utf-8"))
+    assert loaded == [] and ready["loaded"] == []
+    assert "memory limit" in ready["errors"]["greedy"]
