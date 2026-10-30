@@ -2831,10 +2831,8 @@ def _architecture_skip_modules(model_types):
         skip.append("proj_out")
     # WavLM's attention hands q/k/v/out_proj.weight to F.multi_head_attention_forward, which a packed Params4bit cannot be.
     if any(mt == "wavlm" for mt in model_types):
-        # Qualified so a composite's decoder (SpeechEncoderDecoderModel) stays quantized: transformers 5 matches
-        # "attention.q_proj" as a suffix. 4.x matches only bare leaf names or "key." substrings, and a bare
-        # "attention" also caught a BERT decoder's attention / crossattention, so name WavLM's own layers instead
-        # (12 in base, 24 in large; Unsloth's 5.x matcher also accepts them as path components).
+        # Qualified so a composite's decoder stays quantized: 5.x matches "attention.q_proj" as a suffix; a bare
+        # "attention" on 4.x also caught a BERT decoder's (cross)attention, so name WavLM's own layers instead.
         skip.extend(
             (
                 "attention.q_proj",

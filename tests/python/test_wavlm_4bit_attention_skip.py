@@ -161,7 +161,6 @@ def test_the_composite_names_match_transformers():
 
 @pytest.mark.parametrize("matcher", [_transformers4_skips, _zoo_transformers5_skips])
 def test_a_bert_decoder_attention_is_still_quantized(matcher):
-    # BERT names its attention `attention` / `crossattention`, so a bare "attention" key kept it 16-bit too.
     skip = _architecture_skip_modules()(["bert", "speech-encoder-decoder", "wavlm"])
     linears = _wavlm_bert_speech_encoder_decoder_linears()
     kept = {n for n in linears if matcher(n, skip)}
