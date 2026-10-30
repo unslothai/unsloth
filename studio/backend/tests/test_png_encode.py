@@ -26,6 +26,26 @@ def _fresh(monkeypatch, tmp_path):
     monkeypatch.setattr(gallery, "studio_root", lambda: tmp_path)
 
 
+def _fast_here():
+    """True where this Python's zlib and Pillow's agree (the probe passes); else every image goes to Pillow.
+
+    Pillow's macOS and Windows wheels can bundle a different zlib, so there the fast path steps aside.
+    """
+    saved = dict(png_encode._PROBED)
+    png_encode._PROBED.clear()
+    try:
+        return png_encode._proven("RGB", 1)
+    finally:
+        png_encode._PROBED.clear()
+        png_encode._PROBED.update(saved)
+
+
+FAST_HERE = _fast_here()
+needs_fast = pytest.mark.skipif(
+    not FAST_HERE, reason = "Pillow's zlib differs from Python's here, so Pillow encodes every image"
+)
+
+
 def _pillow(image, **kwargs):
     buffer = io.BytesIO()
     image.save(buffer, format = "PNG", **kwargs)
@@ -73,6 +93,7 @@ def _info():
 @pytest.mark.parametrize("mode", ["RGB", "RGBA", "L", "LA"])
 @pytest.mark.parametrize("size", [(1, 1), (1, 9), (9, 1), (63, 130), (300, 257), (2, 17000)])
 @pytest.mark.parametrize("level", [1, 6, 9])
+@needs_fast
 def test_bytes_match_pillow(mode, size, level):
     image = _image(mode, *size, seed = size[0] * 31 + size[1])
     before = png_encode.engaged
@@ -84,6 +105,7 @@ def test_bytes_match_pillow(mode, size, level):
     assert png_encode.engaged == before + 1
 
 
+@needs_fast
 def test_bytes_match_pillow_without_text_and_across_idat_buffers():
     # 1500 rows of noise come to several 64 KiB IDAT buffers; a width over 16384 px widens the buffer.
     for size in ((1500, 400), (40, 20000)):
@@ -93,6 +115,7 @@ def test_bytes_match_pillow_without_text_and_across_idat_buffers():
         assert png_encode.encode(image, compress_level = 1) == _pillow(image, compress_level = 1)
 
 
+@needs_fast
 def test_bytes_match_pillow_for_what_the_image_carries():
     image = _image("RGB", 40, 50)
     image.info["transparency"] = (1, 2, 3)
@@ -111,6 +134,7 @@ def test_the_probe_spans_more_than_one_idat_buffer(mode):
     assert sum(chunk[0] == b"IDAT" for chunk in png_encode._chunks(data)) >= 2
 
 
+@needs_fast
 def test_lazy_png_source_matches_pillow():
     source = io.BytesIO(_pillow(_image("RGBA", 70, 90), compress_level = 6))
     expected = _pillow(Image.open(io.BytesIO(source.getvalue())), compress_level = 1)
@@ -147,6 +171,7 @@ def test_a_failed_probe_keeps_pillow_for_that_mode_and_level(monkeypatch):
     assert png_encode.encode(image, compress_level = 1) is None
 
 
+@needs_fast
 def test_an_encode_error_falls_back(monkeypatch):
     image = _image("RGB", 64, 64)
     assert png_encode.encode(image, compress_level = 1) is not None
@@ -158,6 +183,7 @@ def test_an_encode_error_falls_back(monkeypatch):
     assert png_encode.encode(image, compress_level = 1) is None
 
 
+@needs_fast
 def test_the_filter_worker_stays_a_few_bands_ahead_of_deflate(monkeypatch):
     # Deflate is the slow side at high levels; a worker free to run ahead would hold the whole filtered image.
     import threading
@@ -215,12 +241,13 @@ def _meta(index = 0):
 
 
 @pytest.mark.parametrize("level", ["1", "6"])
-def test_gallery_writes_pillows_bytes_through_the_fast_path(monkeypatch, level):
+def test_gallery_writes_pillows_bytes(monkeypatch, level):
     monkeypatch.setenv(gallery.PNG_COMPRESS_LEVEL_ENV, level)
     images = [_image("RGB", 257, 300, seed = i) for i in range(4)]
     before = png_encode.engaged
     records = list(gallery.save_many((image, _meta(i)) for i, image in enumerate(images)))
-    assert png_encode.engaged == before + 4
+    # Where the probe fails every image goes to Pillow; the files must be Pillow's bytes either way.
+    assert png_encode.engaged == before + (4 if FAST_HERE else 0)
     monkeypatch.setenv(png_encode.FAST_ENV, "0")
     for i, (image, record) in enumerate(zip(images, records)):
         written = gallery.image_path(record["id"]).read_bytes()
@@ -242,3 +269,13 @@ def test_gallery_falls_back_to_pillow_when_the_fast_path_steps_aside(monkeypatch
     info.add_text("unsloth", json.dumps(recipe))
     info.add_text("parameters", gallery._params_text(recipe))
     assert written == _pillow(image, pnginfo = info, compress_level = 1)
+
+
+def test_encode_returns_pillows_bytes_or_steps_aside_on_every_platform():
+    # Runs everywhere: a served result is always Pillow's bytes, and a failed probe serves nothing.
+    image = _image("RGBA", 120, 90, seed = 5)
+    data = png_encode.encode(image, pnginfo = _info(), compress_level = 1)
+    if FAST_HERE:
+        assert data == _pillow(image, pnginfo = _info(), compress_level = 1)
+    else:
+        assert data is None
