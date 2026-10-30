@@ -5615,8 +5615,7 @@ class VideoBackend:
             def _load(offline: bool) -> None:
                 if forced_offline:
                     kwargs["local_files_only"] = offline
-                # Every hub-id config read of the base during assembly (encoder / VAE / transformer configs, the LTX-2.5
-                # companions and encoder worker) reads the commit the plan pinned; a no-op for an unpinned load.
+                # Pin every hub-id config read during assembly to the plan's commit (no-op when unpinned).
                 with pread_safetensors():
                     with pinned_repo_revision(
                         kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
@@ -5647,9 +5646,7 @@ class VideoBackend:
                 )
                 retry_online = True
             if retry_online:
-                # Outside the except clause, so the failed attempt's traceback (whose frames hold the transformer and
-                # experts it built) is gone: free those, its encoder worker and its speed globals before the online
-                # attempt allocates its own copy.
+                # Outside the except so the failed attempt's traceback frames are released before retrying online.
                 self._close_pending_ltx25_encoder(token)
                 self._rollback_precommit_globals(token)
                 import gc
