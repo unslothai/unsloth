@@ -711,6 +711,20 @@ def arm_graphs_after_placement(
             pipe._unsloth_cuda_graph_reason = "offload active"
             applied["cuda_graph"] = False
             return applied
+        from .diffusion_cfg_batch import cfg_pair_decline  # noqa: PLC0415 - import cycle
+
+        if cfg_pair_decline(pipe, graphs = False) is None:
+            cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+            pipe._unsloth_cuda_graphs = ()
+            pipe._unsloth_cuda_graph_after_placement = False
+            pipe._unsloth_cuda_graph_reason = "guidance branches pair per streamed block"
+            applied["cuda_graph"] = False
+            if logger is not None:
+                logger.info(
+                    "diffusion.cuda_graph: off for this load (both guidance branches share each streamed "
+                    "block's upload instead)"
+                )
+            return applied
         handles, reason = cuda_graph.arm_after_placement(pipe, logger = logger)
         pipe._unsloth_cuda_graph_after_placement = False
         pipe._unsloth_cuda_graph_reason = reason

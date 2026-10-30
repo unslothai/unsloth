@@ -41,90 +41,100 @@ def _checkpoint_sort_key(checkpoint_path: Path) -> tuple[int, int, str]:
     return (1, 0, str(checkpoint_path))
 
 
-def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
-    """Best-effort base-model lookup using persisted Unsloth run metadata."""
-    checkpoint_name = checkpoint_dir.name
-    resolved_checkpoint_dir = str(checkpoint_dir.resolve())
+class _History:
+    def __init__(self) -> None:
+        self._conn = None
+        self._dirs: Optional[list] = None
+        self._pairs: Optional[list] = None
 
-    try:
-        conn = get_connection()
-    except Exception:
-        return None
+    def _fetch(self, sql: str) -> list:
+        # A failed open or query is retried by the next run, as when each run opened its own connection.
+        if self._conn is None:
+            self._conn = get_connection()
+        return self._conn.execute(sql).fetchall()
 
-    try:
-        exact_rows = conn.execute(
-            """
-            SELECT model_name
-            FROM training_runs
-            WHERE output_dir IN (?, ?)
-            ORDER BY started_at DESC
-            """,
-            (
-                resolved_checkpoint_dir,
-                str(checkpoint_dir),
-            ),
-        ).fetchall()
-        for row in exact_rows:
-            model_name = row["model_name"]
-            if model_name:
-                return model_name
+    def dir_rows(self) -> list:
+        if self._dirs is None:
+            self._dirs = [
+                (row["model_name"], row["output_dir"])
+                for row in self._fetch(
+                    "SELECT model_name, output_dir FROM training_runs"
+                    " WHERE output_dir IS NOT NULL ORDER BY started_at DESC"
+                )
+            ]
+        return self._dirs
 
-        suffix_rows = conn.execute(
-            """
-            SELECT model_name, output_dir
-            FROM training_runs
-            WHERE output_dir IS NOT NULL
-            ORDER BY started_at DESC
-            """
-        ).fetchall()
-        for row in suffix_rows:
-            output_dir = str(row["output_dir"] or "").rstrip("/\\")
-            if not (
-                output_dir.endswith(f"/{checkpoint_name}")
-                or output_dir.endswith(f"\\{checkpoint_name}")
+    def model_projects(self) -> list:
+        """Distinct (model_name, project_name), in order of their newest run."""
+        if self._pairs is None:
+            pairs = {}
+            for row in self._fetch(
+                "SELECT model_name, config_json FROM training_runs ORDER BY started_at DESC"
             ):
-                continue
-            model_name = row["model_name"]
-            if model_name:
-                return model_name
+                if not row["model_name"]:
+                    continue
+                project_name = None
+                if row["config_json"]:
+                    try:
+                        project_name = extract_project_name(json.loads(row["config_json"]))
+                    except Exception:
+                        project_name = None
+                pairs.setdefault((row["model_name"], project_name), None)
+            self._pairs = list(pairs)
+        return self._pairs
 
-        parts = checkpoint_name.rsplit("_", 1)
-        if len(parts) != 2 or not parts[1].isdigit():
-            return None
+    def close(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
-        timestamp = int(parts[1])
-        generated_rows = conn.execute(
-            """
-            SELECT model_name, config_json
-            FROM training_runs
-            ORDER BY started_at DESC
-            """
-        ).fetchall()
-        for row in generated_rows:
-            model_name = row["model_name"]
-            if not model_name:
-                continue
 
-            project_name = None
-            config_json = row["config_json"]
-            if config_json:
-                try:
-                    project_name = extract_project_name(json.loads(config_json))
-                except (TypeError, json.JSONDecodeError):
-                    project_name = None
-
-            expected_dir_name = build_default_output_dir_name(
-                model_name,
-                project_name,
-                timestamp = timestamp,
-            )
-            if expected_dir_name == checkpoint_name:
-                return model_name
+def _infer_base_model_from_history(
+    checkpoint_dir: Path, history: Optional[_History] = None
+) -> Optional[str]:
+    """Best-effort base-model lookup using persisted Unsloth run metadata."""
+    own_history = history is None
+    if own_history:
+        history = _History()
+    try:
+        return _lookup_base_model(checkpoint_dir, history)
     except Exception:
         return None
     finally:
-        conn.close()
+        if own_history:
+            history.close()
 
+
+def _lookup_base_model(checkpoint_dir: Path, history: _History) -> Optional[str]:
+    checkpoint_name = checkpoint_dir.name
+    exact_dirs = (str(checkpoint_dir.resolve()), str(checkpoint_dir))
+    dir_rows = history.dir_rows()
+    for model_name, output_dir in dir_rows:
+        if model_name and output_dir in exact_dirs:
+            return model_name
+
+    for model_name, output_dir in dir_rows:
+        output_dir = str(output_dir).rstrip("/\\")
+        if model_name and (
+            output_dir.endswith(f"/{checkpoint_name}")
+            or output_dir.endswith(f"\\{checkpoint_name}")
+        ):
+            return model_name
+
+    parts = checkpoint_name.rsplit("_", 1)
+    if len(parts) != 2 or not parts[1].isdigit():
+        return None
+
+    timestamp = int(parts[1])
+    for model_name, project_name in history.model_projects():
+        if (
+            build_default_output_dir_name(model_name, project_name, timestamp = timestamp)
+            == checkpoint_name
+        ):
+            return model_name
     return None
 
 
@@ -257,6 +267,16 @@ def scan_checkpoints(
     """
     if outputs_dir is None:
         outputs_dir = str(outputs_root())
+    history = _History()
+    try:
+        return _scan_checkpoints(outputs_dir, include_decision, history)
+    finally:
+        history.close()
+
+
+def _scan_checkpoints(
+    outputs_dir: str, include_decision: bool, history: _History
+) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
     models = []
     outputs_path = resolve_output_dir(outputs_dir)
 
@@ -319,7 +339,7 @@ def scan_checkpoints(
 
             # Fallback: "unsloth_Llama-3.2-3B-Instruct_1771227800" -> "unsloth/Llama-3.2-3B-Instruct".
             if not metadata.get("base_model"):
-                metadata["base_model"] = _infer_base_model_from_history(item)
+                metadata["base_model"] = _infer_base_model_from_history(item, history)
 
             if not metadata.get("base_model"):
                 name_part = model_segment_from_default_output_dir_name(item.name)

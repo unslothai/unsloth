@@ -121,12 +121,34 @@ def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled):
     assert calls == ["scaled_mm" if scaled else "dequant"]
 
 
-def test_scaled_mm_asks_for_bf16_when_activations_are_fp16():
-    """torch 2.10's rowwise CUTLASS kernel writes bf16 bits into an fp16 output when there is no
+def test_scaled_mm_asks_for_bf16_when_activations_are_fp16(monkeypatch):
+    """torch < 2.14's rowwise CUTLASS kernel writes bf16 bits into an fp16 output when there is no
     bias: fp16 calls request bf16 and cast back; bf16 / fp32 are unchanged."""
+    monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", True)
     assert F8._scaled_mm_out_dtype(torch.float16) is torch.bfloat16
     assert F8._scaled_mm_out_dtype(torch.bfloat16) is torch.bfloat16
     assert F8._scaled_mm_out_dtype(torch.float32) is torch.float32
+
+
+def test_scaled_mm_keeps_fp16_output_where_torch_writes_fp16(monkeypatch):
+    """torch >= 2.14 honours out.dtype; a bf16 detour would lose precision and overflow 65408..65504."""
+    monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", False)
+    assert F8._scaled_mm_out_dtype(torch.float16) is torch.float16
+    assert F8._scaled_mm_out_dtype(torch.bfloat16) is torch.bfloat16
+    assert F8._scaled_mm_out_dtype(torch.float32) is torch.float32
+
+
+def test_scaled_mm_fp16_workaround_follows_the_installed_torch():
+    from torch.torch_version import TorchVersion
+
+    broken = torch.__version__ < "2.14.0"
+    assert F8._SCALED_MM_FP16_OUT_BROKEN is broken
+    assert F8._scaled_mm_out_dtype(torch.float16) is (torch.bfloat16 if broken else torch.float16)
+    # 2.14 pre-releases keep the workaround.
+    assert TorchVersion("2.13.9+cu130") < "2.14.0"
+    assert TorchVersion("2.14.0a0+git0") < "2.14.0"
+    assert not TorchVersion("2.14.0+cu130") < "2.14.0"
+    assert not TorchVersion("2.15.0") < "2.14.0"
 
 
 def test_every_rowwise_scaled_mm_call_uses_the_out_dtype_helper():

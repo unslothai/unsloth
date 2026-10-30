@@ -766,3 +766,74 @@ def test_a_cached_trailing_fp8_twin_is_used_before_an_uncached_own_file(hub):
     hub.downloads.clear()
     assert _resolve(fp8) == hub.cached[(REPO, "Model-FP8.safetensors")]
     assert hub.fetched == ["Model-FP8.safetensors"]
+
+
+# nvfp4: the same preference holds for the hosted NVFP4 repos (image families resolve the twin first).
+NV_REPO = "unsloth/Z-Image-Turbo-NVFP4"
+NV_ST, NV_PT = "Z-Image-Turbo-NVFP4.safetensors", "Z-Image-Turbo-NVFP4.pt"
+# Captured before any fixture stubs it: the nvfp4 cases ask the install's real readability question.
+_REAL_LOAD_SUPPORTED = pq.restricted_prequant_load_supported
+
+
+@pytest.fixture
+def nv_hub(hub, monkeypatch):
+    from core.inference import diffusion_nvfp4_flag
+
+    monkeypatch.setenv(diffusion_nvfp4_flag.NVFP4_DIFFUSION_ENV, "1")
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", _REAL_LOAD_SUPPORTED)
+    if not (_REAL_LOAD_SUPPORTED("nvfp4", NV_ST) and _REAL_LOAD_SUPPORTED("nvfp4", NV_PT)):
+        pytest.skip("this install cannot read nvfp4 checkpoints")
+    hub.hosted = {NV_ST, NV_PT}
+    return hub
+
+
+def _nv_source():
+    """The chain Studio resolves for Z-Image's hosted NVFP4 repo, not a hand-written one."""
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    source = pq.resolve_prequant_source(fam, "nvfp4")
+    assert source.location == NV_REPO
+    assert pq.candidate_filenames_of(source)[:2] == (NV_ST, NV_PT)
+    return source
+
+
+def _nv_resolve(source, **kw):
+    return pq._resolve_checkpoint_path(source, None, None, scheme = "nvfp4", **kw)
+
+
+def test_nvfp4_cached_pickle_is_kept(nv_hub, caplog):
+    nv_hub.cache(NV_PT, NV_REPO)
+    caplog.set_level("INFO")
+    assert _nv_resolve(_nv_source()) == nv_hub.cached[(NV_REPO, NV_PT)]
+    assert NV_ST not in nv_hub.fetched
+    assert f"using the cached {NV_PT}" in caplog.text
+
+
+def test_nvfp4_cached_pickle_offline(nv_hub):
+    nv_hub.cache(NV_PT, NV_REPO)
+    assert _nv_resolve(_nv_source(), local_files_only = True) == nv_hub.cached[(NV_REPO, NV_PT)]
+    assert nv_hub.downloads == [(NV_PT, True)]
+
+
+def test_nvfp4_new_user_downloads_only_the_safetensors(nv_hub):
+    assert _nv_resolve(_nv_source()) == nv_hub.cached[(NV_REPO, NV_ST)]
+    assert nv_hub.fetched == [NV_ST]
+
+
+def test_nvfp4_pickle_only_repo_still_loads_the_pickle(nv_hub):
+    nv_hub.hosted = {NV_PT}
+    assert _nv_resolve(_nv_source()) == nv_hub.cached[(NV_REPO, NV_PT)]
+    assert nv_hub.fetched == [NV_ST, NV_PT]
+
+
+def test_nvfp4_torchao_without_nvfp4_unflatten_downloads_the_pickle(nv_hub, monkeypatch):
+    """torchao 0.16: the twin is hosted but unreadable here, so the hosted .pt is the only download."""
+    utils = pytest.importorskip("torchao.prototype.safetensors.safetensors_utils")
+    monkeypatch.setattr(
+        utils,
+        "ALLOWED_TENSORS_SUBCLASSES",
+        [n for n in utils.ALLOWED_TENSORS_SUBCLASSES if n not in ("NVFP4Tensor", "MXTensor")],
+    )
+    assert _nv_resolve(_nv_source()) == nv_hub.cached[(NV_REPO, NV_PT)]
+    assert nv_hub.fetched == [NV_PT]

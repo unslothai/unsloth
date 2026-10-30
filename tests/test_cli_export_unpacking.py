@@ -51,6 +51,9 @@ class _FakeExportBackend:
 
 def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inject a fake studio.backend.core.export into sys.modules so the CLI's lazy import binds to it; parent packages stubbed to skip the structlog-dependent tree."""
+    # The CLI puts studio/backend on sys.path, whose tests/ package then shadows the repo's for any
+    # process spawned later in this worker (`No module named 'tests.<file>'`): restore it afterwards.
+    monkeypatch.setattr(sys, "path", list(sys.path))
     # Load the real CLI first: the stubs below shadow studio.backend.utils, which it imports.
     importlib.import_module("unsloth_cli.commands.export")
 
@@ -86,6 +89,34 @@ def cli_app(monkeypatch: pytest.MonkeyPatch) -> typer.Typer:
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
+
+
+def test_an_export_run_leaves_sys_path_as_it_found_it(runner: CliRunner, tmp_path: Path) -> None:
+    """The run puts studio/backend first on sys.path, and studio/backend/tests is a package: left
+    there, every later `spawn` child in the worker resolves `tests.<file>` to it and dies. First in
+    the file, so the tests below cannot have leaked the path before it looks."""
+    before = list(sys.path)
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        _install_fake_studio_backend(monkeypatch)
+        # Another collected module may already have put it there, and the CLI skips a path it finds.
+        # In place, on the copy the helper above swapped in: only that helper's restore may undo it.
+        sys.path[:] = [p for p in sys.path if p != backend_dir]
+        clean = list(sys.path)
+        from unsloth_cli.commands import export as export_cmd
+
+        app = typer.Typer()
+        app.command("export")(export_cmd.export)
+        app.command("noop")(lambda: None)
+        result = runner.invoke(
+            app, ["export", str(ckpt), str(tmp_path / "out"), "--format", "lora"]
+        )
+        assert result.exit_code == 0, result.output
+        # Non-vacuous: the run did put studio/backend on sys.path, which the restore has to undo.
+        assert backend_dir in sys.path and backend_dir not in clean
+    assert sys.path == before
 
 
 @pytest.mark.parametrize(
