@@ -883,6 +883,27 @@ def _cached_repo(path: Path) -> tuple[str, str] | None:
     return None
 
 
+def _is_own_shared_blob(path: Path, cached: tuple[str, str], resolved: Path) -> bool:
+    """Hub >= 1.32 stores Xet files once per cache: snapshot -> repo blob -> <cache>/blobs/xx/<hash>."""
+    hop, last_in_repo = path, None
+    for _ in range(8):
+        if not hop.is_symlink():
+            break
+        hop = Path(os.path.normpath(hop.parent.resolve() / os.readlink(hop)))
+        if _cached_repo(hop) != cached:
+            break
+        last_in_repo = hop
+    if last_in_repo is None or hop != resolved or hop.is_symlink():
+        return False
+    repo_blobs = last_in_repo.parent
+    repo_dir = repo_blobs.parent
+    return (
+        repo_blobs.name == "blobs"
+        and repo_dir.name == f"models--{cached[0].replace('/', '--')}"
+        and resolved.parent.parent == repo_dir.parent / "blobs"
+    )
+
+
 def cached_model_repo(reference: str) -> str | None:
     """Recover a resident's Hub identity only from a verified model-cache path."""
     from utils.hf_cache_settings import known_hf_hub_caches
@@ -896,7 +917,7 @@ def cached_model_repo(reference: str) -> str | None:
         if cached is None or cached[1] != "model":
             return None
         resolved = path.resolve()
-        if _cached_repo(resolved) != cached:
+        if _cached_repo(resolved) != cached and not _is_own_shared_blob(path, cached, resolved):
             return None
         if Path(normalize_path(reference)).expanduser().resolve() != resolved:
             return None
