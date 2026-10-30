@@ -55,8 +55,14 @@ test("server Min P, a Max output cap and out-of-range values follow the engine's
     { minP: 0.3, minPMode: "server-default", maxTokens: 2 ** 31 - 1 },
     GENERATE,
   );
-  assert.equal("min_p" in out, false);
+  assert.equal(out.min_p, null);
   assert.equal("max_tokens" in out, false);
+  const shown = s.effectiveParams(
+    { min_p: 0.3, use_model_settings: true },
+    { minPMode: "server-default" },
+    GENERATE,
+  );
+  assert.equal(shown.min_p, null);
   assert.equal(s.savedAsParams({ maxTokens: 20000 }, VISION).max_tokens, 8192);
 });
 

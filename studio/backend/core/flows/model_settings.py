@@ -57,9 +57,12 @@ def overlay(
     out = dict(params)
     for key, pid in SAVED_TO_PARAM.items():
         value = saved.get(key)
-        if pid not in by_id or pid in skip or value is None:
+        if pid not in by_id or pid in skip:
             continue
         if key == "minP" and saved.get("minPMode") == "server-default":
+            out[pid] = None
+            continue
+        if value is None:
             continue
         if key == "maxTokens" and value >= _MAX_TOKENS_AS_MAX:
             continue

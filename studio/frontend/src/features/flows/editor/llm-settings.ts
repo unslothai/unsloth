@@ -126,8 +126,12 @@ export function savedAsParams(
   for (const [key, pid] of SAVED_TO_PARAM) {
     const param = spec.params.find((p) => p.id === pid);
     const value = saved[key];
-    if (!param || value === undefined || value === null) continue;
-    if (key === "minP" && saved.minPMode === "server-default") continue;
+    if (!param) continue;
+    if (key === "minP" && saved.minPMode === "server-default") {
+      out[pid] = null;
+      continue;
+    }
+    if (value === undefined || value === null) continue;
     if (key === "systemPrompt") {
       if (typeof value === "string") out[pid] = value;
       continue;
