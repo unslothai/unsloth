@@ -66,6 +66,8 @@ _QUANTS = {"q4_k_m", "q5_k_m", "q8_0", "f16"}
 _STUDIO_TARGETS = frozenset(
     {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
 )
+# Embedding fine-tunes (FastSentenceTransformer) default to the attention projections only.
+_STUDIO_EMBEDDING_TARGETS = frozenset({"q_proj", "k_proj", "v_proj", "o_proj"})
 _MISSING = object()
 
 
@@ -128,6 +130,8 @@ def _name(node: ast.AST) -> Optional[str]:
 class _Reader(ast.NodeVisitor):
     def __init__(self) -> None:
         self.consts: dict[str, Any] = {}
+        # Module-level list/tuple/set literals, e.g. TARGETS = [...] passed as target_modules = TARGETS.
+        self.collections: dict[str, Any] = {}
         self.found: dict[str, Any] = {}
         self.tune: dict[str, Any] = {}
         self.unsupported: set[str] = set()
@@ -166,6 +170,10 @@ class _Reader(ast.NodeVisitor):
             value = self.value(node.value)
             if value is not None:
                 self.consts[node.targets[0].id] = value
+            elif isinstance(node.value, (ast.List, ast.Tuple, ast.Set)):
+                literal = _literal(node.value)
+                if literal is not _MISSING:
+                    self.collections[node.targets[0].id] = literal
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -254,11 +262,15 @@ class _Reader(ast.NodeVisitor):
                 continue
             value = _literal(k.value)
             if value is _MISSING and isinstance(k.value, ast.Name):
-                value = self.consts.get(k.value.id, _MISSING)
+                name = k.value.id
+                value = self.collections.get(name, self.consts.get(name, _MISSING))
             if k.arg == "target_modules":
-                same = isinstance(value, (list, tuple, set)) and set(value) == _STUDIO_TARGETS
+                if self.found.get("task") == "embedding":
+                    expected, studio = _STUDIO_EMBEDDING_TARGETS, "q/k/v/o projections"
+                else:
+                    expected, studio = _STUDIO_TARGETS, "q/k/v/o/gate/up/down projections"
+                same = isinstance(value, (list, tuple, set)) and set(value) == expected
                 what = "LoRA target_modules"
-                studio = "q/k/v/o/gate/up/down projections"
             elif k.arg == "lora_dropout":
                 same = (
                     isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0
