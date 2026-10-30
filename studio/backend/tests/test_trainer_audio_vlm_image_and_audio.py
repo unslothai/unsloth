@@ -165,11 +165,16 @@ def test_an_image_typed_column_counts_even_when_row_zero_is_empty(audio_vlm_trai
         "text": ["one", "two"],
         feature: [[] if many else None, [image] if many else image],
     }
-    schema = datasets.Features({
-        "audio": {"array": datasets.Sequence(datasets.Value("float32")), "sampling_rate": datasets.Value("int64")},
-        "text": datasets.Value("string"),
-        feature: datasets.Sequence(datasets.Image()) if many else datasets.Image(),
-    })
+    schema = datasets.Features(
+        {
+            "audio": {
+                "array": datasets.Sequence(datasets.Value("float32")),
+                "sampling_rate": datasets.Value("int64"),
+            },
+            "text": datasets.Value("string"),
+            feature: datasets.Sequence(datasets.Image()) if many else datasets.Image(),
+        }
+    )
     ds = _NoAudioCast(datasets.Dataset.from_dict(rows, features = schema))
 
     assert audio_vlm_trainer._resolve_audio_vlm_image_column(ds, None, "audio") == feature
