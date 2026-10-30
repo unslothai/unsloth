@@ -53,8 +53,9 @@ export function benchmarkResult(outputs: Record<string, unknown> | null): Benchm
   };
 }
 
+/** Benchmark scores are already percents (0..100). */
 export function percent(score: number | null): string {
-  return score === null ? "-" : `${Math.round(score * 100)}%`;
+  return score === null ? "-" : `${Math.round(score)}%`;
 }
 
 export function benchmarkView(input: {

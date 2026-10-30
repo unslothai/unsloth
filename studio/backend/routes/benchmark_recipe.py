@@ -44,12 +44,30 @@ logger = get_logger(__name__)
 def _recipe_task(params: dict) -> dict:
     targets = params["targets"]
     with httpx.Client() as client:
-        return run_benchmark(
-            params["spec"],
-            chat = lambda target, messages: post_chat(client, targets[target], messages),
-            on_progress = lambda done, total: _report_progress(done, total, "Recipe held-out"),
-            is_cancelled = params["is_cancelled"],
-        )
+        try:
+            return run_benchmark(
+                params["spec"],
+                chat = lambda target, messages: post_chat(client, targets[target], messages),
+                on_progress = lambda done, total: _report_progress(done, total, "Recipe held-out"),
+                is_cancelled = params["is_cancelled"],
+            )
+        finally:
+            _restore_adapter(client, targets)
+
+
+def _restore_adapter(client: Any, targets: dict) -> None:
+    """use_adapter sticks on the server: a run whose last request turned the LoRA off ends with one
+    one-token request that turns it back on, so a later chat isn't left on the base model."""
+    candidate = targets.get("candidate") or {}
+    if candidate.get("body", {}).get("use_adapter") is not True or not any(
+        (t.get("body") or {}).get("use_adapter") is False for t in targets.values()
+    ):
+        return
+    restore = {**candidate, "body": {**candidate["body"], "max_tokens": 1}}
+    try:
+        post_chat(client, restore, [{"role": "user", "content": "ok"}])
+    except Exception as exc:
+        logger.warning("benchmark.recipe_heldout: could not turn the adapter back on: %s", exc)
 
 
 def _model_label(alias: str, configs: dict[str, dict], local_names: set) -> str:

@@ -26,6 +26,8 @@ LEAK_MIN_CHARS = 16
 # so a round with a handful of failures stays mostly fresh rows instead of near-copies of a few.
 FAILURE_PERCENT = 25
 PER_FAILURE = 2
+# Score nodes whose score output is already a percent.
+PERCENT_SCORERS = ("train.benchmark",)
 # Failures whose normalized prompts match this closely (same reference) seed as one.
 NEAR_SAME = 0.9
 
@@ -138,11 +140,12 @@ def seed_rows(
     return found
 
 
-def as_percent(score: Any) -> Optional[float]:
-    """A score node may answer 0..1 or 0..100; a dict with `score` or `accuracy` also works."""
+def as_percent(score: Any, percent: bool = False) -> Optional[float]:
+    """A score node may answer 0..1 or 0..100; a dict with `score` or `accuracy` also works.
+    ``percent`` says the node always answers 0..100 (Benchmark), so 0.5 is half a percent."""
     if isinstance(score, dict):
         score = next((score[k] for k in ("score", "accuracy", "value") if k in score), None)
     if isinstance(score, bool) or not isinstance(score, (int, float)):
         return None
-    value = float(score) * 100 if 0 <= score <= 1 else float(score)
+    value = float(score) * 100 if 0 <= score <= 1 and not percent else float(score)
     return round(max(0.0, min(100.0, value)), 2)

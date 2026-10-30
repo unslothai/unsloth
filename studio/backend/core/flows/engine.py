@@ -2159,6 +2159,7 @@ class FlowEngine:
         per_failure = int(params.get("per_failure") or loop_rounds.PER_FAILURE)
         seed_rows = int((plan.nodes[seed_node].get("params") or {}).get("rows") or 50)
         scorer_params = plan.nodes[scorer].get("params") or {}
+        in_percent = plan.specs[scorer]["type"] in loop_rounds.PERCENT_SCORERS
         rs.set_status(nid, "running")
         history: list[dict] = []
         failures: list[dict] = []
@@ -2266,8 +2267,8 @@ class FlowEngine:
                 )
                 entry = {
                     "round": r + 1,
-                    "test_score": loop_rounds.as_percent(test_out.get("score")),
-                    "probe_score": loop_rounds.as_percent(probe_out.get("score")),
+                    "test_score": loop_rounds.as_percent(test_out.get("score"), in_percent),
+                    "probe_score": loop_rounds.as_percent(probe_out.get("score"), in_percent),
                     "rows_from_failures": fed,
                     "probe_failures": len(failures),
                     "probe_rows": probe.get("rows"),

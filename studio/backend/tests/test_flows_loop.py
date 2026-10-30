@@ -148,6 +148,8 @@ def test_seed_rows_rewrite_failures_then_fresh():
     assert all(r["origin"] == "fresh" for r in loop_rounds.seed_rows([], 3, 50))
     assert loop_rounds.as_percent(0.875) == 87.5 and loop_rounds.as_percent(88) == 88.0
     assert loop_rounds.as_percent({"accuracy": 1}) == 100.0 and loop_rounds.as_percent("x") is None
+    # Benchmark answers in percent: 0.5 is half a percent, not 50.
+    assert loop_rounds.as_percent(0.5, percent = True) == 0.5 and loop_rounds.as_percent(87.5, percent = True) == 87.5
 
 
 def test_few_failures_never_flood_the_seed_with_near_copies():

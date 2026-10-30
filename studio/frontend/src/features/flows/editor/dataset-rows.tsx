@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/ui/data-table";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useMemo } from "react";
+import { readable } from "./value-kinds";
 
 type Row = Record<string, unknown>;
 
@@ -40,7 +41,7 @@ function cell(value: unknown) {
     );
   if (value === null || value === undefined || value === "")
     return <span className="text-muted-foreground/70">-</span>;
-  const text = typeof value === "string" ? value : JSON.stringify(value);
+  const text = typeof value === "string" ? value : readable(value);
   return <span className="line-clamp-4 whitespace-pre-wrap break-words">{text}</span>;
 }
 

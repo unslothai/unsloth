@@ -388,9 +388,11 @@ async def _as_dataset(ctx: NodeContext, rows: list[dict], name: str) -> dict:
     return await upload_rows(ctx, rows, name)
 
 
-def _rounded(score: Any) -> Any:
-    # A 0..1 fraction to two decimals of a percent: 0.6067 reads as 60.67% wherever it lands.
-    return round(score, 4) if isinstance(score, float) else score
+def _percent(score: Any) -> Optional[float]:
+    """The 0..1 pass rate as a percent with two decimals, the unit the card and a Loop's target use."""
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        return None
+    return round(score * 100, 2)
 
 
 @handler("train.benchmark")
@@ -414,8 +416,8 @@ async def benchmark(ctx: NodeContext) -> dict:
             "task": task,
             "model": label,
             "metric": found["metric"],
-            "score": _rounded(found["score"]),
-            "base_score": found["base_score"],
+            "score": _percent(found["score"]),
+            "base_score": _percent(found["base_score"]),
             "passed": found["passed"],
             "scored": found["scored"],
             "run_id": found["run_id"],
@@ -426,4 +428,4 @@ async def benchmark(ctx: NodeContext) -> dict:
     failures["preview"] = [
         {k: _short(v) for k, v in r.items()} for r in found["failures"][:MAX_ROWS]
     ]
-    return {"score": _rounded(found["score"]), "results": results, "failures": failures}
+    return {"score": _percent(found["score"]), "results": results, "failures": failures}

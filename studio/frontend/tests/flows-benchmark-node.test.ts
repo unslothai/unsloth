@@ -12,6 +12,7 @@ registerBundlerResolver();
 const { benchmarkView, percent } = await import(
   "../src/features/flows/editor/benchmark-status.ts"
 );
+const { readable } = await import("../src/features/flows/editor/value-kinds.ts");
 
 const catalog = JSON.parse(
   readFileSync(new URL("./fixtures/flows-catalog.json", import.meta.url), "utf8"),
@@ -62,19 +63,27 @@ test("the card reads its state from the run", () => {
     ...base,
     status: "done",
     outputs: {
-      score: 1,
+      score: 100,
       results: { kind: "dataset", passed: 2, scored: 2, base_score: 0, metric: "reference match", run_id: "r1" },
     },
   });
   assert.equal(scored.state, "scored");
   assert.deepEqual(scored.result, {
-    score: 1,
+    score: 100,
     passed: 2,
     scored: 2,
     baseScore: 0,
     metric: "reference match",
     runId: "r1",
   });
-  assert.equal(percent(0.256), "26%");
+  assert.equal(percent(25.6), "26%");
   assert.equal(percent(null), "-");
+});
+
+test("a judge cell reads as key: value lines, not raw JSON", () => {
+  assert.equal(
+    readable({ correctness: { score: 4, reasoning: "Same rows" }, passed: true }),
+    "correctness: score: 4, reasoning: Same rows\npassed: true",
+  );
+  assert.equal(readable(["a", 1]), "a, 1");
 });
