@@ -1897,6 +1897,16 @@ def _lora_fused_ok(W, W_quant, dtype):
     return _quant_state_dtype(W_quant) == dtype
 
 
+def _shares_storage(out, *tensors):
+    if _is_compiling():
+        return False
+    ptr = out.untyped_storage().data_ptr()
+    return any(
+        t is not None and isinstance(t, torch_Tensor) and t.untyped_storage().data_ptr() == ptr
+        for t in tensors
+    )
+
+
 def matmul_lora(
     X,
     W,
@@ -1940,8 +1950,16 @@ def matmul_lora(
         A is not None
         and fused
         and _lora_fused_ok(W, W_quant, dtype)
-        # A caller's buffer is written before the base GEMM, so it must already be the output.
-        and (out is None or (out.shape == (X.shape[0], B.shape[0]) and out.dtype == dtype))
+        # A caller's buffer is written before the base GEMM, so it must already be the output and must
+        # not share storage with an operand the base GEMM still reads.
+        and (
+            out is None
+            or (
+                out.shape == (X.shape[0], B.shape[0])
+                and out.dtype == dtype
+                and not _shares_storage(out, W, X, A, B, XA)
+            )
+        )
     ):
         if XA is None:
             XA = torch_matmul(X, A.t().to(dtype))
