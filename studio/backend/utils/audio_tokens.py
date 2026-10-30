@@ -95,7 +95,9 @@ def classify_audio_tokens(tok_config: dict) -> Optional[str]:
     """The audio_type a parsed tokenizer_config fingerprints, or None."""
     added = tok_config.get("added_tokens_decoder") or {}
     token_contents = [value.get("content", "") for value in added.values()]
-    if isinstance(tok_config.get("audio_token"), str):
+    # Only beside an image processor (LFM3-Omni): audio-input chat loads as a VLM, and
+    # speech-only LFM3-Audio has no such load.
+    if isinstance(tok_config.get("audio_token"), str) and tok_config.get("image_processor"):
         token_contents.append(tok_config["audio_token"])
     if not token_contents:
         return None

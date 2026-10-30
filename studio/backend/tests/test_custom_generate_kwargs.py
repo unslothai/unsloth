@@ -55,3 +55,15 @@ def test_zoo_wrapped_call_still_reads_original_signature():
             return super().__call__(*args, **kwargs)
 
     assert _processor_takes_text_first(_Patched()) is True
+
+
+def test_a_text_load_without_generate_is_refused_by_name():
+    import pytest
+    from core.inference.inference import _refuse_without_generate
+
+    class Lfm3AudioModel:
+        pass
+
+    with pytest.raises(ValueError, match = "Lfm3AudioModel, which cannot generate text"):
+        _refuse_without_generate(Lfm3AudioModel(), "LiquidAI/LFM3-Audio-2B")
+    _refuse_without_generate(types.SimpleNamespace(generate = lambda **kw: None), "any/causal-lm")
