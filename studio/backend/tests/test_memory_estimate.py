@@ -4409,6 +4409,86 @@ class TestComputeBytes:
         )
 
 
+def _unfused_route(monkeypatch, fuses):
+    """mlx and zoo stubs, so the unquantized route runs where MLX does not."""
+    asked = []
+    mx = SimpleNamespace(
+        float32 = SimpleNamespace(size = 4),
+        bfloat16 = SimpleNamespace(size = 2),
+        zeros = lambda shape, dtype: SimpleNamespace(shape = shape, dtype = dtype),
+    )
+
+    def fused_kernel_exists(
+        queries,
+        q_keys,
+        q_values,
+        group_size,
+        mask = None,
+    ):
+        L, S = queries.shape[-2], q_keys[0].shape[-2]
+        assert q_keys[1].shape[-1] * group_size == q_values[1].shape[-1] * group_size == 256
+        assert queries.shape[1] == 24 and q_keys[0].shape[1] == 4 and mask == "causal"
+        asked.append((L, S))
+        return fuses(L, S)
+
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core = mx))
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    monkeypatch.setitem(
+        sys.modules,
+        "unsloth_zoo.mlx.attention",
+        SimpleNamespace(fused_kernel_exists = fused_kernel_exists),
+    )
+    return asked
+
+
+_BONSAI = (5120, 17408, 24, 4, 256, 0)
+_SCORE = 24 * 2 * mm._SCORE_LIVE
+
+
+@pytest.mark.parametrize(
+    "fuses, cells",
+    [
+        (lambda L, S: True, 0),
+        (lambda L, S: L <= 8, 2048 * 32768),
+        # NAX: the split kernel needs 1024 queries, so only the 1023-token tail is unfused.
+        (lambda L, S: L <= 8 or L >= 1024, 1023 * 33791),
+    ],
+)
+def test_a_full_width_cache_pays_for_the_widest_call_mlx_does_not_fuse(monkeypatch, fuses, cells):
+    n_ctx = 33792
+    floor = mm._compute_bytes(_BONSAI[:3], 2, 2048, [_GROWING], n_ctx, None)
+    asked = _unfused_route(monkeypatch, fuses)
+    priced = mm._compute_bytes(_BONSAI, 2, 2048, [_GROWING], n_ctx, None)
+    assert priced - floor == cells * _SCORE
+    assert (2048, 16 * 2048) in asked
+
+
+def test_a_tail_unfused_past_any_fixed_scan_is_still_priced(monkeypatch):
+    # NAX d512 with few heads: tails fuse only past 8160 queries, longer than a fixed scan reaches.
+    _unfused_route(monkeypatch, lambda L, S: L <= 8 or L > 8160)
+    floor = mm._compute_bytes(_BONSAI[:3], 2, 16384, [_GROWING], 32768, None)
+    priced = mm._compute_bytes(_BONSAI, 2, 16384, [_GROWING], 32768, None)
+    assert priced - floor == 8160 * (16384 + 8160) * _SCORE
+
+
+def test_the_scores_charged_never_fall_as_the_context_grows(monkeypatch):
+    _unfused_route(monkeypatch, lambda L, S: L <= 8 or L == S >= 2048)
+    steps = range(256, 12_289, 256)
+    priced = [mm._compute_bytes(_BONSAI, 2, 2048, [_GROWING], n, None) for n in steps]
+    assert priced == sorted(priced)
+
+
+def test_a_windowed_model_and_an_unreachable_zoo_keep_the_old_price(monkeypatch):
+    widths = _BONSAI
+    floor = mm._compute_bytes(widths[:3], 2, 2048, [_GROWING], 262144, None)
+    asked = _unfused_route(monkeypatch, lambda L, S: False)
+    windowed = [_GROWING, _plan_entry(bound_spec = (object, "max_size", 1024))]
+    assert mm._compute_bytes(widths, 2, 2048, windowed, 262144, None) == floor
+    assert asked == []
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.attention", None)
+    assert mm._compute_bytes(widths, 2, 2048, [_GROWING], 262144, None) == floor
+
+
 @_NEEDS_MLX
 class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
     """unsloth-zoo routes each call between a score matrix and a dequantized copy of the cache."""
@@ -4445,16 +4525,29 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         row = mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
         floor = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, None)
         priced = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, 2048, 4, 64)
-        scores = mm._widest_quantized_scores(32768, 2048, 2048) * 32 * mm._QUANT_SCORE_DTYPE_SIZE
+        scores = mm._widest_quantized_scores(32768, 2048, 2048) * 32 * 2 * mm._SCORE_LIVE
         assert priced - floor == row * 32768 < scores
 
     def test_the_decode_step_still_scores_where_that_is_the_wider_of_the_two(self):
-        widths = (3584, 18944, 128, 1, 64, 0)
+        widths = (3584, 18944, 256, 1, 64, 0)
         row = mm._dequantized_row_bytes(widths, 2, 8, 64, 2048)
-        floor = mm._compute_bytes(widths, 2, 2048, [], 32768, None)
+        floor = mm._compute_bytes(widths[:3], 2, 2048, [], 32768, None)
         charged = mm._compute_bytes(widths, 2, 2048, [], 32768, 2048, 8, 64) - floor
-        assert row is not None and charged == (32769) * 128 * mm._QUANT_SCORE_DTYPE_SIZE
+        assert row is not None and charged == (32769) * 256 * 2 * mm._SCORE_LIVE
         assert charged > row * 32768
+
+    def test_a_full_width_cache_is_charged_the_scores_mlx_builds_below_nax(self):
+        from unsloth_zoo.mlx.nax import nax_available
+
+        if nax_available():
+            pytest.skip("NAX fuses head_dim 256 prefill")
+        plan = [_GROWING] * 4
+        unrouted = mm._compute_bytes(self.GQA[:3], 2, 2048, plan, 32768, None)
+        assert mm._compute_bytes(self.GQA, 2, 2048, plan, 32768, None) == unrouted
+        wide = mm._compute_bytes(self.WIDE, 2, 2048, plan, 32768, None)
+        assert (
+            wide - unrouted == mm._widest_quantized_scores(32768, 0, 2048) * 16 * 2 * mm._SCORE_LIVE
+        )
 
     def test_a_zoo_that_cannot_route_it_keeps_the_scores_whole(self, monkeypatch):
         import builtins
@@ -4471,7 +4564,7 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         floor = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, None)
         priced = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, 2048, 4, 64)
         assert priced - floor == (
-            mm._widest_quantized_scores(32768, 2048, 2048) * 32 * mm._QUANT_SCORE_DTYPE_SIZE
+            mm._widest_quantized_scores(32768, 2048, 2048) * 32 * 2 * mm._SCORE_LIVE
         )
 
     @pytest.mark.parametrize(
@@ -5140,6 +5233,12 @@ class TestShardsTheLoaderReads:
             mm.mlx_shard_files(str(tmp_path), self._VISION)
 
 
+# mlx 0.32.4 leaves head_dim 256 prefill unfused below NAX, and tails under 1024 queries on NAX.
+_UNFUSED_HEAD_DIM_256_SCORES = {
+    "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": {True: 1_298_923_560, False: 2_682_961_960}
+}
+
+
 @_NEEDS_MLX
 @pytest.mark.parametrize(
     "repo, n_ctx, kv_bits, weights, kv, compute, layers, caption",
@@ -5231,7 +5330,7 @@ class TestShardsTheLoaderReads:
             None,
             5_298_715_127,
             249_561_088,
-            1_281_737_359,
+            1_282_888_719,
             28,
             "bf16",
         ),
@@ -5241,7 +5340,7 @@ class TestShardsTheLoaderReads:
             None,
             2_061_600,
             98_304,
-            688_341_647,
+            690_952_857,
             2,
             "bf16",
         ),
@@ -5256,7 +5355,10 @@ def test_a_real_checkpoint_is_priced_to_the_byte(
     )
     assert breakdown is not None
     assert (breakdown.weights_bytes, breakdown.kv_bytes) == (weights, kv)
-    assert breakdown.compute_bytes == compute
+    from unsloth_zoo.mlx.nax import nax_available
+
+    unfused = _UNFUSED_HEAD_DIM_256_SCORES.get(repo, {}).get(nax_available(), 0)
+    assert breakdown.compute_bytes == compute + unfused
     assert breakdown.layer_count == layers
     assert breakdown.cache_type_kv == caption
 
