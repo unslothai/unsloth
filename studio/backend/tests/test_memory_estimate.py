@@ -4613,6 +4613,50 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         assert mm._dequantized_row_bytes((3584, 18944, 32, 0, 0, 0), 2, 4, 64, 2048) is None
 
 
+@pytest.mark.parametrize("chunk", [256, 2048])
+def test_the_route_is_asked_about_a_cache_longer_than_the_chunk(monkeypatch, chunk):
+    """zoo never fuses a causal chunk over fewer keys than queries (#15935)."""
+    asked = []
+
+    def quantize(w, group_size, bits):
+        *lead, width = w.shape
+        packed = SimpleNamespace(shape = (*lead, width * bits // 32), dtype = SimpleNamespace(size = 4))
+        scales = SimpleNamespace(shape = (*lead, width // group_size), dtype = w.dtype)
+        return packed, scales, scales
+
+    mx = SimpleNamespace(
+        float32 = SimpleNamespace(size = 4),
+        bfloat16 = SimpleNamespace(size = 2),
+        zeros = lambda shape, dtype: SimpleNamespace(shape = shape, dtype = dtype),
+        quantize = quantize,
+    )
+
+    def fused_kernel_exists(
+        queries,
+        q_keys,
+        q_values,
+        group_size,
+        mask = None,
+    ):
+        asked.append((queries.shape[-2], q_keys[0].shape[-2], q_values[0].shape[-2], mask))
+        return q_keys[0].shape[-2] >= queries.shape[-2]
+
+    zoo = SimpleNamespace(
+        _row_bytes = lambda cache, group_size, dtype: 7,
+        dequantizing_is_smaller = lambda *args: True,
+        fused_kernel_exists = fused_kernel_exists,
+    )
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core = mx))
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.attention", zoo)
+
+    widths = (3584, 18944, 32, 8, 128, 0)
+    assert mm._dequantized_row_bytes(widths, 2, 4, 64, chunk) == 8 * 2 * 7
+    ((queries, keys, values, mask),) = asked
+    assert queries == chunk and keys == values > chunk
+    assert mask == "causal"
+
+
 @pytest.mark.skipif(not _HAVE_MLX, reason = "imports architecture modules")
 class TestProbeFollowsTheLoadersRoute:
     """The estimator must not price a load path that cannot be taken."""
