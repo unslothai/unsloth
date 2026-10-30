@@ -150,6 +150,7 @@ function mountForm(
         },
     },
     "@hugeicons/core-free-icons": { ViewIcon: "ViewIcon", ViewOffSlashIcon: "ViewOffSlashIcon" },
+    "@/lib/folder-icons": { ViewIcon: "ViewIcon", ViewOffSlashIcon: "ViewOffSlashIcon" },
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "../api": {
       refreshSession: async () => true,

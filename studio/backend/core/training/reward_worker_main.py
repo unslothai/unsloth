@@ -160,6 +160,99 @@ class _BoundedLog:
         return getattr(self._file, name)
 
 
+_JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x100
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+
+
+def _limit_job_memory(kernel32, handle, limit_bytes):
+    """RLIMIT_AS for the Windows reward job: a per-process commit cap on every process in it.
+    Windows has nothing like RLIMIT_FSIZE, so there is no file-size cap there."""
+    if not limit_bytes or not handle:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    class _Basic(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _Io(ctypes.Structure):
+        _fields_ = [
+            (n, ctypes.c_uint64)
+            for n in (
+                "ReadOperationCount",
+                "WriteOperationCount",
+                "OtherOperationCount",
+                "ReadTransferCount",
+                "WriteTransferCount",
+                "OtherTransferCount",
+            )
+        ]
+
+    class _Extended(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _Basic),
+            ("IoInfo", _Io),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    info = _Extended()
+    info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_PROCESS_MEMORY
+    info.ProcessMemoryLimit = int(limit_bytes)
+    return bool(
+        kernel32.SetInformationJobObject(
+            handle,
+            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        )
+    )
+
+
+def _cap_own_memory(limit_bytes, kernel32 = None):
+    """Puts this worker in a job of its own with the memory cap, before any reward code runs.
+
+    The host also caps the job it puts the launched process in, but under MXC that process is the
+    launcher, which may start this worker before the host's job exists, and job membership is
+    fixed when a process is created."""
+    if not limit_bytes or (kernel32 is None and os.name != "nt"):
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    if kernel32 is None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job or not _limit_job_memory(kernel32, job, limit_bytes):
+        return False
+    # The handle stays open for the worker's life; the job goes when the worker does.
+    return bool(kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()))
+
+
 def main():
     workdir = os.getcwd()
     # Notebook rewards print a lot; a pipe nobody drains would block them.
@@ -176,6 +269,12 @@ def main():
     with open(setup_path, encoding = "utf-8") as f:
         setup = json.load(f)
     specs = setup["specs"]
+    try:
+        capped = _cap_own_memory(setup.get("memory_limit_bytes"))
+    except Exception:  # noqa: BLE001 - reported below
+        capped = False
+    if os.name == "nt" and setup.get("memory_limit_bytes") and not capped:
+        print("Could not set the reward memory limit on this worker.")
     try:
         _install_unsloth_helpers(setup.get("unsloth_helpers"))
     except Exception as exc:  # noqa: BLE001 - only rewards that use them will fail, by name

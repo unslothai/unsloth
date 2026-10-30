@@ -381,6 +381,62 @@ def test_the_sweep_reaps_a_prepared_upload_a_crash_left_behind():
     assert not stale.exists() and waiting.exists()
 
 
+def _sidecar_for(directory, input_id, touched):
+    import json
+    meta = {
+        "name": "a.wav",
+        "duration_s": 1,
+        "sample_rate": 16000,
+        "channels": 1,
+        "sha256": input_id,
+        "created_at": "x",
+        "touched_at": touched,
+    }
+    (directory / f"{input_id}.json").write_text(json.dumps(meta), encoding = "utf-8")
+
+
+def test_the_sweep_lists_prepared_copies_once_for_every_live_input(monkeypatch):
+    directory = audio_inputs.inputs_dir()
+    now = time.time()
+    for i in range(6):
+        input_id = f"{i:032x}"
+        (directory / f"{input_id}.wav").write_bytes(b"w" * 10)
+        (directory / f"{input_id}.24000.mono.wav").write_bytes(b"d" * 10)
+        _sidecar_for(directory, input_id, now)
+    globs = []
+    real = audio_inputs._derived
+    monkeypatch.setattr(audio_inputs, "_derived", lambda d, s: globs.append(s) or real(d, s))
+    assert audio_inputs.sweep() == 0
+    assert globs == []
+
+
+def test_the_sweep_sizes_prepared_copies_like_the_per_input_glob(monkeypatch):
+    directory = audio_inputs.inputs_dir()
+    now = time.time()
+    names = {
+        "aaaa": ["aaaa.24000.mono.wav", "aaaa..wav", "aaaa.x.y.wav", "aaaa.1.wav.tmp"],
+        "aaaab": ["aaaab.1.wav"],
+        "bbbb": ["bbbb.16000.stereo.m30.wav"],
+        "cc-dd_1": ["cc-dd_1.24000.mono.wav", "cc-dd_1x.1.wav"],
+    }
+    for age, (input_id, derived) in enumerate(names.items()):
+        (directory / f"{input_id}.wav").write_bytes(b"w" * 100)
+        for name in derived:
+            (directory / name).write_bytes(b"d" * 1000)
+        _sidecar_for(directory, input_id, now - age)
+    (directory / "zz.notes.wav").write_bytes(b"q")
+    index = audio_inputs._derived_index(directory)
+    for input_id in names:
+        assert sorted(audio_inputs._derived_from(index, directory, input_id)) == sorted(
+            audio_inputs._derived(directory, input_id)
+        )
+    # aaaa = 100 + 3 * 1000 (the .tmp is not a WAV), aaaab = 1100, bbbb = 1100, cc-dd_1 = 1100.
+    assert audio_inputs.sweep(byte_cap = 3100 + 1100 + 1100) == 1
+    assert not (directory / "cc-dd_1.wav").exists()
+    assert (directory / "cc-dd_1x.1.wav").exists()
+    assert (directory / "bbbb.wav").exists()
+
+
 @pytest.mark.parametrize(
     "fmt, codec, rate, layout, start_s, end_s",
     [

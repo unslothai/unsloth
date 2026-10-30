@@ -3,13 +3,13 @@
 
 import {
   AiImageIcon,
-  ArrowExpand01Icon,
   Edit03Icon,
   MagicWand01Icon,
   ZoomInAreaIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 // Relative with .ts: the node tests import this file and cannot resolve @/.
+import { ExpandArrowsIcon } from "../../lib/expand-icons.ts";
 import { ImagesIcon } from "../../lib/hugeicons-derived.ts";
 import { PaintbrushIcon } from "../../lib/paintbrush-icon.ts";
 
@@ -64,7 +64,7 @@ export const WORKFLOW_TABS: Array<{
   {
     id: "extend",
     label: "Extend",
-    icon: ArrowExpand01Icon,
+    icon: ExpandArrowsIcon,
     requires: "outpaint",
     hint: "Grow the canvas and fill the edges",
   },

@@ -33,12 +33,12 @@ import {
   effectiveTrainingObjective,
 } from "@/features/training";
 import { useT } from "@/i18n";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
   Award01Icon,
   BubbleChatEditIcon,
-  ChipIcon,
   Database02Icon,
   PencilEdit01Icon,
   Settings02Icon,

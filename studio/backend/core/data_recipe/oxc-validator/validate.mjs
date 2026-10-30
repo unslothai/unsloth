@@ -392,7 +392,7 @@ function fallbackLintResults(entries, message) {
   );
 }
 
-function runLintBatch(entries, budgetMs) {
+function runLintBatch(entries, budgetMs, startedAtMs) {
   if (entries.length === 0) {
     return new Map();
   }
@@ -429,7 +429,9 @@ function runLintBatch(entries, budgetMs) {
     ];
     const rawDiagnostics = [];
     for (const names of chunks) {
-      const timeoutMs = Math.floor(budgetMs - OXLINT_BUDGET_MARGIN_MS - performance.now());
+      const timeoutMs = Math.floor(
+        budgetMs - OXLINT_BUDGET_MARGIN_MS - (performance.now() - startedAtMs),
+      );
       if (timeoutMs < OXLINT_MIN_TIMEOUT_MS) {
         return fallbackLintResults(entries, "oxlint skipped: validation budget exhausted");
       }
@@ -539,7 +541,7 @@ function readStdin() {
   });
 }
 
-function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
+function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs, startedAtMs }) {
   if (mode === "syntax") {
     return codes.map((code, index) =>
       validateSyntaxOne({ code, lang, index, codeShape }).result,
@@ -550,7 +552,7 @@ function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
     const entries = codes.map((code, index) =>
       resolveLintEntry({ code, lang, index, codeShape }),
     );
-    const lintMap = runLintBatch(entries, oxlintBudgetMs);
+    const lintMap = runLintBatch(entries, oxlintBudgetMs, startedAtMs);
     return entries.map(
       (entry) =>
         lintMap.get(entry.index) ??
@@ -568,7 +570,7 @@ function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
   const lintTargets = syntaxRuns
     .filter((run) => run.result.is_valid === true)
     .map((run) => run.lintEntry);
-  const lintMap = runLintBatch(lintTargets, oxlintBudgetMs);
+  const lintMap = runLintBatch(lintTargets, oxlintBudgetMs, startedAtMs);
 
   return syntaxRuns.map((run) => {
     if (run.result.is_valid !== true) {
@@ -583,6 +585,17 @@ function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
       })
     );
   });
+}
+
+function validatePayload(payload, startedAtMs) {
+  const lang = mapLang(payload?.lang);
+  const mode = mapMode(payload?.mode);
+  const codeShape = mapCodeShape(payload?.code_shape);
+  const codes = Array.isArray(payload?.codes) ? payload.codes : [];
+  const oxlintBudgetMs = mapBudgetMs(payload?.timeout_ms);
+  return JSON.stringify(
+    runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs, startedAtMs }),
+  );
 }
 
 async function main() {
@@ -604,17 +617,71 @@ async function main() {
     );
     return;
   }
-
-  const lang = mapLang(payload?.lang);
-  const mode = mapMode(payload?.mode);
-  const codeShape = mapCodeShape(payload?.code_shape);
-  const codes = Array.isArray(payload?.codes) ? payload.codes : [];
-  const oxlintBudgetMs = mapBudgetMs(payload?.timeout_ms);
-  const out = runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs });
-  process.stdout.write(JSON.stringify(out));
+  process.stdout.write(validatePayload(payload, 0));
 }
 
-main().catch((error) => {
-  process.stderr.write(String(error?.stack || error));
-  process.exit(1);
-});
+// --serve: one {"id", "payload"} per line, answered in order with {"id", "result"|"error"}.
+const SERVE_MAX_LINE_CHARS = 64 * 1024 * 1024;
+
+let servedRequests = 0;
+
+function serveLine(line) {
+  // The caller's deadline started before Node did, so the first request pays for startup.
+  const startedAtMs = servedRequests++ === 0 ? 0 : performance.now();
+  let id = null;
+  let reply;
+  try {
+    const request = JSON.parse(line);
+    id = Number.isSafeInteger(request?.id) ? request.id : null;
+    reply = `{"id":${JSON.stringify(id)},"result":${validatePayload(request?.payload, startedAtMs)}}`;
+  } catch (error) {
+    reply = JSON.stringify({ id, error: String(error?.stack || error) });
+  }
+  process.stdout.write(`${reply}\n`);
+}
+
+function serve() {
+  // A closed stdin (caller done or dead) ends the process.
+  const parentPid = process.ppid;
+  if (process.platform !== "win32") {
+    setInterval(() => {
+      if (process.ppid !== parentPid) {
+        process.exit(0);
+      }
+    }, 1000).unref();
+  }
+  // Only each new chunk is scanned: rescanning the whole pending line made large requests quadratic.
+  let pending = [];
+  let pendingChars = 0;
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    let start = 0;
+    let newline = chunk.indexOf("\n");
+    while (newline !== -1) {
+      pending.push(chunk.slice(start, newline));
+      const line = pending.join("");
+      pending = [];
+      pendingChars = 0;
+      serveLine(line);
+      start = newline + 1;
+      newline = chunk.indexOf("\n", start);
+    }
+    if (start < chunk.length) {
+      pending.push(chunk.slice(start));
+      pendingChars += chunk.length - start;
+    }
+    if (pendingChars > SERVE_MAX_LINE_CHARS) {
+      process.exit(2);
+    }
+  });
+  process.stdin.on("error", () => process.exit(0));
+}
+
+if (process.argv.includes("--serve")) {
+  serve();
+} else {
+  main().catch((error) => {
+    process.stderr.write(String(error?.stack || error));
+    process.exit(1);
+  });
+}

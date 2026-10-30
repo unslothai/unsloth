@@ -433,9 +433,11 @@ export function TtsFooter({
         {secondaryAction}
         <Button
           className={cn(
-            "relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
+            "relative z-10 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
             // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
-            generationPresentation && "hover:bg-muted dark:hover:bg-muted",
+            generationPresentation
+              ? "text-ui-13 hover:bg-muted dark:hover:bg-muted"
+              : "h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85",
           )}
           onClick={
             generationPresentation?.canStop
@@ -451,7 +453,7 @@ export function TtsFooter({
                 (musicNeedsDescription && !audioInstructions.trim()) ||
                 blocker !== null
           }
-          variant={generationPresentation ? "outline" : "dark"}
+          variant={generationPresentation ? "outline" : "primary"}
           aria-describedby={blocker ? "audio-generate-blocker" : undefined}
           aria-keyshortcuts="Control+Enter Meta+Enter"
           title={

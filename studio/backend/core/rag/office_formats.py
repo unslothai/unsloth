@@ -210,6 +210,7 @@ _BUILTIN_DATE_FORMATS = {
 
 
 _BUILTIN_DURATION_FORMATS = {46}  # [h]:mm:ss
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 # Classified as openpyxl does: quoted text and locale tags aside, any date or time token.
 _FORMAT_STRIP = re.compile(r'".*?"|\[(?!hh?\]|mm?\]|ss?\])[^\]]*\]')
 _FORMAT_DURATION = re.compile(
@@ -1231,7 +1232,7 @@ def _word_text(raw: str) -> str:
     # A cell ends in 0x07; a row ends in one more.
     text = "".join(out).replace("\x07\x07", "\n").replace("\x07", " | ")
     text = text.translate({0x0D: "\n", 0x0B: "\n", 0x0C: "\n", 0x1E: "-", 0x1F: None})
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = _BLANK_LINE_RUN.sub("\n\n", text)
     return _clean_control(text).strip()
 
 
