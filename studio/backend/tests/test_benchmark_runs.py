@@ -286,3 +286,48 @@ def test_root_model_routes_are_fenced_and_token_counts_are_not_generations(monke
 def test_the_lease_outlasts_a_throttled_background_tab():
     # Chrome runs a hidden tab's 15 s renewal timer about once a minute.
     assert benchmarks_routes.LEASE_TTL_SECONDS > 2 * 60
+
+
+def test_a_lease_waits_out_a_load_that_passed_the_fence_first(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    monkeypatch.setattr(benchmarks_routes, "_loads_in_flight", {})
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_load():
+        entered.set()
+        release.wait(5)
+        return {"ok": True}
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    app.post("/api/inference/load")(slow_load)
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app, headers = {"Authorization": "Bearer t"})
+    mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+
+    stray = threading.Thread(target = lambda: client.post("/api/inference/load"))
+    stray.start()
+    assert entered.wait(5)
+    refused = client.post("/api/benchmarks/lease", json = mine)
+    assert refused.status_code == 409 and refused.json()["detail"]["error"] == "model_loading"
+    release.set()
+    stray.join(5)
+    assert client.post("/api/benchmarks/lease", json = mine).status_code == 200
+
+    # The holder's own load in flight never blocks its renewal.
+    entered.clear()
+    release.clear()
+    own = threading.Thread(
+        target = lambda: client.post(
+            "/api/inference/load", headers = {"X-Unsloth-Bench-Lease": mine["holder"]}
+        )
+    )
+    own.start()
+    assert entered.wait(5)
+    assert client.post("/api/benchmarks/lease", json = mine).status_code == 200
+    release.set()
+    own.join(5)
+    assert benchmarks_routes._loads_in_flight == {}
