@@ -168,6 +168,22 @@ _ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
 _BUFFER_NAMES = ("input_ids", "attention_mask", "labels", "position_ids", "shift_labels")
 _PAD_VALUES = {"labels": -100, "shift_labels": -100, "attention_mask": 0, "input_ids": 0}
+# Only the text buffers above are sharded; image / video / audio features would stay whole on every rank.
+_MULTIMODAL_INPUTS = (
+    "pixel_values",
+    "pixel_values_videos",
+    "image_grid_thw",
+    "video_grid_thw",
+    "input_features",
+)
+
+
+def _multimodal_inputs(inputs: dict) -> list:
+    return sorted(
+        name
+        for name, value in inputs.items()
+        if value is not None and (name in _MULTIMODAL_INPUTS or name.startswith("pixel_values"))
+    )
 
 
 _INSTALLED_MESH = []
@@ -194,9 +210,8 @@ def _positions_restart(position_ids, attention_mask) -> bool:
 
 def _hybrid_config_blocker(model) -> Optional[str]:
     config = getattr(model, "config", None)
-    if getattr(config, "vision_config", None) is not None:
-        # Only text buffers are sharded; image / video features would stay whole on every rank.
-        return "multimodal models"
+    # A vision_config alone is not refused: shipped Qwen3.5 checkpoints carry one even for text-only
+    # training. Batches with image / video inputs are refused per step in _prepare_inputs.
     text_config = getattr(config, "text_config", None) or config
     if getattr(text_config, "output_router_logits", False):
         # The load balancing loss is a product of per-sequence means, not a sum over shards.
@@ -306,6 +321,13 @@ class ContextParallelManager:
         if not isinstance(input_ids, torch.Tensor) or inputs.get("inputs_embeds") is not None:
             raise ValueError(
                 "Unsloth: context parallelism needs input_ids batches (not inputs_embeds)."
+            )
+        multimodal = _multimodal_inputs(inputs)
+        if multimodal:
+            raise ValueError(
+                "Unsloth: context parallelism shards text tokens only; batches with image / video "
+                f"inputs ({', '.join(multimodal)}) are not supported. Train on text-only data, or "
+                "use context_parallel_size = 1."
             )
         bsz, seq_len = input_ids.shape
         packed_seq_lengths = inputs.get("packed_seq_lengths")
