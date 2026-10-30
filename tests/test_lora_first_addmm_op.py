@@ -9,7 +9,10 @@ import torch
 import unsloth  # noqa: F401
 from unsloth.kernels import utils as KU
 
-pytestmark = pytest.mark.skipif(not KU._HAS_LORA_FIRST_OP, reason = "needs torch.library.custom_op")
+# Gated on the API, not on the registration result, so a failed registration on a capable torch is a failure.
+pytestmark = pytest.mark.skipif(
+    not hasattr(torch.library, "custom_op"), reason = "needs torch.library.custom_op"
+)
 # Compiled code uses the op only when torch.export's flag tells strict export apart (torch 2.7+).
 _OP_COMPILED = hasattr(torch.compiler, "_is_exporting_flag")
 
@@ -363,6 +366,51 @@ def test_a_partly_registered_op_is_not_used():
         timeout = 900,
     )
     assert p.returncode == 0 and "HAS_OP False" in p.stdout, (p.stdout + p.stderr)[-3000:]
+
+
+_REEXECUTED_MODULE_CASE = """
+import importlib
+import torch
+import unsloth  # noqa: F401
+from unsloth.kernels import utils as KU
+assert KU._HAS_LORA_FIRST_OP is True
+calls = []
+orig = torch.library.custom_op
+def counting(name, *a, **k):
+    if name == "unsloth::lora_first_addmm":
+        calls.append(name)
+    return orig(name, *a, **k)
+torch.library.custom_op = counting
+KU = importlib.reload(KU)
+print("REREGISTERED", len(calls), "HAS_OP", KU._HAS_LORA_FIRST_OP)
+"""
+
+
+def test_a_reexecuted_module_reuses_the_completed_registration():
+    # Re-registering over a working op could leave it half replaced if a later step failed; a re-executed
+    # module must reuse the ready op instead of defining it again.
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    env = dict(
+        os.environ,
+        PYTHONPATH = os.pathsep.join([str(root), os.environ.get("PYTHONPATH", "")]),
+        UNSLOTH_DISABLE_CPU_FALLBACK = "0",
+    )
+    p = subprocess.run(
+        [sys.executable, "-c", _REEXECUTED_MODULE_CASE],
+        cwd = root,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
+    assert p.returncode == 0 and "REREGISTERED 0 HAS_OP True" in p.stdout, (p.stdout + p.stderr)[
+        -3000:
+    ]
 
 
 def test_a_completely_registered_op_is_marked_ready():

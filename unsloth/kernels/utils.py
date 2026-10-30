@@ -1894,50 +1894,54 @@ if _HAS_ADDMM_OP:
     # Traced fused LoRA order as one opaque op: the rank-r term goes into a fresh buffer and the base GEMM
     # accumulates onto it in place. As two functional addmms, Inductor first copies the rank-r term into a
     # new output for the base GEMM to read. Returns a new tensor, so a saved output aliases nothing.
-    try:
-
-        @torch.library.custom_op("unsloth::lora_first_addmm", mutates_args = ())
-        def _lora_first_addmm_op(
-            X: torch.Tensor, Wt: torch.Tensor, XA: torch.Tensor, Bt: torch.Tensor, alpha: float
-        ) -> torch.Tensor:
-            return _lora_first_addmm(X, Wt, XA, Bt, alpha)
-
-        @_lora_first_addmm_op.register_fake
-        def _(X, Wt, XA, Bt, alpha):
-            return X.new_empty((X.shape[0], Wt.shape[1]))
-
-        # out = alpha * XA @ Bt + X @ Wt, so a compiled differentiable caller gets the addmm gradients.
-        def _lora_first_addmm_setup(ctx, inputs, output):
-            # Save only what the requested gradients read (a frozen inference-mode base cannot be saved).
-            X, Wt, XA, Bt, alpha = inputs
-            ctx.alpha = alpha
-            need = ctx.needs_input_grad
-            ctx.save_for_backward(
-                X if need[1] else None,
-                Wt if need[0] else None,
-                XA if need[3] else None,
-                Bt if need[2] else None,
-            )
-
-        def _lora_first_addmm_backward(ctx, grad):
-            X, Wt, XA, Bt = ctx.saved_tensors
-            need = ctx.needs_input_grad
-            dX = grad @ Wt.t() if need[0] else None
-            dWt = X.t() @ grad if need[1] else None
-            dXA = (grad @ Bt.t()) * ctx.alpha if need[2] else None
-            dBt = (XA.t() @ grad) * ctx.alpha if need[3] else None
-            return dX, dWt, dXA, dBt, None
-
-        _lora_first_addmm_op.register_autograd(
-            _lora_first_addmm_backward, setup_context = _lora_first_addmm_setup
-        )
-        # Marked only after the fake and autograd registrations succeeded, so a module re-executed in the
-        # same process can tell a complete op from one whose registration failed partway.
-        torch.ops.unsloth.__dict__["_lora_first_addmm_ready"] = True
+    # A module re-executed in the same process reuses a completed registration and never re-registers over it.
+    if torch.ops.unsloth.__dict__.get("_lora_first_addmm_ready", False):
         _HAS_LORA_FIRST_OP = True
-    except Exception:
-        # Already registered (module re-executed) or an older torch.library: the functional path below.
-        _HAS_LORA_FIRST_OP = bool(torch.ops.unsloth.__dict__.get("_lora_first_addmm_ready", False))
+    else:
+        try:
+
+            @torch.library.custom_op("unsloth::lora_first_addmm", mutates_args = ())
+            def _lora_first_addmm_op(
+                X: torch.Tensor, Wt: torch.Tensor, XA: torch.Tensor, Bt: torch.Tensor, alpha: float
+            ) -> torch.Tensor:
+                return _lora_first_addmm(X, Wt, XA, Bt, alpha)
+
+            @_lora_first_addmm_op.register_fake
+            def _(X, Wt, XA, Bt, alpha):
+                return X.new_empty((X.shape[0], Wt.shape[1]))
+
+            # out = alpha * XA @ Bt + X @ Wt, so a compiled differentiable caller gets the addmm gradients.
+            def _lora_first_addmm_setup(ctx, inputs, output):
+                # Save only what the requested gradients read (a frozen inference-mode base cannot be saved).
+                X, Wt, XA, Bt, alpha = inputs
+                ctx.alpha = alpha
+                need = ctx.needs_input_grad
+                ctx.save_for_backward(
+                    X if need[1] else None,
+                    Wt if need[0] else None,
+                    XA if need[3] else None,
+                    Bt if need[2] else None,
+                )
+
+            def _lora_first_addmm_backward(ctx, grad):
+                X, Wt, XA, Bt = ctx.saved_tensors
+                need = ctx.needs_input_grad
+                dX = grad @ Wt.t() if need[0] else None
+                dWt = X.t() @ grad if need[1] else None
+                dXA = (grad @ Bt.t()) * ctx.alpha if need[2] else None
+                dBt = (XA.t() @ grad) * ctx.alpha if need[3] else None
+                return dX, dWt, dXA, dBt, None
+
+            _lora_first_addmm_op.register_autograd(
+                _lora_first_addmm_backward, setup_context = _lora_first_addmm_setup
+            )
+            # Marked only after the fake and autograd registrations succeeded, so a module re-executed in the
+            # same process can tell a complete op from one whose registration failed partway.
+            torch.ops.unsloth.__dict__["_lora_first_addmm_ready"] = True
+            _HAS_LORA_FIRST_OP = True
+        except Exception:
+            # An older torch.library, or a registration that failed partway: the functional path below.
+            _HAS_LORA_FIRST_OP = False
 
 
 def addmm_(
