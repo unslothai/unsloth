@@ -569,9 +569,7 @@ def _check_feedback(
                 )
             )
             continue
-        percent = next(
-            (p for p in specs[held[0]]["params"] if p["id"] == "holdout_percent"), None
-        )
+        percent = next((p for p in specs[held[0]]["params"] if p["id"] == "holdout_percent"), None)
         if percent:
             raw = (nodes[held[0]].get("params") or {}).get("holdout_percent", percent["default"])
             try:
