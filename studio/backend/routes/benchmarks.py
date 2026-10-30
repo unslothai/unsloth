@@ -187,6 +187,14 @@ def load_refused(holder: Optional[str]) -> bool:
         return _sweep_holds_against(holder)
 
 
+def _eval_running() -> bool:
+    """An Eval scores whatever the llama-server holds, so a load mid-run would credit its tasks to another model."""
+    from core.benchmark import orchestrator
+
+    backend = orchestrator._orchestrator
+    return backend is not None and backend.is_active()
+
+
 def note_inference_request(holder: Optional[str]) -> None:
     """Count a generation that is not the sweep's own while a sweep holds the server."""
     with _lease_lock:
@@ -196,19 +204,24 @@ def note_inference_request(holder: Optional[str]) -> None:
 
 class BenchmarkTrafficMiddleware:
     """Pure ASGI: a sweep shares the one llama-server. Other generations during it are counted and
-    shown with the run; other loads, which would swap the server under its rows, are refused."""
+    shown with the run; other loads, which would swap the server under its rows, are refused, as
+    they are while an Eval runs."""
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if _lease is not None and scope.get("type") == "http" and scope.get("method") == "POST":
+        path = scope.get("path") or ""
+        if (
+            scope.get("type") == "http"
+            and scope.get("method") == "POST"
+            and (_lease is not None or (path in LOAD_PATHS and _eval_running()))
+        ):
             from core.inference.llama_keepwarm import (
                 _carries_bearer_credentials,
                 _is_inference_path,
             )
 
-            path = scope.get("path") or ""
             holder = next(
                 (
                     v.decode("latin-1")
@@ -218,16 +231,18 @@ class BenchmarkTrafficMiddleware:
                 None,
             )
             # Uncredentialed calls go on to the route's own 401.
-            if (
-                path in LOAD_PATHS
-                and _carries_bearer_credentials(scope, path)
-                and load_refused(holder)
-            ):
+            refused = None
+            if path in LOAD_PATHS and _carries_bearer_credentials(scope, path):
+                if load_refused(holder):
+                    refused = "A benchmark is running on this model."
+                elif _eval_running():
+                    refused = "An eval is running on this model."
+            if refused:
                 from starlette.responses import JSONResponse
                 await JSONResponse(
                     {
-                        "detail": "A benchmark is running on this model. Stop it on the Benchmarks "
-                        "page or let it finish, then try again."
+                        "detail": f"{refused} Stop it on the Benchmarks page or let it finish, "
+                        "then try again."
                     },
                     status_code = 409,
                 )(scope, receive, send)

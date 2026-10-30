@@ -269,6 +269,37 @@ def test_a_sweep_refuses_other_loads_until_it_lets_go(monkeypatch):
         TestClient(app).post("/api/inference/load").status_code == 200
     )  # the route's auth decides
     client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
-    # Only sweeps fence loads: llama-bench and Evals manage the server themselves.
+    # A llama-bench lease does not fence loads: it manages the server itself.
     client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb", "kind": "llama-bench"})
+    assert client.post("/api/inference/load").status_code == 200
+
+
+def test_a_running_eval_refuses_loads_from_every_tab(monkeypatch):
+    from core.benchmark import orchestrator
+
+    class _Eval:
+        active = True
+
+        def is_active(self):
+            return self.active
+
+    running = _Eval()
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    monkeypatch.setattr(orchestrator, "_orchestrator", running)
+    app = FastAPI()
+    app.post("/api/inference/load")(lambda: {"ok": True})
+    app.post("/api/inference/unload")(lambda: {"ok": True})
+    app.post("/api/inference/chat/completions")(lambda: {"ok": True})
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app, headers = {"Authorization": "Bearer t"})
+
+    refused = client.post("/api/inference/load")
+    assert refused.status_code == 409 and "eval is running" in refused.json()["detail"]
+    assert client.post("/api/inference/unload").status_code == 409
+    # The eval's own generations still reach the server, and the route's auth decides uncredentialed loads.
+    assert client.post("/api/inference/chat/completions").status_code == 200
+    assert TestClient(app).post("/api/inference/load").status_code == 200
+    running.active = False
+    assert client.post("/api/inference/load").status_code == 200
+    monkeypatch.setattr(orchestrator, "_orchestrator", None)
     assert client.post("/api/inference/load").status_code == 200
