@@ -304,3 +304,10 @@ test("Load model defaults with no saved load clears the card's own load settings
   assert.equal(s.loadPatch(SAVED, GENERATE, null).load, null);
   assert.equal(s.loadPatch(SAVED, GENERATE, {}).load, null);
 });
+
+test("a card switched to another model never shows the last model's saved load", () => {
+  const src = readSrc("features/flows/editor/llm-settings-panel.tsx");
+  const hook = src.slice(src.indexOf("function useSavedLoad"), src.indexOf("function useLoadedModel"));
+  assert.match(hook, /setSaved\(\{ at, load:/);
+  assert.match(hook, /return saved\?\.at === at \? saved\.load : null;/);
+});

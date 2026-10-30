@@ -143,7 +143,12 @@ function overridesChanged() {
 
 /** Chat's saved launch settings for the model, as the engine reads them. */
 function useSavedLoad(key: string | null, variant: string | null) {
-  const [saved, setSaved] = useState<LoadSettings | null>(null);
+  // Tagged with the model it was read for, so a switch never shows the last model's while the read is out.
+  const at = `${key ?? ""}\u0000${variant ?? ""}`;
+  const [saved, setSaved] = useState<{
+    at: string;
+    load: LoadSettings | null;
+  } | null>(null);
   const [version, setVersion] = useState(0);
   useEffect(() => {
     const bump = () => setVersion((v) => v + 1);
@@ -162,13 +167,13 @@ function useSavedLoad(key: string | null, variant: string | null) {
     void readOverrides().then((overrides) => {
       const keys = variant ? [modelOverrideKey(key, variant), key] : [key];
       const found = resolveStoredOverride(overrides, keys);
-      if (alive) setSaved(found ? { ...found } : null);
+      if (alive) setSaved({ at, load: found ? { ...found } : null });
     });
     return () => {
       alive = false;
     };
   }, [key, variant, version]);
-  return saved;
+  return saved?.at === at ? saved.load : null;
 }
 
 /** The loaded model as Chat's status reports it: the resident one, not Chat's picker. */
