@@ -3743,7 +3743,7 @@ export const tr = {
       mcp: {
         title: "Ajan erişimi (MCP)",
         description:
-          "Claude Code ve Codex gibi kodlama ajanlarının Unsloth'u MCP üzerinden kullanmasına izin verin. Ajanlar, bu sayfadaki bir Unsloth API anahtarıyla oturum açar.",
+          "Claude Code ve Codex gibi kodlama ajanlarının Unsloth'u MCP üzerinden kullanmasına izin verin.",
         enable: "Ajan bağlantılarına izin ver",
         enableDescription:
           "/mcp/ uç noktasını Unsloth API anahtarı taşıyan isteklere sunar.",
@@ -3752,7 +3752,7 @@ export const tr = {
         saveError: "Ajan erişimi ayarı kaydedilemedi.",
         agent: "Ajan",
         exportKeyHint:
-          "Ajanı başlatmadan önce {name} değişkenini bu sayfadaki bir Unsloth API anahtarına ayarlayın.",
+          "Ajanı başlatmadan önce {name} değişkenini bir Unsloth API anahtarına ayarlayın.",
         configFileHint: "Bunu şu dosyaya ekleyin: {path}",
         keywords:
           "mcp model context protocol model bağlam protokolü ajanlar agents claude codex araçlar tools",

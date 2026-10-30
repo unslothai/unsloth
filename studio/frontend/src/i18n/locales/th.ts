@@ -3582,14 +3582,14 @@ export const th = {
       mcp: {
         title: "การเข้าถึงของเอเจนต์ (MCP)",
         description:
-          "ให้เอเจนต์เขียนโค้ด เช่น Claude Code และ Codex ใช้ Unsloth ผ่าน MCP เอเจนต์จะลงชื่อเข้าใช้ด้วยคีย์ API ของ Unsloth จากหน้านี้",
+          "ให้เอเจนต์เขียนโค้ด เช่น Claude Code และ Codex ใช้ Unsloth ผ่าน MCP",
         enable: "อนุญาตการเชื่อมต่อจากเอเจนต์",
         enableDescription: "ให้บริการ /mcp/ แก่คำขอที่มีคีย์ API ของ Unsloth",
         lockedByEnv: "ตั้งค่าโดย {name}",
         loadError: "ไม่สามารถโหลดการตั้งค่าการเข้าถึงของเอเจนต์ได้",
         saveError: "ไม่สามารถบันทึกการตั้งค่าการเข้าถึงของเอเจนต์ได้",
         agent: "เอเจนต์",
-        exportKeyHint: "ตั้งค่า {name} เป็นคีย์ API ของ Unsloth จากหน้านี้ก่อนเริ่มเอเจนต์",
+        exportKeyHint: "ตั้งค่า {name} เป็นคีย์ API ของ Unsloth ก่อนเริ่มเอเจนต์",
         configFileHint: "เพิ่มส่วนนี้ลงใน {path}",
         keywords:
           "เอเจนต์ เครื่องมือ โปรโตคอล mcp model context protocol agents claude codex tools",

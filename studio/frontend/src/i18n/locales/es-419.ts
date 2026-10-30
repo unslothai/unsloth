@@ -3806,7 +3806,7 @@ export const es419 = {
       mcp: {
         title: "Acceso de agentes (MCP)",
         description:
-          "Permite que agentes de programación como Claude Code y Codex usen Unsloth mediante MCP. Los agentes inician sesión con una clave de API de Unsloth de esta página.",
+          "Permite que agentes de programación como Claude Code y Codex usen Unsloth mediante MCP.",
         enable: "Permitir conexiones de agentes",
         enableDescription:
           "Sirve /mcp/ a las solicitudes que incluyen una clave de API de Unsloth.",
@@ -3815,7 +3815,7 @@ export const es419 = {
         saveError: "No se pudo guardar la opción de acceso de agentes.",
         agent: "Agente",
         exportKeyHint:
-          "Define {name} con una clave de API de Unsloth de esta página antes de iniciar el agente.",
+          "Define {name} con una clave de API de Unsloth antes de iniciar el agente.",
         configFileHint: "Agrega esto a {path}.",
         keywords:
           "mcp protocolo de contexto de modelo agentes agente herramientas model context protocol agents claude codex tools",

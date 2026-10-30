@@ -3790,7 +3790,7 @@ export const pl = {
       mcp: {
         title: "Dostęp agentów (MCP)",
         description:
-          "Pozwól agentom programistycznym, takim jak Claude Code i Codex, korzystać z Unsloth przez MCP. Agenci logują się kluczem API Unsloth z tej strony.",
+          "Pozwól agentom programistycznym, takim jak Claude Code i Codex, korzystać z Unsloth przez MCP.",
         enable: "Zezwalaj na połączenia agentów",
         enableDescription:
           "Udostępnia /mcp/ dla żądań zawierających klucz API Unsloth.",
@@ -3799,7 +3799,7 @@ export const pl = {
         saveError: "Nie udało się zapisać ustawienia dostępu agentów.",
         agent: "Agent",
         exportKeyHint:
-          "Przed uruchomieniem agenta ustaw {name} na klucz API Unsloth z tej strony.",
+          "Przed uruchomieniem agenta ustaw {name} na klucz API Unsloth.",
         configFileHint: "Dodaj to do {path}.",
         keywords:
           "mcp model context protocol agents claude codex tools agenci narzędzia",

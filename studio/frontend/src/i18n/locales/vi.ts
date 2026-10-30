@@ -3748,7 +3748,7 @@ export const vi = {
       mcp: {
         title: "Quyền truy cập của tác tử (MCP)",
         description:
-          "Cho phép các tác tử lập trình như Claude Code và Codex dùng Unsloth qua MCP. Tác tử đăng nhập bằng khóa API Unsloth từ trang này.",
+          "Cho phép các tác tử lập trình như Claude Code và Codex dùng Unsloth qua MCP.",
         enable: "Cho phép tác tử kết nối",
         enableDescription:
           "Phục vụ /mcp/ cho các yêu cầu có kèm khóa API Unsloth.",
@@ -3757,7 +3757,7 @@ export const vi = {
         saveError: "Không thể lưu cài đặt quyền truy cập của tác tử.",
         agent: "Tác tử",
         exportKeyHint:
-          "Đặt {name} thành một khóa API Unsloth từ trang này trước khi bạn khởi động tác tử.",
+          "Đặt {name} thành một khóa API Unsloth trước khi bạn khởi động tác tử.",
         configFileHint: "Thêm nội dung này vào {path}.",
         keywords:
           "mcp model context protocol agents claude codex tools giao thức ngữ cảnh mô hình tác tử công cụ",
@@ -3805,12 +3805,12 @@ export const vi = {
         systemOne: "Mô hình quyết định",
         generateImage: "Tạo hình ảnh",
         generateAudio: "Tạo âm thanh",
-        transcribe: "Phiên âm",
+        transcribe: "Chép lời",
         analyzeAudio: "Phân tích âm thanh",
         generateVideo: "Tạo video",
         runRecipe: "Chạy Data Recipe",
         getJob: "Trạng thái tác vụ",
-        datasets: "Bộ dữ liệu",
+        datasets: "Tập dữ liệu",
         startTraining: "Bắt đầu huấn luyện",
         listTrainingRuns: "Các lần huấn luyện",
         exportModel: "Xuất mô hình",
