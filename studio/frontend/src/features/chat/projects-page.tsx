@@ -68,7 +68,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Folder02Icon,
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
@@ -79,6 +78,7 @@ import {
   ViewOffSlashIcon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { ArrowDownIcon } from "lucide-react";
@@ -145,7 +145,16 @@ function formatUpdated(ts: number): string {
   });
 }
 
-export function ProjectsPage() {
+export function ProjectsPage({
+  embedded = false,
+  ordered,
+  searching = false,
+}: {
+  embedded?: boolean;
+  /** The Library's filtered, sorted projects; its toolbar owns search and sort when embedded. */
+  ordered?: ProjectRecord[];
+  searching?: boolean;
+} = {}) {
   const t = useT();
   const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
@@ -325,12 +334,13 @@ export function ProjectsPage() {
     );
     return filtered;
   }, [projects, query, sortDir]);
-  const isSearching = query.trim() !== "";
+  const listedProjects = ordered ?? sortedProjects;
+  const isSearching = ordered ? searching : query.trim() !== "";
   const visibleCount = baseFit + extraCount;
   const visibleProjects = isSearching
-    ? sortedProjects
-    : sortedProjects.slice(0, visibleCount);
-  const hasMore = !isSearching && sortedProjects.length > visibleCount;
+    ? listedProjects
+    : listedProjects.slice(0, visibleCount);
+  const hasMore = !isSearching && listedProjects.length > visibleCount;
 
   const tourSteps = useMemo(
     () => buildProjectsTourSteps({ hasProjects: visibleProjects.length > 0 }),
@@ -542,9 +552,16 @@ export function ProjectsPage() {
     }
   }
 
+  // Inside the Library the page header and tour belong to the Library, so only the body renders.
+  const Shell = embedded ? "div" : "main";
   return (
-    <main className="mx-auto w-full max-w-5xl 4xl:max-w-6xl px-6 pb-10 pt-8 max-sm:px-4 font-heading sm:px-10">
-      <GuidedTour {...tour.tourProps} />
+    <Shell
+      className={cn(
+        "font-heading",
+        !embedded && "mx-auto w-full max-w-5xl 4xl:max-w-6xl px-6 pb-10 pt-8 max-sm:px-4 sm:px-10",
+      )}
+    >
+      {!embedded && <GuidedTour {...tour.tourProps} />}
       <input
         ref={globalImportRef}
         type="file"
@@ -559,10 +576,11 @@ export function ProjectsPage() {
           e.target.value = "";
         }}
       />
+      {!embedded && (
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
-          Projects
-        </h1>
+          <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
+            Projects
+          </h1>
         <div className="flex w-full min-w-0 items-center justify-end gap-3 sm:w-auto sm:flex-1">
           <div className="relative min-w-0 flex-1 sm:max-w-md">
             <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
@@ -660,6 +678,7 @@ export function ProjectsPage() {
           </Button>
         </div>
       </div>
+      )}
 
       {!hasLoaded ? (
         <div className="mt-16">
@@ -711,9 +730,12 @@ export function ProjectsPage() {
         </div>
       ) : (
         <>
-        <div className="mt-16">
+        <div className={embedded ? "mt-6" : "mt-16"}>
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
+            {ordered ? (
+              <span className="shrink-0 sm:w-40">Updated</span>
+            ) : (
             <button
               type="button"
               onClick={() => setSortDir((dir) => (dir === "desc" ? "asc" : "desc"))}
@@ -729,6 +751,7 @@ export function ProjectsPage() {
                 )}
               />
             </button>
+            )}
             <span className="size-7 shrink-0" />
             <span className="size-7 shrink-0" />
             <span className="w-8 shrink-0" />
@@ -1210,6 +1233,6 @@ export function ProjectsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </main>
+    </Shell>
   );
 }

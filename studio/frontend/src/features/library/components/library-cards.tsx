@@ -4,7 +4,7 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Folder01Icon } from "@hugeicons/core-free-icons";
+import { FolderClosedIcon } from "@/lib/folder-icons";
 import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
@@ -304,7 +304,8 @@ function FolderCard({
           className="flex aspect-square items-center justify-center"
           style={{ minHeight: CARD_MIN_HEIGHT }}
         >
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className={CARD_ICON_CLASS} />
+          {/* The 4.4 folder sits a touch shorter than 4.1's; 30px keeps it the size it was at 28px. */}
+          <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.5} className="size-7.5" />
         </div>
       </CardFrame>
       <button

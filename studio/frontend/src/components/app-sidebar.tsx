@@ -124,8 +124,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderExportIcon,
-  Folder02Icon,
   FlimSlateIcon,
   HelpCircleIcon,
   Image01Icon,
@@ -154,6 +152,7 @@ import {
   ApiIcon,
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import {
   AiSpeechIcon,

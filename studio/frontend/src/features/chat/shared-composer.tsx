@@ -118,7 +118,6 @@ import {
   Bookmark02Icon,
   CodeIcon,
   Download01Icon,
-  FolderAddIcon,
   Image03Icon,
   McpServerIcon,
   Scroll01Icon,
@@ -127,6 +126,7 @@ import {
   SlidersHorizontalIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { StopIcon } from "@/lib/media-control-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";

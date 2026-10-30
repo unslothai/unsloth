@@ -4441,8 +4441,6 @@ export const zhCN = {
       empty: {
         chatsTitle: "还没有聊天",
         chatsDescription: "你的对话会显示在这里，与文件分开存放。",
-        projectsTitle: "还没有项目",
-        projectsDescription: "项目将相关聊天归为一组，并共享指令。",
         archivedTitle: "没有已归档内容",
         archivedDescription: "你归档的聊天会显示在这里。",
         sectionsTitle: "还没有分区",

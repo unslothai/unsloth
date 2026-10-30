@@ -15,12 +15,12 @@ import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   FilterMailIcon,
-  FolderAddIcon,
   LayerIcon,
   PencilEdit02Icon,
   PinIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { Columns2Icon, GitBranchIcon } from "lucide-react";
@@ -378,6 +378,7 @@ export function ChatsToolbar({
   onNewChat,
   onNewProject,
   onNewSection,
+  showView = true,
 }: {
   filters?: ChatFilters;
   onFiltersChange: (next: ChatFilters) => void;
@@ -391,13 +392,14 @@ export function ChatsToolbar({
   onNewChat: () => void;
   onNewProject: () => void;
   onNewSection: () => void;
+  showView?: boolean;
 }) {
   const t = useT();
   return (
     <div className="flex min-w-0 items-center gap-2">
       {filters && <FilterMenu filters={filters} onChange={onFiltersChange} facets={facets} />}
       {sort}
-      {VIEW_OPTIONS.map(({ value, label, tip, icon }) => (
+      {showView && VIEW_OPTIONS.map(({ value, label, tip, icon }) => (
         <ToolbarTip key={value} label={t(tip)}>
           <button
             type="button"

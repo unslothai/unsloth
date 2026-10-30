@@ -4572,8 +4572,6 @@ export const ru = {
       empty: {
         chatsTitle: "Чатов пока нет",
         chatsDescription: "Здесь появляются ваши разговоры, отдельно от файлов.",
-        projectsTitle: "Проектов пока нет",
-        projectsDescription: "Проекты объединяют связанные чаты с общими инструкциями.",
         archivedTitle: "Архив пуст",
         archivedDescription: "Здесь появляются чаты, которые вы архивируете.",
         sectionsTitle: "Разделов пока нет",

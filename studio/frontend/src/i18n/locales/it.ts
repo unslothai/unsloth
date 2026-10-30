@@ -4616,8 +4616,6 @@ export const it = {
       empty: {
         chatsTitle: "Ancora nessuna chat",
         chatsDescription: "Le tue conversazioni compaiono qui, separate dai tuoi file.",
-        projectsTitle: "Ancora nessun progetto",
-        projectsDescription: "I progetti raggruppano chat correlate e condividono le istruzioni tra loro.",
         archivedTitle: "Nessun elemento archiviato",
         archivedDescription: "Le chat che archivi compaiono qui.",
         sectionsTitle: "Ancora nessuna sezione",

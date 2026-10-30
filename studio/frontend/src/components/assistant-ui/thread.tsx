@@ -432,8 +432,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderAttachmentIcon,
-  FolderAddIcon,
   Image03Icon,
   McpServerIcon,
   Refresh01Icon,
@@ -448,6 +446,7 @@ import {
   PlusSignIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderAttachmentIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";

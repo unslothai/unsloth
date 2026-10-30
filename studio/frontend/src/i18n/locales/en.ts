@@ -4609,8 +4609,6 @@ export const en = {
       empty: {
         chatsTitle: "No chats yet",
         chatsDescription: "Your conversations show up here, kept apart from your files.",
-        projectsTitle: "No projects yet",
-        projectsDescription: "Projects group related chats and share instructions between them.",
         archivedTitle: "Nothing archived",
         archivedDescription: "Chats you archive show up here.",
         sectionsTitle: "No sections yet",

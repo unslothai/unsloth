@@ -15,7 +15,6 @@ import {
   FileEmpty02Icon,
   FilterMailIcon,
   FlimSlateIcon,
-  Folder01Icon,
   GridViewIcon,
   ImageIcon,
   LeftToRightListBulletIcon,
@@ -26,6 +25,7 @@ import {
   Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderClosedIcon } from "@/lib/folder-icons";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { AiSpeechIcon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -305,7 +305,7 @@ const NEW_OPTIONS: MenuOption<NewAction>[] = [
   { value: "video", label: "library.create.video", icon: FlimSlateIcon },
   { value: "audio", label: "library.create.audio", icon: AiSpeechIcon },
   { value: "model", label: "library.create.model", icon: TestTubeOutlineIcon },
-  { value: "folder", label: "library.create.folder", icon: Folder01Icon },
+  { value: "folder", label: "library.create.folder", icon: FolderClosedIcon },
 ];
 
 function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {

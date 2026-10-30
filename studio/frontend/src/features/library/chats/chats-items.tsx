@@ -44,8 +44,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderAddIcon,
-  FolderExportIcon,
   LayerIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -58,6 +56,7 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { ForkIcon } from "@/lib/fork-icon";
@@ -1541,26 +1540,6 @@ export function ProjectRow({
         </>
       )}
       <ProjectMenu project={project} variant="row" />
-    </div>
-  );
-}
-
-export function ProjectListHeader({ date }: { date: DateColumn }) {
-  const t = useT();
-  const { dateField } = useChatsActions();
-  return (
-    <div
-      className={cn(
-        "flex items-center gap-4 pb-2 text-ui-12p5 text-muted-foreground",
-        ROW_INSET,
-      )}
-    >
-      <span className="min-w-0 flex-1">{t("library.list.name")}</span>
-      <span className={CONTENTS_COLUMN}>
-        {t("library.chats.list.contents")}
-      </span>
-      <DateHeader {...date} field={dateField} />
-      <span className="w-8 shrink-0" />
     </div>
   );
 }

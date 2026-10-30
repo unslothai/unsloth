@@ -480,7 +480,7 @@ test("cards drop the kind tile everywhere but All, which mixes chats, projects a
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.match(library, /<ChatCard[^>]*showTile=\{shownEntries !== null\}/s);
   assert.match(library, /<ChatRow[^>]*showTile=\{shownEntries !== null\}/s);
-  assert.equal(library.split("showTile={false}").length - 1, 6);
+  assert.equal(library.split("showTile={false}").length - 1, 4);
   const favorites = library.slice(library.indexOf("function favoriteEntries("));
   assert.doesNotMatch(favorites.slice(0, favorites.indexOf("cards:")), /showTile/);
   const items = readSrc("features/library/chats/chats-items.tsx");

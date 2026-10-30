@@ -4807,9 +4807,6 @@ export const sv = {
         chatsTitle: "Inga chattar än",
         chatsDescription:
           "Dina konversationer visas här, åtskilda från dina filer.",
-        projectsTitle: "Inga projekt än",
-        projectsDescription:
-          "Projekt grupperar relaterade chattar och delar instruktioner mellan dem.",
         archivedTitle: "Inget arkiverat",
         archivedDescription: "Chattar som du arkiverar visas här.",
         sectionsTitle: "Inga avsnitt än",

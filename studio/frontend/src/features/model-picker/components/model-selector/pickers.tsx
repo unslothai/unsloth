@@ -136,7 +136,6 @@ import {
   DashboardCircleIcon,
   Flag01Icon,
   FlimSlateIcon,
-  Folder02Icon,
   HelpCircleIcon,
   ImageIcon,
   InformationCircleIcon,
@@ -147,6 +146,7 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";

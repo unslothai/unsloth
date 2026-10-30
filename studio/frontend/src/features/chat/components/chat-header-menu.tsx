@@ -35,7 +35,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderExportIcon,
   LayerIcon,
   MoreHorizontalIcon,
   PinIcon,
@@ -45,6 +44,7 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";

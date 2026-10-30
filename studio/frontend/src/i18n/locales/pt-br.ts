@@ -4575,8 +4575,6 @@ export const ptBR = {
       empty: {
         chatsTitle: "Nenhum chat ainda",
         chatsDescription: "Suas conversas aparecem aqui, separadas dos seus arquivos.",
-        projectsTitle: "Nenhum projeto ainda",
-        projectsDescription: "Projetos agrupam chats relacionados e compartilham instruções entre eles.",
         archivedTitle: "Nada arquivado",
         archivedDescription: "Os chats que você arquivar aparecem aqui.",
         sectionsTitle: "Nenhuma seção ainda",

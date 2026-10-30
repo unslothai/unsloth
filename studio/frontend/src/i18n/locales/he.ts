@@ -4669,9 +4669,6 @@ export const he = {
       empty: {
         chatsTitle: "אין עדיין צ'אטים",
         chatsDescription: "השיחות שלך יופיעו כאן, בנפרד מהקבצים שלך.",
-        projectsTitle: "אין עדיין פרויקטים",
-        projectsDescription:
-          "פרויקטים מקבצים צ'אטים קשורים ומשתפים ביניהם הוראות.",
         archivedTitle: "אין פריטים בארכיון",
         archivedDescription: "צ'אטים שתעביר לארכיון יופיעו כאן.",
         sectionsTitle: "אין עדיין מדורים",

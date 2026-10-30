@@ -16,11 +16,11 @@ import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
   Delete02Icon,
-  FolderSearchIcon,
   Search01Icon,
   SlidersHorizontalIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SortIcon } from "@/lib/sort-icon";
 import { memo, useId, useLayoutEffect, useMemo, useRef, useState } from "react";

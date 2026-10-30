@@ -4540,8 +4540,6 @@ export const ar = {
       empty: {
         chatsTitle: "لا توجد محادثات بعد",
         chatsDescription: "تظهر محادثاتك هنا، منفصلة عن ملفاتك.",
-        projectsTitle: "لا توجد مشاريع بعد",
-        projectsDescription: "تجمع المشاريع المحادثات المرتبطة وتشارك التعليمات بينها.",
         archivedTitle: "لا يوجد شيء مؤرشف",
         archivedDescription: "تظهر هنا المحادثات التي تؤرشفها.",
         sectionsTitle: "لا توجد أقسام بعد",

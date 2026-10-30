@@ -118,9 +118,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderAttachmentIcon,
-  Folder02Icon,
-  FolderExportIcon,
   LayoutAlignRightIcon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
@@ -129,6 +126,7 @@ import {
   PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon, FolderAttachmentIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { useAui } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";

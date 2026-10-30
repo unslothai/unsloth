@@ -4490,8 +4490,6 @@ export const ja = {
       empty: {
         chatsTitle: "まだチャットはありません",
         chatsDescription: "会話はファイルとは別にここに表示されます。",
-        projectsTitle: "まだプロジェクトはありません",
-        projectsDescription: "プロジェクトは関連するチャットをまとめ、指示を共有します。",
         archivedTitle: "アーカイブはありません",
         archivedDescription: "アーカイブしたチャットがここに表示されます。",
         sectionsTitle: "セクションはまだありません",

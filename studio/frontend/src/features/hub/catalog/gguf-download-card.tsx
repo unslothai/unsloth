@@ -44,13 +44,13 @@ import {
   Refresh01Icon,
   Delete02Icon,
   Download01Icon,
-  Folder01Icon,
   HelpCircleIcon,
   InformationCircleIcon,
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {

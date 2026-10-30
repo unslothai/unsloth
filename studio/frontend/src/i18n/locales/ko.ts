@@ -4530,8 +4530,6 @@ export const ko = {
       empty: {
         chatsTitle: "아직 채팅이 없습니다",
         chatsDescription: "대화는 파일과 분리되어 여기에 표시됩니다.",
-        projectsTitle: "아직 프로젝트가 없습니다",
-        projectsDescription: "프로젝트는 관련 채팅을 묶고 지침을 공유합니다.",
         archivedTitle: "보관된 항목 없음",
         archivedDescription: "보관한 채팅이 여기에 표시됩니다.",
         sectionsTitle: "아직 섹션이 없습니다",

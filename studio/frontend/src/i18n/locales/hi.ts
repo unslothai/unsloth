@@ -4551,8 +4551,6 @@ export const hi = {
       empty: {
         chatsTitle: "अभी तक कोई चैट नहीं",
         chatsDescription: "आपकी बातचीत यहाँ दिखती है, आपकी फ़ाइलों से अलग।",
-        projectsTitle: "अभी तक कोई प्रोजेक्ट नहीं",
-        projectsDescription: "प्रोजेक्ट संबंधित चैट को एक साथ रखते हैं और उनके बीच निर्देश साझा करते हैं।",
         archivedTitle: "कुछ भी आर्काइव नहीं",
         archivedDescription: "आप जो चैट आर्काइव करते हैं, वे यहाँ दिखती हैं।",
         sectionsTitle: "अभी कोई सेक्शन नहीं",

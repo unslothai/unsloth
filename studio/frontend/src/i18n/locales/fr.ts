@@ -4625,8 +4625,6 @@ export const fr = {
       empty: {
         chatsTitle: "Aucune discussion pour l’instant",
         chatsDescription: "Vos conversations apparaissent ici, séparées de vos fichiers.",
-        projectsTitle: "Aucun projet pour l’instant",
-        projectsDescription: "Les projets regroupent des discussions liées et partagent des instructions entre elles.",
         archivedTitle: "Rien d’archivé",
         archivedDescription: "Les discussions que vous archivez apparaissent ici.",
         sectionsTitle: "Aucune section pour l’instant",
