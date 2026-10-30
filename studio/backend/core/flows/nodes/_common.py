@@ -325,6 +325,17 @@ _LOADED_OPTIONS: dict[str, tuple[str, str, int]] = {}
 _ALONGSIDE_OPTIONS: dict[str, Optional[str]] = {}
 
 
+def loaded_options(slot: str) -> Optional[tuple[str, str, int]]:
+    """(repo, options hash, load count) the flow loaded ``slot`` with; dropped once any other load happened."""
+    from core.inference import gpu_arbiter
+
+    found = _LOADED_OPTIONS.get(slot)
+    if found is not None and found[2] != gpu_arbiter.load_count(gpu_arbiter.CHAT):
+        _LOADED_OPTIONS.pop(slot, None)
+        return None
+    return found
+
+
 def options_hash(options: Optional[dict]) -> Optional[str]:
     if not options:
         return None
@@ -436,10 +447,7 @@ async def _ensure_model(
     settings = options_hash(options)
     from core.inference import gpu_arbiter
 
-    loaded_with = _LOADED_OPTIONS.get(slot)
-    if loaded_with is not None and loaded_with[2] != gpu_arbiter.load_count(gpu_arbiter.CHAT):
-        _LOADED_OPTIONS.pop(slot, None)
-        loaded_with = None
+    loaded_with = loaded_options(slot)
     same_settings = (
         loaded_with is None or loaded_with[0] != repo.lower()
         if settings is None

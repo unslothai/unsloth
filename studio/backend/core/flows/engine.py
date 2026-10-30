@@ -214,6 +214,7 @@ class RunState:
     app: Any = None
     resident: dict[str, Optional[str]] = field(default_factory = dict)
     initial_resident: dict[str, list[str]] = field(default_factory = dict)
+    resident_variant: dict[str, Optional[str]] = field(default_factory = dict)
     fresh: set[str] = field(default_factory = set)
     prefetch_task: Optional[asyncio.Task] = field(default = None, repr = False)
     prefetched: int = 0
@@ -1383,6 +1384,7 @@ class FlowEngine:
             if gpu_running == 0:
                 gpu_ready = [n for n in ready if plan.specs[n]["lane"] == "gpu"]
                 if gpu_ready:
+                    await self._probe_resident_variant(rs, gpu_ready)
                     launch.append(self._pick_gpu(rs, gpu_ready))
             for nid in launch:
                 pending.remove(nid)
@@ -1658,13 +1660,33 @@ class FlowEngine:
         repo = choice.get("repo", "") if isinstance(choice, dict) else ""
         return MODEL_SLOT.get(kind, kind), str(repo or "").lower()
 
+    async def _probe_resident_variant(self, rs: RunState, ready: list[str]) -> None:
+        """The loaded chat model's quant, for Model-unset cards that follow saved settings: their saved load can
+        be quant-specific. Read only when one is ready; nothing else is on the GPU at this point."""
+        from studio_mcp import loading
+
+        if not any(
+            self._model_of(rs.plan, nid) == ("llm", "")
+            and (rs.plan.nodes[nid].get("params") or {}).get(model_settings.USE_SAVED)
+            for nid in ready
+        ):
+            return
+        try:
+            _slots, status = await asyncio.wait_for(loading._resident(rs.caller), RESIDENT_PROBE_S)
+            variant = status.get("gguf_variant")
+        except Exception:
+            variant = None
+        rs.resident_variant["llm"] = variant if isinstance(variant, str) and variant else None
+
     def _pick_gpu(self, rs: RunState, ready: list[str]) -> str:
         plan = rs.plan
 
         def model_of(nid: str) -> tuple[str, str]:
             return self._model_of(plan, nid)
 
-        from core.flows.nodes._common import _LOADED_OPTIONS, options_hash
+        from core.flows.nodes._common import loaded_options, options_hash
+
+        variants = getattr(rs, "resident_variant", None) or {}
 
         # Cards with their own load settings group by them too, so same-settings cards run back to back.
         loads: dict[str, Optional[str]] = {}
@@ -1674,14 +1696,18 @@ class FlowEngine:
                 params = plan.nodes[nid].get("params") or {}
                 slot, repo = model_of(nid)
                 loads[nid] = (
-                    options_hash(model_settings.card_load_kwargs(params, None if repo else rs.resident.get(slot)))
+                    options_hash(
+                        model_settings.card_load_kwargs(
+                            params, None if repo else rs.resident.get(slot), variants.get(slot)
+                        )
+                    )
                     if model_settings.LOAD in params or params.get(model_settings.USE_SAVED)
                     else None
                 )
             return loads[nid]
 
         def loaded_with(slot: str, repo: str) -> Optional[str]:
-            found = _LOADED_OPTIONS.get(slot)
+            found = loaded_options(slot)
             return found[1] if found and found[0] == repo else None
 
         for nid in ready:

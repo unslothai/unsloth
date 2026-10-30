@@ -132,12 +132,16 @@ def load_kwargs(load: Any, *, is_gguf: bool) -> Optional[dict]:
     return model_override_load_kwargs(normalize_model_override(load), is_gguf = is_gguf) or None
 
 
-def card_load_kwargs(params: dict, resident: Optional[str] = None) -> Optional[dict]:
+def card_load_kwargs(
+    params: dict, resident: Optional[str] = None, resident_variant: Optional[str] = None
+) -> Optional[dict]:
     """What the scheduler groups by, before the run resolves saved settings: theirs when the card follows them.
-    A card with Model unset reads as the resident model, so GGUF-only settings survive the mapping."""
+    A card with Model unset reads as the resident model and its quant, so GGUF-only and quant-specific settings
+    match what the run resolves."""
     choice = params.get("model")
-    repo = (choice.get("repo") if isinstance(choice, dict) else None) or resident
-    variant = choice.get("variant") if isinstance(choice, dict) else None
+    picked = choice.get("repo") if isinstance(choice, dict) else None
+    repo = picked or resident
+    variant = (choice.get("variant") if isinstance(choice, dict) else None) if picked else resident_variant
     load = params.get(LOAD) or {}
     if params.get(USE_SAVED) and repo:
         load = {**load, **saved_load(repo, variant)}

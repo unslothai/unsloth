@@ -11,6 +11,7 @@ from core.flows import model_settings
 from core.flows.engine import param_values
 from core.flows.nodes import _common
 from core.flows.specs import NODE_SPECS
+from core.inference import gpu_arbiter
 
 GENERATE = next(s for s in NODE_SPECS if s["type"] == "llm.generate")
 VISION = next(s for s in NODE_SPECS if s["type"] == "llm.vision")
@@ -266,6 +267,10 @@ def test_the_cache_key_includes_the_load_settings():
     assert key({**base, "load": CARD_LOAD}) != key({**base, "load": {**CARD_LOAD, "max_seq_length": 8192}})
 
 
+def _loads():
+    return gpu_arbiter.load_count(gpu_arbiter.CHAT)
+
+
 def _plan(nodes):
     return SimpleNamespace(
         specs = {nid: GENERATE for nid in nodes},
@@ -285,7 +290,7 @@ def test_ready_cards_sharing_a_load_run_back_to_back(monkeypatch):
     assert engine._pick_gpu(rs, ["a", "b", "c"]) in ("b", "c")
     # With the model resident at 32k, the 32k card goes first.
     opts = model_settings.load_kwargs(big["load"], is_gguf = True)
-    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), 0)})
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())})
     rs.resident = {"llm": GGUF}
     assert engine._pick_gpu(rs, ["b", "a", "c"]) == "a"
 
@@ -296,7 +301,7 @@ def test_a_card_on_the_loaded_model_waits_when_its_load_differs(monkeypatch):
     small = {"load": {"max_seq_length": 8192}}
     plan = _plan({"a": small, "b": big})
     opts = model_settings.load_kwargs(big["load"], is_gguf = True)
-    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), 0)})
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())})
     rs = SimpleNamespace(plan = plan, resident = {"llm": GGUF})
     engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
     assert engine._pick_gpu(rs, ["a", "b"]) == "b"
@@ -310,7 +315,7 @@ def test_gguf_only_settings_on_a_card_with_model_unset_are_compared(monkeypatch)
     other = {"load": {"gpu_layers": 40}}
     opts = model_settings.load_kwargs(other["load"], is_gguf = True)
     assert opts and model_settings.card_load_kwargs(layers, GGUF) != opts
-    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), 0)})
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())})
     rs = SimpleNamespace(plan = _plan({"a": layers, "b": other}), resident = {"llm": GGUF})
     engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
     assert engine._pick_gpu(rs, ["a", "b"]) == "b"
@@ -353,3 +358,52 @@ def test_a_card_on_the_loaded_model_keeps_its_quant_through_a_reload(monkeypatch
 def test_the_context_pin_wins_under_manual_auto_layers():
     load = {"gpu_memory_mode": "manual", "custom_context_length": 12288}
     assert model_settings.load_kwargs(load, is_gguf = True)["max_seq_length"] == 12288
+
+
+def test_a_stale_load_record_does_not_steer_the_scheduler(monkeypatch):
+    big = {"load": {"max_seq_length": 32768}}
+    small = {"load": {"max_seq_length": 8192}}
+    opts = model_settings.load_kwargs(big["load"], is_gguf = True)
+    # Recorded before some other load (Chat reloading the model) bumped the count.
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads() - 1)})
+    rs = SimpleNamespace(plan = _plan({"a": small, "b": big, "c": {}}), resident = {"llm": GGUF})
+    engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
+    assert engine._pick_gpu(rs, ["a", "b", "c"]) == "c"
+
+
+def test_a_model_unset_card_hashes_the_resident_quants_saved_load(monkeypatch):
+    by_quant = {"Q8_0": {"max_seq_length": 32768}, None: {"max_seq_length": 8192}}
+    monkeypatch.setattr(model_settings, "saved_load", lambda model_id, variant = None: dict(by_quant[variant]))
+    opts = model_settings.load_kwargs(by_quant["Q8_0"], is_gguf = True)
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())})
+    follows = {"use_model_settings": True}
+    other = {"load": {"max_seq_length": 8192}}
+    rs = SimpleNamespace(
+        plan = _plan({"a": other, "b": follows}), resident = {"llm": GGUF}, resident_variant = {"llm": "Q8_0"}
+    )
+    engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
+    assert engine._pick_gpu(rs, ["a", "b"]) == "b"
+    rs.resident_variant = {}
+    assert engine._pick_gpu(rs, ["a", "b"]) == "a"
+
+
+def test_the_resident_quant_is_probed_only_for_a_model_unset_card_that_follows_saved(monkeypatch):
+    from studio_mcp import loading
+
+    calls = []
+
+    async def fake_resident(caller):
+        calls.append(caller)
+        return {"llm": [GGUF]}, {"gguf_variant": "Q8_0"}
+
+    monkeypatch.setattr(loading, "_resident", fake_resident)
+    engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
+    rs = SimpleNamespace(
+        plan = _plan({"a": {"load": {"max_seq_length": 8192}}, "b": {"use_model_settings": True}}),
+        caller = None,
+        resident_variant = {},
+    )
+    asyncio.run(engine._probe_resident_variant(rs, ["a"]))
+    assert not calls
+    asyncio.run(engine._probe_resident_variant(rs, ["a", "b"]))
+    assert len(calls) == 1 and rs.resident_variant == {"llm": "Q8_0"}
