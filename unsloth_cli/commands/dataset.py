@@ -69,6 +69,10 @@ def _print_report(report):
     typer.echo(
         f"Prepared rows: {report['rows_prepared']:,} | Dropped by formatting: {report['rows_dropped_by_formatter']:,}"
     )
+    if report["rows_expanded_by_formatter"]:
+        typer.echo(
+            f"Additional rows from conversation expansion: {report['rows_expanded_by_formatter']:,}"
+        )
     lengths = report["lengths"]
     typer.echo(
         f"Token lengths: min {lengths['min']}, median {lengths['p50']}, p95 {lengths['p95']}, max {lengths['max']}"

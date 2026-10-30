@@ -148,7 +148,13 @@ def _mask(tokenizer, model_name: str, encoded: dict, final_format: str) -> tuple
     return list(trainer.train_dataset["labels"]), masking
 
 
-def prepare_text_dataset(tokenizer, config: dict, dataset) -> dict:
+def prepare_text_dataset(
+    tokenizer,
+    config: dict,
+    dataset,
+    *,
+    collect_row_statistics = False,
+) -> dict:
     """Shared preview/audit formatting, retaining diagnostics before callers select rows."""
     from utils.datasets import format_and_template_dataset
     from utils.datasets.raw_text import prepare_raw_text_dataset
@@ -167,6 +173,7 @@ def prepare_text_dataset(tokenizer, config: dict, dataset) -> dict:
             "warnings": [notice.message for notice in result.notices],
         }
 
+    row_statistics = {} if collect_row_statistics else None
     info = format_and_template_dataset(
         dataset,
         model_name = config["model_name"],
@@ -177,9 +184,12 @@ def prepare_text_dataset(tokenizer, config: dict, dataset) -> dict:
         custom_format_mapping = config.get("custom_format_mapping"),
         # Keep tokenizer-only diagnostics in this process; worker pools add startup overhead.
         num_proc = 1,
+        **({"row_statistics": row_statistics} if collect_row_statistics else {}),
     )
     if not info.get("success", True):
         raise ValueError("; ".join(info.get("errors") or []) or "Dataset formatting failed")
+    if collect_row_statistics:
+        info["row_statistics"] = row_statistics
     return info
 
 

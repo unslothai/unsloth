@@ -29,6 +29,9 @@ When chat rows also retain `input_ids`, those IDs take precedence over the forma
 as they do in training. The report identifies this route and its lack of extra truncation.
 Tokenizer loading applies the training repairs, including reuse of an existing padding
 token. If padding requires model preparation, the audit reports that it is unsupported.
+Prompt/completion datasets keep training's completion-only mask, including when
+`--train-on-completions` is off. Conversation expansion is counted separately from source
+rows dropped during conversion; total formatter drops also include later row filtering.
 
 This first version supports unpacked PyTorch causal language-model training. Apple Silicon's
 MLX backend, packed configs and media datasets are refused because their training processors

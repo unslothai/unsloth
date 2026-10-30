@@ -219,7 +219,18 @@ def test_pretokenized_padding_does_not_count_as_truncation(tokenizer):
 
 
 @pytest.mark.parametrize(
-    "kind", ["raw", "auto", "chat", "chat_without_template", "alpaca", "ids", "labels"]
+    "kind",
+    [
+        "raw",
+        "auto",
+        "chat",
+        "chat_without_template",
+        "alpaca",
+        "ids",
+        "labels",
+        "prompt",
+        "prompt_chat",
+    ],
 )
 def test_counts_match_zoo_training_preparation_and_collation(tokenizer, kind):
     from types import SimpleNamespace
@@ -237,6 +248,13 @@ def test_counts_match_zoo_training_preparation_and_collation(tokenizer, kind):
         "auto": [{"text": "hello"}],
         "chat": [chat()],
         "chat_without_template": [chat()],
+        "prompt": [{"prompt": "hello", "completion": "answer"}],
+        "prompt_chat": [
+            {
+                "prompt": [{"role": "user", "content": "hello"}],
+                "completion": [{"role": "assistant", "content": "answer"}],
+            }
+        ],
         "alpaca": [{"instruction": "hello", "input": "", "output": "answer"}],
         "ids": [{"input_ids": [1, 10, tokenizer.eos_token_id]}],
         "labels": [
@@ -277,6 +295,9 @@ def test_counts_match_zoo_training_preparation_and_collation(tokenizer, kind):
     batch = trainer.data_collator(prepared.to_list())
     assert report["tokens_after_truncation"] == sum(len(row) for row in prepared["input_ids"])
     assert report["loss_targets_after_truncation"] == int((batch["labels"][:, 1:] != -100).sum())
+    if kind == "chat_without_template":
+        assert report["template"]["text"] == training_tokenizer.chat_template
+        assert report["template"]["sha256"]
 
 
 @pytest.mark.parametrize("limit", [1, 2])
@@ -356,6 +377,37 @@ def test_actual_media_is_still_refused(tokenizer):
         )
 
 
+def test_truncation_removes_the_entire_completion_even_without_response_masking(tokenizer):
+    report = audit_dataset(
+        Dataset.from_list([{"prompt": "hello " * 30, "completion": "answer"}]),
+        tokenizer,
+        config(train_on_completions = False, max_seq_length = 8),
+    )
+    assert report["loss_targets_before_truncation"] > 0
+    assert report["loss_targets_after_truncation"] == 0
+    assert report["rows_losing_all_loss_to_truncation"] == 1
+    assert report["status"] == "issues_found"
+    assert report["tokenization"]["source"] == "prompt_completion"
+    assert report["template"]["source"] == "none"
+
+
+@pytest.mark.parametrize("include_drop", [False, True])
+def test_row_expansion_cannot_invent_or_cancel_formatter_drops(tokenizer, include_drop):
+    rows = [{"messages": chat()["messages"] * 2}]
+    if include_drop:
+        rows.append({"messages": [{"role": "user", "content": "hello"}]})
+    report = audit_dataset(
+        Dataset.from_list(rows),
+        tokenizer,
+        config(format_type = "alpaca", max_seq_length = 512, train_on_completions = False),
+    )
+    assert report["rows_prepared"] == 2
+    assert report["rows_expanded_by_formatter"] == 1
+    assert report["rows_dropped_by_formatter"] == int(include_drop)
+    assert report["source_rows_dropped_during_conversion"] == int(include_drop)
+    assert report["status"] == ("issues_found" if include_drop else "ok")
+
+
 def test_packing_is_not_given_unpacked_loss_statistics(tokenizer):
     with pytest.raises(ValueError, match = "packing=False"):
         audit_dataset(Dataset.from_list([chat()]), tokenizer, config(packing = True))
@@ -368,20 +420,41 @@ def test_batch_size_does_not_change_effective_template_or_counts(tokenizer):
     )
 
 
-@pytest.mark.parametrize("case", ["full_scan", "retained_tokens", "pad_eos", "text_metadata"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "full_scan",
+        "retained_tokens",
+        "pad_eos",
+        "text_metadata",
+        "prompt_completion",
+        "expansion",
+        "expansion_and_drop",
+        "fallback_template",
+    ],
+)
 def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path, case):
     model = tmp_path / "tokenizer"
+    if case == "fallback_template":
+        tokenizer.chat_template = None
     tokenizer.add_special_tokens({"additional_special_tokens": ["<pad>"]})
     tokenizer.save_pretrained(model)
     data = tmp_path / "train.jsonl"
     tokenized = chat()
-    tokenized["input_ids"] = tokenizer.apply_chat_template(tokenized["messages"])[:3]
+    tokenized["input_ids"] = [tokenizer.bos_token_id, 10, 11]
     tokenized["labels"] = [-100] * len(tokenized["input_ids"])
     rows = {
         "full_scan": [chat()] * 100 + [chat("long " * 100)],
         "retained_tokens": [tokenized],
         "pad_eos": [{"input_ids": [tokenizer.bos_token_id, tokenizer.eos_token_id]}],
         "text_metadata": [{"filename": "train.py", "text": "hello"}],
+        "prompt_completion": [{"prompt": "hello " * 30, "completion": "answer"}],
+        "expansion": [{"messages": chat()["messages"] * 2}],
+        "expansion_and_drop": [
+            {"messages": chat()["messages"] * 2},
+            {"messages": [{"role": "user", "content": "hello"}]},
+        ],
+        "fallback_template": [chat()],
     }[case]
     data.write_text("".join(json.dumps(row) + "\n" for row in rows))
     guard = tmp_path / "guard"
@@ -424,7 +497,9 @@ def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path, case
             str(model),
             "--train-on-completions" if case == "full_scan" else "--no-train-on-completions",
             "--format-type",
-            "raw" if case == "text_metadata" else "auto",
+            "raw"
+            if case == "text_metadata"
+            else ("alpaca" if case.startswith("expansion") else "auto"),
             "--max-seq-length",
             "32",
             "--full",
@@ -436,7 +511,11 @@ def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path, case
         env = env,
         timeout = 60,
     )
-    assert result.returncode == (1 if case in ("full_scan", "retained_tokens") else 0), (
+    assert result.returncode == (
+        1
+        if case in ("full_scan", "retained_tokens", "prompt_completion", "expansion_and_drop")
+        else 0
+    ), (
         result.stdout,
         result.stderr,
     )
@@ -448,6 +527,12 @@ def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path, case
         assert report["loss_targets_after_truncation"] == 0
     elif case == "pad_eos":
         assert report["loss_targets_after_truncation"] == 1
+    elif case == "prompt_completion":
+        assert report["rows_losing_all_loss_to_truncation"] == 1
+    elif case.startswith("expansion"):
+        assert report["rows_dropped_by_formatter"] == int(case == "expansion_and_drop")
+    elif case == "fallback_template":
+        assert report["template"]["text"] and report["template"]["sha256"]
     receipts = [json.loads(path.read_text()) for path in guard.glob("*.json")]
     assert len(receipts) >= 2  # CLI parent and tokenizer worker.
     assert all(not receipt["weights"] and not receipt["cuda"] for receipt in receipts)

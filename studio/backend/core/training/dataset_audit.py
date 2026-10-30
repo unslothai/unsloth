@@ -67,6 +67,7 @@ def _label_rows(
     completion_only,
     *,
     retained_tokens = True,
+    completion_loss = None,
 ):
     from types import SimpleNamespace
     from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
@@ -75,7 +76,8 @@ def _label_rows(
     from utils.datasets.pretokenized import resolve_completion_only_loss
 
     user_labels = final_format == "pretokenized" and "labels" in dataset.column_names
-    completion_loss = resolve_completion_only_loss(dataset)
+    if completion_loss is None:
+        completion_loss = resolve_completion_only_loss(dataset)
     trainer = SimpleNamespace(
         data_collator = DataCollatorForLanguageModeling(
             pad_token_id = tokenizer.pad_token_id,
@@ -123,6 +125,29 @@ def _label_rows(
         ][0].tolist()
         for row in rows
     ], masking
+
+
+def _prepare_prompt_completion(dataset, tokenizer, max_length):
+    from types import SimpleNamespace
+    from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
+    from unsloth_zoo.dataset_utils import sft_prepare_dataset
+
+    trainer = SimpleNamespace(
+        data_collator = DataCollatorForLanguageModeling(
+            pad_token_id = tokenizer.pad_token_id, completion_only_loss = True
+        ),
+        completion_only_loss = True,
+    )
+    # Zoo's prompt/completion route treats a non-positive length as no truncation.
+    return sft_prepare_dataset(
+        trainer,
+        dataset,
+        tokenizer,
+        SimpleNamespace(max_length = max_length, dataset_num_proc = 1),
+        False,
+        None,
+        "audit",
+    )
 
 
 def _load_training_tokenizer(config):
@@ -195,7 +220,9 @@ def audit_dataset(
     # Explicit raw/CPT adds EOS in the trainer; auto-detected raw uses the formatter as-is.
     format_config["raw_text"] = config.get("is_cpt") or config.get("format_type") == "raw"
     formatting_tokenizer = copy.deepcopy(tokenizer)
-    info = prepare_text_dataset(formatting_tokenizer, format_config, selected)
+    info = prepare_text_dataset(
+        formatting_tokenizer, format_config, selected, collect_row_statistics = True
+    )
     prepared = info["dataset"]
     final_format = str(info["final_format"]).lower()
     if not len(prepared):
@@ -203,16 +230,22 @@ def audit_dataset(
     tokenizer = get_training_chat_template(formatting_tokenizer, config["model_name"], final_format)
     pretokenized = final_format == "pretokenized"
     retained_tokens = "input_ids" in prepared.column_names
+    prompt_completion = not retained_tokens and {"prompt", "completion"} <= set(
+        prepared.column_names
+    )
+    plain_prompt = prompt_completion and isinstance(prepared[0]["prompt"], str)
     template = (
         None
-        if final_format in ("raw_text", "pretokenized")
+        if final_format == "raw_text" or retained_tokens or plain_prompt
         else (
             DEFAULT_ALPACA_TEMPLATE
             if final_format == "alpaca"
-            else getattr(formatting_tokenizer, "chat_template", None)
+            else getattr(tokenizer, "chat_template", None)
         )
     )
     first_text = None if retained_tokens else prepared[0]["text"]
+    if prompt_completion:
+        first_text = prepared[0]["prompt"] if plain_prompt else None
     add_special_tokens = (
         False if retained_tokens else resolve_add_special_tokens(tokenizer, first_text)
     )
@@ -227,6 +260,9 @@ def audit_dataset(
             kept = prepare_pretokenized_dataset(full, max_seq_length = max_length)
         elif retained_tokens:
             full = kept = batch
+        elif prompt_completion:
+            full = _prepare_prompt_completion(batch, tokenizer, -1)
+            kept = _prepare_prompt_completion(batch, tokenizer, max_length)
         else:
             texts = list(batch["text"])
             full = Dataset.from_dict(dict(tokenizer(texts, add_special_tokens = add_special_tokens)))
@@ -247,6 +283,7 @@ def audit_dataset(
             final_format,
             config.get("train_on_completions", False),
             retained_tokens = retained_tokens,
+            completion_loss = True if prompt_completion else None,
         )
         kept_labels, masking = _label_rows(
             tokenizer,
@@ -255,6 +292,7 @@ def audit_dataset(
             final_format,
             config.get("train_on_completions", False),
             retained_tokens = retained_tokens,
+            completion_loss = True if prompt_completion else None,
         )
         for offset, (ids, retained, before, after) in enumerate(
             zip(full["input_ids"], kept["input_ids"], full_labels, kept_labels)
@@ -282,7 +320,9 @@ def audit_dataset(
                         "loss_targets": after_targets,
                     }
                 )
-    dropped = len(selected) - len(prepared)
+    row_statistics = info.get("row_statistics", {})
+    expanded = row_statistics.get("expanded_rows", 0)
+    dropped = len(selected) + expanded - len(prepared)
     warnings = list(
         dict.fromkeys(
             [
@@ -309,7 +349,9 @@ def audit_dataset(
         "tokenizer_source": config.get("tokenizer_source") or config["model_name"],
         "format": final_format,
         "tokenization": {
-            "source": "input_ids" if retained_tokens else "text",
+            "source": "input_ids"
+            if retained_tokens
+            else ("prompt_completion" if prompt_completion else "text"),
             "context_limit_applied": pretokenized or not retained_tokens,
         },
         "settings": {
@@ -330,6 +372,8 @@ def audit_dataset(
         "masking": masking,
         "rows_prepared": len(prepared),
         "rows_dropped_by_formatter": dropped,
+        "rows_expanded_by_formatter": expanded,
+        "source_rows_dropped_during_conversion": row_statistics.get("dropped_source_rows", 0),
         "lengths": _length_summary(lengths),
         **counts,
         "examples": examples,
