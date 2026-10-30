@@ -103,7 +103,10 @@ def test_rule_types(body, text, reference, expected):
         ("type: regex\npattern: x", "frontmatter"),
         (_md("t", "type: shell\ncmd: rm"), "type must be one of"),
         (_md("t", "type: regex\npattern: '('"), "Invalid regex"),
-        (_md("t", "type: regex\npattern: '" + "(" * 500 + "a" + ")" * 500 + "'"), "nested too deeply"),
+        (
+            _md("t", "type: regex\npattern: '" + "(" * 500 + "a" + ")" * 500 + "'"),
+            "nested too deeply",
+        ),
         (_md("t", "type: regex\npattern: x", kind = "python"), "Python rewards are not supported"),
         (_md("t", "import os\nimport sys", kind = "python"), "Python rewards are not supported"),
         (_md("Bad Name", "type: regex\npattern: x"), "lowercase"),
