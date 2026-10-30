@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# Fused batch-1 NF4 decode (UNSLOTH_DECODE_FUSED_NF4=1): 4 launches per layer (qkv, o, gate_up, down).
-# RMSNorm is split: the producer writes xg = h * gamma plus sum(h^2) partials, the consumer scales
-# its accumulators by rstd (fixed-order sum: deterministic, no atomics).
+# Fused batch-1 NF4 decode: 4 launches per layer (qkv, o, gate_up, down). Split RMSNorm: producer writes
+# xg = h * gamma + sum(h^2) partials, consumer scales by rstd (fixed-order sum: deterministic, no atomics).
 
 import functools
 
