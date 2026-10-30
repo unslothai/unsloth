@@ -478,7 +478,21 @@ async def delete_flow(flow_id: str) -> Response:
     return Response(status_code = 204)
 
 
-def _hub_cached(repo: str) -> Optional[bool]:
+_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt", ".onnx")
+_SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+
+
+def _variant_complete(files: list[str], variant: str) -> bool:
+    from core.inference.llama_cpp import _gguf_files_for_variant
+
+    names = _gguf_files_for_variant(files, variant)
+    if not names:
+        return False
+    shards = [m for m in (_SHARD.search(n) for n in names) if m]
+    return not shards or len(shards) >= int(shards[0].group(2))
+
+
+def _hub_cached(repo: str, variant: Optional[str] = None) -> Optional[bool]:
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
     except Exception:
@@ -486,8 +500,22 @@ def _hub_cached(repo: str) -> Optional[bool]:
     folder = Path(HF_HUB_CACHE) / ("models--" + repo.replace("/", "--"))
     snapshots = folder / "snapshots"
     try:
-        return snapshots.is_dir() and any(snapshots.iterdir())
-    except OSError:
+        if not snapshots.is_dir():
+            return False
+        # A snapshot can hold only config / tokenizer files, or another quant of the same repo.
+        for snap in snapshots.iterdir():
+            files = [
+                p.relative_to(snap).as_posix()
+                for p in snap.rglob("*")
+                if p.name.lower().endswith(_WEIGHT_SUFFIXES) and p.is_file()
+            ]
+            if not files:
+                continue
+            ggufs = [f for f in files if f.lower().endswith(".gguf")]
+            if not variant or not ggufs or _variant_complete(ggufs, variant):
+                return True
+        return False
+    except Exception:
         return None
 
 
@@ -524,7 +552,7 @@ async def _model_report(request: Request, plan: compiler.Plan) -> list[dict]:
                 **need,
                 "downloaded": True
                 if loaded
-                else await asyncio.to_thread(_hub_cached, need["repo"]),
+                else await asyncio.to_thread(_hub_cached, need["repo"], need.get("variant")),
                 "loaded": loaded,
                 "size_bytes": None,
                 "fits": None,

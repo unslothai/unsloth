@@ -482,3 +482,34 @@ def test_glb_models_upload_and_travel_in_packages(client, monkeypatch):
     assert exported.status_code == 200
     with zipfile.ZipFile(io.BytesIO(exported.content)) as zf:
         assert f"assets/{media['ref'].split(':')[1]}.glb" in zf.namelist()
+
+
+def _snapshot(cache, repo, *files):
+    snap = cache / ("models--" + repo.replace("/", "--")) / "snapshots" / ("a" * 40)
+    snap.mkdir(parents = True, exist_ok = True)
+    for name in files:
+        (snap / name).parent.mkdir(parents = True, exist_ok = True)
+        (snap / name).write_bytes(b"x")
+
+
+def test_download_check_needs_the_weights_and_the_selected_quant(monkeypatch, tmp_path):
+    import huggingface_hub.constants as hub_constants
+
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
+    _snapshot(tmp_path, "org/meta-only", "config.json", "tokenizer_config.json")
+    _snapshot(tmp_path, "org/other-quant-GGUF", "model-Q8_0.gguf")
+    _snapshot(tmp_path, "org/split-GGUF", "Q4_K_M/model-Q4_K_M-00001-of-00002.gguf")
+    _snapshot(tmp_path, "org/full", "config.json", "model.safetensors")
+    _snapshot(tmp_path, "org/diffusers", "model_index.json", "transformer/diffusion.safetensors")
+    _snapshot(tmp_path, "org/quant-GGUF", "model-Q8_0.gguf", "model-Q4_K_M.gguf")
+
+    assert flows_routes._hub_cached("org/meta-only") is False
+    assert flows_routes._hub_cached("org/other-quant-GGUF", "Q4_K_M") is False
+    assert flows_routes._hub_cached("org/split-GGUF", "Q4_K_M") is False
+    assert flows_routes._hub_cached("org/never-fetched") is False
+    assert flows_routes._hub_cached("org/full") is True
+    assert flows_routes._hub_cached("org/diffusers") is True
+    assert flows_routes._hub_cached("org/quant-GGUF", "Q4_K_M") is True
+    assert flows_routes._hub_cached("org/other-quant-GGUF") is True
+    _snapshot(tmp_path, "org/split-GGUF", "Q4_K_M/model-Q4_K_M-00002-of-00002.gguf")
+    assert flows_routes._hub_cached("org/split-GGUF", "Q4_K_M") is True
