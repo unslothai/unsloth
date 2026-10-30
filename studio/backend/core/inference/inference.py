@@ -2554,6 +2554,10 @@ class InferenceBackend:
 
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(None, timer)
+            # Without it, Stop leaves generate running to max_new_tokens while it holds the lock.
+            stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            if stopping_criteria is not None:
+                generation_kwargs["stopping_criteria"] = stopping_criteria
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
 
             err: dict[str, str] = {}

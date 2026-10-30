@@ -356,6 +356,27 @@ def test_the_audio_input_path_resolves_an_unset_budget(monkeypatch):
     assert model.calls[0]["max_new_tokens"] == _WINDOW - _PROMPT_LEN
 
 
+def test_the_audio_input_path_stops_when_cancelled(monkeypatch):
+    """A custom generate (LFM3-Omni) gets no other cancel signal, and runs to max_new_tokens holding the lock."""
+    import threading
+
+    backend, model = _audio_backend(monkeypatch)
+    cancel = threading.Event()
+    list(
+        backend.generate_audio_input_response(
+            [{"role": "user", "content": "hi"}], "", object(), 0.0, 1.0, 0, 0.0, 8, 1.0,
+            cancel_event = cancel,
+        )
+    )
+
+    # The stream's own finally sets the event, so clear it to see the criteria follow it.
+    criteria = model.calls[0]["stopping_criteria"]
+    cancel.clear()
+    assert not any(c(None, None) for c in criteria)
+    cancel.set()
+    assert any(c(None, None) for c in criteria)
+
+
 def _rendered_audio_messages(
     monkeypatch,
     messages,

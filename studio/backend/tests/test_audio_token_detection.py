@@ -628,7 +628,7 @@ def test_a_processor_audio_token_is_audio_vlm():
     assert classify_audio_tokens(_LFM3_OMNI_TOKENIZER_CONFIG) is None
     assert classify_audio_tokens(_LFM3_OMNI_PROCESSOR_CONFIG) == "audio_vlm"
     # Only the markers the tokenizer patterns already accept: Qwen2-Audio's <|AUDIO|> stays unrouted.
-    assert classify_audio_tokens({"audio_token": "<|AUDIO|>"}) is None
+    assert classify_audio_tokens({"audio_token": "<|AUDIO|>", "image_processor": {"image_processor_type": "Lfm3ImageProcessor"}}) is None
     assert classify_audio_tokens({"audio_token": None}) is None
 
 

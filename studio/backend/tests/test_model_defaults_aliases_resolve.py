@@ -100,6 +100,7 @@ def test_lfm3_omni_uses_all_linear_defaults():
     for name in (
         "LiquidAI/LFM3-Omni-2B",
         "LiquidAI/LFM3-1.7B",
+        "LiquidAI/LFM3-1.7B-Base",
         "LiquidAI/LFM3-VL-2B",
         "LiquidAI/LFM3-Audio-2B",
     ):

@@ -287,7 +287,7 @@ MODEL_NAME_MAPPING = {
         "LiquidAI/LFM2-1.2B",
         "unsloth/LFM2-1.2B-unsloth-bnb-4bit",
     ],
-    # LFM3's MLP is w1/w2/w3, which the default up/down/gate_proj targets miss.
+    # LFM3's MLP is w1/w2/w3, which the default up_proj/down_proj targets miss.
     "LiquidAI_LFM3-Omni-2B.yaml": [
         "LiquidAI/LFM3-Omni-2B",
         "LiquidAI/LFM3-1.7B",
