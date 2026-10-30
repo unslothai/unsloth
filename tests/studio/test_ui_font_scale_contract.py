@@ -24,6 +24,8 @@ FONTSIZE_STYLE_ALLOWLIST = {
     "lib/copy-to-clipboard.ts",
     # SVG text in viewBox units: the chart scales with its width and exports as PNG, where CSS vars don't resolve.
     "features/benchmarks/components/bench-chart.tsx",
+    "features/benchmarks/components/bar-chart.tsx",
+    "features/benchmarks/components/chart-frame.tsx",
 }
 
 # Sizes a container query's em breakpoint, not text (--ui-space-scale derives
