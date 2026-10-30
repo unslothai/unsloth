@@ -1674,12 +1674,12 @@ def get_transformers_tier(
 ) -> str:
     """Returns 510, 550, 530 or default; local config.json is checked before name heuristics (dir-name false positives); probe=False skips sidecar subprocesses."""
     tier = _native_transformers_tier(model_name, hf_token, probe)
-    # Native rules can place a custom-code checkpoint below its saving version; raise only, no new fetch.
-    cfg = (
-        _load_config_json(model_name, hf_token)
-        if _safe_is_file(Path(model_name) / "config.json")
-        else _cached_config_json(model_name, hf_token)
-    )
+    # Native rules can place a custom-code checkpoint below its saving version; raise only. The name
+    # fast path fetches no config, so a real load (probe=True) reads it here; the cheap hint stays I/O-free.
+    if probe and tier != "default":
+        cfg = _load_config_json(model_name, hf_token)
+    else:
+        cfg = _cached_config_json(model_name, hf_token)
     required = _remote_code_min_version(cfg)
     current = _release_tuple(_tier_version(tier))
     if required is not None and current is not None and current < required:

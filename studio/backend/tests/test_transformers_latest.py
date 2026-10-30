@@ -1688,3 +1688,12 @@ class TestCustomCodeRouting:
         assert result is not None
         assert result["supported_in_pypi"] is False and result["supported_in_main"] is True
         assert result["main_version"] == "5.14.0.dev0"
+
+    def test_hub_name_match_is_raised_to_saving_version(self, monkeypatch):
+        cfg = {
+            "model_type": "qwen3_5",
+            "auto_map": {"AutoConfig": "configuration_x.XConfig"},
+            "transformers_version": "5.8.0",
+        }
+        monkeypatch.setattr(tv, "_load_config_json", lambda name, token = None: cfg)
+        assert get_transformers_tier("someorg/Qwen3.5-Custom") == "510"
