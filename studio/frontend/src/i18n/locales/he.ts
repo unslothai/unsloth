@@ -6,6 +6,13 @@ import type { en } from "./en";
 
 export const he = {
   chatBackground: {
+    sizing: "התאמת גודל תמונה",
+    fill: "מילוי",
+    fit: "התאמה",
+    stretch: "מתיחה",
+    original: "גודל מקורי",
+    zoom: "זום",
+    outline: "מסגרת שדה ההודעה",
     fade: "דעיכה אל הרקע",
     title: "תמונת רקע",
     description: "תמונה מקומית לסביבת העבודה שלך. JPEG, PNG או WebP, עד 20 MiB. הטקסט נשאר קריא אוטומטית.",

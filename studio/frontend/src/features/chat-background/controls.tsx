@@ -22,6 +22,8 @@ import { ChatBackground } from "./index";
 import {
 	DEFAULT_ADJUSTMENTS,
 	EFFECTS,
+	IMAGE_SIZING,
+	type ImageSizing,
 	POSITIONS,
 	normalizedSize,
 	validUpload,
@@ -44,6 +46,12 @@ const labels: Record<BackgroundEffect, TranslationKey> = {
 	Halftone: "chatBackground.halftone",
 	Scanlines: "chatBackground.scanlines",
 };
+const sizingLabels: Record<ImageSizing, TranslationKey> = {
+	cover: "chatBackground.fill",
+	contain: "chatBackground.fit",
+	stretch: "chatBackground.stretch",
+	original: "chatBackground.original",
+};
 const errors = {
 	storage: "chatBackground.storageError",
 	file: "chatBackground.fileError",
@@ -59,6 +67,7 @@ export function ChatBackgroundControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.title")}
+			actionAlign="text"
 			action={
 				<div className="flex max-w-full items-center justify-end">
 					<Button
@@ -159,7 +168,7 @@ export function ChatBackgroundControls() {
 											{t("chatBackground.response")}
 										</p>
 									)}
-									<div className="wallpaper-preview-composer rounded-xl border border-border p-3">
+									<div className="wallpaper-preview-composer rounded-xl p-3">
 										{t("chatBackground.prompt")}
 									</div>
 								</div>
@@ -191,25 +200,52 @@ export function ChatBackgroundControls() {
 					</SelectContent>
 				</Select>
 			</SettingsRow>
-			{(["visibility", "blur"] as const).map((key) => (
+			<SettingsRow label={t("chatBackground.sizing")}>
+				<Select
+					disabled={!value || busy}
+					value={adjustments.sizing}
+					onValueChange={(sizing) =>
+						patchBackground({ sizing: sizing as ImageSizing })
+					}
+				>
+					<SelectTrigger
+						aria-label={t("chatBackground.sizing")}
+						className="w-52"
+					>
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						{IMAGE_SIZING.map((sizing) => (
+							<SelectItem key={sizing} value={sizing}>
+								{t(sizingLabels[sizing])}
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
+			</SettingsRow>
+			{(["visibility", "blur", "zoom"] as const).map((key) => (
 				<SettingsRow
 					key={key}
 					label={t(
-						key === "blur"
-							? "chatBackground.blur"
-							: "chatBackground.visibility",
+						key === "zoom"
+							? "chatBackground.zoom"
+							: key === "blur"
+								? "chatBackground.blur"
+								: "chatBackground.visibility",
 					)}
 				>
 					<div className="flex w-52 items-center gap-3">
 						<Slider
 							disabled={!value || busy}
 							aria-label={t(
-								key === "blur"
-									? "chatBackground.blur"
-									: "chatBackground.visibility",
+								key === "zoom"
+									? "chatBackground.zoom"
+									: key === "blur"
+										? "chatBackground.blur"
+										: "chatBackground.visibility",
 							)}
-							min={0}
-							max={key === "blur" ? 20 : 100}
+							min={key === "zoom" ? 100 : 0}
+							max={key === "zoom" ? 300 : key === "blur" ? 20 : 100}
 							step={1}
 							value={[adjustments[key]]}
 							onValueChange={([v]) => patchBackground({ [key]: v })}
@@ -221,6 +257,14 @@ export function ChatBackgroundControls() {
 					</div>
 				</SettingsRow>
 			))}
+			<SettingsRow label={t("chatBackground.outline")}>
+				<Switch
+					aria-label={t("chatBackground.outline")}
+					checked={adjustments.outline}
+					disabled={!value || busy}
+					onCheckedChange={(outline) => patchBackground({ outline })}
+				/>
+			</SettingsRow>
 			<SettingsRow label={t("chatBackground.fade")}>
 				<Switch
 					aria-label={t("chatBackground.fade")}

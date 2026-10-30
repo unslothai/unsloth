@@ -6,6 +6,13 @@ import { en } from "./en.ts";
 
 export const ptBR = {
   chatBackground: {
+    sizing: "Dimensionamento da imagem",
+    fill: "Preencher",
+    fit: "Ajustar",
+    stretch: "Esticar",
+    original: "Tamanho original",
+    zoom: "Zoom",
+    outline: "Contorno do campo de mensagem",
     fade: "Esmaecer para o fundo",
     title: "Imagem de fundo",
     description: "Uma imagem local para seu espaço de trabalho. JPEG, PNG ou WebP, até 20 MiB. O texto permanece legível automaticamente.",

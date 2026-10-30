@@ -3,6 +3,13 @@
 
 export const sv = {
   chatBackground: {
+    sizing: "Bildstorlek",
+    fill: "Fyll",
+    fit: "Anpassa",
+    stretch: "Sträck ut",
+    original: "Originalstorlek",
+    zoom: "Zoom",
+    outline: "Kontur runt meddelandefältet",
     fade: "Tona ut mot bakgrunden",
     title: "Bakgrundsbild",
     description: "En lokal bild för din arbetsyta. JPEG, PNG eller WebP, högst 20 MiB. Texten förblir automatiskt läsbar.",

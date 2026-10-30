@@ -6,6 +6,13 @@ import { en } from "./en.ts";
 
 export const hi = {
   chatBackground: {
+    sizing: "छवि का आकार",
+    fill: "भरें",
+    fit: "फ़िट करें",
+    stretch: "खींचें",
+    original: "मूल आकार",
+    zoom: "ज़ूम",
+    outline: "संदेश बॉक्स की रूपरेखा",
     fade: "पृष्ठभूमि में फ़ेड करें",
     title: "पृष्ठभूमि छवि",
     description: "आपके कार्यक्षेत्र के लिए एक स्थानीय छवि। JPEG, PNG या WebP, अधिकतम 20 MiB। पाठ अपने आप पढ़ने योग्य रहता है।",

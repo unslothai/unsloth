@@ -6,6 +6,13 @@ import { en } from "./en.ts";
 
 export const fr = {
   chatBackground: {
+    sizing: "Dimensionnement de l’image",
+    fill: "Remplir",
+    fit: "Ajuster",
+    stretch: "Étirer",
+    original: "Taille d’origine",
+    zoom: "Zoom",
+    outline: "Contour du champ de message",
     fade: "Fondu vers l’arrière-plan",
     title: "Image d’arrière-plan",
     description: "Une image locale pour votre espace de travail. JPEG, PNG ou WebP, jusqu’à 20 Mio. Le texte reste automatiquement lisible.",

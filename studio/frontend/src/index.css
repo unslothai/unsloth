@@ -6705,9 +6705,10 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
 .chat-wallpaper-frame { position: absolute; inset: 0; opacity: var(--wallpaper-visibility); }
 .chat-wallpaper-image {
   position: absolute; inset: 0 0 auto; height: min(72%, 760px);
-  background-size: cover; background-repeat: no-repeat;
+  overflow: hidden;
   mask-image: linear-gradient(#000, transparent);
 }
+.chat-wallpaper-artwork { position: absolute; inset: 0; background-repeat: no-repeat; }
 .chat-wallpaper-image[data-fade="false"] { height: 100%; mask-image: none; }
 .chat-wallpaper-frame[data-entering] { animation: wallpaper-enter 180ms ease-out both; }
 .chat-wallpaper-frame[data-departing] { animation: wallpaper-leave 180ms ease-out both; }
@@ -6792,3 +6793,6 @@ html:has([data-wallpaper-workspace] > .chat-wallpaper[data-ready]) [data-slot="w
 
 /* Clear only route canvases; cards, menus and reading surfaces retain their fills. */
 [data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) :is(.hub-page, .hub-page .hub-canvas, [data-wallpaper-page-canvas]) { background: transparent; }
+
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
+.wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer { box-shadow: none; }

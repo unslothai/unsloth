@@ -6,6 +6,13 @@ import { en } from "./en.ts";
 
 export const zhCN = {
   chatBackground: {
+    sizing: "图片缩放方式",
+    fill: "填充",
+    fit: "适应",
+    stretch: "拉伸",
+    original: "原始尺寸",
+    zoom: "缩放",
+    outline: "消息输入框边框",
     fade: "渐隐至背景",
     title: "背景图片",
     description: "用于工作区的本地图片。支持 JPEG、PNG 或 WebP，最大 20 MiB。自动保持文字清晰可读。",

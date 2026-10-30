@@ -6,6 +6,13 @@ import { en } from "./en.ts";
 
 export const ar = {
   chatBackground: {
+    sizing: "تحجيم الصورة",
+    fill: "ملء",
+    fit: "احتواء",
+    stretch: "تمديد",
+    original: "الحجم الأصلي",
+    zoom: "تكبير",
+    outline: "إطار حقل الرسالة",
     fade: "تلاشي إلى الخلفية",
     title: "صورة الخلفية",
     description: "صورة محلية لمساحة عملك. JPEG أو PNG أو WebP، حتى 20 MiB. يبقى النص مقروءًا تلقائيًا.",

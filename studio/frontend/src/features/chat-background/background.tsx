@@ -170,6 +170,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			className="chat-wallpaper"
 			data-ready={Boolean(frames.current) || undefined}
 			data-reduced={skin.reduced || undefined}
+			data-outline={value.outline}
 			style={{ "--wallpaper-safe": skin.safe } as CSSProperties}
 		>
 			{[frames.previous, frames.current].map((frame, i) => {
@@ -189,17 +190,26 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 							} as CSSProperties
 						}
 					>
-						<div
-							className="chat-wallpaper-image"
-							data-fade={adjustment.fade}
-							style={{
-								backgroundImage: `url("${frame.url}")`,
-								backgroundPosition: adjustment.position,
-								filter: adjustment.blur
-									? `blur(${adjustment.blur}px)`
-									: undefined,
-							}}
-						/>
+						<div className="chat-wallpaper-image" data-fade={adjustment.fade}>
+							<div
+								className="chat-wallpaper-artwork"
+								style={{
+									backgroundImage: `url("${frame.url}")`,
+									backgroundPosition: adjustment.position,
+									backgroundSize:
+										adjustment.sizing === "original"
+											? "auto"
+											: adjustment.sizing === "stretch"
+												? "100% 100%"
+												: adjustment.sizing,
+									transform: `scale(${adjustment.zoom / 100})`,
+									transformOrigin: adjustment.position,
+									filter: adjustment.blur
+										? `blur(${adjustment.blur}px)`
+										: undefined,
+								}}
+							/>
+						</div>
 					</div>
 				);
 			})}

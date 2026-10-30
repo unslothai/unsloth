@@ -3,6 +3,13 @@
 
 export const en = {
   chatBackground: {
+    sizing: "Image sizing",
+    fill: "Fill",
+    fit: "Fit",
+    stretch: "Stretch",
+    original: "Original size",
+    zoom: "Zoom",
+    outline: "Composer outline",
     fade: "Fade to background",
     title: "Background image",
     description: "A local image for your workspace. JPEG, PNG or WebP, up to 20 MiB. Text stays readable automatically.",

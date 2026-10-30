@@ -12,11 +12,14 @@ export function SettingsSection({
   ref,
   hideHeading = false,
   action,
+  actionAlign,
   danger = false,
 }: {
   title: string;
   /** Control shown beside the heading, e.g. Refresh. */
   action?: ReactNode;
+  /** Align an action’s top edge with the heading’s visible text. */
+  actionAlign?: "text";
   hideHeading?: boolean;
   /** Danger zone: a divider above the heading sets it apart from the sections before it. */
   danger?: boolean;
@@ -39,13 +42,13 @@ export function SettingsSection({
             <div
               className={cn(
                 "flex justify-between gap-3",
-                description ? "items-start" : "items-center",
+                description || actionAlign === "text" ? "items-start" : "items-center",
               )}
             >
               <h2 className="settings-heading text-base font-semibold font-heading">
                 {title}
               </h2>
-              {description ? (
+              {description || actionAlign === "text" ? (
                 // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
                 <div className="mt-[calc(var(--text-base)*0.372)] shrink-0">
                   {action}

@@ -6,6 +6,13 @@ import { en } from "./en.ts";
 
 export const ko = {
   chatBackground: {
+    sizing: "이미지 크기 조정",
+    fill: "채우기",
+    fit: "맞추기",
+    stretch: "늘이기",
+    original: "원본 크기",
+    zoom: "확대",
+    outline: "메시지 입력창 테두리",
     fade: "배경으로 페이드",
     title: "배경 이미지",
     description: "작업 공간에 사용할 로컬 이미지입니다. JPEG, PNG 또는 WebP, 최대 20 MiB. 텍스트 가독성은 자동으로 유지됩니다.",

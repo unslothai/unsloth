@@ -52,6 +52,17 @@ async (page) => {
   }
   await page.getByRole('combobox',{name:'Effect',exact:true}).click();await page.getByRole('option',{name:'ASCII',exact:true}).click();await settled('ASCII');
   const workers=await page.evaluate(()=>window.__wallpaperWorkers);
+  for(const [label,size] of [['Fill','cover'],['Stretch','100% 100%'],['Original size','auto'],['Fit','contain']]) {
+    await page.getByRole('combobox',{name:'Image sizing',exact:true}).click();
+    await page.getByRole('option',{name:label,exact:true}).click();
+    await page.waitForFunction(size=>[...document.querySelectorAll('.chat-wallpaper-artwork')].every(e=>getComputedStyle(e).backgroundSize===size),size);
+  }
+  await page.getByRole('slider',{name:'Zoom',exact:true}).focus();await page.keyboard.press('End');
+  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.chat-wallpaper-artwork')).transform==='matrix(3, 0, 0, 3, 0, 0)');
+  const outline=page.getByRole('switch',{name:'Composer outline',exact:true});
+  await outline.click();
+  await page.waitForFunction(()=>[...document.querySelectorAll('.wallpaper-preview-composer, .unsloth-composer-surface')].every(e=>getComputedStyle(e).boxShadow==='none'));
+
   const fade=page.getByRole('switch',{name:'Fade to background',exact:true});
   check(await fade.getAttribute('aria-checked')==='true','fade defaults on');
   await fade.click();
@@ -65,6 +76,9 @@ async (page) => {
   check(await page.evaluate(()=>window.__wallpaperWorkers)===workers,'CSS controls must not rerun effects');
   await page.reload();await settled('ASCII');
   check(await fade.getAttribute('aria-checked')==='false','fade preference persisted');
+  check(await outline.getAttribute('aria-checked')==='false','outline preference persisted');
+  check(await page.getByRole('slider',{name:'Zoom',exact:true}).getAttribute('aria-valuenow')==='300','zoom persisted');
+  check(await page.locator('[data-chat-content-root] .chat-wallpaper-artwork').evaluate(e=>getComputedStyle(e).backgroundSize)==='contain','sizing persisted');
   check(await page.getByRole('slider',{name:'Visibility',exact:true}).getAttribute('aria-valuenow')==='100','visibility persisted');
   check(await page.getByRole('slider',{name:'Image blur',exact:true}).getAttribute('aria-valuenow')==='1','blur persisted');
   check(await page.getByRole('button',{name:'Horizontal 100%, vertical 0%',exact:true}).getAttribute('aria-pressed')==='true','position persisted');
@@ -79,6 +93,8 @@ async (page) => {
   await page.evaluate(()=>{IDBObjectStore.prototype.put=window.__put;delete window.__put;});
   await page.getByRole('button',{name:'Reset adjustments',exact:true}).click();await settled('None');
   check(await fade.getAttribute('aria-checked')==='true','reset restores fade');
+  check(await outline.getAttribute('aria-checked')==='true','reset restores outline');
+  check(await page.getByRole('slider',{name:'Zoom',exact:true}).getAttribute('aria-valuenow')==='100','reset restores zoom');
   await page.getByRole('combobox',{name:'Effect',exact:true}).click();await page.getByRole('option',{name:'Halftone',exact:true}).click();await settled('Halftone');
   await page.getByRole('button',{name:'Toggle theme',exact:true}).click();await settled('Halftone');
   await page.getByRole('button',{name:'Toggle conversation',exact:true}).click();

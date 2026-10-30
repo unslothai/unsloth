@@ -7,6 +7,13 @@ import { en } from "./en.ts";
 
 export const ja = {
   chatBackground: {
+    sizing: "画像のサイズ調整",
+    fill: "埋める",
+    fit: "全体を表示",
+    stretch: "引き伸ばす",
+    original: "元のサイズ",
+    zoom: "ズーム",
+    outline: "入力欄の枠線",
     fade: "背景にフェード",
     title: "背景画像",
     description: "ワークスペース用のローカル画像。JPEG、PNG、WebP、最大20 MiB。文字の読みやすさは自動調整されます。",

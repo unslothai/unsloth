@@ -12,6 +12,13 @@ export const EFFECTS = [
 	"Scanlines",
 ] as const;
 export type BackgroundEffect = (typeof EFFECTS)[number];
+export const IMAGE_SIZING = [
+	"cover",
+	"contain",
+	"stretch",
+	"original",
+] as const;
+export type ImageSizing = (typeof IMAGE_SIZING)[number];
 export const POSITIONS = [
 	"0% 0%",
 	"50% 0%",
@@ -28,6 +35,9 @@ export const DEFAULT_ADJUSTMENTS = {
 	visibility: 70,
 	blur: 0,
 	fade: true,
+	outline: true,
+	sizing: "cover" as ImageSizing,
+	zoom: 100,
 	position: "50% 50%",
 };
 export type BackgroundAdjustments = typeof DEFAULT_ADJUSTMENTS;
@@ -55,6 +65,11 @@ export function sanitizeAdjustments(
 		visibility: bounded(input.visibility, 100, 70),
 		blur: bounded(input.blur, 20, 0),
 		fade: typeof input.fade === "boolean" ? input.fade : true,
+		outline: typeof input.outline === "boolean" ? input.outline : true,
+		sizing: IMAGE_SIZING.includes(input.sizing as ImageSizing)
+			? input.sizing!
+			: "cover",
+		zoom: Math.max(100, bounded(input.zoom, 300, 100)),
 		position: POSITIONS.includes(input.position as (typeof POSITIONS)[number])
 			? input.position!
 			: "50% 50%",

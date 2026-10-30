@@ -27,6 +27,13 @@ test("background preferences repair malformed persisted data", () => {
 	);
 	assert.equal(sanitizeAdjustments({ visibility: NaN }).visibility, 70);
 	assert.equal(sanitizeAdjustments({ fade: false }).fade, false);
+    assert.equal(sanitizeAdjustments({ outline: false }).outline, false);
+    assert.equal(sanitizeAdjustments({ outline: "false" as never }).outline, true);
+    assert.equal(sanitizeAdjustments({ sizing: "contain" }).sizing, "contain");
+    assert.equal(sanitizeAdjustments({ sizing: "invalid" as never }).sizing, "cover");
+    assert.equal(sanitizeAdjustments({ zoom: 500 }).zoom, 300);
+    assert.equal(sanitizeAdjustments({ zoom: 0 }).zoom, 100);
+    assert.equal(sanitizeAdjustments({ zoom: NaN }).zoom, 100);
 	assert.equal(sanitizeAdjustments({ fade: "false" as never }).fade, true);
 });
 test("uploads bound processing dimensions", () => {
