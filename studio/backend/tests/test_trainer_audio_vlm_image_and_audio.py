@@ -142,6 +142,20 @@ def test_a_list_of_images_per_row_gets_one_slot_per_image(audio_vlm_trainer):
     assert [[p["type"] for p in u["content"]].count("image") for u in users] == [1, 2]
 
 
+def test_a_file_name_column_of_audio_paths_is_not_taken_for_images(audio_vlm_trainer):
+    rows = {
+        "audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * 2,
+        "text": ["one", "two"],
+        "file_name": ["clips/a.wav", "clips/b.wav"],
+    }
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(
+        _NoAudioCast(datasets.Dataset.from_dict(rows))
+    )
+
+    assert getattr(audio_vlm_trainer, "_audio_vlm_image_col", None) is None
+    assert _user_part_types(formatted) == ["audio", "text"]
+
+
 def _collator_block():
     lines = (_BACKEND / "core" / "training" / "trainer.py").read_text(encoding = "utf-8").splitlines()
     start = next(

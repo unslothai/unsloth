@@ -2348,10 +2348,19 @@ class UnslothTrainer:
         for col, role in (custom_format_mapping or {}).items():
             if role == "image" and col in cols:
                 return col
-        from hub.utils.dataset_format import detect_multimodal_dataset
+        from hub.utils.dataset_format import (
+            _first_row,
+            _holds_images,
+            _is_image_value,
+            detect_multimodal_dataset,
+        )
 
+        # The detector also takes a column by its name (file_name), which may hold audio paths.
+        sample = _first_row(dataset) or {}
         candidates = [
-            c for c in detect_multimodal_dataset(dataset)["multimodal_columns"] if c != audio_col
+            c
+            for c in detect_multimodal_dataset(dataset)["multimodal_columns"]
+            if c != audio_col and (_is_image_value(sample.get(c)) or _holds_images(sample.get(c)))
         ]
         return candidates[0] if candidates else None
 
