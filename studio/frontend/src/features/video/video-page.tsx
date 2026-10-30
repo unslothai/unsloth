@@ -3925,7 +3925,7 @@ function VideoGenerator({
               </p>
             </div>
 
-            {/* Top edge on the icon's drawn top: centred in the line, stroke starts 1.25/24 into the glyph. */}
+            {/* Top edge on the icon's drawn top (its stroke starts 1.25/24 into the glyph). */}
             <div className="mt-[calc((var(--text-xl)-18px*var(--ui-space-scale,1))/2+18px*var(--ui-space-scale,1)*0.052)]">
               <MediaGenerationPresetControl
                 kind="video"
