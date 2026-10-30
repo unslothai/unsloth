@@ -54,6 +54,7 @@ import {
 } from "./derive-rf";
 import { watchRewiredOutputs } from "./stale-outputs";
 import { useWireReconnect } from "./use-wire-reconnect";
+import { wheelScrollsInside } from "./wheel-scroll";
 import { addFileNodes } from "./file-drop";
 import { FlowEdgeView } from "./flow-edge";
 import { FlowNodeView } from "./flow-node";
@@ -637,6 +638,20 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       }}
       onDragLeave={fileDrop.dragHandlers.onDragLeave}
       onDrop={fileDrop.dragHandlers.onDrop}
+      // Scroll a box under the pointer only while it can still move; otherwise the wheel zooms.
+      onWheelCapture={(event) => {
+        if (
+          wrapper.current &&
+          wheelScrollsInside(
+            event.target as HTMLElement,
+            wrapper.current,
+            event.deltaX,
+            event.deltaY,
+            event.ctrlKey,
+          )
+        )
+          event.stopPropagation();
+      }}
       data-testid="flows-canvas"
     >
       <ReactFlow<RfNode, RfEdge>
@@ -668,6 +683,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         panOnDrag={true}
         panActivationKeyCode="Space"
         zoomOnDoubleClick={false}
+        // `nowheel` boxes would block zoom even with nothing to scroll; onWheelCapture decides.
+        noWheelClassName="flows-wheel-unused"
         snapToGrid={snapToGrid}
         snapGrid={SNAP_GRID}
         minZoom={0.08}
