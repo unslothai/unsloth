@@ -61,6 +61,23 @@ _ARGS = {
     "weight_decay": "weight_decay",
 }
 _QUANTS = {"q4_k_m", "q5_k_m", "q8_0", "f16"}
+# What Studio's training request uses when a flow sets nothing: a notebook asking for other LoRA placement,
+# dropout or scaling trains a different adapter, so say so instead of dropping it silently.
+_STUDIO_TARGETS = frozenset(
+    {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+)
+# Embedding fine-tunes (FastSentenceTransformer) default to the attention projections only.
+_STUDIO_EMBEDDING_TARGETS = frozenset({"q_proj", "k_proj", "v_proj", "o_proj"})
+_MISSING = object()
+
+
+def _literal(node: ast.AST) -> Any:
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return _MISSING
+
+
 _MAGIC = re.compile(r"^\s*[!%]")
 
 
@@ -110,9 +127,14 @@ def _name(node: ast.AST) -> Optional[str]:
     return None
 
 
+_MUTATORS = {"append", "extend", "insert", "remove", "pop", "clear", "add", "discard", "update"}
+
+
 class _Reader(ast.NodeVisitor):
     def __init__(self) -> None:
         self.consts: dict[str, Any] = {}
+        # Module-level list/tuple/set literals, e.g. TARGETS = [...] passed as target_modules = TARGETS.
+        self.collections: dict[str, Any] = {}
         self.found: dict[str, Any] = {}
         self.tune: dict[str, Any] = {}
         self.unsupported: set[str] = set()
@@ -146,16 +168,51 @@ class _Reader(ast.NodeVisitor):
             return
         self.generic_visit(node)
 
-    def visit_Assign(self, node: ast.Assign) -> None:
-        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            value = self.value(node.value)
-            if value is not None:
-                self.consts[node.targets[0].id] = value
+    def forget(self, name: str) -> None:
+        self.consts.pop(name, None)
+        self.collections.pop(name, None)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        # Any other rebinding (+=, for, with, del, unpacking) leaves a value we cannot resolve.
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.forget(node.id)
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)) and isinstance(node.value, ast.Name):
+            self.forget(node.value.id)
         self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self.visit_Assign(ast.Assign(targets = [node.target], value = node.value))
+        else:
+            self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        # The right-hand side reads the old bindings, as Python evaluates it first.
+        value = self.value(node.value)
+        self.visit(node.value)
+        for target in node.targets:
+            self.visit(target)
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if value is not None:
+                self.consts[name] = value
+            else:
+                if isinstance(node.value, (ast.List, ast.Tuple, ast.Set)):
+                    literal = _literal(node.value)
+                    if literal is not _MISSING:
+                        self.collections[name] = literal
 
     def visit_Call(self, node: ast.Call) -> None:
         fn = _name(node.func)
         owner = _name(node.func.value) if isinstance(node.func, ast.Attribute) else None
+        if (
+            fn in _MUTATORS
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+        ):
+            self.forget(node.func.value.id)
         if fn in _UNSUPPORTED:
             self.unsupported.add(_UNSUPPORTED[fn])
         elif fn and fn.endswith("Trainer") and fn not in _SFT_TRAINERS:
@@ -190,6 +247,7 @@ class _Reader(ast.NodeVisitor):
             alpha = self.kw(node, "lora_alpha")
             if isinstance(alpha, int) and not isinstance(alpha, bool):
                 self.tune["lora_alpha"] = alpha
+            self._lora_settings(node)
         elif fn == "load_dataset" and "dataset" not in self.found and _local_files(self, node):
             self.unsupported.add("a dataset loaded from local files (data_files)")
         elif fn == "load_dataset" and "dataset" in self.found:
@@ -231,6 +289,38 @@ class _Reader(ast.NodeVisitor):
             if k.arg == "reward_funcs":
                 self.unsupported.add("custom reward functions")
         self.generic_visit(node)
+
+    def _lora_settings(self, call: ast.Call) -> None:
+        for k in call.keywords:
+            if k.arg not in ("target_modules", "lora_dropout", "use_rslora"):
+                continue
+            value = _literal(k.value)
+            if value is _MISSING and isinstance(k.value, ast.Name):
+                name = k.value.id
+                value = self.collections.get(name, self.consts.get(name, _MISSING))
+            if k.arg == "target_modules":
+                if self.found.get("task") == "embedding":
+                    expected, studio = _STUDIO_EMBEDDING_TARGETS, "q/k/v/o projections"
+                else:
+                    expected, studio = _STUDIO_TARGETS, "q/k/v/o/gate/up/down projections"
+                same = isinstance(value, (list, tuple, set)) and set(value) == expected
+                what = "LoRA target_modules"
+            elif k.arg == "lora_dropout":
+                same = (
+                    isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0
+                )
+                what = "LoRA dropout"
+                studio = "0"
+            else:
+                same = value is False or value is None
+                what = "use_rslora"
+                studio = "off"
+            if not same:
+                shown = ast.unparse(k.value)[:80]
+                self.approximated.append(
+                    f"{what} = {shown}: Studio's fine-tune uses its default ({studio}), "
+                    "so the adapter differs from the notebook's"
+                )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if "format" in node.name.lower():
