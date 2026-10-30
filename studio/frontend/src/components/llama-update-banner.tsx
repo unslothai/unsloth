@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { LlamaUpdateChangelogPanel } from "@/components/update/llama-update-changelog-panel";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
+import { LLAMA_BACKEND_LABELS } from "@/features/settings/lib/llama-backend-labels";
 import {
   llamaUpdateOffered,
   useLlamaUpdateCheck,
@@ -15,6 +16,7 @@ import {
   useNotificationDue,
   useNotificationFrequency,
 } from "@/hooks/use-notification-frequency";
+import { useLocale, useT } from "@/i18n";
 import {
   type UpdateComponent,
   type UpdateComponentFlags,
@@ -45,21 +47,14 @@ import { HugeiconsIcon } from "@hugeicons/react";
 // cap for interpolation between coarse backend progress updates.
 const RUNNING_CAP = 0.95;
 
-// untranslated labels mirror llama-backend-labels.ts; unknown backends keep their identifiers.
-const BACKEND_LABELS: Record<string, string> = {
-  auto: "Automatic",
-  cpu: "CPU",
-  cuda: "CUDA",
-  rocm: "ROCm",
-  vulkan: "Vulkan",
-  metal: "Metal",
-};
+type Translate = ReturnType<typeof useT>;
 
-function backendLabel(backend: string | null | undefined): string {
+function backendLabel(backend: string | null | undefined, t: Translate): string {
   if (!backend) {
     return "";
   }
-  return BACKEND_LABELS[backend] ?? backend;
+  const key = LLAMA_BACKEND_LABELS[backend];
+  return key ? t(key) : backend;
 }
 
 function useSmoothedProgress(
@@ -148,8 +143,9 @@ function VersionLine({
   bundled: boolean;
   backendPair: readonly [string, string] | null;
 }): ReactElement {
+  const t = useT();
   const [from, to] = backendPair ?? [
-    row.installedTag ?? "unknown",
+    row.installedTag ?? t("runtimeUpdate.unknownVersion"),
     row.latestTag ?? "",
   ];
   const rowSize = bundled ? sizeLabelOf(row.sizeBytes) : null;
@@ -157,7 +153,7 @@ function VersionLine({
   // no audio.cpp runtime yet, so the offer is a first install.
   const lead =
     row.component === "audio.cpp" && row.installedTag === null
-      ? "Install the audio runtime"
+      ? t("runtimeUpdate.installAudio")
       : null;
   return (
     <p
@@ -188,6 +184,8 @@ export function LlamaUpdateBanner({
   enabled = true,
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
+  const t = useT();
+  const locale = useLocale();
   // an open card remains allowed after recording its components as shown.
   const [shownChannels, setShownChannels] = useState<
     readonly NotificationChannel[]
@@ -259,7 +257,13 @@ export function LlamaUpdateBanner({
     setJobRows(nextJobRows);
   }
   const rows = jobRows ?? liveRows;
-  const label = updateComponentsLabel(rows.map((row) => row.component));
+  const components = rows.map((row) => row.component);
+  // llama-job-lifecycle builds the toast in English.
+  const toastLabel = updateComponentsLabel(components);
+  const label =
+    components.length > 1
+      ? new Intl.ListFormat(locale, { type: "conjunction" }).format(components)
+      : toastLabel;
   const bundled = rows.length > 1;
   const llamaRow = rows.find((row) => row.component === "llama.cpp") ?? null;
   const primary = rows[0] ?? null;
@@ -280,7 +284,7 @@ export function LlamaUpdateBanner({
           ) ?? "the latest build");
       toast.success(
         llamaUpdateToastMessage({
-          component: label,
+          component: toastLabel,
           migrating: fromJob,
           jobMessage: result.message,
           updatedTag,
@@ -289,7 +293,11 @@ export function LlamaUpdateBanner({
       );
     } else if (result) {
       // the failing phase may differ from the component named by the card.
-      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
+      toast.error(
+        t("runtimeUpdate.failed", {
+          error: result.error ?? t("runtimeUpdate.unknownError"),
+        }),
+      );
     }
   }
 
@@ -332,16 +340,16 @@ export function LlamaUpdateBanner({
   // a migration can reapply the automatic backend at the installed release.
   const backendChange =
     llamaRow && status?.backend_migration_available && status.to_backend
-      ? `${backendLabel(status.from_backend)} \u2192 ${backendLabel(status.to_backend)}`
+      ? `${backendLabel(status.from_backend, t)} \u2192 ${backendLabel(status.to_backend, t)}`
       : null;
   const llamaVersionChanged = Boolean(llamaRow?.versionChanged);
   const backendOnly = Boolean(backendChange) && !llamaVersionChanged;
   // a skip dismisses the whole offer, so a bundle reads plural even when llama.cpp only migrates.
   const skipLabel = bundled
-    ? "Skip these versions"
+    ? t("runtimeUpdate.skipVersions")
     : backendOnly
-      ? "Skip this change"
-      : "Skip this version";
+      ? t("runtimeUpdate.skipChange")
+      : t("runtimeUpdate.skipVersion");
 
   function handleSkip(event: MouseEvent<HTMLButtonElement>) {
     const skippedTag = bundled || backendOnly ? null : primary?.latestTag;
@@ -354,15 +362,17 @@ export function LlamaUpdateBanner({
       // detail is 0 for Enter or Space, so only keyboard users get focus moved to Undo.
       fromKeyboard: event.detail === 0,
       message: skippedTag
-        ? `Skipped ${label} ${skippedTag} for now`
-        : `Skipped the ${label} ${bundled ? "updates" : "update"} for now`,
+        ? t("runtimeUpdate.skippedVersion", { component: label, version: skippedTag })
+        : bundled
+          ? t("runtimeUpdate.skippedUpdates", { components: label })
+          : t("runtimeUpdate.skippedUpdate", { component: label }),
     });
   }
   // show the backend pair when a migration has no version change.
   const backendPair = backendOnly
     ? ([
-        backendLabel(status?.from_backend),
-        backendLabel(status?.to_backend),
+        backendLabel(status?.from_backend, t),
+        backendLabel(status?.to_backend, t),
       ] as const)
     : null;
   // only the measured migration pair gets the speed note; other updates do not.
@@ -370,8 +380,8 @@ export function LlamaUpdateBanner({
     backendOnly &&
     status?.from_backend === "rocm" &&
     status?.to_backend === "vulkan"
-      ? "Vulkan is >10% faster than ROCM. No restart needed"
-      : "No restart needed";
+      ? t("runtimeUpdate.vulkanFaster")
+      : t("runtimeUpdate.noRestart");
   const changelogTags =
     llamaRow?.versionChanged && llamaRow.installedTag && llamaRow.latestTag
       ? { installedTag: llamaRow.installedTag, latestTag: llamaRow.latestTag }
@@ -396,8 +406,8 @@ export function LlamaUpdateBanner({
   );
   const summary = [
     bundled ? label : null,
-    sizeLabel ? `${sizeLabel} download` : null,
-    backendChange ? `${backendChange} backend` : null,
+    sizeLabel ? t("runtimeUpdate.downloadSize", { size: sizeLabel }) : null,
+    backendChange ? t("runtimeUpdate.backendChange", { change: backendChange }) : null,
     restartNote,
   ]
     .filter(Boolean)
@@ -415,21 +425,25 @@ export function LlamaUpdateBanner({
   let title: string;
   if (applying && !bundled) {
     title = firstInstall
-      ? "Installing the audio runtime..."
-      : `Updating ${label}...`;
+      ? t("runtimeUpdate.installingAudio")
+      : t("runtimeUpdate.updating", { component: label });
   } else if (applying) {
     title =
       phaseIndex >= 0
-        ? `Installing ${rows[phaseIndex].component} (${phaseIndex + 1} of ${rows.length})...`
-        : `Installing ${rows.length} updates...`;
+        ? t("runtimeUpdate.installingPhase", {
+            component: rows[phaseIndex].component,
+            current: phaseIndex + 1,
+            total: rows.length,
+          })
+        : t("runtimeUpdate.installingCount", { count: rows.length });
   } else if (bundled) {
-    title = `${rows.length} runtime updates`;
+    title = t("runtimeUpdate.bundleTitle", { count: rows.length });
   } else {
     title = firstInstall
-      ? "Install the audio runtime"
+      ? t("runtimeUpdate.installAudio")
       : backendOnly
-        ? `New ${label} backend`
-        : `New ${label} update`;
+        ? t("runtimeUpdate.newBackend", { component: label })
+        : t("runtimeUpdate.newUpdate", { component: label });
   }
   const updateProgress = status?.job.progress ?? null;
   const jobSucceeded = status?.job.state === "success";
@@ -489,7 +503,11 @@ export function LlamaUpdateBanner({
           <button
             type="button"
             onClick={handleSkip}
-            aria-label={`Hide the ${label} ${bundled ? "updates" : "update"} until Unsloth is reopened`}
+            aria-label={
+              bundled
+                ? t("runtimeUpdate.hideUpdates", { components: label })
+                : t("runtimeUpdate.hideUpdate", { component: label })
+            }
             className="absolute right-3 top-3 flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             data-testid="llama-update-close-button"
           >
@@ -522,7 +540,7 @@ export function LlamaUpdateBanner({
                 aria-expanded={detailsOpen}
                 data-testid="llama-update-changelog-toggle"
               >
-                {detailsOpen ? "Hide what's new" : "What's new"}
+                {detailsOpen ? t("runtimeUpdate.hideWhatsNew") : t("runtimeUpdate.whatsNew")}
               </button>
             )}
             {detailsOpen ? (
@@ -552,7 +570,7 @@ export function LlamaUpdateBanner({
           <div
             className="mb-1.5 mt-4 h-1 overflow-hidden rounded-full bg-muted"
             role="progressbar"
-            aria-label={`Updating ${label}`}
+            aria-label={t("runtimeUpdate.updatingLabel", { component: label })}
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={
@@ -587,7 +605,7 @@ export function LlamaUpdateBanner({
               onClick={snooze}
               data-testid="llama-update-snooze-button"
             >
-              Later
+              {t("runtimeUpdate.later")}
             </Button>
             <Button
               size="sm"
@@ -597,7 +615,7 @@ export function LlamaUpdateBanner({
               onClick={handleUpdate}
               data-testid="llama-update-button"
             >
-              Update
+              {t("runtimeUpdate.update")}
             </Button>
           </div>
         )}
@@ -622,6 +640,7 @@ function SkippedNotice({
   onUndo: () => void;
   onExpire: () => void;
 }): ReactElement {
+  const t = useT();
   const undoRef = useRef<HTMLButtonElement>(null);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -673,7 +692,7 @@ function SkippedNotice({
           onClick={onUndo}
           data-testid="llama-update-undo-skip"
         >
-          Undo
+          {t("runtimeUpdate.undo")}
         </Button>
       </div>
     </div>

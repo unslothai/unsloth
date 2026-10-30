@@ -3717,6 +3717,52 @@ def _progress_latch_enabled() -> bool:
     )
 
 
+def _wait_or_pause_bg_compile(bg: Any, state: Any, loras: Any, cancel: Any) -> Any:
+    """Wait for an in-flight bg compile, or (per-block) let it run one slice then park it; returns the paused
+    compile for the caller to resume, else None. LoRA renders always wait (they would change the module mid-trace)."""
+    if bg is None or not bg.compiling():
+        return None
+    pipe = getattr(state, "pipe", None)
+    if bg.yields() and not _has_active_lora(loras) and not getattr(pipe, "_unsloth_loras", ()):
+        budget = bg_compile.slice_seconds(getattr(pipe, "_unsloth_eager_render_s", None))
+        waited, paused = bg.pause(cancel, budget_s = budget)
+        if paused:
+            logger.info(
+                "diffusion.bg_compile: render paused the background compile after %.1f s (slice %.1f s); this "
+                "render runs eager and the compile resumes after it",
+                waited,
+                budget,
+            )
+            return bg
+        logger.info(
+            "diffusion.bg_compile: render waited %.1f s for the background compile (slice %.1f s)",
+            waited,
+            budget,
+        )
+        return None
+    logger.info("diffusion.bg_compile: render waits for the background compile to finish")
+    waited = bg.wait(cancel)
+    logger.info("diffusion.bg_compile: render waited %.1f s for the background compile", waited)
+    return None
+
+
+def _note_eager_render(state: Any, bg_eager: bool, seconds: float) -> None:
+    """Keeps this load's fastest eager render (the background compile's slice): renders before the deferred
+    profile, and those that ran eager beside a pending compile."""
+    pipe = getattr(state, "pipe", None)
+    if pipe is None or not (seconds > 0):
+        return
+    eager = bg_eager or "compiled" not in tuple(getattr(state, "speed_optims", None) or ())
+    if not eager:
+        return
+    try:
+        best = getattr(pipe, "_unsloth_eager_render_s", None)
+        if not isinstance(best, (int, float)) or seconds < best:
+            pipe._unsloth_eager_render_s = float(seconds)
+    except Exception:  # noqa: BLE001 - a heuristic only
+        pass
+
+
 def _bg_compile_module(
     pipe: Any,
     *,
@@ -8119,7 +8165,7 @@ class DiffusionBackend:
                 transformer_quant_decline: Optional[str] = None
                 small_dit_kept_bf16 = False
                 transformer_quant_decline_status = RESOLVED_FELL_BACK
-                # A GGUF is excluded while it bakes LoRAs: only the dense build can carry them.
+                # A GGUF is excluded while it bakes LoRAs: only the dense build bakes them at load.
                 if (
                     transformer_quant == TQ_AUTO
                     and pipeline_seed_scheme is None
@@ -12734,40 +12780,18 @@ class DiffusionBackend:
                 invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             return
 
-        if _small_host_int8(pipe):
-            raise ValueError(
-                "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth "
-                "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Load the "
-                "model with the LoRA selected (Unsloth then keeps the dense transformer), or use a host with more RAM."
-            )
-        if comfy_block_runtime_layers(getattr(pipe, "transformer", None)):
-            raise ValueError(
-                "LoRA is not available on this load: the ComfyUI file's nvfp4 / mxfp8 layers run on their own "
-                "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Unsloth then "
-                "dequantizes those layers), or set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / UNSLOTH_DIFFUSION_COMFY_MXFP8=0."
-            )
-        if fp8_stored_layers(getattr(pipe, "transformer", None)):
-            raise ValueError(
-                "LoRA is not available on this load: the file's fp8 layers are stored as fp8 and widened per layer "
-                "(this GPU has no fp8 GEMM), which cannot carry adapters. Load the file with the LoRA selected "
-                "(Unsloth then widens those layers at load), or set UNSLOTH_DIFFUSION_FP8_STORAGE=0."
-            )
-        if not diffusion_lora.supports_lora(
+        blocked = _lora_load_block_reason(pipe)
+        if blocked:
+            raise ValueError(blocked)
+        unavailable = diffusion_lora.lora_unavailable_reason(
             engine = "diffusers",
             family = getattr(state.family, "name", None),
             model_kind = state.kind,
             transformer_quant = state.transformer_quant,
             compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
-        ):
-            # Name only routes the user can actually reach: a GPU host never selects the native engine on its own
-            raise ValueError(
-                "LoRA is not supported for this model/quantisation on the diffusers engine "
-                "(GGUF-via-diffusers, or a torch.compile'd Speed=default/max load). Reload with "
-                "transformer_quant int8 or fp8, which rebuilds the GGUF into a LoRA-capable dense "
-                "transformer, or use a bf16 / bnb-4bit load at Speed=off/eager. To keep the GGUF "
-                "weights themselves, reload it on the native engine (Advanced > Engine > Native, "
-                "or engine=sd_cpp on the load), which a GPU host does not select on its own."
-            )
+        )
+        if unavailable:
+            raise ValueError(unavailable)
 
         desired = self._resolve_lora_set(
             specs,
@@ -13195,29 +13219,28 @@ class DiffusionBackend:
         if _hires_pass is None:
             bind_generation_cancel(cancel)
         with nullcontext() if _hires_pass is not None else self._generation_slot(cancel):
-            # Never render beside a background compile; wait outside the state lock so status polls keep answering.
+            # Wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
-            if pending_bg is not None and pending_bg.compiling():
-                logger.info(
-                    "diffusion.bg_compile: render waits for the background compile to finish"
-                )
-                waited = pending_bg.wait(cancel)
-                logger.info(
-                    "diffusion.bg_compile: render waited %.1f s for the background compile", waited
-                )
-            with self._lock:
-                state = self._state
-                if state is None:
-                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
-                if cancel.is_set():
-                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                # The slot admits on a zero fence, which a COMMITTED replacement also satisfies (#9448)
-                loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
-                if expected_load is not None and expected_load != loaded_id:
-                    raise DiffusionModelReplacedError(expected_load, loaded_id)
-                # Publish active step-0 state before slow setup, so a reload's mount probe does not read idle.
-                self._gen = _GenState(total_steps = steps)
-                begin_attention_run(state)
+            paused_bg = _wait_or_pause_bg_compile(pending_bg, self._state, loras, cancel)
+            try:
+                with self._lock:
+                    state = self._state
+                    if state is None:
+                        raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                    if cancel.is_set():
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                    # The slot admits on a zero fence, which a COMMITTED replacement also satisfies (#9448)
+                    loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
+                    if expected_load is not None and expected_load != loaded_id:
+                        raise DiffusionModelReplacedError(expected_load, loaded_id)
+                    # Publish active step-0 state before slow setup, so a reload's mount probe does not read idle.
+                    self._gen = _GenState(total_steps = steps)
+                    begin_attention_run(state)
+            except BaseException:
+                if paused_bg is not None:
+                    paused_bg.resume()
+                raise
+            render_t0 = time.perf_counter()
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_scheduler: Optional[tuple[Any, Any]] = None
@@ -13260,6 +13283,14 @@ class DiffusionBackend:
                 lora_requested = _has_active_lora(loras)
                 # Stay eager while prior adapters are attached: compiling would bake them in.
                 loras_attached = bool(getattr(state.pipe, "_unsloth_loras", ()))
+                if (
+                    state.speed_deferred
+                    and state.generation_count == 1
+                    and not aux_pass
+                    and str(getattr(state, "device", "")).startswith("cuda")
+                ):
+                    # 2nd image: warm inductor's workers so the deferred compile does not wait on them.
+                    bg_compile.warm_compile_pool(logger)
                 if (
                     state.speed_deferred
                     and state.generation_count >= 2
@@ -14408,6 +14439,8 @@ class DiffusionBackend:
                 if applied_embeddings is not None:
                     result["embeddings"] = list(applied_embeddings.used)
                     result["embeddings_skipped"] = list(applied_embeddings.skipped)
+                if not aux_pass and _hires_pass is None:
+                    _note_eager_render(state, bg_eager, time.perf_counter() - render_t0)
                 logger.info(
                     "diffusion.generated: %s",
                     format_generation_for_log(
@@ -14447,6 +14480,8 @@ class DiffusionBackend:
                         bg.kick()
                     except Exception as exc:  # noqa: BLE001 - the next render compiles inline
                         logger.warning("diffusion.bg_compile: kick failed: %s", exc)
+                if paused_bg is not None:
+                    paused_bg.resume()
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
@@ -14724,10 +14759,10 @@ class DiffusionBackend:
             transformer_quant = state.transformer_quant,
         )
         compiled = "compiled" in (getattr(state, "speed_optims", ()) or ())
-        lora_load_ok = (
-            not _small_host_int8(state.pipe)
-            and not comfy_block_runtime_layers(getattr(state.pipe, "transformer", None))
-            and not fp8_stored_layers(getattr(state.pipe, "transformer", None))
+        lora_block = _lora_load_block_reason(state.pipe)
+        lora_load_ok = lora_block is None
+        lora_reason = lora_block or diffusion_lora.lora_unavailable_reason(
+            compiled = compiled, **lora_gate
         )
         return {
             "loaded": True,
@@ -14795,8 +14830,8 @@ class DiffusionBackend:
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),
-            "supports_lora": lora_load_ok
-            and diffusion_lora.supports_lora(compiled = compiled, **lora_gate),
+            "supports_lora": lora_reason is None,
+            "lora_unavailable_reason": lora_reason,
             # Only Speed=Auto's 3rd-image compile blocks LoRA: a reload stays eager until then.
             "lora_after_reload": lora_load_ok
             and compiled
@@ -14819,6 +14854,30 @@ def _small_host_int8(pipe: Any) -> bool:
     """Whether the small-host route stored a denoiser as int8 weights on this pipe."""
     info = small_host_engaged_on(pipe) or {}
     return any(str(v).startswith("int8") for v in (info.get("components") or {}).values())
+
+
+def _lora_load_block_reason(pipe: Any) -> Optional[str]:
+    """Why this load's transformer cannot carry adapters whatever the family and quant allow, or None."""
+    if _small_host_int8(pipe):
+        return (
+            "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth "
+            "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Use a host "
+            "with more RAM, or name the LoRA in the API load request (Unsloth then keeps the dense transformer)."
+        )
+    if comfy_block_runtime_layers(getattr(pipe, "transformer", None)):
+        return (
+            "LoRA is not available on this load: the ComfyUI file's nvfp4 / mxfp8 layers run on their own "
+            "quantized Linears, which cannot carry adapters. Set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / "
+            "UNSLOTH_DIFFUSION_COMFY_MXFP8=0, or name the LoRA in the API load request (Unsloth then dequantizes "
+            "those layers)."
+        )
+    if fp8_stored_layers(getattr(pipe, "transformer", None)):
+        return (
+            "LoRA is not available on this load: the file's fp8 layers are stored as fp8 and widened per layer "
+            "(this GPU has no fp8 GEMM), which cannot carry adapters. Set UNSLOTH_DIFFUSION_FP8_STORAGE=0, or name "
+            "the LoRA in the API load request (Unsloth then widens those layers at load)."
+        )
+    return None
 
 
 def _transformer_quant_backend(state: Any) -> Optional[str]:
