@@ -142,3 +142,9 @@ test("the panel reuses Chat's controls and none of its chat-only sections", () =
   for (const chatOnly of ["Tools", "Retrieval", "Preset", "Prompt variables"])
     assert.doesNotMatch(src, new RegExp(`label="${chatOnly}"`));
 });
+
+test("a card with no model keys its settings on the resident model, not Chat's picker", () => {
+  assert.equal(s.implicitModel("unsloth/Qwen3-4B-GGUF", "openai/gpt-5"), "unsloth/Qwen3-4B-GGUF");
+  assert.equal(s.implicitModel(null, "openai/gpt-5"), null);
+  assert.equal(s.implicitModel(undefined, "unsloth/Qwen3-4B-GGUF"), "unsloth/Qwen3-4B-GGUF");
+});

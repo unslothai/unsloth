@@ -14,7 +14,7 @@ registerBundlerResolver();
 
 const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
 const { useRuntimeStore } = await import("../src/features/flows/stores/runtime-store.ts");
-const { rewiredCards, watchRewiredOutputs } = await import("../src/features/flows/editor/stale-outputs.ts");
+const { rewiredCards, watchRewiredOutputs, withDownstream } = await import("../src/features/flows/editor/stale-outputs.ts");
 
 const flow = () =>
   doc(
@@ -41,6 +41,17 @@ test("only cards whose incoming wires changed count as rewired", () => {
   const before = useDocStore.getState().graph;
   useDocStore.getState().updateNode("a", { pos: [10, 10] });
   assert.deepEqual(rewiredCards(before, useDocStore.getState().graph), []);
+});
+
+test("a rewired card's downstream cards drop the outputs they computed from it", () => {
+  useDocStore.getState().load(
+    doc(
+      [node("a", "input.text"), node("b", "input.text", [0, 200]), node("p", "output.preview", [500, 0]), node("q", "output.preview", [900, 0])],
+      [edge("e1", "a", "text", "p", "value"), edge("e2", "p", "value", "q", "value")],
+    ),
+  );
+  assert.deepEqual(withDownstream(useDocStore.getState().graph, ["a"]).sort(), ["a", "p", "q"]);
+  assert.deepEqual(withDownstream(useDocStore.getState().graph, ["b"]), ["b"]);
 });
 
 test("Escape closes the inspector as well as clearing the selection", () => {

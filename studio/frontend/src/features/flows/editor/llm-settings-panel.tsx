@@ -21,6 +21,7 @@ import {
   effectiveParams,
   findSaved,
   isOn,
+  implicitModel,
   loadPatch,
   modelKey,
   paramsAsSaved,
@@ -83,7 +84,9 @@ export function LlmSettingsPanel({
   node: FlowNode;
   spec: NodeSpec;
 }) {
-  const loaded = useChatRuntimeStore((s) => s.params.checkpoint);
+  const loaded = useChatRuntimeStore((s) =>
+    implicitModel(s.residentCheckpoint, s.params.checkpoint),
+  );
   const key = modelKey(node.params, loaded);
   const saved = useChatRuntimeStore((s) => findSaved(s.paramsByModel, key));
   const switchId = useId();

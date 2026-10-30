@@ -11,6 +11,8 @@ import {
   VIDEO_GEN_TASKS,
 } from "@/features/model-picker/components/model-selector/pickers";
 import { type ModelOption, ModelSelector } from "@/features/model-picker";
+import { usePlatformStore } from "@/config/env";
+import { priorityTrainingModels } from "@/config/training";
 import { type ComponentProps, useEffect, useState } from "react";
 import { choiceFromPick, isTrainableRepo } from "./model-choice";
 import type { ModelChoice } from "../types";
@@ -69,20 +71,22 @@ export function FlowModelPicker({
 }) {
   const textKind = kind === "chat" || kind === "vision" || kind === "train";
   const [models, setModels] = useState<ModelOption[]>([]);
+  const deviceType = usePlatformStore((s) => s.deviceType);
   useEffect(() => {
     if (!textKind) return;
     let alive = true;
     void loadChatModels().then((all) => {
       if (!alive) return;
       const vision = all.filter((m) => (m as { isVision?: boolean }).isVision);
+      // Chat's list is mostly GGUF, so Recommended leads with the Train page's own picks.
       if (kind === "train")
-        setModels(all.filter((m) => !m.isGguf && isTrainableRepo(m.id)));
+        setModels(trainModels(deviceType, all));
       else setModels(kind === "vision" && vision.length ? vision : all);
     });
     return () => {
       alive = false;
     };
-  }, [kind, textKind]);
+  }, [kind, textKind, deviceType]);
   return (
     <ModelSelector
       models={models}
@@ -98,4 +102,22 @@ export function FlowModelPicker({
       {...KIND_PROPS[kind]}
     />
   );
+}
+
+function trainModels(
+  deviceType: string | null | undefined,
+  local: ModelOption[],
+): ModelOption[] {
+  const seen = new Set<string>();
+  const out: ModelOption[] = [];
+  for (const m of [
+    ...priorityTrainingModels(deviceType).map((id) => ({ id, name: id })),
+    ...local.filter((m) => !(m as { isGguf?: boolean }).isGguf),
+  ]) {
+    const key = m.id.toLowerCase();
+    if (!isTrainableRepo(m.id) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(m);
+  }
+  return out;
 }

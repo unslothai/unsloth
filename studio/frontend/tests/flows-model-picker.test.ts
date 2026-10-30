@@ -59,3 +59,9 @@ test("a select param the doc never stored shows its default, not an empty box", 
   const select = fields.slice(fields.indexOf('case "select":'), fields.indexOf('case "seed":'));
   assert.match(select, /spec\.default \?\? spec\.options\?\.\[0\]/);
 });
+
+test("Fine-tune's Recommended leads with the Train page's own picks", () => {
+  const picker = readSrc("features/flows/editor/model-picker-field.tsx");
+  assert.match(picker, /priorityTrainingModels\(deviceType\)/);
+  assert.match(picker, /if \(kind === "train"\)\s*setModels\(trainModels\(deviceType, all\)\)/);
+});

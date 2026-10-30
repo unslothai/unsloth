@@ -86,6 +86,15 @@ export function newCardParams(type: string, params: Params): Params {
   return LLM_SETTINGS_NODES.has(type) ? { ...params, [USE_SAVED]: true } : params;
 }
 
+/** The model a card with no model picked runs on: what the server reports resident (as the run resolves it),
+ *  not Chat's picker, which may hold an external model. Chat's pick only until the first status read. */
+export function implicitModel(
+  resident: string | null | undefined,
+  picked: string | null | undefined,
+): string | null {
+  return resident === undefined ? picked || null : resident || null;
+}
+
 /** The id Chat keys its memory on: the card's model, or the one loaded when it names none. */
 export function modelKey(
   params: Params,
