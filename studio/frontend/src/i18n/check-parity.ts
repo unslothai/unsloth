@@ -8,6 +8,7 @@ import { ar } from "./locales/ar.ts";
 import { cs } from "./locales/cs.ts";
 import { de } from "./locales/de.ts";
 import { en } from "./locales/en.ts";
+import { es419 } from "./locales/es-419.ts";
 import { es } from "./locales/es.ts";
 import { fa } from "./locales/fa.ts";
 import { fr } from "./locales/fr.ts";
@@ -132,6 +133,7 @@ const overlays: Record<string, Tree> = {
   ko: ko as unknown as Tree,
   it: it as unknown as Tree,
   "zh-TW": zhTW as unknown as Tree,
+  "es-419": es419 as unknown as Tree,
   id: id as unknown as Tree,
   vi: vi as unknown as Tree,
   tr: tr as unknown as Tree,

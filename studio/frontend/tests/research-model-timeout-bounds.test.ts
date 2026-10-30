@@ -27,6 +27,10 @@ test("the cap matches the ceiling the backend payload enforces", () => {
   assert.equal(MAX_RESEARCH_MODEL_TIMEOUT_SECONDS, 365 * 24 * 3600);
 });
 
+test("a fresh store has no limit on a Deep Research model request", () => {
+  assert.equal(useChatRuntimeStore.getState().researchModelTimeoutSeconds, 0);
+});
+
 test("the mirrored patch keeps the cap and drops one second past it", () => {
   const atCap: PersistedChatSettings = {};
   assignSanitizedMirroredSettings(

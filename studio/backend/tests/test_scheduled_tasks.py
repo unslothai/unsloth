@@ -32,7 +32,8 @@ from storage import scheduled_tasks_db as db
 from storage import studio_db
 from utils.account_context import OWNER
 
-DAY = 24 * 60 * 60 * 1000
+HOUR = 60 * 60 * 1000
+DAY = 24 * HOUR
 
 
 def ms(iso: str) -> int:
@@ -121,6 +122,44 @@ def client():
 def test_next_run_after(schedule, zone, after, expected):
     following = next_run_after(parse_schedule(schedule), zone, ms(f"{after}:00+00:00"))
     assert following == ms(f"{expected}:00+00:00")
+
+
+@pytest.mark.parametrize("hours", [1, 2, 5, 24])
+def test_hourly_schedules_start_one_full_interval_from_now(hours):
+    now = ms("2026-10-14T09:23:45.123+00:00")
+    schedule = parse_schedule({"kind": "hourly", "hours": hours})
+    assert next_run_after(schedule, "UTC", now) == now + hours * HOUR
+
+
+@pytest.mark.parametrize(
+    "zone, anchor, hours, elapsed_ms, expected",
+    [
+        # One millisecond of polling delay must not shift the next occurrence.
+        ("UTC", "2026-10-14T09:00:00+00:00", 1, 1, "2026-10-14T10:00:00+00:00"),
+        # Five-hour intervals continue across midnight instead of resetting each day.
+        ("UTC", "2026-10-14T23:00:00+00:00", 5, 0, "2026-10-15T04:00:00+00:00"),
+        # Missed occurrences are skipped while keeping the original cadence.
+        ("UTC", "2026-10-14T09:00:00+00:00", 2, 7 * HOUR, "2026-10-14T17:00:00+00:00"),
+        # A future persisted occurrence remains the next one.
+        ("UTC", "2026-10-14T09:00:00+00:00", 2, -1, "2026-10-14T09:00:00+00:00"),
+        # New York jumps from 01:59 to 03:00; elapsed hours remain exactly one hour.
+        ("America/New_York", "2026-03-08T06:30:00+00:00", 1, 0, "2026-03-08T07:30:00+00:00"),
+        # Both occurrences of 01:30 are one elapsed hour apart when the clocks fall back.
+        ("America/New_York", "2026-11-01T05:30:00+00:00", 1, 0, "2026-11-01T06:30:00+00:00"),
+    ],
+)
+def test_hourly_schedules_keep_their_elapsed_cadence(zone, anchor, hours, elapsed_ms, expected):
+    anchor_ms = ms(anchor)
+    schedule = parse_schedule({"kind": "hourly", "hours": hours})
+    assert next_run_after(schedule, zone, anchor_ms + elapsed_ms, anchor_ms = anchor_ms) == ms(
+        expected
+    )
+
+
+@pytest.mark.parametrize("hours", [0, -1, 25, 1.5, 2.0, True, False, "2", None])
+def test_hourly_intervals_require_whole_hours_in_range(hours):
+    with pytest.raises(ValidationError):
+        parse_schedule({"kind": "hourly", "hours": hours})
 
 
 def test_a_one_time_task_has_no_run_left_once_its_time_passes():
@@ -386,6 +425,74 @@ def test_create_list_and_read(client, monkeypatch):
 def test_invalid_tasks_are_refused(client, overrides, status):
     assert create(client, **overrides).status_code == status
     assert client.get("/api/scheduled-tasks").json()["tasks"] == []
+
+
+@pytest.mark.parametrize("hours", [0, -1, 25, 1.5, 2.0, True, "2", None])
+def test_invalid_hourly_intervals_are_refused_on_create_and_update(client, hours):
+    invalid = {"kind": "hourly", "hours": hours}
+    assert create(client, schedule = invalid).status_code == 422
+    task = create(client).json()
+    response = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"schedule": invalid})
+    assert response.status_code == 422
+    assert client.get(f"/api/scheduled-tasks/{task['id']}").json() == task
+
+
+def test_hourly_tasks_persist_and_restart_the_interval_on_timing_changes(client, monkeypatch):
+    now = ms("2026-10-14T09:23:45.123+00:00")
+    monkeypatch.setattr(db, "now_ms", lambda: now)
+    schedule = {"kind": "hourly", "hours": 2}
+    response = create(client, schedule = schedule)
+    assert response.status_code == 201
+    task = response.json()
+    url = f"/api/scheduled-tasks/{task['id']}"
+    due = now + 2 * HOUR
+    assert task["schedule"] == schedule
+    assert task["nextRunAt"] == due
+    assert client.get(url).json() == task
+    assert client.get("/api/scheduled-tasks").json()["tasks"] == [task]
+
+    now = due + HOUR
+    # Saving unchanged timing and renaming must preserve the overdue occurrence.
+    unchanged = client.patch(
+        url,
+        json = {"title": "Hourly brief", "schedule": schedule, "enabled": True, "timezone": "UTC"},
+    ).json()
+    assert unchanged["nextRunAt"] == due
+
+    edited = client.patch(url, json = {"schedule": {"kind": "hourly", "hours": 5}}).json()
+    assert edited["nextRunAt"] == now + 5 * HOUR
+    paused = client.patch(url, json = {"enabled": False}).json()
+    assert paused["status"] == "paused" and paused["nextRunAt"] is None
+    now += DAY
+    resumed = client.patch(url, json = {"enabled": True}).json()
+    assert resumed["status"] == "active"
+    assert resumed["nextRunAt"] == now + 5 * HOUR
+    now += HOUR
+    rezoned = client.patch(url, json = {"timezone": "Europe/London"}).json()
+    assert rezoned["nextRunAt"] == now + 5 * HOUR
+
+
+def test_late_hourly_claims_skip_missed_runs_without_drift_and_manual_runs_keep_the_cadence():
+    due = ms("2026-10-14T09:23:45.123+00:00")
+    make_task(schedule = {"kind": "hourly", "hours": 2}, nextRunAt = due)
+    now = due + 7 * HOUR + 1
+    task, run = db.claim_next(now, "worker", next_run_for)
+    assert run["scheduledFor"] == due
+    assert task["nextRunAt"] == due + 8 * HOUR
+    assert db.claim_next(now, "worker", next_run_for) is None
+    db.finish_run(run["id"], "worker", status = "succeeded")
+    assert db.claim_next(now, "worker", next_run_for) is None
+
+    db.request_run(task["id"])
+    manual_task, manual = db.claim_next(now, "worker", next_run_for)
+    assert manual["source"] == "manual"
+    assert manual_task["nextRunAt"] == due + 8 * HOUR
+    db.finish_run(manual["id"], "worker", status = "succeeded")
+
+    # The next pass reads only persisted state, so a process restart does not reset the cadence.
+    following, following_run = db.claim_next(due + 8 * HOUR + 57, "new-worker", next_run_for)
+    assert following_run["scheduledFor"] == due + 8 * HOUR
+    assert following["nextRunAt"] == due + 10 * HOUR
 
 
 def test_the_task_limit(client, monkeypatch):
@@ -1719,6 +1826,38 @@ def test_studios_own_runs_do_not_count_as_someone_using_it(monkeypatch):
     assert not keepwarm.idle_for(0)
     keepwarm._note_end()
     assert not keepwarm.idle_for(300)
+
+
+def _freshly_started_keepwarm():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_fresh_llama_keepwarm", llama_keepwarm.__file__)
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+    return fresh
+
+
+def test_a_freshly_started_studio_counts_as_away_until_someone_chats():
+    away = scheduler_module._AWAY_SECONDS
+    fresh = _freshly_started_keepwarm()
+    assert fresh.idle_for(away)
+    with fresh.unattended_activity():
+        fresh._note_activity()
+    assert fresh.idle_for(away)
+    fresh._note_pending()
+    assert not fresh.idle_for(away)
+    fresh._note_start()
+    assert not fresh.idle_for(away)
+    fresh._note_end()
+    assert not fresh.idle_for(away)
+
+
+def test_a_model_loaded_right_after_start_counts_as_in_use():
+    fresh = _freshly_started_keepwarm()
+    stamp = fresh.attended_stamp()
+    fresh.note_model_loaded()
+    assert fresh.attended_stamp() != stamp
+    assert not fresh.idle_for(scheduler_module._AWAY_SECONDS)
 
 
 def test_the_idle_loop_noticing_a_swap_does_not_count_as_someone_using_studio(monkeypatch):

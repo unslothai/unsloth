@@ -429,6 +429,7 @@ import {
   engineRequestField,
   engineSelectVisible,
   loadedEngineChoice,
+  loraUnavailableNote,
   nativeLoadAdvanced,
   nativeReloadTarget,
   offersCompiledLoraReload,
@@ -2154,6 +2155,7 @@ export function ImagesPage({
   // Refresh the LoRA picker when the loaded family changes, since a LoRA is family-specific.
   // Not on first load or unload (a restore can precede the load), so track it in a ref.
   const loraCapable = Boolean(!external && status?.loaded && status?.supports_lora);
+  const loraOffNote = external ? null : loraUnavailableNote(status);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   const bakedLorasOnLoad = useRef(false);
   useEffect(() => {
@@ -6027,7 +6029,7 @@ export function ImagesPage({
               </div>
 
               {workflow === "create" && (
-                // Top edge on the icon's drawn top: centred in the line, stroke starts 1.25/24 into the glyph.
+                // Top edge on the icon's drawn top (its stroke starts 1.25/24 into the glyph).
                 <div className="mt-[calc((var(--text-xl)-18px*var(--ui-space-scale,1))/2+18px*var(--ui-space-scale,1)*0.052)]">
                   <MediaGenerationPresetControl
                     kind="image"
@@ -6576,7 +6578,7 @@ export function ImagesPage({
             )}
             {!external && !loraCapable && offersNativeLoraReload(status) && (
               <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                <span>LoRAs need the native engine for this GGUF; diffusers runs it without them.</span>
+                <span>LoRAs are off on this load; the native engine applies them to this GGUF.</span>
                 <Button size="sm" variant="secondary" className="shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
                   Reload with native engine
                 </Button>
@@ -6591,6 +6593,9 @@ export function ImagesPage({
                   </Button>
                 )}
               </div>
+            )}
+            {loraOffNote && (
+              <div className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">{loraOffNote}</div>
             )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
