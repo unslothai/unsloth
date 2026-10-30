@@ -13601,7 +13601,7 @@ class DiffusionBackend:
                             soft_overlay = (init_pil, mask_pil)
 
                 if (
-                    workflow in ("img2img", "inpaint")
+                    workflow in ("img2img", "inpaint", "upscale")
                     and init_pil is not None
                     and "strength" in call_params
                 ):

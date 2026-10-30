@@ -1565,10 +1565,18 @@ def test_min_inference_steps_keeps_counts_that_already_denoise():
     assert hires.min_inference_steps(1, 1.0, hires.RULE_FLOOR) == 1
 
 
-def test_img2img_and_inpaint_raise_steps_before_the_call():
+def test_img2img_inpaint_and_upscale_raise_steps_before_the_call():
     import core.inference.diffusion as diffusion
 
     src = inspect.getsource(diffusion)
     guard = src.index("diffusion_hires.min_inference_steps(")
-    assert 'workflow in ("img2img", "inpaint")' in src[guard - 600 : guard]
+    assert 'workflow in ("img2img", "inpaint", "upscale")' in src[guard - 600 : guard]
     assert src.index('"num_inference_steps": steps,', guard) > guard
+
+
+def test_upscale_default_strength_keeps_one_step_and_hires_refine_is_untouched():
+    # The standalone Upscale default strength is 0.35; the Hires refine already schedules >= 1 step.
+    n = hires.min_inference_steps(1, 0.35, hires.RULE_FLOOR)
+    assert n == 3 and hires.steps_run(n, 0.35, hires.RULE_FLOOR) == 1
+    refine = hires.refine_inference_steps(1, 0.35, hires.RULE_FLOOR)
+    assert hires.min_inference_steps(refine, 0.35, hires.RULE_FLOOR) == refine
