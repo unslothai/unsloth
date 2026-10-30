@@ -29,7 +29,6 @@ TEXTS = [
 
 
 def _scalar_oracle(dataset, eos_token):
-    """The per-row filter and EOS map this module used before batching."""
     dataset = dataset.filter(lambda ex: isinstance(ex["text"], str) and bool(ex["text"].strip()))
 
     def _append_eos(ex, _eos = eos_token):
@@ -130,7 +129,6 @@ def test_map_style_filter_and_eos_passes_run_batched_over_the_text_column(stream
 
     raw_text.prepare_raw_text_dataset(_make(TEXTS, streaming), eos_token = EOS, append_eos = True)
     if streaming:
-        # Streaming keeps the per-row passes: a batched filter + map pair iterates ~10x slower there.
         assert calls == [("filter", None, None), ("map", None, None)]
     else:
         assert ("filter", True, "text") in calls
