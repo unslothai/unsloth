@@ -7,6 +7,7 @@ import asyncio
 import sqlite3
 import threading
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -30,7 +31,7 @@ from routes import inference as inference_routes
 from routes.scheduled_tasks import router
 from storage import scheduled_tasks_db as db
 from storage import studio_db
-from utils.account_context import OWNER
+from utils.account_context import OWNER, AccountContext, run_as
 
 HOUR = 60 * 60 * 1000
 DAY = 24 * HOUR
@@ -1059,6 +1060,187 @@ def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):
     assert request.headers["x-unsloth-require-text"] == "1"
     assert request.state.api_monitor_via_api_key is False
     assert request.state.keyless_api_admitted is False
+
+
+@pytest.fixture
+def projects_home(tmp_path, monkeypatch):
+    # Project folders otherwise land in the real ~/Documents/Unsloth Studio.
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_a_run_reads_the_memory_and_the_project_instructions_as_chat_does(monkeypatch):
+    from core import agents_md
+
+    agents_md.write_memory("I prefer metric units.")
+    studio_db.upsert_chat_project(
+        {
+            "id": "proj-1",
+            "name": "Weather",
+            "instructions": "Always answer in French.",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    producer = FakeProducer(completion("Il fait beau."))
+
+    generate(monkeypatch, producer, make_task(projectId = "proj-1"))
+
+    system, user = producer.payload.messages
+    assert system.content.startswith("<agents_md>\n# Source: ")
+    assert system.content.endswith(
+        "I prefer metric units.\n</agents_md>\n\n"
+        "<project_instructions>\nAlways answer in French.\n</project_instructions>\n\n" + note
+    )
+    assert user.content == "Write a haiku about mornings."
+
+    agents_md.set_memory_enabled(False)
+    generate(monkeypatch, producer, make_task(id = "task-2"))
+    assert producer.payload.messages[0].content == note
+
+
+def _project_with(instructions, **extra):
+    return studio_db.upsert_chat_project(
+        {
+            "id": "proj-1",
+            "name": "Weather",
+            "instructions": instructions,
+            "createdAt": 1,
+            "updatedAt": 1,
+            **extra,
+        }
+    )
+
+
+@pytest.mark.usefixtures("projects_home")
+@pytest.mark.parametrize("state", ["deleted", "archived", "blank"])
+def test_a_project_chat_would_not_read_adds_nothing_to_a_run(monkeypatch, state):
+    instructions = "   " if state == "blank" else "Always answer in French."
+    _project_with(instructions, archived = state == "archived")
+    if state == "deleted":
+        studio_db.delete_chat_project("proj-1")
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    producer = FakeProducer(completion("Fine."))
+
+    generate(monkeypatch, producer, make_task(projectId = "proj-1"))
+
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    assert producer.payload.messages[0].content == note
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_turning_memory_off_keeps_the_project_instructions_of_a_run(monkeypatch):
+    from core import agents_md
+
+    agents_md.write_memory("I prefer metric units.")
+    agents_md.set_memory_enabled(False)
+    _project_with("Always answer in French.")
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    producer = FakeProducer(completion("Il fait beau."))
+
+    generate(monkeypatch, producer, make_task(projectId = "proj-1"))
+
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    assert producer.payload.messages[0].content == (
+        "<project_instructions>\nAlways answer in French.\n</project_instructions>\n\n" + note
+    )
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_a_run_reads_the_project_folder_file_as_chat_does(monkeypatch):
+    from core import agents_md
+
+    def system_of_a_run(task_id, **task_fields):
+        producer = FakeProducer(completion("Done."))
+        generate(monkeypatch, producer, make_task(id = task_id, **task_fields))
+        return producer.payload.messages[0].content
+
+    agents_md.write_memory("I prefer metric units.")
+    project = _project_with("   ")
+    Path(project["rootPath"], "AGENTS.md").write_text("Use the folder rules.", encoding = "utf-8")
+
+    system = system_of_a_run("task-1", projectId = "proj-1")
+    assert system.index("I prefer metric units.") < system.index("Use the folder rules.")
+    assert "<project_instructions>" not in system
+
+    agents_md.set_memory_enabled(False)
+    system = system_of_a_run("task-2", projectId = "proj-1")
+    assert "Use the folder rules." in system and "metric" not in system
+
+    _project_with("   ", archived = True)
+    assert "Use the folder rules." not in system_of_a_run("task-3", projectId = "proj-1")
+
+    def as_member():
+        member = _project_with("   ")
+        Path(member["rootPath"], "AGENTS.md").write_text("Member folder.", encoding = "utf-8")
+        return system_of_a_run("task-4", projectId = "proj-1")
+
+    assert "Member folder." not in run_as(AccountContext("alice", "alice"), as_member)
+
+
+def test_a_stalled_instruction_read_ends_the_run_at_its_deadline(monkeypatch):
+    released = threading.Event()
+    monkeypatch.setattr(scheduler_module, "_RUN_TIMEOUT_SECONDS", 0.05)
+    # Bounded: the event loop's shutdown waits for this thread.
+    monkeypatch.setattr(scheduler_module, "_run_instructions", lambda *_: released.wait(0.5))
+    producer = FakeProducer(completion("unused"))
+
+    with pytest.raises(RunFailed) as failure:
+        generate(monkeypatch, producer)
+
+    assert failure.value.code == "timeout"
+    assert producer.payload is None
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_a_connection_run_gets_the_same_instructions_as_a_local_one(monkeypatch):
+    from core import agents_md
+    from storage import providers_db
+
+    agents_md.write_memory("I prefer metric units.")
+    _project_with("Always answer in French.")
+    config = {"id": "conn-1", "is_enabled": 1, "display_name": "OpenAI", "provider_type": "openai"}
+    monkeypatch.setattr(providers_db, "get_provider", lambda provider_id: config)
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    local, external = FakeProducer(completion("Oui.")), FakeProducer(completion("Oui."))
+
+    generate(monkeypatch, local, make_task(projectId = "proj-1"))
+    generate(
+        monkeypatch,
+        external,
+        make_task(id = "task-2", projectId = "proj-1", model = "external::conn-1::gpt-5-mini"),
+    )
+
+    assert external.payload.provider_id == "conn-1"
+    assert "I prefer metric units." in external.payload.messages[0].content
+    assert external.payload.messages[0].content == local.payload.messages[0].content
+
+
+@pytest.mark.usefixtures("projects_home")
+def test_a_run_reads_the_memory_and_project_of_the_account_it_runs_for(monkeypatch):
+    from core import agents_md
+
+    def set_up(notes, instructions):
+        agents_md.write_memory(notes)
+        _project_with(instructions)
+        return make_task(projectId = "proj-1")
+
+    alice, bob = AccountContext("alice", "alice"), AccountContext("bob", "bob")
+    alice_task = run_as(alice, set_up, "Alice's notes.", "Alice's project.")
+    bob_task = run_as(bob, set_up, "Bob's notes.", "Bob's project.")
+    alice_run, bob_run = FakeProducer(completion("A")), FakeProducer(completion("B"))
+
+    run_as(alice, generate, monkeypatch, alice_run, alice_task)
+    run_as(bob, generate, monkeypatch, bob_run, bob_task)
+
+    alice_system = alice_run.payload.messages[0].content
+    assert "Alice's notes." in alice_system and "Alice's project." in alice_system
+    assert "Bob" not in alice_system
+    bob_system = bob_run.payload.messages[0].content
+    assert "Bob's notes." in bob_system and "Bob's project." in bob_system
+    assert "Alice" not in bob_system
 
 
 @pytest.mark.parametrize("primary", [None, "gemma-3"])
