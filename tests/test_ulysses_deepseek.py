@@ -306,3 +306,123 @@ def test_chunked_attention_gradients_match_and_nest_in_checkpointing(wrap, monke
             grads.append([x.grad for x in leaves])
         for dense, chunked in zip(*grads):
             torch.testing.assert_close(chunked, dense, rtol = 1e-5, atol = 1e-6)
+
+
+class _PackingStubTrainer:
+    def __init__(
+        self,
+        model = None,
+        args = None,
+        **kwargs,
+    ):
+        self.model = model
+        self.args = args
+
+
+class _KwargsModel(torch.nn.Module):
+    def __init__(self, attention):
+        super().__init__()
+        self.self_attn = attention
+
+    def forward(self, input_ids = None, **kwargs):
+        return None
+
+
+@pytest.mark.parametrize("kind", [k for k in KINDS if k in ("v32", "v4")])
+def test_ulysses_sft_turns_padding_free_off_for_attention_that_refuses_packing(kind, monkeypatch):
+    """V3.2 / V4 Ulysses forwards refuse packed batches, so SFT must not pick padding-free under
+    Ulysses CP: the automatic choice turned it on and the first CP step raised (Colab L4, i6)."""
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    for name in ("enable_padding_free_metadata", "enable_sample_packing"):
+        monkeypatch.setattr(trainer_module, name, lambda model, trainer: None)
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    module = SimpleNamespace(SFTTrainer = type("SFTTrainer", (_PackingStubTrainer,), {}))
+    trainer_module._patch_sft_trainer_auto_packing(module)
+
+    name = {"v32": "DeepseekV32Attention", "v4": "DeepseekV4Attention"}[kind]
+    refusing = _KwargsModel(type(name, (torch.nn.Module,), {})())
+    plain = _KwargsModel(type("DeepseekV3Attention", (torch.nn.Module,), {})())
+
+    def config(backend):
+        return SimpleNamespace(
+            packing = False,
+            padding_free = None,
+            max_length = 64,
+            context_parallel_size = 2,
+            context_parallel_backend = backend,
+            eval_packing = True,
+        )
+
+    args = config("ulysses")
+    module.SFTTrainer(model = refusing, args = args)
+    assert args.padding_free is False and args.packing is False
+    assert args.eval_packing is False
+    # Ulysses attention that takes packed batches keeps the automatic padding-free choice.
+    args = config("ulysses")
+    module.SFTTrainer(model = plain, args = args)
+    assert args.padding_free is not False
+    # Without CP the refusing class trains packed as before.
+    args = config("ulysses")
+    args.context_parallel_size = 1
+    module.SFTTrainer(model = refusing, args = args)
+    assert args.padding_free is not False
+
+
+@pytest.mark.parametrize("name", ["DeepseekV32Attention", "DeepseekV4Attention"])
+def test_ulysses_deepseek_forward_runs_eager_inside_compiled_layers(name, monkeypatch):
+    """Unsloth compiles each decoder layer as one region; traced, the V3.2 / V4 Ulysses forwards (list
+    all_gather, the sequence gather, the no_grad indexer top-k) segfaulted the first CP=2 SFT step on L4
+    (torch 2.14 and 2.8). They must run eagerly inside a compiled layer."""
+    from unsloth.utils import ulysses_deepseek as ud
+
+    seen = []
+
+    def fake_forward(module, hidden_states, *args, group, **kwargs):
+        seen.append(torch.compiler.is_compiling())
+        return hidden_states * 2, None
+
+    target = "ulysses_deepseek_v4_forward" if name == "DeepseekV4Attention" else "ulysses_deepseek_v32_forward"
+    monkeypatch.setattr(ud, target, fake_forward)
+    attention = type(name, (torch.nn.Module,), {"forward": lambda self, hidden_states, **kw: (hidden_states, None)})()
+    manager = types.SimpleNamespace(backend = "ulysses", group = None, packed_seq_lengths = None)
+    ud.wrap_deepseek_attention_forward(attention, lambda: manager)
+
+    def layer(x):
+        return attention(x)[0] + 1
+
+    torch._dynamo.reset()
+    out = torch.compile(layer, backend = "eager")(torch.ones(2, 3))
+    torch.testing.assert_close(out, torch.full((2, 3), 3.0))
+    assert seen == [False], seen
+
+
+def _ddp_worker(rank, world, kind):
+    ad.HAS_FLASH_ATTENTION = False
+    ad.HAS_XFORMERS = False
+    model = _model(kind)
+    seq = 16
+    ids = torch.randint(0, VOCAB, (2, seq), generator = torch.Generator().manual_seed(1))
+    count = F.pad(ids, (0, 1), value = -100)[:, 1:].ne(-100).sum()
+    manager = _manager(world, rank)
+    manager.attach_attention_hooks(model)
+    # The CP trainer turns DDP's find_unused_parameters off (reentrant checkpointing).
+    ddp = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters = False)
+    for _ in range(2):
+        inputs = {"input_ids": ids.clone(), "labels": ids.clone()}
+        manager._prepare_inputs(inputs)
+        with manager.apply(inputs):
+            out = ddp(input_ids = inputs["input_ids"], position_ids = inputs["position_ids"], use_cache = False)
+            _loss(out.logits, inputs["shift_labels"], count).backward()
+    indexer = [n for n, p in model.named_parameters() if ".indexer." in n]
+    assert indexer and all(model.get_parameter(n).grad is None for n in indexer), indexer
+
+
+@pytest.mark.parametrize("kind", [k for k in KINDS if k in ("v32", "v4")])
+def test_ulysses_deepseek_ddp_steps_with_trainable_indexer(kind):
+    """The DSA indexer only picks keys (a discrete top-k), so its weights never get a gradient. With
+    LoRA on them (V3.2 indexer.wq_b, V4 compressor.indexer.q_b_proj) and DDP's find_unused_parameters
+    off under CP, the second CP=2 SFT step on L4 failed with "Expected to have finished reduction"."""
+    _spawn(_ddp_worker, 2, kind)

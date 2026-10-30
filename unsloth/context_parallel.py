@@ -125,6 +125,39 @@ _ULYSSES_OWN_MASK_LAYER_TYPES = {
 _ULYSSES_SLIDING_MODEL_TYPES = ("gemma4_text",)
 
 
+def ulysses_packing_blocker(model) -> Optional[str]:
+    """Class name of the first module whose Ulysses forward refuses packed batches (Kimi delta,
+    MiniMax Lightning, DeepSeek V3.2 / V4 attention), else None. SFT keeps padding-free off for them."""
+    from .utils.ulysses_deepseek import DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+    from .utils.ulysses_hybrid import is_ulysses_kimi_delta, is_ulysses_lightning
+
+    if not isinstance(model, torch.nn.Module):
+        return None
+    for module in model.modules():
+        if (
+            type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+            or is_ulysses_kimi_delta(module)
+            or is_ulysses_lightning(module)
+        ):
+            return type(module).__name__
+    return None
+
+
+def _ddp_ignore_indexer(model, attn_name: str, attention) -> None:
+    # The DSA indexer only picks keys (a discrete top-k), so its weights never get a gradient. CP
+    # turns DDP's find_unused_parameters off, so trainable indexer weights (LoRA on V3.2 wq_b, V4
+    # q_b_proj) would stall the gradient reduction: DDP leaves them out instead.
+    names = [
+        f"{attn_name}.{sub}.{p}"
+        for sub, module in attention.named_modules()
+        if sub.rsplit(".", 1)[-1] == "indexer"
+        for p, _ in module.named_parameters()
+    ]
+    if names:
+        ignored = set(getattr(model, "_ddp_params_and_buffers_to_ignore", ()))
+        model._ddp_params_and_buffers_to_ignore = sorted(ignored.union(names))
+
+
 def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     # Ring and Llama's forward ignore mask, window and softcap, so both backends refuse them.
     allowed = {"full_attention", "linear_attention"} if backend == "ulysses" else {"full_attention"}
@@ -441,6 +474,7 @@ class ContextParallelManager:
                     and type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
                 ):
                     wrap_deepseek_attention_forward(module, get_cp_manager)
+                    _ddp_ignore_indexer(model, name, module)
                 elif (
                     name.endswith("self_attn")
                     and type(module).__name__ in ULYSSES_ATTENTION_CLASSES
