@@ -4967,6 +4967,8 @@ export const ar = {
       weight: "الوزن",
       bundled: "مضمّنة",
       user: "خاصتك",
+      kindRule: "قاعدة",
+      kindPython: "Python",
       invalid: "غير صالحة",
       tryTitle: "جرّبها",
       tryCompletion: "إجابة نموذجية",
@@ -5013,6 +5015,7 @@ export const ar = {
     prompt: {
       title: "تنسيق الموجّه",
       description: "ما يُطلب من النموذج كتابته",
+      presetHint: "يُرسل قبل كل موجّه. تقرأ مكافآتك الوسوم التي يطلبها، لذا أبقِ الاثنين متوافقين.",
       presetLabel: "إعداد مسبق لموجّه النظام",
       presets: {
         notebook: "وسوم التفكير والإجابة",

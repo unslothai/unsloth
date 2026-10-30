@@ -58,6 +58,7 @@ function harness() {
     "@/lib/utils": { cn: (...parts: unknown[]) => parts.join(" ") },
     "@hugeicons/core-free-icons": passthrough,
     "@hugeicons/react": passthrough,
+    "./rl-panel": { RL_PANEL_CLASS: "" },
   });
   const mount = (dataset: string) => {
     shared.dataset = dataset;

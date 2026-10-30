@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { SegmentedTabsList } from "@/components/segmented-tabs";
+import { SectionField } from "@/components/section-box";
+import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { GRPO_DEFAULT_SYSTEM_PROMPT } from "@/config/training";
 import {
@@ -15,16 +21,17 @@ import {
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import {
-  Alert02Icon,
-  Brain02Icon,
-  CheckmarkCircle02Icon,
-} from "@hugeicons/core-free-icons";
+import { Alert02Icon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { FieldHint } from "../field-hint";
+import { ParamsRow } from "../params-section-controls";
+import { RL_PANEL_CLASS } from "./rl-panel";
 
 type Preset = "notebook" | "none" | "custom";
+
+const PRESETS: Preset[] = ["notebook", "none", "custom"];
 
 function presetOf(prompt: string): Preset {
   if (prompt === GRPO_DEFAULT_SYSTEM_PROMPT) {
@@ -54,6 +61,8 @@ export function PromptFormatSection(): ReactElement {
   const [editing, setEditing] = useState(false);
   const preset = presetOf(s.prompt);
   const showEditor = preset === "custom" || editing;
+  const active: Preset = showEditor ? "custom" : preset;
+  const presetLabel = (option: Preset) => t(`rl.prompt.presets.${option}`);
 
   const promptColumn = Object.entries(s.mapping).find(
     ([, role]) => role === "prompt",
@@ -89,46 +98,64 @@ export function PromptFormatSection(): ReactElement {
   };
 
   return (
-    <div className="flex flex-col gap-4">
-      <Tabs
-        value={showEditor ? "custom" : preset}
-        onValueChange={choose}
-        className="contents"
+    <div className="flex flex-col gap-5">
+      <SectionField
+        label={t("rl.prompt.systemPrompt")}
+        hint={
+          <FieldHint
+            text={t("rl.prompt.presetHint")}
+            label={t("rl.prompt.systemPrompt")}
+          />
+        }
       >
-        <SegmentedTabsList
-          value={showEditor ? "custom" : preset}
-          ariaLabel={t("rl.prompt.presetLabel")}
-          size="compact"
-          options={[
-            { value: "notebook", label: t("rl.prompt.presets.notebook") },
-            { value: "none", label: t("rl.prompt.presets.none") },
-            { value: "custom", label: t("rl.prompt.presets.custom") },
-          ]}
-        />
-      </Tabs>
+        <div className="flex flex-col gap-2">
+          <Select value={active} onValueChange={choose}>
+            <SelectTrigger
+              aria-label={`${t("rl.prompt.presetLabel")}: ${presetLabel(active)}`}
+              className={cn(
+                PICKER_TRIGGER_CLASS,
+                "w-full justify-between @md/train-section:w-[calc(240px*var(--ui-space-scale,1))]",
+              )}
+            >
+              <span className="truncate font-medium text-foreground">
+                {presetLabel(active)}
+              </span>
+            </SelectTrigger>
+            <SelectContent
+              position="popper"
+              side="bottom"
+              align="start"
+              sideOffset={8}
+              className="rounded-xl ring-0"
+            >
+              {PRESETS.map((option) => (
+                <SelectItem key={option} value={option}>
+                  {presetLabel(option)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {showEditor && (
+            <Textarea
+              rows={6}
+              aria-label={t("rl.prompt.systemPrompt")}
+              className="font-mono text-xs"
+              value={s.prompt}
+              onChange={(e) => s.setPrompt(e.target.value)}
+            />
+          )}
+        </div>
+      </SectionField>
 
-      {showEditor && (
-        <Textarea
-          rows={6}
-          aria-label={t("rl.prompt.systemPrompt")}
-          className="font-mono text-xs"
-          value={s.prompt}
-          onChange={(e) => s.setPrompt(e.target.value)}
-        />
-      )}
-
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,16rem)]">
-        <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-border/70 bg-muted/30 p-3">
-          <p className="text-ui-10 uppercase tracking-[0.05em] text-muted-foreground/70">
-            {t("rl.prompt.previewTitle")}
-          </p>
-          <div className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-2 gap-y-1.5 font-mono text-ui-11p5">
+      <SectionField label={t("rl.prompt.previewTitle")}>
+        <div className={RL_PANEL_CLASS}>
+          <div className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3 gap-y-2 font-mono text-ui-11p5 leading-ui-15">
             <span className="text-violet-700 dark:text-violet-300">
               {t("rl.prompt.system")}
             </span>
             <span
               className={cn(
-                "whitespace-pre-wrap break-words",
+                "whitespace-pre-wrap break-words text-foreground",
                 system.trim() === "" && "text-muted-foreground italic",
               )}
             >
@@ -141,50 +168,37 @@ export function PromptFormatSection(): ReactElement {
               {userText || t("rl.prompt.noRow")}
             </span>
           </div>
-        </div>
-
-        <div className="flex flex-col gap-3 text-ui-11p5">
           {tags.length > 0 &&
             (missingTags.length === 0 ? (
-              <p className="flex items-start gap-1.5 text-emerald-700 dark:text-emerald-300">
+              <p className="flex items-start gap-1.5 border-t border-border/60 pt-3 text-ui-11p5 leading-ui-15 text-emerald-700 dark:text-emerald-300">
                 <HugeiconsIcon
                   icon={CheckmarkCircle02Icon}
-                  className="mt-px size-3.5 shrink-0"
+                  className="size-3.5 shrink-0"
                 />
                 {t("rl.prompt.tagsOk", { tags: tags.join(" ") })}
               </p>
             ) : (
-              <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-300">
+              <p className="flex items-start gap-1.5 border-t border-border/60 pt-3 text-ui-11p5 leading-ui-15 text-amber-700 dark:text-amber-300">
                 <HugeiconsIcon
                   icon={Alert02Icon}
-                  className="mt-px size-3.5 shrink-0"
+                  className="size-3.5 shrink-0"
                 />
                 {t("rl.prompt.tagsMissing", { tags: missingTags.join(" ") })}
               </p>
             ))}
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex min-w-0 items-start gap-1.5">
-              <HugeiconsIcon
-                icon={Brain02Icon}
-                className="mt-px size-3.5 shrink-0 text-muted-foreground"
-              />
-              <div>
-                <p className="font-medium text-foreground">
-                  {t("rl.params.thinking")}
-                </p>
-                <p className="text-muted-foreground/85">
-                  {t("rl.prompt.thinkingHint")}
-                </p>
-              </div>
-            </div>
-            <Switch
-              checked={s.thinking}
-              onCheckedChange={s.setThinking}
-              aria-label={t("rl.params.thinking")}
-            />
-          </div>
         </div>
-      </div>
+      </SectionField>
+
+      <ParamsRow
+        label={t("rl.params.thinking")}
+        tooltip={t("rl.prompt.thinkingHint")}
+      >
+        <Switch
+          checked={s.thinking}
+          onCheckedChange={s.setThinking}
+          aria-label={t("rl.params.thinking")}
+        />
+      </ParamsRow>
     </div>
   );
 }
