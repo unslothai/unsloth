@@ -252,8 +252,13 @@ def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkey
         FineGrainedFP8Config(dequantize = True, weight_block_size = [BLOCK, BLOCK])
     )
     quantizer.pre_quantized = True
-    loaded = quantizer.update_weight_conversions(plain())
-    model = SimpleNamespace(_weight_conversions = loaded)
+    # A model without fp8 scale params; transformers >= 5.21 takes it as a second argument.
+    model = SimpleNamespace(named_parameters = lambda: iter(()))
+    if "model" in inspect.signature(quantizer.update_weight_conversions).parameters:
+        loaded = quantizer.update_weight_conversions(plain(), model)
+    else:
+        loaded = quantizer.update_weight_conversions(plain())
+    model._weight_conversions = loaded
     monkeypatch.setattr(cm, "get_model_conversion_mapping", lambda *a, **k: plain())
     assert _helper()(model) > 0
 
