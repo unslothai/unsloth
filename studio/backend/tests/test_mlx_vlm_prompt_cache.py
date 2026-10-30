@@ -400,7 +400,8 @@ def test_store_serves_the_longest_prefix_and_evicts_to_fit(fake_mx):
     assert store.lookup("m", b + [0], limit = 256) == (None, 0)
     assert store.lookup("m", a + [0], limit = 256)[1] == 256
     assert store.nbytes == 4 * 512 and len(store) == 2
-    assert not store.store("m", [4] * 800, _snapshot([4] * 800))
+    assert not store.store("m", [4] * 800, _snapshot([4] * 800), hold = False)
+    assert store.store("m", [4] * 800, _snapshot([4] * 800))  # held apart
     assert len(store) == 2 and store.nbytes == 4 * 512
 
     store = VLMPromptSnapshotStore(max_bytes = 10**9, max_entries = 2)
@@ -420,6 +421,97 @@ def test_store_serves_the_longest_prefix_and_evicts_to_fit(fake_mx):
     assert store.nbytes == cache_entries_nbytes(_snapshot([1, 2, 3, 4]))
     store.retain(None)
     assert len(store) == 0 and store.nbytes == 0
+
+
+def _over_budget_store():
+    """256 rows fit the budget; one request's 512 boundary and 699 replay are held."""
+    store, ids = VLMPromptSnapshotStore(max_bytes = 4 * 300), list(range(1000))
+    store.store("m", ids[:256], _snapshot(ids[:256]))
+    assert store.store("m", ids[:512], _snapshot(ids[:512]))
+    assert store.store("m", ids[:699], _snapshot(ids[:699]), replay = True)
+    return store, ids
+
+
+def test_snapshots_over_the_budget_are_held_for_the_chats_next_lookup_only(fake_mx):
+    store, ids = _over_budget_store()
+    assert len(store) == 1 and store.nbytes == 4 * 256 and len(store._held) == 2
+    assert ("m", tuple(ids[:512])) in store and ("m", tuple(ids[:699])) in store
+
+    # Another key, another prefix, an earlier boundary: served as before, and released.
+    for key, prompt, limit, reused in (
+        ("t", ids, 768, 0),
+        ("m", [-1] + ids[1:], 768, 0),
+        ("m", ids, 511, 256),
+        ("m", ids[:701], 511, 256),
+    ):
+        store, ids = _over_budget_store()
+        assert store.lookup(key, prompt, limit)[1] == reused and not store._held
+    store, ids = _over_budget_store()
+    store._entries[("m", tuple(ids[:768]))] = (_snapshot(ids[:768]), 0)
+    assert store.lookup("m", ids, 768)[1] == 768 and not store._held
+
+    # The boundary is handed over, uncopied, and its replay goes with it.
+    store, ids = _over_budget_store()
+    held = store._held._entries[("m", tuple(ids[:512]))][0]
+    assert store.lookup("m", ids[:800], limit = 768) == (held, 512)
+    assert ("m", tuple(ids[:512])) not in store and not store._held and len(store) == 1
+    assert not fake_mx
+
+    # The replay serves the same prompt again and stays, with the boundary reading through it.
+    store, ids = _over_budget_store()
+    assert store.lookup("m", ids[:700], limit = 512)[1] == 699 and len(store._held) == 2
+    assert store.lookup("m", ids[:700], limit = 512)[1] == 699
+
+    # One chat at a time; release follows every way the store frees.
+    assert store.store("t", ids[:400], _snapshot(ids[:400]))
+    assert list(store._held._entries) == [("t", tuple(ids[:400]))]
+    for free in (
+        lambda s: s.retain(("m", tuple(ids[:256]))),
+        lambda s: s.retain_key("m"),
+        lambda s: s.discard(("m", tuple(ids[:512]))),
+        lambda s: s.release_held(),
+        lambda s: s.clear(),
+    ):
+        store, ids = _over_budget_store()
+        free(store)
+        assert ("m", tuple(ids[:512])) not in store
+
+
+def test_a_long_chat_resumes_from_its_held_snapshot_without_a_copy(fake_mx):
+    # 256 rows of make_cache fit; 512 do not.
+    store, language_model, ids = (
+        VLMPromptSnapshotStore(2400),
+        FakeLanguageModel(),
+        list(range(1100)),
+    )
+    _generate(store, language_model, ids[:700])
+    assert len(store) == 0 and len(store._held) == 2
+    held = store._held._entries[("m", tuple(ids[:512]))][0]
+    fake_mx.clear()
+    session, cache, stored = _generate(store, language_model, ids[:900])
+    assert session.reused_tokens == 512 and cache is held and stored
+    assert len(fake_mx) == 2  # the two captures; nothing kept of what it resumed from
+    assert [len(item[1]) for item in store._held._entries] == [768, 899]
+
+    fake_mx.clear()
+    session, cache, stored = _generate(store, language_model, ids[:900])
+    assert session.reused_tokens == 899 and cache[0].offset == 900 and len(fake_mx) == 1
+    assert ("m", tuple(ids[:899])) in store and ("m", tuple(ids[:768])) in store
+    assert store._held._entries[("m", tuple(ids[:899]))][0][0].offset == 899  # never advanced
+    session, _cache, _stored = _generate(store, language_model, ids[:1] + ids[2:900])
+    assert session.reused_tokens == 0 and ("m", tuple(ids[:768])) not in store
+
+
+@pytest.mark.parametrize("served", (512, 699))
+def test_a_batched_row_takes_what_is_held_and_holds_nothing(fake_mx, served):
+    store, ids = VLMPromptSnapshotStore(2400), list(range(1100))
+    _generate(store, FakeLanguageModel(), ids[:700])
+    held = store._held._entries[("m", tuple(ids[:served]))][0]
+    fake_mx.clear()
+    row = VLMBatchRowCache(store, "m", make_cache, step = STEP)
+    prefix, cache = _prefill_row(row, ids[: 900 if served == 512 else 700])
+    assert prefix == served and cache is held and not store._held and len(store) == 0
+    assert len(fake_mx) == (2 if served == 512 else 0)  # its own checkpoints, then dropped
 
 
 def test_session_captures_the_boundary_and_resumes_leaving_a_copy_behind(fake_mx):
@@ -613,6 +705,110 @@ def test_session_serves_and_stores_only_prefixes_past_the_last_media_token(fake_
     assert len(store) == 0 and store.nbytes == 0
 
 
+@pytest.mark.parametrize("ring", (False, True))
+def test_a_lone_batched_row_holds_its_snapshots_from_the_cache_it_hands_back(ring):
+    mx = pytest.importorskip("mlx.core")
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+
+    def positions(start, n):
+        return mx.arange(start, start + n, dtype = mx.float32).reshape(1, 1, n, 1) * mx.ones(
+            (1, 2, 1, 64)
+        )
+
+    def advance(entries, start, n):
+        for entry in entries:
+            if isinstance(entry, cache.ArraysCache):
+                entry[0] = mx.full((1, 64), float(start + n))
+            else:
+                entry.update_and_fetch(positions(start, n), -positions(start, n))
+        mx.eval([entry.state for entry in entries])
+
+    def prefill(
+        row,
+        ids,
+        decoded = 6,
+    ):
+        entries, lengths = row.open(ids)
+        done = cache_entries_offset(entries)
+        while done < len(ids) - 1:
+            take = min(STEP - done % STEP, len(ids) - 1 - done)
+            advance(entries, done, take)
+            done += take
+            if done in lengths:
+                row.checkpoint(done, entries)
+        for step in range(decoded):
+            advance(entries, done + step, 1)
+        # What unsloth-zoo hands back for a lone row: its own entries.
+        return lambda: entries
+
+    ids, alone = list(range(1000)), [True]
+    kv = (lambda: cache.RotatingKVCache(max_size = 4096)) if ring else cache.KVCache
+    plain = lambda: [kv(), cache.ArraysCache(size = 1), kv()]
+    window = lambda: cache.RotatingKVCache(max_size = 256)
+    wrapped = lambda: [window(), cache.ArraysCache(size = 1), window()]
+    store = VLMPromptSnapshotStore(max_bytes = 200_000)
+
+    def holds(lengths):
+        assert [len(item[1]) for item in store._held._entries] == lengths
+        for (_key, prefix), (entries, _nbytes) in store._held._entries.items():
+            n = len(prefix)
+            assert [entry.offset for entry in entries[::2]] == [n, n]
+            assert entries[1][0][0, 0].item() == n
+            for entry in entries[::2]:
+                assert mx.array_equal(entry.keys, positions(0, n)).item()
+                assert mx.array_equal(entry.values, -positions(0, n)).item()
+
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: alone[0])
+    take = prefill(row, ids[:700])
+    assert not store._held and len(store) == 0
+    assert [e.keys for _n, skeleton, _r in row._skeletons for e in skeleton[::2]] == [None] * 4
+    row.retire(take)
+    holds([512, 699])
+    # A regenerate banks nothing, so it holds again what served it and the boundary it extends.
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: alone[0])
+    take = prefill(row, ids[:700])
+    assert not store._held and cache_entries_offset(take()) == 705
+    row.retire(take)
+    holds([512, 699])
+    # A prompt one past the boundary resumes it whole and holds it again, not the longer replay.
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: alone[0])
+    row.retire(prefill(row, ids[:513]))
+    holds([512])
+    # The next turn resumes the boundary and holds only what it banks itself.
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: alone[0])
+    take = prefill(row, ids[:900])
+    assert [n for n, _skeleton, _replay in row._skeletons] == [768, 899]
+    row.retire(take)
+    holds([768, 899])
+    # A short turn inside that boundary's chunk banks only its replay and holds the boundary again.
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: alone[0])
+    row.retire(prefill(row, ids[:950]))
+    holds([768, 949])
+
+    # Held only by a row alone in the batch, from a cache holding its rows in order, and only
+    # where unsloth-zoo hands that cache back.
+    short = prefill(VLMBatchRowCache(None, "m", plain), ids[:600], decoded = 0)
+    slid = prefill(VLMBatchRowCache(None, "m", wrapped), ids[:700], decoded = 0)
+    for layout, alone[0], handed in (
+        (plain, False, lambda: pytest.fail("taken")),
+        (plain, True, short),
+        (plain, True, slid),
+        (wrapped, True, lambda: wrapped()),
+    ):
+        row = VLMBatchRowCache(store, "m", layout, step = STEP, alone = lambda: alone[0])
+        prefill(row, ids[:700])
+        assert bool(row._skeletons) is (layout is plain)
+        row.retire(handed)
+        assert not store._held and len(store) == 0 and not row._skeletons
+    prefill(VLMBatchRowCache(store, "m", plain, step = STEP), ids[:700])
+    assert not store._held and len(store) == 0
+    # Within the budget a row banks copies as it prefills.
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: True)
+    prefill(row, ids[:700])
+    assert len(store) == 2 and not row._skeletons
+
+
 def _prefill_row(state, token_ids):
     """unsloth-zoo's batched row: resume the opened cache, checkpoint where a grid chunk ends."""
     cache, lengths = state.open(token_ids)
@@ -703,6 +899,15 @@ def test_session_prefills_the_media_block_and_chains_from_it(fake_mx, caplog):
     assert not stored and len(store) == 0
     session, _cache, stored = generate(200, honour_reuse = False)
     assert session.reused_tokens == 100 and not stored
+
+    # Over the budget the block is not held beside the generation that produced it.
+    small, prompt = VLMPromptSnapshotStore(max_bytes = 100), _block_prompt(500)
+    block.store = small
+    with Session(small, "m", language_model, make_cache, **kwargs) as session:
+        assert session.find_prefix_length(prompt) == 100
+        run_generation(language_model, prompt, session.cache, 100)
+        assert not small._held
+        assert session.finish() and [len(item[1]) for item in small._held._entries] == [356, 499]
 
     store, failing = VLMPromptSnapshotStore(max_bytes = 10**9), FakeMediaBlock(100)
     failing.fail = True
@@ -1091,3 +1296,54 @@ def test_a_compacted_window_updates_exactly_as_the_full_one(keep, next_rows):
         want = full.update_and_fetch(rows(start, n), -rows(start, n))
         for a, b in zip(got, want):
             assert a.shape == b.shape and mx.array_equal(a, b).item()
+
+
+def test_a_short_turn_holds_again_the_boundary_it_resumed_from():
+    mx = pytest.importorskip("mlx.core")
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+
+    def positions(start, n):
+        return mx.arange(start, start + n, dtype = mx.float32).reshape(1, 1, n, 1) * mx.ones(
+            (1, 2, 1, 8)
+        )
+
+    class Model:
+        def __call__(
+            self,
+            inputs,
+            cache = None,
+            **_kwargs,
+        ):
+            start = cache_entries_offset(cache)
+            for entry in cache:
+                entry.update_and_fetch(
+                    positions(start, len(inputs)), -positions(start, len(inputs))
+                )
+            mx.eval([entry.state for entry in cache])
+
+    model, ids = Model(), list(range(1000))
+    make = lambda: [cache.KVCache(), cache.KVCache()]
+
+    def turn(store, n):
+        with Session(store, "m", model, make) as session:
+            prefix = session.find_prefix_length(ids[:n])
+            run_generation(model, ids[:n], session.cache, prefix)
+            for step in range(4):
+                model([0], cache = session.cache)
+            session.finish()
+        return prefix
+
+    def held(store):
+        for (_key, prefix), (entries, _nbytes) in store._held._entries.items():
+            n = len(prefix)
+            assert [entry.offset for entry in entries] == [n, n]
+            assert mx.array_equal(entries[0].keys[..., :n, :], positions(0, n)).item()
+        return [len(item[1]) for item in store._held._entries]
+
+    store = VLMPromptSnapshotStore(max_bytes = 1)
+    assert turn(store, 700) == 0 and held(store) == [512, 699]
+    # Each short turn stays inside the 512 boundary's chunk, so it banks only its replay.
+    for n in (720, 740, 760):
+        assert turn(store, n) == 512
+        assert held(store) == [512, n - 1]
+    assert turn(store, 800) == 512 and turn(store, 800) == 799

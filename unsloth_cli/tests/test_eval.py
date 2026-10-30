@@ -107,6 +107,81 @@ def test_dataset_task_stays_clear_of_names_requested_alongside(tmp_path):
     assert names == ["gsm8k", "gsm8k_2", "gsm8k_3"]
 
 
+@pytest.mark.parametrize("suffix", [".yaml", ".yml"])
+@pytest.mark.parametrize("dataset_first", [True, False])
+def test_dataset_task_avoids_explicit_yaml_name(tmp_path, suffix, dataset_first):
+    data = tmp_path / "qa.jsonl"
+    data.write_text("{}\n")
+    task = tmp_path / f"custom{suffix}"
+    task.write_text("task: qa\ndataset_path: json\n")
+    entries = [data, task] if dataset_first else [task, data]
+    names, includes = evalmod.resolve_tasks(",".join(map(str, entries)), "q", "a", tmp_path / "tmp")
+    assert names == (["qa_2", "qa"] if dataset_first else ["qa", "qa_2"])
+    generated = (tmp_path / "tmp" / "generated").resolve()
+    custom = (tmp_path / "tmp" / "custom").resolve()
+    assert includes == list(map(str, [generated, custom] if dataset_first else [custom, generated]))
+    spec = yaml.safe_load((generated / "qa_2.yaml").read_text())
+    assert spec["task"] == "qa_2"
+    assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
+    assert yaml.safe_load((custom / "qa.yaml").read_text())["task"] == "qa"
+
+
+@pytest.mark.parametrize("dataset_first", [True, False])
+def test_dataset_task_avoids_explicit_group_name(tmp_path, dataset_first):
+    data = tmp_path / "suite.csv"
+    data.write_text("q,a\n")
+    group = tmp_path / "custom.yaml"
+    group.write_text("group: suite\ntask: [a, b]\n")
+    entries = [data, group] if dataset_first else [group, data]
+    names, includes = evalmod.resolve_tasks(",".join(map(str, entries)), "q", "a", tmp_path / "tmp")
+    assert names == (["suite_2", "suite"] if dataset_first else ["suite", "suite_2"])
+    generated = (tmp_path / "tmp" / "generated").resolve()
+    assert includes == list(
+        map(
+            str,
+            [generated, tmp_path.resolve()] if dataset_first else [tmp_path.resolve(), generated],
+        )
+    )
+    spec = yaml.safe_load((generated / "suite_2.yaml").read_text())
+    assert spec["task"] == "suite_2"
+    assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
+
+
+@pytest.mark.parametrize("dataset_first", [True, False])
+def test_dataset_tasks_avoid_explicit_yaml_numeric_suffixes(tmp_path, dataset_first):
+    data = [tmp_path / "qa.jsonl", tmp_path / "qa.csv"]
+    data[0].write_text("{}\n")
+    data[1].write_text("q,a\n")
+    tasks = [tmp_path / "custom.yaml", tmp_path / "other.yaml"]
+    tasks[0].write_text("task: qa\n")
+    tasks[1].write_text("task: qa_2\n")
+    entries = data + tasks if dataset_first else tasks + data
+    names, _ = evalmod.resolve_tasks(",".join(map(str, entries)), "q", "a", tmp_path / "tmp")
+    assert names == (
+        ["qa_3", "qa_4", "qa", "qa_2"] if dataset_first else ["qa", "qa_2", "qa_3", "qa_4"]
+    )
+    for name, path in zip(["qa_3", "qa_4"], data):
+        spec = yaml.safe_load((tmp_path / "tmp" / "generated" / f"{name}.yaml").read_text())
+        assert spec["task"] == name
+        assert spec["dataset_kwargs"] == {"data_files": str(path.resolve())}
+
+
+@pytest.mark.parametrize("duplicate", ["yaml", "same_yaml", "plain_first", "plain_last"])
+def test_explicit_yaml_names_still_reject_duplicates(tmp_path, duplicate):
+    task = tmp_path / "custom.yaml"
+    task.write_text("task: qa\n")
+    other = tmp_path / "other.yaml"
+    other.write_text("task: qa\n")
+    entries = {
+        "yaml": [str(task), str(other)],
+        "same_yaml": [str(task), str(task)],
+        "plain_first": ["qa", str(task)],
+        "plain_last": [str(task), "qa"],
+    }[duplicate]
+    with pytest.raises(ValueError, match = "Duplicate task 'qa' in --tasks"):
+        evalmod.resolve_tasks(",".join(entries), "q", "a", tmp_path / "tmp")
+
+
 def test_standalone_yaml_is_copied_alone(tmp_path):
     (tmp_path / "broken.yaml").write_text("task: [unclosed\n")
     task = tmp_path / "mine.yml"
@@ -336,6 +411,17 @@ def test_unsloth_backend_writes_results(env, tmp_path):
     assert env["kwargs"]["log_samples"] is False
     saved = json.loads((tmp_path / "out" / "results.json").read_text())
     assert saved["results"]["gsm8k"]["exact_match,strict"] == 0.42
+
+
+def test_eval_dataset_before_yaml_with_same_task_name(env, tmp_path):
+    data = tmp_path / "qa.jsonl"
+    data.write_text("{}\n")
+    task = tmp_path / "custom.yaml"
+    task.write_text("task: qa\ndataset_path: json\n")
+    result = _run("fake/model", "--tasks", f"{data},{task}", "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["tasks"] == ["qa_2", "qa"]
+    assert env["task_managers"] == 1
 
 
 def test_default_output_keeps_every_run(env, tmp_path, monkeypatch):

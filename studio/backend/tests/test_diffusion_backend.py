@@ -1131,6 +1131,7 @@ def test_speed_auto_compile_reports_that_a_reload_brings_lora_back(
     backend = DiffusionBackend()
     status = _load_into(backend, tmp_path, **load)
     assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
+    assert status["lora_unavailable_reason"] is None
     for p in ("one", "two", "three"):
         backend.generate(prompt = p)
     status = backend.status()
@@ -1143,13 +1144,60 @@ def test_speed_auto_compile_reports_that_a_reload_brings_lora_back(
     status = _load_into(backend, tmp_path, **load)
     assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
 
-    # An explicit compiled tier compiles at load: a reload would not help, so no hint.
+    # An explicit compiled tier compiles at load: a reload would not help, so no hint, only the reason.
     backend.unload()
     status = _load_into(backend, tmp_path, speed_mode = "default", **load)
     assert "compiled" in status["speed_optims"]
     assert (status["supports_lora"], status["lora_after_reload"]) == (False, False)
+    assert "Speed" in DiffusionStatusResponse(**status).lora_unavailable_reason
     backend.unload()
     assert backend.status()["lora_after_reload"] is False
+
+
+def test_a_gguf_on_diffusers_applies_loras_unfused(fake_runtime, tmp_path, monkeypatch):
+    backend = _loaded_backend(tmp_path)
+    status = backend.status()
+    assert (status["model_kind"], status["transformer_quant"]) == ("gguf", None)
+    assert status["supports_lora"] is True and status["lora_unavailable_reason"] is None
+    applied: list = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        lambda self, specs, **kw: (("style", "/loras/style.safetensors", 0.7),),
+    )
+    monkeypatch.setattr(
+        _FakePipe,
+        "load_lora_weights",
+        lambda self, path, adapter_name = None: applied.append((path, adapter_name)),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        _FakePipe,
+        "set_adapters",
+        lambda self, names, adapter_weights = None: applied.append((names, adapter_weights)),
+        raising = False,
+    )
+    monkeypatch.setattr(_FakePipe, "unload_lora_weights", lambda self: None, raising = False)
+    backend.generate(prompt = "a fox", loras = [("style", 0.7)])
+    assert applied == [("/loras/style.safetensors", "style"), (["style"], [0.7])]
+    assert getattr(backend._state.pipe, "_unsloth_loras_baked", False) is False
+    backend.unload()
+
+
+def test_a_load_that_cannot_carry_adapters_reports_why(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as dmod
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    monkeypatch.setattr(dmod, "_small_host_int8", lambda pipe: True)
+    status = backend.status()
+    assert status["supports_lora"] is False
+    assert "small-host route" in status["lora_unavailable_reason"]
+    with pytest.raises(ValueError) as raised:
+        backend.generate(prompt = "a fox", loras = [("adapter", 1.0)])
+    assert str(raised.value) == status["lora_unavailable_reason"]
+    backend.unload()
 
 
 def test_deferred_speed_stays_off_when_only_an_explicit_tier_may_compile(

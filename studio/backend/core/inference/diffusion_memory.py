@@ -3358,12 +3358,15 @@ MEASURED_ACTIVATION_QWEN_EDIT_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_
 # "0": Qwen-Image / Qwen-Image-2512 text-to-image places from its learned peak only.
 MEASURED_ACTIVATION_QWEN_IMAGE_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_IMAGE"
 # Streamed tier: peak reserved above resident weights AND the prefetch window (the resident seed already pads it).
-# Qwen-Image t2i takes the Edit figure: same DiT class and VAE, half the image tokens (no source latents).
+# Qwen-Image t2i has its own figure: the borrowed Edit figure (3824) left 3.5 GiB unused at a 16 GiB budget.
 _MEASURED_STREAMED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image-edit": 3824,
-    "qwen-image": 3824,
+    "qwen-image": 2560,
 }
 MEASURED_ACTIVATION_STREAMED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_STREAMED"
+# "0": Qwen-Image t2i streams with the borrowed Edit figure again.
+QWEN_IMAGE_STREAMED_SEED_ENV = "UNSLOTH_DIFFUSION_QWEN_IMAGE_STREAMED_SEED"
+_QWEN_IMAGE_BORROWED_STREAMED_MIB = 3824
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
@@ -3535,6 +3538,8 @@ def measured_image_runtime_mib(
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
         if streamed and phase is None and not _env_off(MEASURED_ACTIVATION_STREAMED_ENV):
             seed = _MEASURED_STREAMED_IMAGE_PEAK_MIB.get(str(family or "").lower(), seed)
+            if str(family or "").lower() == "qwen-image" and _env_off(QWEN_IMAGE_STREAMED_SEED_ENV):
+                seed = _QWEN_IMAGE_BORROWED_STREAMED_MIB
         if str(family or "").lower() == "qwen-image-edit" and _env_off(
             MEASURED_ACTIVATION_QWEN_EDIT_ENV
         ):

@@ -20,6 +20,12 @@ from typing import Any, Callable, Optional
 
 _ENV = "UNSLOTH_DIFFUSION_BG_COMPILE"
 OFFLOADED_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED"
+YIELD_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_YIELD"
+# Seconds of compile a render lets run before it pauses it; unset = this load's fastest eager render.
+SLICE_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_SLICE_S"
+_SLICE_MAX_S = 30.0
+# A gap between two yield points longer than this compiled a block graph (a cached block call takes milliseconds).
+_GRAPH_SEGMENT_S = 0.25
 _MAX_SAMPLES = 4
 
 # ContextVars, not thread-locals: diffusion_render_thread.run copies the caller's context onto the render thread.
@@ -35,6 +41,14 @@ _NO_RECORD: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _AUXILIARY: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_diffusion_auxiliary_pass", default = False
 )
+# The BackgroundCompile whose thread this is (set only on that thread): yield_point's target.
+_ACTIVE: contextvars.ContextVar[Optional["BackgroundCompile"]] = contextvars.ContextVar(
+    "unsloth_diffusion_bg_active", default = None
+)
+
+
+class _Closed(BaseException):
+    """Raised at a yield point once the compile is closed (unload): ends the paused replay."""
 
 
 def enabled() -> bool:
@@ -45,6 +59,67 @@ def enabled() -> bool:
 def offloaded_enabled() -> bool:
     raw = (os.environ.get(OFFLOADED_ENV) or "").strip().lower()
     return raw not in ("0", "false", "no", "off")
+
+
+def yield_enabled() -> bool:
+    raw = (os.environ.get(YIELD_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+WARM_POOL_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_WARM_POOL"
+_POOL_WARMED = False
+
+
+def warm_compile_pool(logger: Any = None) -> bool:
+    """Start inductor's compile worker pool ahead of the deferred compile."""
+    global _POOL_WARMED
+    if _POOL_WARMED or not enabled():
+        return False
+    raw = (os.environ.get(WARM_POOL_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    _POOL_WARMED = True
+    try:
+        from . import diffusion_compile_config
+        from torch._inductor.async_compile import AsyncCompile
+
+        diffusion_compile_config.apply()
+        AsyncCompile.warm_pool()
+        AsyncCompile.wakeup()
+    except Exception as exc:  # noqa: BLE001 - the compile warms its own pool as before
+        if logger is not None:
+            logger.debug("diffusion.bg_compile: compile pool warm-up skipped: %s", exc)
+        return False
+    if logger is not None:
+        logger.info(
+            "diffusion.bg_compile: inductor compile workers starting ahead of the deferred compile"
+        )
+    return True
+
+
+def slice_seconds(eager_render_s: Optional[float]) -> float:
+    """Compile seconds a render lets run before it pauses the compile: ``SLICE_ENV`` when set, else the load's
+    fastest eager render (0 when none was timed), clamped to [0, 30]."""
+    raw = (os.environ.get(SLICE_ENV) or "").strip()
+    value: Optional[float] = None
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = None
+    if value is None:
+        value = eager_render_s if isinstance(eager_render_s, (int, float)) else 0.0
+    if value != value:  # NaN
+        value = 0.0
+    return max(0.0, min(_SLICE_MAX_S, float(value)))
+
+
+def yield_point() -> None:
+    """Called before a guarded compiled block runs. On a background compile thread with a pause requested, parks
+    here (between two block graphs, never inside a trace) until the render resumes it. Elsewhere a no-op."""
+    bg = _ACTIVE.get()
+    if bg is not None:
+        bg._yield_point()
 
 
 FLOAT_SEEDS_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_FLOAT_SEEDS"
@@ -475,6 +550,94 @@ class BackgroundCompile:
         self.error: Optional[str] = None
         self.compile_s: Optional[float] = None
         self.eager_generations = 0
+        self._cv = threading.Condition(threading.Lock())
+        self._pause_depth = 0
+        self._parked = False
+        # Bumped when the last pause is released: a parked thread leaves on it even if a new pause is already held.
+        self._release_epoch = 0
+        self.pauses = 0
+        self.paused_s = 0.0
+        self.yield_points = 0
+        # _owe_graph: one graph per resume, so back-to-back renders cannot starve the compile.
+        self.graph_s: Optional[float] = None
+        self._last_yield: Optional[float] = None
+        self._owe_graph = False
+
+    def yields(self) -> bool:
+        return bool(getattr(self.module, "_unsloth_bg_yield", False)) and yield_enabled()
+
+    def pause(
+        self,
+        cancel: Any = None,
+        budget_s: float = 0.0,
+        poll_s: float = 0.05,
+    ) -> tuple[float, bool]:
+        """Let the compile run ``budget_s`` more seconds, then park it at its next yield point. Returns
+        ``(seconds waited, paused)``; ``paused`` means a pause is held and the caller MUST ``resume()``. A compile
+        that ends inside the budget returns ``paused=False`` (the render then runs compiled)."""
+        t0 = time.perf_counter()
+        thread = self._thread
+        if thread is None or thread is threading.current_thread() or not thread.is_alive():
+            return 0.0, False
+        # Ask one graph_s early: the pause lands after the block graph in flight.
+        budget = max(0.0, float(budget_s or 0.0))
+        lead = self.graph_s if self.graph_s is not None else budget
+        deadline = t0 + (0.0 if self._pause_depth else max(0.0, budget - lead))
+        while thread.is_alive() and not (cancel is not None and cancel.is_set()):
+            left = deadline - time.perf_counter()
+            if left <= 0:
+                break
+            thread.join(min(poll_s * 5, left))
+        if not thread.is_alive():
+            return time.perf_counter() - t0, False
+        with self._cv:
+            self._pause_depth += 1
+            self.pauses += 1
+            self._cv.notify_all()
+            while thread.is_alive() and not self._parked:
+                if cancel is not None and cancel.is_set():
+                    break
+                self._cv.wait(poll_s)
+        return time.perf_counter() - t0, True
+
+    def resume(self) -> None:
+        with self._cv:
+            self._pause_depth = max(0, self._pause_depth - 1)
+            if not self._pause_depth:
+                self._release_epoch += 1
+                # the next pause() waits for a fresh park, after the block graph this release owes
+                self._parked = False
+            self._cv.notify_all()
+
+    def _yield_point(self) -> None:
+        self.yield_points += 1
+        if self._closed.is_set():
+            raise _Closed()
+        now = time.perf_counter()
+        if self._last_yield is not None and now - self._last_yield > _GRAPH_SEGMENT_S:
+            seg = now - self._last_yield
+            self.graph_s = seg if self.graph_s is None else 0.5 * (self.graph_s + seg)
+            self._owe_graph = False
+        self._last_yield = now
+        if not self._pause_depth or self._owe_graph:
+            return
+        with self._cv:
+            if not self._pause_depth:
+                return
+            self._parked = True
+            self._cv.notify_all()
+            epoch = self._release_epoch
+            try:
+                while self._release_epoch == epoch and not self._closed.is_set():
+                    self._cv.wait(0.5)
+            finally:
+                self._parked = False
+                end = time.perf_counter()
+                self.paused_s += end - now
+                self._last_yield = end
+                self._owe_graph = True
+        if self._closed.is_set():
+            raise _Closed()
 
     def install(self) -> bool:
         try:
@@ -648,6 +811,7 @@ class BackgroundCompile:
     def _run(self) -> None:
         t0 = time.perf_counter()
         token = _NO_CAPTURE.set(True)
+        _ACTIVE.set(self if self.yields() else None)
         try:
             import torch
 
@@ -675,13 +839,20 @@ class BackgroundCompile:
             self._finish("done")
             if self.logger is not None:
                 self.logger.info(
-                    "diffusion.bg_compile: %s compiled in the background in %.1f s%s; the next render runs compiled",
+                    "diffusion.bg_compile: %s compiled in the background in %.1f s%s%s; the next render runs compiled",
                     type(self.module).__name__,
                     self.compile_s,
                     f" ({self.float_seeds} float specialisation(s) pre-seeded)"
                     if self.float_seeds
                     else "",
+                    f" (paused {self.pauses}x for renders, {self.paused_s:.1f} s, compiling "
+                    f"{self.compile_s - self.paused_s:.1f} s)"
+                    if self.pauses
+                    else "",
                 )
+        except _Closed:
+            self.compile_s = time.perf_counter() - t0
+            self._finish("failed", "closed before the compile finished")
         except BaseException as exc:  # noqa: BLE001 - never kills the process; the next render compiles inline
             self.compile_s = time.perf_counter() - t0
             self._finish(
@@ -699,6 +870,9 @@ class BackgroundCompile:
             exc.__traceback__ = None
         finally:
             _NO_CAPTURE.reset(token)
+            _ACTIVE.set(None)
+            with self._cv:
+                self._cv.notify_all()
 
     def _seed_floats(self) -> Optional[tuple]:
         """Pre-seed the SymFloat specialisations this key's last compile learned; returns what ``_keep_floats`` needs."""
@@ -711,6 +885,8 @@ class BackgroundCompile:
     def close(self, timeout: Optional[float] = None) -> None:
         """Stop recording and wait for an in-flight compile (it holds the module); used on unload."""
         self._closed.set()
+        with self._cv:
+            self._cv.notify_all()  # a parked compile wakes, sees closed and ends
         self._remove_hook()
         thread = self._thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
@@ -731,6 +907,8 @@ class BackgroundCompile:
             "samples": len(self.samples),
             "compile_s": None if self.compile_s is None else round(self.compile_s, 2),
             "eager_generations": self.eager_generations,
+            "pauses": self.pauses,
+            "paused_s": round(self.paused_s, 2),
             "float_seeds": self.float_seeds,
             "error": self.error,
         }
