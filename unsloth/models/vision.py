@@ -3334,8 +3334,14 @@ def _offload_activation_unpack(packed):
 
 
 def _gc_offload_owner(model):
-    # The owner's forward pre-hook marks each forward. PEFT 0.18 calls the top model's .forward()
-    # directly, skipping its hooks, so own by the backbone, which is always called as a module.
+    # The owner's forward pre-hook marks each forward. PEFT 0.18's BaseTuner calls the wrapped model's
+    # .forward() directly, skipping its hooks, so unwrap PEFT and own by the backbone, which the model
+    # calls as a module. Same object before and after get_peft_model, so one offloader and one hook.
+    get_base_model = getattr(model, "get_base_model", None)
+    if callable(get_base_model):
+        base = get_base_model()
+        if isinstance(base, torch.nn.Module):
+            model = base
     backbone = getattr(model, "model", None)
     return backbone if isinstance(backbone, torch.nn.Module) else model
 

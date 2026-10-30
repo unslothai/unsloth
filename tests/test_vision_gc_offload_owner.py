@@ -260,3 +260,61 @@ def test_no_zoo_hooks_falls_back_to_cpu_offload(G):
         y = (x * x).sum()
     y.backward()
     assert torch.equal(x.grad, 2 * x)
+
+
+def _tiny_llama():
+    transformers = pytest.importorskip("transformers")
+    config = transformers.LlamaConfig(
+        vocab_size = 64,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        max_position_embeddings = 32,
+    )
+    torch.manual_seed(0)
+    model = transformers.LlamaForCausalLM(config)
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+    model.train()
+    return model
+
+
+def _install_checkpoint(model, checkpoint):
+    layers = [m for m in model.modules() if hasattr(m, "_gradient_checkpointing_func")]
+    assert layers
+    for m in layers:
+        m._gradient_checkpointing_func = checkpoint
+
+
+@pytest.mark.parametrize("peft_wrapped", [False, True])
+def test_owner_forward_hook_fires_under_peft(G, monkeypatch, peft_wrapped):
+    # post_patch_model runs on the bare model and again on the PEFT model; both must own the
+    # module every forward calls through its hooks (PEFT's BaseTuner calls .forward() directly).
+    phase, labels, made = ["A"], weakref.WeakKeyDictionary(), []
+    monkeypatch.setattr(
+        G, "_new_activation_offloader", _labelling_offloader(G, phase, labels, made)
+    )
+    model = _tiny_llama()
+    backbone = model.model
+    ns, _ = _vision_ns(G)
+    assert ns["_gc_offload_owner"](model) is backbone
+    if peft_wrapped:
+        peft = pytest.importorskip("peft")
+        model = peft.get_peft_model(
+            model, peft.LoraConfig(r = 4, target_modules = ["q_proj", "v_proj"], task_type = "CAUSAL_LM")
+        )
+        assert ns["_gc_offload_owner"](model) is backbone
+    _install_checkpoint(model, _vision_nonre_checkpoint(G, model))
+    ids = torch.randint(0, 64, (2, 6))
+    lengths = []
+    for _ in range(4):  # discarded forwards: no backward (e.g. a skipped non-finite loss)
+        loss = model(input_ids = ids, labels = ids).loss
+        del loss
+        (offloader,) = made
+        lengths.append(len(offloader.order))
+    assert G._OWNED_OFFLOADERS.get(backbone) is offloader
+    assert offloader.owned and offloader.stats["forwards"] == 4
+    assert lengths == [lengths[0]] * 4, lengths
+    model(input_ids = ids, labels = ids).loss.backward()
+    assert offloader.stats["forwards"] == 5
