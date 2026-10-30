@@ -29,6 +29,11 @@ from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS  # noqa: E402
 HIDDEN, HEADS, HEAD_DIM, VOCAB = 32, 4, 8, 64
 
 
+def _acc(x):
+    # fp32 math for low precision, fp64 kept for the fp64 reference.
+    return torch.promote_types(x.dtype, torch.float32)
+
+
 class _ShortConv(nn.Conv1d):
     # fla.modules.ShortConvolution: depthwise causal conv with a SiLU.
     def __init__(
@@ -52,9 +57,9 @@ class _GatedNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim) + 0.1 * torch.randn(dim))
 
     def forward(self, x, g):
-        x = x.float()
+        x = x.to(_acc(x))
         x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim = True) + 1e-6)
-        return (self.weight * x * torch.sigmoid(g.float())).to(g.dtype)
+        return (self.weight * x * torch.sigmoid(g.to(_acc(g)))).to(g.dtype)
 
 
 class KimiDeltaAttention(nn.Module):
@@ -92,27 +97,28 @@ class KimiDeltaAttention(nn.Module):
         q = self.q_conv1d(self.q_proj(hidden_states)).view(shape)
         k = self.k_conv1d(self.k_proj(hidden_states)).view(shape)
         v = self.v_conv1d(self.v_proj(hidden_states)).view(shape)
-        f = self.f_b_proj(self.f_a_proj(hidden_states)).view(shape).float() + self.dt_bias.view(
+        acc = _acc(hidden_states)
+        f = self.f_b_proj(self.f_a_proj(hidden_states)).view(shape).to(acc) + self.dt_bias.view(
             HEADS, HEAD_DIM
         )
-        a = self.A_log.float().exp().view(HEADS, 1)
+        a = self.A_log.to(acc).exp().view(HEADS, 1)
         if self.gate_lower_bound is not None:
             g = self.gate_lower_bound * torch.sigmoid(a * f)
         else:
             g = -a * F.softplus(f)
-        beta = self.b_proj(hidden_states).float().sigmoid()
-        q = F.normalize(q.float(), dim = -1) * HEAD_DIM**-0.5
-        k = F.normalize(k.float(), dim = -1)
+        beta = self.b_proj(hidden_states).to(acc).sigmoid()
+        q = F.normalize(q.to(acc), dim = -1) * HEAD_DIM**-0.5
+        k = F.normalize(k.to(acc), dim = -1)
         state = q.new_zeros(bsz, HEADS, HEAD_DIM, HEAD_DIM)
         outs = []
         for t in range(seq):
             state = state * g[:, t].exp().unsqueeze(-1)
             pred = (k[:, t].unsqueeze(-1) * state).sum(-2)
             state = state + k[:, t].unsqueeze(-1) * (
-                beta[:, t, :, None] * (v[:, t].float() - pred)
+                beta[:, t, :, None] * (v[:, t].to(acc) - pred)
             ).unsqueeze(-2)
             outs.append((q[:, t].unsqueeze(-1) * state).sum(-2))
-        o = torch.stack(outs, dim = 1)
+        o = torch.stack(outs, dim = 1).to(hidden_states.dtype)
         if hasattr(self, "g_proj"):
             gate = self.g_proj(hidden_states)
         else:
@@ -175,7 +181,9 @@ class _Layer(nn.Module):
         h,
         attention_mask = None,
     ):
-        h = h + self.self_attn(hidden_states = self.norm1(h), attention_mask = attention_mask)
+        # Kimi hands the delta layers the 2D padding mask and MLA the causal mask (None here).
+        mask = attention_mask if isinstance(self.self_attn, KimiDeltaAttention) else None
+        h = h + self.self_attn(hidden_states = self.norm1(h), attention_mask = mask)
         return h + self.mlp(self.norm2(h))
 
 
@@ -201,11 +209,12 @@ class _KimiForCausalLM(nn.Module):
         input_ids,
         position_ids = None,
         use_cache = False,
+        attention_mask = None,
         **kwargs,
     ):
         h = self.embed(input_ids)
         for layer in self.model.layers:
-            h = layer(h)
+            h = layer(h, attention_mask)
         return types.SimpleNamespace(logits = self.lm_head(h))
 
 
@@ -214,18 +223,21 @@ def _model(k3):
     return _KimiForCausalLM(k3).train()
 
 
-def _manager(size, rank):
+def _manager(size, rank, group = None):
     manager = object.__new__(cp.ContextParallelManager)
     manager.size = size
     manager.backend = "ulysses"
-    manager.mesh = types.SimpleNamespace(get_group = lambda: None, get_local_rank = lambda: rank)
+    manager.mesh = types.SimpleNamespace(get_group = lambda: group, get_local_rank = lambda: rank)
     return manager
 
 
 def _loss(logits, shift_labels, count):
     return (
         F.cross_entropy(
-            logits.float().flatten(0, 1), shift_labels.flatten(), ignore_index = -100, reduction = "sum"
+            logits.to(_acc(logits)).flatten(0, 1),
+            shift_labels.flatten(),
+            ignore_index = -100,
+            reduction = "sum"
         )
         / count
     )
@@ -291,6 +303,170 @@ def test_shard_local_kimi_delta_is_wrong():
     # Negative control: the stock forward on a sequence shard restarts the scan at the shard seam.
     with pytest.raises(Exception, match = "AssertionError"):
         _spawn(_parity_worker, 2, False, True)
+
+
+def _shard_local(fn, size, *xs):
+    # Negative-control helper: run fn on each sequence shard separately, as a shard-local layer would.
+    n = xs[0].shape[1] // size
+    return torch.cat([fn(*(x[:, i * n : (i + 1) * n] for x in xs)) for i in range(size)], dim = 1)
+
+
+# Deliberately broken copies of ulysses_kimi_delta_forward: each must fail the parity check.
+_BROKEN = {
+    "shard_local_scan": (
+        ("out = _kda_scan(q, k, v, g, b.float().sigmoid())", "out = _shard_local(_kda_scan, size, q, k, v, g, b.float().sigmoid())"),
+    ),
+    "shard_local_conv": tuple(
+        (
+            f"{x} = _kda_short_conv(module.{x}_conv1d, {x}, rows)",
+            f"{x} = _shard_local(lambda t: _kda_short_conv(module.{x}_conv1d, t, rows), size, {x})",
+        )
+        for x in "qkv"
+    ),
+    "a_log_of_rank0": (("module.A_log.reshape(-1)[rank * heads : (rank + 1) * heads]", "module.A_log.reshape(-1)[:heads]"),),
+    "dt_bias_of_rank0": (("module.dt_bias.reshape(-1).index_select(0, rows)", "module.dt_bias.reshape(-1)[: heads * dim]"),),
+    "lower_bound_dropped": (('getattr(module, "gate_lower_bound", None)', "None"),),
+    # MLA: keep the zero padded tail of the value heads instead of the real ones.
+    "mla_value_tail": (("out[..., :v_dim]", "out[..., head_dim - v_dim :]"),),
+}
+
+
+def _install_broken(name):
+    import inspect
+
+    target = "_ulysses_hf_attention" if name.startswith("mla") else "ulysses_kimi_delta_forward"
+    src = inspect.getsource(getattr(uh, target))
+    for before, after in _BROKEN[name]:
+        assert src.count(before) == 1, before
+        src = src.replace(before, after)
+    namespace = dict(vars(uh), _shard_local = _shard_local)
+    exec(src, namespace)
+    setattr(uh, target, namespace[target])
+
+
+def _audit_batch(kind, seed, seq = 13):
+    """Right padded rows of unequal length. "full": every valid token is a label. "seam": labels
+    stop one token after the CP=2 seam (position 7), so the label at 6 crosses it and every shard
+    from the second on has none."""
+    ids = torch.randint(0, VOCAB, (2, seq), generator = torch.Generator().manual_seed(seed))
+    mask = torch.ones_like(ids)
+    mask[0, 11:] = 0
+    mask[1, 9 - seed % 2 :] = 0
+    labels = ids.masked_fill(mask == 0, -100)
+    if kind == "seam":
+        labels[:, 8:] = -100
+    return ids, mask, labels
+
+
+def _inject_lora(model):
+    from peft import LoraConfig, inject_adapter_in_model
+
+    targets = ["q_proj", "k_proj", "v_proj", "f_b_proj", "b_proj", "g_b_proj", "g_proj", "o_proj", "kv_b_proj"]
+    model = inject_adapter_in_model(LoraConfig(r = 4, lora_alpha = 8, target_modules = targets), model)
+    torch.manual_seed(2)
+    for name, param in model.named_parameters():
+        param.requires_grad_("lora_" in name)
+        if "lora_B" in name:
+            with torch.no_grad():
+                param.normal_(0, 0.2)  # nonzero B: the adapters change the forward
+    return model
+
+
+def _audit_worker(rank, world, k3, cp_size, kind, lora, broken):
+    import copy
+
+    ad.HAS_FLASH_ATTENTION = False
+    ad.HAS_XFORMERS = False
+    dp_size = world // cp_size
+    dp_rank, cp_rank = divmod(rank, cp_size)
+    groups = [dist.new_group(list(range(d * cp_size, (d + 1) * cp_size))) for d in range(dp_size)]
+    model = _model(k3).double()
+    if lora:
+        model = _inject_lora(model)
+    batches = [_audit_batch(kind, seed = d) for d in range(dp_size)]
+    shifts = [F.pad(labels, (0, 1), value = -100)[:, 1:] for _, _, labels in batches]
+    count = sum(shift.ne(-100).sum() for shift in shifts)
+
+    # Independent single-process fp64 reference over every DP replica's batch.
+    for (ids, _, _), shift in zip(batches, shifts):
+        _loss(model(input_ids = ids).logits, shift, count).backward()
+    reference = copy.deepcopy(model)  # deepcopy drops .grad
+    for param, ref in zip(model.parameters(), reference.parameters()):
+        ref.grad = None if param.grad is None else param.grad.clone()
+    model.zero_grad(set_to_none = True)
+
+    manager = _manager(cp_size, cp_rank, groups[dp_rank] if dp_size > 1 else None)
+    manager.attach_attention_hooks(model)
+    if broken is not None:
+        _install_broken(broken)
+    ids, mask, labels = batches[dp_rank]
+    inputs = {"input_ids": ids.clone(), "attention_mask": mask.clone(), "labels": labels.clone()}
+    with manager.apply(inputs):
+        out = model(
+            input_ids = inputs["input_ids"],
+            position_ids = inputs["position_ids"],
+            attention_mask = inputs["attention_mask"],
+        )
+        local_labels = inputs["shift_labels"].ne(-100).sum()
+        _loss(out.logits, inputs["shift_labels"], count).backward()
+    if kind == "seam" and cp_rank * inputs["input_ids"].shape[1] >= 7:
+        assert local_labels == 0  # this shard trains on nothing of its own
+    for (name, param), ref in zip(model.named_parameters(), reference.parameters()):
+        # None vs zero vs value, per rank: DDP needs every rank to agree with the reference.
+        assert (param.grad is None) == (ref.grad is None), name
+        if param.grad is None:
+            continue
+        dist.all_reduce(param.grad)
+        # The CP scan runs in fp32 (as fla does), the reference in fp64.
+        torch.testing.assert_close(param.grad, ref.grad, rtol = 1e-4, atol = 1e-6, msg = lambda m: f"{name}: {m}")
+    if not lora:
+        assert all(p.grad is not None for p in model.parameters())
+    optimizers = [
+        torch.optim.AdamW([p for p in m.parameters() if p.requires_grad], lr = 1e-2, eps = 1e-4, weight_decay = 0.1)
+        for m in (model, reference)
+    ]
+    for optimizer in optimizers:
+        optimizer.step()
+    for (name, param), ref in zip(model.named_parameters(), reference.parameters()):
+        torch.testing.assert_close(param, ref, rtol = 1e-5, atol = 1e-5, msg = lambda m: f"{name} after AdamW: {m}")
+
+
+@pytest.mark.parametrize(
+    "k3, world, cp_size, kind, lora",
+    [
+        (False, 2, 2, "full", False),
+        (True, 2, 2, "full", False),
+        (False, 2, 2, "seam", False),
+        (True, 2, 2, "seam", True),
+        (False, 2, 2, "full", True),
+        (True, 4, 4, "full", False),
+        (False, 4, 4, "seam", True),
+        (True, 4, 2, "full", True),
+    ],
+    ids = ["linear-cp2", "k3-cp2", "linear-cp2-seam", "k3-cp2-seam-lora", "linear-cp2-lora", "k3-cp4", "linear-cp4-seam-lora", "k3-dp2xcp2-lora"],
+)
+def test_ulysses_kimi_matches_fp64_reference(k3, world, cp_size, kind, lora):
+    """Padded rows of unequal length, a shard without labels, a label across the seam, LoRA with
+    nonzero B, one AdamW step: CP=2, CP=4 and DP2 x CP2 against one fp64 process."""
+    _spawn(_audit_worker, world, k3, cp_size, kind, lora, None)
+
+
+@pytest.mark.parametrize(
+    "broken, k3",
+    [
+        ("shard_local_scan", False),
+        ("shard_local_conv", False),
+        ("a_log_of_rank0", False),
+        ("dt_bias_of_rank0", True),
+        ("lower_bound_dropped", True),
+        ("mla_value_tail", False),
+    ],
+)
+def test_broken_kimi_delta_shards_fail_the_reference(broken, k3):
+    # Negative controls: a scan or conv restarted at the seam, another rank's per-head decay
+    # parameters, or K3's lower-bounded gate read as the standard one.
+    with pytest.raises(Exception, match = "not close"):
+        _spawn(_audit_worker, 2, k3, 2, "full", False, broken)
 
 
 def test_kimi_gates():

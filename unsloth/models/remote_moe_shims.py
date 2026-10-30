@@ -13,6 +13,7 @@
 """Train-mode forwards for DeepSeek-V3-derived remote MoE ports, keyed on structure never repo name;
 no-op for the native transformers models."""
 
+import contextlib
 import functools
 import os
 import threading
@@ -133,21 +134,36 @@ def is_remote_deepseek_moe(module) -> bool:
     )
 
 
-def _copy_saved(tensor):
-    return tensor.clone()
+_ROUTER_SCORE_FUNCTIONS = frozenset(
+    (
+        torch.sigmoid,
+        torch.Tensor.sigmoid,
+        torch.special.expit,
+        torch.softmax,
+        torch.Tensor.softmax,
+        torch.nn.functional.softmax,
+    )
+)
 
 
-def _identity(tensor):
-    return tensor
+class _CopyRouterScores(torch.overrides.TorchFunctionMode):
+    """Kimi-Linear adds its score bias in place to the sigmoid / softmax output that op's backward
+    saved: hand the gate a copy instead. Only the scores are copied and no saved-tensor hooks are
+    pushed, so gradient checkpointing and activation offload still own the gate's saved tensors."""
+
+    def __torch_function__(self, func, types, args = (), kwargs = None):
+        out = func(*args, **(kwargs or {}))
+        if func in _ROUTER_SCORE_FUNCTIONS and isinstance(out, torch.Tensor) and out.requires_grad:
+            out = out.clone()
+        return out
 
 
 def _gate_forward_without_training_assert(original):
     @functools.wraps(original)
     def forward(self, hidden_states):
-        # Kimi-Linear adds the score bias in place to the sigmoid output its backward saved; saving
-        # copies keeps that backward valid without changing the routing (no-op without grad). The
-        # block shim calls the gate with training already off, so this covers both paths.
-        with torch.autograd.graph.saved_tensors_hooks(_copy_saved, _identity):
+        # The block shim calls the gate with training already off, so this covers both paths.
+        copies = _CopyRouterScores() if torch.is_grad_enabled() else contextlib.nullcontext()
+        with copies:
             if not self.training:
                 return original(self, hidden_states)
             # Gate has no children: flipping `training` only bypasses the assert.

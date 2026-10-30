@@ -67,6 +67,10 @@ def _model(kind):
     return model
 
 
+def _per_expert_modules(model):
+    return any(isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules())
+
+
 def _manager(size, rank):
     manager = object.__new__(cp.ContextParallelManager)
     manager.size = size
@@ -153,7 +157,13 @@ def test_minimax_gates():
     lightning = model.model.layers[0].self_attn
     assert uh.is_ulysses_lightning(lightning) and uh.is_ulysses_mixer(lightning)
     assert cp._unsupported_attention(model.config, "ulysses") is None
-    assert cp._supports_context_parallel(model, "ulysses")
+    if _per_expert_modules(model):
+        # transformers 4.x MiniMax: experts a shard never routes to would stall DDP's reduction.
+        assert not cp._supports_context_parallel(model, "ulysses")
+        with pytest.raises(NotImplementedError, match = "per-expert modules"):
+            cp._check_cp_model(model, 2, "ulysses")
+    else:
+        assert cp._supports_context_parallel(model, "ulysses")
     assert not cp._supports_context_parallel(model, "ring")
     cp._check_stateful_mixers(model, "ulysses", 2)
     with pytest.raises(ValueError, match = "num_attention_heads"):

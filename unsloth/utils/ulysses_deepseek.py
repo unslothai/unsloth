@@ -18,7 +18,6 @@ import sys
 
 import torch
 import torch.distributed as dist
-import torch.distributed.nn.functional as dist_nn
 import torch.nn.functional as F
 
 from .ulysses import _AllToAll
@@ -36,6 +35,20 @@ DEEPSEEK_ULYSSES_ATTENTION_CLASSES = ("DeepseekV32Attention", "DeepseekV4Attenti
 def _apply_rotary_fn(mod):
     module = sys.modules[type(mod).__module__]
     return module.apply_rotary_pos_emb
+
+
+def _gather_seq(x, group, dim = 1):
+    """All-gather sequence shards along ``dim``; backward reduce-scatters the summed gradient.
+
+    torch.distributed.nn.all_gather's gloo backward scatters from group ranks as if they were global
+    ranks, so it fails on every CP group but the first under DP x CP.
+    """
+    from ..context_parallel import _GatherSequence
+
+    out = _GatherSequence.apply(
+        x.movedim(dim, 1), group, dist.get_rank(group), dist.get_world_size(group)
+    )
+    return out.movedim(1, dim)
 
 
 def _attn_chunk() -> int:
@@ -238,15 +251,15 @@ def ulysses_deepseek_v4_forward(
 
     # Scatter query heads across cp ranks and gather full sequence [B, H/cp, S_full, D].
     q = _AllToAll.apply(q, 1, 2, group)
-    # Gather single-head KV across sequence [B, 1, S_full, D]; _AllGather backward
-    # sums gradients across all head-partitioned ranks back to each rank's token shard.
-    kv = torch.cat(dist_nn.all_gather(kv.contiguous(), group = group), dim = 2)
+    # Gather single-head KV across sequence [B, 1, S_full, D]; backward sums the gradients
+    # of all head-partitioned ranks back to each rank's token shard.
+    kv = _gather_seq(kv, group, dim = 2)
 
     local_heads = q.shape[1]
     block_bias = None
     if module.compressor is not None:
-        full_hidden = torch.cat(dist_nn.all_gather(hidden_states.contiguous(), group = group), dim = 1)
-        full_q_res = torch.cat(dist_nn.all_gather(q_residual.contiguous(), group = group), dim = 1)
+        full_hidden = _gather_seq(hidden_states, group)
+        full_q_res = _gather_seq(q_residual, group)
         pos_local = position_ids.contiguous()
         pos_list = [torch.empty_like(pos_local) for _ in range(cp)]
         dist.all_gather(pos_list, pos_local, group = group)
