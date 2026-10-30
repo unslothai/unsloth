@@ -157,7 +157,12 @@ def test_sft_still_auto_enables_padding_free_for_dense(monkeypatch, capsys, mode
 
 @pytest.mark.parametrize(
     "name",
-    ["DeepseekV4CSACompressor", "DeepseekV4HCACompressor", "ZayaCCAProjection", "RecurrentGemmaRglru"],
+    [
+        "DeepseekV4CSACompressor",
+        "DeepseekV4HCACompressor",
+        "ZayaCCAProjection",
+        "RecurrentGemmaRglru",
+    ],
 )
 def test_boundary_blocker_matches_modules_and_string_model_types(name):
     from unsloth.utils.packing import packing_boundary_blocker
