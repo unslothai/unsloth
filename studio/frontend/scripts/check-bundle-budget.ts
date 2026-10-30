@@ -443,17 +443,17 @@ export const BUDGET = {
   // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
   // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
   // the eager English catalog and its search rows. Raised by that.
-  // DPO, ORPO and GRPO in Studio (#12601): +28,389 B raw / +8,956 B transfer over main at 4089c57a82 (5,373,852 ->
-  // 5,402,241 B raw, 1,661,918 -> 1,670,874 B transfer, Node 26, 78 chunks): the RL strings in the eager catalog
+  // DPO, ORPO and GRPO in Studio (#12601): +28,688 B raw / +9,032 B transfer over main at 4089c57a82 (5,373,852 ->
+  // 5,402,540 B raw, 1,661,918 -> 1,670,950 B transfer, Node 26, 78 chunks): the RL strings in the eager catalog
   // and the RL settings and role mapping in the eager training store. Raised by that growth.
-  // Python rewards (#12995): +4,364 B raw / +1,452 B transfer over #12601 (5,402,241 -> 5,406,605 B raw,
-  // 1,670,874 -> 1,672,326 B transfer, Node 26): the isolation switch, Start gating and per-reward Try it
+  // Python rewards (#12995): +4,364 B raw / +1,455 B transfer over #12601 (5,402,540 -> 5,406,904 B raw,
+  // 1,670,950 -> 1,672,405 B transfer, Node 26): the isolation switch, Start gating and per-reward Try it
   // errors in the eager rewards section and catalog. Raised by that growth.
-  // Sample answers (#12999): +1,175 B raw / +386 B transfer over #12995 (5,406,605 -> 5,407,780 B raw,
-  // 1,672,326 -> 1,672,712 B transfer, Node 26): the sample card's strings in the eager catalog and the
+  // Sample answers (#12999): +1,175 B raw / +371 B transfer over #12995 (5,406,904 -> 5,408,079 B raw,
+  // 1,672,405 -> 1,672,776 B transfer, Node 26): the sample card's strings in the eager catalog and the
   // run's objective in the run-config override. Raised by that growth.
-  transferBytes: 1_861_204,
-  rawBytes: 6_025_318,
+  transferBytes: 1_861_268,
+  rawBytes: 6_025_617,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.
