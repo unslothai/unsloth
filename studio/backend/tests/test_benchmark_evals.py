@@ -619,17 +619,32 @@ MC2_RESULTS = {
     "results": {"truthfulqa_mc2": {"alias": "truthfulqa_mc2", "acc,none": 0.48}},
     "samples": {
         "truthfulqa_mc2": [
-            {"doc_id": 0, "doc": {"question": "q0"}, "target": 0, "filtered_resps": [], "acc": 0.73},
-            {"doc_id": 1, "doc": {"question": "q1"}, "target": 0, "filtered_resps": [], "acc": 0.23},
+            {
+                "doc_id": 0,
+                "doc": {"question": "q0"},
+                "target": 0,
+                "filtered_resps": [],
+                "acc": 0.73,
+            },
+            {
+                "doc_id": 1,
+                "doc": {"question": "q1"},
+                "target": 0,
+                "filtered_resps": [],
+                "acc": 0.23,
+            },
         ]
     },
 }
 
 
 @pytest.mark.parametrize(
-    "results,task,partial", [(MC2_RESULTS, "truthfulqa_mc2", True), (ARC_RESULTS, "arc_easy", False)]
+    "results,task,partial",
+    [(MC2_RESULTS, "truthfulqa_mc2", True), (ARC_RESULTS, "arc_easy", False)],
 )
-def test_partial_credit_runs_are_not_reported_as_accuracy(monkeypatch, tmp_path, results, task, partial):
+def test_partial_credit_runs_are_not_reported_as_accuracy(
+    monkeypatch, tmp_path, results, task, partial
+):
     # truthfulqa_mc2 scores each sample with a probability mass under "acc"; counting
     # samples at 1.0 would report 0% accuracy for a 48% run.
     from storage import studio_db
@@ -659,7 +674,8 @@ def test_an_eval_and_a_sweep_never_share_the_server(monkeypatch):
     monkeypatch.setattr(lease_routes, "_lease", None)
     seen = {}
     backend = _orchestrator(
-        monkeypatch, lambda params: seen.setdefault("lease", lease_routes._lease) and {"results": {}}
+        monkeypatch,
+        lambda params: seen.setdefault("lease", lease_routes._lease) and {"results": {}},
     )
     monkeypatch.setattr(benchmark_routes, "get_benchmark_backend", lambda: backend)
     monkeypatch.setattr(orch, "_orchestrator", backend)
