@@ -4819,6 +4819,8 @@ export const cs = {
     edit: "Upravit",
     options: "Možnosti úlohy",
     schedule: {
+      hourly: "Každou hodinu",
+      everyHours: "Každých {hours} h",
       once: "Jednou, {date} v {time}",
       daily: "Každý den v {time}",
       weekdays: "Každý pracovní den v {time}",
@@ -4826,6 +4828,9 @@ export const cs = {
       monthly: "Každý měsíc, den {day}, v {time}",
     },
     form: {
+      hourly: "Každou hodinu",
+      intervalHours: "Interval (hodiny)",
+      hourlyNote: "První spuštění proběhne jeden interval po uložení. Změna intervalu nebo obnovení spustí čekání znovu.",
       createTitle: "Naplánovat úlohu",
       editTitle: "Upravit naplánovanou úlohu",
       name: "Název",

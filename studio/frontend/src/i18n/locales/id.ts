@@ -4803,6 +4803,8 @@ export const id = {
     edit: "Edit",
     options: "Opsi tugas",
     schedule: {
+      hourly: "Setiap jam",
+      everyHours: "Setiap {hours} jam",
       once: "Sekali, {date} pukul {time}",
       daily: "Setiap hari pukul {time}",
       weekdays: "Setiap hari kerja pukul {time}",
@@ -4810,6 +4812,9 @@ export const id = {
       monthly: "Setiap bulan pada tanggal {day} pukul {time}",
     },
     form: {
+      hourly: "Per jam",
+      intervalHours: "Interval (jam)",
+      hourlyNote: "Eksekusi pertama dimulai satu interval setelah disimpan. Mengubah interval atau melanjutkan akan memulai ulang waktu tunggu.",
       createTitle: "Jadwalkan tugas",
       editTitle: "Edit tugas terjadwal",
       name: "Nama",

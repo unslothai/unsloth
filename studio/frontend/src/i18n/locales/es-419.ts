@@ -4883,6 +4883,8 @@ export const es419 = {
     edit: "Editar",
     options: "Opciones de la tarea",
     schedule: {
+      hourly: "Cada hora",
+      everyHours: "Cada {hours} horas",
       once: "Una vez, el {date} a las {time}",
       daily: "Todos los días a las {time}",
       weekdays: "Entre semana a las {time}",
@@ -4890,6 +4892,9 @@ export const es419 = {
       monthly: "Cada mes el día {day} a las {time}",
     },
     form: {
+      hourly: "Cada hora",
+      intervalHours: "Intervalo (horas)",
+      hourlyNote: "La primera ejecución ocurre un intervalo después de guardar. Cambiar el intervalo o reanudar reinicia la espera.",
       createTitle: "Programar una tarea",
       editTitle: "Editar tarea programada",
       name: "Nombre",

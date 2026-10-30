@@ -4529,6 +4529,8 @@ export const zhTW = {
     edit: "編輯",
     options: "任務選項",
     schedule: {
+      hourly: "每小時",
+      everyHours: "每 {hours} 小時",
       once: "一次，{date} {time}",
       daily: "每天 {time}",
       weekdays: "每個工作日 {time}",
@@ -4536,6 +4538,9 @@ export const zhTW = {
       monthly: "每月 {day} 日 {time}",
     },
     form: {
+      hourly: "每小時",
+      intervalHours: "間隔（小時）",
+      hourlyNote: "首次執行會在儲存後經過一個間隔開始。變更間隔或繼續執行會重新開始等待。",
       createTitle: "排程任務",
       editTitle: "編輯排程任務",
       name: "名稱",
