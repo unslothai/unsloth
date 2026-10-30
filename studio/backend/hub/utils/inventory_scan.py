@@ -38,6 +38,7 @@ from hub.utils.hf_tokens import (
 from hub.utils.host_paths import scrub_paths, short_path_for_log
 from hub.utils.state_dir import RepoType
 
+from hub.utils import partial_verdict_cache
 from hub.utils.hf_cache_state import (
     has_incomplete_blobs,
     hf_cache_roots,
@@ -101,6 +102,7 @@ def invalidate_hf_cache_scans(*, sizes: bool = True) -> None:
         _hf_cache_scans_cached_at = 0.0
         _hf_cache_scans_epoch += 1
         invalidate_scan_memos()
+    partial_verdict_cache.invalidate()
     # Settings may answer a slow cache from its last walk; a download or delete must not show the old size.
     if sizes:
         try:
@@ -1799,6 +1801,23 @@ def is_gguf_repo_partial(
         else:
             has_clean = True
     return has_broken and not has_clean
+
+
+def repo_listing_partial(
+    repo_id: str,
+    repo_cache_dir: Path,
+    *,
+    variant_state = None,
+) -> bool:
+    """The local listing's row verdict: ``is_snapshot_partial`` or ``is_gguf_repo_partial`` on the repo's own cache dir, reused across requests while the repo dir and the Hub state are unchanged (see :mod:`hub.utils.partial_verdict_cache`)."""
+
+    def compute() -> bool:
+        return is_snapshot_partial(
+            "model", repo_id, repo_cache_dir, variant_state = variant_state
+        ) or is_gguf_repo_partial(repo_id, repo_cache_dir, variant_state = variant_state)
+
+    key = ("listing", repo_id, variant_state is None, is_snapshot_partial, is_gguf_repo_partial)
+    return partial_verdict_cache.cached_verdict(key, repo_cache_dir, compute)
 
 
 def partial_transport_for(
