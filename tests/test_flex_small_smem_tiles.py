@@ -315,19 +315,23 @@ def test_wrapper_training_calls_add_no_sequence_guard(monkeypatch):
     assert graphs_for(True) == graphs_for(False)
 
 
-@pytest.mark.parametrize(
-    "requested,backend",
-    [({"BACKEND": "AUTO"}, "TRITON"), ({"BACKEND": "FLASH"}, "FLASH")],
-)
-def test_wrapper_forced_short_prompt_never_sends_backend_with_force(
-    monkeypatch, requested, backend
-):
+def test_wrapper_forced_short_prompt_auto_backend_becomes_triton(monkeypatch):
     # torch 2.10+ rejects BACKEND together with the legacy FORCE_USE_FLEX_ATTENTION ("BACKEND
     # cannot be combined with legacy FORCE_USE_FLEX_ATTENTION"). AUTO leaves the kernel to us, so the
-    # forced main kernel becomes BACKEND="TRITON"; an explicit backend is kept.
+    # forced main kernel becomes BACKEND="TRITON" with our tiles.
     wrapped, seen = _wrapped(monkeypatch)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
-    wrapped(_Causal(), *_gqa_qkv(28, 4, 1), object(), kernel_options = dict(requested))
+    wrapped(_Causal(), *_gqa_qkv(28, 4, 1), object(), kernel_options = {"BACKEND": "AUTO"})
     assert "FORCE_USE_FLEX_ATTENTION" not in seen
-    assert seen["BACKEND"] == backend
+    assert seen["BACKEND"] == "TRITON"
     assert seen["fwd_BLOCK_M"] == 64
+
+
+@pytest.mark.parametrize("backend", ["TRITON_DECODE", "FLASH"])
+def test_wrapper_forced_short_prompt_keeps_explicit_backend_untouched(monkeypatch, backend):
+    # An explicit backend other than the main kernel is the caller's choice: our main-kernel tiles
+    # (64 query rows) would make flex_decoding compute only the first 64 of 112 rows on torch 2.10.
+    wrapped, seen = _wrapped(monkeypatch)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    wrapped(_Causal(), *_gqa_qkv(28, 4, 1), object(), kernel_options = {"BACKEND": backend})
+    assert seen == {"BACKEND": backend}
