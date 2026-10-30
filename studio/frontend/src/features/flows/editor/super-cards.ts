@@ -511,7 +511,16 @@ export function foldLayout(
 
 /** Cmd-click on a Mac, Ctrl-click elsewhere (React Flow's own default), plus Shift. */
 export function multiSelectKeys(platform: string): string[] {
-  return /mac|iphone|ipad/i.test(platform)
-    ? ["Meta", "Shift"]
-    : ["Control", "Shift"];
+  return isApplePlatform(platform) ? ["Meta", "Shift"] : ["Control", "Shift"];
+}
+
+export function isApplePlatform(platform: string): boolean {
+  return /mac|iphone|ipad/i.test(platform);
+}
+
+/** A Mac turns Ctrl-click into a right-click, so React Flow never sees it; add or drop the card here. */
+export function toggledSelection(selected: readonly string[], id: string): string[] {
+  return selected.includes(id)
+    ? selected.filter((other) => other !== id)
+    : [...selected, id];
 }

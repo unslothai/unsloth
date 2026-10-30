@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { catalog, doc, edge, node, specs } from "./flows-editor-fixtures.ts";
@@ -430,4 +431,15 @@ test("a note in one card's folded frame stays with that card where another card'
     ).folded.map((f) => f.id);
   assert.ok(folded("super:sc1").includes("note:edge"));
   assert.ok(!folded("super:sc2").includes("note:edge"));
+});
+
+test("a Mac's Ctrl-click (a right-click to the browser) adds or drops a card from the selection", async () => {
+  const { toggledSelection, isApplePlatform } = await import("../src/features/flows/editor/super-cards.ts");
+  assert.deepEqual(toggledSelection(["a"], "b"), ["a", "b"]);
+  assert.deepEqual(toggledSelection(["a", "b"], "a"), ["b"]);
+  assert.deepEqual(toggledSelection([], "a"), ["a"]);
+  assert.equal(isApplePlatform("MacIntel"), true);
+  assert.equal(isApplePlatform("Win32"), false);
+  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
+  assert.match(canvas, /onNodeContextMenu=\{\(event, node\) => \{\s*if \(!APPLE \|\| !event\.ctrlKey\) return;\s*event\.preventDefault\(\);/);
 });

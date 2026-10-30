@@ -52,9 +52,11 @@ import {
   useSuperCardView,
 } from "./super-card-node";
 import {
-  SUPER_PREFIX,
+  isApplePlatform,
   multiSelectKeys,
+  SUPER_PREFIX,
   superCardDragMembers,
+  toggledSelection,
 } from "./super-cards";
 import { FlowEdgeView } from "./flow-edge";
 import { FlowNodeView } from "./flow-node";
@@ -73,9 +75,9 @@ const SNAP_GRID: [number, number] = [16, 16];
 const VISIBLE_ONLY_THRESHOLD = 300;
 const PRO_OPTIONS = { hideAttribution: true };
 const DELETE_KEYS = ["Delete", "Backspace"];
-const MULTI_SELECT_KEYS = multiSelectKeys(
-  typeof navigator === "undefined" ? "" : navigator.platform,
-);
+const PLATFORM = typeof navigator === "undefined" ? "" : navigator.platform;
+const MULTI_SELECT_KEYS = multiSelectKeys(PLATFORM);
+const APPLE = isApplePlatform(PLATFORM);
 const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.1 };
 
 type Size = { width: number; height: number };
@@ -501,6 +503,12 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         connectionMode={ConnectionMode.Strict}
         deleteKeyCode={readOnly ? null : DELETE_KEYS}
         multiSelectionKeyCode={MULTI_SELECT_KEYS}
+        onNodeContextMenu={(event, node) => {
+          if (!APPLE || !event.ctrlKey) return;
+          event.preventDefault();
+          const ui = useUiStore.getState();
+          ui.setSelection(toggledSelection(ui.selectedNodes, node.id), ui.selectedEdges);
+        }}
         selectionMode={SelectionMode.Partial}
         selectionOnDrag={false}
         panOnDrag={true}
