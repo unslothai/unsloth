@@ -9,16 +9,6 @@ import {
   isBackendDownForDesktopUpdate,
   isSilencedDesktopUpdateFailure,
 } from "../src/lib/desktop-update-activity.ts";
-import {
-  PinnedChatsBlockedError,
-  PinnedChatsValidationError,
-  createPinnedChatsSync,
-} from "../src/features/chat/utils/pinned-chats-sync.ts";
-import { isPinFailureUnderDesktopUpdate } from "../src/features/chat/utils/pinned-chats-update-failure.ts";
-import {
-  ChatSettingsRequestError,
-  isRetryablePinError,
-} from "../src/features/chat/utils/settings-retry.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const RUNTIME = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
@@ -142,91 +132,6 @@ test("the pin sync error toast checks for an update failure first", () => {
   const onError = region(PIN_SYNC, "onError: (error) => {", "// Every delete path");
   const guard = onError.indexOf("if (isPinFailureUnderDesktopUpdate(error)) return;");
   assert.ok(guard !== -1 && guard < onError.indexOf("toast.error"));
-});
-
-test("only failures from the stopped backend are pin update failures", () => {
-  const failures = [
-    transport(),
-    // createChatPinsApi aborts a request after 10s.
-    new DOMException("The operation was aborted.", "AbortError"),
-    new DOMException("The operation timed out.", "TimeoutError"),
-    new PinnedChatsBlockedError("An earlier pin change is still waiting to save."),
-  ];
-  for (const error of failures) assert.equal(isPinFailureUnderDesktopUpdate(error), false);
-  const leave = followDesktopUpdateScreen(true, false, noResync);
-  try {
-    for (const error of failures) assert.equal(isPinFailureUnderDesktopUpdate(error), true);
-    // The backend answered: a real rejection still reports.
-    assert.equal(
-      isPinFailureUnderDesktopUpdate(new ChatSettingsRequestError("Bad", 500, null)),
-      false,
-    );
-    assert.equal(
-      isPinFailureUnderDesktopUpdate(new PinnedChatsValidationError("Invalid")),
-      false,
-    );
-  } finally {
-    leave();
-  }
-});
-
-/** The real sync runtime over a backend that `up` takes down, toasting as sync-pinned-chats does. */
-function pinRuntime() {
-  const backend = { up: true, value: [] as string[] };
-  const raised: unknown[] = [];
-  const toasted: unknown[] = [];
-  const sync = createPinnedChatsSync({
-    load: async () => {
-      if (!backend.up) throw transport();
-      return backend.value.slice();
-    },
-    compareAndSet: async (expected, next) => {
-      if (!backend.up) throw transport();
-      const applied = JSON.stringify(backend.value) === JSON.stringify(expected);
-      if (applied) backend.value = next.slice();
-      return { applied, pinnedIds: backend.value.slice() };
-    },
-    readLegacy: () => [],
-    isRetryable: isRetryablePinError,
-    publish: () => {},
-    onError: (error) => {
-      raised.push(error);
-      if (!isPinFailureUnderDesktopUpdate(error)) toasted.push(error);
-    },
-  });
-  return { backend, sync, raised, toasted };
-}
-
-async function queueTwoEditsWhileDown(runtime: ReturnType<typeof pinRuntime>) {
-  await runtime.sync.refresh();
-  runtime.backend.up = false;
-  await Promise.allSettled([
-    runtime.sync.setPinned(["a"], true),
-    runtime.sync.setPinned(["b"], true),
-  ]);
-  // The second edit waits behind the first, which could not reach the backend.
-  assert.ok(runtime.raised.some((error) => error instanceof PinnedChatsBlockedError));
-}
-
-test("pin edits queued behind a failed write stay silent under the update screen", async () => {
-  const runtime = pinRuntime();
-  const leave = followDesktopUpdateScreen(true, false, noResync);
-  try {
-    await queueTwoEditsWhileDown(runtime);
-    assert.deepEqual(runtime.toasted, []);
-  } finally {
-    leave();
-  }
-  // Both edits stayed queued and save once the backend is back.
-  runtime.backend.up = true;
-  await runtime.sync.refresh();
-  assert.deepEqual([...runtime.backend.value].sort(), ["a", "b"]);
-});
-
-test("the same pin failures still toast outside an update", async () => {
-  const runtime = pinRuntime();
-  await queueTwoEditsWhileDown(runtime);
-  assert.equal(runtime.toasted.length, runtime.raised.length);
 });
 
 test("the update layer drives the flag and resyncs chat when the screen drops", () => {

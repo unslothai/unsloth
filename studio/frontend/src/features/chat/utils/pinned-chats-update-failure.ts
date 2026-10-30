@@ -7,15 +7,37 @@ import {
 } from "../../../lib/desktop-update-activity.ts";
 import { PinnedChatsBlockedError } from "./pinned-chats-sync.ts";
 
-/** A pin sync failure caused by the backend the desktop update stopped: no toast under its screen. */
-export function isPinFailureUnderDesktopUpdate(error: unknown): boolean {
-  const down = isBackendDownForDesktopUpdate();
+// Judged when the request fails: the queue reports after a recovery read, by when the flag may be gone.
+const failedUnderUpdate = new WeakSet<object>();
+
+function unreachable(error: unknown, down: boolean): boolean {
   return (
     isSilencedDesktopUpdateFailure(error, down) ||
+    // The pins API aborts at 10s.
     (down &&
-      // The pins API aborts at 10s; a blocked queue entry waits on the request that failed.
-      (error instanceof PinnedChatsBlockedError ||
-        (error instanceof Error &&
-          (error.name === "AbortError" || error.name === "TimeoutError"))))
+      error instanceof Error &&
+      (error.name === "AbortError" || error.name === "TimeoutError"))
   );
+}
+
+/** Called by the pins API for every failed request, with the flag as it was at issue. */
+export function notePinRequestFailure(error: unknown, downWhenIssued: boolean): void {
+  const down = downWhenIssued || isBackendDownForDesktopUpdate();
+  if (typeof error === "object" && error !== null && unreachable(error, down)) {
+    failedUnderUpdate.add(error);
+  }
+}
+
+/** A pin sync failure caused by the backend the desktop update stopped: no toast for it. */
+export function isPinFailureUnderDesktopUpdate(error: unknown): boolean {
+  if (error instanceof PinnedChatsBlockedError) {
+    // Blocked behind an earlier intent: its failure decides, else the update screen itself.
+    return error.cause === undefined
+      ? isBackendDownForDesktopUpdate()
+      : isPinFailureUnderDesktopUpdate(error.cause);
+  }
+  if (typeof error === "object" && error !== null && failedUnderUpdate.has(error)) {
+    return true;
+  }
+  return unreachable(error, isBackendDownForDesktopUpdate());
 }

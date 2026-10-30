@@ -32,7 +32,7 @@ export interface PinnedChatsSyncOptions {
 
 export class PinnedChatsValidationError extends Error {}
 
-/** A queued intent behind one that has not saved yet; that earlier failure is the real one. */
+/** A queued intent behind one that has not saved yet; `cause` is that one's failure, when known. */
 export class PinnedChatsBlockedError extends Error {}
 
 export function isValidPinId(value: unknown): value is string {
@@ -122,6 +122,8 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
   const scheduled = new Map<string, Promise<void>>();
   // A response arrived, but removing its journal entry may still need retrying.
   const acknowledged = new Set<string>();
+  // The cause handed to intents blocked behind the failed one.
+  let lastFailure: { operationId: string; error: unknown } | undefined;
 
   function publish() {
     options.publish(pending.reduce(applyPinOperation, confirmed ?? []));
@@ -318,9 +320,11 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
     if (!pending.some((entry) => entry.operationId === operation.operationId)) {
       return;
     }
-    if (pending[0]?.operationId !== operation.operationId) {
+    const head = pending[0]?.operationId;
+    if (head !== operation.operationId) {
       throw new PinnedChatsBlockedError(
         "An earlier pin change is still waiting to save.",
+        { cause: lastFailure?.operationId === head ? lastFailure.error : undefined },
       );
     }
     try {
@@ -334,6 +338,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       if (epoch !== generation) {
         return;
       }
+      lastFailure = { operationId: operation.operationId, error };
       await recover(operation, error, epoch);
       throw error;
     }
@@ -443,6 +448,7 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       refreshing = undefined;
       scheduled.clear();
       acknowledged.clear();
+      lastFailure = undefined;
       publish();
       if (clearPending) {
         persist([]);
