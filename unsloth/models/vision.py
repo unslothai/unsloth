@@ -5691,8 +5691,7 @@ class FastBaseModel:
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
-        # The compiled forwards switch to eager_on_recompile after one inference forward. A count left
-        # at 1 (a 1-token generate) would switch right after this prefill, so decode never compiled.
+        # A count left at 1 by a 1-token generate would go eager right after the next prefill.
         if unsloth_reset_inference_runs is not None:
             unsloth_reset_inference_runs()
         return model

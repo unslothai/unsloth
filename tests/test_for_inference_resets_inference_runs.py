@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""FastBaseModel.for_inference (every generate()) must restart unsloth_zoo's inference forward count.
-
-The compiled forwards switch Dynamo to eager_on_recompile once one inference forward has run. The
-count was never reset between generates, so a max_new_tokens=1 generate left it at 1 and the next
-generate switched right after its prefill: a decode graph not compiled yet then ran eagerly for
-every step. Runs without ``import unsloth``; both a new unsloth_zoo (shared count + reset helper)
-and an older one (a count per compiled module, no helper) are covered.
-"""
+"""for_inference must reset the inference forward count, on new and older unsloth_zoo."""
 
 from __future__ import annotations
 
@@ -25,7 +18,6 @@ COMPILED = "unsloth_compiled_module_inference_runs_fake"
 
 
 def _reset_definition():
-    """The module-level try/except in vision.py that binds unsloth_reset_inference_runs, run as is."""
     tree = ast.parse((MODELS / "vision.py").read_text(encoding = "utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Try) and any(
@@ -45,8 +37,6 @@ def _reset_definition():
 
 
 class _Stance:
-    """Dynamo's process-wide stance, as far as the inference block and for_inference touch it."""
-
     def __init__(self):
         self.stance = "default"
 
@@ -83,7 +73,7 @@ def _install_zoo(monkeypatch, new_zoo):
 
 
 def _compiled_module(monkeypatch, stance, utils, new_zoo):
-    """A generated module's logits-site block (unsloth_zoo compiler.__DYNAMO__RECOMPILING__), per zoo."""
+    """Mimics unsloth_zoo compiler.__DYNAMO__RECOMPILING__."""
     module = types.ModuleType(COMPILED)
     module.INFERENCE_RUNS = 0
     monkeypatch.setitem(sys.modules, COMPILED, module)
@@ -91,7 +81,7 @@ def _compiled_module(monkeypatch, stance, utils, new_zoo):
     stances = []
 
     def forward():
-        stances.append(stance.stance)  # what the decoder body runs under
+        stances.append(stance.stance)
         count = runs[0] if new_zoo else module.INFERENCE_RUNS
         if count == 1:
             if stance.stance != "eager_on_recompile":
@@ -121,7 +111,6 @@ def setup(request, monkeypatch):
         namespace["unsloth_reset_inference_runs"] = reset
 
     def generate(max_new_tokens):
-        # unsloth_base_fast_generate: for_inference, then one forward per new token.
         fbm.for_inference(_Model())
         stances.clear()
         for _ in range(max_new_tokens):
