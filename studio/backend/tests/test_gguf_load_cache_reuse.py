@@ -1223,6 +1223,7 @@ class TestLoadHubDownloadExclusion:
             "audio_server_task",
             "audio_convert",
             "audio_convert_route",
+            "audio_clone",
             "audio_music",
         }
         unresolved = sorted(

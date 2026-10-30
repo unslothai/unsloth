@@ -1676,6 +1676,10 @@ class _InferenceRuntimeFields(BaseModel):
     audio_convert_route: Optional[str] = Field(
         None, description = "Seed-VC route the running server was started with."
     )
+    audio_clone: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Clone rules (transcript, emotion clip, voice description); None when it does not clone.",
+    )
 
     @model_validator(mode = "after")
     def derive_audio_workflows(self):

@@ -362,6 +362,8 @@ export interface InferenceStatusResponse {
   audio_device_fallback?: "cpu" | null;
   /** Unknown-shaped on purpose: validated by parseMusicCapabilities. */
   audio_music?: unknown;
+  /** Unknown-shaped on purpose: audioModelContextFor reads only what it needs. */
+  audio_clone?: unknown;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   /** Answers a spoken question in its own voice when asked for modalities ["text", "audio"]. */
