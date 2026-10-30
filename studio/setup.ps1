@@ -2141,11 +2141,9 @@ main()
             else { $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = $savedSkip }
         }
         if (-not $proc) { return "" }
-        # -InputObject and an error variable, never $proc.Id or $proc.HasExited. Constrained
-        # Language Mode permits property reads only on its allowed type list and
-        # System.Diagnostics.Process is not on it, so reading either one throws on exactly the
-        # hosts this rung exists for. Handing the object to a cmdlet keeps the access inside
-        # compiled code, where the language mode does not reach.
+        # Wait-Process takes the process as -InputObject with an error variable, never $proc.Id or
+        # $proc.HasExited, since Constrained Language Mode blocks Process property reads while
+        # cmdlets run compiled code.
         $waitError = $null
         Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError
         if ($waitError) {
@@ -3461,10 +3459,9 @@ function Test-MasterRootNoteIsHonoured {
         Write-StudioLine "        UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
         return $false
     }
-    # A note must describe the tree it is written into: every reader requires the Studio
-    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot aim
-    # a removal at the original install. A split layout, with the runtimes under the master root
-    # and Studio outside it, is that shape: say so, rather than leave a note no reader honours.
+    # A note must describe the tree it sits in: readers require the Studio directory to lie inside
+    # the named root, so a copied tree cannot aim removal at the original; a split layout must say
+    # so.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true
@@ -3636,14 +3633,9 @@ function Get-NvidiaSmiCandidatePaths {
     if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
     $pfx86 = ${env:ProgramFiles(x86)}
     if ($pfx86) { $dirs += (Join-Path $pfx86 "NVIDIA Corporation\NVSMI") }
-    # Bounded on purpose. FileRepository holds every driver package the machine has ever had.
-    #
-    # The bound is applied to directories that ACTUALLY HOLD the binary, not to the nv* matches.
-    # NVIDIA ships several packages whose names start nv (HD audio, the virtual audio device,
-    # the network service), so a host with eight of those newer than the display driver would
-    # otherwise spend the whole allowance on directories with no nvidia-smi in them and report
-    # the machine as having none. Test-Path is a file existence check, not a process spawn; the
-    # bound that matters is on the candidates handed back, since each of those costs a probe.
+    # Bounded on the driver directories that actually hold nvidia-smi.exe, not the nv-prefixed
+    # matches, since other nv packages would exhaust the bound; each returned candidate costs a
+    # probe.
     try {
         $repos = @()
         if ($env:SystemRoot) {
@@ -6207,9 +6199,8 @@ function Get-WoaDependencyIndexArgs {
     $pip = ($Resolver -eq "pip")
     $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
     $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
-    # Each variable by its owner's rule, and they are not symmetric. PIP_NO_INDEX is
-    # pip's and pip really reads it, so naming no index here matches what pip will
-    # then do. UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
+    # Each variable follows its owner's rule: pip really reads PIP_NO_INDEX, so naming no index
+    # matches what pip does, while UV_NO_INDEX is ours alone, so that arm honours the operator.
     $noIndexRequested = if ($pip) { Test-PipEnvFlag "PIP_NO_INDEX" } else { Test-NoIndexRequested }
     if ($noIndexRequested) { return @() }
     $default = $null
@@ -7198,9 +7189,8 @@ function Find-InstalledUv {
     return $null
 }
 
-# The floor a found uv has to clear: install.ps1's UvMinVersion, so reuse accepts exactly what
-# the Windows installer accepts. Below 0.13.4 uv's bundled roots still trust the compromised
-# emSign CAs (GHSA-hq85-5cpj-mr62).
+# The floor a found uv must clear, matching install.ps1 UvMinVersion; below 0.13.4 uv's bundled
+# roots still trust the compromised emSign CAs (GHSA-hq85-5cpj-mr62).
 $SetupUvMinVersion = "0.13.4"
 
 function Test-SetupUvVersionAtLeast {
@@ -7229,10 +7219,9 @@ function Get-InstalledUvVerdict {
     return $verdict
 }
 
-# Try to use uv (much faster than pip), fall back to pip if unavailable
-# A uv on PATH below the floor is passed over like an installed one, and kept only when the
-# download fails (offline). One that hangs, fails or answers no version counts as old. A staged run
-# never downloads: it keeps the old uv, as before, behind the Windows trust store.
+# A uv on PATH below the floor is passed over unless the download fails offline; a hang or
+# unreadable version counts as old; a staged run never downloads and keeps the old uv behind the
+# Windows trust store.
 function Get-SetupPathUvTooOld {
     $pathUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $pathUv) { return $null }
@@ -9330,9 +9319,8 @@ if ($LocalLlamaCppLinked) {
 # ==========================================================================
 #  PHASE 3.4: Install the whisper.cpp prebuilt (dictation runtime)
 # ==========================================================================
-# Mirrors the llama.cpp prebuilt install above; current whisper releases are
-# slim bundles that reuse the llama install's ggml runtime, so this runs after
-# llama. Failure is never fatal: local dictation falls back to Transformers STT.
+# Runs after llama because current whisper releases are slim bundles reusing its ggml runtime;
+# failure is never fatal, as local dictation falls back to Transformers STT.
 $WhisperCppDir = Join-Path $UnslothHome "whisper.cpp"
 $WhisperInstaller = Join-Path $PSScriptRoot "install_whisper_prebuilt.py"
 # A user-configured whisper binary/dir or an explicit skip disables the managed install entirely.
