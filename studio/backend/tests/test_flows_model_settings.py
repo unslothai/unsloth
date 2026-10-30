@@ -447,3 +447,17 @@ def test_the_resident_quant_is_probed_only_for_a_model_unset_card_that_follows_s
     assert not calls
     asyncio.run(engine._probe_resident_variant(rs, ["a", "b"]))
     assert len(calls) == 1 and rs.resident_variant == {"llm": "Q8_0"}
+
+
+def test_a_model_unset_card_runs_before_cards_that_switch_to_another_repo(monkeypatch):
+    other = {"repo": "unsloth/gemma-3-4b-it-GGUF", "variant": None}
+    opts = model_settings.load_kwargs({"max_seq_length": 32768}, is_gguf = True)
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())})
+    unset = {"load": {"max_seq_length": 8192}}
+    plan = _plan({"a": unset, "b": {"model": other}, "c": {"model": other}})
+    rs = SimpleNamespace(plan = plan, resident = {"llm": GGUF})
+    engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
+    # The two Gemma cards outnumber it, but loading Gemma first would change what the unset card runs on.
+    assert engine._pick_gpu(rs, ["b", "c", "a"]) == "a"
+    rs.plan = _plan({"b": {"model": other}, "c": {"model": other}})
+    assert engine._pick_gpu(rs, ["b", "c"]) == "b"

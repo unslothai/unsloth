@@ -1721,12 +1721,20 @@ class FlowEngine:
                     return nid
             elif resident == repo and load_of(nid) == loaded_with(slot, repo):
                 return nid
+        # A Model-unset card runs on whatever is loaded, so nothing that switches its slot to another repo goes first.
+        unset = {model_of(nid)[0] for nid in ready if not model_of(nid)[1]}
+
+        def switches(nid: str) -> bool:
+            slot, repo = model_of(nid)
+            return bool(slot in unset and repo and repo != (rs.resident.get(slot) or "").lower())
+
+        pool = [nid for nid in ready if not switches(nid)]
         counts: dict[tuple, int] = {}
-        for nid in ready:
+        for nid in pool:
             key = (*model_of(nid), load_of(nid))
             counts[key] = counts.get(key, 0) + 1
         best = max(counts.values())
-        return next(n for n in ready if counts[(*model_of(n), load_of(n))] == best)
+        return next(n for n in pool if counts[(*model_of(n), load_of(n))] == best)
 
     def _gather_inputs(self, rs: RunState, nid: str, env: Env) -> tuple[dict, Optional[str]]:
         plan = rs.plan
