@@ -97,6 +97,4 @@ def test_a_granted_shared_blob_resident_is_visible(monkeypatch, tmp_path):
     granted = {access._grant_key("org/private", "model")}
     assert access.model_visible(str(pointer), grants = granted)
     assert not access.model_visible(str(pointer), grants = set())
-    assert not access.model_visible(
-        str(pointer), grants = {access._grant_key("org/other", "model")}
-    )
+    assert not access.model_visible(str(pointer), grants = {access._grant_key("org/other", "model")})

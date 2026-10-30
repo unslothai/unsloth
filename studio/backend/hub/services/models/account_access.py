@@ -978,9 +978,7 @@ def _model_visible(reference: str, grants, repo_type: str, offline: bool) -> boo
                 own = actual == cached or (
                     cached[1] == "model" and _is_own_shared_blob(path, cached, resolved)
                 )
-                return own and repo_visible(
-                    cached[0], cached[1], grants = grants, **access_options
-                )
+                return own and repo_visible(cached[0], cached[1], grants = grants, **access_options)
         except (OSError, RuntimeError, ValueError):
             return False
         return False
