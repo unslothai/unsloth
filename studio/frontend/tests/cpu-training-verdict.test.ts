@@ -10,14 +10,22 @@ import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { trainsOnCpu, videoNavHint } = await import("../src/config/hardware-verdict.ts");
+const { trainsOnCpu, videoNavHint } = await import(
+  "../src/config/hardware-verdict.ts"
+);
 const { en } = await import("../src/i18n/locales/en.ts");
 
 test("only a no_gpu verdict with cpu_training trains on the CPU", () => {
   assert.equal(trainsOnCpu("no_gpu", true), true);
   assert.equal(trainsOnCpu("no_gpu", false), false);
   // no_torch with cpu_training is a Chat only install: the full install trains on CPU, this one cannot.
-  for (const reason of ["no_torch", "torch_cpu_build", "torch_cuda_unavailable", "intel_mac", null]) {
+  for (const reason of [
+    "no_torch",
+    "torch_cpu_build",
+    "torch_cuda_unavailable",
+    "intel_mac",
+    null,
+  ]) {
     assert.equal(trainsOnCpu(reason, true), false, String(reason));
   }
 });
@@ -36,8 +44,14 @@ test("the health verdict carries cpu_training into the platform store", () => {
   const env = readSrc("config/env.ts");
   assert.match(env, /cpu_training\?: boolean;/);
   assert.match(env, /cpuTraining: false,/);
-  assert.match(env, /data\.cpu_training === undefined \? previous\.cpuTraining/);
-  assert.match(env, /isTrainUnavailable: \(\) => \{[\s\S]*?trainsOnCpu\(state\.chatOnlyReason, state\.cpuTraining\)/);
+  assert.match(
+    env,
+    /data\.cpu_training === undefined \? previous\.cpuTraining/,
+  );
+  assert.match(
+    env,
+    /isTrainUnavailable: \(\) => \{[\s\S]*?trainsOnCpu\(state\.chatOnlyReason, state\.cpuTraining\)/,
+  );
 });
 
 test("every Train entry point reads isTrainUnavailable, not isChatOnly", () => {
@@ -49,7 +63,17 @@ test("every Train entry point reads isTrainUnavailable, not isChatOnly", () => {
   ]) {
     assert.match(readSrc(file), /isTrainUnavailable\(\)/, file);
   }
-  assert.match(readSrc("features/studio/studio-page.tsx"), /t\("studio\.cpuTrainingNotice"\)/);
+  assert.match(
+    readSrc("features/studio/studio-page.tsx"),
+    /t\("studio\.cpuTrainingNotice"\)/,
+  );
   assert.match(en.studio.cpuTrainingNotice, /runs on the CPU/);
   assert.match(en.studio.cpuTrainingNotice, /text models only/);
+});
+
+test("the drafter section stays hidden where the CPU backend trains, as on MLX", () => {
+  assert.match(
+    readSrc("features/studio/sections/drafter-section.tsx"),
+    /if \(!store\.eligible \|\| deviceType === "mac" \|\| trainsOnCpu\) \{\n\s*return null;/,
+  );
 });
