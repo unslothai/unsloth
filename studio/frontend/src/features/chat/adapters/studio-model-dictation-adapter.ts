@@ -598,10 +598,17 @@ export function unloadSttModel(
 export async function keepSttModelAlive(
   engine?: SttEngine,
   model?: string,
+  keepAliveSeconds?: number,
 ): Promise<boolean> {
   const params = new URLSearchParams();
   if (engine) params.set("engine", engine);
   if (model) params.set("model", model);
+  if (
+    typeof keepAliveSeconds === "number" &&
+    Number.isFinite(keepAliveSeconds)
+  ) {
+    params.set("keep_alive_seconds", String(keepAliveSeconds));
+  }
   const query = params.size ? `?${params}` : "";
   const response = await authFetch(
     `/api/inference/audio/stt/keepalive${query}`,
@@ -612,6 +619,16 @@ export async function keepSttModelAlive(
     held?: boolean;
   } | null;
   return body?.held === true;
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return typeof btoa === "function" ? btoa(binary) : "";
 }
 
 /** Recorded-audio dictation. Short recordings use one pass; long ones split near whisper's 30s
@@ -711,6 +728,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     // transcribed on its own; results are stored by index so the final text keeps
     // its order, while each finished segment is published at once.
     const results: string[] = [];
+    const recordedSegments: SpeechSegment[] = [];
     const queue: { index: number; segment: SpeechSegment }[] = [];
     let worker = false;
     let segCounter = 0;
@@ -749,6 +767,35 @@ export class StudioModelDictationAdapter implements DictationAdapter {
 
     const buildTranscript = () => joinTranscriptParts(results.filter(Boolean));
 
+    const buildSessionAudioDataUrl = (): string | undefined => {
+      if (useVoiceSettingsStore.getState().maxRecentDictations <= 0) {
+        return undefined;
+      }
+      if (recordedSegments.length === 0) return undefined;
+      const sampleRate = recordedSegments[0].sampleRate;
+      const maxSamples = sampleRate * 45; // Cap stored audio at 45s per dictation
+      let totalSamples = 0;
+      for (const seg of recordedSegments) {
+        totalSamples += seg.samples.length;
+      }
+      const length = Math.min(totalSamples, maxSamples);
+      if (length <= 0) return undefined;
+      const combined = new Float32Array(length);
+      let offset = 0;
+      for (const seg of recordedSegments) {
+        if (offset >= length) break;
+        const slice =
+          offset + seg.samples.length > length
+            ? seg.samples.subarray(0, length - offset)
+            : seg.samples;
+        combined.set(slice, offset);
+        offset += slice.length;
+      }
+      const wavBuffer = encodeWav(combined, sampleRate);
+      const base64 = uint8ToBase64(new Uint8Array(wavBuffer));
+      return base64 ? `data:audio/wav;base64,${base64}` : undefined;
+    };
+
     const stopCapture = () => {
       const active = capture;
       capture = null;
@@ -777,7 +824,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       const corrected =
         reason === "cancelled" ? "" : (transcript ?? buildTranscript());
       if (corrected) {
-        recordRecentDictation(corrected, sessionChatId);
+        recordRecentDictation(
+          corrected,
+          sessionChatId,
+          buildSessionAudioDataUrl(),
+        );
       }
       for (const callback of speechEndCallbacks) {
         callback({ transcript: corrected });
@@ -818,6 +869,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
 
     const enqueueSegment = (index: number, segment: SpeechSegment) => {
       if (cancelled || ended) return;
+      if (useVoiceSettingsStore.getState().maxRecentDictations > 0) {
+        recordedSegments.push(segment);
+      }
       queue.push({ index, segment });
       processQueue();
     };
@@ -940,7 +994,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           void loadSttModel(
             sessionModel,
             sessionEngine,
-            undefined,
+            abortController.signal,
             undefined,
             sessionVariant,
           ).catch((error: unknown) =>

@@ -172,15 +172,13 @@ test("every recorder uses the shared permission flow", () => {
     "the dialog is mounted once for the whole app",
   );
   assert.ok(
-    SETTINGS.includes("askAgainMicPermission"),
-    "settings offers an explicit retry after a deny",
+    VOICE_TAB.includes("askAgain: permission === \"denied\""),
+    "the Voice tab offers an explicit retry after a deny",
   );
   assert.ok(
-    SETTINGS.includes("MIC_WARM_ALWAYS"),
-    "the microphone can stay ready indefinitely",
-  );
-  assert.ok(
-    !SETTINGS.includes("hudEnabled") && !SETTINGS.includes("keepOnClipboard"),
+    !SETTINGS.includes("MIC_WARM_ALWAYS") &&
+      !SETTINGS.includes("hudEnabled") &&
+      !SETTINGS.includes("keepOnClipboard"),
     "removed settings must not linger in the section",
   );
 });

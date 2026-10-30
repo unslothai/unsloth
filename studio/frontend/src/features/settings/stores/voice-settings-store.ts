@@ -24,14 +24,180 @@ export interface RecentDictation {
   text: string;
   at: number;
   chatId?: string;
+  audioDataUrl?: string;
 }
 
 // pagination keeps full history; quota failures trim it to QUOTA_TRIM_KEEP.
-const QUOTA_TRIM_KEEP = 200;
+const QUOTA_TRIM_KEEP = 50;
 // transcript caps prevent synchronous localStorage quota failures.
 const MAX_RECENT_DICTATION_LENGTH = 2000;
-const MAX_DICTIONARY_ENTRIES = 100;
+export const MAX_DICTIONARY_ENTRIES = 300;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
+
+export const RECENT_DICTATION_LIMIT_OPTIONS = [0, 5, 10, 25, 50] as const;
+export const DEFAULT_MAX_RECENT_DICTATIONS = 0;
+
+export const STT_KEEP_ALIVE_OPTIONS = [300, 900, 1800, 3600, 0] as const;
+export const DEFAULT_STT_KEEP_ALIVE_SECONDS = 300;
+
+/**
+ * 80 curated default vocabulary words (not including the user's name).
+ * Words from the user's profile name are automatically prepended on top of these 80 words.
+ */
+export const DEFAULT_DICTATION_DICTIONARY_WORDS: readonly string[] = [
+  "Unsloth",
+  "QLoRA",
+  "LoRA",
+  "GGUF",
+  "GGML",
+  "llama.cpp",
+  "whisper.cpp",
+  "safetensors",
+  "PyTorch",
+  "Transformers",
+  "Hugging Face",
+  "bfloat16",
+  "float16",
+  "FlashAttention",
+  "xFormers",
+  "Triton",
+  "vLLM",
+  "SGLang",
+  "Ollama",
+  "LM Studio",
+  "DeepSeek",
+  "Qwen",
+  "Mistral",
+  "Mixtral",
+  "Llama",
+  "Gemma",
+  "Phi",
+  "Cohere",
+  "Anthropic",
+  "Claude",
+  "OpenAI",
+  "ChatGPT",
+  "Gemini",
+  "Parakeet",
+  "Voxtral",
+  "Whisper",
+  "Kokoro",
+  "Orpheus",
+  "GRPO",
+  "RLHF",
+  "DPO",
+  "ORPO",
+  "SFT",
+  "PEFT",
+  "TRL",
+  "BitsAndBytes",
+  "DeepSpeed",
+  "FSDP",
+  "Megatron",
+  "KV Cache",
+  "RoPE",
+  "SwiGLU",
+  "RMSNorm",
+  "CUDA",
+  "cuDNN",
+  "NVLink",
+  "TensorRT",
+  "ROCm",
+  "ONNX",
+  "Vulkan",
+  "OpenCL",
+  "CoreML",
+  "MLX",
+  "TypeScript",
+  "JavaScript",
+  "Python",
+  "Rust",
+  "Tauri",
+  "React",
+  "Vite",
+  "Zustand",
+  "Tailwind",
+  "FastAPI",
+  "Pydantic",
+  "Uvicorn",
+  "PostgreSQL",
+  "SQLite",
+  "Docker",
+  "Kubernetes",
+  "GitHub",
+] as const;
+
+function readStoredUserProfileNames(): { displayName: string; nickname: string } {
+  if (typeof localStorage === "undefined") {
+    return { displayName: "", nickname: "" };
+  }
+  try {
+    const raw = localStorage.getItem("unsloth_user_profile");
+    if (!raw) return { displayName: "", nickname: "" };
+    const parsed = JSON.parse(raw) as {
+      state?: { displayName?: unknown; nickname?: unknown };
+    };
+    return {
+      displayName:
+        typeof parsed?.state?.displayName === "string"
+          ? parsed.state.displayName
+          : "",
+      nickname:
+        typeof parsed?.state?.nickname === "string"
+          ? parsed.state.nickname
+          : "",
+    };
+  } catch {
+    return { displayName: "", nickname: "" };
+  }
+}
+
+/**
+ * Extracts individual words from the user's configured display name and nickname.
+ */
+export function extractUserNameWords(
+  displayName?: string,
+  nickname?: string,
+): string[] {
+  const stored =
+    displayName === undefined && nickname === undefined
+      ? readStoredUserProfileNames()
+      : { displayName: displayName ?? "", nickname: nickname ?? "" };
+  const combined = `${stored.displayName} ${stored.nickname}`.trim();
+  if (!combined) return [];
+  const words: string[] = [];
+  const seen = new Set<string>();
+  for (const token of combined.split(/[\s,;/|]+/)) {
+    const cleaned = token
+      .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}._-]+$/gu, "")
+      .trim()
+      .slice(0, MAX_DICTIONARY_ENTRY_LENGTH);
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    words.push(cleaned);
+  }
+  return words;
+}
+
+export function buildDefaultDictationDictionary(
+  displayName?: string,
+  nickname?: string,
+): string[] {
+  const userWords = extractUserNameWords(displayName, nickname);
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const word of [...userWords, ...DEFAULT_DICTATION_DICTIONARY_WORDS]) {
+    const trimmed = word.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH);
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(trimmed);
+  }
+  return result.slice(0, MAX_DICTIONARY_ENTRIES);
+}
 
 const HF_REPO_ID =
   /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
@@ -124,13 +290,28 @@ export interface VoiceSettingsState {
 
   /** exact spellings applied to matching transcript words and phrases. */
   dictionary: string[];
+  dictionarySeeded: boolean;
   addDictionaryEntry: (value: string) => void;
   updateDictionaryEntry: (index: number, value: string) => void;
   commitDictionaryEntry: (index: number) => void;
   removeDictionaryEntry: (index: number) => void;
+  syncUserNameToDictionary: (displayName?: string, nickname?: string) => void;
+  resetDictionaryToDefaults: () => void;
+
+  /**Seconds before an idle local STT model is automatically unloaded (0 = never). */
+  sttKeepAliveSeconds: number;
+  setSttKeepAliveSeconds: (value: number) => void;
+
+  /** Maximum number of recent dictations to retain (0 = off). */
+  maxRecentDictations: number;
+  setMaxRecentDictations: (value: number) => void;
 
   recentDictations: RecentDictation[];
-  addRecentDictation: (text: string, chatId?: string) => void;
+  addRecentDictation: (
+    text: string,
+    chatId?: string,
+    audioDataUrl?: string,
+  ) => void;
   removeRecentDictation: (id: string) => void;
   clearRecentDictations: () => void;
 
@@ -255,7 +436,8 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
               },
         ),
 
-      dictionary: [],
+      dictionary: buildDefaultDictationDictionary(),
+      dictionarySeeded: true,
       addDictionaryEntry: (value) =>
         set((state) => {
           const trimmed = value.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH);
@@ -268,7 +450,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ) {
             return state;
           }
-          return { dictionary: [...state.dictionary, trimmed] };
+          return {
+            dictionary: [...state.dictionary, trimmed],
+            dictionarySeeded: true,
+          };
         }),
       // Raw value while editing; commitDictionaryEntry finalizes on blur.
       updateDictionaryEntry: (index, value) =>
@@ -276,7 +461,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           const dictionary = [...state.dictionary];
           if (index < 0 || index >= dictionary.length) return state;
           dictionary[index] = value.slice(0, MAX_DICTIONARY_ENTRY_LENGTH);
-          return { dictionary };
+          return { dictionary, dictionarySeeded: true };
         }),
       commitDictionaryEntry: (index) =>
         set((state) => {
@@ -288,16 +473,63 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           } else {
             dictionary.splice(index, 1);
           }
-          return { dictionary };
+          return { dictionary, dictionarySeeded: true };
         }),
       removeDictionaryEntry: (index) =>
         set((state) => ({
           dictionary: state.dictionary.filter((_, i) => i !== index),
+          dictionarySeeded: true,
         })),
+      syncUserNameToDictionary: (displayName, nickname) =>
+        set((state) => {
+          const userWords = extractUserNameWords(displayName, nickname);
+          if (userWords.length === 0) return state;
+          const existingLower = new Set(
+            state.dictionary.map((entry) => entry.toLowerCase()),
+          );
+          const additions = userWords.filter(
+            (word) => !existingLower.has(word.toLowerCase()),
+          );
+          if (additions.length === 0) return state;
+          return {
+            dictionary: [...additions, ...state.dictionary].slice(
+              0,
+              MAX_DICTIONARY_ENTRIES,
+            ),
+            dictionarySeeded: true,
+          };
+        }),
+      resetDictionaryToDefaults: () =>
+        set({
+          dictionary: buildDefaultDictationDictionary(),
+          dictionarySeeded: true,
+        }),
+
+      sttKeepAliveSeconds: DEFAULT_STT_KEEP_ALIVE_SECONDS,
+      setSttKeepAliveSeconds: (value) =>
+        set({
+          sttKeepAliveSeconds: normalizeSttKeepAliveSeconds(value),
+        }),
+
+      maxRecentDictations: DEFAULT_MAX_RECENT_DICTATIONS,
+      setMaxRecentDictations: (value) =>
+        set((state) => {
+          const maxRecentDictations = normalizeMaxRecentDictations(value);
+          return {
+            maxRecentDictations,
+            recentDictations:
+              maxRecentDictations <= 0
+                ? []
+                : state.recentDictations.slice(0, maxRecentDictations),
+          };
+        }),
 
       recentDictations: [],
-      addRecentDictation: (text, chatId) =>
+      addRecentDictation: (text, chatId, audioDataUrl) =>
         set((state) => {
+          if (state.maxRecentDictations <= 0) {
+            return state;
+          }
           const trimmed = text.trim().slice(0, MAX_RECENT_DICTATION_LENGTH);
           if (!trimmed) {
             return state;
@@ -310,9 +542,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
                 text: trimmed,
                 at,
                 ...(chatId ? { chatId } : {}),
+                ...(audioDataUrl ? { audioDataUrl } : {}),
               },
               ...state.recentDictations,
-            ],
+            ].slice(0, state.maxRecentDictations),
           };
         }),
       removeRecentDictation: (id) =>
@@ -387,13 +620,20 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           sttProviderId: asString(saved?.sttProviderId, ""),
           sttProviderModel: asString(saved?.sttProviderModel, ""),
           dictationLanguage,
-          dictionary: Array.isArray(saved?.dictionary)
-            ? saved.dictionary
-                .filter((v): v is string => typeof v === "string" && !!v.trim())
-                .map((v) => v.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH))
-                .slice(0, MAX_DICTIONARY_ENTRIES)
-            : [],
-          recentDictations: normalizeRecentDictations(saved?.recentDictations),
+          dictionary: normalizeSavedDictionary(
+            saved?.dictionary,
+            saved?.dictionarySeeded === true,
+          ),
+          dictionarySeeded: true,
+          sttKeepAliveSeconds: normalizeSttKeepAliveSeconds(
+            saved?.sttKeepAliveSeconds,
+          ),
+          maxRecentDictations: normalizeMaxRecentDictations(
+            saved?.maxRecentDictations,
+          ),
+          recentDictations: normalizeRecentDictations(
+            saved?.recentDictations,
+          ).slice(0, normalizeMaxRecentDictations(saved?.maxRecentDictations)),
           ttsEnabled:
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
           autoReadAloud: saved?.autoReadAloud === true,
@@ -417,6 +657,54 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
 
 function asString(value: unknown, fallback: string): string {
   return typeof value === "string" && value ? value : fallback;
+}
+
+function normalizeSttKeepAliveSeconds(value: unknown): number {
+  if (
+    typeof value === "number" &&
+    (STT_KEEP_ALIVE_OPTIONS as readonly number[]).includes(value)
+  ) {
+    return value;
+  }
+  return DEFAULT_STT_KEEP_ALIVE_SECONDS;
+}
+
+function normalizeMaxRecentDictations(value: unknown): number {
+  if (
+    typeof value === "number" &&
+    (RECENT_DICTATION_LIMIT_OPTIONS as readonly number[]).includes(value)
+  ) {
+    return value;
+  }
+  return DEFAULT_MAX_RECENT_DICTATIONS;
+}
+
+function normalizeSavedDictionary(
+  value: unknown,
+  alreadySeeded: boolean,
+): string[] {
+  const cleaned = Array.isArray(value)
+    ? value
+        .filter((v): v is string => typeof v === "string" && !!v.trim())
+        .map((v) => v.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH))
+    : [];
+  const defaults = buildDefaultDictationDictionary();
+  if (!alreadySeeded) {
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    for (const word of [...cleaned, ...defaults]) {
+      const key = word.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(word);
+    }
+    return merged.slice(0, MAX_DICTIONARY_ENTRIES);
+  }
+  // Even when already seeded, ensure any current user profile name words are present.
+  const userWords = extractUserNameWords();
+  const seen = new Set(cleaned.map((entry) => entry.toLowerCase()));
+  const additions = userWords.filter((word) => !seen.has(word.toLowerCase()));
+  return [...additions, ...cleaned].slice(0, MAX_DICTIONARY_ENTRIES);
 }
 
 function normalizeRecentDictations(value: unknown): RecentDictation[] {
@@ -447,6 +735,10 @@ function normalizeRecentDictations(value: unknown): RecentDictation[] {
       at: candidate.at,
       ...(typeof candidate.chatId === "string" && candidate.chatId
         ? { chatId: candidate.chatId }
+        : {}),
+      ...(typeof candidate.audioDataUrl === "string" &&
+      candidate.audioDataUrl.startsWith("data:audio/")
+        ? { audioDataUrl: candidate.audioDataUrl }
         : {}),
     });
   }
@@ -519,7 +811,11 @@ export function applyDictationDictionary(
   transcript: string,
   dictionary?: string[],
 ): string {
-  const entries = dictionary ?? useVoiceSettingsStore.getState().dictionary;
+  const entries =
+    dictionary ?? [
+      ...extractUserNameWords(),
+      ...useVoiceSettingsStore.getState().dictionary,
+    ];
   if (!transcript || entries.length === 0) return transcript;
 
   const rules: { trigger: string; replacement: string }[] = [];
@@ -560,6 +856,12 @@ export function applyDictationDictionary(
   return result;
 }
 
-export function recordRecentDictation(text: string, chatId?: string): void {
-  useVoiceSettingsStore.getState().addRecentDictation(text, chatId);
+export function recordRecentDictation(
+  text: string,
+  chatId?: string,
+  audioDataUrl?: string,
+): void {
+  useVoiceSettingsStore
+    .getState()
+    .addRecentDictation(text, chatId, audioDataUrl);
 }

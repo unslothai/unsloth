@@ -13,6 +13,7 @@
 // failure either arrives from the adapter with its own toast or becomes one here.
 // A chord that does nothing must never be unexplainable.
 
+import { authFetch } from "@/features/auth";
 import {
   type StudioDictationSession,
   StudioModelDictationAdapter,
@@ -25,6 +26,7 @@ import {
   sttEngineFor,
   stopMediaStream,
   subscribeDictationLevel,
+  useChatRuntimeStore,
 } from "@/features/chat";
 import {
   ensureMicrophonePermission,
@@ -45,7 +47,10 @@ import {
   warmVoiceTypingModel,
 } from "./voice-typing-preflight";
 import { type VoiceTypingCue, playVoiceTypingCue } from "./voice-typing-sounds";
-import { useVoiceTypingStore } from "./voice-typing-store";
+import {
+  DEFAULT_LLM_POST_PROCESS_PROMPT,
+  useVoiceTypingStore,
+} from "./voice-typing-store";
 
 interface VoiceTypingInfo {
   os: string;
@@ -55,23 +60,19 @@ interface VoiceTypingInfo {
 }
 
 type SignalAction = "start" | "stop" | "cancel";
-type HudPhase = "idle" | "preparing" | "recording" | "transcribing" | "done";
+type HudPhase = "idle" | "preparing" | "recording" | "transcribing";
 type Cue = VoiceTypingCue;
 
 /** Safety net so a forgotten toggle cannot record forever. */
 const MAX_RECORDING_MS = 5 * 60 * 1000;
 /** Minimum perceptual level (0..1, where level = rms * 3.2) that counts as speech
  *  for auto-stop, combined with an adaptive ambient noise floor. */
-const MIN_VOICED_LEVEL = 0.11;
+const MIN_VOICED_LEVEL = 0.12;
 /** Shorter recordings that produced nothing had no speech worth reporting. */
 const NO_SPEECH_NOTICE_MIN_MS = 2000;
-/** How long the "inserted" state stays on the overlay before it hides. */
-const DONE_VISIBLE_MS = 900;
 /** Mic-level frames are throttled on their way to the overlay window. */
 const LEVEL_THROTTLE_MS = 45;
-/** How often to tell the backend the loaded dictation model is still wanted. The
- *  sidecar unloads it after five idle minutes, and a press then pays for the load
- *  before it can record; a heartbeat well inside that window keeps a press instant. */
+/** How often to check or hold the loaded dictation model. */
 const MODEL_KEEPALIVE_MS = 60_000;
 /** Retry interval when boot-time model check runs before the Python backend is up. */
 const BOOT_MODEL_RETRY_MS = 3_000;
@@ -95,10 +96,12 @@ export class VoiceTypingController {
   private lastLevelSentAt = 0;
   private recordingStartedAt = 0;
   private speechHeard = false;
+  private voicedFrameStreak = 0;
   private lastVoiceAt = 0;
-  private noiseFloorLevel = 0.02;
+  private noiseFloorLevel = 0.025;
   /** Bumped by cancel; an in-flight delivery from an older session is discarded. */
   private cancelToken = 0;
+  private llmAbortController: AbortController | null = null;
   private deniedMicNoticeShown = false;
   /** Microphone kept open between sessions so the next press records at once. */
   private warmStream: MediaStream | null = null;
@@ -149,6 +152,16 @@ export class VoiceTypingController {
         // saved microphone must not leave the old one open until its timer ends.
         if (state.micDeviceId !== previous.micDeviceId) {
           this.releaseWarmMicrophone();
+        }
+        if (state.sttKeepAliveSeconds !== previous.sttKeepAliveSeconds) {
+          const model = state.sttModel.trim();
+          if (model) {
+            void keepSttModelAlive(
+              sttEngineFor(model),
+              model,
+              state.sttKeepAliveSeconds,
+            ).catch(() => {});
+          }
         }
         if (!useVoiceTypingStore.getState().enabled) return;
         if (
@@ -374,8 +387,7 @@ export class VoiceTypingController {
     console.info("[voice typing] signal:", action, "phase:", this.phase);
     switch (action) {
       case "start":
-        // "done" lingers briefly after an insert; a new press may start already.
-        if ((this.phase === "idle" || this.phase === "done") && !this.starting) {
+        if (this.phase === "idle" && !this.starting) {
           await this.begin();
         }
         return;
@@ -405,7 +417,7 @@ export class VoiceTypingController {
   }
 
   private async begin(): Promise<void> {
-    if (this.phase !== "idle" && this.phase !== "done") return;
+    if (this.phase !== "idle") return;
     if (this.session || this.starting) return;
     if (!isStudioDictationAvailable()) {
       // The canonical explanation the composer also shows.
@@ -437,8 +449,9 @@ export class VoiceTypingController {
     this.starting = false;
     this.transcript = "";
     this.speechHeard = false;
+    this.voicedFrameStreak = 0;
     this.lastVoiceAt = 0;
-    this.noiseFloorLevel = 0.02;
+    this.noiseFloorLevel = 0.025;
     this.recordingStartedAt = 0;
     const { removeFillerWords, spokenPunctuation } =
       useVoiceTypingStore.getState();
@@ -451,9 +464,9 @@ export class VoiceTypingController {
         microphone: warm,
         removeFillerWords,
         spokenPunctuation,
-        // Stream partial segments so the HUD pill can preview live words while
-        // the user is dictating a multi-sentence thought.
-        stream: true,
+        // Use a single JSON response per cut segment so system/UI resources are not
+        // spent streaming partial tokens and HTTP disconnect aborts the backend immediately.
+        stream: false,
       }).listen();
     } catch (error) {
       console.error("[voice typing] could not start:", error);
@@ -545,24 +558,47 @@ export class VoiceTypingController {
       }
       const voiceThreshold = Math.max(
         MIN_VOICED_LEVEL,
-        this.noiseFloorLevel * 2.4,
+        this.noiseFloorLevel * 2.5,
       );
       if (level >= voiceThreshold) {
-        this.speechHeard = true;
-        this.lastVoiceAt = now;
+        this.voicedFrameStreak += 1;
+        if (this.voicedFrameStreak >= 2 || level >= voiceThreshold * 1.4) {
+          this.speechHeard = true;
+          this.lastVoiceAt = now;
+        }
+        // Slowly adapt noise floor upward if steady ambient hum is below 0.16
+        // so constant background noise cannot lock `speechHeard` active forever.
+        if (level < 0.16 && level < this.noiseFloorLevel * 4.2) {
+          this.noiseFloorLevel = Math.min(
+            0.18,
+            Math.max(0.015, this.noiseFloorLevel * 0.98 + level * 0.02),
+          );
+        }
         return;
       }
+      this.voicedFrameStreak = 0;
       this.noiseFloorLevel = Math.min(
         0.18,
-        Math.max(0.01, this.noiseFloorLevel * 0.96 + level * 0.04),
+        Math.max(0.015, this.noiseFloorLevel * 0.95 + level * 0.05),
       );
       const { autoStopSilence, autoStopDelayMs, mode } =
         useVoiceTypingStore.getState();
       if (!autoStopSilence || mode === "hold") return;
-      if (!this.speechHeard || !this.lastVoiceAt) return;
-      if (now - this.lastVoiceAt < autoStopDelayMs) return;
+      if (!this.speechHeard) {
+        // User activated voice typing and spoke nothing (only silence or ambient noise):
+        // close the pill automatically after the silence window without transcribing.
+        const silentWaitMs = Math.max(autoStopDelayMs, 2500);
+        if (
+          this.recordingStartedAt > 0 &&
+          now - this.recordingStartedAt >= silentWaitMs
+        ) {
+          console.info("[voice typing] auto-cancel after initial silence");
+          this.cancelSession();
+        }
+        return;
+      }
+      if (!this.lastVoiceAt || now - this.lastVoiceAt < autoStopDelayMs) return;
       console.info("[voice typing] auto-stop after silence");
-      toast.info(translate("settings.voice.voiceTyping.stoppedAfterSilence"));
       this.finish();
     });
   }
@@ -570,6 +606,12 @@ export class VoiceTypingController {
   private finish(): void {
     const session = this.session;
     if (!session || this.phase !== "recording") return;
+    if (!this.speechHeard && !this.transcript.trim()) {
+      // Nothing above the noise floor was spoken; close immediately without
+      // entering the transcribing phase or calling the backend.
+      this.cancelSession();
+      return;
+    }
     this.clearTimers();
     this.releaseLevel();
     this.stopRequestedAt = performance.now();
@@ -589,23 +631,98 @@ export class VoiceTypingController {
     })();
   }
 
+  private async postProcessTranscript(
+    rawText: string,
+    token: number,
+  ): Promise<string> {
+    const {
+      llmPostProcessEnabled,
+      llmPostProcessModel,
+      llmPostProcessPrompt,
+    } = useVoiceTypingStore.getState();
+    if (!llmPostProcessEnabled || !rawText.trim()) return rawText;
+    const runtime = useChatRuntimeStore.getState();
+    const model =
+      llmPostProcessModel.trim() ||
+      runtime.residentCheckpoint?.trim() ||
+      runtime.params.checkpoint.trim() ||
+      runtime.loadedModels[0]?.id?.trim() ||
+      "";
+    if (!model) return rawText;
+
+    const template =
+      llmPostProcessPrompt.trim() || DEFAULT_LLM_POST_PROCESS_PROMPT;
+    const userContent = template.includes("${output}")
+      ? template.replaceAll("${output}", rawText)
+      : `${template}\n\n<transcript>\n${rawText}\n</transcript>`;
+
+    const controller = new AbortController();
+    this.llmAbortController = controller;
+    try {
+      const response = await authFetch("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: userContent }],
+          stream: false,
+          temperature: 0.1,
+          max_tokens: Math.max(256, Math.min(2048, rawText.length * 2)),
+          enable_thinking: false,
+          enable_tools: false,
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok || this.disposed || token !== this.cancelToken) {
+        return rawText;
+      }
+      const data = (await response.json().catch(() => null)) as {
+        choices?: Array<{ message?: { content?: string | null } }>;
+      } | null;
+      const content = data?.choices?.[0]?.message?.content;
+      if (typeof content !== "string") return rawText;
+      const cleaned = content
+        .replace(/<think>[\s\S]*?<\/think>/gi, "")
+        .trim();
+      return cleaned || rawText;
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        console.warn("[voice typing] LLM post-processing skipped:", error);
+      }
+      return rawText;
+    } finally {
+      if (this.llmAbortController === controller) {
+        this.llmAbortController = null;
+      }
+    }
+  }
+
   private async deliver(
     session: StudioDictationSession,
     token: number,
     recordedMs: number,
   ): Promise<void> {
     if (this.session === session) this.session = null;
-    const text = this.transcript.trim();
+    const rawText = this.transcript.trim();
     this.transcript = "";
     if (this.disposed || token !== this.cancelToken) return;
-    if (!text) {
-      // Genuine silence (or an aborted session): nothing to insert.
-      if (recordedMs >= NO_SPEECH_NOTICE_MIN_MS) {
+    if (!rawText) {
+      // Genuine silence (or an aborted session): close the pill immediately.
+      this.setPhase("idle");
+      if (recordedMs >= NO_SPEECH_NOTICE_MIN_MS && this.speechHeard) {
         toast.info(translate("settings.voice.voiceTyping.noSpeechNotice"));
       }
+      return;
+    }
+    const text = await this.postProcessTranscript(rawText, token);
+    if (this.disposed || token !== this.cancelToken) return;
+    if (!text.trim()) {
       this.setPhase("idle");
       return;
     }
+    // Hide the floating HUD pill immediately before inserting text so there is
+    // zero post-transcription linger delay.
+    this.setPhase("idle");
     useVoiceTypingStore.getState().setLastTranscript(text);
     this.playCue("stop");
     const {
@@ -647,12 +764,6 @@ export class VoiceTypingController {
       });
       // A completed session proves the model is resident.
       useVoiceTypingStore.getState().setReadiness("ready");
-      this.setPhase("done", text);
-      this.setTimer(DONE_VISIBLE_MS, () => {
-        if (this.phase === "done") this.setPhase("idle");
-      });
-      // Keep the microphone open for a follow-up dictation; the first session
-      // opens it here because it owned the stream it recorded from.
       this.warmMicrophone();
     } catch (error) {
       if (this.disposed || token !== this.cancelToken) return;
@@ -666,7 +777,10 @@ export class VoiceTypingController {
     // Invalidates any in-flight delivery from a session stopped earlier.
     this.cancelToken += 1;
     this.starting = false;
-    const wasRecording = this.phase === "recording";
+    this.llmAbortController?.abort();
+    this.llmAbortController = null;
+    const wasActive =
+      this.phase === "recording" || this.phase === "transcribing";
     const session = this.session;
     this.session = null;
     this.transcript = "";
@@ -681,7 +795,7 @@ export class VoiceTypingController {
     // including one a just-finished session had already returned to the pool.
     this.discardSessionStream();
     this.releaseWarmMicrophone();
-    if (wasRecording) this.playCue("cancel");
+    if (wasActive) this.playCue("cancel");
     this.setPhase("idle");
   }
 
@@ -695,9 +809,7 @@ export class VoiceTypingController {
           ? "settings.voice.voiceTyping.hudListening"
           : phase === "transcribing"
             ? "settings.voice.voiceTyping.hudTranscribing"
-            : phase === "done"
-              ? "settings.voice.voiceTyping.hudInserted"
-              : null;
+            : null;
     const label = labelKey ? translate(labelKey) : undefined;
     void this.invokeQuietly("voice_typing_hud_state", {
       state: phase,
@@ -824,6 +936,15 @@ export class VoiceTypingController {
    *  loads on a heartbeat, so an idle app cannot pin VRAM it is not using, and a
    *  model that was evicted anyway is simply loaded by the next press. */
   private armModelKeepAlive(): void {
+    const { sttModel, sttKeepAliveSeconds } = useVoiceSettingsStore.getState();
+    const model = sttModel.trim();
+    if (model) {
+      void keepSttModelAlive(
+        sttEngineFor(model),
+        model,
+        sttKeepAliveSeconds,
+      ).catch(() => {});
+    }
     if (this.keepAliveTimer !== null || this.disposed) return;
     if (!useVoiceTypingStore.getState().enabled) return;
     this.keepAliveTimer = window.setInterval(() => {
@@ -857,18 +978,20 @@ export class VoiceTypingController {
     if (readiness === "needs-download" || readiness === "engine-missing") {
       return;
     }
-    const model = useVoiceSettingsStore.getState().sttModel.trim();
+    const { sttModel, sttKeepAliveSeconds } = useVoiceSettingsStore.getState();
+    const model = sttModel.trim();
     if (!model) return;
-    void keepSttModelAlive(sttEngineFor(model), model)
-      .then((held) => {
-        if (!held && !this.disposed && readiness === "ready") {
-          void this.refreshModelStatus();
-        }
-      })
-      .catch((error) => {
-        // A heartbeat is an optimization; a failure must never surface.
-        console.info("[voice typing] model keepalive failed:", error);
-      });
+    if (sttKeepAliveSeconds === 0) {
+      void keepSttModelAlive(sttEngineFor(model), model, 0)
+        .then((held) => {
+          if (!held && !this.disposed && readiness === "ready") {
+            void this.refreshModelStatus();
+          }
+        })
+        .catch(() => {});
+    } else if (readiness === "ready") {
+      void this.refreshModelStatus();
+    }
   }
 
   private releaseWarmMicrophone(): void {

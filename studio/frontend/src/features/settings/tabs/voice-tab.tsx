@@ -35,6 +35,7 @@ import {
   generateCustomTtsAudio,
   generateStudioTtsAudio,
   isDecisionConnection,
+  keepSttModelAlive,
   loadSttModel,
   releaseTtsAudioUrl,
   startSttDownload,
@@ -96,7 +97,9 @@ import {
   AUDIO_CPP_STT_FOLDER_IDS,
   AUDIO_CPP_STT_MODELS,
   MTMD_STT_MODELS,
+  RECENT_DICTATION_LIMIT_OPTIONS,
   RECOMMENDED_STT_MODELS,
+  STT_KEEP_ALIVE_OPTIONS,
   STT_PICKER_MODELS,
   type SttModel,
   type TtsEngine,
@@ -164,11 +167,13 @@ function SttModelPicker({
   value,
   language,
   downloadedModels,
+  loadedModels,
   onChange,
 }: {
   value: SttModel;
   language: string;
   downloadedModels: ReadonlySet<string>;
+  loadedModels: ReadonlySet<string>;
   onChange: (model: SttModel) => void;
 }) {
   const t = useT();
@@ -255,6 +260,29 @@ function SttModelPicker({
     return ids;
   }, [debouncedQuery, language, results, value]);
 
+  const groupedItems = useMemo(() => {
+    const downloaded: string[] = [];
+    const available: string[] = [];
+    for (const model of items) {
+      if (downloadedModels.has(model) || loadedModels.has(model)) {
+        downloaded.push(model);
+      } else {
+        available.push(model);
+      }
+    }
+    // Within downloaded, place currently loaded model(s) first.
+    downloaded.sort((a, b) => {
+      const aLoaded = loadedModels.has(a) ? 0 : 1;
+      const bLoaded = loadedModels.has(b) ? 0 : 1;
+      return aLoaded - bLoaded;
+    });
+    return {
+      downloaded,
+      available,
+      flat: [...downloaded, ...available],
+    };
+  }, [items, downloadedModels, loadedModels]);
+
   const selectModel = async (model: string) => {
     if (!isSttModelId(model) || validating) {
       return;
@@ -278,6 +306,58 @@ function SttModelPicker({
     setQuery("");
   };
 
+  const renderModelRow = (model: string) => {
+    const twoLines = sttModelSource(model) !== sttModelName(model);
+    const size = sttModelSize(model) || folderSizes.get(model);
+    const isLoaded = loadedModels.has(model);
+    const isDownloaded = downloadedModels.has(model) || isLoaded;
+    return (
+      <button
+        key={model}
+        type="button"
+        onClick={() => void selectModel(model)}
+        aria-selected={model === value}
+        className={`flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
+          twoLines ? "rounded-md" : "rounded-full"
+        } ${model === value ? "bg-accent font-medium" : ""}`}
+      >
+        <span className="min-w-0 flex-1 truncate">
+          <span className="flex items-center gap-1.5 truncate text-xs">
+            {isDownloaded ? (
+              <span
+                role="img"
+                aria-label={t("picker.onDevice")}
+                className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success"
+              />
+            ) : null}
+            <span className="truncate" title={sttModelName(model)}>
+              {sttModelName(model)}
+            </span>
+            {isLoaded ? (
+              <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-ui-9 font-semibold text-primary">
+                {t("settings.voice.dictation.sttLoadedBadge")}
+              </span>
+            ) : RECOMMENDED_STT_MODELS.has(model) ? (
+              <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
+                {t("settings.voice.dictation.sttRecommended")}
+              </span>
+            ) : null}
+          </span>
+          {twoLines ? (
+            <span className="mt-0.5 block truncate font-mono text-ui-9 leading-tight text-muted-foreground">
+              {sttModelSource(model)}
+            </span>
+          ) : null}
+        </span>
+        {size ? (
+          <span className="shrink-0 text-ui-10 tabular-nums text-muted-foreground">
+            {size}
+          </span>
+        ) : null}
+      </button>
+    );
+  };
+
   return (
     <Popover
       open={open}
@@ -293,7 +373,14 @@ function SttModelPicker({
           aria-label={t("settings.voice.dictation.sttModelLabel")}
           className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
         >
-          <span className="truncate">{sttModelName(value)}</span>
+          <span className="flex min-w-0 items-center gap-1.5 truncate">
+            <span className="truncate">{sttModelName(value)}</span>
+            {loadedModels.has(value) ? (
+              <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-ui-9 font-semibold text-primary">
+                {t("settings.voice.dictation.sttLoadedBadge")}
+              </span>
+            ) : null}
+          </span>
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
             strokeWidth={2}
@@ -318,9 +405,9 @@ function SttModelPicker({
             className="h-8 pl-8 text-sm"
             autoFocus={true}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && items.length > 0) {
+              if (event.key === "Enter" && groupedItems.flat.length > 0) {
                 event.preventDefault();
-                void selectModel(items[0]);
+                void selectModel(groupedItems.flat[0]);
               }
             }}
           />
@@ -330,66 +417,39 @@ function SttModelPicker({
           data-testid="stt-model-results"
           className="max-h-64 overflow-y-auto p-1"
         >
-          {(isLoading && debouncedQuery && items.length === 0) || validating ? (
+          {(isLoading && debouncedQuery && groupedItems.flat.length === 0) ||
+          validating ? (
             <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
               <Spinner className="size-3.5" />
               {validating
                 ? t("settings.voice.dictation.sttModelValidating")
                 : t("settings.voice.dictation.sttModelSearching")}
             </div>
-          ) : items.length === 0 ? (
+          ) : groupedItems.flat.length === 0 ? (
             <div className="px-3 py-3 text-xs text-muted-foreground">
               {t("settings.voice.dictation.sttModelNoResults")}
             </div>
           ) : (
-            items.map((model) => {
-              // A custom repo's name is its id: one-line rows keep a pill
-              // shape, two-line rows use the row radius.
-              const twoLines = sttModelSource(model) !== sttModelName(model);
-              const size = sttModelSize(model) || folderSizes.get(model);
-              return (
-                <button
-                  key={model}
-                  type="button"
-                  onClick={() => void selectModel(model)}
-                  aria-selected={model === value}
-                  className={`flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
-                    twoLines ? "rounded-md" : "rounded-full"
-                  } ${model === value ? "bg-accent font-medium" : ""}`}
-                >
-                  <span className="min-w-0 flex-1 truncate">
-                    <span className="flex items-center gap-1.5 truncate text-xs">
-                      {/* Same green dot the Hub marks an on-device row with. */}
-                      {downloadedModels.has(model) ? (
-                        <span
-                          role="img"
-                          aria-label={t("picker.onDevice")}
-                          className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success"
-                        />
-                      ) : null}
-                      <span className="truncate" title={sttModelName(model)}>
-                        {sttModelName(model)}
-                      </span>
-                      {RECOMMENDED_STT_MODELS.has(model) ? (
-                        <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
-                          {t("settings.voice.dictation.sttRecommended")}
-                        </span>
-                      ) : null}
-                    </span>
-                    {twoLines ? (
-                      <span className="mt-0.5 block truncate font-mono text-ui-9 leading-tight text-muted-foreground">
-                        {sttModelSource(model)}
-                      </span>
-                    ) : null}
-                  </span>
-                  {size ? (
-                    <span className="shrink-0 text-ui-10 tabular-nums text-muted-foreground">
-                      {size}
-                    </span>
+            <>
+              {groupedItems.downloaded.length > 0 ? (
+                <div className="mb-1">
+                  <div className="px-2.5 py-1 text-ui-10 font-semibold tracking-wider text-muted-foreground uppercase">
+                    {t("settings.voice.dictation.sttGroupDownloaded")}
+                  </div>
+                  {groupedItems.downloaded.map(renderModelRow)}
+                </div>
+              ) : null}
+              {groupedItems.available.length > 0 ? (
+                <div>
+                  {groupedItems.downloaded.length > 0 ? (
+                    <div className="px-2.5 py-1 text-ui-10 font-semibold tracking-wider text-muted-foreground uppercase">
+                      {t("settings.voice.dictation.sttGroupAvailable")}
+                    </div>
                   ) : null}
-                </button>
-              );
-            })
+                  {groupedItems.available.map(renderModelRow)}
+                </div>
+              ) : null}
+            </>
           )}
         </div>
       </PopoverContent>
@@ -520,6 +580,24 @@ export function VoiceTab() {
   const dictationLanguage = useVoiceSettingsStore((s) => s.dictationLanguage);
   const setDictationLanguage = useVoiceSettingsStore(
     (s) => s.setDictationLanguage,
+  );
+  const sttKeepAliveSeconds = useVoiceSettingsStore(
+    (s) => s.sttKeepAliveSeconds,
+  );
+  const setSttKeepAliveSeconds = useVoiceSettingsStore(
+    (s) => s.setSttKeepAliveSeconds,
+  );
+  const maxRecentDictations = useVoiceSettingsStore(
+    (s) => s.maxRecentDictations,
+  );
+  const setMaxRecentDictations = useVoiceSettingsStore(
+    (s) => s.setMaxRecentDictations,
+  );
+  const recentDictationsCount = useVoiceSettingsStore(
+    (s) => s.recentDictations.length,
+  );
+  const syncUserNameToDictionary = useVoiceSettingsStore(
+    (s) => s.syncUserNameToDictionary,
   );
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   const setTtsEnabled = useVoiceSettingsStore((s) => s.setTtsEnabled);
@@ -704,6 +782,10 @@ export function VoiceTab() {
   const [downloadedSttModels, setDownloadedSttModels] = useState<
     ReadonlySet<string>
   >(() => new Set());
+  // Currently loaded STT models across all engines, for the picker's Loaded badge and Eject & Load button.
+  const [loadedSttModels, setLoadedSttModels] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   // Was a bare two-sample delta over ~800ms with no window or stability gate,
   // so one throttled timer or bursty poll set the displayed speed outright.
   // Model whose download this tab watched; completion auto-loads it.
@@ -792,6 +874,15 @@ export function VoiceTab() {
       return;
     }
     let cancelled = false;
+    let pollTimer: number | null = null;
+    const schedulePoll = (ms: number) => {
+      if (cancelled) return;
+      if (pollTimer !== null) window.clearTimeout(pollTimer);
+      pollTimer = window.setTimeout(() => {
+        pollTimer = null;
+        if (!cancelled) setStatusNonce((n) => n + 1);
+      }, ms);
+    };
     void (async () => {
       // Only surface "checking" on the first poll; background refreshes keep
       // the last phase so the status line doesn't flicker while polling.
@@ -799,14 +890,20 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
+        const engines = [
+          status.transformers,
+          status.gguf,
+          status.mtmd,
+          status.audiocpp,
+        ];
         setDownloadedSttModels(
+          new Set(engines.flatMap((engine) => engine?.downloaded_models ?? [])),
+        );
+        setLoadedSttModels(
           new Set(
-            [
-              status.transformers,
-              status.gguf,
-              status.mtmd,
-              status.audiocpp,
-            ].flatMap((engine) => engine?.downloaded_models ?? []),
+            engines
+              .map((engine) => engine?.loaded_model)
+              .filter((m): m is string => typeof m === "string" && !!m),
           ),
         );
         // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
@@ -858,9 +955,7 @@ export function VoiceTab() {
           }
           watchedDownloadRef.current = download.model;
           // Keep the status line fresh.
-          window.setTimeout(() => {
-            if (!cancelled) setStatusNonce((n) => n + 1);
-          }, 800);
+          schedulePoll(800);
         } else {
           const finished = watchedDownloadRef.current;
           watchedDownloadRef.current = null;
@@ -889,23 +984,20 @@ export function VoiceTab() {
         }
         if (engineStatus.loading) {
           setSttPhase("loading");
-          window.setTimeout(() => {
-            if (!cancelled) setStatusNonce((n) => n + 1);
-          }, 600);
+          schedulePoll(600);
           return;
         }
         if (loaded && !engineStatus.loading) {
           setSttDevice(engineStatus.device);
           setSttPhase("ready");
-          window.setTimeout(
-            () => {
-              if (!cancelled) setStatusNonce((n) => n + 1);
-            },
-            Math.max(
-              1000,
-              Math.min(engineStatus.keep_alive_seconds * 1000, 15_000),
-            ),
-          );
+          if (engineStatus.keep_alive_seconds > 0) {
+            schedulePoll(
+              Math.max(
+                5000,
+                Math.min(engineStatus.keep_alive_seconds * 1000, 15_000),
+              ),
+            );
+          }
           return;
         }
         // Merely opening settings or selecting local STT never downloads or
@@ -918,6 +1010,7 @@ export function VoiceTab() {
     })();
     return () => {
       cancelled = true;
+      if (pollTimer !== null) window.clearTimeout(pollTimer);
     };
   }, [
     isLocalEngine,
@@ -1017,9 +1110,27 @@ export function VoiceTab() {
     }
   };
 
+  const otherLoadedSttModel = useMemo(() => {
+    for (const loadedModel of loadedSttModels) {
+      if (loadedModel !== sttModel) return loadedModel;
+    }
+    if (
+      loadedSttModels.has(sttModel) &&
+      sttVariant &&
+      sttLoadedVariant &&
+      sttLoadedVariant !== sttVariant
+    ) {
+      return sttModel;
+    }
+    return null;
+  }, [loadedSttModels, sttModel, sttVariant, sttLoadedVariant]);
+
   const warmSttModel = async () => {
     setSttPhase("loading");
     try {
+      if (otherLoadedSttModel) {
+        await unloadSttModel().catch(() => {});
+      }
       await loadSttModel(sttModel, undefined, undefined, undefined, sttVariant);
       setStatusNonce((nonce) => nonce + 1);
     } catch (error) {
@@ -1376,7 +1487,7 @@ export function VoiceTab() {
                         {sttUnloading ? <Spinner className="mr-1.5" /> : null}
                         {sttUnloading
                           ? t("settings.voice.dictation.sttUnloading")
-                          : t("settings.voice.dictation.sttUnload")}
+                          : t("settings.voice.dictation.sttEject")}
                       </Button>
                     ) : sttPhase === "loading" || sttPhase === "checking" ? (
                       // The status line already says "Loading model…"; the
@@ -1401,7 +1512,9 @@ export function VoiceTab() {
                       >
                         {sttPhase === "error"
                           ? t("settings.voice.dictation.sttRetry")
-                          : t("settings.voice.dictation.sttLoad")}
+                          : otherLoadedSttModel
+                            ? t("settings.voice.dictation.sttEjectAndLoad")
+                            : t("settings.voice.dictation.sttLoad")}
                       </Button>
                     )
                   ) : null}
@@ -1413,11 +1526,8 @@ export function VoiceTab() {
                   value={sttModel}
                   language={dictationLanguage}
                   downloadedModels={downloadedSttModels}
+                  loadedModels={loadedSttModels}
                   onChange={(next) => {
-                    if (next !== sttModel) {
-                      void unloadSttModel().catch(() => {});
-                      void autoLoadSttModel(next);
-                    }
                     setSttModel(next);
                   }}
                 />
@@ -1429,9 +1539,6 @@ export function VoiceTab() {
                     value={sttVariant ?? ""}
                     onValueChange={(next) => {
                       setSttGgufVariant(next);
-                      if (next === shownSttVariant) return;
-                      void unloadSttModel().catch(() => {});
-                      void autoLoadSttModel(sttModel, next);
                     }}
                   >
                     <SelectTrigger
@@ -1487,48 +1594,89 @@ export function VoiceTab() {
         ) : null}
 
         {isLocalEngine && modelSttSupported ? (
-          <SettingsRow
-            label={t("settings.voice.dictation.sttDeviceLabel")}
-            description={
-              sttDevicePreference === "cpu"
-                ? t("settings.voice.dictation.sttDeviceCpuDescription")
-                : t("settings.voice.dictation.sttDeviceAutoDescription")
-            }
-          >
-            <Select
-              value={sttDevicePreference}
-              onValueChange={(value) => {
-                const next = value === "cpu" ? "cpu" : "auto";
-                if (next === sttDevicePreference) return;
-                // Scoped, so moving our placement cannot evict a model another surface
-                // swapped in. wait:false so a decoding dictation is not killed for a
-                // setting the next load applies anyway.
-                void unloadSttModel(sttEngineFor(sttModel), sttModel, {
-                  wait: false,
-                }).catch(() => {});
-                setSttPhase("on-demand");
-                setSttDevice(null);
-                setSttDevicePreference(next);
-              }}
+          <>
+            <SettingsRow
+              label={t("settings.voice.dictation.sttDeviceLabel")}
+              description={
+                sttDevicePreference === "cpu"
+                  ? t("settings.voice.dictation.sttDeviceCpuDescription")
+                  : t("settings.voice.dictation.sttDeviceAutoDescription")
+              }
             >
-              <SelectTrigger
-                data-testid="stt-device-trigger"
-                aria-label={t("settings.voice.dictation.sttDeviceLabel")}
-                className="w-56"
-                size="sm"
+              <Select
+                value={sttDevicePreference}
+                onValueChange={(value) => {
+                  const next = value === "cpu" ? "cpu" : "auto";
+                  if (next === sttDevicePreference) return;
+                  void unloadSttModel(sttEngineFor(sttModel), sttModel, {
+                    wait: false,
+                  }).catch(() => {});
+                  setSttPhase("on-demand");
+                  setSttDevice(null);
+                  setSttDevicePreference(next);
+                }}
               >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto" data-testid="stt-device-auto">
-                  {t("settings.voice.dictation.sttDeviceAuto")}
-                </SelectItem>
-                <SelectItem value="cpu" data-testid="stt-device-cpu">
-                  {t("settings.voice.dictation.sttDeviceCpu")}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </SettingsRow>
+                <SelectTrigger
+                  data-testid="stt-device-trigger"
+                  aria-label={t("settings.voice.dictation.sttDeviceLabel")}
+                  className="w-56"
+                  size="sm"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto" data-testid="stt-device-auto">
+                    {t("settings.voice.dictation.sttDeviceAuto")}
+                  </SelectItem>
+                  <SelectItem value="cpu" data-testid="stt-device-cpu">
+                    {t("settings.voice.dictation.sttDeviceCpu")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+
+            <SettingsRow
+              label={t("settings.voice.dictation.sttKeepAliveLabel")}
+              description={t(
+                "settings.voice.dictation.sttKeepAliveDescription",
+              )}
+            >
+              <Select
+                value={String(sttKeepAliveSeconds)}
+                onValueChange={(value) => {
+                  const seconds = Number(value);
+                  setSttKeepAliveSeconds(seconds);
+                  void keepSttModelAlive(
+                    sttEngineFor(sttModel),
+                    sttModel,
+                    seconds,
+                  ).catch(() => {});
+                }}
+              >
+                <SelectTrigger
+                  data-testid="stt-keep-alive-trigger"
+                  aria-label={t("settings.voice.dictation.sttKeepAliveLabel")}
+                  className="w-56"
+                  size="sm"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STT_KEEP_ALIVE_OPTIONS.map((seconds) => (
+                    <SelectItem key={seconds} value={String(seconds)}>
+                      {seconds === 0
+                        ? t("settings.voice.dictation.sttKeepAliveNever")
+                        : seconds === 3600
+                          ? t("settings.voice.dictation.sttKeepAliveOneHour")
+                          : t("settings.voice.dictation.sttKeepAliveMinutes", {
+                              minutes: Math.round(seconds / 60),
+                            })}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+          </>
         ) : null}
 
         <SettingsRow
@@ -1617,7 +1765,10 @@ export function VoiceTab() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setSubpage("dictionary")}
+            onClick={() => {
+              syncUserNameToDictionary();
+              setSubpage("dictionary");
+            }}
           >
             {t("settings.voice.dictionary.manage")}
           </Button>
@@ -1627,16 +1778,44 @@ export function VoiceTab() {
           label={t("settings.voice.recents.manageLabel")}
           description={t("settings.voice.recents.sectionDescription")}
         >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setSelectedDictationId(null);
-              setSubpage("recents");
-            }}
-          >
-            {t("settings.voice.recents.manage")}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Select
+              value={String(maxRecentDictations)}
+              onValueChange={(value) => setMaxRecentDictations(Number(value))}
+            >
+              <SelectTrigger
+                data-testid="recent-dictations-limit-trigger"
+                aria-label={t("settings.voice.recents.manageLabel")}
+                className="w-36"
+                size="sm"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RECENT_DICTATION_LIMIT_OPTIONS.map((limit) => (
+                  <SelectItem key={limit} value={String(limit)}>
+                    {limit === 0
+                      ? t("settings.voice.recents.limitOff")
+                      : t("settings.voice.recents.limitCount", {
+                          count: limit,
+                        })}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {maxRecentDictations > 0 || recentDictationsCount > 0 ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setSelectedDictationId(null);
+                  setSubpage("recents");
+                }}
+              >
+                {t("settings.voice.recents.manage")}
+              </Button>
+            ) : null}
+          </div>
         </SettingsRow>
       </SettingsSection>
 

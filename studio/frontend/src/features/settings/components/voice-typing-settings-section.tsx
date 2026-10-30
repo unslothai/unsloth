@@ -8,16 +8,24 @@ import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { useMicrophonePermissionStore } from "@/features/microphone";
+import { Textarea } from "@/components/ui/textarea";
 import {
+  buildExternalModelId,
+  customProviderDisplayName,
+  useChatRuntimeStore,
+  useExternalProvidersStore,
+} from "@/features/chat";
+import {
+  DEFAULT_LLM_POST_PROCESS_PROMPT,
   DEFAULT_VOICE_TYPING_SHORTCUT,
-  MIC_WARM_ALWAYS,
   VOICE_TYPING_HUD_POSITIONS,
   VOICE_TYPING_PASTE_METHODS,
   VOICE_TYPING_SOUND_THEMES,
@@ -30,20 +38,16 @@ import {
   isConflictingShortcut,
   isModifierCode,
   previewVoiceTypingSound,
-  requestVoiceTypingModelDownload,
   useVoiceTypingStore,
 } from "@/features/voice-typing";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
-import { Copy01Icon } from "@/lib/copy-icon";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { toast } from "@/lib/toast";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsRow } from "./settings-row";
-import { SettingsGroupDivider, SettingsSection } from "./settings-section";
+import { SettingsSection } from "./settings-section";
 
 interface VoiceTypingInfo {
   os: string;
@@ -97,8 +101,6 @@ export function VoiceTypingSettingsSection() {
   const setCopyLastTranscript = useVoiceTypingStore(
     (state) => state.setCopyLastTranscript,
   );
-  const preloadModel = useVoiceTypingStore((state) => state.preloadModel);
-  const setPreloadModel = useVoiceTypingStore((state) => state.setPreloadModel);
   const autoStopSilence = useVoiceTypingStore((state) => state.autoStopSilence);
   const setAutoStopSilence = useVoiceTypingStore(
     (state) => state.setAutoStopSilence,
@@ -106,10 +108,6 @@ export function VoiceTypingSettingsSection() {
   const autoStopDelayMs = useVoiceTypingStore((state) => state.autoStopDelayMs);
   const setAutoStopDelayMs = useVoiceTypingStore(
     (state) => state.setAutoStopDelayMs,
-  );
-  const micWarmSeconds = useVoiceTypingStore((state) => state.micWarmSeconds);
-  const setMicWarmSeconds = useVoiceTypingStore(
-    (state) => state.setMicWarmSeconds,
   );
   const removeFillerWords = useVoiceTypingStore(
     (state) => state.removeFillerWords,
@@ -145,27 +143,80 @@ export function VoiceTypingSettingsSection() {
   const setMuteWhileRecording = useVoiceTypingStore(
     (state) => state.setMuteWhileRecording,
   );
-  const readiness = useVoiceTypingStore((state) => state.readiness);
-  const lastTranscript = useVoiceTypingStore((state) => state.lastTranscript);
+  const llmPostProcessEnabled = useVoiceTypingStore(
+    (state) => state.llmPostProcessEnabled,
+  );
+  const setLlmPostProcessEnabled = useVoiceTypingStore(
+    (state) => state.setLlmPostProcessEnabled,
+  );
+  const llmPostProcessModel = useVoiceTypingStore(
+    (state) => state.llmPostProcessModel,
+  );
+  const setLlmPostProcessModel = useVoiceTypingStore(
+    (state) => state.setLlmPostProcessModel,
+  );
+  const llmPostProcessPrompt = useVoiceTypingStore(
+    (state) => state.llmPostProcessPrompt,
+  );
+  const setLlmPostProcessPrompt = useVoiceTypingStore(
+    (state) => state.setLlmPostProcessPrompt,
+  );
+  const resetLlmPostProcessPrompt = useVoiceTypingStore(
+    (state) => state.resetLlmPostProcessPrompt,
+  );
 
-  const micPermission = useMicrophonePermissionStore(
-    (state) => state.permission,
+  const residentCheckpoint = useChatRuntimeStore(
+    (state) => state.residentCheckpoint,
   );
-  const loadMicPermission = useMicrophonePermissionStore((state) => state.load);
-  const requestMicPermission = useMicrophonePermissionStore(
-    (state) => state.request,
+  const checkpoint = useChatRuntimeStore((state) => state.params.checkpoint);
+  const localModels = useChatRuntimeStore((state) => state.models);
+  const externalProviders = useExternalProvidersStore(
+    (state) => state.providers,
   );
-  const askAgainMicPermission = useMicrophonePermissionStore(
-    (state) => state.askAgain,
+  const connectionsEnabled = useExternalProvidersStore(
+    (state) => state.connectionsEnabled,
   );
-  const resetMicPermission = useMicrophonePermissionStore(
-    (state) => state.reset,
-  );
+
+  const activeChatModelLabel = useMemo(() => {
+    const activeId = (residentCheckpoint || checkpoint || "").trim();
+    if (!activeId) return "";
+    const match = localModels.find((m) => m.id === activeId);
+    if (match?.name) return match.name;
+    return activeId;
+  }, [residentCheckpoint, checkpoint, localModels]);
+
+  const llmModelOptions = useMemo(() => {
+    const local = localModels
+      .filter((m) => m.id && !m.isAudio)
+      .map((m) => ({
+        id: m.id,
+        label: m.name || m.id,
+      }));
+    const external: { id: string; label: string; group: string }[] = [];
+    if (connectionsEnabled) {
+      for (const provider of externalProviders) {
+        if (provider.decisionsOnly) continue;
+        const groupLabel =
+          provider.name || customProviderDisplayName(provider.providerType);
+        for (const modelId of provider.models ?? []) {
+          if (!modelId) continue;
+          external.push({
+            id: buildExternalModelId(provider.id, modelId),
+            label: modelId,
+            group: groupLabel,
+          });
+        }
+      }
+    }
+    return { local, external };
+  }, [localModels, externalProviders, connectionsEnabled]);
 
   const [info, setInfo] = useState<VoiceTypingInfo | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [needsModifier, setNeedsModifier] = useState(false);
+  const [draftVolume, setDraftVolume] = useState<number | null>(null);
   const shortcutButtonRef = useRef<HTMLButtonElement | null>(null);
+  const effectiveVolume = draftVolume ?? soundVolume;
 
   useEffect(() => {
     if (!isTauri) return;
@@ -179,10 +230,6 @@ export function VoiceTypingSettingsSection() {
       live = false;
     };
   }, []);
-
-  useEffect(() => {
-    void loadMicPermission();
-  }, [loadMicPermission]);
 
   // While the capture box is armed, suspend the native global shortcut poller and
   // capture the next chord. Clicking outside or blurring cancels capture cleanly.
@@ -244,35 +291,9 @@ export function VoiceTypingSettingsSection() {
         ? t("settings.voice.voiceTyping.modeToggleDescription")
         : t("settings.voice.voiceTyping.modeHybridDescription");
 
-  const micStatusText =
-    micPermission === "granted"
-      ? t("settings.voice.voiceTyping.micAccessGranted")
-      : micPermission === "denied"
-        ? t("settings.voice.voiceTyping.micAccessBlockedStatus")
-        : t("settings.voice.voiceTyping.micAccessNeeded");
-  const micStatusDescription =
-    micPermission === "granted"
-      ? t("settings.voice.voiceTyping.micAccessGrantedDescription")
-      : micPermission === "denied"
-        ? t("settings.voice.voiceTyping.micAccessBlockedDescription")
-        : t("settings.voice.voiceTyping.micAccessNeededDescription");
-
-  const modelStatusText =
-    readiness === "ready"
-      ? t("settings.voice.voiceTyping.modelReady")
-      : readiness === "loading"
-        ? t("settings.voice.voiceTyping.modelLoading")
-        : readiness === "will-load"
-          ? t("settings.voice.voiceTyping.modelWillLoad")
-          : readiness === "needs-download"
-            ? t("settings.voice.voiceTyping.modelNeedsDownload")
-            : readiness === "engine-missing"
-              ? t("settings.voice.voiceTyping.modelEngineMissing")
-              : readiness === "custom"
-                ? t("settings.voice.voiceTyping.modelCustom")
-                : t("settings.voice.voiceTyping.modelChecking");
-
   const shortcutHasConflict = isConflictingShortcut(shortcut);
+  const promptModified =
+    llmPostProcessPrompt.trim() !== DEFAULT_LLM_POST_PROCESS_PROMPT.trim();
 
   return (
     <SettingsSection title={t("settings.voice.voiceTyping.sectionTitle")}>
@@ -290,77 +311,6 @@ export function VoiceTypingSettingsSection() {
 
       {enabled ? (
         <>
-          <div
-            className="-mt-1 flex flex-wrap items-center justify-between gap-2 pb-3 text-xs text-muted-foreground"
-            data-testid="voice-typing-active-hint"
-          >
-            <span>
-              {t("settings.voice.voiceTyping.activeHint", {
-                shortcut: formatShortcut(shortcut),
-              })}
-            </span>
-            <span
-              className="inline-flex items-center gap-1.5 rounded-full bg-muted/60 px-2.5 py-0.5 text-ui-11 font-medium text-foreground/80"
-              data-testid="voice-typing-model-status"
-            >
-              <span
-                className={`size-1.5 rounded-full ${
-                  readiness === "ready" || readiness === "custom"
-                    ? "bg-emerald-500"
-                    : readiness === "loading" || readiness === "will-load"
-                      ? "bg-amber-500"
-                      : readiness === "needs-download" ||
-                          readiness === "engine-missing"
-                        ? "bg-destructive"
-                        : "bg-muted-foreground/50"
-                }`}
-              />
-              {modelStatusText}
-              {readiness === "needs-download" ? (
-                <button
-                  type="button"
-                  className="ml-1 font-semibold text-primary underline underline-offset-2 hover:opacity-80"
-                  onClick={() => requestVoiceTypingModelDownload()}
-                >
-                  {t("settings.voice.voiceTyping.downloadAction")}
-                </button>
-              ) : null}
-            </span>
-          </div>
-
-          {lastTranscript ? (
-            <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
-              <div className="min-w-0 flex-1">
-                <p className="text-ui-11 font-medium text-muted-foreground">
-                  {t("settings.voice.voiceTyping.lastTranscriptLabel")}
-                </p>
-                <p className="truncate text-xs text-foreground">
-                  {lastTranscript}
-                </p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="shrink-0 gap-1.5"
-                data-testid="voice-typing-copy-last"
-                onClick={() => {
-                  void copyToClipboard(lastTranscript).then((ok) => {
-                    if (ok) {
-                      toast.success(
-                        t("settings.voice.voiceTyping.copiedNotice"),
-                      );
-                    }
-                  });
-                }}
-              >
-                <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
-                {t("settings.voice.voiceTyping.copyLastAction")}
-              </Button>
-            </div>
-          ) : null}
-
-          <SettingsGroupDivider />
-
           <SettingsRow
             label={t("settings.voice.voiceTyping.shortcutLabel")}
             description={t("settings.voice.voiceTyping.shortcutHint")}
@@ -466,111 +416,6 @@ export function VoiceTypingSettingsSection() {
             </Select>
           </SettingsRow>
 
-          <SettingsGroupDivider />
-
-          <SettingsRow
-            label={t("settings.voice.voiceTyping.micAccessLabel")}
-            description={micStatusDescription}
-          >
-            <div className="flex items-center gap-2">
-              <span
-                className="flex items-center gap-1.5 text-xs text-muted-foreground"
-                data-testid="voice-typing-mic-status"
-              >
-                <span
-                  className={`size-1.5 rounded-full ${
-                    micPermission === "granted"
-                      ? "bg-emerald-500"
-                      : micPermission === "denied"
-                        ? "bg-destructive"
-                        : "bg-muted-foreground/50"
-                  }`}
-                />
-                {micStatusText}
-              </span>
-              {micPermission === "granted" ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  data-testid="voice-typing-mic-reset"
-                  onClick={() => {
-                    void resetMicPermission();
-                  }}
-                >
-                  {t("settings.voice.voiceTyping.micAccessReset")}
-                </Button>
-              ) : micPermission === "denied" ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  data-testid="voice-typing-mic-ask-again"
-                  onClick={() => {
-                    void askAgainMicPermission("settings");
-                  }}
-                >
-                  {t("settings.voice.voiceTyping.micAccessAskAgain")}
-                </Button>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  data-testid="voice-typing-mic-allow"
-                  onClick={() => {
-                    void requestMicPermission("settings");
-                  }}
-                >
-                  {t("settings.voice.dictation.allowMicrophone")}
-                </Button>
-              )}
-            </div>
-          </SettingsRow>
-
-          <SettingsRow
-            label={t("settings.voice.voiceTyping.micWarmLabel")}
-            description={
-              micWarmSeconds === MIC_WARM_ALWAYS
-                ? t("settings.voice.voiceTyping.micWarmAlwaysDescription")
-                : t("settings.voice.voiceTyping.micWarmDescription")
-            }
-          >
-            <Select
-              value={String(micWarmSeconds)}
-              onValueChange={(value) => setMicWarmSeconds(Number(value))}
-            >
-              <SelectTrigger
-                size="sm"
-                className="w-56"
-                data-testid="voice-typing-mic-warm"
-                aria-label={t("settings.voice.voiceTyping.micWarmLabel")}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="0">
-                  {t("settings.voice.voiceTyping.micWarmOff")}
-                </SelectItem>
-                <SelectItem value="15">
-                  {t("settings.voice.voiceTyping.micWarmSeconds", {
-                    seconds: 15,
-                  })}
-                </SelectItem>
-                <SelectItem value="30">
-                  {t("settings.voice.voiceTyping.micWarmSeconds", {
-                    seconds: 30,
-                  })}
-                </SelectItem>
-                <SelectItem value="60">
-                  {t("settings.voice.voiceTyping.micWarmSeconds", {
-                    seconds: 60,
-                  })}
-                </SelectItem>
-                <SelectItem value={String(MIC_WARM_ALWAYS)}>
-                  {t("settings.voice.voiceTyping.micWarmAlways")}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </SettingsRow>
-
           <SettingsRow
             label={t("settings.voice.voiceTyping.muteAudioLabel")}
             description={t("settings.voice.voiceTyping.muteAudioDescription")}
@@ -582,8 +427,6 @@ export function VoiceTypingSettingsSection() {
               aria-label={t("settings.voice.voiceTyping.muteAudioLabel")}
             />
           </SettingsRow>
-
-          <SettingsGroupDivider />
 
           <SettingsRow
             label={t("settings.voice.voiceTyping.pasteLabel")}
@@ -675,8 +518,6 @@ export function VoiceTypingSettingsSection() {
             </SettingsRow>
           ) : null}
 
-          <SettingsGroupDivider />
-
           <SettingsRow
             label={t("settings.voice.voiceTyping.fillerWordsLabel")}
             description={t("settings.voice.voiceTyping.fillerWordsDescription")}
@@ -704,6 +545,113 @@ export function VoiceTypingSettingsSection() {
               )}
             />
           </SettingsRow>
+
+          <SettingsRow
+            label={t("settings.voice.voiceTyping.llmPostProcessLabel")}
+            description={t(
+              "settings.voice.voiceTyping.llmPostProcessDescription",
+            )}
+          >
+            <Switch
+              checked={llmPostProcessEnabled}
+              onCheckedChange={setLlmPostProcessEnabled}
+              data-testid="voice-typing-llm-post-process"
+              aria-label={t("settings.voice.voiceTyping.llmPostProcessLabel")}
+            />
+          </SettingsRow>
+
+          {llmPostProcessEnabled ? (
+            <>
+              <SettingsRow
+                label={t("settings.voice.voiceTyping.llmModelLabel")}
+                description={t(
+                  "settings.voice.voiceTyping.llmModelDescription",
+                )}
+              >
+                <Select
+                  value={llmPostProcessModel || "__active__"}
+                  onValueChange={(value) =>
+                    setLlmPostProcessModel(value === "__active__" ? "" : value)
+                  }
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="w-56"
+                    data-testid="voice-typing-llm-model"
+                    aria-label={t("settings.voice.voiceTyping.llmModelLabel")}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__active__">
+                      {activeChatModelLabel
+                        ? `${t("settings.voice.voiceTyping.llmModelActive")} (${activeChatModelLabel})`
+                        : t("settings.voice.voiceTyping.llmModelActive")}
+                    </SelectItem>
+                    {llmModelOptions.local.length > 0 ? (
+                      <SelectGroup>
+                        <SelectLabel>
+                          {t("settings.voice.voiceTyping.llmModelLocalGroup")}
+                        </SelectLabel>
+                        {llmModelOptions.local.map((m) => (
+                          <SelectItem key={m.id} value={m.id}>
+                            {m.label}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ) : null}
+                    {llmModelOptions.external.length > 0 ? (
+                      <SelectGroup>
+                        <SelectLabel>
+                          {t(
+                            "settings.voice.voiceTyping.llmModelConnectedGroup",
+                          )}
+                        </SelectLabel>
+                        {llmModelOptions.external.map((m) => (
+                          <SelectItem key={m.id} value={m.id}>
+                            {m.group}: {m.label}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ) : null}
+                  </SelectContent>
+                </Select>
+              </SettingsRow>
+
+              <div className="flex flex-col gap-2 py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium text-foreground">
+                      {t("settings.voice.voiceTyping.llmPromptLabel")}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {t("settings.voice.voiceTyping.llmPromptDescription")}
+                    </div>
+                  </div>
+                  {promptModified ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      data-testid="voice-typing-llm-prompt-reset"
+                      onClick={resetLlmPostProcessPrompt}
+                    >
+                      {t("settings.voice.voiceTyping.llmPromptReset")}
+                    </Button>
+                  ) : null}
+                </div>
+                <Textarea
+                  value={llmPostProcessPrompt}
+                  onChange={(event) =>
+                    setLlmPostProcessPrompt(event.target.value)
+                  }
+                  rows={6}
+                  className="font-mono text-xs leading-relaxed"
+                  data-testid="voice-typing-llm-prompt"
+                  aria-label={t("settings.voice.voiceTyping.llmPromptLabel")}
+                />
+              </div>
+            </>
+          ) : null}
 
           <SettingsRow
             label={t("settings.voice.voiceTyping.autoStopLabel")}
@@ -760,8 +708,6 @@ export function VoiceTypingSettingsSection() {
             </SettingsRow>
           ) : null}
 
-          <SettingsGroupDivider />
-
           <SettingsRow
             label={t("settings.voice.voiceTyping.soundsLabel")}
             description={t("settings.voice.voiceTyping.soundsDescription")}
@@ -809,11 +755,12 @@ export function VoiceTypingSettingsSection() {
                   </Select>
                   <Button
                     variant="outline"
-                    size="sm"
+                    size="icon-sm"
+                    className="size-8 aspect-square shrink-0 rounded-md p-0"
                     data-testid="voice-typing-sound-preview"
                     aria-label={t("settings.voice.voiceTyping.soundsPreview")}
                     onClick={() =>
-                      previewVoiceTypingSound(soundTheme, soundVolume)
+                      previewVoiceTypingSound(soundTheme, effectiveVolume)
                     }
                   >
                     <HugeiconsIcon icon={Volume02Icon} className="size-3.5" />
@@ -829,12 +776,22 @@ export function VoiceTypingSettingsSection() {
               >
                 <div className="flex items-center gap-3">
                   <Slider
-                    value={[soundVolume]}
+                    value={[effectiveVolume]}
                     min={0}
                     max={1}
                     step={0.05}
                     onValueChange={([value]) => {
-                      if (value !== undefined) setSoundVolume(value);
+                      if (value !== undefined) {
+                        const snapped = Math.round(value * 20) / 20;
+                        setDraftVolume(snapped);
+                      }
+                    }}
+                    onValueCommit={([value]) => {
+                      if (value !== undefined) {
+                        const snapped = Math.round(value * 20) / 20;
+                        setSoundVolume(snapped);
+                      }
+                      setDraftVolume(null);
                     }}
                     className="w-44"
                     aria-label={t(
@@ -842,30 +799,12 @@ export function VoiceTypingSettingsSection() {
                     )}
                   />
                   <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">
-                    {Math.round(soundVolume * 100)}%
+                    {Math.round(effectiveVolume * 100)}%
                   </span>
                 </div>
               </SettingsRow>
             </>
           ) : null}
-
-          <SettingsGroupDivider />
-
-          <SettingsRow
-            label={t("settings.voice.voiceTyping.preloadLabel")}
-            description={t("settings.voice.voiceTyping.preloadDescription")}
-          >
-            <Switch
-              checked={preloadModel}
-              onCheckedChange={setPreloadModel}
-              data-testid="voice-typing-preload"
-              aria-label={t("settings.voice.voiceTyping.preloadLabel")}
-            />
-          </SettingsRow>
-
-          <p className="pt-1 text-xs text-muted-foreground">
-            {t("settings.voice.voiceTyping.engineNote")}
-          </p>
         </>
       ) : null}
     </SettingsSection>

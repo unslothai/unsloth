@@ -25395,6 +25395,7 @@ async def stt_unload(
 async def stt_keep_alive(
     engine: Optional[str] = None,
     model: Optional[str] = None,
+    keep_alive_seconds: Optional[float] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     """Push the idle unload back for a dictation model that is already loaded.
@@ -25408,6 +25409,8 @@ async def stt_keep_alive(
     """
     from core.inference import stt_registry
 
+    if keep_alive_seconds is not None:
+        await asyncio.to_thread(stt_registry.set_keep_alive_seconds, keep_alive_seconds)
     target = _resolve_serving_stt_engine(engine) if engine is not None else None
     result = await asyncio.to_thread(stt_registry.keep_alive, target, model)
     return JSONResponse(content = result)
@@ -25655,7 +25658,7 @@ async def transcribe_audio_raw(
         return StreamingResponse(
             stream_transcript(
                 lambda on_progress: _transcribe_audio_result(
-                    raw, model, language, fast, engine, None, device, on_progress
+                    raw, model, language, fast, engine, request, device, on_progress
                 ),
                 title,
                 save = save,

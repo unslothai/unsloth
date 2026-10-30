@@ -131,6 +131,39 @@
         flex: 0 0 auto;
         align-items: center;
       }
+      .vt-cancel-btn {
+        pointer-events: auto;
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 5px;
+        margin: 0 -4px 0 2px;
+        padding: 4px 7px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        color: #cbd0d8;
+        font: 600 10px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        transition:
+          background 120ms ease,
+          border-color 120ms ease,
+          color 120ms ease;
+      }
+      .vt-cancel-btn:hover {
+        border-color: rgba(248, 113, 113, 0.45);
+        background: rgba(248, 113, 113, 0.2);
+        color: #fecaca;
+      }
+      .vt-cancel-btn:active {
+        background: rgba(248, 113, 113, 0.3);
+      }
+      .vt-cancel-icon {
+        width: 10px;
+        height: 10px;
+        display: block;
+      }
       .vt-esc kbd {
         padding: 3px 5px;
         border: 1px solid rgba(255, 255, 255, 0.09);

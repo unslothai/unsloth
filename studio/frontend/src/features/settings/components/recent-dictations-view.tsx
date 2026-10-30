@@ -38,13 +38,15 @@ import { toast } from "@/lib/toast";
 import {
   Delete02Icon,
   Search01Icon,
+  StopIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type RecentDictation,
   useVoiceSettingsStore,
@@ -92,6 +94,52 @@ export function RecentDictationsView({
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
+  function togglePlayAudio(dictation: RecentDictation) {
+    if (!dictation.audioDataUrl) return;
+    if (playingId === dictation.id && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+      setPlayingId(null);
+      return;
+    }
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    const audio = new Audio(dictation.audioDataUrl);
+    audioRef.current = audio;
+    setPlayingId(dictation.id);
+    audio.addEventListener("ended", () => {
+      if (audioRef.current === audio) {
+        audioRef.current = null;
+        setPlayingId(null);
+      }
+    });
+    audio.addEventListener("error", () => {
+      if (audioRef.current === audio) {
+        audioRef.current = null;
+        setPlayingId(null);
+      }
+    });
+    void audio.play().catch(() => {
+      if (audioRef.current === audio) {
+        audioRef.current = null;
+        setPlayingId(null);
+      }
+    });
+  }
   // Keyed on the inputs so a change restarts from page one without an effect.
   const pageKey = `${sortOrder}::${search}`;
   const [page, setPage] = useState({ key: pageKey, count: PAGE_SIZE });
@@ -228,6 +276,14 @@ export function RecentDictationsView({
               {selected.text}
             </p>
           </article>
+          {selected.audioDataUrl ? (
+            <audio
+              controls
+              src={selected.audioDataUrl}
+              className="h-9 w-full"
+              data-testid="dictation-audio-player"
+            />
+          ) : null}
           <div className="flex justify-end gap-2">
             {selected.chatId ? (
               <Button
@@ -392,7 +448,24 @@ export function RecentDictationsView({
                       </span>
                     </span>
                   </button>
-                  <span className="flex w-24 shrink-0 items-center justify-end gap-1">
+                  <span className="flex w-28 shrink-0 items-center justify-end gap-1">
+                    {dictation.audioDataUrl ? (
+                      <button
+                        type="button"
+                        onClick={() => togglePlayAudio(dictation)}
+                        aria-label={t("settings.voice.recents.playAudio")}
+                        title={t("settings.voice.recents.playAudio")}
+                        className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <HugeiconsIcon
+                          icon={
+                            playingId === dictation.id ? StopIcon : Volume02Icon
+                          }
+                          strokeWidth={1.75}
+                          className="size-4"
+                        />
+                      </button>
+                    ) : null}
                     {dictation.chatId ? (
                       <button
                         type="button"

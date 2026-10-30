@@ -10,6 +10,7 @@ export {
 } from "./shortcut";
 export { useVoiceTyping } from "./use-voice-typing";
 export {
+  DEFAULT_LLM_POST_PROCESS_PROMPT,
   MIC_WARM_ALWAYS,
   VOICE_TYPING_HUD_POSITIONS,
   VOICE_TYPING_PASTE_METHODS,
@@ -27,5 +28,6 @@ export {
 } from "./voice-typing-sounds";
 export {
   requestVoiceTypingModelDownload,
+  warmVoiceTypingModel,
   type VoiceTypingModelState,
 } from "./voice-typing-preflight";

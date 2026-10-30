@@ -1273,6 +1273,11 @@ class WhisperSttSidecar:
     def keep_alive_seconds(self) -> float:
         return self._keep_alive_seconds
 
+    def set_keep_alive_seconds(self, seconds: float) -> None:
+        with self._lock:
+            self._keep_alive_seconds = max(0.0, float(seconds))
+            self._schedule_idle_unload_locked()
+
     def _cancel_idle_unload_locked(self) -> None:
         self._idle_generation += 1
         timer = self._idle_timer

@@ -4,14 +4,18 @@
 import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { useT } from "@/i18n";
 import {
   Delete02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
-import { useVoiceSettingsStore } from "../stores/voice-settings-store";
+import { useEffect, useState } from "react";
+import {
+  extractUserNameWords,
+  useVoiceSettingsStore,
+} from "../stores/voice-settings-store";
 
 export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
   const t = useT();
@@ -26,7 +30,21 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
   const removeDictionaryEntry = useVoiceSettingsStore(
     (s) => s.removeDictionaryEntry,
   );
+  const syncUserNameToDictionary = useVoiceSettingsStore(
+    (s) => s.syncUserNameToDictionary,
+  );
+  const resetDictionaryToDefaults = useVoiceSettingsStore(
+    (s) => s.resetDictionaryToDefaults,
+  );
+  const displayName = useUserProfileStore((s) => s.displayName);
+  const nickname = useUserProfileStore((s) => s.nickname);
   const [newEntry, setNewEntry] = useState("");
+
+  useEffect(() => {
+    syncUserNameToDictionary(displayName, nickname);
+  }, [displayName, nickname, syncUserNameToDictionary]);
+
+  const userWords = extractUserNameWords(displayName, nickname);
 
   const handleAddEntry = () => {
     const trimmed = newEntry.trim();
@@ -51,13 +69,52 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
         </h1>
       </header>
 
-      <div className="flex flex-col gap-1">
-        <h2 className="settings-heading text-sm font-semibold">
-          {t("settings.voice.dictionary.sectionTitle")}
-        </h2>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.voice.dictionary.sectionDescription")}
-        </p>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-col gap-1">
+          <h2 className="settings-heading text-sm font-semibold">
+            {t("settings.voice.dictionary.sectionTitle")} ({dictionary.length})
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.voice.dictionary.sectionDescription")}
+            {userWords.length > 0
+              ? ` (${userWords.length} ${userWords.length === 1 ? "word" : "words"} from your profile name included)`
+              : ""}
+          </p>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={resetDictionaryToDefaults}
+          data-testid="dictionary-reset-defaults"
+        >
+          {t("settings.voice.dictionary.resetDefaults")}
+        </Button>
+      </div>
+
+      <div className="flex items-center gap-2 py-1.5">
+        <Input
+          value={newEntry}
+          onChange={(e) => setNewEntry(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleAddEntry();
+            }
+          }}
+          placeholder={t("settings.voice.dictionary.entryPlaceholder")}
+          className="h-8 flex-1 text-sm"
+          aria-label={t("settings.voice.dictionary.newEntryAria")}
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          onClick={handleAddEntry}
+          disabled={!newEntry.trim()}
+        >
+          <HugeiconsIcon icon={PlusSignIcon} className="mr-1.5 size-3.5" />
+          {t("settings.voice.dictionary.addEntry")}
+        </Button>
       </div>
 
       <div className="flex flex-col">
@@ -101,31 +158,6 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
             </Button>
           </div>
         ))}
-        <div className="flex items-center gap-2 py-1.5">
-          <Input
-            value={newEntry}
-            onChange={(e) => setNewEntry(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                handleAddEntry();
-              }
-            }}
-            placeholder={t("settings.voice.dictionary.entryPlaceholder")}
-            className="h-8 flex-1 text-sm"
-            aria-label={t("settings.voice.dictionary.newEntryAria")}
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            className="shrink-0"
-            onClick={handleAddEntry}
-            disabled={!newEntry.trim()}
-          >
-            <HugeiconsIcon icon={PlusSignIcon} className="mr-1.5 size-3.5" />
-            {t("settings.voice.dictionary.addEntry")}
-          </Button>
-        </div>
       </div>
     </div>
   );

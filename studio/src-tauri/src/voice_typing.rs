@@ -14,7 +14,7 @@
 //! Every step logs at INFO level (never the transcript itself): a chord that produces
 //! no visible reaction must still be traceable in the app log.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -35,6 +35,37 @@ static SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// True while the user is recording a new shortcut chord in Settings, so pressing
 /// the existing chord or Escape does not fire a live dictation session.
 static SHORTCUT_SUSPENDED: AtomicBool = AtomicBool::new(false);
+
+/// Lock-free packed representation of the active shortcut chord for the Windows
+/// low-level keyboard hook (`WH_KEYBOARD_LL`), avoiding mutex locks and heap
+/// allocations on every system keystroke.
+/// Layout: bits 0..15 = vk, bit 16 = ctrl, bit 17 = shift, bit 18 = alt,
+/// bit 19 = super_key, bit 20 = enabled.
+static PACKED_CHORD: AtomicU32 = AtomicU32::new(0);
+
+fn pack_chord(enabled: bool, chord: Option<&Chord>) -> u32 {
+    if !enabled {
+        return 0;
+    }
+    let Some(c) = chord else {
+        return 0;
+    };
+    let mut bits = (c.vk as u32) & 0xFFFF;
+    if c.ctrl {
+        bits |= 1 << 16;
+    }
+    if c.shift {
+        bits |= 1 << 17;
+    }
+    if c.alt {
+        bits |= 1 << 18;
+    }
+    if c.super_key {
+        bits |= 1 << 19;
+    }
+    bits |= 1 << 20;
+    bits
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActivationMode {
@@ -174,6 +205,8 @@ pub fn voice_typing_configure(
     if let Some(ref pos) = hud_position {
         hud::set_position_mode(&app, Some(pos.as_str()));
     }
+    let packed = pack_chord(enabled, Some(&chord));
+    PACKED_CHORD.store(packed, Ordering::SeqCst);
     let mute_pref = {
         let mut config = CONFIG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         config.enabled = enabled;
@@ -271,6 +304,16 @@ pub async fn voice_typing_hud_level(app: AppHandle, level: f32) {
 #[tauri::command]
 pub async fn voice_typing_hud_prewarm(app: AppHandle) {
     hud::prewarm(&app);
+}
+
+/// Immediately cancel an active dictation or transcription from the HUD overlay button.
+#[tauri::command]
+pub async fn voice_typing_cancel(app: AppHandle) {
+    log::info!("Voice typing cancelled via HUD button");
+    SESSION_ACTIVE.store(false, Ordering::SeqCst);
+    audio_mute::set_recording_mute(false);
+    hud::hide(&app);
+    emit_signal(&app, "cancel");
 }
 
 // ---------------------------------------------------------------------------
@@ -618,7 +661,7 @@ mod audio_mute {
 #[cfg(target_os = "windows")]
 mod shortcut_poller {
     use super::{
-        edge_signal, emit_signal, parse_chord, Chord, Edge, CONFIG, SESSION_ACTIVE,
+        edge_signal, emit_signal, parse_chord, Chord, Edge, CONFIG, PACKED_CHORD, SESSION_ACTIVE,
         SHORTCUT_SUSPENDED,
     };
     use std::ptr::null_mut;
@@ -714,21 +757,21 @@ mod shortcut_poller {
                     }
                 }
 
-                let active_chord = {
-                    let config = CONFIG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                    if config.enabled {
-                        config.parsed_chord.clone()
-                    } else {
-                        None
-                    }
-                };
-                if let Some(chord) = active_chord {
-                    if vk == chord.vk {
+                let packed = PACKED_CHORD.load(Ordering::Relaxed);
+                if (packed & (1 << 20)) != 0 {
+                    let chord_vk = (packed & 0xFFFF) as u16;
+                    if vk == chord_vk {
                         if is_down {
                             let (ctrl, shift, alt, super_key) = current_modifiers();
-                            if chord.matches_modifiers(ctrl, shift, alt, super_key)
-                                || HOOK_MAIN_KEY_DOWN.load(Ordering::SeqCst)
-                            {
+                            let want_ctrl = (packed & (1 << 16)) != 0;
+                            let want_shift = (packed & (1 << 17)) != 0;
+                            let want_alt = (packed & (1 << 18)) != 0;
+                            let want_super = (packed & (1 << 19)) != 0;
+                            let matches = want_ctrl == ctrl
+                                && want_shift == shift
+                                && want_alt == alt
+                                && want_super == super_key;
+                            if matches || HOOK_MAIN_KEY_DOWN.load(Ordering::SeqCst) {
                                 if !HOOK_MAIN_KEY_DOWN.swap(true, Ordering::SeqCst) {
                                     HOOK_MAIN_KEY_PRESSED.store(true, Ordering::SeqCst);
                                 }
@@ -894,6 +937,8 @@ mod shortcut_poller {
     fn watch_escape(app: &AppHandle, escape_held: &mut bool) {
         let held = down(VK_ESCAPE) || HOOK_ESCAPE_DOWN.swap(false, Ordering::SeqCst);
         if held && !*escape_held && SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
+            super::audio_mute::set_recording_mute(false);
+            super::hud::hide(app);
             emit_signal(app, "cancel");
         }
         *escape_held = held;

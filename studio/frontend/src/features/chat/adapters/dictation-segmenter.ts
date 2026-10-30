@@ -46,9 +46,9 @@ const DEFAULT_PRE_ROLL_MS = 450;
 const DEFAULT_MIN_SEGMENT_MS = 2_800;
 const DEFAULT_MAX_SEGMENT_MS = 14_000;
 const DEFAULT_SILENCE_CUT_MS = 360;
-const DEFAULT_VOICE_RMS = 0.012;
+const DEFAULT_VOICE_RMS = 0.015;
 const DEFAULT_TRIM_MARGIN_MS = 120;
-const DEFAULT_MIN_SPEECH_MS = 120;
+const DEFAULT_MIN_SPEECH_MS = 140;
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
@@ -75,6 +75,8 @@ export class SpeechSegmenter {
   private active: Float32Array[] | null = null;
   private activeSamples = 0;
   private silenceMs = 0;
+  private onsetMs = 0;
+  private activePeakRms = 0;
   private voiced = false;
   private noiseFloor = 0.003;
   private lastLevel = 0;
@@ -130,17 +132,31 @@ export class SpeechSegmenter {
     const frameMs = (samples.length / this.sampleRate) * 1000;
 
     if (!isSpeech) {
-      this.noiseFloor = clamp(this.noiseFloor * 0.98 + rms * 0.02, 0.001, 0.05);
+      this.noiseFloor = clamp(this.noiseFloor * 0.97 + rms * 0.03, 0.001, 0.06);
+      this.onsetMs = 0;
+    } else if (rms < 0.045 && rms < this.noiseFloor * 4.5) {
+      // Slowly adapt upward during steady low-level ambient noise (fans, AC hum)
+      // so constant background noise does not lock `isSpeech` on forever.
+      this.noiseFloor = clamp(
+        this.noiseFloor * 0.985 + rms * 0.015,
+        0.001,
+        0.06,
+      );
     }
 
     if (!this.active) {
       this.appendPreRoll(samples);
       if (!isSpeech) return null;
+      this.onsetMs += frameMs;
+      if (this.onsetMs < 35 && rms < speechThreshold * 1.6) {
+        return null;
+      }
       // The pre-roll already contains this frame and everything before it that
       // the detector needed to decide the sentence had started.
       this.active = this.preRoll.slice();
       this.activeSamples = this.preRollCount;
       this.silenceMs = 0;
+      this.activePeakRms = rms;
       this.voiced = true;
       return null;
     }
@@ -151,6 +167,9 @@ export class SpeechSegmenter {
     if (isSpeech) {
       this.voiced = true;
       this.silenceMs = 0;
+      if (rms > this.activePeakRms) {
+        this.activePeakRms = rms;
+      }
     } else {
       this.silenceMs += frameMs;
     }
@@ -208,11 +227,18 @@ export class SpeechSegmenter {
 
   private finalize(): SpeechSegment | null {
     const frames = this.active;
+    const peakRms = this.activePeakRms;
     this.active = null;
     this.activeSamples = 0;
     this.silenceMs = 0;
+    this.onsetMs = 0;
+    this.activePeakRms = 0;
     this.voiced = false;
     if (!frames || frames.length === 0) return null;
+    // Reject segments that never rose meaningfully above the adapted noise floor.
+    if (peakRms < Math.max(this.voiceRms, this.noiseFloor * 2.1)) {
+      return null;
+    }
 
     const total = frames.reduce((sum, frame) => sum + frame.length, 0);
     const samples = new Float32Array(total);
@@ -224,6 +250,9 @@ export class SpeechSegmenter {
 
     const trimmed = this.trimSilence(samples);
     if (!trimmed) return null;
+    if (rmsOf(trimmed) < Math.max(this.voiceRms * 0.55, this.noiseFloor * 1.4)) {
+      return null;
+    }
     return {
       samples: trimmed,
       sampleRate: this.sampleRate,

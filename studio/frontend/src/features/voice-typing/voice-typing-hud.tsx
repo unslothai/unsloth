@@ -6,6 +6,7 @@
 // it stays independent of the main app's theme. The pill is deliberately compact:
 // state dot, waveform, elapsed time and the Esc hint, with no transcript text.
 
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 
@@ -134,8 +135,14 @@ export function VoiceTypingHud() {
 
   const accent = ACCENTS[state] ?? "#8b93a1";
   const heights = barHeights(level, state);
-  const active = state === "preparing" || state === "recording";
+  const cancellable =
+    state === "preparing" || state === "recording" || state === "transcribing";
   const displayCopy = sublabel ? tailPreview(sublabel) : label;
+
+  const handleCancel = () => {
+    setState("");
+    void invoke("voice_typing_cancel").catch(() => {});
+  };
 
   return (
     <div className="vt-stage">
@@ -183,10 +190,29 @@ export function VoiceTypingHud() {
             formatElapsed(elapsedMs)
           )}
         </span>
-        {active ? (
-          <span className="vt-esc" aria-hidden="true">
-            <kbd>Esc</kbd>
-          </span>
+        {cancellable ? (
+          <button
+            type="button"
+            className="vt-cancel-btn"
+            onClick={handleCancel}
+            title="Cancel dictation (Esc)"
+            aria-label="Cancel dictation"
+          >
+            <span>Esc</span>
+            <svg
+              viewBox="0 0 12 12"
+              className="vt-cancel-icon"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M2.5 2.5 9.5 9.5M9.5 2.5 2.5 9.5"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
         ) : null}
       </output>
     </div>

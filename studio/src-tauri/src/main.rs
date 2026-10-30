@@ -2597,6 +2597,7 @@ fn main() {
             voice_typing::voice_typing_hud_state,
             voice_typing::voice_typing_hud_level,
             voice_typing::voice_typing_hud_prewarm,
+            voice_typing::voice_typing_cancel,
             voice_typing::paste::voice_typing_insert,
             ];
             handler(invoke)

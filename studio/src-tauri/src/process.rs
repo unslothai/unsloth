@@ -3346,6 +3346,23 @@ pub fn start_backend(
         return Err(msg);
     }
 
+    #[cfg(debug_assertions)]
+    if let Some(root) = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+    {
+        if root.join("studio").join("backend").is_dir() {
+            let mut pythonpath = std::ffi::OsString::from(&root);
+            if let Some(existing) = std::env::var_os("PYTHONPATH") {
+                if !existing.is_empty() {
+                    pythonpath.push(if cfg!(windows) { ";" } else { ":" });
+                    pythonpath.push(existing);
+                }
+            }
+            cmd.env("PYTHONPATH", pythonpath);
+        }
+    }
     cmd.env_remove(STUDIO_RUNTIME_GATE_HANDOFF_ENV);
     cmd.env(STUDIO_RUNTIME_GATE_ACQUIRE_ENV, "1");
 

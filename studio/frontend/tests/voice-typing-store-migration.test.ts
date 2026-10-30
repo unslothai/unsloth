@@ -35,6 +35,9 @@ interface VoiceTypingState {
   pasteMethod: string;
   hudPosition: string;
   muteWhileRecording: boolean;
+  llmPostProcessEnabled: boolean;
+  llmPostProcessModel: string;
+  llmPostProcessPrompt: string;
   lastTranscript: string;
   hudEnabled?: unknown;
   hudShowTranscript?: unknown;
@@ -69,7 +72,10 @@ test("voice typing is off by default", async () => {
   assert.equal(store.getInitialState().enabled, false);
   assert.equal(store.getState().enabled, false);
   assert.equal(store.getState().copyLastTranscript, false);
-  assert.equal(store.getState().micWarmSeconds, 15);
+  assert.equal(store.getState().micWarmSeconds, 0);
+  assert.equal(store.getState().llmPostProcessEnabled, false);
+  assert.equal(store.getState().llmPostProcessModel, "");
+  assert.ok(store.getState().llmPostProcessPrompt.includes("${output}"));
 });
 
 test("an older enabled preference is reset to off", async () => {
@@ -104,7 +110,7 @@ test("the old clipboard flag becomes the copy-once preference", async () => {
   assert.equal(restored.getState().copyLastTranscript, false);
 });
 
-test("a current payload keeps its choices and its -1 warm setting", async () => {
+test("a current payload keeps its choices and forces micWarmSeconds off", async () => {
   const store = await load({
     version: 3,
     state: {
@@ -120,7 +126,7 @@ test("a current payload keeps its choices and its -1 warm setting", async () => 
     "a version 3 choice is respected",
   );
   assert.equal(store.getState().copyLastTranscript, true);
-  assert.equal(store.getState().micWarmSeconds, -1, "Always stays Always");
+  assert.equal(store.getState().micWarmSeconds, 0, "micWarmSeconds is always 0");
   assert.equal(store.getState().soundVolume, 0.8);
 });
 
@@ -136,7 +142,7 @@ test("out-of-range values are repaired instead of shown", async () => {
       muteWhileRecording: "yes",
     },
   });
-  assert.equal(store.getState().micWarmSeconds, 15);
+  assert.equal(store.getState().micWarmSeconds, 0);
   assert.equal(store.getState().soundVolume, 1);
   assert.equal(store.getState().pasteMethod, "ctrl_v");
   assert.equal(store.getState().hudPosition, "bottom");
@@ -156,4 +162,36 @@ test("new writes carry the current schema version", async () => {
   assert.ok(!("hudEnabled" in (saved.state ?? {})));
   assert.ok(!("keepOnClipboard" in (saved.state ?? {})));
   assert.ok(!("lastTranscript" in (saved.state ?? {})));
+});
+
+test("default dictation dictionary has 80 base words plus user name words", async () => {
+  const voiceSettingsModule = (await import(
+    new URL(
+      "../src/features/settings/stores/voice-settings-store.ts",
+      import.meta.url,
+    ).href
+  )) as {
+    DEFAULT_DICTATION_DICTIONARY_WORDS: readonly string[];
+    extractUserNameWords: (name?: string) => string[];
+    buildDefaultDictationDictionary: (name?: string) => string[];
+  };
+
+  assert.equal(
+    voiceSettingsModule.DEFAULT_DICTATION_DICTIONARY_WORDS.length,
+    80,
+    "exactly 80 quality base words excluding user name",
+  );
+  assert.ok(
+    voiceSettingsModule.DEFAULT_DICTATION_DICTIONARY_WORDS.includes("Unsloth"),
+    "includes Unsloth",
+  );
+
+  const nameWords = voiceSettingsModule.extractUserNameWords("Fahad Khan");
+  assert.deepEqual(nameWords, ["Fahad", "Khan"]);
+
+  const combined = voiceSettingsModule.buildDefaultDictationDictionary("Fahad Khan");
+  assert.equal(combined.length, 82);
+  assert.equal(combined[0], "Fahad");
+  assert.equal(combined[1], "Khan");
+  assert.equal(combined[2], "Unsloth");
 });

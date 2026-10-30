@@ -770,6 +770,11 @@ class GgmlSttSidecar:
     def keep_alive_seconds(self) -> float:
         return self._keep_alive_seconds
 
+    def set_keep_alive_seconds(self, seconds: float) -> None:
+        with self._lock:
+            self._keep_alive_seconds = max(0.0, float(seconds))
+            self._schedule_idle_unload_locked()
+
     def _process_alive(self) -> bool:
         # Snapshot once: a concurrent unload() can null it between the check and .poll().
         process = self._process
@@ -797,7 +802,7 @@ class GgmlSttSidecar:
 
     def _schedule_idle_unload_locked(self) -> None:
         self._cancel_idle_unload_locked()
-        if not self._process_alive():
+        if not self._process_alive() or self._keep_alive_seconds <= 0:
             return
         generation = self._idle_generation
         timer = threading.Timer(self._keep_alive_seconds, self._idle_unload, args = (generation,))

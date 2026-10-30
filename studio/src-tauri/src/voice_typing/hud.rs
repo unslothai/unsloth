@@ -17,8 +17,8 @@ use tauri::{
 const HUD_LABEL: &str = "voice-hud";
 /// The pill itself is compact, while the transparent window gives CSS shadows and
 /// live transcript ticker text breathing room without clipping.
-const HUD_WIDTH: f64 = 400.0;
-const HUD_HEIGHT: f64 = 128.0;
+const HUD_WIDTH: f64 = 360.0;
+const HUD_HEIGHT: f64 = 72.0;
 /// Distance from the top or bottom of the monitor work area to the window edge.
 const WORK_AREA_MARGIN: f64 = 16.0;
 
@@ -84,8 +84,9 @@ fn existing(app: &AppHandle) -> Option<WebviewWindow> {
         .build();
     match built {
         Ok(window) => {
-            // Passive indicator: clicks pass through to whatever is underneath.
-            let _ = window.set_ignore_cursor_events(true);
+            // Focusable is false (WS_EX_NOACTIVATE), so clicking the cancel button on
+            // the HUD pill never steals focus from the application being dictated into.
+            let _ = window.set_ignore_cursor_events(false);
             Some(window)
         }
         Err(error) => {
