@@ -655,6 +655,7 @@ class SdCppEngine:
                     timeout = timeout,
                     check = False,
                     env = runtime_env(self.binary),
+                    **windows_hidden_subprocess_kwargs(),
                 )
         except (OSError, subprocess.SubprocessError):
             return None

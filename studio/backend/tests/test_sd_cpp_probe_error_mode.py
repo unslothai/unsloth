@@ -183,5 +183,46 @@ def test_engine_version_probe_launches_with_the_bit(error_mode, monkeypatch, tmp
     assert error_mode["value"] == 0x8000
 
 
+_windows_only = pytest.mark.skipif(sys.platform != "win32", reason = "real kernel32")
+
+
+def _child_error_mode() -> int:
+    out = subprocess.run(
+        [sys.executable, "-c", "import ctypes; print(ctypes.WinDLL('kernel32').GetErrorMode())"],
+        capture_output = True,
+        text = True,
+        check = True,
+        timeout = 60,
+    )
+    return int(out.stdout.strip())
+
+
+@_windows_only
+def test_a_real_child_inherits_the_bit_only_while_held():
+    kernel32 = ctypes.WinDLL("kernel32")
+    original = kernel32.GetErrorMode()
+    kernel32.SetErrorMode(original & ~1)
+    try:
+        assert not _child_error_mode() & 1
+        with subprocess_compat.windows_loader_error_boxes_suppressed():
+            assert _child_error_mode() & 1
+        assert not _child_error_mode() & 1
+    finally:
+        kernel32.SetErrorMode(original)
+
+
+@_windows_only
+def test_a_real_binary_missing_its_dll_is_reported_unrunnable(tmp_path):
+    # python.exe copied without pythonXY.dll fails in the loader, like an sd.cpp bundle without HIP.
+    import shutil
+
+    binary = tmp_path / "sd-server.exe"
+    shutil.copy(getattr(sys, "_base_executable", sys.executable), binary)
+    with subprocess_compat.windows_loader_error_boxes_suppressed():
+        rc = subprocess.run([str(binary), "--help"], capture_output = True, timeout = 60).returncode
+    assert rc & 0xFFFFFFFF == _STATUS_DLL_NOT_FOUND
+    assert bk._server_binary_runnable(str(binary)) is False
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
