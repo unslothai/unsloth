@@ -13600,6 +13600,13 @@ class DiffusionBackend:
                         if inpaint_padding_applied is None and init_pil is not None:
                             soft_overlay = (init_pil, mask_pil)
 
+                if workflow in ("img2img", "inpaint") and init_pil is not None and "strength" in call_params:
+                    applied = strength if strength is not None else call_params["strength"].default
+                    if isinstance(applied, (int, float)):
+                        # SDXL-style img2img runs int(N * strength) steps: a 1-step default would denoise none.
+                        steps = diffusion_hires.min_inference_steps(
+                            steps, float(applied), diffusion_hires.timestep_rule(pipe)
+                        )
                 kwargs: dict[str, Any] = {
                     # prompt / generator are set per chunk below, one Generator per image.
                     "num_inference_steps": steps,
