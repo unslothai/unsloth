@@ -123,7 +123,7 @@ def test_hub_probe_reads_the_explicit_file(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("subfolder", [None, "sub"])
 def test_absolute_explicit_name_inside_the_model_dir_decides_the_layout(tmp_path, subfolder):
-    # transformers joins an absolute name to the real model dir (+ subfolder) and accepts it when inside.
+    # transformers accepts an absolute name inside the real model dir (+ subfolder).
     path = _repo(tmp_path, SPLIT, SPLIT)
     root = tmp_path / "ckpt" / subfolder if subfolder else tmp_path / "ckpt"
     root.mkdir(exist_ok = True)
@@ -132,7 +132,6 @@ def test_absolute_explicit_name_inside_the_model_dir_decides_the_layout(tmp_path
     cfg = _cfg(str(root / "chosen.safetensors"))
     probe = loader_utils.gpt_oss_checkpoint_has_fused_experts
     assert probe(cfg, path, subfolder = subfolder) is True
-    # Outside the model dir (+ subfolder) stays refused, absolute or not.
     _save(tmp_path / "outside.safetensors", FUSED)
     outside = str(tmp_path / "outside.safetensors")
     assert (
