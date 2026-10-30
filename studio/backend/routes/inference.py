@@ -6629,15 +6629,49 @@ _DISPLAY_GEMMA_CALL_RE = _re.compile(r"(?<!\w)call\s*:")
 _DISPLAY_GEMMA_TAIL_RE = _re.compile(r"(?<!\w)c(?:a(?:l(?:l\s*)?)?)?\Z")
 
 
+# After the first sentinel: ``P + O + B`` with P free of ``<``, ``[``, ``{`` and ``call:``, O one of these openers.
+_DISPLAY_HOLD_OPENER_RE = _re.compile(
+    r'<tool_call>(?:\s*<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>)?'
+    r'|<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>'
+)
+# Literals in B that can end the hold: every sentinel but the orphan ``</param`` arm (anchored at the end, so the
+# match at O, which runs to the end, consumes it first), plus think segmentation and GLM argument tags.
+_DISPLAY_HOLD_TRIGGERS = tuple(
+    dict.fromkeys(
+        tuple(s for s in _DISPLAY_STRIP_SENTINELS if s != "</param")
+        + ("<think", "</think", "[THINK", "[/THINK", "<arg_key", "<arg_value", "</arg_value")
+    )
+)
+_DISPLAY_HOLD_OVERLAP = max(len(trigger) for trigger in _DISPLAY_HOLD_TRIGGERS) - 1
+
+
 class _StreamingDisplayStrip:
     """``_strip_tool_xml_for_display`` for a cumulative buffer that grows one token at a time.
 
     The full strip rescans the whole buffer per call, quadratic over a turn on the event loop. No arm can edit
     text holding none of ``_DISPLAY_STRIP_SENTINELS`` and no ``call:``, so such a buffer is returned as is and the
-    scan resumes where it stopped. After a sentinel the full strip runs on every call, as before.
+    scan resumes where it stopped. After a sentinel the full strip runs, except while the buffer is
+    ``P + O + B``: P (everything before the first sentinel) holds no ``<``, ``[``, ``{`` or ``call:``, O is
+    ``<tool_call>`` or ``<function=NAME>`` (optionally wrapped), and B holds no ``_DISPLAY_HOLD_TRIGGERS`` and no
+    ``call:``. There the regex match at O runs to the end (no closer), the function-XML scan and GLM drop the
+    unclosed call at the end, the masking walk stops at O, think splitting needs a tag, and every other arm needs
+    a ``<`` or ``[`` before O, so the strip is P for every such B. The hold arms only when the full strip just
+    returned exactly P, and only text appended since the last call is scanned for triggers.
     """
 
-    __slots__ = ("_auto_heal", "_names", "_prev", "_scanned", "_gemma_from", "_marked")
+    __slots__ = (
+        "_auto_heal",
+        "_names",
+        "_prev",
+        "_scanned",
+        "_gemma_from",
+        "_marked",
+        "_hold_out",
+        "_hold_dead",
+        "_hold_from",
+        "_hold_scanned",
+        "_hold_gemma_from",
+    )
 
     def __init__(
         self,
@@ -6654,6 +6688,11 @@ class _StreamingDisplayStrip:
         self._scanned = 0
         self._gemma_from = 0
         self._marked = False
+        self._hold_out = None
+        self._hold_dead = False
+        self._hold_from = 0
+        self._hold_scanned = 0
+        self._hold_gemma_from = 0
 
     def _has_sentinel(self, text: str) -> bool:
         start = max(0, self._scanned - _DISPLAY_SENTINEL_OVERLAP)
@@ -6667,6 +6706,66 @@ class _StreamingDisplayStrip:
         self._scanned = len(text)
         return False
 
+    def _hold_clean(self, text: str) -> bool:
+        """No trigger and no ``call:`` in B, scanning only what was appended since the last call."""
+        lo = max(self._hold_from, self._hold_scanned - _DISPLAY_HOLD_OVERLAP)
+        if any(text.find(trigger, lo) >= 0 for trigger in _DISPLAY_HOLD_TRIGGERS):
+            return False
+        if _DISPLAY_GEMMA_CALL_RE.search(text, self._hold_gemma_from) is not None:
+            return False
+        tail = _DISPLAY_GEMMA_TAIL_RE.search(
+            text, max(self._hold_gemma_from, len(text.rstrip()) - 4)
+        )
+        self._hold_gemma_from = tail.start() if tail is not None else len(text)
+        self._hold_scanned = len(text)
+        return True
+
+    def _try_hold(self, text: str, out: str) -> None:
+        first = min(
+            (at for at in (text.find(s) for s in _DISPLAY_STRIP_SENTINELS) if at >= 0),
+            default = -1,
+        )
+        if first < 0:
+            self._hold_dead = True
+            return
+        prefix = text[:first]
+        if (
+            "<" in prefix
+            or "[" in prefix
+            or "{" in prefix
+            or _DISPLAY_GEMMA_CALL_RE.search(prefix) is not None
+        ):
+            self._hold_dead = True
+            return
+        opener = _DISPLAY_HOLD_OPENER_RE.match(text, first)
+        if opener is not None and opener.group().endswith("<tool_call>"):
+            # A wrapped ``<function=NAME>`` may still be arriving after the whitespace.
+            nxt = opener.end()
+            while nxt < len(text) and text[nxt].isspace():
+                nxt += 1
+            if nxt == len(text) or (text[nxt] == "<" and text.find(">", nxt) < 0):
+                return
+        if opener is None:
+            # ``<tool_call`` or ``<function=NA`` still arriving.
+            if text.find(">", first) < 0 and (
+                text.startswith("<function", first)
+                or (len(text) - first < 11 and "<tool_call>".startswith(text[first:]))
+            ):
+                return
+            self._hold_dead = True
+            return
+        # Fail closed: the strip just run must agree with the reasoning in the docstring.
+        if out != prefix:
+            self._hold_dead = True
+            return
+        self._hold_from = opener.end()
+        self._hold_scanned = opener.end()
+        self._hold_gemma_from = opener.end()
+        if not self._hold_clean(text):
+            self._hold_dead = True
+            return
+        self._hold_out = out
+
     def strip(self, text: str) -> str:
         if not self._auto_heal:
             return text
@@ -6677,11 +6776,19 @@ class _StreamingDisplayStrip:
             self._marked = True
         if not self._marked:
             return text
-        return _strip_tool_xml_for_display(
+        if self._hold_out is not None:
+            if self._hold_clean(text):
+                return self._hold_out
+            self._hold_out = None
+            self._hold_dead = True
+        out = _strip_tool_xml_for_display(
             text,
             auto_heal_tool_calls = True,
             enabled_tool_names = self._names,
         )
+        if not self._hold_dead:
+            self._try_hold(text, out)
+        return out
 
 
 class _ReasoningSpanGuard:
@@ -6704,6 +6811,9 @@ class _ReasoningSpanGuard:
         self._consumed = 0
         self._turn_wrap = None
         self._claimed = False
+        # Each event carries the whole turn so far: strip it incrementally, not from scratch per event.
+        self._display = None
+        self._display_key = None
 
     @property
     def claimed(self) -> bool:
@@ -6752,19 +6862,30 @@ class _ReasoningSpanGuard:
         wrapped_so_far = None,
     ) -> str:
         wrap = self._wrap_for(text, wrapped_so_far)
+        display = self._display_strip(auto_heal_tool_calls, enabled_tool_names)
         if wrap is None:
-            return _strip_tool_xml_for_display(
-                text,
+            return display.strip(text)
+        # Clamp: mid-stream the close tag has not arrived yet, so the whole text is trace.
+        end = min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
+        return text[:end] + display.strip(text[end:])
+
+    def _display_strip(
+        self, auto_heal_tool_calls: bool, enabled_tool_names
+    ) -> "_StreamingDisplayStrip":
+        """Returns exactly ``_strip_tool_xml_for_display`` for any input; a buffer that does not extend the last
+        one resets it, so a new turn or a moved span start is handled."""
+        key = (bool(auto_heal_tool_calls), enabled_tool_names)
+        if self._display is None or self._display_key != key:
+            self._display = _StreamingDisplayStrip(
                 auto_heal_tool_calls = auto_heal_tool_calls,
                 enabled_tool_names = enabled_tool_names,
             )
-        # Clamp: mid-stream the close tag has not arrived yet, so the whole text is trace.
-        end = min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
-        return text[:end] + _strip_tool_xml_for_display(
-            text[end:],
-            auto_heal_tool_calls = auto_heal_tool_calls,
-            enabled_tool_names = enabled_tool_names,
-        )
+            # A copy: the caller's set may change between events.
+            self._display_key = (
+                key[0],
+                None if enabled_tool_names is None else frozenset(enabled_tool_names),
+            )
+        return self._display
 
 
 def _strip_tool_xml(text: str, enabled_tool_names: Optional[set] = None) -> str:

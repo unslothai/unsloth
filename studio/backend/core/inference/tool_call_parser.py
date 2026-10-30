@@ -1422,16 +1422,22 @@ _OPEN_CALL_TRIGGERS = (
 )
 _OPEN_CALL_TRIGGER_MAX_LEN = max(len(trigger) for trigger in _OPEN_CALL_TRIGGERS)
 _OPEN_CALL_WS_RE = re.compile(r"\s*")
+# ``<function=NAME>`` (bare or inside ``<tool_call>``) closes at ``</function>``; other bodies get the same set.
+_OPEN_BODY_TRIGGERS = _OPEN_CALL_TRIGGERS + ("</function",)
+_OPEN_BODY_TRIGGER_MAX_LEN = max(len(trigger) for trigger in _OPEN_BODY_TRIGGERS)
+# The scanner's opener without its trailing ``\s*``, so the body starts at a fixed offset.
+_OPEN_FUNCTION_OPENER_RE = re.compile(r'<function(?:=[\w\.\-]+|\s+name="[\w\.\-]+")>')
 
 
 def _promotable_gemma_call_pos(text: str, start: int, enabled_tool_names) -> int:
     """The sentinel find is exact, not a heuristic: sweeping call-free prose per chunk was quadratic."""
-    start = text.find(_GEMMA_BARE_SENTINEL, start)
-    if start < 0:
-        return -1
-    for m in _GEMMA_BARE_TC_RE.finditer(text, start):
+    # Every match starts with the literal, so trying the regex only where it lands finds the same matches as
+    # ``finditer`` without sweeping the rest of the buffer per chunk (``<tool_call`` alone holds one).
+    m = _search_from_literal(_GEMMA_BARE_TC_RE, _GEMMA_BARE_SENTINEL, text, start)
+    while m is not None:
         if _markerless_promotable(m.group(1), enabled_tool_names):
             return m.start()
+        m = _search_from_literal(_GEMMA_BARE_TC_RE, _GEMMA_BARE_SENTINEL, text, m.end())
     return -1
 
 
@@ -1546,6 +1552,7 @@ class StreamingMarkupStripper:
         "_gate_out",
         "_gate_dead",
         "_gate_from",
+        "_gate_triggers",
         "_gate_scanned",
         "_gate_call_ws",
     )
@@ -1583,6 +1590,7 @@ class StreamingMarkupStripper:
         # (floor, first) the gate can never arm for; append-only growth cannot undo its reason.
         self._gate_dead = None
         self._gate_from = 0
+        self._gate_triggers = _OPEN_CALL_TRIGGERS
         self._gate_scanned = 0
         # Where a ``call`` followed only by whitespace so far resumes its colon check, else -1.
         self._gate_call_ws = -1
@@ -1590,10 +1598,16 @@ class StreamingMarkupStripper:
     def _gate_clean(self, text: str) -> bool:
         """Scan only text appended since the last call (plus an overlap) for anything that could change the strip."""
         n = len(text)
-        lo = self._gate_scanned - _OPEN_CALL_TRIGGER_MAX_LEN + 1
+        triggers = self._gate_triggers
+        overlap = (
+            _OPEN_CALL_TRIGGER_MAX_LEN
+            if triggers is _OPEN_CALL_TRIGGERS
+            else _OPEN_BODY_TRIGGER_MAX_LEN
+        )
+        lo = self._gate_scanned - overlap + 1
         if lo < self._gate_from:
             lo = self._gate_from
-        for trigger in _OPEN_CALL_TRIGGERS:
+        for trigger in triggers:
             if text.find(trigger, lo) >= 0:
                 return False
         at = self._gate_call_ws
@@ -1618,20 +1632,20 @@ class StreamingMarkupStripper:
         return True
 
     def _gate_try_arm(self, text: str, seg_start: int, out: str, seg_out: str):
-        """Arm when ``text[seg_start:]`` is ``P + <tool_call> + B``: P without ``<``, ``[``, ``{``, ``call\\s*:``;
-        B starting ``\\s*{`` without a trigger or ``call\\s*:``. Then only ``<tool_call>.*$`` matches (the masking
-        walk stops at the opener, GLM needs a name, every other arm needs a ``<`` or ``[`` in P), so the segment
-        strips to P (``seg_final``) or itself, and so do the cut decisions, until a trigger arrives."""
+        """Arm when ``text[seg_start:]`` is ``P + O + B``: P without ``<``, ``[``, ``{``, ``call\\s*:``; O one of
+        ``<tool_call>``, ``<function=NAME>``, ``<tool_call>\\s*<function=NAME>``; B without a trigger or ``call\\s*:``.
+        Then the arms that can reach past O (``<tool_call>.*$``, ``<function=..>.*$``, the function-XML scan, GLM)
+        all run to the end unless a trigger closes them, the masking walk stops at O, and every other arm needs a
+        ``<`` or ``[`` in P, so the segment strips to P (``seg_final``) or itself, and so do the cut decisions,
+        until a trigger arrives. A JSON body keeps the original trigger set; any other body adds ``</function``."""
         key = (self._floor, self._first)
         if self._gate_dead == key:
             return
         start = self._floor + self._first
         prefix = text[seg_start:start]
-        body = start + len(_OPEN_CALL_OPENER)
         if (
-            not text.startswith(_OPEN_CALL_OPENER, start)
             # ``<param`` in the kept head makes the cut depend on later text (``_inside_open_parameter``).
-            or text.find("<param", self._floor, seg_start) >= 0
+            text.find("<param", self._floor, seg_start) >= 0
             or "<" in prefix
             or "[" in prefix
             or "{" in prefix
@@ -1642,14 +1656,39 @@ class StreamingMarkupStripper:
         ):
             self._gate_dead = key
             return
-        brace = _OPEN_CALL_WS_RE.match(text, body).end()
-        if brace == len(text):
-            return
+        triggers = _OPEN_BODY_TRIGGERS
+        if text.startswith(_OPEN_CALL_OPENER, start):
+            body = start + len(_OPEN_CALL_OPENER)
+            nxt = _OPEN_CALL_WS_RE.match(text, body).end()
+            if nxt == len(text):
+                return
+            if text[nxt] == "{":
+                triggers = _OPEN_CALL_TRIGGERS
+            elif text[nxt] == "<":
+                fn = _OPEN_FUNCTION_OPENER_RE.match(text, nxt)
+                if fn is not None:
+                    body = fn.end()
+                elif text.find(">", nxt) < 0:
+                    # Possibly a ``<function=NAME>`` still arriving.
+                    return
+        else:
+            fn = _OPEN_FUNCTION_OPENER_RE.match(text, start)
+            if fn is None:
+                rest = len(text) - start
+                if text.find(">", start) < 0 and (
+                    (rest < len(_OPEN_CALL_OPENER) and _OPEN_CALL_OPENER.startswith(text[start:]))
+                    or text.startswith("<function", start)
+                ):
+                    return
+                self._gate_dead = key
+                return
+            body = fn.end()
         # Fail closed if the full strip just run disagrees with the reasoning above.
-        if text[brace] != "{" or seg_out != (prefix if self._seg_final else text[seg_start:]):
+        if seg_out != (prefix if self._seg_final else text[seg_start:]):
             self._gate_dead = key
             return
         self._gate_from = body
+        self._gate_triggers = triggers
         self._gate_scanned = body
         self._gate_call_ws = -1
         if not self._gate_clean(text):

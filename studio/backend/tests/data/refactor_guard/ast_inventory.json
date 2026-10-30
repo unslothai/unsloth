@@ -1130,6 +1130,7 @@
       "_LLAMA3_WS_RE": "'\\\\s*' flags=32",
       "_MISTRAL_V11_NAME_RE": "'\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*' flags=32",
       "_OPEN_CALL_WS_RE": "'\\\\s*' flags=32",
+      "_OPEN_FUNCTION_OPENER_RE": "'<function(?:=[\\\\w\\\\.\\\\-]+|\\\\s+name=\"[\\\\w\\\\.\\\\-]+\")>' flags=32",
       "_OUTER_ENVELOPE_CLOSED_PATS[0]": "'<tool_call>(?:(?!<tool_call>).)*</tool_call>' flags=48",
       "_OUTER_ENVELOPE_CLOSED_PATS[1]": "'<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>' flags=48",
       "_OUTER_ENVELOPE_CLOSED_PATS[2]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
@@ -1189,6 +1190,7 @@
       "re.compile('<function(?:=([\\\\w\\\\.\\\\-]+)|\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\")>\\\\s*')": 1,
       "re.compile('<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>', re.DOTALL)": 1,
       "re.compile('<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>.*$', re.DOTALL)": 1,
+      "re.compile('<function(?:=[\\\\w\\\\.\\\\-]+|\\\\s+name=\"[\\\\w\\\\.\\\\-]+\")>')": 1,
       "re.compile('<function\\\\s+name=\"')": 1,
       "re.compile('<tool_call>(?:(?!<tool_call>).)*</tool_call>', re.DOTALL)": 1,
       "re.compile('<tool_call>.*$', re.DOTALL)": 1,
@@ -1531,6 +1533,12 @@
       "_MISTRAL_V11_NAME_RE": {
         "kind": "assign"
       },
+      "_OPEN_BODY_TRIGGERS": {
+        "kind": "assign"
+      },
+      "_OPEN_BODY_TRIGGER_MAX_LEN": {
+        "kind": "assign"
+      },
       "_OPEN_CALL_OPENER": {
         "kind": "assign"
       },
@@ -1541,6 +1549,9 @@
         "kind": "assign"
       },
       "_OPEN_CALL_WS_RE": {
+        "kind": "assign"
+      },
+      "_OPEN_FUNCTION_OPENER_RE": {
         "kind": "assign"
       },
       "_OUTER_ENVELOPE_CLOSED_PATS": {
