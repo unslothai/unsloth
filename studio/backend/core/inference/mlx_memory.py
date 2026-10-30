@@ -1017,10 +1017,11 @@ def _widest_unfused_scores(widths, dtype_size: int, n_ctx: int, prefill_chunk: i
         return not _attention_fuses(route, widths, dtype_size, queries, keys)
 
     def longest_tail(whole, limit):
-        lengths = _unfused_tails(route, widths, dtype_size, chunk)[min(whole, 1)]
-        if limit > _TAIL_SCAN and unfused(limit, limit + whole * chunk):
-            return limit
-        return max((r for r in lengths if r <= limit), default = 0)
+        # The tail of a prompt holding no whole chunk is its first call, so it is square.
+        short, first_fused = _unfused_tails(route, widths, dtype_size, chunk if whole else 0)
+        if limit > 8 and first_fused > 9:
+            return min(limit, first_fused - 1)
+        return max((r for r in short if r <= limit), default = 0)
 
     whole, rest = divmod(max(n_ctx - 1, 0), chunk)
     cells = [n_ctx + 1 if unfused(1, 2) or unfused(1, n_ctx + 1) else 0]
@@ -1036,18 +1037,29 @@ def _widest_unfused_scores(widths, dtype_size: int, n_ctx: int, prefill_chunk: i
     return max(cells)
 
 
-# mlx's fused-kernel thresholds all sit below this, so longer tails route as this one does.
-_TAIL_SCAN = 4096
+# Past any context: a shape still unfused here never fuses.
+_TAIL_MAX = 1 << 24
 
 
 @functools.lru_cache(maxsize = 64)
-def _unfused_tails(route, widths, dtype_size: int, chunk: int):
-    """Tail lengths mlx leaves unfused, as the first call (square) and after a whole chunk."""
-    span = range(1, min(chunk - 1, _TAIL_SCAN) + 1)
-    return tuple(
-        tuple(r for r in span if not _attention_fuses(route, widths, dtype_size, r, r + later))
-        for later in (0, chunk)
-    )
+def _unfused_tails(route, widths, dtype_size: int, later: int):
+    """Unfused tails of up to 8 queries (the vector kernel), and the first longer tail that fuses.
+
+    Above 8 queries mlx's kernels only switch on as queries grow (NAX split, d512 query blocks,
+    square d256), so one boundary separates the unfused tails from the fused ones.
+    """
+
+    def unfused(r):
+        return not _attention_fuses(route, widths, dtype_size, r, r + later)
+
+    short = tuple(r for r in range(1, 9) if unfused(r))
+    lo, hi = 8, 9
+    while hi < _TAIL_MAX and unfused(hi):
+        lo, hi = hi, min(hi * 2, _TAIL_MAX)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if unfused(mid) else (lo, mid)
+    return short, hi
 
 
 def _zoo_route():

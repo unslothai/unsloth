@@ -4460,7 +4460,15 @@ def test_a_full_width_cache_pays_for_the_widest_call_mlx_does_not_fuse(monkeypat
     asked = _unfused_route(monkeypatch, fuses)
     priced = mm._compute_bytes(_BONSAI, 2, 2048, [_GROWING], n_ctx, None)
     assert priced - floor == cells * _SCORE
-    assert (2048, 16 * 2048) in asked and (1023, 1023 + 2048) in asked
+    assert (2048, 16 * 2048) in asked
+
+
+def test_a_tail_unfused_past_any_fixed_scan_is_still_priced(monkeypatch):
+    # NAX d512 with few heads: tails fuse only past 8160 queries, longer than a fixed scan reaches.
+    _unfused_route(monkeypatch, lambda L, S: L <= 8 or L > 8160)
+    floor = mm._compute_bytes(_BONSAI[:3], 2, 16384, [_GROWING], 32768, None)
+    priced = mm._compute_bytes(_BONSAI, 2, 16384, [_GROWING], 32768, None)
+    assert priced - floor == 8160 * (16384 + 8160) * _SCORE
 
 
 def test_the_scores_charged_never_fall_as_the_context_grows(monkeypatch):
