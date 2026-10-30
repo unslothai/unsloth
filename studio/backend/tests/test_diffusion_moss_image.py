@@ -443,7 +443,7 @@ def test_family_row_defaults_and_trust():
         and fam.transformer_class == "MOSSImageTransformer"
     )
     for repo in ("OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base", "moss-image"):
-        assert df.default_generation_params(repo) == (50, 3.0), repo
+        assert df.default_generation_params(repo) == (25, 2.5), repo
     trusted = trusted_repo_ids(df._FAMILIES)
     assert {"openmoss-team/moss-image-sft", "openmoss-team/moss-image-base"} <= trusted
 
