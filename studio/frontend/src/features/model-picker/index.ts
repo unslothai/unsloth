@@ -92,6 +92,11 @@ export {
   resolveResidentInitialConfig,
 } from "./model-config/per-model-config";
 export {
+  readRememberedModelSettings,
+  rememberModelSettingsPatch,
+  rememberedSettingsKey,
+} from "./model-config/remembered-model-settings";
+export {
   SharedRunConfigLinkHandler,
   receiveSharedRunConfigUrls,
 } from "./sharing";

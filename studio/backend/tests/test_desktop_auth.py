@@ -817,6 +817,10 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     sandbox_capability_module.router = APIRouter()
     systemone_module = ModuleType("routes.systemone")
     systemone_module.router = APIRouter()
+    claude_desktop_module = ModuleType("routes.claude_desktop")
+    claude_desktop_module.router = APIRouter()
+    codex_desktop_module = ModuleType("routes.codex_desktop")
+    codex_desktop_module.router = APIRouter()
     from fastmcp import FastMCP
 
     systemone_module.MCP_PATH = "/mcp/decisions"
@@ -853,6 +857,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.library", library_module)
     monkeypatch.setitem(sys.modules, "routes.sandbox_capability", sandbox_capability_module)
     monkeypatch.setitem(sys.modules, "routes.systemone", systemone_module)
+    monkeypatch.setitem(sys.modules, "routes.claude_desktop", claude_desktop_module)
+    monkeypatch.setitem(sys.modules, "routes.codex_desktop", codex_desktop_module)
     monkeypatch.setitem(sys.modules, "routes.browser", browser_module)
 
     import studio.backend.main as backend_main

@@ -443,8 +443,19 @@ export const BUDGET = {
   // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
   // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
   // the eager English catalog and its search rows. Raised by that.
-  transferBytes: 1_850_410,
-  rawBytes: 5_991_390,
+  // Settings > Agents > Desktop apps (the Claude Desktop and Codex Desktop cards, their model pickers, the shared
+  // context window / MTP / keep-loaded run settings, API clients and strings) add +8,089 B raw / +2,495 B transfer
+  // to the eager settings and locale chunks (6,935,466 -> 6,943,555 B raw, 2,085,390 -> 2,087,885 B transfer against
+  // 8f8eaee609, one machine and build, Node 26.8.2, unchanged at 99 chunks). Lazy-loading the cards cost more
+  // (+2.4 KB transfer, 7 extra startup chunks), so they are imported statically and the budget raised by that growth.
+  // Merged onto upstream main 21127b21bf. Main alone measures over its own budget on this machine (5,837.6 KB raw /
+  // 1,801.9 KB transfer on Node 26.8.2, 1,806.1 KB transfer on Node 24.22, 85 chunks), and the Desktop apps still add
+  // +8.0 KB raw / +2.5 KB transfer on top (merged: 5,845.6 KB raw, 1,804.4 KB transfer on Node 26, 1,808.6 KB on
+  // Node 24). Re-measured: the merged size plus a few KB of headroom.
+  // Merged onto upstream main c6056ffcbc (budget 1,850,410 B transfer / 5,991,390 B raw): upstream's budget plus
+  // the Desktop apps' +2,495 B transfer / +8,089 B raw.
+  transferBytes: 1_852_905,
+  rawBytes: 5_999_479,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

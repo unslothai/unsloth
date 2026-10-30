@@ -45,6 +45,8 @@ def studio(tmp_path, monkeypatch):
     monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
     for name in ("OPENCLAW_CONFIG_PATH", "OPENCLAW_STATE_DIR", "OPENCLAW_HOME", "OPENCLAW_PROFILE"):
         monkeypatch.delenv(name, raising = False)
+    # Claude Desktop's profile follows the account's home, not $HOME; keep it in tmp_path too.
+    monkeypatch.setattr(start._claude_desktop, "user_home", lambda: home)
     server = {"calls": [], "keys": {CLI_KEY, APP_KEY}, "minted": 0}
 
     def http_json(
@@ -1204,3 +1206,281 @@ def test_vscode_warns_when_the_context_is_too_small_for_agent_mode(
 
     assert result.exit_code == 0, result.output
     assert ("--context-length 32768" in result.output) is warned
+
+
+# -- Claude Desktop (`unsloth start claude --app`) -------------------------------------------
+
+
+USER_CLAUDE = '{\n  "mcpServers": {"fs": {"command": "npx"}}\n}\n'
+
+
+@pytest.fixture
+def claude_desktop(studio, monkeypatch, tmp_path):
+    cda = start._claude_desktop
+    real_targets = cda.target_paths
+    app = tmp_path / "Applications" / "Claude.app"
+    desktop = {"running": False, "opened": [], "quit": 0, "app": app}
+
+    def quit_app(timeout = 30.0):
+        desktop["quit"] += 1
+        desktop["running"] = False
+
+    def open_app(path):
+        desktop["opened"].append(path)
+        desktop["running"] = True
+
+    monkeypatch.setattr(cda, "can_launch", lambda platform = None: True)
+    monkeypatch.setattr(cda, "app_path", lambda platform = None, home = None: app)
+    monkeypatch.setattr(
+        cda, "target_paths", lambda platform = None, home = None: real_targets("darwin", home)
+    )
+    monkeypatch.setattr(cda, "is_running", lambda: desktop["running"])
+    monkeypatch.setattr(cda, "quit_app", quit_app)
+    monkeypatch.setattr(cda, "open_app", open_app)
+    support = studio["home"] / "Library" / "Application Support"
+    desktop["config"] = support / "Claude" / "claude_desktop_config.json"
+    desktop["third"] = support / "Claude-3p"
+    desktop["profile"] = desktop["third"] / "configLibrary" / f"{cda.PROFILE_ID}.json"
+    desktop["meta"] = desktop["third"] / "configLibrary" / "_meta.json"
+    desktop["config"].parent.mkdir(parents = True)
+    desktop["config"].write_text(USER_CLAUDE)
+    return desktop
+
+
+def test_claude_app_switches_the_app_while_running_and_back_on_exit(studio, claude_desktop):
+    cda = start._claude_desktop
+    seen = {}
+
+    def while_running():
+        seen["profile_text"] = claude_desktop["profile"].read_text()
+        profile = json.loads(seen["profile_text"])
+        seen["profile"] = profile
+        seen["mode"] = json.loads(claude_desktop["config"].read_text())["deploymentMode"]
+        seen["meta"] = json.loads(claude_desktop["meta"].read_text())
+        seen["backup"] = (
+            claude_desktop["config"]
+            .with_name("claude_desktop_config.json.unsloth-backup")
+            .read_text()
+        )
+        seen["probe"] = cda.probe(profile["inferenceGatewayBaseUrl"])
+        seen["state"] = json.loads((start._claude_app_state_path()).read_text())
+
+    studio["while_running"] = while_running
+
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+
+    assert result.exit_code == 0, result.output
+    profile = seen["profile"]
+    assert profile["inferenceProvider"] == "gateway"
+    assert profile["deploymentDisplayName"] == "Unsloth"
+    assert profile["inferenceGatewayAuthScheme"] == "bearer"
+    # Claude holds a per-session gateway token; the minted Unsloth key never lands in its files.
+    assert profile["inferenceGatewayApiKey"] != APP_KEY
+    assert APP_KEY not in seen["profile_text"]
+    assert seen["probe"]
+    assert seen["mode"] == "3p"
+    assert seen["meta"]["appliedId"] == cda.PROFILE_ID
+    assert seen["backup"] == USER_CLAUDE
+    assert seen["state"]["key_id"] == 7
+    assert claude_desktop["opened"] == [claude_desktop["app"]]
+    # On exit: Claude quit, files back byte for byte, created files gone, key revoked.
+    assert claude_desktop["quit"] == 1
+    assert claude_desktop["config"].read_text() == USER_CLAUDE
+    assert not claude_desktop["third"].joinpath("claude_desktop_config.json").exists()
+    assert not claude_desktop["profile"].exists()
+    assert not claude_desktop["meta"].exists()
+    assert (
+        not claude_desktop["config"].with_name("claude_desktop_config.json.unsloth-backup").exists()
+    )
+    assert not start._claude_app_state_path().exists()
+    assert APP_KEY not in studio["keys"]
+    assert any(c[0] == "POST" and c[2] == {"name": "Claude Desktop"} for c in studio["calls"])
+    assert "Switched Claude Desktop back" in result.output
+
+
+def test_claude_app_restarts_an_open_claude_after_asking(studio, claude_desktop, monkeypatch):
+    claude_desktop["running"] = True
+    monkeypatch.setattr(start, "_confirm_claude_restart", lambda: True)
+    order = []
+    real_apply = start._claude_desktop.apply_profile
+
+    def apply(*args, **kwargs):
+        order.append(("apply", claude_desktop["running"]))
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(start._claude_desktop, "apply_profile", apply)
+
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+
+    assert result.exit_code == 0, result.output
+    # Claude saves its settings while it quits, so the switch happens only once it is gone.
+    assert order == [("apply", False)]
+    assert claude_desktop["quit"] == 2
+    assert claude_desktop["opened"] == [claude_desktop["app"]]
+    assert claude_desktop["config"].read_text() == USER_CLAUDE
+
+
+def test_claude_app_leaves_an_open_claude_alone_when_declined(studio, claude_desktop, monkeypatch):
+    claude_desktop["running"] = True
+    monkeypatch.setattr(start, "_confirm_claude_restart", lambda: False)
+
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+
+    assert result.exit_code == 0, result.output
+    assert claude_desktop["opened"] == []
+    assert "Quit and reopen Claude Desktop" in result.output
+    assert claude_desktop["config"].read_text() == USER_CLAUDE
+
+
+def test_claude_app_is_refused_off_macos(studio, claude_desktop, monkeypatch):
+    monkeypatch.setattr(start._claude_desktop, "can_launch", lambda platform = None: False)
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+    assert result.exit_code != 0
+    assert "only drive on macOS" in result.output
+    assert studio["calls"] == []
+
+
+def test_claude_app_explains_a_missing_install(studio, claude_desktop, monkeypatch):
+    monkeypatch.setattr(start._claude_desktop, "app_path", lambda platform = None, home = None: None)
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+    assert result.exit_code != 0
+    assert "Claude Desktop isn't installed" in result.output
+    assert "https://claude.ai/download" in result.output
+    assert studio["calls"] == []
+
+
+def test_claude_app_takes_no_agent_arguments(studio, claude_desktop):
+    result = CliRunner().invoke(start.start_app, ["claude", "--app", "--", "--resume"])
+    assert result.exit_code != 0
+    result = CliRunner().invoke(start.start_app, ["claude", "--app", "--auto-route"])
+    assert result.exit_code != 0
+    assert "--auto-route" in result.output
+
+
+def test_claude_app_refuses_a_broken_config_without_changing_anything(studio, claude_desktop):
+    claude_desktop["config"].write_text("[not, an, object")
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+    assert result.exit_code != 0
+    assert claude_desktop["config"].read_text() == "[not, an, object"
+    assert not claude_desktop["profile"].exists()
+    assert studio["minted"] == 0
+
+
+def test_claude_app_refuses_a_symlinked_config(studio, claude_desktop, tmp_path):
+    real = tmp_path / "real.json"
+    real.write_text("{}")
+    claude_desktop["config"].unlink()
+    claude_desktop["config"].symlink_to(real)
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+    assert result.exit_code != 0
+    assert "symlink" in result.output
+    assert real.read_text() == "{}"
+
+
+def test_claude_app_needs_a_key_for_a_remote_server(studio, claude_desktop, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: "http://10.0.0.5:8888")
+    monkeypatch.setattr(start, "is_loopback_url", lambda url: False)
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+    assert result.exit_code != 0
+    assert "--api-key" in result.output
+    assert claude_desktop["config"].read_text() == USER_CLAUDE
+
+
+def test_claude_app_recovers_from_a_session_that_was_killed(studio, claude_desktop, monkeypatch):
+    cda = start._claude_desktop
+    targets = cda.target_paths()
+    files = cda.snapshot(targets)
+    cda.apply_profile(targets, files, "http://127.0.0.1:9", "tok", cda.write_file)
+    state_path = start._claude_app_state_path()
+    start._write_private_json(
+        state_path,
+        {
+            "base": BASE,
+            "key": APP_KEY,
+            "key_id": 7,
+            "owner": {"pid": 999999, "started": 1.0},
+            "files": files,
+        },
+    )
+    monkeypatch.setattr(start, "_codex_app_owner_alive", lambda owner: False)
+    claude_desktop["running"] = True
+
+    studio["while_running"] = lambda: None
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+
+    assert result.exit_code == 0, result.output
+    assert "did not exit cleanly" in result.output
+    assert claude_desktop["config"].read_text() == USER_CLAUDE
+    assert not claude_desktop["profile"].exists()
+    assert not state_path.exists()
+
+
+def test_claude_app_refuses_a_second_session(studio, claude_desktop, monkeypatch):
+    start._write_private_json(
+        start._claude_app_state_path(),
+        {"base": BASE, "files": {"x": {"original": None}}, "owner": {"pid": 4242, "started": 1.0}},
+    )
+    monkeypatch.setattr(start, "_codex_app_owner_alive", lambda owner: True)
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+    assert result.exit_code != 0
+    assert "PID 4242" in result.output
+
+
+def test_claude_app_is_switched_back_when_the_switch_fails(studio, claude_desktop, monkeypatch):
+    cda = start._claude_desktop
+
+    def broken_open(path):
+        raise OSError("open failed")
+
+    monkeypatch.setattr(cda, "open_app", broken_open)
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+    assert result.exit_code != 0
+    assert claude_desktop["config"].read_text() == USER_CLAUDE
+    assert not claude_desktop["profile"].exists()
+    assert not start._claude_app_state_path().exists()
+    assert APP_KEY not in studio["keys"]
+
+
+def test_claude_help_lists_app(studio):
+    result = CliRunner().invoke(start.start_app, ["claude", "--help"], terminal_width = 200)
+    assert "--app" in result.output
+
+
+def test_claude_app_keeps_the_backup_when_the_user_changed_a_setting(studio, claude_desktop):
+    def while_running():
+        config = json.loads(claude_desktop["config"].read_text())
+        config["deploymentMode"] = "1p"
+        claude_desktop["config"].write_text(json.dumps(config))
+
+    studio["while_running"] = while_running
+    result = CliRunner().invoke(start.start_app, ["claude", "--app"])
+    assert result.exit_code == 0, result.output
+    backup = claude_desktop["config"].with_name("claude_desktop_config.json.unsloth-backup")
+    assert backup.read_text() == USER_CLAUDE
+    assert "Left deploymentMode" in result.output
+    assert f"Kept your original claude_desktop_config.json at {backup}" in result.output.replace(
+        "\n", ""
+    )
+
+
+def test_codex_app_held_by_studio_points_at_its_settings(studio, tmp_path):
+    config = _codex_config(studio)
+    state_path = tmp_path / "agents" / "app" / "codex.json"
+    state_path.parent.mkdir(parents = True, exist_ok = True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "path": str(config),
+                "base": BASE,
+                "owner": start._claude_desktop.owner_record("studio"),
+                "key_id": 9,
+            }
+        )
+    )
+
+    result = CliRunner().invoke(start.start_app, ["codex", "--app"])
+
+    assert result.exit_code == 1
+    assert "from the Studio app" in result.output and "Codex Desktop" in result.output
+    assert config.read_text() == USER_CODEX
+    assert state_path.exists() and studio["minted"] == 0

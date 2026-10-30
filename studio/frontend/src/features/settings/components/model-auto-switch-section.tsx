@@ -5,13 +5,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useT } from "@/i18n";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type OpenAIAutoSwitchSettings,
   type OpenAIAutoSwitchUpdate,
   loadOpenAIAutoSwitchSettings,
+  subscribeOpenAIAutoSwitchSettings,
   updateOpenAIAutoSwitchSettings,
 } from "../api/openai-auto-switch";
+import { followSavedIdleDraft } from "./idle-draft";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
@@ -250,6 +252,25 @@ export function ModelAutoSwitchSection() {
   const [draftIdleSeconds, setDraftIdleSeconds] = useState("0");
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Live: another control writing the same setting (Settings → Agents → Keep model loaded)
+  // shows up here at once. The idle draft follows only while it still shows the saved value,
+  // so a number being typed is never replaced.
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+  useEffect(
+    () =>
+      subscribeOpenAIAutoSwitchSettings((next) => {
+        const previous = settingsRef.current;
+        setDraftIdleSeconds((draft) =>
+          followSavedIdleDraft(draft, previous, next),
+        );
+        setSettings(next);
+      }),
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;

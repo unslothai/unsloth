@@ -32,6 +32,8 @@ import click
 import typer
 from typer.core import TyperCommand
 
+from studio.backend.utils import claude_desktop as _claude_desktop
+from studio.backend.utils import codex_desktop as _codex_desktop
 from studio.backend.utils.coding_agents import (
     deepseek_harness_executables_on_path,
     is_deepseek_harness_executable,
@@ -58,7 +60,7 @@ start_app = typer.Typer(
 _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
 # Codex treats an SSE stream with no bytes for this long as lost, cancels it and reconnects. Its default is 300000 (5 minutes), measured against the WHOLE quiet period, and llama-server sends nothing at all while it processes the prompt. A local CPU host chews through a prompt at low tens of tokens a second and Codex's own preamble is several thousand tokens before the user has typed anything: 16.1 tok/s measured on a 2-core box means ~460s of silence for a ~7300-token first turn, so the default trips before the first token exists. The reconnect is worse than the wait, because llama-server hands the retry a different parallel slot whose KV cache shares no prefix, so each attempt restarts prompt processing from zero and the five retries can never converge. Observed as a request completing in exactly 300056ms with `Reconnecting... 1/5` and no turn ever finishing. 20 minutes here, sized to be longer than a slow local first turn rather than to any server-side budget: nothing here bounds generation, and a genuinely dead stream is still caught, just later.
-_CODEX_STREAM_IDLE_TIMEOUT_MS = 1_200_000
+_CODEX_STREAM_IDLE_TIMEOUT_MS = _codex_desktop.STREAM_IDLE_TIMEOUT_MS
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 # Not "unsloth": Hermes strips a `<provider>/` prefix, so unsloth/<repo> stops matching model.default.
 _HERMES_PROVIDER = "unsloth-studio"
@@ -226,7 +228,7 @@ _VIBE_WINDOWS_INSTALL_HINT = (
     "irm https://astral.sh/uv/install.ps1 | iex; "
     '$env:Path = "$HOME\\.local\\bin;$env:Path"; uv tool install mistral-vibe'
 )
-_PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
+_PROVIDER_HEADER = _codex_desktop.PROVIDER_HEADER
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
 
@@ -502,6 +504,16 @@ _CODEX_APP_OPTION = typer.Option(
         "Switch the Codex desktop app to Unsloth instead of starting the CLI, open it, and "
         "switch it back when this command exits or Unsloth stops (the app only offers one "
         "provider's models at a time)."
+    ),
+)
+_CLAUDE_APP_OPTION = typer.Option(
+    False,
+    "--app",
+    rich_help_panel = _PANEL_SESSION,
+    help = (
+        "Switch Claude Desktop (macOS) to Unsloth instead of starting Claude Code: point its "
+        "third-party gateway profile at a local Unsloth gateway, open it, and switch it back "
+        "when this command exits or Unsloth stops."
     ),
 )
 
@@ -3244,41 +3256,10 @@ def _claude_local_env(
     return env
 
 
-def _codex_provider_table(base: str, key: Optional[str] = None) -> str:
-    # The desktop app gets no shell env, so it needs the key itself rather than env_key.
-    auth = (
-        f"experimental_bearer_token = {json.dumps(key)}" if key else f'env_key = "{_CODEX_ENV_KEY}"'
-    )
-    return (
-        f"{_PROVIDER_HEADER}\n"
-        'name = "Unsloth Studio"\n'
-        f"base_url = {json.dumps(base + '/v1')}\n"
-        f"{auth}\n"
-        'wire_api = "responses"\n'
-        "requires_openai_auth = false\n"
-        f"stream_idle_timeout_ms = {_CODEX_STREAM_IDLE_TIMEOUT_MS}\n"
-    )
-
-
-_CODEX_PROVIDER_TABLES = (_PROVIDER_HEADER, _PROVIDER_HEADER[:-1] + ".")
-
-
-def _merge_codex_config(
-    existing: str,
-    base: str,
-    key: Optional[str] = None,
-) -> str:
-    chunks = re.split(r"(?m)^(?=\[)", existing)  # preamble, then one chunk per table
-    if key is None and not re.search(r"(?m)^\s*oss_provider\s*=", chunks[0]):
-        if chunks[0] and not chunks[0].endswith("\n"):
-            chunks[0] += "\n"
-        chunks[0] += f'oss_provider = "{_CODEX_PROFILE}"\n'
-    text = "".join(c for c in chunks if not c.startswith(_CODEX_PROVIDER_TABLES))
-    if not text.endswith("\n"):
-        text += "\n"
-    if not text.endswith("\n\n"):
-        text += "\n"
-    return text + _codex_provider_table(base, key)
+# Shared with Studio's Codex Desktop card (studio/backend/utils/codex_desktop.py).
+_codex_provider_table = _codex_desktop.provider_table
+_CODEX_PROVIDER_TABLES = _codex_desktop.PROVIDER_TABLES
+_merge_codex_config = _codex_desktop.merge_config
 
 
 # Keep custom-model behavior aligned with Codex's own unknown-model fallback. This Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
@@ -3336,33 +3317,9 @@ def _codex_supports_patch_line_endings() -> bool:
 
 def _codex_model_catalog(model: dict, visibility: str = "none") -> dict:
     """Return conservative metadata for an Unsloth model unknown to Codex's built-in catalog."""
-    model_id = model["id"]
-    window = model.get("context_length") or model.get("max_context_length")
-    entry = {
-        "slug": model_id,
-        "display_name": model_id,
-        "description": "Model served by Unsloth Studio",
-        "supported_reasoning_levels": [],
-        "shell_type": "default",
-        "visibility": visibility,
-        "supported_in_api": True,
-        "priority": 99,
-        "availability_nux": None,
-        "upgrade": None,
-        "base_instructions": _CODEX_FALLBACK_PROMPT.read_text(encoding = "utf-8"),
-        "supports_reasoning_summaries": False,
-        "supports_reasoning_summary_parameter": False,
-        "support_verbosity": False,
-        "default_verbosity": None,
-        "apply_patch_tool_type": "freeform",
-        "truncation_policy": {"mode": "bytes", "limit": 10_000},
-        "supports_parallel_tool_calls": False,
-        "experimental_supported_tools": [],
-    }
-    if window:
-        entry["context_window"] = int(window)
-        entry["max_context_window"] = int(window)
-    return {"models": [entry]}
+    return _codex_desktop.model_catalog(
+        model, visibility, _CODEX_FALLBACK_PROMPT.read_text(encoding = "utf-8")
+    )
 
 
 _TOML_KEY_PART = re.compile(
@@ -6517,23 +6474,8 @@ def _set_app_values(
     return yaml.safe_dump(config, sort_keys = False, allow_unicode = True)
 
 
-def _set_toml_key(text: str, name: str, line: str) -> tuple:
-    chunks = re.split(r"(?m)^(?=\[)", text)
-    match = re.search(rf"(?m)^[ \t]*{name}[ \t]*=[^\r\n]*", chunks[0])
-    if match is None:
-        return f"{line}\n{text}", None
-    chunks[0] = chunks[0][: match.start()] + line + chunks[0][match.end() :]
-    return "".join(chunks), match.group(0)
-
-
-def _unset_toml_key(text: str, name: str, line: str, previous: Optional[str]) -> Optional[str]:
-    chunks = re.split(r"(?m)^(?=\[)", text)
-    match = re.search(rf"(?m)^[ \t]*{name}[ \t]*=([^\r\n]*)(\r?\n)?", chunks[0])
-    if match is None or match.group(0).strip() != line:
-        return None
-    restored = "" if previous is None else previous + (match.group(2) or "")
-    chunks[0] = chunks[0][: match.start()] + restored + chunks[0][match.end() :]
-    return "".join(chunks)
+_set_toml_key = _codex_desktop.set_toml_key
+_unset_toml_key = _codex_desktop.unset_toml_key
 
 
 def _same_app_config(path: Path, text: str, other: str) -> bool:
@@ -6677,51 +6619,17 @@ def _add_app_provider(
     _app_server_notice(base)
 
 
-_CODEX_APP_CATALOG = "unsloth-model-catalog.json"
+_CODEX_APP_CATALOG = _codex_desktop.CATALOG_NAME
 
 
-def _codex_app_lines(model_id: str) -> dict:
-    return {
-        "model_provider": f'model_provider = "{_CODEX_PROFILE}"',
-        "model": f"model = {json.dumps(model_id)}",
-        "model_catalog_json": f"model_catalog_json = {json.dumps(_CODEX_APP_CATALOG)}",
-    }
+_codex_app_lines = _codex_desktop.app_lines
 
 
 def _codex_app_build(text: Optional[str], base: str, key: str, entry: dict, previous) -> tuple:
-    previous = dict(previous or {})
-    tables = [
-        c for c in re.split(r"(?m)^(?=\[)", text or "") if c.startswith(_CODEX_PROVIDER_TABLES)
-    ]
-    previous.setdefault("table", "".join(tables) or None)
-    merged = _merge_codex_config(text or "", base, key)
-    for name, line in _codex_app_lines(entry["id"]).items():
-        merged, old = _set_toml_key(merged, name, line)
-        previous.setdefault(name, old)
-    return merged, previous
+    return _codex_desktop.build(text, base, key, entry["id"], previous)
 
 
-def _codex_app_restore(text: str, state: dict) -> tuple:
-    skipped = []
-    chunks = re.split(r"(?m)^(?=\[)", text)
-    ours = _codex_provider_table(state["base"], state["key"]).strip()
-
-    def is_ours(chunk: str) -> bool:
-        # An editor on Windows may have rewritten the file with CRLF line endings.
-        return chunk.replace("\r\n", "\n").strip() == ours
-
-    if any(is_ours(chunk) for chunk in chunks):
-        table = state["previous"].get("table") or ""
-        text = "".join(table if is_ours(chunk) else chunk for chunk in chunks)
-    else:
-        skipped.append(_PROVIDER_HEADER)
-    for name, line in _codex_app_lines(state["model"]).items():
-        restored = _unset_toml_key(text, name, line, state["previous"].get(name))
-        if restored is None:
-            skipped.append(name)
-        else:
-            text = restored
-    return text, skipped
+_codex_app_restore = _codex_desktop.restore
 
 
 def _codex_app_target() -> _AppTarget:
@@ -6757,34 +6665,16 @@ def _codex_app_owner_alive(owner: object) -> bool:
 
 
 def _switch_codex_app_back(state_path: Path, state: dict) -> list:
-    path = Path(state["path"])
-    text = _read_app_file(path)
-    skipped = []
-    if text is not None:
-        new_text, skipped = _codex_app_restore(text, state)
-        backup = Path(state["backup"]) if state.get("backup") else None
-        original = _read_app_file(backup) if backup else None
-        if original is not None and _same_app_config(path, new_text, original):
-            new_text = original
-        if state.get("created") and _same_app_config(path, new_text, ""):
-            path.unlink()
-        elif new_text != text:
-            _write_app_file(path, new_text)
-        if original is not None and new_text == original:
-            if state.get("mode") is not None:
-                os.chmod(path, state["mode"])
-            backup.unlink(missing_ok = True)
-    if "model_catalog_json" not in skipped:
-        path.with_name(_CODEX_APP_CATALOG).unlink(missing_ok = True)
+    # The file part is shared with Studio's Codex Desktop card, which can recover a CLI session.
+    notes = _codex_desktop.restore_files(
+        state, read = _read_app_file, write = _write_app_file, same = _same_app_config
+    )
     revoked = state.get("key_id") is None or _revoke_app_key(state.get("base", ""), state["key_id"])
     state_path.unlink(missing_ok = True)
-    notes = [
-        f"Left {name} in {path} as is: it changed while Codex was on Unsloth." for name in skipped
-    ]
     if not revoked:
         notes.append(
-            "Couldn't reach Unsloth to revoke the app's key; delete 'Codex app' in "
-            "Unsloth → Settings → API."
+            f"Couldn't reach Unsloth to revoke the app's key; delete '{_codex_desktop.KEY_NAME}' "
+            "in Unsloth → Settings → API."
         )
     return notes
 
@@ -6807,13 +6697,12 @@ def _recover_codex_app() -> Optional[dict]:
 
 
 def _open_codex_app() -> None:
-    if sys.platform == "darwin":
+    if _codex_desktop.can_launch():
+        # Shared with Studio: a clean environment, so the shell's venv, HOME and keys stay out of
+        # the app and the tools it spawns.
         with contextlib.suppress(OSError):
-            if (
-                subprocess.run(["open", "-b", "com.openai.codex"], capture_output = True).returncode
-                == 0
-            ):
-                return
+            _codex_desktop.open_app(_codex_desktop.app_path())
+            return
     typer.echo("Open the Codex app now.")
 
 
@@ -6882,6 +6771,143 @@ def _codex_app_session(base: str, explicit_key: Optional[str], entry: dict) -> N
             # After SIGHUP the terminal may be gone; the switch back has already happened.
             with contextlib.suppress(OSError):
                 typer.echo("Switched the Codex app back; restart it if a window is still open.")
+                for note in notes:
+                    typer.echo(note)
+        finally:
+            signal.signal(signal.SIGINT, previous_sigint)
+
+
+_CLAUDE_APP_AGENT = "claude-desktop"
+_CLAUDE_APP_LABEL = _claude_desktop.KEY_NAME
+
+
+def _claude_app_preflight() -> Path:
+    # Same scope as `ollama launch claude-desktop`, which only launches on macOS.
+    if not _claude_desktop.can_launch():
+        _fail("--app switches Claude Desktop, which Unsloth can only drive on macOS so far.")
+    path = _claude_desktop.app_path()
+    if path is None:
+        _fail(
+            "Claude Desktop isn't installed (looked for /Applications/Claude.app and "
+            f"~/Applications/Claude.app). Install it from {_claude_desktop.DOWNLOAD_URL} and re-run."
+        )
+    return path
+
+
+def _claude_app_state_path() -> Path:
+    # Shared with the Studio app's Claude Desktop switch, so only one of them holds Claude at a time.
+    return _claude_desktop.state_path(_agents_config_root())
+
+
+def _switch_claude_app_back(state_path: Path, state: dict) -> list:
+    """Quit Claude Desktop if it is open, then put its profile files back and revoke the key."""
+    notes = _claude_desktop.switch_back(state)
+    revoked = state.get("key_id") is None or _revoke_app_key(state.get("base", ""), state["key_id"])
+    state_path.unlink(missing_ok = True)
+    if not revoked:
+        notes.append(
+            f"Couldn't reach Unsloth to revoke the app's key; delete '{_CLAUDE_APP_LABEL}' in "
+            "Unsloth → Settings → API."
+        )
+    return notes
+
+
+def _recover_claude_app() -> Optional[dict]:
+    state_path = _claude_app_state_path()
+    state = _claude_desktop.read_state(state_path)
+    if state is None:
+        return None
+    if _codex_app_owner_alive(state.get("owner")):
+        return state
+    notes = _switch_claude_app_back(state_path, state)
+    typer.echo(
+        "Switched Claude Desktop back from an earlier Unsloth session that did not exit cleanly."
+    )
+    for note in notes:
+        typer.echo(note)
+    return None
+
+
+def _confirm_claude_restart() -> bool:
+    if not sys.stdin.isatty():
+        return False
+    return typer.confirm("Restart Claude Desktop to use Unsloth?", default = True)
+
+
+def _claude_app_session(base: str, explicit_key: Optional[str], entry: dict, app: Path) -> None:
+    if not is_loopback_url(base) and not explicit_key:
+        _fail(
+            f"{base} isn't on this machine. --app hands the {_CLAUDE_APP_LABEL} a key for it, "
+            "so pass the key for that server with --api-key."
+        )
+    target = _AppTarget(_CLAUDE_APP_AGENT, _CLAUDE_APP_LABEL, Path())
+    state_path = _claude_app_state_path()
+    targets = _claude_desktop.target_paths()
+    try:
+        _claude_desktop.snapshot(targets)
+    except ValueError as exc:
+        _shutdown_auto_served()
+        _fail(f"{exc} Fix it and re-run; nothing was changed.")
+    key_id, gateway, new_state = None, None, None
+    try:
+        key, key_id = _app_api_key(target, base, explicit_key, {})
+        token = _claude_desktop.new_token()
+        gateway = _claude_desktop.Gateway(
+            base, key, _claude_desktop.gateway_model(entry), token
+        ).start()
+        new_state = _claude_desktop.begin(
+            state_path,
+            targets,
+            {"base": base, "key": key, "key_id": key_id, "gateway": gateway.base_url},
+            {**_codex_app_owner(), "kind": "cli"},
+        )
+
+        def switch() -> None:
+            try:
+                _claude_desktop.switch(state_path, new_state, targets, token)
+            except ValueError as exc:
+                _fail(str(exc))
+
+        if _claude_desktop.is_running():
+            if _confirm_claude_restart():
+                _claude_desktop.quit_app()
+                if not _claude_desktop.wait_for_exit():
+                    _fail("Claude Desktop did not quit; quit it manually and re-run the command.")
+                # Claude writes its settings while it shuts down; switch after it is gone.
+                switch()
+                _claude_desktop.open_app(app)
+            else:
+                switch()
+                typer.echo(
+                    "Quit and reopen Claude Desktop when you're ready for the switch to take effect."
+                )
+        else:
+            switch()
+            _claude_desktop.open_app(app)
+    except BaseException:
+        if new_state is not None:
+            _claude_desktop.abort(state_path, new_state)
+        if gateway is not None:
+            gateway.stop()
+        _revoke_new_app_key(base, key_id, {})
+        _shutdown_auto_served()
+        raise
+    try:
+        typer.echo(
+            f"Claude Desktop is on {entry['id']} from Unsloth at {base} until this command exits "
+            "(Ctrl+C). It shows up as the Unsloth profile. If this command is killed instead, "
+            "the next `unsloth start claude` (or the Studio app) switches the app back."
+        )
+        _hold_codex_app(base)
+    finally:
+        # A second Ctrl+C must not cut the switch back short.
+        previous_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            notes = _switch_claude_app_back(state_path, new_state)
+            gateway.stop()
+            _shutdown_auto_served()
+            with contextlib.suppress(OSError):
+                typer.echo("Switched Claude Desktop back to your usual Claude profile.")
                 for note in notes:
                     typer.echo(note)
         finally:
@@ -7334,10 +7360,29 @@ def claude(
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
     auto_route: bool = _AUTO_ROUTE_OPTION,
+    app: bool = _CLAUDE_APP_OPTION,
 ):
     """Point Claude Code at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    _check_app_flags(app, ctx.args, as_subagent)
+    if app and auto_route:
+        _fail("--auto-route is for Claude Code; Claude Desktop has no hook to run it.")
+    running = _recover_claude_app()
+    claude_app = None
+    if app:
+        if running is not None:
+            _fail(
+                "Claude Desktop is already on Unsloth for "
+                + (
+                    "the Studio app; disconnect it in Settings → Agents"
+                    if (running.get("owner") or {}).get("kind") == "studio"
+                    else f"another `unsloth start claude --app` (PID {running['owner']['pid']})"
+                )
+                + ". Stop that one first."
+            )
+        # Before any model load: there is nothing to switch on another OS or without the app.
+        claude_app = _claude_app_preflight()
     # The route gate is a hook the Windows claude cannot run from WSL, so its own tools would stay on.
     if auto_route and _wsl_windows_executable(["claude"]):
         _fail("--auto-route needs claude installed inside WSL, not the Windows claude.")
@@ -7377,7 +7422,7 @@ def claude(
                 refuse = refuse_small_context,
             ),
         )
-    _require_agent_for_launch("claude", install_hint, launch)
+    _require_agent_for_launch("claude", install_hint, launch and not app)
     server_options = ServerOptions(
         enable_tools = enable_tools,
         tool_call_healing = tool_call_healing,
@@ -7390,7 +7435,8 @@ def claude(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
-        carried = _ALL_REQUEST_FIELDS,
+        # The app reads no per-launch flags, so the server applies them.
+        carried = frozenset() if app else _ALL_REQUEST_FIELDS,
     )
     base, key, entry = _connect(
         api_key,
@@ -7424,6 +7470,13 @@ def claude(
     except BaseException:
         _shutdown_auto_served()
         raise
+    if app and entry.get("connection"):
+        _shutdown_auto_served()
+        _fail(
+            "Claude Desktop can't use a Connection model yet. Drop --app to run it in Claude Code."
+        )
+    if app:
+        return _claude_app_session(base, api_key, entry, claude_app)
     model_id = entry["id"]
     if as_subagent:
         subagent_id = (
@@ -7533,6 +7586,11 @@ def codex(
     _check_app_flags(app, ctx.args, as_subagent)
     running = _recover_codex_app()
     if app and running is not None:
+        if (running.get("owner") or {}).get("kind") == "studio":
+            _fail(
+                "The Codex app is already on Unsloth from the Studio app (Settings → Agents → "
+                "Codex Desktop). Disconnect it there first."
+            )
         _fail(
             "The Codex app is already on Unsloth for another `unsloth start codex --app` "
             f"(PID {running['owner']['pid']}). Stop that one first."

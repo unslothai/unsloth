@@ -1619,6 +1619,30 @@ export function perModelConfigStorageChanged(
   );
 }
 
+/** The fields another editor changed in a model's saved record, as a patch for an open
+ *  editor's draft: the Agents panel and Run settings edit the same record, and an open panel
+ *  must show the other's write rather than keep a stale copy. Only fields whose stored value
+ *  moved, so the draft's own pending edits elsewhere survive. A forgotten record reads as the
+ *  defaults it falls back to. Null when nothing it holds changed. */
+export function peerStoredConfigPatch(
+  previous: ResolvedPerModelConfig,
+  current: ResolvedPerModelConfig,
+): Partial<PerModelConfig> | null {
+  if (!perModelConfigStorageChanged(previous, current)) {
+    return null;
+  }
+  const before = previous.config as unknown as Record<string, unknown>;
+  const after = current.config as unknown as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    // Absent and null both mean "not set" here: only a real value change is a peer's edit.
+    if (JSON.stringify(before[key] ?? null) !== JSON.stringify(after[key] ?? null)) {
+      patch[key] = after[key] ?? (DEFAULT_PER_MODEL_CONFIG as unknown as Record<string, unknown>)[key] ?? null;
+    }
+  }
+  return patch as Partial<PerModelConfig>;
+}
+
 export function resolveInitialConfig(
   modelId: string,
   ggufVariant?: string | null,

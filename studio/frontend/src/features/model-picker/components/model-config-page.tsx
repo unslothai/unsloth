@@ -231,6 +231,7 @@ import {
   normalizePerModelConfig,
   PER_MODEL_CONFIG_UPDATED_EVENT,
   perModelConfigStorageChanged,
+  peerStoredConfigPatch,
   pinSpeculativeMode,
   readAdvancedSettingsOpen,
   resolveInitialConfig,
@@ -3509,6 +3510,27 @@ export function ModelConfigPage({
     });
 
   const storedRecord = useStoredPerModelConfig(configId, target.ggufVariant);
+  // Another editor of the same record (Settings → Agents, another tab) saved: show its values
+  // here at once instead of a stale draft. This panel's own save lands as a no-op, since the
+  // draft already holds what it wrote.
+  const storedRecordRef = useRef({ draftKey, record: storedRecord });
+  useEffect(() => {
+    const seen = storedRecordRef.current;
+    storedRecordRef.current = { draftKey, record: storedRecord };
+    // A different model is not a peer write.
+    if (seen.draftKey !== draftKey || seen.record === storedRecord) {
+      return;
+    }
+    const previous = seen.record;
+    const patch = peerStoredConfigPatch(previous, storedRecord);
+    if (!patch) {
+      return;
+    }
+    patchModelConfigDraft(draftKey, patch);
+    if (previous.remembered !== storedRecord.remembered) {
+      setModelConfigDraftRemember(draftKey, storedRecord.remembered, storedRecord.remembered);
+    }
+  }, [storedRecord, draftKey]);
   const matchesStored =
     storedRecord.remembered &&
     perModelConfigsEqual(
