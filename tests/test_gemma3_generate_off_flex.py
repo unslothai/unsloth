@@ -42,7 +42,11 @@ def _with_prepare(model):
     call reads (the static cache builds the step mask there), returns that step's input_ids."""
     model.seen = []
 
-    def prepare_inputs_for_generation(input_ids, cache_position = None, **kwargs):
+    def prepare_inputs_for_generation(
+        input_ids,
+        cache_position = None,
+        **kwargs,
+    ):
         text = model.config.get_text_config()
         model.seen.append(text._attn_implementation)
         if cache_position is not None:
@@ -53,7 +57,12 @@ def _with_prepare(model):
     return model
 
 
-def _steps(model, prompt_len = 5, new_tokens = 3, cache_position = True):
+def _steps(
+    model,
+    prompt_len = 5,
+    new_tokens = 3,
+    cache_position = True,
+):
     """Prefill then one-token steps, as generate() calls prepare_inputs_for_generation."""
     for step in range(new_tokens):
         n = prompt_len + step

@@ -1641,7 +1641,9 @@ class _NonFlexGenerate:
                 # off to it), not the wrapper generate() was called on. Wrap both; each is restored on
                 # exit, including an instance attribute that was already there.
                 targets = [self.model]
-                base = self.model.get_base_model() if hasattr(self.model, "get_base_model") else None
+                base = (
+                    self.model.get_base_model() if hasattr(self.model, "get_base_model") else None
+                )
                 if base is not None and base is not self.model:
                     targets.append(base)
                 wrapped = []
