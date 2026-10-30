@@ -369,3 +369,31 @@ def test_ulysses_sft_turns_padding_free_off_for_attention_that_refuses_packing(k
     args.context_parallel_size = 1
     module.SFTTrainer(model = refusing, args = args)
     assert args.padding_free is not False
+
+
+@pytest.mark.parametrize("name", ["DeepseekV32Attention", "DeepseekV4Attention"])
+def test_ulysses_deepseek_forward_runs_eager_inside_compiled_layers(name, monkeypatch):
+    """Unsloth compiles each decoder layer as one region; traced, the V3.2 / V4 Ulysses forwards (list
+    all_gather, the sequence gather, the no_grad indexer top-k) segfaulted the first CP=2 SFT step on L4
+    (torch 2.14 and 2.8). They must run eagerly inside a compiled layer."""
+    from unsloth.utils import ulysses_deepseek as ud
+
+    seen = []
+
+    def fake_forward(module, hidden_states, *args, group, **kwargs):
+        seen.append(torch.compiler.is_compiling())
+        return hidden_states * 2, None
+
+    target = "ulysses_deepseek_v4_forward" if name == "DeepseekV4Attention" else "ulysses_deepseek_v32_forward"
+    monkeypatch.setattr(ud, target, fake_forward)
+    attention = type(name, (torch.nn.Module,), {"forward": lambda self, hidden_states, **kw: (hidden_states, None)})()
+    manager = types.SimpleNamespace(backend = "ulysses", group = None, packed_seq_lengths = None)
+    ud.wrap_deepseek_attention_forward(attention, lambda: manager)
+
+    def layer(x):
+        return attention(x)[0] + 1
+
+    torch._dynamo.reset()
+    out = torch.compile(layer, backend = "eager")(torch.ones(2, 3))
+    torch.testing.assert_close(out, torch.full((2, 3), 3.0))
+    assert seen == [False], seen

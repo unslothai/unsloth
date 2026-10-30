@@ -480,6 +480,11 @@ def ulysses_deepseek_v32_forward(
     return module.o_proj(attn_output), None
 
 
+@torch.compiler.disable
+def _run_eager(fn, *args, **kwargs):
+    return fn(*args, **kwargs)
+
+
 def wrap_deepseek_attention_forward(module, get_cp_manager) -> None:
     if getattr(module, "_unsloth_cp_orig_forward", None) is not None:
         return
@@ -497,8 +502,11 @@ def wrap_deepseek_attention_forward(module, get_cp_manager) -> None:
             raise NotImplementedError(
                 f"Unsloth: Ulysses context parallelism does not support packing for {name}."
             )
+        # Looked up per call (tests substitute it). Eager even inside Unsloth's per-layer compiled
+        # region: traced, the list all_gather / sequence gather / no_grad indexer top-k crashed the
+        # first CP step (SIGSEGV on L4, torch 2.8 and 2.14).
         ulysses_forward = ulysses_deepseek_v4_forward if v4 else ulysses_deepseek_v32_forward
-        return ulysses_forward(module, *args, group = manager.group, **kwargs)
+        return _run_eager(ulysses_forward, module, *args, group = manager.group, **kwargs)
 
     module._unsloth_cp_orig_forward = forward
     module.forward = wrapped
