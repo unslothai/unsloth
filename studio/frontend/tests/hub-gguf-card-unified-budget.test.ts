@@ -121,6 +121,7 @@ function loadCard(
       "@/features/chat": anyExport,
       "@/features/model-picker": anyExport,
       "@/lib/chevron-icons": anyExport,
+      "@/lib/folder-icons": anyExport,
       "@/lib/copy-to-clipboard": anyExport,
       "@/lib/toast": anyExport,
       "@/lib/utils": anyExport,
