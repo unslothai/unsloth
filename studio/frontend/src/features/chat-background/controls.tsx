@@ -15,7 +15,7 @@ import { Slider } from "@/components/ui/slider";
 import { useT, type TranslationKey } from "@/i18n";
 // Shared settings primitives: avoid importing the settings barrel into this feature.
 // eslint-disable-next-line no-restricted-imports
-import { SettingsSection } from "@/features/settings/components/settings-section";
+import { SettingsGroupDivider, SettingsSection } from "@/features/settings/components/settings-section";
 // eslint-disable-next-line no-restricted-imports
 import { SettingsRow } from "@/features/settings/components/settings-row";
 import { ChatBackground } from "./index";
@@ -91,6 +91,7 @@ export function ChatBackgroundControls() {
 				</div>
 			}
 		>
+			<SettingsGroupDivider />
 			<input
 				ref={input}
 				className="sr-only"
