@@ -467,16 +467,16 @@ function DeepResearchWebsiteAccessContent({
             setPolicy(draft);
             setMcpSources(mcpDraft);
             const minutes = Number(timeoutMinutes);
-            // typed values bypass max; clamp to avoid a short default timeout.
-            setModelTimeoutSeconds(
-              unlimited
-                ? 0
-                : !timeoutEdited
-                  ? modelTimeoutSeconds
+            // An untouched value stays unstored so it follows the default; typed values bypass max, so clamp.
+            if (timeoutEdited) {
+              setModelTimeoutSeconds(
+                unlimited
+                  ? 0
                   : Number.isSafeInteger(minutes) && minutes >= 1
                     ? Math.min(minutes, MAX_RESEARCH_MODEL_TIMEOUT_MINUTES) * 60
                     : LIMITED_RESEARCH_MODEL_TIMEOUT_SECONDS,
-            );
+              );
+            }
             onClose();
           }}
         >
