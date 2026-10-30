@@ -361,7 +361,12 @@ def is_moe_model(model_dir: str) -> bool:
     return False
 
 
-def _preflight_check(model_dir: str, cfg: Exl3Config) -> None:
+def _preflight_check(
+    model_dir: str,
+    cfg: Exl3Config,
+    *,
+    raise_on_error: bool = True,
+) -> bool:
     """Validate EXL3 compatibility before starting a (potentially long) job.
 
     EXL3's trellis tiling requires the quantized matmul dimensions to be
@@ -377,6 +382,8 @@ def _preflight_check(model_dir: str, cfg: Exl3Config) -> None:
     }
     bad = {name: val for name, val in checks.items() if isinstance(val, int) and val % 128 != 0}
     if bad:
+        if not raise_on_error:
+            return False
         details = ", ".join(f"{k}={v}" for k, v in bad.items())
         raise ValueError(
             "Unsloth: this model cannot be quantized with EXL3 because its "
@@ -386,6 +393,7 @@ def _preflight_check(model_dir: str, cfg: Exl3Config) -> None:
             "(`load_in_exl3=False`, `load_in_16bit=True`) for this model, or a "
             "model whose hidden/intermediate sizes are multiples of 128."
         )
+    return True
 
 
 def _conversion_complete(out_dir: str) -> bool:
@@ -516,9 +524,10 @@ def quantize_to_exl3(
         if _conversion_complete(resolved_out) and not overwrite:
             return resolved_out
 
-        if overwrite and os.path.isdir(resolved_out):
-            shutil.rmtree(resolved_out, ignore_errors = True)
-            shutil.rmtree(resolved_work, ignore_errors = True)
+        if overwrite:
+            for directory in (resolved_out, resolved_work):
+                if os.path.isdir(directory):
+                    shutil.rmtree(directory, ignore_errors = True)
 
         ensure_vlm_preprocessor(model_name)
 

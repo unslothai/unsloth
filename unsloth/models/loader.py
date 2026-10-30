@@ -2431,7 +2431,7 @@ class FastModel(FastBaseModel):
                 use_modelscope = USE_MODELSCOPE,
             )
             if _exl3_adapter_route is not None:
-                _exl3_adapter = model_name
+                _exl3_adapter = getattr(_exl3_adapter_route, "adapter_path", None) or model_name
                 model_name, load_in_exl3 = _exl3_adapter_route
                 _exl3_base_revision = getattr(_exl3_adapter_route, "source_revision", None)
                 _source_provider = getattr(_exl3_adapter_route, "source_provider", None)
@@ -2485,6 +2485,10 @@ class FastModel(FastBaseModel):
             model_name = _exl3_plan.checkpoint_dir
             use_exact_model_name = True
             if _exl3_plan.is_exl3:
+                if dtype is None:
+                    dtype = _exl3_plan.config.compute_dtype
+                    if isinstance(dtype, str) and dtype in ("float16", "bfloat16", "float32"):
+                        dtype = getattr(torch, dtype)
                 _exl3_active = True
                 load_in_4bit = False
                 load_in_8bit = False

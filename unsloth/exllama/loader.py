@@ -32,7 +32,7 @@ from .patcher import (
     patch_transformers_exl3,
     read_exl3_bitrate,
 )
-from .quantize import quantize_to_exl3
+from .quantize import quantize_to_exl3, _preflight_check
 from .utils import is_exllama_available, require_exllama
 
 
@@ -164,10 +164,12 @@ class _Exl3AdapterRoute(tuple):
         config,
         revision = None,
         provider = None,
+        adapter_path = None,
     ):
         route = super().__new__(cls, (source, config))
         route.source_revision = revision
         route.source_provider = provider
+        route.adapter_path = adapter_path
         return route
 
 
@@ -271,7 +273,23 @@ def resolve_exl3_adapter(
         selected = config
     else:
         return None
-    return _Exl3AdapterRoute(source_model, selected, stamp.source_revision, stamp.source_provider)
+    adapter_path = model_name
+    if use_modelscope:
+        adapter_path = _resolve_local_dir(
+            model_name,
+            token = token,
+            revision = revision,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+            use_modelscope = True,
+        )
+    return _Exl3AdapterRoute(
+        source_model,
+        selected,
+        stamp.source_revision,
+        stamp.source_provider,
+        adapter_path,
+    )
 
 
 def _looks_like_exl3_request(load_in_exl3, quantization_config) -> bool:
@@ -627,6 +645,14 @@ def prepare_exl3_checkpoint(
             f"EXL3 currently supports {len(exllama_supported_architectures())} "
             f"architectures; upgrade exllamav3 for newer ones."
         )
+
+    explicit = (
+        is_explicit
+        if is_explicit is not None
+        else _looks_like_exl3_request(load_in_exl3, quantization_config)
+    )
+    if not _preflight_check(local_dir, cfg, raise_on_error = explicit):
+        return None
 
     checkpoint_dir = quantize_to_exl3(
         local_dir,
