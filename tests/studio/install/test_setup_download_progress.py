@@ -47,7 +47,7 @@ def run_download(tmp_path, component, env, exit_code):
         + output_filter
         + '\n_mirror_switch() { return 1; }\n_NODE_PY="$1"\nSCRIPT_DIR="$2"\nNODE_DIR="$2"\n'
         '_PREBUILT_CMD=("$1" "$2/install_node_prebuilt.py")\n'
-        '_WHISPER_CMD=("${_PREBUILT_CMD[@]}")\n'
+        '_AUDIO_CPP_CMD=("${_PREBUILT_CMD[@]}")\n'
         + source[start:end]
         + f'\ncp "$_{component}_LOG" "$2/captured.log"\n'
         + f'rm -f "$_{component}_LOG"\nexit "$_{component}_STATUS"\n'
@@ -67,7 +67,7 @@ def run_download(tmp_path, component, env, exit_code):
     return process, release
 
 
-@pytest.mark.parametrize("component", ["NODE", "PREBUILT", "WHISPER"])
+@pytest.mark.parametrize("component", ["NODE", "PREBUILT", "AUDIO_CPP"])
 @pytest.mark.parametrize(
     "env",
     [{"UNSLOTH_TAURI_UPDATE": "1"}, {"UNSLOTH_TAURI_UPDATE": "true"}, {"UNSLOTH_VERBOSE": "1"}],
@@ -104,7 +104,7 @@ def test_download_progress_arrives_before_the_installer_exits(tmp_path, componen
     assert (tmp_path / "captured.log").read_text().splitlines() == all_output
 
 
-@pytest.mark.parametrize("component", ["NODE", "PREBUILT", "WHISPER"])
+@pytest.mark.parametrize("component", ["NODE", "PREBUILT", "AUDIO_CPP"])
 def test_terminal_update_stays_quiet(tmp_path, component):
     process, release = run_download(tmp_path, component, {}, 0)
     release.touch()

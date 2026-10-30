@@ -142,6 +142,7 @@ export function useCloneGeneration({
   replayQueuedTtsPick,
   audioOptionValues,
   sttRepo,
+  settleSttRepo,
   sttReady,
   onClonePage,
 }: Pick<
@@ -165,6 +166,7 @@ export function useCloneGeneration({
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
     audioOptionValues: AudioOptionValues;
     sttRepo: string | null;
+    settleSttRepo?: (repo: string | null) => Promise<string | null>;
     /** The STT model is on disk, so transcribing never starts a download. */
     sttReady: boolean;
     /** Audio is the visible tab and Clone its page: auto-transcribe runs only then. */
@@ -191,6 +193,7 @@ export function useCloneGeneration({
 
   const referenceTranscriber = useReferenceTranscribe({
     sttRepo,
+    settleSttRepo,
     onText: (next, source) =>
       useAudioCloneStore.getState().applyTranscript(source, next),
   });

@@ -58,8 +58,6 @@ Check "guidance says an app reinstall does not reset the folder" (
     $setupText -match 'Reinstalling the app does not reset it\.')
 Check "guidance names the concrete recovery commands" (
     $setupText -match 'takeown /F' -and $setupText -match 'icacls .* /reset /T')
-Check "whisper marker probe cannot terminate the non-fatal whisper phase" (
-    $setupText -match 'if \(Test-PathQuiet \$llamaMarker "Leaf"\)')
 
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_acl_" + [guid]::NewGuid().ToString("N"))
 $locked = Join-Path $root "llama.cpp"
@@ -334,7 +332,7 @@ Check "a wrapped UnauthorizedAccessException classifies as access denied" (
 Check "an unrelated exception does not classify as access denied" (
     -not (Test-AccessDeniedError ([System.IO.FileNotFoundException]::new("missing"))))
 
-# Whisper denial remains nonfatal while other ownership failures remain fatal.
+# audio.cpp denial remains nonfatal while other ownership failures remain fatal.
 $assertSrc = Get-FunctionSource -Path $setupPath -Name Assert-StudioOwnedOrAbsent
 $markSrc = Get-FunctionSource -Path $setupPath -Name Mark-StudioOwned
 Check "setup.ps1 defines Assert-StudioOwnedOrAbsent" ($null -ne $assertSrc)
@@ -351,7 +349,7 @@ if ($assertSrc -and $markSrc) {
     $StudioHomeIsCustom = $true
 
     $nfRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_nf_" + [guid]::NewGuid().ToString("N"))
-    $nfDenied = Join-Path $nfRoot "whisper.cpp"
+    $nfDenied = Join-Path $nfRoot "audio.cpp"
     $nfUnowned = Join-Path $nfRoot "unowned"
     $nfInner = Join-Path $nfDenied "inner"
     $nfMarker = Join-Path $nfDenied $StudioOwnedMarker
@@ -376,7 +374,7 @@ if ($assertSrc -and $markSrc) {
         if ($nfReal) {
             $threw = $false
             $out = $null
-            try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfDenied -Label "whisper.cpp install" -NonFatal) }
+            try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfDenied -Label "audio.cpp install" -NonFatal) }
             catch { $threw = $true }
             Check "-NonFatal hands a denied tree back instead of exiting" (-not $threw)
             # One bare string: a stray emit would break the caller's -eq.
@@ -384,12 +382,12 @@ if ($assertSrc -and $markSrc) {
             Check "-NonFatal returns Denied" ($out.Count -eq 1 -and $out[0] -eq "Denied")
 
             $threw = $false
-            try { $null = Assert-StudioOwnedOrAbsent -Path $nfDenied -Label "whisper.cpp install" } catch { $threw = $true }
+            try { $null = Assert-StudioOwnedOrAbsent -Path $nfDenied -Label "audio.cpp install" } catch { $threw = $true }
             Check "without -NonFatal a denied tree still stops setup" $threw
 
             $out = $null
             $threw = $false
-            try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfInner -Label "whisper.cpp install" -NonFatal) }
+            try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfInner -Label "audio.cpp install" -NonFatal) }
             catch { $threw = $true }
             Check "-NonFatal hands back a tree whose parent is unreadable" (
                 -not $threw -and $out.Count -eq 1 -and $out[0] -eq "Denied")
@@ -405,7 +403,7 @@ if ($assertSrc -and $markSrc) {
                 try {
                     $out = $null
                     $threw = $false
-                    try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfBare -Label "whisper.cpp install" -NonFatal) }
+                    try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfBare -Label "audio.cpp install" -NonFatal) }
                     catch { $threw = $true }
                     Check "-NonFatal hands back a denied tree that has no marker ($mode)" (
                         -not $threw -and $out.Count -eq 1 -and $out[0] -eq "Denied")
@@ -418,7 +416,7 @@ if ($assertSrc -and $markSrc) {
         # Pin the stop to Exit-SetupFailure: a missing helper would also throw.
         $threw = $false
         $thrownBy = $null
-        try { $null = Assert-StudioOwnedOrAbsent -Path $nfUnowned -Label "whisper.cpp install" -NonFatal }
+        try { $null = Assert-StudioOwnedOrAbsent -Path $nfUnowned -Label "audio.cpp install" -NonFatal }
         catch { $threw = $true; $thrownBy = $_.Exception.Message }
         Check "-NonFatal does not excuse an unowned tree" ($threw -and $thrownBy -eq "EXIT-SETUP")
 

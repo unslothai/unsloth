@@ -11,8 +11,12 @@ import {
   STT_MODELS,
   STT_MODEL_LANGUAGES,
   STT_MODEL_REPOS,
+  type SttHostEngines,
   type SttModel,
+  type SttModelSource,
   migrateVoiceSettings,
+  normalizeSttModelSource,
+  sttModelForHost,
 } from "./stt-model-catalog";
 
 export * from "./stt-model-catalog";
@@ -87,7 +91,8 @@ function normalizeSttDevice(value: unknown): SttDevice {
 
 export type TtsEngine = "system" | "studio" | "custom";
 
-/** Custom repos run safetensors on Transformers. */
+/** Whether a model id is curated. Whisper ids run on Transformers, mtmd ids on llama.cpp, audiocpp ids on
+ *  audio.cpp; custom repos run safetensors on Transformers. */
 export function isCuratedSttModel(model: SttModel): boolean {
   return (STT_MODELS as readonly string[]).includes(model.trim());
 }
@@ -104,6 +109,10 @@ export interface VoiceSettingsState {
   /** STT model used when dictationEngine is "model". */
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
+  /** who chose `sttModel`; only a "user" pick is never adapted to the host. */
+  sttModelSource: SttModelSource;
+  /** switch a retired whisper.cpp pick to a model this host can run. */
+  adoptHostSttModel: (host: SttHostEngines) => void;
 
   /** quant for a package folder `sttModel`; "" uses its resident or default quant. */
   sttGgufVariant: string;
@@ -220,16 +229,22 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setSttModel: (value) =>
         set((state) => {
           const normalized = normalizeSttModel(value);
-          const sttModel = isSttModelLanguageCompatible(
+          const compatible = isSttModelLanguageCompatible(
             normalized,
             state.dictationLanguage,
-          )
-            ? normalized
-            : DEFAULT_STT_MODEL;
+          );
+          const sttModel = compatible ? normalized : DEFAULT_STT_MODEL;
+          const sttModelSource: SttModelSource = compatible ? "user" : "default";
           // a quant belongs to the model it was selected for.
           return sttModel === state.sttModel
-            ? { sttModel }
-            : { sttModel, sttGgufVariant: "" };
+            ? { sttModel, sttModelSource }
+            : { sttModel, sttModelSource, sttGgufVariant: "" };
+        }),
+      sttModelSource: "default",
+      adoptHostSttModel: (host) =>
+        set((state) => {
+          const next = sttModelForHost(state, host);
+          return next ? { ...next, sttGgufVariant: "" } : state;
         }),
 
       sttGgufVariant: "",
@@ -252,6 +267,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
                 dictationLanguage,
                 sttModel: DEFAULT_STT_MODEL,
                 sttGgufVariant: "",
+                sttModelSource: "default",
               },
         ),
 
@@ -354,7 +370,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     {
       name: "unsloth_voice_settings",
       storage: createJSONStorage(() => quotaSafeLocalStorage),
-      version: 1,
+      version: 2,
       migrate: migrateVoiceSettings,
       merge: (persisted, current) => {
         const saved = persisted as Partial<VoiceSettingsState> | undefined;
@@ -374,11 +390,18 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         )
           ? savedSttModel
           : DEFAULT_STT_MODEL;
+        // a substituted model is the default's, whatever chose the saved one.
+        const sttModelSource =
+          typeof saved?.sttModel === "string" &&
+          saved.sttModel.trim() === sttModel
+            ? normalizeSttModelSource(saved.sttModelSource, sttModel)
+            : "default";
         return {
           ...current,
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine,
           sttModel,
+          sttModelSource,
           sttGgufVariant:
             sttModel === savedSttModel
               ? asString(saved?.sttGgufVariant, "")

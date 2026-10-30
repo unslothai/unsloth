@@ -381,6 +381,7 @@ export function AudioPage({
     sttLoadAbort,
     deferredSttLoad,
     refreshSttStatus,
+    settleSavedSttRepo,
     sttSelected,
     sttReady,
     releaseTranscribeSelection,
@@ -423,6 +424,7 @@ export function AudioPage({
     ensureSttLoaded,
     setLastSttRepo,
     refreshSttStatus,
+    settleSavedSttRepo,
     sttEngineFor,
     readSttResidency,
     sttLoadGeneration,
@@ -709,6 +711,7 @@ export function AudioPage({
     replayQueuedTtsPick,
     audioOptionValues,
     sttRepo: cloneSttRepo,
+    settleSttRepo: settleSavedSttRepo,
     sttReady: cloneSttReady,
     onClonePage: active && pageWorkflow === "clone",
   });
@@ -731,6 +734,7 @@ export function AudioPage({
     replayQueuedTtsPick,
     audioOptionValues,
     sttRepo: cloneSttRepo,
+    settleSttRepo: settleSavedSttRepo,
   });
   const edit = useEditGeneration({
     status,
@@ -751,6 +755,7 @@ export function AudioPage({
     replayQueuedTtsPick,
     audioOptionValues,
     sttRepo: cloneSttRepo,
+    settleSttRepo: settleSavedSttRepo,
   });
   const separate = useSeparateGeneration({
     status,
@@ -1751,12 +1756,7 @@ export function AudioPage({
         description: "Speech-to-text",
       }),
       isGguf: artifact.engine !== "transformers",
-      deviceQuant:
-        artifact.engine === "mtmd"
-          ? "Q8_0"
-          : artifact.engine === "gguf"
-            ? "F16"
-            : undefined,
+      deviceQuant: artifact.engine === "mtmd" ? "Q8_0" : undefined,
       deviceSize: size || undefined,
       deviceSizeBytes: size ? deviceSizeBytes(size) : undefined,
       deviceLoaded:

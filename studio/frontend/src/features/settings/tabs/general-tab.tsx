@@ -98,7 +98,6 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ViewIcon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
 
-// whisper.cpp rides along with llama.cpp's card, so it has no line of its own.
 const UPDATE_REMINDER_CHANNELS: {
   channel: NotificationChannel;
   name: string;

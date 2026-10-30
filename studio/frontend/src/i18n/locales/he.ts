@@ -3509,7 +3509,6 @@ export const he = {
       llamaCppVersion: "גרסת llama.cpp",
       audioCppVersion: "גרסת audio.cpp",
       mlxVersion: "גרסת MLX",
-      whisperCppVersion: "גרסת whisper.cpp",
       engines: {
         title: "מנועים",
         description: "סביבות ההרצה ש-Unsloth משתמש בהן כדי להריץ מודלים. העדכונים מותקנים ברקע, ללא הפעלה מחדש.",

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings lists llama.cpp, whisper.cpp, audio.cpp and MLX in Engines, and mlx-lm / mlx-vlm in Environment.
+// Settings lists llama.cpp, audio.cpp and MLX in Engines, and mlx-lm / mlx-vlm in Environment.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -21,7 +21,7 @@ test("the hardware details carry the audio.cpp version to the About tab", () => 
   );
 });
 
-test("the Engines section lists llama.cpp, whisper.cpp and audio.cpp", () => {
+test("the Engines section lists llama.cpp and audio.cpp, not the retired whisper.cpp", () => {
   const section = read(
     "features/settings/components/engine-versions-section.tsx",
   );
@@ -29,10 +29,7 @@ test("the Engines section lists llama.cpp, whisper.cpp and audio.cpp", () => {
     section,
     /installed: hw\.llamaCpp \?\? status\?\.llama\.installed_tag \?\? null,/,
   );
-  assert.match(
-    section,
-    /installed: status\?\.whisper\?\.installed_tag \?\? null,/,
-  );
+  assert.doesNotMatch(section, /whisperCppVersion|key: "whisper"/);
   assert.match(
     section,
     /installed: hw\.audioCpp \?\? status\?\.audio\?\.installed_tag \?\? null,/,

@@ -91,6 +91,7 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
         transcript_marker = "<asr_text>",
     ),
 }
+DEFAULT_MTMD_STT_MODEL = "qwen3-asr-0.6b"
 # Voxtral Mini answers audio instead of transcribing in chat mode; Parakeet and Nemotron lack llama.cpp text architectures.
 
 _TRANSCRIBE_PROMPT = "Transcribe the audio."

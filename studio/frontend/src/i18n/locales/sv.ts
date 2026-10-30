@@ -3614,7 +3614,6 @@ export const sv = {
       llamaCppVersion: "llama.cpp-version",
       audioCppVersion: "audio.cpp-version",
       mlxVersion: "MLX-version",
-      whisperCppVersion: "whisper.cpp-version",
       engines: {
         title: "Motorer",
         description: "Körmiljöerna som Unsloth använder för att köra modeller. Uppdateringar installeras i bakgrunden, utan omstart.",

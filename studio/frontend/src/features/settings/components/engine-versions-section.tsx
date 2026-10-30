@@ -18,7 +18,7 @@ import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
 type EngineRow = {
-  key: "llama" | "whisper" | "audio" | "mlx";
+  key: "llama" | "audio" | "mlx";
   labelKey: TranslationKey;
   installed: string | null;
   offer: ComponentOffer | null;
@@ -44,12 +44,6 @@ export function EngineVersionsSection() {
       offer: status?.llama ?? null,
     },
     {
-      key: "whisper",
-      labelKey: "settings.about.whisperCppVersion",
-      installed: status?.whisper?.installed_tag ?? null,
-      offer: status?.whisper ?? null,
-    },
-    {
       key: "audio",
       labelKey: "settings.about.audioCppVersion",
       installed: hw.audioCpp ?? status?.audio?.installed_tag ?? null,
@@ -62,11 +56,9 @@ export function EngineVersionsSection() {
       offer: null,
     },
   ];
-  // whisper.cpp only reports once the backend knows it, MLX only where installed; an empty row reads as missing.
+  // MLX only where installed; an empty row reads as missing.
   const visibleRows = rows.filter(
-    (row) =>
-      (row.key !== "whisper" || row.offer != null) &&
-      (row.key !== "mlx" || row.installed != null),
+    (row) => row.key !== "mlx" || row.installed != null,
   );
   const job = status?.job;
   const offered = status != null && llamaUpdateOffered(status);

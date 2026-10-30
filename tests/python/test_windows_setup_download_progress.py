@@ -38,12 +38,12 @@ def setup_fragment(component):
             block = block.replace("$PSScriptRoot\\", "$PSScriptRoot/")
         output, status = "$nodeOut", "$nodeExit"
     else:
-        name = "Prebuilt" if component == "llama" else "Whisper"
+        name = "Prebuilt" if component == "llama" else "AudioCpp"
         start = source.index(f"$prevEAP{name} =")
         end = source.index(f"$ErrorActionPreference = $prevEAP{name}", start)
         block = source[start:end] + f"$ErrorActionPreference = $prevEAP{name}"
-        output = "$prebuiltOutput" if component == "llama" else "$whisperOutput"
-        status = "$prebuiltExit" if component == "llama" else "$whisperExit"
+        output = "$prebuiltOutput" if component == "llama" else "$audioCppOutput"
+        status = "$prebuiltExit" if component == "llama" else "$audioCppExit"
     return encoding + helpers, block, output, status
 
 
@@ -58,7 +58,7 @@ def start_installer(tmp_path, shell, component, mode, child_source):
         "$script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')\n"
         "$NodeInstallPython = $Python\n$NodeDir = $WorkDir\n"
         "$prebuiltArgs = @((Join-Path $WorkDir 'install_node_prebuilt.py'))\n"
-        "$whisperArgs = $prebuiltArgs\n" + block + "\n"
+        "$audioCppArgs = $prebuiltArgs\n" + block + "\n"
         f"[IO.File]::WriteAllText((Join-Path $WorkDir 'captured.log'), {output})\n"
         f"exit {status}\n",
         encoding = "utf-8",
@@ -102,7 +102,7 @@ def start_installer(tmp_path, shell, component, mode, child_source):
 
 
 @pytest.mark.parametrize("shell", SHELLS or [None])
-@pytest.mark.parametrize("component", ["node", "llama", "whisper"])
+@pytest.mark.parametrize("component", ["node", "llama", "audio_cpp"])
 @pytest.mark.parametrize("mode", ["1", "true", "quiet", "verbose"])
 @pytest.mark.parametrize("exit_code", [0, 7])
 def test_windows_download_output(tmp_path, shell, component, mode, exit_code):
@@ -145,7 +145,9 @@ def test_windows_download_output(tmp_path, shell, component, mode, exit_code):
 
 
 @pytest.mark.parametrize("shell", SHELLS or [None])
-@pytest.mark.parametrize("component", ["node", "llama", "whisper"])
+# The installers whose own download_file streams the archive; audio.cpp downloads through
+# prebuilt_core, which test_install_audio_cpp_prebuilt_logic.py covers.
+@pytest.mark.parametrize("component", ["node", "llama"])
 def test_windows_real_download_reports_progress_while_active(
     tmp_path, shell, component, monkeypatch
 ):

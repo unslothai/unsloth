@@ -3384,7 +3384,6 @@ export const hi = {
       llamaCppVersion: "llama.cpp संस्करण",
       audioCppVersion: "audio.cpp संस्करण",
       mlxVersion: "MLX संस्करण",
-      whisperCppVersion: "whisper.cpp संस्करण",
       engines: {
         title: "इंजन",
         description: "वे रनटाइम जिनसे Unsloth मॉडल चलाता है। अपडेट बैकग्राउंड में इंस्टॉल होते हैं, रीस्टार्ट की ज़रूरत नहीं।",

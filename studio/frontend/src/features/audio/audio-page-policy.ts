@@ -288,7 +288,8 @@ export interface SttDownloadedArtifact {
   engine: SttEngine;
 }
 
-/** Whisper uses one short key for distinct Transformers and whisper.cpp downloads, so keep the engine. */
+/** Whisper's short keys are shared across engines, so keep the engine. whisper.cpp is retired, so its
+ *  GGML caches are no longer offered. */
 export function sttDownloadedArtifacts(
   status: SttDownloadedStatus,
   repoIdForSidecarKey: (sidecarKey: string, engine: SttEngine) => string,
@@ -298,7 +299,6 @@ export function sttDownloadedArtifacts(
   const blocks: readonly [SttEngine, SttDownloadedStatus | undefined][] = [
     ["transformers", status],
     ["transformers", status.transformers],
-    ["gguf", status.gguf],
     ["mtmd", status.mtmd],
     ["audiocpp", status.audiocpp],
   ];

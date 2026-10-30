@@ -11,10 +11,13 @@ import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
 /** fills the prompt without a transcript entry or language hint for cross-lingual references. */
 export function useReferenceTranscribe({
   sttRepo,
+  settleSttRepo,
   onText,
   purpose = "reference",
 }: {
   sttRepo: string | null;
+  /** Resolves a saved whisper.cpp Transcribe pick against the host before it is used. */
+  settleSttRepo?: (repo: string | null) => Promise<string | null>;
   onText: (text: string, reference: AudioSourceSelection) => void;
   /** "convert" transcribes up to Convert's cap instead of the 30 s clone reference. */
   purpose?: "reference" | "convert";
@@ -35,16 +38,16 @@ export function useReferenceTranscribe({
       setTranscribing(true);
       setError(null);
       try {
+        const repo = settleSttRepo ? await settleSttRepo(sttRepo) : sttRepo;
+        if (controller.signal.aborted) return;
         const voice = useVoiceSettingsStore.getState();
-        const model = sttRepo ? sttSidecarKeyFor(sttRepo) : voice.sttModel;
+        const model = repo ? sttSidecarKeyFor(repo) : voice.sttModel;
         const result = await transcribeAudioInput(
           sourceRefOf(reference),
           {
             // the Settings model uses its saved quant; a Transcribe selection is already resident.
-            model: sttRepo
-              ? model
-              : withSttVariant(model, voice.sttGgufVariant),
-            engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
+            model: repo ? model : withSttVariant(model, voice.sttGgufVariant),
+            engine: repo ? sttEngineForRepoId(repo) : sttEngineFor(model),
             device: voice.sttDevice,
             purpose,
           },
@@ -73,7 +76,7 @@ export function useReferenceTranscribe({
         }
       }
     },
-    [sttRepo, purpose],
+    [sttRepo, settleSttRepo, purpose],
   );
 
   const cancel = useCallback(() => {

@@ -3447,7 +3447,6 @@ export const en = {
       llamaCppVersion: "llama.cpp Version",
       audioCppVersion: "audio.cpp Version",
       mlxVersion: "MLX Version",
-      whisperCppVersion: "whisper.cpp Version",
       engines: {
         title: "Engines",
         description: "The runtimes Unsloth uses to run models. Updates install in the background, with no restart.",

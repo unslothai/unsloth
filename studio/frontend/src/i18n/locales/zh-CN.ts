@@ -3320,7 +3320,6 @@ export const zhCN = {
       llamaCppVersion: "llama.cpp 版本",
       audioCppVersion: "audio.cpp 版本",
       mlxVersion: "MLX 版本",
-      whisperCppVersion: "whisper.cpp 版本",
       engines: {
         title: "引擎",
         description: "Unsloth 用来运行模型的运行时。更新在后台安装，无需重启。",

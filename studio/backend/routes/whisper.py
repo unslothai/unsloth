@@ -1,18 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GET /api/whisper/update-status: prebuilt state; fails open; updates via POST /api/llama/update"""
+"""GET /api/whisper/update-status, kept for old clients: whisper.cpp is retired, so it always answers
+``supported: False`` without probing the install or GitHub; the response shape is unchanged."""
 
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
-from utils.whisper_cpp_update import get_update_status
 
 router = APIRouter()
 
@@ -61,6 +60,4 @@ async def whisper_update_status(
     ),
     current_subject: str = Depends(get_current_subject),
 ) -> WhisperUpdateStatusResponse:
-    # Off the event loop: detection may probe the host and read GitHub.
-    status = await asyncio.to_thread(get_update_status, force_refresh = force_refresh)
-    return WhisperUpdateStatusResponse(**status)
+    return WhisperUpdateStatusResponse()

@@ -2,8 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """llama.cpp prebuilt update routes: GET /api/llama/update-status, GET /api/llama/update-changelog,
-POST /api/llama/update; fail open; old top-level fields keep shape so older clients work; whisper
-and audio.cpp chain as phases."""
+POST /api/llama/update; fail open; old top-level fields keep shape so older clients work; audio.cpp
+chains as a phase. whisper.cpp is retired: its ``whisper`` sub-status is always null and its phase is
+always skipped, but the fields stay for older clients."""
 
 from __future__ import annotations
 
@@ -80,8 +81,8 @@ class LlamaUpdateStatusResponse(BaseModel):
     update_available: bool = Field(
         False,
         description = (
-            "True when an update would do something: llama.cpp is behind OR the "
-            "whisper piggyback is behind OR audio.cpp is not the pinned release."
+            "True when an update would do something: llama.cpp is behind OR "
+            "audio.cpp is not the pinned release. The retired whisper.cpp never counts."
         ),
     )
     llama_update_available: bool = Field(

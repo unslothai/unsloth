@@ -5354,90 +5354,12 @@ if [ ! -L "$LLAMA_CPP_DIR" ] && {
     _remove_agent_instruction_files "$LLAMA_CPP_DIR"
 fi
 
-# ── whisper.cpp (local speech-to-text dictation engine) ──
-# whisper.cpp: optional, fail-open; installs beside llama.cpp as _managed_whisper_cpp_dir() expects.
-WHISPER_CPP_DIR="$UNSLOTH_HOME/whisper.cpp"
-if [ -n "${WHISPER_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_WHISPER_CPP_PATH:-}" ]; then
-    verbose_substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
-elif [ "${UNSLOTH_SKIP_WHISPER_INSTALL:-0}" = "1" ]; then
-    verbose_substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
-else
-    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
-        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
-    fi
-    _WHISPER_CMD=(python "$SCRIPT_DIR/install_whisper_prebuilt.py" --install-dir "$WHISPER_CPP_DIR")
-    if [ -n "${UNSLOTH_WHISPER_RELEASE_TAG:-}" ]; then
-        _WHISPER_CMD+=(--published-release-tag "$UNSLOTH_WHISPER_RELEASE_TAG")
-    fi
-    if [ -n "${_setup_gfx:-}" ]; then
-        _WHISPER_CMD+=(--rocm-gfx "$_setup_gfx")
-    elif [ "$_setup_amd_detected" = true ]; then
-        _WHISPER_CMD+=(--has-rocm)
-    fi
-    _WHISPER_LOG="$(mktemp)"
-    set +e
-    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
-        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG" | _filter_download_output
-        _WHISPER_STATUS=${PIPESTATUS[0]}
-    else
-        "${_WHISPER_CMD[@]}" >"$_WHISPER_LOG" 2>&1
-        _WHISPER_STATUS=$?
-    fi
-    set -e
-    if [ "$_WHISPER_STATUS" -eq 0 ]; then
-        if grep -Fq "already matches" "$_WHISPER_LOG"; then
-            step "whisper.cpp" "prebuilt up to date"
-        elif grep -Fq "keeping the existing complete install" "$_WHISPER_LOG"; then
-            step "whisper.cpp" "update unavailable, existing prebuilt kept" "$C_WARN"
-        else
-            step "whisper.cpp" "prebuilt installed"
-        fi
-        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
-            : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-        fi
-        rm -f "$_WHISPER_LOG"
-    elif [ "$_WHISPER_STATUS" -eq 3 ]; then
-        step "whisper.cpp" "install busy; keeping existing runtime" "$C_WARN"
-        rm -f "$_WHISPER_LOG"
-    else
-        _WHISPER_RECOVERED=false
-        _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
-        if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
-                && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
-            _frontend_bg_join
-            substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
-            # A stale marker would report "already matches" over the source binary.
-            rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
-            if run_quiet_no_exit "whisper.cpp source build" \
-                    env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"; then
-                _WHISPER_RECOVERED=true
-                step "whisper.cpp" "source build installed"
-                if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
-                    : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-                fi
-            else
-                :
-            fi
-        fi
-        if [ "$_WHISPER_RECOVERED" != true ]; then
-            if [ "$_WHISPER_STATUS" -eq 2 ]; then
-                _WHISPER_REQUIRED_TAG="$(sed -n 's/.*slim bundle requires llama\.cpp \([^; ]*\).*/\1/p' "$_WHISPER_LOG" | tail -n 1)"
-                _WHISPER_INSTALLED_TAG="$(python - "$UNSLOTH_HOME/llama.cpp/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    print(json.load(open(sys.argv[1], encoding="utf-8")).get("release_tag", ""))
-except Exception:
-    pass
-PY
-)"
-                _WHISPER_PAIRING="installed llama.cpp ${_WHISPER_INSTALLED_TAG:-unknown}; whisper requires ${_WHISPER_REQUIRED_TAG:-unknown}"
-                step "whisper.cpp" "no compatible prebuilt ($_WHISPER_PAIRING); curated whisper.cpp dictation is unavailable; publish the paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "$C_WARN"
-            else
-                step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "$C_WARN"
-            fi
-        fi
-        rm -f "$_WHISPER_LOG"
-    fi
+# ── whisper.cpp (retired) ──
+# Unsloth Studio no longer installs or updates whisper.cpp: Whisper dictation runs on
+# Transformers, and llama.cpp serves the default dictation model. An existing tree is left
+# in place for the uninstall script to remove.
+if [ -d "$UNSLOTH_HOME/whisper.cpp" ]; then
+    verbose_substep "whisper.cpp: retired; Unsloth Studio no longer installs or updates it (existing files are left in place)"
 fi
 
 # ── audio.cpp (speech, music and dictation engine) ──
@@ -5563,7 +5485,7 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
     # error into "Installation failed", so one transient prebuilt download failure (a
     # single HTTP 403 rate limit will do it) fails the whole first-launch install of an
     # app whose own footer just said Installed. Everything except GGUF inference works,
-    # and whisper.cpp in this same script already degrades rather than failing for
+    # and audio.cpp in this same script already degrades rather than failing for
     # exactly this case. Match it, and say what is missing and how to get it back.
     #
     # PROGRESS, not STEP: install.rs maps [TAURI:STEP] to the install-step event, and

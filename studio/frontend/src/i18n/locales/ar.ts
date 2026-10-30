@@ -3375,7 +3375,6 @@ export const ar = {
       llamaCppVersion: "إصدار llama.cpp",
       audioCppVersion: "إصدار audio.cpp",
       mlxVersion: "إصدار MLX",
-      whisperCppVersion: "إصدار whisper.cpp",
       engines: {
         title: "المحركات",
         description: "بيئات التشغيل التي يستخدمها Unsloth لتشغيل النماذج. تُثبَّت التحديثات في الخلفية دون إعادة تشغيل.",

@@ -3293,7 +3293,6 @@ export const it = {
       llamaCppVersion: "Versione di llama.cpp",
       audioCppVersion: "Versione di audio.cpp",
       mlxVersion: "Versione di MLX",
-      whisperCppVersion: "Versione di whisper.cpp",
       engines: {
         title: "Motori",
         description: "I runtime che Unsloth usa per eseguire i modelli. Gli aggiornamenti si installano in background, senza riavvio.",

@@ -3364,7 +3364,6 @@ export const ko = {
       llamaCppVersion: "llama.cpp 버전",
       audioCppVersion: "audio.cpp 버전",
       mlxVersion: "MLX 버전",
-      whisperCppVersion: "whisper.cpp 버전",
       engines: {
         title: "엔진",
         description: "Unsloth가 모델을 실행하는 데 사용하는 런타임입니다. 업데이트는 재시작 없이 백그라운드에서 설치됩니다.",

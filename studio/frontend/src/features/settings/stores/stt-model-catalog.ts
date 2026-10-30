@@ -32,7 +32,16 @@ export const RECOMMENDED_STT_MODELS: ReadonlySet<SttModel> = new Set([
   "qwen3-asr-1.7b",
 ]);
 
-/** Served by llama.cpp mtmd (GGUF plus audio mmproj); whisper.cpp is Whisper-only. */
+/** The curated Whisper checkpoints, served by Transformers. */
+export const WHISPER_STT_MODELS: ReadonlySet<SttModel> = new Set([
+  "tiny",
+  "base",
+  "small",
+  "large-v3-turbo",
+  "large-v3",
+]);
+
+/** Served by llama.cpp mtmd (GGUF plus audio mmproj). */
 export const MTMD_STT_MODELS: ReadonlySet<SttModel> = new Set([
   "qwen3-asr-0.6b",
   "qwen3-asr-1.7b",
@@ -92,19 +101,90 @@ export const STT_MODEL_REPOS: Record<DefaultSttModel, string> = {
   ) as Record<AudioCppSttKey, string>),
 };
 export const DEFAULT_STT_MODEL: DefaultSttModel = "qwen3-asr-0.6b";
+/** The same model on audio.cpp, for a host whose llama.cpp cannot serve it. */
+const AUDIO_CPP_DEFAULT_STT_MODEL: DefaultSttModel = "audiocpp-qwen3-asr-0.6b";
+/** The default before Qwen3-ASR, used only by the v1 migration. */
 const LEGACY_DEFAULT_STT_MODEL = "small";
 
-/** v0 defaulted to Whisper Small, so a stored "small" is usually untouched; move it to the
- * recommended model. Re-picking Small persists at v1 and sticks. */
+/** Who chose `sttModel`. "default": the app's default. "user": the picker,
+ * never changed automatically. "whisper-cpp": a Whisper pick saved while
+ * whisper.cpp served it, settled once by the host. */
+export type SttModelSource = "default" | "user" | "whisper-cpp";
+
+export function normalizeSttModelSource(
+  value: unknown,
+  model: SttModel,
+): SttModelSource {
+  if (value === "default" || value === "user") {
+    return value;
+  }
+  if (value === "whisper-cpp" && WHISPER_STT_MODELS.has(model)) {
+    return value;
+  }
+  return model === DEFAULT_STT_MODEL ? "default" : "user";
+}
+
+/**
+ * v0's default was Whisper Small, so a stored "small" is far more often a
+ * default nobody touched than a deliberate pick. Move those to the recommended
+ * model; choosing Small again persists at v1 and sticks. Any other saved model
+ * was chosen on purpose and is left alone.
+ *
+ * v2 records who chose the model. A saved model is kept as the user's, and a
+ * Whisper pick is marked for the host to settle now that whisper.cpp is
+ * retired. A save without a model gets the default when it is merged.
+ */
 export function migrateVoiceSettings(
   persisted: unknown,
   fromVersion: number,
 ): Record<string, unknown> | undefined {
-  const saved = persisted as Record<string, unknown> | undefined;
+  let saved = persisted as Record<string, unknown> | undefined;
   if (fromVersion < 1 && saved?.sttModel === LEGACY_DEFAULT_STT_MODEL) {
-    return { ...saved, sttModel: DEFAULT_STT_MODEL };
+    saved = { ...saved, sttModel: DEFAULT_STT_MODEL };
+  }
+  if (fromVersion < 2 && typeof saved?.sttModel === "string") {
+    saved = {
+      ...saved,
+      sttModelSource: WHISPER_STT_MODELS.has(saved.sttModel.trim())
+        ? "whisper-cpp"
+        : "user",
+    };
   }
   return saved;
+}
+
+/** The `available` flags of the engine blocks in `/audio/stt/status`. */
+export interface SttHostEngines {
+  transformers?: { available: boolean };
+  audiocpp?: { available: boolean };
+  mtmd?: { available: boolean };
+}
+
+/**
+ * The model to switch to on this host, or null to keep the current one. A
+ * retired whisper.cpp pick keeps its key on Transformers, or without PyTorch
+ * becomes the llama.cpp default (its audio.cpp twin when llama.cpp cannot
+ * serve it). Any other model is never changed.
+ */
+export function sttModelForHost(
+  current: { sttModel: SttModel; sttModelSource: SttModelSource },
+  host: SttHostEngines,
+): { sttModel: SttModel; sttModelSource: SttModelSource } | null {
+  if (current.sttModelSource === "whisper-cpp") {
+    if (host.transformers?.available === true) {
+      return { sttModel: current.sttModel, sttModelSource: "user" };
+    }
+    if (host.transformers?.available !== false) {
+      return null;
+    }
+    if (host.mtmd?.available) {
+      return { sttModel: DEFAULT_STT_MODEL, sttModelSource: "default" };
+    }
+    return host.audiocpp?.available
+      ? { sttModel: AUDIO_CPP_DEFAULT_STT_MODEL, sttModelSource: "default" }
+      : null;
+  }
+  return null;
 }
 
 // Separate name and size so lists can right-align the size.
@@ -125,11 +205,11 @@ export const STT_MODEL_NAMES: Record<DefaultSttModel, string> = {
     ]),
   ) as Record<AudioCppSttKey, string>),
 };
-// Whisper sizes are f16 GGML; mtmd sizes include the mmproj.
+// Whisper sizes are the Transformers snapshots; mtmd sizes include the mmproj.
 export const STT_MODEL_SIZES: Record<DefaultSttModel, string> = {
-  tiny: "78 MB",
-  base: "148 MB",
-  small: "488 MB",
+  tiny: "155 MB",
+  base: "295 MB",
+  small: "969 MB",
   "large-v3-turbo": "1.6 GB",
   "large-v3": "3.1 GB",
   "qwen3-asr-0.6b": "1.0 GB",

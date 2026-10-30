@@ -3392,7 +3392,6 @@ export const ru = {
       llamaCppVersion: "Версия llama.cpp",
       audioCppVersion: "Версия audio.cpp",
       mlxVersion: "Версия MLX",
-      whisperCppVersion: "Версия whisper.cpp",
       engines: {
         title: "Движки",
         description: "Среды выполнения, с помощью которых Unsloth запускает модели. Обновления устанавливаются в фоне, без перезапуска.",

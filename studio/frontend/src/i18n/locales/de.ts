@@ -3423,7 +3423,6 @@ export const de = {
       llamaCppVersion: "llama.cpp-Version",
       audioCppVersion: "audio.cpp-Version",
       mlxVersion: "MLX-Version",
-      whisperCppVersion: "whisper.cpp-Version",
       engines: {
         title: "Engines",
         description: "Die Laufzeiten, mit denen Unsloth Modelle ausführt. Updates werden im Hintergrund installiert, ohne Neustart.",

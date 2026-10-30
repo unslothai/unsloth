@@ -32,16 +32,34 @@ import {
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
 } from "../catalog";
-import { isAudioSttEngine } from "../stt-artifacts";
+import {
+  canonicalSttChoice,
+  isAudioSttEngine,
+  isRetiredWhisperChoice,
+  retiredWhisperFallback,
+} from "../stt-artifacts";
 import type { AudioHostState } from "./audio-host-state";
 
 export function useSttSidecar({
   setBusy,
   activeRef,
 }: Pick<AudioHostState, "setBusy" | "activeRef">) {
-  const [lastSttRepo, setLastSttRepoChoice] = usePersistedChoice("unsloth:audio:last-stt-model", "");
+  const [savedSttRepo, setLastSttRepoChoice] = usePersistedChoice("unsloth:audio:last-stt-model", "");
   const [lastSttVariant, setLastSttVariant] = usePersistedChoice("unsloth:audio:last-stt-variant", "");
-  const [lastSttEngine, setLastSttEngine] = usePersistedChoice("unsloth:audio:last-stt-engine", "");
+  const [savedSttEngine, setLastSttEngine] = usePersistedChoice("unsloth:audio:last-stt-engine", "");
+  // a retired whisper.cpp pick reads as its Transformers twin; the next pick saves that form.
+  const { repo: lastSttRepo, engine: lastSttEngine } = canonicalSttChoice(
+    savedSttRepo,
+    savedSttEngine,
+  );
+  // Without PyTorch that twin cannot run, so the first status read that can tell moves the
+  // pick to the Qwen3-ASR the backend serves the retired engine with.
+  const retiredWhisperPick = useRef(
+    isRetiredWhisperChoice(savedSttRepo, savedSttEngine),
+  );
+  // That pick and where the host sent it, so a load that started before the read still gets there.
+  const retiredWhisperRepo = useRef(retiredWhisperPick.current ? lastSttRepo : null);
+  const retiredWhisperSettled = useRef<string | null>(null);
   const [selectedSttRepo, setSelectedSttRepo] = useState<string | null>(null);
   const [sttLoadedModel, setSttLoadedModel] = useState<string | null>(null);
   const [sttLoadedEngine, setSttLoadedEngine] = useState<
@@ -76,6 +94,9 @@ export function useSttSidecar({
   );
   const setLastSttRepo = useCallback(
     (repo: string) => {
+      // An explicit pick replaces the saved whisper.cpp choice, so a later status read must not move it.
+      retiredWhisperPick.current = false;
+      retiredWhisperRepo.current = null;
       setLastSttRepoChoice(repo);
       setLastSttVariant(sttGgufVariants.current.get(repo.toLowerCase()) ?? "");
       setLastSttEngine(sttEngines.current.get(repo.toLowerCase()) ?? "");
@@ -104,6 +125,19 @@ export function useSttSidecar({
           ? (selectedKey ?? undefined)
           : undefined,
       );
+      // Where the host serves the retired pick does not depend on the selection, so even a read a
+      // newer one replaced settles it: a load waiting on it must not wait for another.
+      if (retiredWhisperPick.current) {
+        const fallback = retiredWhisperFallback(stt);
+        if (fallback !== undefined) retiredWhisperPick.current = false;
+        if (fallback) {
+          retiredWhisperSettled.current = fallback.repo;
+          sttEngines.current.set(fallback.repo.toLowerCase(), fallback.engine);
+          setLastSttRepoChoice(fallback.repo);
+          setLastSttVariant("");
+          setLastSttEngine(fallback.engine);
+        }
+      }
       if (generation !== sttStatusRefreshGeneration.current) return;
       audioCppRuntime.current = stt.audio_cpp_runtime ?? null;
       const nextDownloadedArtifacts = sttDownloadedArtifacts(
@@ -161,7 +195,21 @@ export function useSttSidecar({
       setSttLoadedModel(null);
       setSttLoadedEngine(null);
     }
-  }, [sttEngineFor]);
+  }, [sttEngineFor, setLastSttRepoChoice, setLastSttVariant, setLastSttEngine]);
+
+  /** `repo` as a load should use it. The saved whisper.cpp pick reads the host first when no
+   *  status read has settled it yet, so a host without PyTorch loads the Qwen3-ASR it moves to
+   *  instead of the Transformers twin the backend refuses. */
+  const settleSavedSttRepo = useCallback(
+    async (repo: string | null): Promise<string | null> => {
+      if (!repo || repo !== retiredWhisperRepo.current) return repo;
+      if (retiredWhisperPick.current) await refreshSttStatus();
+      return repo === retiredWhisperRepo.current
+        ? (retiredWhisperSettled.current ?? repo)
+        : repo;
+    },
+    [refreshSttStatus],
+  );
 
   const sttSelected = selectedSttRepo !== null;
   const sttReady = sttSelectionReady(
@@ -357,6 +405,7 @@ export function useSttSidecar({
     sttLoadAbort,
     deferredSttLoad,
     refreshSttStatus,
+    settleSavedSttRepo,
     sttSelected,
     sttReady,
     releaseTranscribeSelection,

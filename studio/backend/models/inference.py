@@ -588,8 +588,9 @@ class TranscribeRequest(BaseModel):
     )
     engine: Optional[str] = Field(
         None,
-        description = "STT engine: 'transformers' (default), 'gguf' (whisper.cpp), 'mtmd' (llama.cpp) "
-        "or 'audiocpp' (audio.cpp)",
+        description = "STT engine: 'transformers' (default), 'mtmd' (llama.cpp) or 'audiocpp' "
+        "(audio.cpp). 'gguf' is the retired whisper.cpp alias: Unsloth Studio serves it with "
+        "Transformers, or with llama.cpp's (else audio.cpp's) Qwen3-ASR when PyTorch is not installed",
     )
     device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
         None,
@@ -607,8 +608,9 @@ class SttLoadRequest(BaseModel):
     model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
     engine: Optional[str] = Field(
         None,
-        description = "STT engine: 'transformers' (default), 'gguf' (whisper.cpp), 'mtmd' (llama.cpp) "
-        "or 'audiocpp' (audio.cpp)",
+        description = "STT engine: 'transformers' (default), 'mtmd' (llama.cpp) or 'audiocpp' "
+        "(audio.cpp). 'gguf' is the retired whisper.cpp alias: Unsloth Studio serves it with "
+        "Transformers, or with llama.cpp's (else audio.cpp's) Qwen3-ASR when PyTorch is not installed",
     )
     device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
         None,

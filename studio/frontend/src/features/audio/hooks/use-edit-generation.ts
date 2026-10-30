@@ -76,6 +76,7 @@ export function useEditGeneration({
   replayQueuedTtsPick,
   audioOptionValues,
   sttRepo,
+  settleSttRepo,
 }: Pick<
   AudioHostState,
   | "status"
@@ -96,6 +97,7 @@ export function useEditGeneration({
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
     audioOptionValues: AudioOptionValues;
     sttRepo: string | null;
+    settleSttRepo?: (repo: string | null) => Promise<string | null>;
   }) {
   const source = useAudioEditStore((state) => state.source);
   const transcript = useAudioEditStore((state) => state.transcript);
@@ -120,6 +122,7 @@ export function useEditGeneration({
 
   const transcriber = useReferenceTranscribe({
     sttRepo,
+    settleSttRepo,
     onText: (next, from) => {
       const store = useAudioEditStore.getState();
       // The recording may have changed while this one was transcribed.

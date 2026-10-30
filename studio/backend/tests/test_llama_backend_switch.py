@@ -426,32 +426,87 @@ def test_switching_to_the_recorded_choice_is_refused(monkeypatch, tmp_path):
     assert action["reason"] == "already_selected"
 
 
-def test_a_failed_whisper_repair_can_be_retried_from_the_same_selection(monkeypatch):
-    """Retrying a failed whisper repair must start a job even though the backend is already selected."""
+def _whisper_must_not_run(monkeypatch):
+    """whisper.cpp is retired: it is offered (behind, with a stale slim pairing) and every
+    run fails the test, so only a plan that never asks can pass."""
+
+    def _reached(*_args, **_kwargs):
+        raise AssertionError("whisper.cpp is retired and must not be run")
+
     monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
     monkeypatch.setattr(whisper_upd, "repair_pairing_plan", lambda: {"phase": {"repair": True}})
-
-    plan = _whisper_phase_plan("cuda", llama_will_run = False, llama_skip_reason = "already_selected")
-
-    assert plan["phase"]["repair"] is True
-
-
-def test_an_already_selected_request_with_a_healthy_pairing_stays_refused(monkeypatch):
-    """Only a stale pairing is an owed repair; a healthy re-selection must stay refused, not succeed."""
-    planned = []
     monkeypatch.setattr(
-        whisper_upd, "repair_pairing_plan", lambda: planned.append(1) or {"phase": {"repair": True}}
+        whisper_upd,
+        "chained_phase_plan",
+        lambda **_kw: {"update_available": True, "phase": {"kind": "whisper"}},
+    )
+    for name in ("run_chained_phase", "run_chained_phase_after_llama", "run_repair_phase"):
+        monkeypatch.setattr(whisper_upd, name, _reached)
+
+
+@pytest.mark.parametrize(
+    "backend_request,llama_will_run,llama_skip_reason,migration",
+    [
+        ("cuda", False, "already_selected", False),
+        ("cuda", False, "local_link", False),
+        ("vulkan", True, None, False),
+        ("auto", True, None, True),
+        (None, True, None, False),
+        (None, False, "up_to_date", False),
+    ],
+)
+def test_whisper_cpp_is_retired_from_every_plan(
+    monkeypatch, tmp_path, backend_request, llama_will_run, llama_skip_reason, migration
+):
+    # The marker's "auto" request is what let a plain update move the backend, and a stale
+    # slim pairing is the one refusal that used to start a repair-only job.
+    _install(monkeypatch, tmp_path)
+    _whisper_must_not_run(monkeypatch)
+
+    plan = _whisper_phase_plan(
+        backend_request,
+        llama_will_run = llama_will_run,
+        llama_skip_reason = llama_skip_reason,
+        migration = migration,
     )
 
-    monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: False)
-    assert (
-        _whisper_phase_plan("cuda", llama_will_run = False, llama_skip_reason = "already_selected")
-        == {}
+    assert plan == {"skip_reason": "retired"}
+
+
+def test_a_switch_never_re_pairs_whisper(monkeypatch, tmp_path):
+    install_dir = _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(upd, "_whisper_phase_plan", _whisper_phase_plan)
+    _whisper_must_not_run(monkeypatch)
+    _patch_installer(
+        monkeypatch,
+        on_start = lambda cmd, kwargs: _write_vulkan_install(install_dir, backend_request = "vulkan"),
     )
 
-    monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
-    assert _whisper_phase_plan("cuda", llama_will_run = False, llama_skip_reason = "local_link") == {}
-    assert planned == []
+    assert upd.start_backend_switch("vulkan")["started"] is True
+    job = _await_job()
+
+    assert job["state"] == "success", job
+    assert job["phases"]["whisper"]["state"] == "skipped"
+    assert job["phases"]["whisper"]["reason"] == "retired"
+    assert job["message"] == "llama.cpp is now running on vulkan."
+
+
+def test_an_already_selected_switch_with_a_stale_pairing_stays_refused(monkeypatch, tmp_path):
+    # The stale-pairing retry used to start a whisper-only repair job.
+    _install(
+        monkeypatch,
+        tmp_path,
+        asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
+        backend = "vulkan",
+        backend_request = "vulkan",
+    )
+    monkeypatch.setattr(upd, "_whisper_phase_plan", _whisper_phase_plan)
+    _whisper_must_not_run(monkeypatch)
+
+    action = upd.start_backend_switch("vulkan")
+
+    assert action["started"] is False
+    assert action["reason"] == "already_selected"
 
 
 def test_re_selecting_a_backend_is_refused_even_when_its_asset_moved(monkeypatch, tmp_path):
@@ -723,18 +778,6 @@ def test_status_keeps_a_concrete_choice_applied_when_its_asset_moves(monkeypatch
     assert status["backend"] == "cuda"
     assert status["backend_request"] == "cuda"
     assert status["selection_applied"] is True
-
-
-def test_a_switch_that_installs_nothing_plans_no_whisper_phase(monkeypatch):
-    # whisper re-pairs only because llama's ggml is replaced; no llama phase, nothing to re-pair
-    planned = []
-    monkeypatch.setattr(
-        whisper_upd, "repair_pairing_plan", lambda: planned.append(1) or {"phase": {"repair": True}}
-    )
-
-    assert _whisper_phase_plan("cuda", llama_will_run = False) == {}
-    assert planned == []
-    assert _whisper_phase_plan("cuda", llama_will_run = True)["phase"]["repair"] is True
 
 
 def _slim_whisper(
@@ -1217,52 +1260,3 @@ def test_an_explicit_recheck_re_resolves_the_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(upd, "_pending_backend_migration", _spy)
     upd.get_update_status(force_refresh = True)
     assert seen == [True], seen
-
-
-def test_a_migration_keeps_a_pending_whisper_update(monkeypatch):
-    chained = {"phase": {"kind": "whisper", "tag": "w2"}, "update_available": True}
-    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: chained)
-    repair_calls = []
-    monkeypatch.setattr(
-        whisper_upd, "repair_pairing_plan", lambda: (repair_calls.append(True), {})[1]
-    )
-    monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
-
-    plan = _whisper_phase_plan("auto", llama_will_run = True, migration = True)
-    assert plan == chained, plan
-    assert repair_calls == [], "a migration must not take the repair-only branch"
-
-
-def test_a_plain_update_that_can_move_the_backend_still_re_pairs_whisper(monkeypatch, tmp_path):
-    # an update passes no --llama-backend, so the "auto" default can move under it
-    _install(monkeypatch, tmp_path)
-    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: {"skip_reason": "up_to_date"})
-    repair = {"update_available": True, "phase": {"repair": True}}
-    monkeypatch.setattr(whisper_upd, "repair_pairing_plan", lambda: repair)
-
-    assert _whisper_phase_plan(None, llama_will_run = True) is repair
-    assert _whisper_phase_plan(None, llama_will_run = False)["skip_reason"] == "up_to_date"
-
-
-def test_a_recorded_backend_choice_does_not_schedule_a_re_pair(monkeypatch, tmp_path):
-    _install(monkeypatch, tmp_path, backend_request = "cuda")
-    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: {"skip_reason": "up_to_date"})
-    monkeypatch.setattr(whisper_upd, "repair_pairing_plan", lambda: {"phase": {"repair": True}})
-    assert _whisper_phase_plan(None, llama_will_run = True)["skip_reason"] == "up_to_date"
-
-
-def test_a_self_contained_whisper_keeps_its_up_to_date_reason(monkeypatch, tmp_path):
-    _install(monkeypatch, tmp_path)
-    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: {"skip_reason": "up_to_date"})
-    monkeypatch.setattr(
-        whisper_upd, "repair_pairing_plan", lambda: {"skip_reason": "self_contained", "phase": None}
-    )
-    assert _whisper_phase_plan(None, llama_will_run = True)["skip_reason"] == "up_to_date"
-
-
-def test_a_deliberate_switch_still_takes_the_repair_branch(monkeypatch):
-    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: {"phase": {"kind": "whisper"}})
-    marker = {"repaired": True}
-    monkeypatch.setattr(whisper_upd, "repair_pairing_plan", lambda: marker)
-    monkeypatch.setattr(whisper_upd, "slim_pairing_is_stale", lambda: True)
-    assert _whisper_phase_plan("vulkan", llama_will_run = True) is marker

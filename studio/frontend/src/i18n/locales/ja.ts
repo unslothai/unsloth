@@ -3347,7 +3347,6 @@ export const ja = {
       llamaCppVersion: "llama.cpp バージョン",
       audioCppVersion: "audio.cpp バージョン",
       mlxVersion: "MLX バージョン",
-      whisperCppVersion: "whisper.cpp バージョン",
       engines: {
         title: "エンジン",
         description: "Unsloth がモデルの実行に使うランタイムです。更新はバックグラウンドでインストールされ、再起動は不要です。",

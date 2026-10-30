@@ -78,6 +78,7 @@ export function useConvertGeneration({
   replayQueuedTtsPick,
   audioOptionValues,
   sttRepo,
+  settleSttRepo,
 }: Pick<
   AudioHostState,
   | "status"
@@ -98,6 +99,7 @@ export function useConvertGeneration({
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
     audioOptionValues: AudioOptionValues;
     sttRepo: string | null;
+    settleSttRepo?: (repo: string | null) => Promise<string | null>;
   }) {
   const source = useAudioConvertStore((state) => state.source);
   const target = useAudioConvertStore((state) => state.target);
@@ -141,6 +143,7 @@ export function useConvertGeneration({
 
   const transcriber = useReferenceTranscribe({
     sttRepo,
+    settleSttRepo,
     purpose: "convert",
     // A transcript that finishes after the recording changed belongs to the old one.
     onText: (next, recording) => {

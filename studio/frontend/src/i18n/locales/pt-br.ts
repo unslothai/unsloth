@@ -3396,7 +3396,6 @@ export const ptBR = {
       llamaCppVersion: "Versão do llama.cpp",
       audioCppVersion: "Versão do audio.cpp",
       mlxVersion: "Versão do MLX",
-      whisperCppVersion: "Versão do whisper.cpp",
       engines: {
         title: "Motores",
         description: "Os runtimes que o Unsloth usa para executar modelos. As atualizações são instaladas em segundo plano, sem reiniciar.",
