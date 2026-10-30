@@ -20,9 +20,34 @@ __all__ = ["tile_mlp", "untile_mlp"]
 _ENV = "UNSLOTH_TILED_MLP"
 
 
+_OFF = ("", "0", "false", "off", "no", "none")
+
+
+def _is_off(value):
+    """One parse for "tiling off", shared by the env var, the loader kwarg and `tile_mlp`: None, False, 0 and the
+    strings "", "0", "false", "off", "no", "none" (any case)."""
+    if value is None or value is False:
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return value == 0
+    if isinstance(value, str):
+        return value.strip().lower() in _OFF
+    return False
+
+
+def _env_mode():
+    """UNSLOTH_TILED_MLP, or None when it is unset or any off spelling."""
+    env = os.environ.get(_ENV, "").strip()
+    return None if _is_off(env) else env
+
+
 def _registry():
+    import importlib
+
     try:
-        from unsloth_zoo import tiling_registry
+        tiling_registry = importlib.import_module("unsloth_zoo.tiling_registry")
     except ImportError as e:
         raise ImportError(
             "Unsloth: tiled MLP needs a newer unsloth_zoo (unsloth_zoo.tiling_registry); "
@@ -52,9 +77,9 @@ def tile_mlp(
     elif target_gb is not None:
         mode = f"target:{float(target_gb)}"
     elif mode is None:
-        env = os.environ.get(_ENV, "").strip()
         # An explicit call wins over a disabled environment.
-        mode = env if env.lower() not in ("", "0", "false", "off") else True
+        env = _env_mode()
+        mode = env if env is not None else True
     return _registry().install(model, mode, modules = modules, verbose = verbose)
 
 
@@ -64,17 +89,20 @@ def untile_mlp(model):
 
 
 def resolve_loader_mode(unsloth_tiled_mlp):
-    """The tiling mode a loader call asks for, or None. UNSLOTH_TILED_MLP (when set and not "0") gives the mode;
-    a truthy `unsloth_tiled_mlp` turns tiling on even when the environment says "0" (the old behaviour)."""
-    env = os.environ.get(_ENV, "").strip()
-    env_on = env not in ("", "0")
-    if env_on:
+    """The tiling mode a loader call asks for, or None. UNSLOTH_TILED_MLP, when set to anything but an off spelling,
+    gives the mode; otherwise a `unsloth_tiled_mlp` that is not off turns tiling on, so an off environment never
+    overrides an explicit kwarg (the old "0" behaviour, now the same for every off spelling)."""
+    env = _env_mode()
+    if env is not None:
         return env
-    if unsloth_tiled_mlp is None or unsloth_tiled_mlp is False:
-        return None
-    if isinstance(unsloth_tiled_mlp, str) and unsloth_tiled_mlp.strip() in ("", "0"):
-        return None
-    return unsloth_tiled_mlp
+    return None if _is_off(unsloth_tiled_mlp) else unsloth_tiled_mlp
+
+
+def check_tiling_available(unsloth_tiled_mlp):
+    """Loader entry, before any weights load: when tiling is requested, make sure this unsloth_zoo has the registry
+    and fail fast otherwise. Tiling off never imports it."""
+    if resolve_loader_mode(unsloth_tiled_mlp) is not None:
+        _registry()
 
 
 def loader_tile_mlp(model, unsloth_tiled_mlp):
@@ -85,10 +113,12 @@ def loader_tile_mlp(model, unsloth_tiled_mlp):
     return _registry().install(model, mode)
 
 
-def revalidate_for_trainer(trainer):
+def revalidate_for_trainer(trainer, model = None):
     """Per Trainer instance: re-run the model's tiling plan so modules added since load (PEFT, the fused LoRA MLP
-    forward) are covered. No-op for a model that was never tiled."""
-    model = getattr(trainer, "model", None)
+    forward) are covered. No-op for a model that was never tiled. `model` overrides `trainer.model` (the fresh model
+    `model_init` returns)."""
+    if model is None:
+        model = getattr(trainer, "model", None)
     if model is None:
         return None
     try:

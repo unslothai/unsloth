@@ -6408,6 +6408,12 @@ def patch_gradient_accumulation_fix(Trainer):
             model = _original_call_model_init(self, *args, **kwargs)
             _refuse_tensor_parallel_for_trainer(model)
             _tensor_subclass_weights_for_ddp(self, model)
+            # The fresh model may carry modules added after load (PEFT, the fused LoRA MLP); re-run its tiling plan.
+            try:
+                from ..tiling import revalidate_for_trainer
+                revalidate_for_trainer(self, model)
+            except Exception as e:
+                logger.warning_once(f"Unsloth: tiled MLP revalidation skipped ({e})")
             return model
 
         _unsloth_call_model_init._unsloth_marks_ddp_ignores = True

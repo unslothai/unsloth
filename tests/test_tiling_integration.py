@@ -47,9 +47,12 @@ def _model(n = 2):
 def _env(monkeypatch):
     monkeypatch.delenv("UNSLOTH_TILED_MLP", raising = False)
     monkeypatch.delenv("UNSLOTH_TILED_MLP_MODULES", raising = False)
-    registry.set_engine("checkpoint")
+    set_engine = getattr(registry, "set_engine", None)
+    if set_engine is not None:
+        set_engine("checkpoint")
     yield
-    registry.set_engine(None)
+    if set_engine is not None:
+        set_engine(None)
 
 
 @pytest.mark.parametrize(
@@ -69,6 +72,18 @@ def _env(monkeypatch):
         ("target:2", True, "target:2"),
         ("target:2:mlp,ffn", False, "target:2:mlp,ffn"),
         ("auto", "rows:8", "auto"),  # the environment wins over the kwarg, as before
+        # One off parse: every off spelling of the environment behaves like "0" ...
+        ("false", True, True),
+        ("off", True, True),
+        ("No", True, True),
+        ("none", True, True),
+        ("FALSE", False, None),
+        # ... and of the kwarg, numeric 0 included.
+        (None, 0, None),
+        (None, "false", None),
+        (None, "Off", None),
+        (None, "no", None),
+        (None, "none", None),
     ],
 )
 def test_loader_mode_spellings(monkeypatch, env, kwarg, want):
@@ -106,8 +121,9 @@ def test_tile_mlp_and_untile_mlp():
     torch.testing.assert_close(sum(layer.mlp(x) for layer in model.layers), want)
 
 
-def test_tile_mlp_ignores_a_disabled_environment(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_TILED_MLP", "0")
+@pytest.mark.parametrize("off", ["0", "false", "OFF", "no", "none"])
+def test_tile_mlp_ignores_a_disabled_environment(monkeypatch, off):
+    monkeypatch.setenv("UNSLOTH_TILED_MLP", off)
     assert _tiling().tile_mlp(_model(), verbose = False).plan.mode == "arctic"
     monkeypatch.setenv("UNSLOTH_TILED_MLP", "rows:4")
     assert _tiling().tile_mlp(_model(), verbose = False).plan.rows == 4
@@ -180,6 +196,77 @@ def test_sentence_transformer_passes_the_kwarg_through():
     assert passed
 
 
-def test_package_exports_tile_mlp():
-    src = (ROOT / "unsloth" / "__init__.py").read_text()
-    assert "from .tiling import tile_mlp, untile_mlp" in src
+def test_package_exports_tile_mlp_on_every_backend():
+    # At module scope, after the MLX / GPU / CPU branch, so `unsloth.tile_mlp` exists on MLX too.
+    tree = ast.parse((ROOT / "unsloth" / "__init__.py").read_text())
+    top = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.ImportFrom) and n.module == "tiling" and n.level == 1
+    ]
+    assert top and {a.name for a in top[0].names} == {"tile_mlp", "untile_mlp"}
+
+
+@pytest.mark.parametrize("off", [False, None, 0, "0", "false", "no"])
+def test_tiling_off_never_imports_the_registry(monkeypatch, off):
+    # An unsloth_zoo without the registry: tiling off must not touch it.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.tiling_registry", None)
+    tiling = _tiling()
+    tiling.check_tiling_available(off)
+    assert tiling.loader_tile_mlp(_model(), off) is None
+
+
+@pytest.mark.parametrize(("env", "kwarg"), [(None, True), (None, "auto"), ("arctic", False), ("0", True)])
+def test_tiling_on_without_the_registry_fails_fast(monkeypatch, env, kwarg):
+    import sys
+
+    if env is not None:
+        monkeypatch.setenv("UNSLOTH_TILED_MLP", env)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.tiling_registry", None)
+    with pytest.raises(ImportError, match = "newer unsloth_zoo"):
+        _tiling().check_tiling_available(kwarg)
+
+
+def test_loaders_check_the_registry_before_loading_weights():
+    tree = ast.parse((ROOT / "unsloth" / "models" / "loader.py").read_text())
+    loaders = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+        and n.name == "from_pretrained"
+        and any(getattr(c.func, "id", None) == "loader_tile_mlp" for c in ast.walk(n) if isinstance(c, ast.Call))
+    ]
+    assert len(loaders) == 2  # FastLanguageModel and FastModel
+    for fn in loaders:
+        calls = [c for c in ast.walk(fn) if isinstance(c, ast.Call)]
+        check = [c.lineno for c in calls if getattr(c.func, "id", None) == "check_tiling_available"]
+        loads = [c.lineno for c in calls if getattr(c.func, "attr", None) == "from_pretrained"]
+        assert check and loads and min(check) < min(loads)
+
+
+def test_model_init_revalidates_the_fresh_model():
+    tree = ast.parse((ROOT / "unsloth" / "models" / "_utils.py").read_text())
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_unsloth_call_model_init"
+    )
+    calls = [
+        c
+        for c in ast.walk(fn)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "revalidate_for_trainer"
+    ]
+    assert calls and [getattr(a, "id", None) for a in calls[0].args] == ["self", "model"]
+
+
+def test_revalidate_for_trainer_takes_the_model_explicitly():
+    tiling = _tiling()
+    model = _model()
+    tiling.tile_mlp(model, rows = 2, verbose = False)
+    model.layers.append(torch.nn.Module())
+    model.layers[-1].mlp = FooMLP()
+    trainer = types.SimpleNamespace(model = _model())  # still the previous instance
+    tiling.revalidate_for_trainer(trainer, model)
+    assert len(registry.tiled_modules(model)) == 3

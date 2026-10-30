@@ -1673,9 +1673,6 @@ else:
         del _sys_mod
         from ._cpu_init import *  # __all__ carries __version__
 
-    # Sequence tiling one-liner, every backend: unsloth.tile_mlp(model) / unsloth.untile_mlp(model).
-    from .tiling import tile_mlp, untile_mlp
-
     # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
     # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
     try:
@@ -1762,6 +1759,10 @@ else:
         except Exception:
             pass
 
+
+# Sequence tiling one-liner, every backend (MLX included): unsloth.tile_mlp(model) / unsloth.untile_mlp(model).
+# unsloth.tiling imports only os; the zoo registry loads when a helper is called.
+from .tiling import tile_mlp, untile_mlp
 
 # A pip --target / PYTHONPATH layout makes dill pickle modules by value, breaking dataset fingerprints.
 try:
