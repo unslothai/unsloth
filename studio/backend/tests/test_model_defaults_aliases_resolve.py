@@ -98,8 +98,9 @@ def test_lfm2_supported_ids_use_all_linear_defaults(model_id):
 
 def test_lfm3_omni_uses_all_linear_defaults():
     """The default up_proj/down_proj list misses LFM3's w1/w2/w3 MLP; an audio run then barely learns."""
-    config = _load_tuned("LiquidAI/LFM3-Omni-2B", "LiquidAI_LFM3-Omni-2B.yaml")
-    assert config["lora"]["target_modules"] == ["all-linear"]
+    for name in ("LiquidAI/LFM3-Omni-2B", "LiquidAI/LFM3-1.7B", "LiquidAI/LFM3-VL-2B", "LiquidAI/LFM3-Audio-2B"):
+        config = _load_tuned(name, "LiquidAI_LFM3-Omni-2B.yaml")
+        assert config["lora"]["target_modules"] == ["all-linear"]
 
 _QWEN35_SIZES = ["0.8B", "2B", "4B", "9B", "27B", "35B-A3B"]
 
