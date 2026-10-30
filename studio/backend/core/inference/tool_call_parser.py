@@ -3556,10 +3556,11 @@ _GEMMA_SLOT = "\ue000"
 _GEMMA_SLOT_RE = re.compile(_GEMMA_SLOT + r"(\d+)" + _GEMMA_SLOT)
 
 
-def _slot_gemma_values(body: str, raw: list[str]) -> str:
+def _slot_gemma_values(body: str) -> "tuple[str, list[str]]":
     """``body`` with each ``<|"|>`` value that opens a value outside an ordinary quoted string replaced by a
-    placeholder, its raw text appended to ``raw``. Quotes open where the quote-less parser opens them."""
+    placeholder, and the raw values in order. Quotes open where the quote-less parser opens them."""
     out: list[str] = []
+    raw: list[str] = []
     quote = ""
     prev = ":"
     i, n = 0, len(body)
@@ -3588,7 +3589,7 @@ def _slot_gemma_values(body: str, raw: list[str]) -> str:
         if not ch.isspace():
             prev = ch
         i += 1
-    return "".join(out)
+    return "".join(out), raw
 
 
 def _gemma_bare_body_arguments(body: str) -> dict[str, Any]:
@@ -3597,8 +3598,7 @@ def _gemma_bare_body_arguments(body: str) -> dict[str, Any]:
     value) keeps the quote-less reading of the whole body."""
     if _GEMMA_QUOTED_VALUE_RE.search(body) is None or _GEMMA_SLOT in body:
         return _gemma_parse_stripped_body(body)
-    raw: list[str] = []
-    slotted = _slot_gemma_values(body, raw)
+    slotted, raw = _slot_gemma_values(body)
     used: list[int] = []
 
     def fill(v: Any) -> Any:

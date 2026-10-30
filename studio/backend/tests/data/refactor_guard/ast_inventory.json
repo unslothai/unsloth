@@ -1906,7 +1906,7 @@
       "_slot_gemma_values": {
         "decorators": [],
         "kind": "def",
-        "signature": "body: str, raw: list[str]"
+        "signature": "body: str"
       },
       "_strictly_inside": {
         "decorators": [],

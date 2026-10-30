@@ -282,7 +282,7 @@
       "_search_from_literal": "core.inference.tool_call_parser._search_from_literal(pattern: 're.Pattern', literal: 'str', text: 'str', pos: 'int')",
       "_signal_inside_leading_wrapperless_gemma": "core.inference.tool_call_parser._signal_inside_leading_wrapperless_gemma(content: 'str', enabled_tool_names: 'Optional[set]') -> 'bool'",
       "_skip_mistral_call_id": "core.inference.tool_call_parser._skip_mistral_call_id(text: 'str', pos: 'int') -> 'int'",
-      "_slot_gemma_values": "core.inference.tool_call_parser._slot_gemma_values(body: 'str', raw: 'list[str]') -> 'str'",
+      "_slot_gemma_values": "core.inference.tool_call_parser._slot_gemma_values(body: 'str') -> \"'tuple[str, list[str]]'\"",
       "_strictly_inside": "core.inference.tool_call_parser._strictly_inside(spans: 'list', pos: 'int') -> 'bool'",
       "_string_content_spans": "core.inference.tool_call_parser._string_content_spans(text: 'str', start: 'int', end: 'int') -> 'list'",
       "_strip_function_xml_calls": "core.inference.tool_call_parser._strip_function_xml_calls(text: 'str', *, final: 'bool') -> 'str'",
