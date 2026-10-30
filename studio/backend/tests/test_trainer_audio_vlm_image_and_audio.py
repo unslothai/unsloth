@@ -209,7 +209,11 @@ class _RecordingProcessor:
         return {"input_ids": torch.ones((len(text), 2), dtype = torch.long)}
 
 
-def _collate(image_col, row_image = None, rows = None):
+def _collate(
+    image_col,
+    row_image = None,
+    rows = None,
+):
     pytest.importorskip("torch")
     processor = _RecordingProcessor()
     namespace = {
@@ -260,11 +264,16 @@ def test_a_none_image_row_gets_no_slot_and_no_image(audio_vlm_trainer):
         "text": ["one", "two"],
         "image": [None, image],
     }
-    schema = datasets.Features({
-        "audio": {"array": datasets.Sequence(datasets.Value("float32")), "sampling_rate": datasets.Value("int64")},
-        "text": datasets.Value("string"),
-        "image": datasets.Image(),
-    })
+    schema = datasets.Features(
+        {
+            "audio": {
+                "array": datasets.Sequence(datasets.Value("float32")),
+                "sampling_rate": datasets.Value("int64"),
+            },
+            "text": datasets.Value("string"),
+            "image": datasets.Image(),
+        }
+    )
     formatted = audio_vlm_trainer._format_audio_vlm_dataset(
         _NoAudioCast(datasets.Dataset.from_dict(rows, features = schema))
     )
