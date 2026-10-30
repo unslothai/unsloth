@@ -701,29 +701,60 @@ def test_muon_is_refused_before_native_fsdp2_shards(clean_env):
 # MoE cells.
 
 
-def test_moe_cells_are_separate_from_the_router_aux_loss():
+def test_moe_rows_cover_family_precision_aux_and_mode():
     import types
 
     from unsloth import parallel_capabilities as caps
 
-    config = types.SimpleNamespace(model_type = "qwen3_moe", num_experts = 4, output_router_logits = False)
-    q = caps.query_from(types.SimpleNamespace(dp = 1, tp = 1, pp = 1, cp = 2, fsdp2 = False, cp_backend = None),
-                        None, types.SimpleNamespace(config = config), None, cp_backend = "ulysses")
-    assert (q.moe, q.router_aux_loss) == (True, False)
-    with pytest.raises(NotImplementedError, match = r"MoE \(router aux loss off\) x cp' lacks parity, compile"):
-        caps.check(q)
-    with pytest.raises(NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*Instead: output_router_logits = False"):
-        caps.check(_q(cp = 2, cp_backend = "ulysses", moe = True, router_aux_loss = True))
-    with pytest.raises(NotImplementedError, match = r"^Unsloth: MoE x pp / cp"):
-        caps.check(_q(pp = 2, moe = True, router_aux_loss = True))
-    with pytest.raises(NotImplementedError, match = r"MoE \(router aux loss off\) x pp' lacks parity"):
-        caps.check(_q(pp = 2, moe = True))
+    moe = [c for c in caps.CELLS if c.name.startswith("MoE ")]
+    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 5
+    proven = sorted(c.name for c in moe if not c.missing())
+    assert "MoE qwen3_moe x lora+experts x aux off x cp" in proven
+    assert "MoE qwen3_moe x full x aux off x fsdp2" in proven
+    assert "MoE qwen3_moe x lora+experts x aux on x ddp" in proven
+    moe_q = dict(family = "qwen3_moe", moe = True, expert_lora = True)
+    assert caps.cell_status(_q(cp = 2, cp_backend = "ulysses", **moe_q))[0] == "supported"
+    caps.check(_q(cp = 2, cp_backend = "ulysses", compile = "block", **moe_q))
+    caps.check(_q(dp = 2, cp = 2, fsdp2 = True, cp_backend = "ulysses", **moe_q))
+    for extra, why in (
+        (dict(family = "qwen3_5_moe"), "no tiny-checkpoint gloo run"),
+        (dict(mode = "qlora"), "4-bit experts need bitsandbytes on a GPU"),
+        (dict(expert_lora = False), "not run yet"),
+    ):
+        with pytest.raises(NotImplementedError, match = why):
+            caps.check(_q(cp = 2, cp_backend = "ulysses", **{**moe_q, **extra}))
+    with pytest.raises(NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"):
+        caps.check(_q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **moe_q))
+    with pytest.raises(NotImplementedError, match = r"x pp' lacks parity, engagement, compile evidence; pipeline"):
+        caps.check(_q(pp = 2, **moe_q))
     with pytest.raises(NotImplementedError, match = r"^Unsloth: MoE x tp"):
-        caps.check(_q(tp = 2, moe = True))
-    caps.check(_q(dp = 2, fsdp2 = True, moe = True, router_aux_loss = True))  # dp alone keeps experts whole
+        caps.check(_q(tp = 2, **moe_q))
+    assert caps.cell_status(_q(dp = 2, fsdp2 = True, router_aux_loss = True, **moe_q))[0] == "supported"
+    assert caps.cell_status(_q(dp = 2, router_aux_loss = True, **{**moe_q, "family": "gpt_oss"}))[0] == "unverified"
+    caps.check(_q(dp = 2, router_aux_loss = True, **{**moe_q, "family": "gpt_oss"}))  # dp alone: reported, runs
+
+
+def test_aux_loss_is_read_the_way_trl_turns_it_on():
+    import types
+
+    from unsloth import parallel_capabilities as caps
+
+    class SFTTrainer:
+        pass
+
+    config = types.SimpleNamespace(
+        model_type = "qwen3_moe", num_experts = 4, output_router_logits = False, router_aux_loss_coef = 0.001
+    )
+    model = types.SimpleNamespace(config = config)
+    trl_default = types.SimpleNamespace(router_aux_loss_coef = None)
+    assert caps.query_from(None, SFTTrainer, model, trl_default).router_aux_loss is True
+    assert caps.query_from(None, SFTTrainer, model, types.SimpleNamespace(router_aux_loss_coef = 0.0)).router_aux_loss is False
+    assert caps.query_from(None, None, model, trl_default).router_aux_loss is False  # a plain Trainer
+    config.output_router_logits = True
+    assert caps.query_from(None, None, model, None).router_aux_loss is True
     dense = types.SimpleNamespace(model_type = "qwen3_next", num_experts = 2, num_hidden_layers = 2,
-                                  mlp_only_layers = [0, 1])
-    assert caps.query_from(None, None, types.SimpleNamespace(config = dense)).moe is False
+                                  mlp_only_layers = [0, 1], output_router_logits = True)
+    assert caps.query_from(None, SFTTrainer, types.SimpleNamespace(config = dense), trl_default).moe is False
 
 
 def test_cp_with_native_fsdp2_is_a_supported_cell():

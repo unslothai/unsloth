@@ -847,6 +847,17 @@ def _check_native_fsdp2_reduces_over_cp(model, manager) -> None:
         )
 
 
+def _refuse_router_aux_loss_after_init(trainer, size: int) -> None:
+    """TRL's SFTTrainer / DPOTrainer set output_router_logits on the config inside their __init__ (from the
+    architecture's router_aux_loss_coef unless router_aux_loss_coef = 0.0). A load balancing loss computed per
+    sequence shard is not the one-process objective; this catches what the pre-init registry check predicted."""
+    from .parallel_capabilities import Query, _moe, check
+
+    moe, aux = _moe(getattr(trainer, "model", None))
+    if moe and aux:
+        check(Query(trainer = "sft", moe = True, router_aux_loss = True, cp = size, torch = (99, 0)), cells = False)
+
+
 def _check_cp_runtime(self, size: int, backend: str) -> None:
     # train() would swap in a fresh model without the attention hooks or the support check.
     if getattr(self, "model_init", None) is not None:
@@ -1041,6 +1052,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 pre_cp_trainers.append(weakref.ref(self))
             return
         _check_cp_runtime(self, size, backend)
+        _refuse_router_aux_loss_after_init(self, size)
         # These recompute loss outside our forward from sharded labels, losing cross-shard targets.
         if (
             getattr(self.args, "label_smoothing_factor", 0)
@@ -1665,6 +1677,7 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
                 "Unsloth: DPO / GRPO context parallelism needs context_parallel_backend = 'ulysses'."
             )
         _check_cp_runtime(self, size, backend)
+        _refuse_router_aux_loss_after_init(self, size)
         _check_rl_config(self, kind)
         ref_model = getattr(self, "ref_model", None)
         _check_cp_trainer(self, size, backend, [self.model, ref_model])

@@ -100,7 +100,7 @@ def _block_compile_on_cpu(model):
 
 def _case_train(
     rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = True, keep = False, compile = False,
-    arch = "llama", router_aux = False, attn = "sdpa", ungate = False,
+    arch = "llama", router_aux = False, attn = "sdpa", ungate = False, mode = "lora", trl_aux = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -146,7 +146,11 @@ def _case_train(
 
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
-    model = peft(load(ckpt, load_in_4bit = False))
+    model = load(ckpt, load_in_4bit = False)
+    if mode == "lora":
+        model = peft(model)
+    else:
+        model.train()
     if router_aux:
         model.config.output_router_logits = True
     for name, module in model.named_modules():
@@ -207,6 +211,10 @@ def _case_train(
         dataset_kwargs = {"skip_prepare_dataset": True},
         gradient_checkpointing = False,
     )
+    if hasattr(args, "router_aux_loss_coef"):
+        # TRL turns the MoE load balancing loss on from the architecture's coefficient unless this is 0.0
+        # (it then sets output_router_logits on the config itself): aux off unless the case asks for it.
+        args.router_aux_loss_coef = None if (router_aux or trl_aux) else 0.0
     if sft_cp:
         args.context_parallel_size = cp
         args.context_parallel_backend = "ulysses"
@@ -245,14 +253,18 @@ def _case_train(
     if is_tp:
         state = tp_native.tp_full_state_dict(trainer.model, adapters_only = True)
     else:
-        state = {k: _full(v) for k, v in trainer.model.state_dict().items() if "lora_" in k}
+        state = {k: _full(v) for k, v in trainer.model.state_dict().items() if "lora_" in k or mode == "full"}
     stage = pp_native.pipeline_stage_of(trainer.model)
     res = {
         "layout": None if layout is None else repr(layout),
         "losses": [h["loss"] for h in logs],
         "grad_norms": [h.get("grad_norm") for h in logs],
         "grads": {k.replace("module.", "").replace("_orig_mod.", ""): v for k, v in grads.items()},
-        "state": {k.replace("module.", "").replace("_orig_mod.", ""): _full(v) for k, v in state.items() if "lora_" in k},
+        "state": {
+            k.replace("module.", "").replace("_orig_mod.", ""): _full(v)
+            for k, v in state.items()
+            if "lora_" in k or mode == "full"
+        },
         "cp_group": None if manager is None else sorted(int(r) for r in manager.mesh.mesh.flatten().tolist()),
         "is_tp": is_tp,
         "stage": None if stage is None else int(stage.stage_index),
@@ -262,6 +274,7 @@ def _case_train(
         "compiled_classes": [getattr(c, "__name__", c) for c in compiled],
         "native_fsdp2": __import__("unsloth.models.fsdp2_native", fromlist = ["x"]).is_native_fsdp2(trainer.model),
         "banner": trainer.__dict__.get("_unsloth_parallel_announced"),
+        "output_router_logits": bool(getattr(trainer.model.config, "output_router_logits", False)),
         "compile": compile_used,
     }
     if dist.is_initialized():
@@ -335,15 +348,15 @@ def _spawn(case, world = 1, env = None, **kwargs):
 _REF = {}
 
 
-def _ref(bs, compile = False, arch = "llama"):
-    key = (bs, compile, arch)
+def _ref(bs, compile = False, arch = "llama", **kwargs):
+    key = (bs, compile, arch, tuple(sorted(kwargs.items())))
     if key not in _REF:
-        (_REF[key],) = _spawn("train", 1, bs = bs, compile = compile, arch = arch)
+        (_REF[key],) = _spawn("train", 1, bs = bs, compile = compile, arch = arch, **kwargs)
         assert "error" not in _REF[key], _REF[key]
     return _REF[key]
 
 
-def _close(got, want, rel = 1e-4, what = ""):
+def _close(got, want, rel = 1e-4, what = "", state_atol = 1e-6):
     assert "error" not in got, (what, got.get("error"), got.get("trace"))
     assert got["losses"] == pytest.approx(want["losses"], rel = rel), (what, got["losses"], want["losses"])
     assert got["grad_norms"] == pytest.approx(want["grad_norms"], rel = rel), (
@@ -354,7 +367,8 @@ def _close(got, want, rel = 1e-4, what = ""):
     for kind in ("grads", "state"):
         assert set(got[kind]) <= set(want[kind]) and got[kind], (what, kind, sorted(set(got[kind]) - set(want[kind])))
         for key, value in got[kind].items():
-            torch.testing.assert_close(value, want[kind][key], rtol = rel * 10, atol = 1e-6, msg = f"{what} {kind} {key}")
+            atol = state_atol if kind == "state" else 1e-6
+            torch.testing.assert_close(value, want[kind][key], rtol = rel * 10, atol = atol, msg = f"{what} {kind} {key}")
 
 
 def test_cp2_alone_matches_one_process():
@@ -456,12 +470,6 @@ def test_cp_with_native_fsdp2_matches_one_process(env, sft_cp):
         _close(res, ref, what = (env, rank))
 
 
-def test_moe_under_cp_is_refused_until_its_cell_has_evidence():
-    for res in _spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe"):
-        error = res.get("error") or ""
-        assert "MoE (router aux loss off) x cp" in error and "lacks parity" in error, error or res["losses"]
-
-
 def test_dense_qwen3_under_cp_matches_one_process():
     """The control for the MoE cell below: the same family without experts trains like one process."""
     ref = _ref(2, arch = "qwen3")
@@ -471,33 +479,67 @@ def test_dense_qwen3_under_cp_matches_one_process():
         _close(res, ref, what = ("qwen3", rank))
 
 
-@pytest.mark.xfail(
-    strict = True,
-    reason = "MoE x cp parity: router LoRA grads up to 5% off one process (A/A 1e-6); an XPASS means the cell can open",
+@pytest.mark.parametrize(
+    "mode, world, env, cp",
+    [
+        ("lora", 2, {}, 1),
+        ("lora", 2, {"UNSLOTH_FSDP2": "1"}, 1),
+        ("lora", 2, {}, 2),
+        ("lora", 4, {"UNSLOTH_FSDP2": "1"}, 2),
+        ("full", 2, {"UNSLOTH_FSDP2": "1"}, 1),
+        ("full", 2, {}, 2),
+    ],
+    ids = ["lora-ddp", "lora-fsdp2", "lora-cp2", "lora-fsdp2_cp2", "full-fsdp2", "full-cp2"],
 )
-@pytest.mark.parametrize("compile", [False, True], ids = ["eager", "block_compile"])
-def test_moe_without_aux_loss_under_cp_matches_one_process(compile):
-    """Qwen3-MoE (router aux loss off) under Ulysses cp 2: routed experts are per token, so the shards should train
-    like one process, and block compile should add no graph breaks / recompiles. Run with the registry gate
-    lifted: this is the evidence the cell is waiting for."""
+def test_moe_under_data_and_context_parallel_matches_one_process(mode, world, env, cp):
+    """Tiny Qwen3-MoE (4 experts, 2 per token) with the router aux loss off (router_aux_loss_coef = 0.0: TRL
+    would otherwise turn it on from the architecture's coefficient): LoRA on attention, router and the experts
+    (ParamWrapper), or full finetuning, under DDP / native FSDP2 / Ulysses cp, trains like one process."""
+    ref = _ref(2 * world // cp, arch = "qwen3_moe", mode = mode)
+    assert not ref["output_router_logits"]
+    for rank, res in enumerate(_spawn("train", world, env, bs = 2, cp = cp, arch = "qwen3_moe", mode = mode)):
+        assert "error" not in res, (rank, res.get("trace"))
+        assert not res["output_router_logits"]
+        experts = [k for k in res["grads"] if ".experts." in k]
+        assert experts and all(res["grads"][k].abs().sum() > 0 for k in experts), experts  # routed experts train
+        if mode == "lora":
+            assert any("lora_" in k for k in experts), experts
+        if cp > 1:
+            assert res["seen_lengths"] == [SEQ // cp] and res["ulysses_calls"] >= 2
+        # Full finetuning also steps the 151936-row embedding: Adam (lr 1e-2, eps 1e-4) turns 1e-8 gradient noise
+        # on a nearly unused row into a 2e-6 weight difference after two steps (losses agree to 1e-7).
+        _close(res, ref, what = (mode, world, env, cp, rank), state_atol = 1e-5 if mode == "full" else 1e-6)
+
+
+@pytest.mark.parametrize("env", [{}, {"UNSLOTH_FSDP2": "1"}], ids = ["ddp", "fsdp2"])
+def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
+    """The load balancing loss is per micro-batch (a product of means). Data parallel keeps each micro-batch on
+    one rank, so dp 2 x accumulation 2 equals one process accumulating the same 4 micro-batches."""
+    (ref,) = _spawn("train", 1, bs = 2, ga = 4, arch = "qwen3_moe", router_aux = True)
+    assert ref["output_router_logits"]
+    for rank, res in enumerate(_spawn("train", 2, env, bs = 2, ga = 2, arch = "qwen3_moe", router_aux = True)):
+        assert "error" not in res, (rank, res.get("trace"))
+        assert res["output_router_logits"]
+        _close(res, ref, what = (env, rank))
+
+
+def test_moe_block_compile_under_cp_is_compile_clean():
     from unsloth.utils.compile_counters import not_above
 
     ref = _ref(2, arch = "qwen3_moe")
-    single = _ref(2, compile = True, arch = "qwen3_moe") if compile else None
-    for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", compile = compile, ungate = True)):
+    single = _ref(2, compile = True, arch = "qwen3_moe")
+    assert single["compiled_classes"]
+    _close(single, ref, what = "qwen3_moe one process compiled")
+    for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", compile = True)):
         assert "error" not in res, (rank, res.get("trace"))
-        assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2]
-        if compile:
-            assert res["compiled_classes"] and not not_above(res["compile"], single["compile"]), (
-                res["compile"],
-                single["compile"],
-            )
-        else:
-            assert res["ulysses_calls"] >= 2
-        _close(res, ref, what = ("qwen3_moe", compile, rank))
+        assert res["compiled_classes"] and res["seen_lengths"] == [SEQ // 2]
+        assert not not_above(res["compile"], single["compile"]), (res["compile"], single["compile"])
+        _close(res, ref, what = ("qwen3_moe cp2 compiled", rank))
 
 
-def test_moe_with_router_aux_loss_under_cp_is_refused():
-    for res in _spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", router_aux = True):
+@pytest.mark.parametrize("config_flag", [True, False], ids = ["output_router_logits", "trl_default_coef"])
+def test_moe_with_router_aux_loss_under_cp_is_refused(config_flag):
+    """Refused before the split, also when only TRL's default router_aux_loss_coef would turn the loss on."""
+    for res in _spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", router_aux = config_flag, trl_aux = True):
         error = res.get("error") or ""
-        assert "MoE x pp / cp" in error and "Instead: output_router_logits = False" in error, error or res["losses"]
+        assert "MoE x pp / cp" in error and "router_aux_loss_coef = 0.0" in error, error or res["losses"]

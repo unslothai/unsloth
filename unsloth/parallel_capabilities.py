@@ -42,6 +42,7 @@ __all__ = [
     "FEATURES",
     "Cell",
     "CELLS",
+    "MOE_FAMILIES",
     "METADATA",
     "HOOKS",
     "active_features",
@@ -80,7 +81,9 @@ class Query:
     kernels: bool = False  # Unsloth's fused RoPE / RMSNorm / SwiGLU / LoRA kernels
     loss: str = "standard"  # standard, fused_ce, chunked_ce, fused_rl
     moe: bool = False  # routed experts
-    router_aux_loss: bool = False  # output_router_logits: the load balancing loss is on
+    router_aux_loss: bool = False  # the load balancing loss is on (output_router_logits, or TRL's default coef)
+    expert_lora: bool = False  # LoRA on the routed experts (PEFT target_parameters / ParamWrapper)
+    moe_backend: str = ""  # UNSLOTH_MOE_BACKEND: grouped_mm, unsloth_triton, native_torch ("" = default)
     optim: str = ""  # the optimizer (args.optim or the class of a prebuilt one), lower case
 
 
@@ -238,8 +241,9 @@ RULES = (
         "the MoE router auxiliary loss (output_router_logits) under pipeline / context parallel",
         lambda q: q.moe and q.router_aux_loss and (q.pp > 1 or q.cp > 1),
         "the load balancing loss is a product of whole-batch means; per stage / per shard pieces would be "
-        "summed wrong (the aux-loss injection design has not landed)",
-        "output_router_logits = False (router_aux_loss_coef unused), or drop pp / cp",
+        "summed wrong (the aux-loss injection design has not landed). TRL's SFTTrainer turns it on from the "
+        "architecture's router_aux_loss_coef by default",
+        "router_aux_loss_coef = 0.0 in the trainer config (and output_router_logits = False), or drop pp / cp",
     ),
     Rule(
         "MoE x tp",
@@ -518,26 +522,6 @@ CELLS = (
         compile = "eager: no compiled region",
     ),
     Cell(
-        "MoE (router aux loss off) x cp",
-        {"moe": (True,), "router_aux_loss": (False,), "cp": (2, 4, 8)},
-        parity = None,
-        engagement = _MOE_CP + " (seq / cp tokens, Ulysses exchanges)",
-        compile = None,
-        note = (
-            "parity fails on CPU gloo (qwen3_moe, cp 2): router LoRA grads up to 5% and attention LoRA grads ~1e-3 "
-            "off one process, while dense qwen3 under cp 2 and a one-process A/A agree to 1e-6; block compile adds "
-            f"recompiles (28 > 22). See {_MOE_CP}"
-        ),
-    ),
-    Cell(
-        "MoE (router aux loss off) x pp",
-        {"moe": (True,), "router_aux_loss": (False,), "pp": (2, 4, 8)},
-        parity = None,
-        engagement = None,
-        compile = None,
-        note = "pipeline parallel refuses MoE (stage receive-buffer liveness test first)",
-    ),
-    Cell(
         "cp x tp (DDP dp), eager",
         {**_CP_TP, "fsdp2": (False,), "compile": ("eager",), "dp": (1, 2), "tp": (2,), "cp": (2,)},
         parity = _PARITY + "[cp2_tp2|dp2_cp2_tp2]",
@@ -559,6 +543,83 @@ CELLS = (
         compile = _GLOO + "test_block_compile_composes_like_one_process (graph breaks / recompiles <= one process)",
     ),
 )
+
+
+# MoE rows: family x precision x router aux loss x parallel mode. Evidence where a CPU gloo run proves it; every
+# other row is refused (under cp / pp / tp) or reported unverified (dp alone), with what it waits for.
+MOE_FAMILIES = ("qwen3_moe", "qwen3_5_moe", "gpt_oss", "deepseek_v3", "kimi_linear")
+_MOE_PRECISION = {
+    "lora": {"mode": ("lora",), "expert_lora": (False,)},
+    "lora+experts": {"mode": ("lora",), "expert_lora": (True,)},
+    "qlora": {"mode": ("qlora",)},
+    "full": {"mode": ("full",)},
+}
+_ONE = (1,)
+_MOE_MODES = {
+    "ddp": {"dp": (2, 4, 8), "fsdp2": (False,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
+    "fsdp2": {"dp": (2, 4, 8), "fsdp2": (True,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
+    "cp": {"dp": (1, 2, 4), "fsdp2": (False, True), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE},
+    "pp": {"pp": (2, 4, 8)},
+    "tp": {"tp": (2, 4, 8)},
+}
+_MOE_COMMON = {
+    "trainer": ("sft",),
+    "moe": (True,),
+    "attention": ("sdpa", "eager"),
+    "memory": ("none", "gc"),
+    "kernels": (False,),
+    "loss": ("standard",),
+    "packing": (False,),
+    "vllm": (False,),
+}
+_MOE_TEST = _GLOO + "test_moe_under_data_and_context_parallel_matches_one_process"
+_MOE_AUX_TEST = _GLOO + "test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch"
+_MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
+# (family, precision, aux, mode) -> (parity, engagement, compile) for the rows a test proves.
+_MOE_EVIDENCE = {
+    ("qwen3_moe", "lora+experts", False, "ddp"): (_MOE_TEST + "[lora-ddp]",) * 2 + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", False, "fsdp2"): (_MOE_TEST + "[lora-fsdp2]",) * 2 + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", False, "cp"): (_MOE_TEST + "[lora-cp2|lora-fsdp2_cp2]",) * 2 + (_MOE_COMPILE,),
+    ("qwen3_moe", "full", False, "fsdp2"): (_MOE_TEST + "[full-fsdp2]",) * 2 + ("eager: no compiled region",),
+    ("qwen3_moe", "full", False, "cp"): (_MOE_TEST + "[full-cp2]",) * 2 + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", True, "ddp"): (_MOE_AUX_TEST,) * 2 + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", True, "fsdp2"): (_MOE_AUX_TEST,) * 2 + ("eager: no compiled region",),
+}
+
+
+def _moe_note(family, precision, aux, mode):
+    if mode == "tp":
+        return "refused by the MoE x tp rule (no expert parallel)"
+    if aux and mode in ("cp", "pp"):
+        return "refused by the MoE x pp / cp rule (aux-loss injection first)"
+    if mode == "pp":
+        return "pipeline parallel refuses MoE (stage receive-buffer liveness test first)"
+    if precision == "qlora":
+        return "4-bit experts need bitsandbytes on a GPU (L4 / G4 via notebook_cloud_run.py --gpu)"
+    if family != "qwen3_moe":
+        return "no tiny-checkpoint gloo run for this family yet"
+    return "not run yet"
+
+
+def _moe_cells():
+    cells = []
+    for family in MOE_FAMILIES:
+        for precision, pmatch in _MOE_PRECISION.items():
+            for aux in (False, True):
+                for mode, mmatch in _MOE_MODES.items():
+                    evidence = _MOE_EVIDENCE.get((family, precision, aux, mode))
+                    compile_modes = ("eager", "block") if evidence and not evidence[2].startswith("eager:") else ("eager",)
+                    match = {**_MOE_COMMON, **pmatch, **mmatch, "family": (family,), "router_aux_loss": (aux,),
+                             "compile": compile_modes}
+                    name = f"MoE {family} x {precision} x aux {'on' if aux else 'off'} x {mode}"
+                    if evidence:
+                        cells.append(Cell(name, match, *evidence))
+                    else:
+                        cells.append(Cell(name, match, None, None, None, note = _moe_note(family, precision, aux, mode)))
+    return tuple(cells)
+
+
+CELLS = CELLS + _moe_cells()
 
 
 def _strict() -> bool:
@@ -773,6 +834,37 @@ def _moe(model):
     return experts > 1, bool(getattr(text, "output_router_logits", False)) and experts > 1
 
 
+def _aux_loss_on(model, args, trainer_kind) -> bool:
+    """As the trainer will run it: TRL's SFTTrainer / DPOTrainer turn the load balancing loss on (and set
+    output_router_logits on the config) from the architecture's router_aux_loss_coef unless the trainer argument
+    router_aux_loss_coef is 0.0; a plain Trainer only follows output_router_logits."""
+    moe, configured = _moe(model)
+    if not moe:
+        return False
+    if configured:
+        return True
+    if trainer_kind in ("sft", "dpo", "grpo", "other_rl") and args is not None and hasattr(args, "router_aux_loss_coef"):
+        config = getattr(model, "config", None)
+        text = getattr(config, "text_config", None) or config
+        coef = args.router_aux_loss_coef
+        if coef is None:
+            coef = getattr(text, "router_aux_loss_coef", 0.0) or 0.0
+        return bool(coef) and hasattr(text, "output_router_logits")
+    return False
+
+
+def _expert_lora(model) -> bool:
+    if model is None or isinstance(model, str):
+        return False
+    for config in (getattr(model, "peft_config", None) or {}).values():
+        if getattr(config, "target_parameters", None):
+            return True
+    try:
+        return any("experts" in n and "lora_" in n for n, _ in model.named_parameters())
+    except Exception:
+        return False
+
+
 def _optimizer_name(args, optimizer = None):
     if optimizer is not None:
         inner = getattr(optimizer, "optimizer", optimizer)
@@ -785,7 +877,8 @@ def query_from(
     layout = None, trainer_cls = None, model = None, args = None, cp = None, cp_backend = None, optimizer = None
 ):
     family, hybrid, multimodal, windowed = _model_traits(model)
-    moe, router_aux_loss = _moe(model)
+    moe, _ = _moe(model)
+    router_aux_loss = _aux_loss_on(model, args, _trainer_kind(trainer_cls))
     packing = bool(getattr(args, "packing", False) or getattr(args, "padding_free", False))
     kernels = _kernels(model)
     return Query(
@@ -814,6 +907,8 @@ def query_from(
         loss = "fused_ce" if kernels and __import__("os").environ.get("UNSLOTH_RETURN_LOGITS", "0") != "1" else "standard",
         moe = moe,
         router_aux_loss = router_aux_loss,
+        expert_lora = _expert_lora(model),
+        moe_backend = __import__("os").environ.get("UNSLOTH_MOE_BACKEND", "").strip().lower(),
         optim = _optimizer_name(args, optimizer),
     )
 
