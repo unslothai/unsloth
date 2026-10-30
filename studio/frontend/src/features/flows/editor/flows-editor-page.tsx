@@ -117,7 +117,7 @@ function EditorBody({
       className={`flows-editor flex h-full min-h-0 w-full flex-col bg-background ${BELOW_TITLEBAR} text-foreground`}
       data-testid="flows-editor"
     >
-      <Toolbar />
+      <Toolbar readOnly={readOnly} />
       {readOnly && (
         <Alert className="rounded-none border-x-0 border-t-0 py-2">
           <AlertDescription className="text-xs text-amber-700 dark:text-amber-300">

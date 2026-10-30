@@ -156,3 +156,22 @@ test("the inspector shows a Preview block's value, not an empty Output section",
   const outputs = src.slice(src.indexOf("function NodeOutputs"), src.indexOf("function ParamRow"));
   assert.match(outputs, /spec\.outputs\.length === 0 &&[\s\S]*?Object\.entries\(runtime\.outputs/);
 });
+
+test("a read-only flow's toolbar cannot edit the document", () => {
+  const page = readSrc("features/flows/editor/flows-editor-page.tsx");
+  assert.match(page, /<Toolbar readOnly=\{readOnly\} \/>/);
+  const bar = readSrc("features/flows/editor/toolbar.tsx");
+  assert.match(bar, /<input\s+value=\{name\}\s+readOnly=\{readOnly\}/);
+  for (const label of ["Undo", "Redo", "Tidy up layout", "Group selection", "Add note"]) {
+    const at = bar.indexOf(`label="${label}`);
+    assert.ok(at > 0, label);
+    assert.match(bar.slice(at, bar.indexOf("/>", at)), /disabled=\{readOnly( \|\||\})/, label);
+  }
+});
+
+test("the Reroute palette row takes the theme's text colours", () => {
+  const src = readSrc("features/flows/editor/palette.tsx");
+  const reroute = src.slice(src.indexOf("function RerouteBody"), src.indexOf("function PaletteRowBody"));
+  assert.doesNotMatch(reroute, /zinc-|text-white|bg-white/);
+  assert.match(reroute, /text-muted-foreground hover:bg-muted\/35 hover:text-foreground/);
+});

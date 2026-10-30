@@ -123,7 +123,7 @@ function RerouteBody() {
   return (
     <>
       <span className="flex w-3.5 justify-center">
-        <span className="h-2 w-3.5 rounded-full border border-zinc-400" />
+        <span className="h-2 w-3.5 rounded-full border border-muted-foreground" />
       </span>
       <span className="flex-1 truncate">Reroute</span>
     </>
@@ -152,7 +152,7 @@ function RerouteItem({
       aria-pressed={armed}
       title={REROUTE_HINT}
       data-testid="palette-reroute"
-      className={`mb-1.5 flex w-full touch-none select-none items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui-12p5 ${armed ? "bg-muted text-white" : "text-zinc-300 hover:bg-white/5 hover:text-white"}`}
+      className={`mb-1.5 flex w-full touch-none select-none items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui-12p5 ${armed ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/35 hover:text-foreground"}`}
     >
       <RerouteBody />
     </button>

@@ -62,7 +62,7 @@ function IconButton({
   );
 }
 
-function ToolbarImpl() {
+function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
   const name = useDocStore((s) => s.meta.name);
   const kind = useDocStore((s) => s.meta.kind);
   const canUndo = useDocStore((s) => s.past.length > 0);
@@ -85,6 +85,7 @@ function ToolbarImpl() {
           </span>
           <input
             value={name}
+            readOnly={readOnly}
             onChange={(e) =>
               useDocStore
                 .getState()
@@ -118,13 +119,13 @@ function ToolbarImpl() {
           icon={Undo02Icon}
           label="Undo (Ctrl+Z)"
           onClick={() => useDocStore.getState().undo()}
-          disabled={!canUndo}
+          disabled={readOnly || !canUndo}
         />
         <IconButton
           icon={Redo02Icon}
           label="Redo (Ctrl+Shift+Z)"
           onClick={() => useDocStore.getState().redo()}
-          disabled={!canRedo}
+          disabled={readOnly || !canRedo}
         />
         <span className="mx-1 h-4 w-px bg-border" />
         <IconButton
@@ -156,6 +157,7 @@ function ToolbarImpl() {
         <IconButton
           icon={HierarchySquare02Icon}
           label="Tidy up layout"
+          disabled={readOnly}
           onClick={() => {
             void autoLayout(getInternalNode, kind === "story" ? "LR" : "LR")
               .then(() =>
@@ -175,6 +177,7 @@ function ToolbarImpl() {
         <IconButton
           icon={GridViewIcon}
           label="Group selection (Shift+G)"
+          disabled={readOnly}
           onClick={() => {
             const vp = getViewport();
             groupSelection([
@@ -188,6 +191,7 @@ function ToolbarImpl() {
         <IconButton
           icon={StickyNote01Icon}
           label="Add note"
+          disabled={readOnly}
           onClick={() => {
             const vp = getViewport();
             useDocStore.getState().upsertNote({
