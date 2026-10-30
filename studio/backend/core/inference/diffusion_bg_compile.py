@@ -26,6 +26,8 @@ YIELD_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_YIELD"
 # Seconds of compile a render lets run before it pauses it; unset = this load's fastest eager render.
 SLICE_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_SLICE_S"
 _SLICE_MAX_S = 30.0
+# A gap between two yield points longer than this compiled a block graph (a cached block call takes milliseconds).
+_GRAPH_SEGMENT_S = 0.25
 _MAX_SAMPLES = 4
 
 # ContextVars, not thread-locals: diffusion_render_thread.run copies the caller's context onto the render thread.
@@ -523,9 +525,16 @@ class BackgroundCompile:
         self._cv = threading.Condition(threading.Lock())
         self._pause_depth = 0
         self._parked = False
+        # Bumped when the last pause is released: a parked thread leaves on it even if a new pause is already held.
+        self._release_epoch = 0
         self.pauses = 0
         self.paused_s = 0.0
         self.yield_points = 0
+        # Seconds between two yield points that compiled a block graph (EMA), and whether the thread still owes one
+        # graph since it was last resumed (so back-to-back renders cannot starve it).
+        self.graph_s: Optional[float] = None
+        self._last_yield: Optional[float] = None
+        self._owe_graph = False
 
     def yields(self) -> bool:
         """Whether this compile stops between blocks for a render (a per-block compiled U-Net)."""
@@ -544,8 +553,12 @@ class BackgroundCompile:
         thread = self._thread
         if thread is None or thread is threading.current_thread() or not thread.is_alive():
             return 0.0, False
-        # Already paused (a hires pass inside its render): the compile is parked, so no slice runs.
-        deadline = t0 + (0.0 if self._pause_depth else max(0.0, float(budget_s or 0.0)))
+        # The pause takes effect after the block graph in flight: ask that much before the slice ends, so the wait
+        # stays about one slice. Unmeasured yet: ask at once. Already paused (a hires pass inside its render): the
+        # compile is parked, so no slice runs.
+        budget = max(0.0, float(budget_s or 0.0))
+        lead = self.graph_s if self.graph_s is not None else budget
+        deadline = t0 + (0.0 if self._pause_depth else max(0.0, budget - lead))
         while thread.is_alive() and not (cancel is not None and cancel.is_set()):
             left = deadline - time.perf_counter()
             if left <= 0:
@@ -566,26 +579,40 @@ class BackgroundCompile:
     def resume(self) -> None:
         with self._cv:
             self._pause_depth = max(0, self._pause_depth - 1)
+            if not self._pause_depth:
+                self._release_epoch += 1
+                # the next pause() waits for a fresh park, after the block graph this release owes
+                self._parked = False
             self._cv.notify_all()
 
     def _yield_point(self) -> None:
         self.yield_points += 1
         if self._closed.is_set():
             raise _Closed()
-        if not self._pause_depth:
+        now = time.perf_counter()
+        if self._last_yield is not None and now - self._last_yield > _GRAPH_SEGMENT_S:
+            # the segment since the last yield point compiled a block graph
+            seg = now - self._last_yield
+            self.graph_s = seg if self.graph_s is None else 0.5 * (self.graph_s + seg)
+            self._owe_graph = False
+        self._last_yield = now
+        if not self._pause_depth or self._owe_graph:
             return
         with self._cv:
             if not self._pause_depth:
                 return
-            t0 = time.perf_counter()
             self._parked = True
             self._cv.notify_all()
+            epoch = self._release_epoch
             try:
-                while self._pause_depth and not self._closed.is_set():
+                while self._release_epoch == epoch and not self._closed.is_set():
                     self._cv.wait(0.5)
             finally:
                 self._parked = False
-                self.paused_s += time.perf_counter() - t0
+                end = time.perf_counter()
+                self.paused_s += end - now
+                self._last_yield = end
+                self._owe_graph = True
         if self._closed.is_set():
             raise _Closed()
 

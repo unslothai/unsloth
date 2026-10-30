@@ -229,13 +229,46 @@ def test_a_render_pauses_the_compile_between_blocks_and_it_resumes(monkeypatch):
 
 def test_a_compile_that_ends_inside_the_slice_is_not_paused(monkeypatch):
     monkeypatch.delenv(bg.YIELD_ENV, raising = False)
-    net = _Blocks(n = 3, compile_s = 0.05)
+    net = _Blocks(n = 4, compile_s = 0.3)
     job = _armed(net)
     job.kick()
+    _wait_for(lambda: job.graph_s is not None)  # one block graph timed
+    assert job.graph_s == pytest.approx(0.3, abs = 0.15)
     waited, paused = job.pause(budget_s = 5.0)
     assert not paused and job.state == "done"
     assert waited < 5.0
     job.resume()  # harmless without a pause held
+
+
+def test_the_pause_is_asked_one_block_graph_before_the_slice_ends(monkeypatch):
+    monkeypatch.delenv(bg.YIELD_ENV, raising = False)
+    net = _Blocks(n = 12, compile_s = 0.4)
+    job = _armed(net)
+    job.kick()
+    _wait_for(lambda: job.graph_s is not None)
+    waited, paused = job.pause(budget_s = 1.0)
+    assert paused
+    # asked at ~0.6 s, the graph in flight ends by ~1.0 s (+ its own jitter); never slice + a whole graph
+    assert 0.5 <= waited < 1.0 + 0.3
+    job.resume()
+    _wait_for(lambda: job.state == "done")
+
+
+def test_back_to_back_renders_cannot_starve_the_compile(monkeypatch):
+    monkeypatch.delenv(bg.YIELD_ENV, raising = False)
+    net = _Blocks(n = 5, compile_s = 0.3)
+    job = _armed(net)
+    job.kick()
+    renders = 0
+    while job.compiling() and renders < 50:
+        _, paused = job.pause(budget_s = 0.0)  # every render asks at once
+        if paused:
+            job.resume()
+        renders += 1
+    _wait_for(lambda: job.state == "done")
+    # each resume owes one block graph before the next park: at most one render per graph (+ the first)
+    assert renders <= 5 + 1
+    assert len(net.compiled_blocks) == 5
 
 
 def test_nested_pause_runs_no_second_slice(monkeypatch):
