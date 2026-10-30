@@ -549,8 +549,7 @@ class FileHistory:
                     shared.add(rel)
         with self._lock:
             # Edits made since the last call (by the user, or another chat) are stored first, so the
-            # rewind can tell them apart from this chat's own and they stay restorable too. Targets
-            # are probed too: no walk lists one inside a dot folder.
+            # rewind can tell them apart from this chat's own and they stay restorable too.
             self._transaction(
                 workdir,
                 lambda: self._record(
