@@ -473,6 +473,35 @@ def _stateful_mixer_kind(module) -> Optional[str]:
     return None
 
 
+# Token mixers that read across packed documents and take no boundary input, so padding-free / packing
+# changes the result. DeepSeek V4's CSA / HCA compressors pool KV over fixed windows of the flattened
+# row and gate them by position_ids, so a later document attends to earlier documents' entries. ZAYA's
+# CCA runs causal convs and a one-token delayed value over the row; RecurrentGemma's RG-LRU recurs over it.
+_PACKING_BOUNDARY_BLIND_MODULES = (
+    "DeepseekV4CSACompressor",
+    "DeepseekV4HCACompressor",
+    "ZayaCCAProjection",
+    "RecurrentGemmaRglru",
+)
+# Same families by model_type, for a string `model=` whose modules are not built yet.
+_PACKING_BOUNDARY_BLIND_MODEL_TYPES = ("deepseek_v4", "zaya", "recurrent_gemma")
+
+
+def packing_boundary_blocker(model, model_types = ()) -> Optional[str]:
+    """Name of the first module (else model type) that mixes tokens across packed documents with no
+    way to pass it the boundaries, else None. SFT keeps packing and padding-free off for these."""
+    modules = getattr(model, "modules", None)
+    if callable(modules) and not isinstance(model, str):
+        for module in modules():
+            name = type(module).__name__
+            if name in _PACKING_BOUNDARY_BLIND_MODULES:
+                return name
+    for model_type in model_types or ():
+        if model_type in _PACKING_BOUNDARY_BLIND_MODEL_TYPES:
+            return model_type
+    return None
+
+
 def _iter_stateful_mixers(model):
     """(module, kind) for every stateful mixer, outermost first; submodules of a gated-delta
     mixer (its own short convs) are owned by that mixer's shim."""
@@ -2146,4 +2175,5 @@ __all__ = [
     "mask_packed_sequence_boundaries",
     "mask_packed_boundary_labels",
     "clear_packed_caches",
+    "packing_boundary_blocker",
 ]
