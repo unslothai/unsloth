@@ -89,19 +89,40 @@ const DECISION_DATASET_IDS = [
   "tasksource/synthetic-typed-decisions",
 ];
 
-export function DatasetSelector() {
+export function DatasetSelector({
+  value,
+  onValueChange,
+}: {
+  /** Controlled mode (Flows): a Hub repo only, reported instead of stored on the Train page. */
+  value?: string | null;
+  onValueChange?: (repo: string) => void;
+} = {}) {
   const t = useT();
   const navigate = useNavigate();
-  const dataset = useTrainingConfigStore((s) => s.dataset);
-  const uploadedFile = useTrainingConfigStore((s) => s.uploadedFile);
-  const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
-  const isDecision = useTrainingConfigStore((s) => s.modelType === "decision");
-  const modelType = useTrainingConfigStore((s) =>
+  const controlled = onValueChange !== undefined;
+  const storeDataset = useTrainingConfigStore((s) => s.dataset);
+  const storeUploadedFile = useTrainingConfigStore((s) => s.uploadedFile);
+  const storeDatasetSource = useTrainingConfigStore((s) => s.datasetSource);
+  const storeIsDecision = useTrainingConfigStore(
+    (s) => s.modelType === "decision",
+  );
+  const storeModelType = useTrainingConfigStore((s) =>
     s.modelType === "decision" ? null : s.modelType,
   );
-  const selectHfDataset = useTrainingConfigStore((s) => s.selectHfDataset);
+  const storeSelectHfDataset = useTrainingConfigStore(
+    (s) => s.selectHfDataset,
+  );
   const selectLocalDataset = useTrainingConfigStore(
     (s) => s.selectLocalDataset,
+  );
+  const dataset = controlled ? value || null : storeDataset;
+  const uploadedFile = controlled ? null : storeUploadedFile;
+  const datasetSource = controlled ? "huggingface" : storeDatasetSource;
+  const isDecision = controlled ? false : storeIsDecision;
+  const modelType = controlled ? null : storeModelType;
+  const selectHfDataset = useMemo<typeof storeSelectHfDataset>(
+    () => (onValueChange ? (id) => id && onValueChange(id) : storeSelectHfDataset),
+    [onValueChange, storeSelectHfDataset],
   );
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
@@ -173,8 +194,9 @@ export function DatasetSelector() {
         repoId: d.repoId,
         cachePath: d.loadCachePath ?? d.cachePath ?? null,
       }));
+    // Flows' dataset node reads a Hub repo id, so folders and uploads stay on the Train page.
     const localItems: DatasetDeviceItem[] = localRows
-      .filter((d) => !d.partial)
+      .filter((d) => !d.partial && !controlled)
       .map((d) => ({
         kind: "local",
         key: `local:${d.path}`,
@@ -190,7 +212,7 @@ export function DatasetSelector() {
     return [...cachedItems, ...localItems].sort((a, b) =>
       a.title.localeCompare(b.title, undefined, { sensitivity: "base" }),
     );
-  }, [cachedRows, localRows, t]);
+  }, [cachedRows, controlled, localRows, t]);
 
   const hasDeviceItems = deviceItems.length > 0;
   const pickerView = picker.getViewState({

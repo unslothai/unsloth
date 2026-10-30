@@ -20,7 +20,7 @@ import { toast } from "sonner";
 import { uploadAsset } from "../api";
 import type { MediaValue, ParamSpec } from "../types";
 import { modelChoiceOf } from "./model-choice";
-import { FlowModelPicker } from "./model-picker-field";
+import { FlowModelPicker, FlowTrainModelPicker } from "./model-picker-field";
 import { DiceIcon, Upload01Icon } from "./icon-data";
 import { MediaThumb, isMediaValue } from "./media";
 import { pickOptions } from "./remote-options";
@@ -345,13 +345,12 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
     return <RemoteOptionsField spec={spec} value={value} onChange={onChange} />;
   switch (spec.kind) {
     case "text":
-      // Fine-tune's base model is a plain repo string; it gets the same picker.
+      // Fine-tune's base model is a plain repo string, picked the way the Train page picks it.
       if (spec.id === "base_model")
         return (
-          <FlowModelPicker
-            kind="train"
-            choice={{ repo: String(value ?? ""), variant: null }}
-            onChange={(choice) => onChange(choice.repo)}
+          <FlowTrainModelPicker
+            value={String(value ?? "")}
+            onChange={(model) => onChange(model)}
           />
         );
       return <TextField spec={spec} value={value} onChange={onChange} />;

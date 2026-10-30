@@ -11,11 +11,10 @@ import {
   VIDEO_GEN_TASKS,
 } from "@/features/model-picker/components/model-selector/pickers";
 import { type ModelOption, ModelSelector } from "@/features/model-picker";
-import { usePlatformStore } from "@/config/env";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { priorityTrainingModels } from "@/config/training";
+import { TrainModelSelector } from "@/features/train-model-picker";
 import { type ComponentProps, useEffect, useState } from "react";
-import { choiceFromPick, isTrainableRepo } from "./model-choice";
+import { choiceFromPick } from "./model-choice";
 import type { ModelChoice } from "../types";
 
 type SelectorProps = ComponentProps<typeof ModelSelector>;
@@ -23,8 +22,6 @@ type SelectorProps = ComponentProps<typeof ModelSelector>;
 /** Each Flows model kind opens Studio's picker on the page that owns that kind. */
 const KIND_PROPS: Record<string, Partial<SelectorProps>> = {
   chat: { hubCapability: "text" },
-  // Fine-tune's base model: a GGUF can't be trained, so the picker leaves them out.
-  train: { hubCapability: "text", rowFilter: (row) => isTrainableRepo(row.id) },
   vision: { hubCapability: "vision" },
   image: {
     task: IMAGE_GEN_TASKS,
@@ -70,9 +67,8 @@ export function FlowModelPicker({
   choice: ModelChoice;
   onChange: (choice: ModelChoice) => void;
 }) {
-  const textKind = kind === "chat" || kind === "vision" || kind === "train";
+  const textKind = kind === "chat" || kind === "vision";
   const [models, setModels] = useState<ModelOption[]>([]);
-  const deviceType = usePlatformStore((s) => s.deviceType);
   // Chat's check mark, only when this exact repo (and quant) is the server's resident model.
   const resident = useChatRuntimeStore(
     (s) =>
@@ -87,15 +83,12 @@ export function FlowModelPicker({
     void loadChatModels().then((all) => {
       if (!alive) return;
       const vision = all.filter((m) => (m as { isVision?: boolean }).isVision);
-      // Chat's list is mostly GGUF, so Recommended leads with the Train page's own picks.
-      if (kind === "train")
-        setModels(trainModels(deviceType, all));
-      else setModels(kind === "vision" && vision.length ? vision : all);
+      setModels(kind === "vision" && vision.length ? vision : all);
     });
     return () => {
       alive = false;
     };
-  }, [kind, textKind, deviceType]);
+  }, [kind, textKind]);
   return (
     <ModelSelector
       models={models}
@@ -108,36 +101,21 @@ export function FlowModelPicker({
       onValueChange={(id, meta) => onChange(choiceFromPick(id, meta))}
       variant="ghost"
       size="sm"
-      placeholder={`Choose a ${kind === "tts" ? "speech" : kind === "train" ? "base" : kind} model`}
+      placeholder={`Choose a ${kind === "tts" ? "speech" : kind} model`}
       className="nodrag -ml-2 h-8 w-fit max-w-[calc(100%+0.5rem)] !pl-2 !pr-1.5"
       contentClassName="nodrag nowheel"
       {...KIND_PROPS[kind]}
-      // Recommended lists GGUF on a GPU, which `rowFilter` drops; the Train page's picks fill it.
-      moreModels={
-        kind === "train" ? { label: "For fine-tuning", models } : undefined
-      }
     />
   );
 }
 
-export function trainModels(
-  deviceType: string | null | undefined,
-  local: ModelOption[],
-): ModelOption[] {
-  const seen = new Set<string>();
-  const out: ModelOption[] = [];
-  for (const m of [
-    ...priorityTrainingModels(deviceType).map((id) => ({
-      id,
-      name: id,
-      isGguf: false,
-    })),
-    ...local.filter((m) => !(m as { isGguf?: boolean }).isGguf),
-  ]) {
-    const key = m.id.toLowerCase();
-    if (!isTrainableRepo(m.id) || seen.has(key)) continue;
-    seen.add(key);
-    out.push(m);
-  }
-  return out;
+/** Fine-tune's base model: the Train page's own picker (trainable weights, VRAM fit), kept as a plain repo string. */
+export function FlowTrainModelPicker({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (model: string) => void;
+}) {
+  return <TrainModelSelector value={value} onValueChange={onChange} />;
 }
