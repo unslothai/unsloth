@@ -675,3 +675,4 @@ test("no hop where a wire forks or joins right on the line it would hop", () => 
   ]);
   assertCleanHops(routes);
 });
+

@@ -43,6 +43,6 @@ test("the router never sees a note, so a note on the straight path does not bend
   assert.equal(new Set(straight.points.map((p) => Math.round(p.y))).size, 1, "a straight run between level ports");
   const src = readFileSync(new URL("../src/features/flows/editor/wire-routing.tsx", import.meta.url), "utf8");
   assert.match(src, /node\.hidden \|\| !isWireObstacle\(node\.type\)/);
-  assert.match(src, /useStore\(\(s\) => routingKey\(s\.nodes\)\)/);
+  assert.match(src, /useStore\(\(s\) => routingKey\(\[\.\.\.s\.nodeLookup\.values\(\)\]\)\)/);
   assert.match(src, /\[nodesKey, edges, scope, store(, moving)?\]/);
 });

@@ -128,7 +128,7 @@ function EditorBody({
         </Alert>
       )}
       {!readOnly && <CapabilityBanner flowId={flowId} />}
-      <div className="relative flex min-h-0 flex-1 bg-background">
+      <div className="relative flex min-h-0 flex-1 overflow-hidden rounded-tl-xl bg-background">
         {paletteOpen && !readOnly && <Palette onDrop={dropAt} />}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="relative min-h-0 flex-1">

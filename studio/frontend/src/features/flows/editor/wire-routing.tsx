@@ -229,7 +229,8 @@ export const WireRouterController = memo(function WireRouterController({
   moving?: ReadonlySet<string> | null;
 }) {
   const store = useStoreApi<RfNode, RfEdge>();
-  const nodesKey = useStore((s) => routingKey(s.nodes));
+  // Sizes live in the lookup: a view-built node (a closed super card) never gets them back in s.nodes.
+  const nodesKey = useStore((s) => routingKey([...s.nodeLookup.values()]));
   const edges = useStore((s) => s.edges);
 
   useEffect(() => {
