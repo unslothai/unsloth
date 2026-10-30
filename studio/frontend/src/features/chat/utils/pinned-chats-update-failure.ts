@@ -31,7 +31,6 @@ export function notePinRequestFailure(error: unknown, downWhenIssued: boolean): 
 /** A pin sync failure caused by the backend the desktop update stopped: no toast for it. */
 export function isPinFailureUnderDesktopUpdate(error: unknown): boolean {
   if (error instanceof PinnedChatsBlockedError) {
-    // Blocked behind an earlier intent: its failure decides, else the update screen itself.
     return error.cause === undefined
       ? isBackendDownForDesktopUpdate()
       : isPinFailureUnderDesktopUpdate(error.cause);
