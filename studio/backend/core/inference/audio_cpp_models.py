@@ -2133,7 +2133,6 @@ class AudioCppModel:
 
     @property
     def cache_variants(self) -> tuple[AudioCppVariant, ...]:
-        """Variants cache actions (delete, reveal) cover, loadable or not."""
         return self.variants + self.unloadable
 
     @property
@@ -3372,23 +3371,20 @@ def _scan_downloaded(task: Optional[str]) -> list[AudioCppModel]:
                 continue
             if task is not None and model.task != task:
                 continue
-            ready = next(
-                (v for v in model.variants if audio_cpp_files.cached_files(model.with_variant(v))),
-                None,
-            )
-            if ready is not None:
-                out.append(model.with_variant(ready))
-                continue
-            spare = next(
+            cached = next(
                 (
                     v
-                    for v in model.unloadable
+                    for v in model.cache_variants
                     if audio_cpp_files.cached_files(model.with_variant(v))
                 ),
                 None,
             )
-            if spare is not None:
+            if cached is None:
+                continue
+            row = model.with_variant(cached)
+            if cached in model.unloadable:
                 # Listed so Model Hub can delete it, and unsupported so nothing loads it.
-                reason = model.unsupported or _unloadable_reason(spare.primary)
-                out.append(replace(model.with_variant(spare), unsupported = reason))
+                reason = model.unsupported or _unloadable_reason(cached.primary)
+                row = replace(row, unsupported = reason)
+            out.append(row)
     return out
