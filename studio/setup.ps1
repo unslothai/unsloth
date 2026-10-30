@@ -2141,9 +2141,11 @@ main()
             else { $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = $savedSkip }
         }
         if (-not $proc) { return "" }
-        # Wait-Process takes the process as -InputObject with an error variable, never $proc.Id or
-        # $proc.HasExited, since Constrained Language Mode blocks Process property reads while
-        # cmdlets run compiled code.
+        # -InputObject and an error variable, never $proc.Id or $proc.HasExited. Constrained
+        # Language Mode permits property reads only on its allowed type list and
+        # System.Diagnostics.Process is not on it, so reading either one throws on exactly the
+        # hosts this rung exists for. Handing the object to a cmdlet keeps the access inside
+        # compiled code, where the language mode does not reach.
         $waitError = $null
         Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError
         if ($waitError) {
@@ -3633,9 +3635,14 @@ function Get-NvidiaSmiCandidatePaths {
     if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
     $pfx86 = ${env:ProgramFiles(x86)}
     if ($pfx86) { $dirs += (Join-Path $pfx86 "NVIDIA Corporation\NVSMI") }
-    # Bounded on the driver directories that actually hold nvidia-smi.exe, not the nv-prefixed
-    # matches, since other nv packages would exhaust the bound; each returned candidate costs a
-    # probe.
+    # Bounded on purpose. FileRepository holds every driver package the machine has ever had.
+    #
+    # The bound is applied to directories that ACTUALLY HOLD the binary, not to the nv* matches.
+    # NVIDIA ships several packages whose names start nv (HD audio, the virtual audio device,
+    # the network service), so a host with eight of those newer than the display driver would
+    # otherwise spend the whole allowance on directories with no nvidia-smi in them and report
+    # the machine as having none. Test-Path is a file existence check, not a process spawn; the
+    # bound that matters is on the candidates handed back, since each of those costs a probe.
     try {
         $repos = @()
         if ($env:SystemRoot) {
@@ -6199,8 +6206,9 @@ function Get-WoaDependencyIndexArgs {
     $pip = ($Resolver -eq "pip")
     $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
     $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
-    # Each variable follows its owner's rule: pip really reads PIP_NO_INDEX, so naming no index
-    # matches what pip does, while UV_NO_INDEX is ours alone, so that arm honours the operator.
+    # Each variable by its owner's rule, and they are not symmetric. PIP_NO_INDEX is
+    # pip's and pip really reads it, so naming no index here matches what pip will
+    # then do. UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
     $noIndexRequested = if ($pip) { Test-PipEnvFlag "PIP_NO_INDEX" } else { Test-NoIndexRequested }
     if ($noIndexRequested) { return @() }
     $default = $null
