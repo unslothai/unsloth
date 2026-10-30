@@ -183,3 +183,16 @@ def test_without_the_tier_the_exact_and_vec0_paths_answer(rag_conn, monkeypatch,
     assert not vec_cache._ann and vec_cache._entries
     hits, scanned = _dense(rag_conn, rows[3], 3)
     assert not scanned and hits[0][0] == "d:3"
+
+
+def test_rows_another_writer_added_are_never_missed(rag_conn, monkeypatch):
+    # With the cache off for the write, note_append sees nothing: as with a second process or an older build.
+    rows = _vectors(300)
+    _add(rag_conn, "kb", "d", rows)
+    _warm(rag_conn, rows[0])
+    monkeypatch.setenv("RAG_VEC_CACHE", "0")
+    new = _vectors(3, seed = 21)
+    _add(rag_conn, "kb", "e", new)
+    monkeypatch.setenv("RAG_VEC_CACHE", "1")
+    hits, scanned = _dense(rag_conn, new[0], 3)
+    assert scanned and hits[0][0] == "e:0"
