@@ -3159,8 +3159,10 @@ def _read_cast_cache(
     revision: Optional[str],
     base: Optional[str],
     cancel_check: Any = None,
+    device: Any = None,
 ) -> list:
-    """Inject cached float16 / bfloat16 casts into ``pipe_kwargs``; returns the unserved candidates. Never raises."""
+    """Inject cached float16 / bfloat16 casts into ``pipe_kwargs``; returns the unserved candidates. Never raises.
+    ``device``: a miss whose dense conversion would not fit host RAM is first staged there (``video_small_host``)."""
     try:
         from .diffusion_cast_cache import candidates, read_all
 
@@ -3177,6 +3179,9 @@ def _read_cast_cache(
         )
         if not cands:
             return []
+        if device is not None:
+            from .video_small_host import stage_misses
+            stage_misses(cands, device, logger = logger, cancel_check = cancel_check)
         hits = read_all(cands, logger = logger, cancel_check = cancel_check)
         pipe_kwargs.update(hits)
         if hits:
@@ -8974,6 +8979,7 @@ class VideoBackend:
                 revision = None if _base_local_dir else _base_fetch_revision,
                 base = base,
                 cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+                device = target.torch_device if target.device == "cuda" else None,
             )
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
             pipe = pipeline_cls.from_pretrained(

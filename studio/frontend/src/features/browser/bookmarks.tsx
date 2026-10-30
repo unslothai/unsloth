@@ -27,9 +27,9 @@ import {
   ArrowRightDoubleIcon,
   Delete02Icon,
   Edit03Icon,
-  Folder01Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
 import { hostOf } from "./address";
