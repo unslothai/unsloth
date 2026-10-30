@@ -45247,11 +45247,8 @@ def _anthropic_message_from_openai_completion(
             # balanced [TOOL_CALLS] prose, gated on the declared tools so an inactive
             # NAME[ARGS]{...} example is kept. A client-tool reply cut at the limit keeps its unfinished
             # call: the in-process route already healed it, and that text is all the client gets of it.
-            if (
-                not healing_active
-                and response_format is None
-                and not (openai_tools and finish_reason == "length")
-            ):
+            keep_cut_call = openai_tools and finish_reason == "length"
+            if not healing_active and response_format is None and not keep_cut_call:
                 text = _strip_tool_xml_for_display(
                     text,
                     auto_heal_tool_calls = True,
