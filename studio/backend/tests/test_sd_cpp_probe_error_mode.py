@@ -212,12 +212,14 @@ def test_a_real_child_inherits_the_bit_only_while_held():
 
 
 @_windows_only
-def test_a_real_binary_missing_its_dll_is_reported_unrunnable(tmp_path):
-    # python.exe copied without pythonXY.dll fails in the loader, like an sd.cpp bundle without HIP.
+def test_a_real_binary_missing_its_dll_is_reported_unrunnable(tmp_path, monkeypatch):
+    # python.exe copied away from pythonXY.dll, PATH cut to System32: a loader failure like ROCm without HIP.
+    import os
     import shutil
 
     binary = tmp_path / "sd-server.exe"
     shutil.copy(getattr(sys, "_base_executable", sys.executable), binary)
+    monkeypatch.setenv("PATH", os.path.join(os.environ["SystemRoot"], "System32"))
     with subprocess_compat.windows_loader_error_boxes_suppressed():
         rc = subprocess.run([str(binary), "--help"], capture_output = True, timeout = 60).returncode
     assert rc & 0xFFFFFFFF == _STATUS_DLL_NOT_FOUND
