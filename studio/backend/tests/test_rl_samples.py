@@ -76,7 +76,7 @@ def test_grpo_keeps_prompt_turns_when_sample_answers_are_on():
     from core.training import rl
 
     source = inspect.getsource(rl.build_rl_trainer)
-    assert "keep_turns = sample_sink is not None or" in source
+    assert "sample_sink is not None or any(" in source
 
 
 def test_missing_and_nan_scores_become_none_and_count_as_zero():
