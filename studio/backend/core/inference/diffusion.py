@@ -3733,6 +3733,55 @@ def _progress_latch_enabled() -> bool:
     )
 
 
+def _wait_or_pause_bg_compile(bg: Any, state: Any, loras: Any, cancel: Any) -> Any:
+    """Before a render: a background compile in flight either finishes (the render waits, as always) or, when it
+    compiles per block (``BackgroundCompile.yields``), runs on for one slice (``diffusion_bg_compile.slice_seconds``:
+    about one eager render) and is then parked at its next block boundary while this render runs eager. Returns the
+    paused compile, which the caller resumes when the render ends; None when nothing was paused. A render that
+    attaches or keeps LoRA adapters waits for the whole compile (it would change the module mid-trace)."""
+    if bg is None or not bg.compiling():
+        return None
+    pipe = getattr(state, "pipe", None)
+    if bg.yields() and not _has_active_lora(loras) and not getattr(pipe, "_unsloth_loras", ()):
+        budget = bg_compile.slice_seconds(getattr(pipe, "_unsloth_eager_render_s", None))
+        waited, paused = bg.pause(cancel, budget_s = budget)
+        if paused:
+            logger.info(
+                "diffusion.bg_compile: render paused the background compile after %.1f s (slice %.1f s); this "
+                "render runs eager and the compile resumes after it",
+                waited,
+                budget,
+            )
+            return bg
+        logger.info(
+            "diffusion.bg_compile: render waited %.1f s for the background compile (slice %.1f s)",
+            waited,
+            budget,
+        )
+        return None
+    logger.info("diffusion.bg_compile: render waits for the background compile to finish")
+    waited = bg.wait(cancel)
+    logger.info("diffusion.bg_compile: render waited %.1f s for the background compile", waited)
+    return None
+
+
+def _note_eager_render(state: Any, bg_eager: bool, seconds: float) -> None:
+    """Keeps this load's fastest eager render (the background compile's slice): renders before the deferred
+    profile, and those that ran eager beside a pending compile."""
+    pipe = getattr(state, "pipe", None)
+    if pipe is None or not (seconds > 0):
+        return
+    eager = bg_eager or "compiled" not in tuple(getattr(state, "speed_optims", None) or ())
+    if not eager:
+        return
+    try:
+        best = getattr(pipe, "_unsloth_eager_render_s", None)
+        if not isinstance(best, (int, float)) or seconds < best:
+            pipe._unsloth_eager_render_s = float(seconds)
+    except Exception:  # noqa: BLE001 - a heuristic only
+        pass
+
+
 def _bg_compile_module(
     pipe: Any,
     *,
@@ -13238,29 +13287,29 @@ class DiffusionBackend:
         if _hires_pass is None:
             bind_generation_cancel(cancel)
         with nullcontext() if _hires_pass is not None else self._generation_slot(cancel):
-            # Never render beside a background compile; wait outside the state lock so status polls keep answering.
+            # Never render beside a running background compile; wait outside the state lock so status polls keep
+            # answering. A per-block compile is paused at its next block boundary instead (this render runs eager).
             pending_bg = getattr(self._state, "bg_compile", None)
-            if pending_bg is not None and pending_bg.compiling():
-                logger.info(
-                    "diffusion.bg_compile: render waits for the background compile to finish"
-                )
-                waited = pending_bg.wait(cancel)
-                logger.info(
-                    "diffusion.bg_compile: render waited %.1f s for the background compile", waited
-                )
-            with self._lock:
-                state = self._state
-                if state is None:
-                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
-                if cancel.is_set():
-                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                # The slot admits on a zero fence, which a COMMITTED replacement also satisfies (#9448)
-                loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
-                if expected_load is not None and expected_load != loaded_id:
-                    raise DiffusionModelReplacedError(expected_load, loaded_id)
-                # Publish active step-0 state before slow setup, so a reload's mount probe does not read idle.
-                self._gen = _GenState(total_steps = steps)
-                begin_attention_run(state)
+            paused_bg = _wait_or_pause_bg_compile(pending_bg, self._state, loras, cancel)
+            try:
+                with self._lock:
+                    state = self._state
+                    if state is None:
+                        raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                    if cancel.is_set():
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                    # The slot admits on a zero fence, which a COMMITTED replacement also satisfies (#9448)
+                    loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
+                    if expected_load is not None and expected_load != loaded_id:
+                        raise DiffusionModelReplacedError(expected_load, loaded_id)
+                    # Publish active step-0 state before slow setup, so a reload's mount probe does not read idle.
+                    self._gen = _GenState(total_steps = steps)
+                    begin_attention_run(state)
+            except BaseException:
+                if paused_bg is not None:
+                    paused_bg.resume()
+                raise
+            render_t0 = time.perf_counter()
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_scheduler: Optional[tuple[Any, Any]] = None
@@ -14455,6 +14504,8 @@ class DiffusionBackend:
                 if applied_embeddings is not None:
                     result["embeddings"] = list(applied_embeddings.used)
                     result["embeddings_skipped"] = list(applied_embeddings.skipped)
+                if not aux_pass and _hires_pass is None:
+                    _note_eager_render(state, bg_eager, time.perf_counter() - render_t0)
                 logger.info(
                     "diffusion.generated: %s",
                     format_generation_for_log(
@@ -14494,6 +14545,8 @@ class DiffusionBackend:
                         bg.kick()
                     except Exception as exc:  # noqa: BLE001 - the next render compiles inline
                         logger.warning("diffusion.bg_compile: kick failed: %s", exc)
+                if paused_bg is not None:
+                    paused_bg.resume()
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None

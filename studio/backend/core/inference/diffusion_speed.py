@@ -16,6 +16,7 @@ from typing import Any, Callable, Iterator, Optional
 
 from . import diffusion_compile_config as compile_config
 from .diffusion_bg_compile import eager_forced as _bg_eager_forced
+from .diffusion_bg_compile import yield_point as _bg_yield_point
 from . import diffusion_gguf_compile as gguf_compile
 from .diffusion_autoopt import targets as _targets
 
@@ -1166,12 +1167,15 @@ def _compile_repeated_blocks(
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "sdpa aot cache", exc)
     if unet is not None:
-        # Whole-module U-Net compile: dynamic always False, so each new (height, width, batch) recompiles.
+        # dynamic always False, so each new (height, width, batch) recompiles.
         unet_kwargs: dict[str, Any] = {"fullgraph": kwargs["fullgraph"], "dynamic": False}
         if max_autotune:
             unet_kwargs["mode"] = "max-autotune-no-cudagraphs"
         if filter_reductions:
             pin_reduction_configs(unet_kwargs, logger)
+        if unet_compiles_regionally(unet, max_autotune = max_autotune):
+            return _compile_unet_blocks(unet, unet_kwargs, logger)
+        # Whole-module U-Net compile.
         try:
             unet.compile(**unet_kwargs)
             return True
@@ -1270,6 +1274,75 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
+
+
+def _unet_blocks(unet: Any) -> list:
+    """The U-Net's repeated blocks (``UNET_REGIONAL_BLOCKS``), in module order; [] when it has none."""
+    names = set(_targets.UNET_REGIONAL_BLOCKS)
+    try:
+        return [m for m in unet.modules() if m is not unet and type(m).__name__ in names]
+    except Exception:  # noqa: BLE001 - not a torch module
+        return []
+
+
+def unet_compiles_regionally(unet: Any, *, max_autotune: bool = False) -> bool:
+    """A U-Net denoiser with repeated blocks compiles per block (``UNET_REGIONAL_BLOCKS``) on the default tier;
+    max-autotune and ``UNSLOTH_DIFFUSION_UNET_REGIONAL=0`` keep the whole-module compile."""
+    return (
+        unet is not None
+        and not max_autotune
+        and _targets.unet_regional_enabled()
+        and bool(_unet_blocks(unet))
+    )
+
+
+_UNET_RECOMPILE_LIMIT = 256
+
+
+def _compile_unet_blocks(unet: Any, unet_kwargs: dict[str, Any], logger: Any) -> bool:
+    """``Module.compile`` on every repeated U-Net block, guarded like a DiT's regional blocks (a compile failure runs
+    that load eager; a pending background compile routes them eager). The outer forward stays eager: the denoiser
+    CUDA graph captures it whole, so its launches cost nothing."""
+    count = 0
+    try:
+        # One ResnetBlock2D forward serves ~14 graphs per (height, width, batch): 64 would stop at the 5th size.
+        import torch
+
+        dynamo_cfg = getattr(getattr(torch, "_dynamo", None), "config", None)
+        for _limit_attr in ("recompile_limit", "cache_size_limit"):
+            if dynamo_cfg is not None and hasattr(dynamo_cfg, _limit_attr):
+                current = compile_config.get_knob(_DYNAMO_MODULE, _limit_attr) or 0
+                compile_config.set_knob(_DYNAMO_MODULE, _limit_attr, max(current, _UNET_RECOMPILE_LIMIT))
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "unet recompile limit", exc)
+    try:
+        for module in _unet_blocks(unet):
+            module.compile(**unet_kwargs)
+            count += 1
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "unet regional compile", exc)
+        for module in unet.modules():
+            if module is not unet and getattr(module, "_compiled_call_impl", None) is not None:
+                module._compiled_call_impl = None
+        return False
+    if not count:
+        return False
+    guard_compiled_blocks(unet, logger)
+    try:
+        unet._unsloth_regional_compile_kwargs = dict(unet_kwargs)
+        # A background compile of this U-Net may stop between blocks for a render (diffusion_bg_compile.yield_point).
+        unet._unsloth_bg_yield = True
+    except Exception:  # noqa: BLE001 - not a settable module (tests/fakes)
+        pass
+    if logger is not None:
+        logger.info(
+            "diffusion.speed: %s compiles per block (%d blocks: %s); set %s=0 for the whole-module compile",
+            type(unet).__name__,
+            count,
+            ", ".join(_targets.UNET_REGIONAL_BLOCKS),
+            _targets.UNET_REGIONAL_ENV,
+        )
+    return True
 
 
 def _install_compile_patches(
@@ -1429,6 +1502,8 @@ class _CompileGuard:
         def guarded(*args: Any, **kwargs: Any) -> Any:
             # Compile still in flight in the background: entering it here would compile inline.
             if guard.error is None and not _bg_eager_forced():
+                # On a yielding background compile thread: park here, between two block graphs, while a render runs.
+                _bg_yield_point()
                 compile_config.apply()
                 try:
                     return compiled(*args, **kwargs)
@@ -1485,6 +1560,10 @@ def _guarded_dits(pipe: Any) -> list:
         extra = getattr(pipe, attr, None)
         if extra is not None and extra not in dits:
             dits.append(extra)
+    # A per-block compiled U-Net carries the same guard.
+    unet = _denoiser_unet(pipe)
+    if unet is not None and unet not in dits and getattr(unet, "_unsloth_compile_guard", None) is not None:
+        dits.append(unet)
     return dits
 
 
