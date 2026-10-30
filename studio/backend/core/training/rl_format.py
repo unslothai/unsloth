@@ -84,6 +84,18 @@ def warmup_messages(problem: str, solution: str, answer: str) -> list[dict]:
     ]
 
 
+def load_warmup_source():
+    from datasets import load_dataset
+    return load_dataset(WARMUP_DATASET, split = WARMUP_SPLIT)
+
+
+def warmup_offline_warning() -> str:
+    return (
+        f"Format warm-up skipped: its examples ({WARMUP_DATASET}) are not in the local cache "
+        "and Hugging Face is offline. GRPO runs without it."
+    )
+
+
 def build_warmup_dataset(
     tokenizer,
     max_seq_length: int,
@@ -94,10 +106,10 @@ def build_warmup_dataset(
     """Formatted rows that fit in half the context, like the notebooks, and whose answer fits the
     GRPO completion cap, so the warm-up never teaches answers GRPO will cut off. ``rows`` caps how
     many get tokenized."""
-    from datasets import Dataset, load_dataset
+    from datasets import Dataset
 
     if dataset is None:
-        dataset = load_dataset(WARMUP_DATASET, split = WARMUP_SPLIT)
+        dataset = load_warmup_source()
     limit = max_seq_length // 2
     texts = []
     for row in dataset:

@@ -5207,12 +5207,33 @@ class UnslothTrainer:
                     and getattr(rl_tokenizer, "chat_template", None)
                 ):
                     self.tokenizer.chat_template = rl_tokenizer.chat_template
-                from core.training.rl import rl_lengths
-                from core.training.rl_format import run_format_warmup, warmup_steps_to_run
+                from core.training.rl import reasoning_format_refusal, rl_lengths
+                from core.training.rl_format import (
+                    load_warmup_source,
+                    run_format_warmup,
+                    warmup_offline_warning,
+                    warmup_steps_to_run,
+                )
 
+                rl_train = dataset["dataset"] if isinstance(dataset, dict) else dataset
+                if objective == "grpo" and (rl_settings or {}).get("reasoning_format"):
+                    # Before the warm-up, so a dataset the format can't render costs no SFT steps.
+                    refusal = reasoning_format_refusal(rl_train)
+                    if refusal:
+                        raise ValueError(refusal)
                 warmup_steps = warmup_steps_to_run(
                     rl_settings, objective, bool(training_args.get("resume_from_checkpoint"))
                 )
+                warmup_source = None
+                if warmup_steps > 0:
+                    try:
+                        warmup_source = load_warmup_source()
+                    except Exception:
+                        # Not in the run's cache preflight: offline, skip it rather than fail the run.
+                        if not _env_offline():
+                            raise
+                        self._record_warning(warmup_offline_warning())
+                        warmup_steps = 0
                 if warmup_steps > 0:
                     self._update_progress(
                         status_message = f"Format warm-up: step 0 of {warmup_steps}..."
@@ -5223,6 +5244,7 @@ class UnslothTrainer:
                         config_args,
                         warmup_steps,
                         should_stop = lambda: self.should_stop,
+                        dataset = warmup_source,
                         on_step = lambda step, steps: self._update_progress(
                             status_message = f"Format warm-up: step {step} of {steps}..."
                         ),
@@ -5242,7 +5264,7 @@ class UnslothTrainer:
                     objective,
                     model = self.model,
                     tokenizer = rl_tokenizer,
-                    train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset,
+                    train_dataset = rl_train,
                     eval_dataset = eval_dataset,
                     config_args = config_args,
                     settings = rl_settings,

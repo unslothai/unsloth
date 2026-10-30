@@ -241,3 +241,24 @@ def test_the_run_fits_the_warmup_to_its_grpo_completion_cap():
     call = source[source.index("run_format_warmup(\n") :]
     call = call[: call.index("\n                    )\n")]
     assert "max_completion_length = rl_lengths(" in call and "rl_settings" in call
+
+
+def test_the_tool_refusal_and_the_offline_skip_come_before_the_warmup():
+    # A refused dataset costs no SFT steps, and an offline run without the warm-up set still trains.
+    import inspect
+
+    from core.training import trainer
+
+    src = inspect.getsource(trainer)
+    refuse = src.index("refusal = reasoning_format_refusal(rl_train)")
+    load = src.index("warmup_source = load_warmup_source()")
+    run = src.index("run_format_warmup(\n")
+    assert refuse < load < run
+    assert "if not _env_offline():\n" in src[load:run]
+    assert "self._record_warning(warmup_offline_warning())" in src[load:run]
+    assert rl_format.WARMUP_DATASET in rl_format.warmup_offline_warning()
+
+
+def test_the_warmup_reads_the_source_it_was_handed(monkeypatch):
+    monkeypatch.setattr(rl_format, "load_warmup_source", lambda: pytest.fail("loaded again"))
+    assert len(build_warmup_dataset(_tok(), 400, rows = 10, dataset = ROWS)) > 0
