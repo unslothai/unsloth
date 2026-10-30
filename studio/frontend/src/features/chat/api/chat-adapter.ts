@@ -3580,6 +3580,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       await ensureGpuDeviceCache();
     }
     let isDiffusion = false;
+    // An unclassifiable GGUF may still be DiffusionGemma, which /load rejects gpu_ids for: no default pick.
+    let diffusionUnknown = false;
     // Automatic pins a default pick on a mixed iGPU host, and /load rejects gpu_ids for DiffusionGemma on
     // some hosts, so classify the GGUF first in that case too.
     const automaticPinsDefault =
@@ -3601,17 +3603,17 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         recordCandidateFailure(failureLabel, cancelled);
         throw cancelled;
       }
-      isDiffusion = (
-        await fetchGgufStagedMetadata({
-          model_path: modelPath,
-          gguf_variant: candidate.ggufVariant,
-          hf_token: preparedToken.token,
-        }).catch((error: unknown) => {
-          // Same authFetch as validate and load, so a dead backend throws here first.
-          recordCandidateFailure(failureLabel, error);
-          throw error;
-        })
-      ).isDiffusion;
+      const staged = await fetchGgufStagedMetadata({
+        model_path: modelPath,
+        gguf_variant: candidate.ggufVariant,
+        hf_token: preparedToken.token,
+      }).catch((error: unknown) => {
+        // Same authFetch as validate and load, so a dead backend throws here first.
+        recordCandidateFailure(failureLabel, error);
+        throw error;
+      });
+      isDiffusion = staged.isDiffusion;
+      diffusionUnknown = staged.diffusionUnknown;
     }
     // The override may live only on the server, and nothing is resident at startup to inherit;
     // sanitized into an explicit list /load validates strictly.
@@ -3659,7 +3661,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       config.selectedGpuIds ?? null,
       config.selectedGpuIndexKind,
       isDiffusion,
-      candidate.kind === "gguf",
+      candidate.kind === "gguf" && !diffusionUnknown,
     );
     // Reconciled against the raw pick: a ratio only applies to the GPU set it was saved with.
     const effectiveTensorSplit = reconcileTensorSplit(

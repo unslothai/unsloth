@@ -242,7 +242,7 @@ test("a background load with no saved pick still reconciles as Automatic", () =>
   );
   assert.match(
     source,
-    /const effectiveGpuIds = reconcilePersistedGpuIds\(\s*config\.selectedGpuIds \?\? null,\s*config\.selectedGpuIndexKind,\s*isDiffusion,\s*candidate\.kind === "gguf",/,
+    /const effectiveGpuIds = reconcilePersistedGpuIds\(\s*config\.selectedGpuIds \?\? null,\s*config\.selectedGpuIndexKind,\s*isDiffusion,\s*candidate\.kind === "gguf" && !diffusionUnknown,/,
   );
 });
 test("only a GGUF load gets the default pick; other engines keep their own device", () => {
@@ -287,4 +287,18 @@ test("Automatic classifies a GGUF before pinning its default pick", () => {
     source,
     /automaticPinsDefault =\s*config\.selectedGpuIds == null &&\s*reconcilePersistedGpuIds\(null, undefined, false, true\) != null;/,
   );
+});
+test("an unclassifiable GGUF keeps Automatic unpinned", () => {
+  // It may be DiffusionGemma, whose /load rejects gpu_ids; only a confirmed non-diffusion GGUF gets the default.
+  const sources: [string, RegExp, number][] = [
+    ["../src/features/chat/api/chat-adapter.ts", /diffusionUnknown = staged\.diffusionUnknown;/, 1],
+    ["../src/features/chat/api/chat-adapter.ts", /candidate\.kind === "gguf" && !diffusionUnknown,/, 1],
+    ["../src/features/chat/hooks/use-chat-model-runtime.ts", /ggufDiffusionUnknown = staged\.diffusionUnknown;/, 1],
+    ["../src/features/chat/hooks/use-chat-model-runtime.ts", /isGguf && !ggufDiffusionUnknown,/g, 2],
+    ["../src/features/chat/shared-composer.tsx", /targetIsGguf && !diffusionUnknown,/g, 2],
+  ];
+  for (const [file, pattern, count] of sources) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.equal(source.match(new RegExp(pattern.source, "g"))?.length ?? 0, count, `${file} ${pattern}`);
+  }
 });

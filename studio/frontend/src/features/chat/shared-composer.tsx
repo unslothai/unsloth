@@ -1757,13 +1757,13 @@ export function SharedComposer({
                 ownConfig.selectedGpuIds,
                 ownConfig.selectedGpuIndexKind,
                 resolvedIsDiffusion === true,
-                targetIsGguf,
+                targetIsGguf && !diffusionUnknown,
               )
             : reconcilePersistedGpuIds(
                 compareLoadKnobs.selectedGpuIds,
                 compareLoadKnobs.selectedGpuIndexKind,
                 resolvedIsDiffusion === true,
-                targetIsGguf,
+                targetIsGguf && !diffusionUnknown,
               );
         // Own config only: inheriting the shared snapshot would be treated as a pin.
         const effectiveCustomContextLength = ownConfig.customContextLength;
