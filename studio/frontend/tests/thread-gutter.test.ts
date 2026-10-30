@@ -62,7 +62,6 @@ function fakeViewport() {
       remove: () => undefined,
       offsetWidth: 100,
       clientWidth: 85,
-      // WebKit: the content starts flush with the box, the left gutter went to the right.
       getBoundingClientRect: () => box,
     }),
     body: { append: () => undefined },
@@ -101,13 +100,11 @@ test("a caller can bring the shift up to date before its own observer would", ()
     const el = viewport as unknown as HTMLElement;
     const stop = watchThreadGutter(el);
     assert.equal(attrs.has(THREAD_GUTTER_SHIFT_ATTRIBUTE), false);
-    // Messages arrive and a classic scroll bar appears; the gutter's observer has not fired yet.
     viewport.clientWidth = 585;
     syncThreadGutter(el);
     assert.equal(attrs.has(THREAD_GUTTER_SHIFT_ATTRIBUTE), true);
     assert.deepEqual(events, [THREAD_GUTTER_CHANGE_EVENT]);
     stop();
-    // Unwatched (unmounted) viewports are a no-op.
     viewport.clientWidth = 600;
     syncThreadGutter(el);
     assert.equal(attrs.has(THREAD_GUTTER_SHIFT_ATTRIBUTE), false);

@@ -43,7 +43,6 @@ export function bothEdgesGutterMisplaced(doc: Document = document): boolean {
 
 const gutterSyncs = new WeakMap<HTMLElement, () => void>();
 
-/** Brings the viewport's gutter shift up to date now, before a caller measures the column. */
 export function syncThreadGutter(viewport: HTMLElement): void {
   gutterSyncs.get(viewport)?.();
 }
