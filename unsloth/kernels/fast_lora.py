@@ -23,6 +23,7 @@ from .utils import (
     get_lora_parameters,
     get_lora_parameters_bias,
     LORA_FUSED_PASSES,
+    _lora_fused_base_ok,
     matmul_lora,
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,
@@ -585,6 +586,8 @@ class LoRA_MLP(torch.autograd.Function):
             and gateS == upS
             and not ctx.biases[0]
             and not ctx.biases[1]
+            and _lora_fused_base_ok(upW, upW_quant, df.dtype)
+            and _lora_fused_base_ok(gateW, gateW_quant, de.dtype)
         ):
             (d_gateA, d_upA), (d_gateB, d_upB), dX = _shared_lora_backward(
                 X,
@@ -1013,6 +1016,9 @@ class LoRA_QKV(torch.autograd.Function):
             and V_mask is None
             and QS == KS == VS
             and not any(ctx.biases)
+            and _lora_fused_base_ok(QW, QW_quant, dQ.dtype)
+            and _lora_fused_base_ok(KW, KW_quant, dK.dtype)
+            and _lora_fused_base_ok(VW, VW_quant, dV.dtype)
         ):
             (d_QA, d_KA, d_VA), (d_QB, d_KB, d_VB), dX = _shared_lora_backward(
                 X,
@@ -1252,7 +1258,7 @@ class LoRA_W(torch.autograd.Function):
         del Xd
         d_bias = _lora_bias_grad(dY, S) if ctx.has_bias else None
 
-        if LORA_FUSED_PASSES and mask is None:
+        if LORA_FUSED_PASSES and mask is None and _lora_fused_base_ok(W, W_quant, dY.dtype):
             # dX starts as the rank-r term; the base GEMM accumulates onto it in its epilogue.
             dX = torch.addmm(y_dB.new_zeros(1), y_dB, A.t(), beta = 0, alpha = S)
             W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)

@@ -1880,6 +1880,12 @@ def addmm_(
 LORA_FUSED_PASSES = os.environ.get("UNSLOTH_LORA_FUSED_PASSES", "1") != "0"
 
 
+def _lora_fused_base_ok(W, W_quant, dtype):
+    # The base GEMM accumulates in place, which autocast does not cast: an unquantized base weight in
+    # another dtype (fp32 weights under fp16 / bf16 autocast) keeps the base-then-LoRA order.
+    return W_quant is not None or W.dtype == dtype
+
+
 def matmul_lora(
     X,
     W,
@@ -1916,7 +1922,7 @@ def matmul_lora(
         out = _int4_matmul(X, W, W_quant, out = out)
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
-    elif A is not None and LORA_FUSED_PASSES:
+    elif A is not None and LORA_FUSED_PASSES and _lora_fused_base_ok(W, W_quant, dtype):
         if XA is None:
             XA = torch_matmul(X, A.t().to(dtype))
         B = B.t().to(dtype)

@@ -205,3 +205,27 @@ def test_dropout_and_lora_bias_keep_the_base_then_lora_order(device, path, confi
     assert all(torch.equal(a, b) for a, b in zip(out0, out1))
     assert torch.equal(dX0, dX1)
     assert set(g0) == set(g1) and all(torch.equal(g0[n], g1[n]) for n in g0)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_fp32_base_under_autocast_keeps_the_base_then_lora_order(device, monkeypatch):
+    # In-place accumulation is not autocast: an fp32 base weight with half activations (fp32 weights under
+    # autocast, as in fast_linear_forward's multi-token path and LoRA_W) takes the old order instead of
+    # failing on the dtype mismatch. (main's LoRA_QKV / LoRA_MLP backward already needs matching dtypes.)
+    half = torch.bfloat16 if device == "cpu" else torch.float16
+    g = torch.Generator(device = "cpu").manual_seed(0)
+    X, W = torch.randn(7, H, generator = g), torch.randn(I, H, generator = g)
+    A, B = torch.randn(4, H, generator = g), torch.randn(I, 4, generator = g)
+    X, W, A, B = X.to(device, half), W.to(device), A.to(device), B.to(device)
+    model, block = _model(device, torch.float32)
+    X0 = torch.randn(2, 5, H, generator = g).to(device, half)
+    outs, runs = {}, {}
+    for on in (True, False):
+        _set(monkeypatch, on)
+        with torch.autocast(device, dtype = half):
+            outs[on] = kernel_utils.matmul_lora(X, W, None, A, B, 2.0)
+            runs[on] = _run(PATHS["o"][0](block), model, X0)
+    assert torch.equal(outs[True], outs[False])
+    (out_on, dX_on, g_on), (out_off, dX_off, g_off) = runs[True], runs[False]
+    assert torch.equal(out_on[0], out_off[0]) and torch.equal(dX_on, dX_off)
+    assert g_on.keys() == g_off.keys() and all(torch.equal(g_on[k], g_off[k]) for k in g_on)
