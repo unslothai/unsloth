@@ -364,7 +364,15 @@ def test_the_audio_input_path_stops_when_cancelled(monkeypatch):
     cancel = threading.Event()
     list(
         backend.generate_audio_input_response(
-            [{"role": "user", "content": "hi"}], "", object(), 0.0, 1.0, 0, 0.0, 8, 1.0,
+            [{"role": "user", "content": "hi"}],
+            "",
+            object(),
+            0.0,
+            1.0,
+            0,
+            0.0,
+            8,
+            1.0,
             cancel_event = cancel,
         )
     )
