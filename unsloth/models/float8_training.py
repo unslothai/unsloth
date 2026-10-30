@@ -147,8 +147,13 @@ def _probe_dtype_pairs(recipe):
     return pairs
 
 
-def _probe_float8_gemm(device, recipe):
-    """Tiny torch._scaled_mm calls with each GEMM's own fp8 dtypes and scaling, so an unsupported GPU / torch refuses here, not mid-training."""
+def _probe_float8_gemm(
+    device,
+    recipe,
+    dtype = torch.bfloat16,
+):
+    """Tiny torch._scaled_mm calls with each GEMM's own fp8 dtypes and scaling, so an unsupported GPU / torch refuses here, not mid-training.
+    Rowwise always writes bfloat16 (torchao computes it in bfloat16 and casts)."""
     M, K, N = 16, 32, 16
     for (dtype_a, rowwise_a), (dtype_b, rowwise_b) in _probe_gemms(recipe):
         a = torch.ones(M, K, device = device).to(dtype_a)
@@ -158,7 +163,22 @@ def _probe_float8_gemm(device, recipe):
         rowwise = rowwise_a or rowwise_b
         sa = torch.ones(M, 1, device = device) if rowwise else torch.ones((), device = device)
         sb = torch.ones(1, N, device = device) if rowwise else torch.ones((), device = device)
-        torch._scaled_mm(a, b, scale_a = sa, scale_b = sb, out_dtype = torch.bfloat16)
+        out_dtype = (
+            torch.bfloat16 if rowwise or dtype not in (torch.float16, torch.float32) else dtype
+        )
+        torch._scaled_mm(a, b, scale_a = sa, scale_b = sb, out_dtype = out_dtype)
+
+
+def _float8_compute_dtype(model, module_filter_fn):
+    """float16 when the converted layers will run in float16 (a float16 load, or one Unsloth upcast to float32
+    masters for float16 mixed precision), else bfloat16."""
+    if getattr(model, "_unsloth_original_dtype", None) == torch.float16:
+        return torch.float16
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear) and module_filter_fn(module, name):
+            if module.weight.dtype == torch.float16:
+                return torch.float16
+    return torch.bfloat16
 
 
 def _recipe_scaling(recipe):
@@ -186,7 +206,11 @@ def _selected_devices(model, module_filter_fn):
     return devices
 
 
-def _check_hardware(device, recipe):
+def _check_hardware(
+    device,
+    recipe,
+    dtype = torch.bfloat16,
+):
     if device is None or device.type != "cuda" or not torch.cuda.is_available():
         raise RuntimeError(
             "Unsloth: float8_training needs the model on an NVIDIA GPU with compute capability 8.9+; "
@@ -221,12 +245,17 @@ def _check_hardware(device, recipe):
                 "(compute capability 12.x). To try it here, pass "
                 f"torchao.float8.Float8LinearConfig.from_recipe_name({recipe!r}) as float8_training."
             )
-    probe_recipe = _recipe_scaling(recipe)
+    probe_recipe = f"{_recipe_scaling(recipe)} scaling"
     try:
-        _probe_float8_gemm(device, recipe)
+        if dtype == torch.float16:
+            # The float16 output GEMM is a different cuBLAS / CUTLASS path from the bfloat16 one.
+            probe_recipe += ", float16 output"
+            _probe_float8_gemm(device, recipe, torch.float16)
+        else:
+            _probe_float8_gemm(device, recipe)
     except Exception as e:
         raise RuntimeError(
-            f"Unsloth: float8_training ({probe_recipe} scaling) is not supported by torch {torch.__version__} on "
+            f"Unsloth: float8_training ({probe_recipe}) is not supported by torch {torch.__version__} on "
             f"{torch.cuda.get_device_name(device)} ({type(e).__name__}: {str(e)[:200]})."
         ) from e
 
@@ -285,8 +314,9 @@ def convert_model_to_float8_training(
         module_filter_fn = float8_training_filter(model, recipe, size_filter = size_filter)
     if check_hardware and not getattr(config, "emulate", False):
         devices = _selected_devices(model, module_filter_fn)
+        dtype = _float8_compute_dtype(model, module_filter_fn)
         for device in devices or [next((p.device for p in model.parameters()), None)]:
-            _check_hardware(device, recipe)
+            _check_hardware(device, recipe, dtype)
     # torchao's new Float8Linear drops Accelerate dispatch hooks (device_map / offload); re-attach them.
     dispatch_hooks = {
         name: m._hf_hook
