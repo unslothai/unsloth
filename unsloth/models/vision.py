@@ -1534,14 +1534,18 @@ class _EagerDecodeSteps:
 
 # Gemma 3 picks flex_attention on sm80+ for training, but one-token decode is slower on flex than on its
 # non-flex path (zoo's SDPA kernel): gemma-3-1b-it on an L4, ~70 vs ~58 ms/token (16-bit), ~74 vs ~63
-# (4-bit). So generate() uses that path and training keeps flex. UNSLOTH_FLEX_ATTENTION_GENERATE=1
-# keeps flex for generate too.
+# (4-bit). Prefill stays on flex: its block mask skips the tiles a dense prompt x cache mask computes
+# (8k / 16k prompts prefill 1.9x / 2.8x slower off flex). So inside generate() each step picks its path
+# in prepare_inputs_for_generation, where the static cache builds that step's mask: one new token per
+# row runs the non-flex path, anything longer runs flex. Training keeps flex.
+# UNSLOTH_FLEX_ATTENTION_GENERATE=1 keeps flex for every generate step.
 _FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
 _FLEX_GENERATE_LOCK = threading.Lock()
+_NON_FLEX_DECODE = "eager"
 
 
 def _flex_generate_configs(model):
-    """The decoder attention configs to move off flex_attention for one generate(), else []."""
+    """The decoder attention configs to move off flex_attention for decode steps, else []."""
     if os.environ.get(_FLEX_GENERATE_ENV_VAR, "0") == "1":
         return []
     config = getattr(model, "config", None)
@@ -1557,14 +1561,60 @@ def _flex_generate_configs(model):
     ]
 
 
+def _step_query_length(model_inputs):
+    """New tokens per row in one prepared generate step, else None."""
+    if not isinstance(model_inputs, dict):
+        return None
+    for key in ("inputs_embeds", "input_ids", "decoder_input_ids"):
+        x = model_inputs.get(key)
+        if isinstance(x, torch.Tensor) and x.dim() >= 2:
+            return int(x.shape[1])
+    return None
+
+
 class _NonFlexGenerate:
-    """One generate() call of a model whose decoder Unsloth put on flex_attention: its decoder
-    attention configs read "eager" (Gemma 3's patched attention then runs SDPA, as on cards without
-    flex), restored on exit. Reference counted per model, so overlapping calls restore once."""
+    """One generate() call of a model whose decoder Unsloth put on flex_attention. Prefill steps
+    keep flex; each one-token decode step reads "eager" on the decoder attention configs (Gemma 3's
+    patched attention then runs SDPA, as on cards without flex). Both paths write and read the same
+    KV cache. The configs are restored on exit, including on error. Reference counted per model, so
+    nested calls restore once; an overlapping call from another thread pins every step to the
+    non-flex path until the last one exits (one shared config cannot serve two step kinds)."""
 
     def __init__(self, model):
         self.model = model
         self.active = False
+
+    def _set(self, decode):
+        state = self.model.__dict__
+        if state.get("_unsloth_non_flex_generate_pinned", False):
+            decode = True
+        value = _NON_FLEX_DECODE if decode else "flex_attention"
+        for c in state.get("_unsloth_non_flex_generate_configs", ()):
+            if _config_get(c, "_attn_implementation", None) != value:
+                _config_set(c, "_attn_implementation", value)
+
+    def _wrap_prepare(self, prepare):
+        scope = self
+
+        @functools.wraps(prepare)
+        def prepare_inputs_for_generation(*args, **kwargs):
+            # Guess from the step's cache positions (first call = prefill without them), build, and
+            # rebuild on the other path only if the prepared inputs disagree.
+            cache_position = kwargs.get("cache_position")
+            if isinstance(cache_position, torch.Tensor) and cache_position.dim() == 1:
+                decode = cache_position.shape[0] == 1
+            else:
+                decode = scope.steps > 0
+            scope.steps += 1
+            scope._set(decode)
+            model_inputs = prepare(*args, **kwargs)
+            q_len = _step_query_length(model_inputs)
+            if q_len is not None and (q_len == 1) != decode:
+                scope._set(q_len == 1)
+                model_inputs = prepare(*args, **kwargs)
+            return model_inputs
+
+        return prepare_inputs_for_generation
 
     def __enter__(self):
         state = self.model.__dict__
@@ -1582,9 +1632,24 @@ class _NonFlexGenerate:
                     for field in ("_attn_implementation", "attn_implementation")
                     if _config_get(c, field, None) is not None
                 ]
-                for c in configs:
-                    _config_set(c, "_attn_implementation", "eager")
                 state["_unsloth_non_flex_generate_saved"] = saved
+                state["_unsloth_non_flex_generate_configs"] = configs
+                state["_unsloth_non_flex_generate_owner"] = threading.get_ident()
+                self.steps = 0
+                prepare = getattr(self.model, "prepare_inputs_for_generation", None)
+                if prepare is not None:
+                    # Restored on exit: PEFT installs its own on the base model during generate().
+                    state["_unsloth_non_flex_generate_prepare"] = (
+                        "prepare_inputs_for_generation" in state,
+                        state.get("prepare_inputs_for_generation"),
+                    )
+                    self.model.prepare_inputs_for_generation = self._wrap_prepare(prepare)
+                else:
+                    state["_unsloth_non_flex_generate_pinned"] = True
+                    self._set(True)
+            elif state.get("_unsloth_non_flex_generate_owner") != threading.get_ident():
+                state["_unsloth_non_flex_generate_pinned"] = True
+                self._set(True)
             state["_unsloth_non_flex_generate"] = depth + 1
             self.active = True
         return self
@@ -1598,6 +1663,16 @@ class _NonFlexGenerate:
             state["_unsloth_non_flex_generate"] = depth
             if depth == 0:
                 state.pop("_unsloth_non_flex_generate", None)
+                state.pop("_unsloth_non_flex_generate_configs", None)
+                state.pop("_unsloth_non_flex_generate_owner", None)
+                state.pop("_unsloth_non_flex_generate_pinned", None)
+                prepare = state.pop("_unsloth_non_flex_generate_prepare", None)
+                if prepare is not None:
+                    had, previous = prepare
+                    if had:
+                        state["prepare_inputs_for_generation"] = previous
+                    else:
+                        state.pop("prepare_inputs_for_generation", None)
                 for c, field, value in state.pop("_unsloth_non_flex_generate_saved", ()):
                     _config_set(c, field, value)
         return False
