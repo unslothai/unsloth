@@ -21473,20 +21473,6 @@ def _snapshot_and_history_begin(
     return before
 
 
-def _walk_lists(workdir: str, rel: str) -> bool:
-    """Whether `_history_walk` would list *rel*, so a file edit_file records is never
-    taken for a deletion by the next python or terminal walk."""
-    parts = rel.split("/")
-    if not all(map(_servable_segment, parts)):
-        return False
-    base = workdir
-    for part in parts[:-1]:
-        if part.startswith(".") or _snapshot_skips_dir(base, part):
-            return False
-        base = os.path.join(base, part)
-    return not (len(parts) == 1 and parts[0] in _INTERNAL_SANDBOX_FILES)
-
-
 def _history_begin_file(session_id: "str | None", target: str) -> dict:
     """Track the one file an edit_file call writes. The first call in a folder walks it once for the baseline."""
     if file_history.current_turn() is None or not session_id:
@@ -21499,7 +21485,11 @@ def _history_begin_file(session_id: "str | None", target: str) -> dict:
     if rel.startswith(os.pardir) or os.path.isabs(rel):
         return {}
     rel = rel.replace(os.sep, "/")
-    if not _walk_lists(workdir, rel) or not file_history.tracked(rel, ()):
+    if (
+        not all(map(_servable_segment, rel.split("/")))
+        or rel in _INTERNAL_SANDBOX_FILES
+        or not file_history.tracked(rel, ())
+    ):
         return {}
     try:
         baseline = file_history.store().needs_baseline(workdir)
