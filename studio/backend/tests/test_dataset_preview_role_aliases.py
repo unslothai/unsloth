@@ -226,6 +226,97 @@ def test_the_preview_and_the_training_path_agree_on_every_spelling():
     assert [m["role"] for m in trained] == [m["role"] for m in previewed]
 
 
+@pytest.mark.parametrize("adapter", ["preview", "training"])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_sharegpt_standardization_preserves_native_tool_metadata(adapter, streaming):
+    from datasets import Dataset, IterableDataset
+    from hub.utils.dataset_format import format_dataset_preview
+    from utils.datasets.format_conversion import standardize_chat_format
+
+    call = {
+        "id": "call_0",
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'},
+    }
+    rows = [
+        {
+            "conversations": [
+                {"from": "human", "value": "Weather?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [call],
+                    "reasoning_content": "Check weather",
+                },
+                {"role": "tool", "content": "21C", "tool_call_id": "call_0", "name": "get_weather"},
+                {"from": "gpt", "value": "", "weight": 0.5},
+            ]
+        }
+    ]
+    dataset = (
+        IterableDataset.from_generator(lambda: iter(rows)) if streaming else Dataset.from_list(rows)
+    )
+    result = (
+        format_dataset_preview(dataset)
+        if adapter == "preview"
+        else standardize_chat_format(dataset, num_proc = 1)
+    )
+    messages = next(iter(result))["conversations"]
+    assert [message["role"] for message in messages] == ["user", "assistant", "tool", "assistant"]
+    assert [message["content"] for message in messages] == ["Weather?", None, "21C", ""]
+    assert messages[1]["tool_calls"] == [call]
+    assert messages[1]["reasoning_content"] == "Check weather"
+    assert messages[2]["tool_call_id"] == "call_0"
+    assert messages[2]["name"] == "get_weather"
+    assert messages[3]["weight"] == 0.5
+    assert all(message.get("from") is None and message.get("value") is None for message in messages)
+    assert rows[0]["conversations"][0] == {"from": "human", "value": "Weather?"}
+
+
+def test_training_preserves_metadata_with_inferred_message_keys():
+    from datasets import Dataset
+    from utils.datasets.format_conversion import standardize_chat_format
+
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"speaker": "human", "text": "first", "weight": 0.5},
+                    {"speaker": "gpt", "text": "second", "weight": 1.0},
+                    {"speaker": "human", "text": "third", "weight": 0.0},
+                ]
+            }
+        ]
+    )
+    messages = standardize_chat_format(dataset, num_proc = 1)[0]["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant", "user"]
+    assert [message["content"] for message in messages] == ["first", "second", "third"]
+    assert [message["weight"] for message in messages] == [0.5, 1.0, 0.0]
+    assert all(
+        message.get("speaker") is None and message.get("text") is None for message in messages
+    )
+
+
+@pytest.mark.parametrize("content", ["", [], 0, False])
+def test_training_content_fallback_preserves_non_null_values(content):
+    from datasets import IterableDataset
+    from utils.datasets.format_conversion import standardize_chat_format
+
+    rows = [
+        {
+            "conversations": [
+                {"from": "human", "value": "question"},
+                {"role": "assistant", "content": content, "value": None},
+            ]
+        }
+    ]
+    dataset = IterableDataset.from_generator(lambda: iter(rows))
+    messages = next(iter(standardize_chat_format(dataset)))["conversations"]
+    assert messages[0]["content"] == "question"
+    assert messages[1]["content"] == content
+    assert type(messages[1]["content"]) is type(content)
+
+
 @pytest.mark.parametrize("role", [None, "", "   ", "\t"])
 def test_the_training_path_defaults_a_blank_role_like_the_preview(role):
     """The training path preserved a blank role and most chat templates reject one."""
