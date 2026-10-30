@@ -16,7 +16,7 @@ from core.flows.city import MAYOR_SCHEMA, CityError, mayor_prompt, validate_mayo
 from core.flows.authoring import AuthoringError, constrained_call
 from core.flows.expr import seed_from
 from core.flows.nodes._common import JsonFieldStream
-from core.flows.nodes.memory import _plan_schema, _retrieve, clean_plan, embed, rate_importance
+from core.flows.nodes.memory import _embed, _plan_schema, _retrieve, clean_plan, rate_importance
 from core.flows.registry import FlowNodeError, NodeContext, handler
 from core.flows.rivals import RIVAL_TASKS
 from core.flows.scene_solver import (
@@ -62,7 +62,8 @@ from core.flows.world import (
 )
 
 RECALL_K = 8
-_VECTORS: "OrderedDict[str, list[float]]" = OrderedDict()
+# text -> (embedding model, vector); a vector is only reused for the model that made it.
+_VECTORS: "OrderedDict[str, tuple[Optional[str], list[float]]]" = OrderedDict()
 _VECTORS_MAX = 20000
 REPLY_RECALL_BUDGET_S = 0.6
 
@@ -260,29 +261,30 @@ async def _recall(
     if ctx.params.get("relevance", "embeddings") == "embeddings":
         texts = [r["text"] for r in stream["records"]]
         missing = list(dict.fromkeys(t for t in texts if t not in _VECTORS))
-        pending = asyncio.ensure_future(embed(ctx, [query] + missing))
+        pending = asyncio.ensure_future(_embed(ctx, [query] + missing))
 
         def keep(task: "asyncio.Future") -> None:
-            vectors = None if task.cancelled() or task.exception() else task.result()
-            for text, vec in zip(missing, (vectors or [])[1:]):
-                _VECTORS[text] = vec
+            got = None if task.cancelled() or task.exception() else task.result()
+            vectors, model = got or ([], None)
+            for text, vec in zip(missing, vectors[1:]):
+                _VECTORS[text] = (model, vec)
             while len(_VECTORS) > _VECTORS_MAX:
                 _VECTORS.popitem(last = False)
 
         pending.add_done_callback(keep)
         try:
-            vectors = await (
+            got = await (
                 asyncio.wait_for(asyncio.shield(pending), budget) if budget is not None else pending
             )
         except asyncio.TimeoutError:
-            vectors = None
+            got = None
             ctx.log("Memories ranked by keywords this turn: the embedding model was slow to answer")
-        if vectors:
-            query_vec = vectors[0]
+        if got and got[0]:
+            query_vec, model = got[0][0], got[1]
             keep(pending)
             for r in stream["records"]:
-                vec = _VECTORS.get(r["text"])
-                if vec is not None and len(vec) == len(query_vec):
+                cached_model, vec = _VECTORS.get(r["text"], (None, None))
+                if vec is not None and cached_model == model and len(vec) == len(query_vec):
                     _VECTORS.move_to_end(r["text"])
                     r["embedding"] = vec
                 else:
