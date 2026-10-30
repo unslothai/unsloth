@@ -18,12 +18,17 @@ import {
   useNativeDropTarget,
 } from "@/features/native-intents";
 import { useImageCrop } from "@/hooks/use-image-crop";
+import {
+  IMAGE_SLOT_DRAG_TYPE,
+  classifyNativeImageDrop,
+  draggedImageSlot,
+  endImageSlotDrag,
+  startImageSlotDrag,
+} from "@/components/image-slot-drag";
 import { GALLERY_ITEM_DRAG_TYPE } from "@/hooks/use-strip-reorder";
 import { MAX_UPLOAD_IMAGE_SIDE, fitImageDataUrl } from "@/lib/image-fit";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
-
-const NATIVE_IMAGE_EXTS = ["jpg", "jpeg", "png", "webp", "gif"];
 
 type GalleryImageSource = (id: string) => Promise<Blob | null>;
 let gallerySource: GalleryImageSource | null = null;
@@ -40,6 +45,10 @@ export function useGalleryImageDropSource(source: GalleryImageSource) {
 
 function isGalleryDrag(event: React.DragEvent): boolean {
   return gallerySource !== null && event.dataTransfer.types.includes(GALLERY_ITEM_DRAG_TYPE);
+}
+
+function isSlotDrag(event: React.DragEvent): boolean {
+  return draggedImageSlot() !== null && event.dataTransfer.types.includes(IMAGE_SLOT_DRAG_TYPE);
 }
 
 /** Shared image picker that returns a data URL. */
@@ -129,10 +138,23 @@ export function ImageDropzone({
   // that the native side registers and reads for this picker.
   const readNativePath = useCallback(
     async (path: string | undefined) => {
+      const kind = classifyNativeImageDrop(path);
+      const slotImage = kind === "none" || kind === "in-app" ? draggedImageSlot() : null;
+      if (slotImage !== null) {
+        selection.current += 1;
+        onChange(slotImage);
+        return;
+      }
       if (!path) return;
-      if (!NATIVE_IMAGE_EXTS.includes(path.split(".").pop()?.toLowerCase() ?? "")) {
-        toast.error("Drop a JPEG, PNG, WebP or GIF image", {
-          description: "Other image formats can still be chosen with the picker.",
+      if (kind === "in-app") {
+        toast.error("Can't drop this image here", {
+          description: "Click to pick the image file instead.",
+        });
+        return;
+      }
+      if (kind === "unsupported") {
+        toast.error("This image type can't be dropped here", {
+          description: "Drop a JPEG, PNG, WebP or GIF, or click to choose other formats.",
         });
         return;
       }
@@ -173,11 +195,21 @@ export function ImageDropzone({
     return (
       <div
         data-reload-snapshot-sensitive
+        draggable={true}
+        onDragStart={(e) => {
+          if (!e.currentTarget.contains(e.target as Node)) return;
+          startImageSlotDrag(value);
+          e.dataTransfer.effectAllowed = "copy";
+          e.dataTransfer.setData(IMAGE_SLOT_DRAG_TYPE, "");
+        }}
+        onDragEnd={() => endImageSlotDrag()}
         className={cn("relative overflow-hidden rounded-lg border border-border", className)}
       >
-        {/* Checkerboard behind the preview, so a transparent upload shows its alpha. */}
+        {/* Checkerboard behind the preview, so a transparent upload shows its alpha.
+            Not draggable itself, or the OS would read the drag as a dropped file. */}
         <img
           src={value}
+          draggable={false}
           alt="Source"
           className="max-h-44 w-full object-contain bg-muted/30"
           style={{
@@ -237,13 +269,19 @@ export function ImageDropzone({
       onDragOver={(e) => {
         e.preventDefault();
         // The strip offers copy or move; without this the cursor reads as a move.
-        if (isGalleryDrag(e)) e.dataTransfer.dropEffect = "copy";
+        if (isGalleryDrag(e) || isSlotDrag(e)) e.dataTransfer.dropEffect = "copy";
         setDragging(true);
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
         e.preventDefault();
         setDragging(false);
+        const slotImage = isSlotDrag(e) ? draggedImageSlot() : null;
+        if (slotImage) {
+          selection.current += 1;
+          onChange(slotImage);
+          return;
+        }
         const galleryId = isGalleryDrag(e) ? e.dataTransfer.getData(GALLERY_ITEM_DRAG_TYPE) : "";
         if (galleryId) void readGalleryItem(galleryId);
         else readFile(e.dataTransfer.files?.[0]);

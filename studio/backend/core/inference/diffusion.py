@@ -505,6 +505,7 @@ from .diffusion_transformer_quant import (
     NATIVE_OFFLOAD_SCHEMES,
     NATIVE_QUANT_SCHEMES,
     normalize_transformer_quant,
+    int8_text_stream_scope,
     quantize_transformer,
     select_transformer_quant_scheme,
     stored_denoiser_precision,
@@ -9816,38 +9817,41 @@ class DiffusionBackend:
                                     else {}
                                 )
                                 engaged: list[str] = []
-                                cached_scheme = (
-                                    self._pipeline_quant_from_cache(
-                                        pipe,
-                                        fam,
-                                        denoisers,
-                                        target = target,
-                                        transformer_quant = transformer_quant,
-                                        fast_accum = transformer_quant_fast_accum,
-                                        loras = loras,
-                                        base = base,
-                                        fetch_base = fetch_base,
-                                        source_base = _base_local_dir or fetch_base,
-                                        hf_token = hf_token,
+                                # Text-stream int8 only when streamed; the scope is part of the prequant-cache key.
+                                with int8_text_stream_scope(not keeps_resident):
+                                    cached_scheme = (
+                                        self._pipeline_quant_from_cache(
+                                            pipe,
+                                            fam,
+                                            denoisers,
+                                            target = target,
+                                            transformer_quant = transformer_quant,
+                                            fast_accum = transformer_quant_fast_accum,
+                                            loras = loras,
+                                            base = base,
+                                            fetch_base = fetch_base,
+                                            source_base = _base_local_dir or fetch_base,
+                                            hf_token = hf_token,
+                                        )
+                                        if native_scheme is None
+                                        else None
                                     )
-                                    if native_scheme is None
-                                    else None
-                                )
                                 if cached_scheme is not None:
                                     engaged.append(cached_scheme)
                                 for attr, _module in denoisers if cached_scheme is None else ():
-                                    scheme = quantize_transformer(
-                                        pipe
-                                        if attr == "transformer"
-                                        else _DenoiserView(pipe, attr),
-                                        target,
-                                        mode = transformer_quant,
-                                        family = getattr(fam, "name", None),
-                                        base_repo = base,
-                                        fast_accum = transformer_quant_fast_accum,
-                                        logger = logger,
-                                        **native_kwargs,
-                                    )
+                                    with int8_text_stream_scope(not keeps_resident):
+                                        scheme = quantize_transformer(
+                                            pipe
+                                            if attr == "transformer"
+                                            else _DenoiserView(pipe, attr),
+                                            target,
+                                            mode = transformer_quant,
+                                            family = getattr(fam, "name", None),
+                                            base_repo = base,
+                                            fast_accum = transformer_quant_fast_accum,
+                                            logger = logger,
+                                            **native_kwargs,
+                                        )
                                     if scheme is None:
                                         break
                                     engaged.append(scheme)
@@ -9859,19 +9863,20 @@ class DiffusionBackend:
                                     transformer_quant_engaged = cached_scheme
                                 elif engaged and len(engaged) == len(denoisers):
                                     transformer_quant_engaged = engaged[0]
-                                    pending_cache_write = self._save_pipeline_quant_to_cache(
-                                        pipe,
-                                        fam,
-                                        denoisers,
-                                        loras = loras,
-                                        base = base,
-                                        source_base = _base_local_dir or fetch_base,
-                                        cancel_check = lambda: self._raise_if_load_cancelled(
-                                            _load_token
-                                        ),
-                                        defer = True,
-                                        native_cache = native_cache_ok,
-                                    )
+                                    with int8_text_stream_scope(not keeps_resident):
+                                        pending_cache_write = self._save_pipeline_quant_to_cache(
+                                            pipe,
+                                            fam,
+                                            denoisers,
+                                            loras = loras,
+                                            base = base,
+                                            source_base = _base_local_dir or fetch_base,
+                                            cancel_check = lambda: self._raise_if_load_cancelled(
+                                                _load_token
+                                            ),
+                                            defer = True,
+                                            native_cache = native_cache_ok,
+                                        )
                                     if not hasattr(pending_cache_write, "start"):
                                         pending_cache_write = None
                                     self._raise_if_load_cancelled(_load_token)

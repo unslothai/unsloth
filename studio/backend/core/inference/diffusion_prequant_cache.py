@@ -354,9 +354,12 @@ def key_parts(
         divisible_for_scheme,
         exclude_tokens_for_scheme,
         int8_convrot_enabled,
+        streamed_weight_only_layout,
     )
 
     group, suffixes = convrot_spec_for_scheme(scheme, family)
+    # Only when set (streamed qwen-image int8), so every other build keeps its existing key.
+    extra = streamed_weight_only_layout(scheme, family)
     return {
         "policy": POLICY_VERSION,
         "family": str(family or ""),
@@ -373,6 +376,7 @@ def key_parts(
         if group and int8_convrot_enabled(family)
         else None,
         "fast_accum": _resolve_fast_accum(None) if scheme == TQ_FP8 else None,
+        **extra,
         **_toolchain(),
     }
 
@@ -1189,6 +1193,14 @@ def save_runtime_quant(
                     "skipped (fp8 quantized with a forced non-default accumulate mode)",
                 )
                 return None
+        wo_keys = ("weight_only_name_tokens", "weight_only_mode", "weight_only_outliers")
+        wanted_wo = {k: parts[k] for k in wo_keys if k in parts}
+        if {k: info[k] for k in wo_keys if k in info} != wanted_wo:
+            _log(logger, "info", "skipped (weight-only modulation state differs from the key)")
+            return None
+        if wanted_wo and wanted_wo["weight_only_mode"] != "wo":
+            _log(logger, "info", "skipped (diagnostic W8A8 modulation mode)")
+            return None
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
             _log(logger, "info", "skipped (ConvRot state differs from the key)")
             return None
@@ -1266,6 +1278,9 @@ def save_runtime_quant(
         if scheme == "fp8":
             from .diffusion_transformer_quant import FP8_GRANULARITY
             metadata["fp8_granularity"] = FP8_GRANULARITY
+        if wanted_wo:
+            metadata["weight_only_name_tokens"] = list(wanted_wo["weight_only_name_tokens"])
+            metadata["weight_only_outliers"] = int(wanted_wo["weight_only_outliers"])
         metadata.update(_rotation(transformer, info))
         header[UNSLOTH_FORMAT_KEY] = prequant_format_for(metadata)
         header[UNSLOTH_METADATA_KEY] = json.dumps(metadata, default = str)
