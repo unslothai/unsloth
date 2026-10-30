@@ -2593,6 +2593,7 @@ fn main() {
             set_tray_server_status,
             voice_typing::voice_typing_info,
             voice_typing::voice_typing_configure,
+            voice_typing::voice_typing_suspend_shortcut,
             voice_typing::voice_typing_hud_state,
             voice_typing::voice_typing_hud_level,
             voice_typing::voice_typing_hud_prewarm,

@@ -508,18 +508,40 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Case-insensitive, word-bounded ("jane doe" -> "Jane Doe"). */
+/**
+ * Case-insensitive, word-bounded dictionary and snippet replacement:
+ * - Plain entries ("Jane Doe", "Unsloth") enforce exact casing.
+ * - Alias/snippet entries ("my email -> team@unsloth.ai" or "k8s => Kubernetes")
+ *   expand spoken triggers into their target text.
+ * - Longer triggers run first so multi-word phrases win over single-word prefixes.
+ */
 export function applyDictationDictionary(
   transcript: string,
   dictionary?: string[],
 ): string {
   const entries = dictionary ?? useVoiceSettingsStore.getState().dictionary;
   if (!transcript || entries.length === 0) return transcript;
-  let result = transcript;
+
+  const rules: { trigger: string; replacement: string }[] = [];
   for (const entry of entries) {
     const trimmed = entry.trim();
     if (!trimmed) continue;
-    const pattern = trimmed.split(/\s+/).map(escapeRegExp).join("\\s+");
+    const arrowMatch = /^(.+?)\s*(?:->|=>)\s*(.+)$/.exec(trimmed);
+    if (arrowMatch) {
+      const trigger = arrowMatch[1].trim();
+      const replacement = arrowMatch[2].trim();
+      if (trigger && replacement) {
+        rules.push({ trigger, replacement });
+      }
+    } else {
+      rules.push({ trigger: trimmed, replacement: trimmed });
+    }
+  }
+  rules.sort((a, b) => b.trigger.length - a.trigger.length);
+
+  let result = transcript;
+  for (const { trigger, replacement } of rules) {
+    const pattern = trigger.split(/\s+/).map(escapeRegExp).join("\\s+");
     try {
       // Capture the boundary instead of a lookbehind, which Safari < 16.4 cannot compile.
       const regex = new RegExp(
@@ -527,7 +549,10 @@ export function applyDictationDictionary(
         "giu",
       );
       // Callback form avoids $-pattern expansion.
-      result = result.replace(regex, (_match, prefix) => `${prefix}${trimmed}`);
+      result = result.replace(
+        regex,
+        (_match, prefix: string) => `${prefix}${replacement}`,
+      );
     } catch {
       // Skip entries that produce an invalid pattern.
     }

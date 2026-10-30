@@ -43,7 +43,7 @@ export interface SpeechSegment {
 }
 
 const DEFAULT_PRE_ROLL_MS = 450;
-const DEFAULT_MIN_SEGMENT_MS = 5_000;
+const DEFAULT_MIN_SEGMENT_MS = 2_800;
 const DEFAULT_MAX_SEGMENT_MS = 14_000;
 const DEFAULT_SILENCE_CUT_MS = 360;
 const DEFAULT_VOICE_RMS = 0.012;
@@ -79,6 +79,7 @@ export class SpeechSegmenter {
   private noiseFloor = 0.003;
   private lastLevel = 0;
   private lastRms = 0;
+  private lastIsSpeech = false;
 
   constructor(options: SpeechSegmenterOptions) {
     this.sampleRate = options.sampleRate;
@@ -110,6 +111,11 @@ export class SpeechSegmenter {
     return this.lastRms;
   }
 
+  /** Whether the most recent frame exceeded the adaptive noise-floor speech threshold. */
+  get isSpeech(): boolean {
+    return this.lastIsSpeech;
+  }
+
   /** Feed one microphone frame. Returns a finished segment when this frame cut
    *  one; the caller encodes and transcribes it. */
   push(frame: Float32Array): SpeechSegment | null {
@@ -120,6 +126,7 @@ export class SpeechSegmenter {
     this.lastLevel = clamp(rms * 3.2, 0, 1);
     const speechThreshold = Math.max(this.voiceRms, this.noiseFloor * 2.5);
     const isSpeech = rms >= speechThreshold;
+    this.lastIsSpeech = isSpeech;
     const frameMs = (samples.length / this.sampleRate) * 1000;
 
     if (!isSpeech) {

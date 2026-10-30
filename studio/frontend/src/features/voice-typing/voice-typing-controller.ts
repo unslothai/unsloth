@@ -60,27 +60,33 @@ type Cue = VoiceTypingCue;
 
 /** Safety net so a forgotten toggle cannot record forever. */
 const MAX_RECORDING_MS = 5 * 60 * 1000;
-/** Raw RMS above this counts as speech for the auto-stop. */
-const VOICED_LEVEL = 0.05;
+/** Minimum perceptual level (0..1, where level = rms * 3.2) that counts as speech
+ *  for auto-stop, combined with an adaptive ambient noise floor. */
+const MIN_VOICED_LEVEL = 0.11;
 /** Shorter recordings that produced nothing had no speech worth reporting. */
 const NO_SPEECH_NOTICE_MIN_MS = 2000;
 /** How long the "inserted" state stays on the overlay before it hides. */
 const DONE_VISIBLE_MS = 900;
 /** Mic-level frames are throttled on their way to the overlay window. */
-const LEVEL_THROTTLE_MS = 55;
+const LEVEL_THROTTLE_MS = 45;
 /** How often to tell the backend the loaded dictation model is still wanted. The
  *  sidecar unloads it after five idle minutes, and a press then pays for the load
  *  before it can record; a heartbeat well inside that window keeps a press instant. */
 const MODEL_KEEPALIVE_MS = 60_000;
+/** Retry interval when boot-time model check runs before the Python backend is up. */
+const BOOT_MODEL_RETRY_MS = 3_000;
+const MAX_BOOT_RETRIES = 6;
 
 export class VoiceTypingController {
   private info: VoiceTypingInfo | null = null;
   private phase: HudPhase = "idle";
+  private starting = false;
   private session: StudioDictationSession | null = null;
   private transcript = "";
   private ready = false;
   private disposed = false;
   private activating = false;
+  private bootRetries = 0;
   private unlistenSignal: UnlistenFn | null = null;
   private unsubscribeLevel: (() => void) | null = null;
   private unsubscribeStore: (() => void) | null = null;
@@ -90,6 +96,7 @@ export class VoiceTypingController {
   private recordingStartedAt = 0;
   private speechHeard = false;
   private lastVoiceAt = 0;
+  private noiseFloorLevel = 0.02;
   /** Bumped by cancel; an in-flight delivery from an older session is discarded. */
   private cancelToken = 0;
   private deniedMicNoticeShown = false;
@@ -191,14 +198,16 @@ export class VoiceTypingController {
     const configChanged =
       state.enabled !== previous.enabled ||
       state.shortcut !== previous.shortcut ||
-      state.mode !== previous.mode;
+      state.mode !== previous.mode ||
+      state.muteWhileRecording !== previous.muteWhileRecording ||
+      state.hudPosition !== previous.hudPosition;
     if (configChanged) await this.pushConfig();
     if (!state.enabled && previous.enabled) {
       // Turning voice typing off should also close a microphone that was kept
       // open for the next press, and stop a dictation that is still running.
       this.releaseWarmMicrophone();
       this.clearModelKeepAlive();
-      if (this.phase !== "idle") this.cancelSession();
+      if (this.phase !== "idle" || this.starting) this.cancelSession();
     }
     if (state.enabled && !previous.enabled) {
       // An explicit switch-on is the only place the mic prompt may appear.
@@ -216,17 +225,22 @@ export class VoiceTypingController {
 
   private async pushConfig(): Promise<void> {
     if (!this.ready || this.disposed) return;
-    const { enabled, shortcut, mode } = useVoiceTypingStore.getState();
+    const { enabled, shortcut, mode, muteWhileRecording, hudPosition } =
+      useVoiceTypingStore.getState();
     console.info("[voice typing] pushing config", {
       enabled,
       shortcut,
       mode,
+      muteWhileRecording,
+      hudPosition,
     });
     try {
       await invoke("voice_typing_configure", {
         enabled,
         shortcut,
         mode,
+        muteWhileRecording,
+        hudPosition,
       });
     } catch (error) {
       const message =
@@ -262,6 +276,20 @@ export class VoiceTypingController {
       }
       const { readiness, model } = await this.refreshModelStatus();
       if (this.disposed) return;
+      if (readiness === "unknown") {
+        // Backend may still be booting when Tauri first mounts the provider;
+        // retry quietly until the server responds.
+        if (this.bootRetries < MAX_BOOT_RETRIES) {
+          this.bootRetries += 1;
+          this.setTimer(BOOT_MODEL_RETRY_MS, () => {
+            if (!this.disposed && useVoiceTypingStore.getState().enabled) {
+              void this.activate(false);
+            }
+          });
+        }
+        return;
+      }
+      this.bootRetries = 0;
       // A saved deny cannot resolve on its own, so it is worth saying out loud at
       // boot; an unknown answer waits for the first press instead.
       const modelUsable =
@@ -347,16 +375,22 @@ export class VoiceTypingController {
     switch (action) {
       case "start":
         // "done" lingers briefly after an insert; a new press may start already.
-        if (this.phase === "idle" || this.phase === "done") await this.begin();
+        if ((this.phase === "idle" || this.phase === "done") && !this.starting) {
+          await this.begin();
+        }
         return;
       case "stop":
         if (this.phase === "recording") this.finish();
-        else if (this.phase === "preparing" || this.phase === "transcribing") {
+        else if (
+          this.starting ||
+          this.phase === "preparing" ||
+          this.phase === "transcribing"
+        ) {
           this.cancelSession();
         }
         return;
       case "cancel":
-        if (this.phase !== "idle") this.cancelSession();
+        if (this.phase !== "idle" || this.starting) this.cancelSession();
         return;
     }
   }
@@ -372,20 +406,25 @@ export class VoiceTypingController {
 
   private async begin(): Promise<void> {
     if (this.phase !== "idle" && this.phase !== "done") return;
-    if (this.session) return;
+    if (this.session || this.starting) return;
     if (!isStudioDictationAvailable()) {
       // The canonical explanation the composer also shows.
       notifyStudioDictationUnavailable();
       return;
     }
+    this.starting = true;
     const pressToken = this.cancelToken;
     // The consent dialog belongs to the settings gesture that switched voice
     // typing on, where the app is already focused. Opening it from a global
     // shortcut would steal focus from the app being dictated into, so a missing
     // grant is reported with a way back to Voice settings instead.
     const permission = await readMicrophonePermission();
-    if (this.disposed || pressToken !== this.cancelToken) return;
+    if (this.disposed || pressToken !== this.cancelToken) {
+      this.starting = false;
+      return;
+    }
     if (permission !== "granted") {
+      this.starting = false;
       this.notifyMicBlocked();
       this.setPhase("idle");
       return;
@@ -395,9 +434,11 @@ export class VoiceTypingController {
     this.firstFinalAt = 0;
     this.stopRequestedAt = 0;
     this.setPhase("preparing");
+    this.starting = false;
     this.transcript = "";
     this.speechHeard = false;
     this.lastVoiceAt = 0;
+    this.noiseFloorLevel = 0.02;
     this.recordingStartedAt = 0;
     const { removeFillerWords, spokenPunctuation } =
       useVoiceTypingStore.getState();
@@ -410,9 +451,9 @@ export class VoiceTypingController {
         microphone: warm,
         removeFillerWords,
         spokenPunctuation,
-        // This surface inserts the final transcript and nothing else, so the
-        // partial text the backend would stream is work nobody reads.
-        stream: false,
+        // Stream partial segments so the HUD pill can preview live words while
+        // the user is dictating a multi-sentence thought.
+        stream: true,
       }).listen();
     } catch (error) {
       console.error("[voice typing] could not start:", error);
@@ -425,7 +466,7 @@ export class VoiceTypingController {
       this.setPhase("idle");
       return;
     }
-    if (this.disposed) {
+    if (this.disposed || pressToken !== this.cancelToken) {
       session.cancel();
       this.discardSessionStream();
       return;
@@ -441,8 +482,14 @@ export class VoiceTypingController {
     });
     // The adapter applies the dictionary and records the session for history.
     session.onSpeech((result) => {
-      if (result.isFinal === false) return;
       const text = result.transcript ?? "";
+      if (result.isFinal === false) {
+        if (text && (this.phase === "recording" || this.phase === "transcribing")) {
+          const preview = joinTranscriptParts([this.transcript, text]).trim();
+          if (preview) this.setPhase(this.phase, preview);
+        }
+        return;
+      }
       if (text) {
         // Keep a segment that is only a spoken "new paragraph": it is a break,
         // not empty text.
@@ -450,6 +497,13 @@ export class VoiceTypingController {
         if (next !== this.transcript) {
           this.transcript = next;
           if (!this.firstFinalAt) this.firstFinalAt = performance.now();
+          const preview = this.transcript.trim();
+          if (
+            preview &&
+            (this.phase === "recording" || this.phase === "transcribing")
+          ) {
+            this.setPhase(this.phase, preview);
+          }
         }
       }
     });
@@ -489,11 +543,19 @@ export class VoiceTypingController {
         this.lastLevelSentAt = now;
         void this.invokeQuietly("voice_typing_hud_level", { level });
       }
-      if (level > VOICED_LEVEL) {
+      const voiceThreshold = Math.max(
+        MIN_VOICED_LEVEL,
+        this.noiseFloorLevel * 2.4,
+      );
+      if (level >= voiceThreshold) {
         this.speechHeard = true;
         this.lastVoiceAt = now;
         return;
       }
+      this.noiseFloorLevel = Math.min(
+        0.18,
+        Math.max(0.01, this.noiseFloorLevel * 0.96 + level * 0.04),
+      );
       const { autoStopSilence, autoStopDelayMs, mode } =
         useVoiceTypingStore.getState();
       if (!autoStopSilence || mode === "hold") return;
@@ -515,7 +577,7 @@ export class VoiceTypingController {
     const recordedMs = this.recordingStartedAt
       ? Date.now() - this.recordingStartedAt
       : 0;
-    this.setPhase("transcribing");
+    this.setPhase("transcribing", this.transcript.trim() || undefined);
     void (async () => {
       try {
         // Resolves once the final segment is transcribed and onSpeech has fired.
@@ -544,11 +606,13 @@ export class VoiceTypingController {
       this.setPhase("idle");
       return;
     }
+    useVoiceTypingStore.getState().setLastTranscript(text);
     this.playCue("stop");
     const {
       appendTrailingSpace,
       copyLastTranscript,
       pasteAutomatically,
+      pasteMethod,
       submitAfterInsert,
     } = useVoiceTypingStore.getState();
     try {
@@ -558,6 +622,7 @@ export class VoiceTypingController {
         // preference keeps it after an automatic paste too, without a second copy.
         copyLastTranscript: copyLastTranscript || !pasteAutomatically,
         paste: pasteAutomatically,
+        pasteMethod,
         // Enter only makes sense once the text was actually pasted.
         submit: pasteAutomatically && submitAfterInsert,
         trailingSpace: appendTrailingSpace,
@@ -582,7 +647,7 @@ export class VoiceTypingController {
       });
       // A completed session proves the model is resident.
       useVoiceTypingStore.getState().setReadiness("ready");
-      this.setPhase("done");
+      this.setPhase("done", text);
       this.setTimer(DONE_VISIBLE_MS, () => {
         if (this.phase === "done") this.setPhase("idle");
       });
@@ -600,6 +665,7 @@ export class VoiceTypingController {
   private cancelSession(): void {
     // Invalidates any in-flight delivery from a session stopped earlier.
     this.cancelToken += 1;
+    this.starting = false;
     const wasRecording = this.phase === "recording";
     const session = this.session;
     this.session = null;
@@ -619,9 +685,26 @@ export class VoiceTypingController {
     this.setPhase("idle");
   }
 
-  private setPhase(phase: HudPhase): void {
+  private setPhase(phase: HudPhase, sublabel?: string): void {
     this.phase = phase;
-    void this.invokeQuietly("voice_typing_hud_state", { state: phase });
+    const { hudPosition } = useVoiceTypingStore.getState();
+    const labelKey =
+      phase === "preparing"
+        ? "settings.voice.voiceTyping.hudPreparing"
+        : phase === "recording"
+          ? "settings.voice.voiceTyping.hudListening"
+          : phase === "transcribing"
+            ? "settings.voice.voiceTyping.hudTranscribing"
+            : phase === "done"
+              ? "settings.voice.voiceTyping.hudInserted"
+              : null;
+    const label = labelKey ? translate(labelKey) : undefined;
+    void this.invokeQuietly("voice_typing_hud_state", {
+      state: phase,
+      label,
+      sublabel: sublabel ?? null,
+      hudPosition,
+    });
   }
 
   /** A stream opened for a different saved device would record from the wrong
@@ -765,21 +848,27 @@ export class VoiceTypingController {
       this.clearModelKeepAlive();
       return;
     }
+    if (readiness === "unknown") {
+      void this.refreshModelStatus();
+      return;
+    }
     // Nothing resident to hold while the model is missing or still downloading;
     // the press that finds it ready starts the timer again.
-    if (
-      readiness === "needs-download" ||
-      readiness === "engine-missing" ||
-      readiness === "unknown"
-    ) {
+    if (readiness === "needs-download" || readiness === "engine-missing") {
       return;
     }
     const model = useVoiceSettingsStore.getState().sttModel.trim();
     if (!model) return;
-    void keepSttModelAlive(sttEngineFor(model), model).catch((error) => {
-      // A heartbeat is an optimization; a failure must never surface.
-      console.info("[voice typing] model keepalive failed:", error);
-    });
+    void keepSttModelAlive(sttEngineFor(model), model)
+      .then((held) => {
+        if (!held && !this.disposed && readiness === "ready") {
+          void this.refreshModelStatus();
+        }
+      })
+      .catch((error) => {
+        // A heartbeat is an optimization; a failure must never surface.
+        console.info("[voice typing] model keepalive failed:", error);
+      });
   }
 
   private releaseWarmMicrophone(): void {

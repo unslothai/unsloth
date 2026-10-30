@@ -1839,6 +1839,33 @@ export const en = {
         permissionReasonDictation: "Chat dictation",
         permissionReasonSettings: "Voice settings",
         permissionReasonAudio: "Audio recording",
+        shortcutReset: "Reset",
+        shortcutConflictHint:
+          "This shortcut is also used by common system or app actions",
+        hudPositionLabel: "Indicator position",
+        hudPositionDescription:
+          "Where the floating indicator sits on your active screen",
+        hudPositionBottom: "Bottom of screen",
+        hudPositionTop: "Top of screen",
+        muteAudioLabel: "Mute audio while dictating",
+        muteAudioDescription:
+          "Temporarily mute system playback while recording so speakers do not bleed into the microphone",
+        pasteMethodLabel: "Insertion method",
+        pasteMethodDescription:
+          "How the transcript is typed into the focused app",
+        pasteMethodCtrlV: "Clipboard (Ctrl + V)",
+        pasteMethodCtrlShiftV: "Terminal paste (Ctrl + Shift + V)",
+        pasteMethodShiftInsert: "Legacy paste (Shift + Insert)",
+        pasteMethodDirect: "Direct keystrokes (no clipboard)",
+        modelReady: "Model ready",
+        modelLoading: "Loading model\u2026",
+        modelWillLoad: "Loads on first press",
+        modelNeedsDownload: "Model not downloaded",
+        modelCustom: "Custom endpoint",
+        modelChecking: "Checking model\u2026",
+        downloadAction: "Download",
+        lastTranscriptLabel: "Last transcript",
+        copyLastAction: "Copy",
       },
       readAloud: {
         sectionTitle: "Read aloud",

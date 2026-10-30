@@ -3,8 +3,8 @@
 //! the cursor, and never takes focus (Windows' `WS_EX_NOACTIVATE` via
 //! `focusable(false)`), so the caret stays in the app being dictated into.
 
-use std::sync::atomic::Ordering;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use log::warn;
@@ -15,23 +15,55 @@ use tauri::{
 };
 
 const HUD_LABEL: &str = "voice-hud";
-/// The pill itself is 300x56. The window is larger so the CSS shadow has room
-/// and is never clipped by the transparent window bounds.
-const HUD_WIDTH: f64 = 360.0;
+/// The pill itself is compact, while the transparent window gives CSS shadows and
+/// live transcript ticker text breathing room without clipping.
+const HUD_WIDTH: f64 = 400.0;
 const HUD_HEIGHT: f64 = 128.0;
-/// Distance from the bottom of the monitor to the overlay's bottom edge.
-const BOTTOM_MARGIN: f64 = 72.0;
+/// Distance from the top or bottom of the monitor work area to the window edge.
+const WORK_AREA_MARGIN: f64 = 16.0;
 
-#[derive(Clone, Serialize)]
-struct HudEvent {
+#[derive(Clone, Default, Serialize)]
+pub struct HudEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
-    state: Option<String>,
+    pub state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    level: Option<f32>,
+    pub level: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sublabel: Option<String>,
 }
 
-/// Last announced phase and mic level, replayed when the overlay page loads late.
-static SNAPSHOT: Mutex<(String, f32)> = Mutex::new((String::new(), 0.0));
+#[derive(Clone, Default)]
+struct HudSnapshot {
+    state: String,
+    level: f32,
+    label: Option<String>,
+    sublabel: Option<String>,
+}
+
+/// Last announced phase, mic level, and localized text, replayed when the overlay loads late.
+static SNAPSHOT: LazyLock<Mutex<HudSnapshot>> = LazyLock::new(|| Mutex::new(HudSnapshot::default()));
+/// Whether the overlay window is currently shown for an active session. Prevents
+/// repositioning the window across monitors on every phase transition.
+static HUD_VISIBLE: AtomicBool = AtomicBool::new(false);
+/// Whether the initial webview load replay has already been scheduled.
+static HUD_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
+/// `true` places the overlay near the top of the active monitor's work area; `false` near the bottom.
+static HUD_TOP: AtomicBool = AtomicBool::new(false);
+
+pub fn set_position_mode(app: &AppHandle, position_mode: Option<&str>) {
+    let top = matches!(position_mode, Some("top"));
+    let changed = HUD_TOP.swap(top, Ordering::SeqCst) != top;
+    if changed && HUD_VISIBLE.load(Ordering::SeqCst) {
+        let handle = app.clone();
+        let _ = app.clone().run_on_main_thread(move || {
+            if let Some(window) = handle.get_webview_window(HUD_LABEL) {
+                position(&window);
+            }
+        });
+    }
+}
 
 fn existing(app: &AppHandle) -> Option<WebviewWindow> {
     if let Some(window) = app.get_webview_window(HUD_LABEL) {
@@ -77,12 +109,18 @@ pub fn prewarm(app: &AppHandle) {
 }
 
 /// Show the overlay without ever taking focus from the app being dictated into.
+/// Only positions and shows the window on transition from hidden -> visible so
+/// mid-session phase transitions (`preparing -> recording -> transcribing`) never
+/// jump across monitors or spawn redundant replay threads.
 pub fn show(app: &AppHandle) {
+    if HUD_VISIBLE.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let handle = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
         // The closure is queued: by the time it runs the session may already have
         // ended (e.g. cancelled before the window existed) — then stay hidden.
-        if !super::SESSION_ACTIVE.load(Ordering::SeqCst) {
+        if !HUD_VISIBLE.load(Ordering::SeqCst) {
             return;
         }
         let Some(window) = existing(&handle) else {
@@ -92,29 +130,48 @@ pub fn show(app: &AppHandle) {
         let _ = window.show();
     });
 
-    // The first show of a session can race the overlay page's load, because the
-    // window is created lazily; re-announce the snapshot once the page is up.
-    let replay = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(700));
-        emit_snapshot(&replay);
-    });
-}
-
-pub fn hide(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(HUD_LABEL) {
-        let _ = window.hide();
+    // The very first show can race the overlay page's load if prewarm hasn't finished;
+    // replay the snapshot once after 250ms and 650ms.
+    if !HUD_BOOTSTRAPPED.swap(true, Ordering::SeqCst) {
+        let replay = app.clone();
+        std::thread::spawn(move || {
+            for delay_ms in [250, 400] {
+                std::thread::sleep(Duration::from_millis(delay_ms));
+                emit_snapshot(&replay);
+            }
+        });
     }
 }
 
-pub fn emit_state(app: &AppHandle, state: &str) {
+pub fn hide(app: &AppHandle) {
+    HUD_VISIBLE.store(false, Ordering::SeqCst);
+    let handle = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window(HUD_LABEL) {
+            let _ = window.hide();
+        }
+    });
+}
+
+pub fn emit_state(
+    app: &AppHandle,
+    state: &str,
+    label: Option<String>,
+    sublabel: Option<String>,
+) {
     {
         let mut snapshot = SNAPSHOT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        snapshot.0 = state.to_string();
+        snapshot.state = state.to_string();
+        if label.is_some() {
+            snapshot.label = label.clone();
+        }
+        if sublabel.is_some() || state == "preparing" || state == "idle" {
+            snapshot.sublabel = sublabel.clone();
+        }
         // A late-loading overlay replays the level too; a stale level from the
         // previous session would show full bars before the first frame arrives.
         if state == "preparing" || state == "idle" {
-            snapshot.1 = 0.0;
+            snapshot.level = 0.0;
         }
     }
     if let Some(window) = app.get_webview_window(HUD_LABEL) {
@@ -123,6 +180,8 @@ pub fn emit_state(app: &AppHandle, state: &str) {
             HudEvent {
                 state: Some(state.to_string()),
                 level: None,
+                label,
+                sublabel,
             },
         );
     }
@@ -131,7 +190,7 @@ pub fn emit_state(app: &AppHandle, state: &str) {
 pub fn emit_level(app: &AppHandle, level: f32) {
     {
         let mut snapshot = SNAPSHOT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        snapshot.1 = level;
+        snapshot.level = level;
     }
     if let Some(window) = app.get_webview_window(HUD_LABEL) {
         let _ = window.emit(
@@ -139,6 +198,8 @@ pub fn emit_level(app: &AppHandle, level: f32) {
             HudEvent {
                 state: None,
                 level: Some(level),
+                label: None,
+                sublabel: None,
             },
         );
     }
@@ -148,18 +209,20 @@ fn emit_snapshot(app: &AppHandle) {
     let Some(window) = app.get_webview_window(HUD_LABEL) else {
         return;
     };
-    let (state, level) = {
+    let snap = {
         let snapshot = SNAPSHOT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        (snapshot.0.clone(), snapshot.1)
+        snapshot.clone()
     };
-    if state.is_empty() {
+    if snap.state.is_empty() {
         return;
     }
     let _ = window.emit(
         "voice-typing:hud",
         HudEvent {
-            state: Some(state),
-            level: Some(level),
+            state: Some(snap.state),
+            level: Some(snap.level),
+            label: snap.label,
+            sublabel: snap.sublabel,
         },
     );
 }
@@ -174,11 +237,16 @@ fn position(window: &WebviewWindow) {
     let scale = monitor.scale_factor();
     let width = (HUD_WIDTH * scale).round() as i32;
     let height = (HUD_HEIGHT * scale).round() as i32;
-    let margin = (BOTTOM_MARGIN * scale).round() as i32;
-    let area = monitor.position();
-    let size = monitor.size();
+    let margin = (WORK_AREA_MARGIN * scale).round() as i32;
+    let work_area = monitor.work_area();
+    let area = &work_area.position;
+    let size = &work_area.size;
     let x = area.x + (size.width as i32 - width) / 2;
-    let y = area.y + size.height as i32 - height - margin;
+    let y = if HUD_TOP.load(Ordering::SeqCst) {
+        area.y + margin
+    } else {
+        area.y + size.height as i32 - height - margin
+    };
     let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
 }
 

@@ -17,6 +17,17 @@ const CODE_TO_KEY: Record<string, string> = {
   NumpadEnter: "Enter",
   Tab: "Tab",
   Backspace: "Backspace",
+  Insert: "Insert",
+  Delete: "Delete",
+  Home: "Home",
+  End: "End",
+  PageUp: "PageUp",
+  PageDown: "PageDown",
+  CapsLock: "CapsLock",
+  ArrowUp: "Up",
+  ArrowDown: "Down",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
   Minus: "-",
   Equal: "=",
   BracketLeft: "[",
@@ -130,4 +141,37 @@ export function formatShortcut(shortcut: string): string {
   return shortcutParts(shortcut)
     .map((part) => (part === "Super" ? "Win" : part))
     .join(" + ");
+}
+
+/**
+ * Common OS and Studio shortcuts that a system-wide voice-typing chord would
+ * shadow. Used by the Settings UI to display a non-blocking heads-up warning.
+ */
+const RESERVED_SHORTCUTS = new Set([
+  "Ctrl+C",
+  "Ctrl+V",
+  "Ctrl+X",
+  "Ctrl+Z",
+  "Ctrl+Y",
+  "Ctrl+A",
+  "Ctrl+S",
+  "Ctrl+F",
+  "Ctrl+K",
+  "Ctrl+N",
+  "Ctrl+B",
+  "Ctrl+,",
+  "Ctrl+/",
+  "Ctrl+Shift+M",
+  "Ctrl+Shift+O",
+  "Alt+1",
+  "Alt+2",
+  "Alt+3",
+  "Alt+4",
+  "Alt+5",
+  "Alt+Tab",
+  "Alt+F4",
+]);
+
+export function isConflictingShortcut(shortcut: string): boolean {
+  return RESERVED_SHORTCUTS.has(shortcut);
 }

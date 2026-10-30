@@ -56,14 +56,28 @@ import {
   resolveDictationChatId,
 } from "./studio-web-speech-dictation-adapter";
 
-// A sentence is cut at the first pause after five seconds, so its transcription
+// A sentence is cut at the first pause after 2.8 seconds, so its transcription
 // starts while the next sentence is still being spoken. Fourteen seconds keeps
 // the final clip well inside Whisper's 30-second window even when the speaker
 // never pauses.
-const DEFAULT_MIN_SEGMENT_MS = 5_000;
+const DEFAULT_MIN_SEGMENT_MS = 2_800;
 const DEFAULT_MAX_SEGMENT_MS = 14_000;
 const DEFAULT_SILENCE_CUT_MS = 360;
 const DEFAULT_PRE_ROLL_MS = 450;
+const MIN_WHISPER_CLIP_MS = 1_000;
+
+/**
+ * Whisper decoders can drop or hallucinate on sub-second clips ("Yes", "Okay").
+ * Pad clips shorter than 1.0s symmetrically with silence so short commands decode cleanly.
+ */
+function padShortSegment(samples: Float32Array, sampleRate: number): Float32Array {
+  const minSamples = Math.round((MIN_WHISPER_CLIP_MS / 1000) * sampleRate);
+  if (samples.length === 0 || samples.length >= minSamples) return samples;
+  const padded = new Float32Array(minSamples);
+  const lead = Math.min(Math.round(0.12 * sampleRate), Math.floor((minSamples - samples.length) / 2));
+  padded.set(samples, lead);
+  return padded;
+}
 
 /** Backend STT engine, decided by the model: Whisper ids run GGML through whisper.cpp, mtmd
  *  ids run through llama.cpp, the GGUF audio runtime's ids (saved keys, package folders and
@@ -817,7 +831,10 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         return;
       }
       worker = true;
-      const wav = encodeWav(item.segment.samples, item.segment.sampleRate);
+      const wav = encodeWav(
+        padShortSegment(item.segment.samples, item.segment.sampleRate),
+        item.segment.sampleRate,
+      );
       const blob = new Blob([wav], { type: "audio/wav" });
       void (async () => {
         try {

@@ -14,7 +14,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useT } from "@/i18n";
-import { Check, Mic } from "lucide-react";
+import { MicIcon } from "@/lib/mic-icon";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type MicrophonePermissionReason,
   useMicrophonePermissionStore,
@@ -60,7 +62,7 @@ export function MicrophonePermissionDialog() {
       >
         <DialogHeader>
           <div className="mb-1 flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/15">
-            <Mic className="size-5" strokeWidth={2} />
+            <MicIcon className="size-5" />
           </div>
           <DialogTitle className="text-lg">
             {t("settings.voice.voiceTyping.permissionTitle")}
@@ -81,7 +83,11 @@ export function MicrophonePermissionDialog() {
           ].map((item) => (
             <li key={item} className="flex items-start gap-2.5">
               <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
-                <Check className="size-3" strokeWidth={3} />
+                <HugeiconsIcon
+                  icon={Tick02Icon}
+                  className="size-3"
+                  strokeWidth={2.5}
+                />
               </span>
               <span className="text-muted-foreground leading-snug">{item}</span>
             </li>
@@ -104,7 +110,7 @@ export function MicrophonePermissionDialog() {
             }}
             data-testid="microphone-permission-allow"
           >
-            <Mic className="mr-2 size-4" />
+            <MicIcon className="mr-2 size-4" />
             {t("settings.voice.voiceTyping.permissionAllow")}
           </Button>
         </DialogFooter>

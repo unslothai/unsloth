@@ -34,28 +34,27 @@
           sans-serif;
         pointer-events: none;
       }
-      /* 300x56 inside a 360x128 window: the 30px side and 36px vertical padding
-         clear the 26px blur, so the shadow is never clipped by the transparent
-         window bounds. */
+      /* 336x52 inside a 400x128 window: the side and vertical margins clear the
+         blur radius, so the shadow is never clipped by the transparent bounds. */
       .vt-pill {
         box-sizing: border-box;
         display: flex;
         align-items: center;
-        gap: 12px;
-        width: 300px;
-        height: 56px;
-        padding: 0 14px 0 18px;
-        border: 1px solid rgba(255, 255, 255, 0.09);
+        gap: 10px;
+        width: 336px;
+        height: 52px;
+        padding: 0 14px 0 16px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 999px;
-        background: rgba(15, 17, 21, 0.9);
+        background: rgba(15, 17, 21, 0.92);
         box-shadow:
           0 10px 26px rgba(0, 0, 0, 0.5),
           0 2px 6px rgba(0, 0, 0, 0.35),
-          inset 0 1px 0 rgba(255, 255, 255, 0.06);
+          inset 0 1px 0 rgba(255, 255, 255, 0.07);
         color: #e8eaee;
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
-        animation: vt-in 160ms ease-out;
+        animation: vt-in 150ms ease-out;
       }
       .vt-dot {
         flex: 0 0 auto;
@@ -64,7 +63,7 @@
         border-radius: 999px;
         background: var(--vt-accent);
         box-shadow: 0 0 0 4px
-          color-mix(in srgb, var(--vt-accent) 16%, transparent);
+          color-mix(in srgb, var(--vt-accent) 18%, transparent);
       }
       .vt-recording .vt-dot,
       .vt-preparing .vt-dot {
@@ -72,25 +71,42 @@
       }
       .vt-wave {
         display: flex;
-        flex: 1 1 auto;
+        flex: 0 0 auto;
         align-items: center;
         justify-content: center;
-        gap: 3px;
+        gap: 2.5px;
         height: 24px;
         color: var(--vt-accent);
       }
       .vt-bar {
-        width: 3px;
+        width: 2.5px;
         border-radius: 999px;
         background: currentColor;
-        transition: height 80ms linear;
+        transition: height 65ms ease-out;
       }
       .vt-preparing .vt-bar,
       .vt-transcribing .vt-bar {
-        animation: vt-idle 1.1s ease-in-out infinite;
+        animation: vt-idle 1.05s ease-in-out infinite;
       }
       .vt-done .vt-bar {
         opacity: 0.75;
+      }
+      .vt-copy {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #9ca3af;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0.01em;
+      }
+      .vt-copy-live {
+        color: #f3f4f6;
+      }
+      .vt-done .vt-copy {
+        color: #a7f3d0;
       }
       .vt-time {
         display: flex;

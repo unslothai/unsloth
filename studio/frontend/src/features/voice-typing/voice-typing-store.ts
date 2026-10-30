@@ -14,6 +14,17 @@ import {
 
 export type VoiceTypingMode = "hold" | "toggle" | "hybrid";
 
+export const VOICE_TYPING_PASTE_METHODS = [
+  "ctrl_v",
+  "ctrl_shift_v",
+  "shift_insert",
+  "direct",
+] as const;
+export type VoiceTypingPasteMethod = (typeof VOICE_TYPING_PASTE_METHODS)[number];
+
+export const VOICE_TYPING_HUD_POSITIONS = ["bottom", "top"] as const;
+export type VoiceTypingHudPosition = (typeof VOICE_TYPING_HUD_POSITIONS)[number];
+
 /** What the local dictation stack can do right now; refreshed by the controller. */
 export type VoiceTypingReadiness =
   | "unknown"
@@ -59,6 +70,25 @@ function repair(
   if (typeof saved.copyLastTranscript !== "boolean") {
     saved.copyLastTranscript = false;
   }
+  if (
+    typeof saved.pasteMethod !== "string" ||
+    !VOICE_TYPING_PASTE_METHODS.includes(
+      saved.pasteMethod as VoiceTypingPasteMethod,
+    )
+  ) {
+    saved.pasteMethod = "ctrl_v";
+  }
+  if (
+    typeof saved.hudPosition !== "string" ||
+    !VOICE_TYPING_HUD_POSITIONS.includes(
+      saved.hudPosition as VoiceTypingHudPosition,
+    )
+  ) {
+    saved.hudPosition = "bottom";
+  }
+  if (typeof saved.muteWhileRecording !== "boolean") {
+    saved.muteWhileRecording = false;
+  }
   return saved;
 }
 
@@ -93,8 +123,16 @@ interface VoiceTypingSettings {
   submitAfterInsert: boolean;
   /** Off: the transcript waits on the clipboard for a manual paste. */
   pasteAutomatically: boolean;
+  /** Keystroke strategy used when `pasteAutomatically` is on. */
+  pasteMethod: VoiceTypingPasteMethod;
+  /** Where the floating indicator sits on the active monitor's work area. */
+  hudPosition: VoiceTypingHudPosition;
+  /** Temporarily mute system audio playback while the microphone is recording. */
+  muteWhileRecording: boolean;
   /** Runtime view of the dictation model, not a preference. */
   readiness: VoiceTypingReadiness;
+  /** Runtime memory of the most recent transcript in this session for quick copy. */
+  lastTranscript: string;
   setEnabled: (enabled: boolean) => void;
   setShortcut: (shortcut: string) => void;
   setMode: (mode: VoiceTypingMode) => void;
@@ -111,7 +149,11 @@ interface VoiceTypingSettings {
   setSpokenPunctuation: (enabled: boolean) => void;
   setSubmitAfterInsert: (enabled: boolean) => void;
   setPasteAutomatically: (enabled: boolean) => void;
+  setPasteMethod: (method: VoiceTypingPasteMethod) => void;
+  setHudPosition: (position: VoiceTypingHudPosition) => void;
+  setMuteWhileRecording: (enabled: boolean) => void;
   setReadiness: (readiness: VoiceTypingReadiness) => void;
+  setLastTranscript: (text: string) => void;
 }
 
 export const useVoiceTypingStore = create<VoiceTypingSettings>()(
@@ -133,7 +175,11 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
       spokenPunctuation: false,
       submitAfterInsert: false,
       pasteAutomatically: true,
+      pasteMethod: "ctrl_v",
+      hudPosition: "bottom",
+      muteWhileRecording: false,
       readiness: "unknown",
+      lastTranscript: "",
       setEnabled: (enabled) => set({ enabled }),
       setShortcut: (shortcut) => set({ shortcut }),
       setMode: (mode) => set({ mode }),
@@ -154,13 +200,18 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
       setSubmitAfterInsert: (submitAfterInsert) => set({ submitAfterInsert }),
       setPasteAutomatically: (pasteAutomatically) =>
         set({ pasteAutomatically }),
+      setPasteMethod: (pasteMethod) => set({ pasteMethod }),
+      setHudPosition: (hudPosition) => set({ hudPosition }),
+      setMuteWhileRecording: (muteWhileRecording) =>
+        set({ muteWhileRecording }),
       setReadiness: (readiness) => set({ readiness }),
+      setLastTranscript: (lastTranscript) => set({ lastTranscript }),
     }),
     {
       name: "unsloth_voice_typing",
       version: 3,
       storage: createJSONStorage(() => localStorage),
-      // Readiness is live state; restoring a stale value would mislabel the model.
+      // Readiness and lastTranscript are live state; restoring a stale value would mislabel the model.
       partialize: (state) => ({
         enabled: state.enabled,
         shortcut: state.shortcut,
@@ -178,6 +229,9 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
         spokenPunctuation: state.spokenPunctuation,
         submitAfterInsert: state.submitAfterInsert,
         pasteAutomatically: state.pasteAutomatically,
+        pasteMethod: state.pasteMethod,
+        hudPosition: state.hudPosition,
+        muteWhileRecording: state.muteWhileRecording,
       }),
       // Version 3 makes the master switch opt-in. Earlier builds armed the global
       // shortcut by default, which is too strong a default for an app-wide hook.

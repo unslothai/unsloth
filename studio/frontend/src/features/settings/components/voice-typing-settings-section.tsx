@@ -16,21 +16,32 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { useMicrophonePermissionStore } from "@/features/microphone";
 import {
+  DEFAULT_VOICE_TYPING_SHORTCUT,
   MIC_WARM_ALWAYS,
+  VOICE_TYPING_HUD_POSITIONS,
+  VOICE_TYPING_PASTE_METHODS,
   VOICE_TYPING_SOUND_THEMES,
+  type VoiceTypingHudPosition,
   type VoiceTypingMode,
+  type VoiceTypingPasteMethod,
   type VoiceTypingSoundTheme,
   chordFromEvent,
   formatShortcut,
+  isConflictingShortcut,
   isModifierCode,
   previewVoiceTypingSound,
+  requestVoiceTypingModelDownload,
   useVoiceTypingStore,
 } from "@/features/voice-typing";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
+import { Volume02Icon } from "@/lib/volume-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
-import { Play } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SettingsRow } from "./settings-row";
 import { SettingsGroupDivider, SettingsSection } from "./settings-section";
 
@@ -46,6 +57,18 @@ const SOUND_THEME_LABEL: Record<VoiceTypingSoundTheme, TranslationKey> = {
   marimba: "settings.voice.voiceTyping.soundsThemeMarimba",
   pop: "settings.voice.voiceTyping.soundsThemePop",
   soft: "settings.voice.voiceTyping.soundsThemeSoft",
+};
+
+const PASTE_METHOD_LABEL: Record<VoiceTypingPasteMethod, TranslationKey> = {
+  ctrl_v: "settings.voice.voiceTyping.pasteMethodCtrlV",
+  ctrl_shift_v: "settings.voice.voiceTyping.pasteMethodCtrlShiftV",
+  shift_insert: "settings.voice.voiceTyping.pasteMethodShiftInsert",
+  direct: "settings.voice.voiceTyping.pasteMethodDirect",
+};
+
+const HUD_POSITION_LABEL: Record<VoiceTypingHudPosition, TranslationKey> = {
+  bottom: "settings.voice.voiceTyping.hudPositionBottom",
+  top: "settings.voice.voiceTyping.hudPositionTop",
 };
 
 export function VoiceTypingSettingsSection() {
@@ -112,6 +135,18 @@ export function VoiceTypingSettingsSection() {
   const setPasteAutomatically = useVoiceTypingStore(
     (state) => state.setPasteAutomatically,
   );
+  const pasteMethod = useVoiceTypingStore((state) => state.pasteMethod);
+  const setPasteMethod = useVoiceTypingStore((state) => state.setPasteMethod);
+  const hudPosition = useVoiceTypingStore((state) => state.hudPosition);
+  const setHudPosition = useVoiceTypingStore((state) => state.setHudPosition);
+  const muteWhileRecording = useVoiceTypingStore(
+    (state) => state.muteWhileRecording,
+  );
+  const setMuteWhileRecording = useVoiceTypingStore(
+    (state) => state.setMuteWhileRecording,
+  );
+  const readiness = useVoiceTypingStore((state) => state.readiness);
+  const lastTranscript = useVoiceTypingStore((state) => state.lastTranscript);
 
   const micPermission = useMicrophonePermissionStore(
     (state) => state.permission,
@@ -130,6 +165,7 @@ export function VoiceTypingSettingsSection() {
   const [info, setInfo] = useState<VoiceTypingInfo | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [needsModifier, setNeedsModifier] = useState(false);
+  const shortcutButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -148,10 +184,13 @@ export function VoiceTypingSettingsSection() {
     void loadMicPermission();
   }, [loadMicPermission]);
 
-  // While the capture box is armed, the next chord becomes the shortcut. Capture
-  // runs before the app's own shortcut handling so nothing else reacts.
+  // While the capture box is armed, suspend the native global shortcut poller and
+  // capture the next chord. Clicking outside or blurring cancels capture cleanly.
   useEffect(() => {
     if (!capturing) return;
+    void invoke("voice_typing_suspend_shortcut", { suspended: true }).catch(
+      () => {},
+    );
     const onKeyDown = (event: KeyboardEvent) => {
       event.preventDefault();
       event.stopPropagation();
@@ -170,8 +209,29 @@ export function VoiceTypingSettingsSection() {
       setCapturing(false);
       setNeedsModifier(false);
     };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (shortcutButtonRef.current && target && shortcutButtonRef.current.contains(target)) {
+        return;
+      }
+      setCapturing(false);
+      setNeedsModifier(false);
+    };
+    const onWindowBlur = () => {
+      setCapturing(false);
+      setNeedsModifier(false);
+    };
     window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("blur", onWindowBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("blur", onWindowBlur);
+      void invoke("voice_typing_suspend_shortcut", { suspended: false }).catch(
+        () => {},
+      );
+    };
   }, [capturing, setShortcut]);
 
   // Browser dev sessions and platforms without a shortcut layer never see this.
@@ -197,6 +257,23 @@ export function VoiceTypingSettingsSection() {
         ? t("settings.voice.voiceTyping.micAccessBlockedDescription")
         : t("settings.voice.voiceTyping.micAccessNeededDescription");
 
+  const modelStatusText =
+    readiness === "ready"
+      ? t("settings.voice.voiceTyping.modelReady")
+      : readiness === "loading"
+        ? t("settings.voice.voiceTyping.modelLoading")
+        : readiness === "will-load"
+          ? t("settings.voice.voiceTyping.modelWillLoad")
+          : readiness === "needs-download"
+            ? t("settings.voice.voiceTyping.modelNeedsDownload")
+            : readiness === "engine-missing"
+              ? t("settings.voice.voiceTyping.modelEngineMissing")
+              : readiness === "custom"
+                ? t("settings.voice.voiceTyping.modelCustom")
+                : t("settings.voice.voiceTyping.modelChecking");
+
+  const shortcutHasConflict = isConflictingShortcut(shortcut);
+
   return (
     <SettingsSection title={t("settings.voice.voiceTyping.sectionTitle")}>
       <SettingsRow
@@ -213,14 +290,74 @@ export function VoiceTypingSettingsSection() {
 
       {enabled ? (
         <>
-          <p
-            className="-mt-1 pb-3 text-xs text-muted-foreground"
+          <div
+            className="-mt-1 flex flex-wrap items-center justify-between gap-2 pb-3 text-xs text-muted-foreground"
             data-testid="voice-typing-active-hint"
           >
-            {t("settings.voice.voiceTyping.activeHint", {
-              shortcut: formatShortcut(shortcut),
-            })}
-          </p>
+            <span>
+              {t("settings.voice.voiceTyping.activeHint", {
+                shortcut: formatShortcut(shortcut),
+              })}
+            </span>
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full bg-muted/60 px-2.5 py-0.5 text-ui-11 font-medium text-foreground/80"
+              data-testid="voice-typing-model-status"
+            >
+              <span
+                className={`size-1.5 rounded-full ${
+                  readiness === "ready" || readiness === "custom"
+                    ? "bg-emerald-500"
+                    : readiness === "loading" || readiness === "will-load"
+                      ? "bg-amber-500"
+                      : readiness === "needs-download" ||
+                          readiness === "engine-missing"
+                        ? "bg-destructive"
+                        : "bg-muted-foreground/50"
+                }`}
+              />
+              {modelStatusText}
+              {readiness === "needs-download" ? (
+                <button
+                  type="button"
+                  className="ml-1 font-semibold text-primary underline underline-offset-2 hover:opacity-80"
+                  onClick={() => requestVoiceTypingModelDownload()}
+                >
+                  {t("settings.voice.voiceTyping.downloadAction")}
+                </button>
+              ) : null}
+            </span>
+          </div>
+
+          {lastTranscript ? (
+            <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <p className="text-ui-11 font-medium text-muted-foreground">
+                  {t("settings.voice.voiceTyping.lastTranscriptLabel")}
+                </p>
+                <p className="truncate text-xs text-foreground">
+                  {lastTranscript}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1.5"
+                data-testid="voice-typing-copy-last"
+                onClick={() => {
+                  void copyToClipboard(lastTranscript).then((ok) => {
+                    if (ok) {
+                      toast.success(
+                        t("settings.voice.voiceTyping.copiedNotice"),
+                      );
+                    }
+                  });
+                }}
+              >
+                <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
+                {t("settings.voice.voiceTyping.copyLastAction")}
+              </Button>
+            </div>
+          ) : null}
 
           <SettingsGroupDivider />
 
@@ -228,25 +365,46 @@ export function VoiceTypingSettingsSection() {
             label={t("settings.voice.voiceTyping.shortcutLabel")}
             description={t("settings.voice.voiceTyping.shortcutHint")}
           >
-            <Button
-              variant="outline"
-              size="sm"
-              data-testid="voice-typing-shortcut"
-              className="min-w-44 justify-center font-mono text-xs"
-              aria-label={t("settings.voice.voiceTyping.shortcutLabel")}
-              onClick={() => {
-                setNeedsModifier(false);
-                setCapturing((value) => !value);
-              }}
-            >
-              {capturing
-                ? t("settings.voice.voiceTyping.shortcutListening")
-                : formatShortcut(shortcut)}
-            </Button>
+            <div className="flex items-center gap-2">
+              {shortcut !== DEFAULT_VOICE_TYPING_SHORTCUT ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-testid="voice-typing-shortcut-reset"
+                  onClick={() => {
+                    setCapturing(false);
+                    setNeedsModifier(false);
+                    setShortcut(DEFAULT_VOICE_TYPING_SHORTCUT);
+                  }}
+                >
+                  {t("settings.voice.voiceTyping.shortcutReset")}
+                </Button>
+              ) : null}
+              <Button
+                ref={shortcutButtonRef}
+                variant={capturing ? "secondary" : "outline"}
+                size="sm"
+                data-testid="voice-typing-shortcut"
+                className="w-56 justify-center font-mono text-xs"
+                aria-label={t("settings.voice.voiceTyping.shortcutLabel")}
+                onClick={() => {
+                  setNeedsModifier(false);
+                  setCapturing((value) => !value);
+                }}
+              >
+                {capturing
+                  ? t("settings.voice.voiceTyping.shortcutListening")
+                  : formatShortcut(shortcut)}
+              </Button>
+            </div>
           </SettingsRow>
           {needsModifier ? (
             <p className="pb-2 text-xs text-destructive">
               {t("settings.voice.voiceTyping.shortcutNeedsModifier")}
+            </p>
+          ) : shortcutHasConflict ? (
+            <p className="pb-2 text-xs text-amber-600 dark:text-amber-400">
+              {t("settings.voice.voiceTyping.shortcutConflictHint")}
             </p>
           ) : null}
 
@@ -260,7 +418,7 @@ export function VoiceTypingSettingsSection() {
             >
               <SelectTrigger
                 size="sm"
-                className="w-44"
+                className="w-56"
                 data-testid="voice-typing-mode"
                 aria-label={t("settings.voice.voiceTyping.modeLabel")}
               >
@@ -276,6 +434,34 @@ export function VoiceTypingSettingsSection() {
                 <SelectItem value="toggle">
                   {t("settings.voice.voiceTyping.modeToggle")}
                 </SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+
+          <SettingsRow
+            label={t("settings.voice.voiceTyping.hudPositionLabel")}
+            description={t("settings.voice.voiceTyping.hudPositionDescription")}
+          >
+            <Select
+              value={hudPosition}
+              onValueChange={(value) =>
+                setHudPosition(value as VoiceTypingHudPosition)
+              }
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-56"
+                data-testid="voice-typing-hud-position"
+                aria-label={t("settings.voice.voiceTyping.hudPositionLabel")}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {VOICE_TYPING_HUD_POSITIONS.map((pos) => (
+                  <SelectItem key={pos} value={pos}>
+                    {t(HUD_POSITION_LABEL[pos])}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </SettingsRow>
@@ -353,7 +539,7 @@ export function VoiceTypingSettingsSection() {
             >
               <SelectTrigger
                 size="sm"
-                className="w-44"
+                className="w-56"
                 data-testid="voice-typing-mic-warm"
                 aria-label={t("settings.voice.voiceTyping.micWarmLabel")}
               >
@@ -385,6 +571,18 @@ export function VoiceTypingSettingsSection() {
             </Select>
           </SettingsRow>
 
+          <SettingsRow
+            label={t("settings.voice.voiceTyping.muteAudioLabel")}
+            description={t("settings.voice.voiceTyping.muteAudioDescription")}
+          >
+            <Switch
+              checked={muteWhileRecording}
+              onCheckedChange={setMuteWhileRecording}
+              data-testid="voice-typing-mute-audio"
+              aria-label={t("settings.voice.voiceTyping.muteAudioLabel")}
+            />
+          </SettingsRow>
+
           <SettingsGroupDivider />
 
           <SettingsRow
@@ -400,17 +598,51 @@ export function VoiceTypingSettingsSection() {
           </SettingsRow>
 
           {pasteAutomatically ? (
-            <SettingsRow
-              label={t("settings.voice.voiceTyping.submitLabel")}
-              description={t("settings.voice.voiceTyping.submitDescription")}
-            >
-              <Switch
-                checked={submitAfterInsert}
-                onCheckedChange={setSubmitAfterInsert}
-                data-testid="voice-typing-submit"
-                aria-label={t("settings.voice.voiceTyping.submitLabel")}
-              />
-            </SettingsRow>
+            <>
+              <SettingsRow
+                label={t("settings.voice.voiceTyping.pasteMethodLabel")}
+                description={t(
+                  "settings.voice.voiceTyping.pasteMethodDescription",
+                )}
+              >
+                <Select
+                  value={pasteMethod}
+                  onValueChange={(value) =>
+                    setPasteMethod(value as VoiceTypingPasteMethod)
+                  }
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="w-56"
+                    data-testid="voice-typing-paste-method"
+                    aria-label={t(
+                      "settings.voice.voiceTyping.pasteMethodLabel",
+                    )}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {VOICE_TYPING_PASTE_METHODS.map((method) => (
+                      <SelectItem key={method} value={method}>
+                        {t(PASTE_METHOD_LABEL[method])}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingsRow>
+
+              <SettingsRow
+                label={t("settings.voice.voiceTyping.submitLabel")}
+                description={t("settings.voice.voiceTyping.submitDescription")}
+              >
+                <Switch
+                  checked={submitAfterInsert}
+                  onCheckedChange={setSubmitAfterInsert}
+                  data-testid="voice-typing-submit"
+                  aria-label={t("settings.voice.voiceTyping.submitLabel")}
+                />
+              </SettingsRow>
+            </>
           ) : null}
 
           <SettingsRow
@@ -498,7 +730,7 @@ export function VoiceTypingSettingsSection() {
               >
                 <SelectTrigger
                   size="sm"
-                  className="w-44"
+                  className="w-56"
                   data-testid="voice-typing-auto-stop-delay"
                   aria-label={t(
                     "settings.voice.voiceTyping.autoStopDelayLabel",
@@ -559,7 +791,7 @@ export function VoiceTypingSettingsSection() {
                   >
                     <SelectTrigger
                       size="sm"
-                      className="w-36"
+                      className="w-44"
                       data-testid="voice-typing-sound-theme"
                       aria-label={t(
                         "settings.voice.voiceTyping.soundsThemeLabel",
@@ -584,7 +816,7 @@ export function VoiceTypingSettingsSection() {
                       previewVoiceTypingSound(soundTheme, soundVolume)
                     }
                   >
-                    <Play className="size-3.5" />
+                    <HugeiconsIcon icon={Volume02Icon} className="size-3.5" />
                   </Button>
                 </div>
               </SettingsRow>
@@ -604,7 +836,7 @@ export function VoiceTypingSettingsSection() {
                     onValueChange={([value]) => {
                       if (value !== undefined) setSoundVolume(value);
                     }}
-                    className="w-36"
+                    className="w-44"
                     aria-label={t(
                       "settings.voice.voiceTyping.soundsVolumeLabel",
                     )}

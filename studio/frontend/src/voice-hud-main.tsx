@@ -7,9 +7,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { VoiceTypingHud } from "./features/voice-typing/voice-typing-hud";
-import { initializeLocale } from "./i18n";
-
-void initializeLocale();
 
 const container = document.getElementById("root");
 if (container) {

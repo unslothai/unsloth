@@ -6,16 +6,18 @@
 // it stays independent of the main app's theme. The pill is deliberately compact:
 // state dot, waveform, elapsed time and the Esc hint, with no transcript text.
 
-import { useT } from "@/i18n";
 import { listen } from "@tauri-apps/api/event";
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 
-const BAR_COUNT = 7;
-const BAR_IDS = ["b1", "b2", "b3", "b4", "b5", "b6", "b7"] as const;
+const BAR_COUNT = 9;
+const BAR_IDS = ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9"] as const;
+const BAR_WEIGHTS = [0.42, 0.62, 0.82, 0.95, 1.0, 0.92, 0.78, 0.58, 0.4] as const;
 
 interface HudPayload {
   state?: string;
   level?: number;
+  label?: string;
+  sublabel?: string;
 }
 
 const ACCENTS: Record<string, string> = {
@@ -25,20 +27,23 @@ const ACCENTS: Record<string, string> = {
   done: "#6ee7b7",
 };
 
-/** Center-weighted bars so the meter reads like a small waveform. */
+const FALLBACK_LABELS: Record<string, string> = {
+  preparing: "Getting ready…",
+  recording: "Listening",
+  transcribing: "Transcribing…",
+  done: "Inserted",
+};
+
+/** Center-weighted bars so the meter reads like a natural voice waveform. */
 function barHeights(level: number, state: string): number[] {
-  if (state === "done") return Array.from({ length: BAR_COUNT }, () => 5);
+  if (state === "done") return Array.from({ length: BAR_COUNT }, () => 4);
   if (state !== "recording") {
     return Array.from({ length: BAR_COUNT }, (_, index) =>
-      index % 2 === 0 ? 14 : 8,
+      index % 2 === 0 ? 13 : 7,
     );
   }
   const clamped = Math.max(0.03, Math.min(1, level));
-  return Array.from({ length: BAR_COUNT }, (_, index) => {
-    const center =
-      1 - Math.abs(index - (BAR_COUNT - 1) / 2) / ((BAR_COUNT - 1) / 2);
-    return 4 + clamped * (0.45 + 0.55 * center) * 20;
-  });
+  return BAR_WEIGHTS.map((weight) => 4 + Math.pow(clamped, 0.75) * weight * 20);
 }
 
 function formatElapsed(milliseconds: number): string {
@@ -46,10 +51,18 @@ function formatElapsed(milliseconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+/** Keep the tail of long live transcripts visible inside the compact pill. */
+function tailPreview(text: string, maxChars = 34): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= maxChars) return clean;
+  return `…${clean.slice(clean.length - maxChars + 1).trimStart()}`;
+}
+
 export function VoiceTypingHud() {
-  const t = useT();
   const [state, setState] = useState("");
   const [level, setLevel] = useState(0);
+  const [customLabel, setCustomLabel] = useState("");
+  const [sublabel, setSublabel] = useState("");
   const [elapsedMs, setElapsedMs] = useState(0);
   const startedAt = useRef<number | null>(null);
   const frozenMs = useRef(0);
@@ -60,8 +73,23 @@ export function VoiceTypingHud() {
       if (payload.state) {
         setState(payload.state);
         if (payload.state !== "recording") setLevel(0);
+        if (payload.state === "preparing" || payload.state === "idle") {
+          setSublabel("");
+        }
       }
-      if (typeof payload.level === "number") setLevel(payload.level);
+      if (typeof payload.label === "string") {
+        setCustomLabel(payload.label);
+      }
+      if (payload.sublabel !== undefined) {
+        setSublabel(payload.sublabel ?? "");
+      }
+      if (typeof payload.level === "number") {
+        setLevel((prev) =>
+          payload.level! > prev
+            ? prev * 0.25 + payload.level! * 0.75
+            : prev * 0.6 + payload.level! * 0.4,
+        );
+      }
     });
     return () => {
       void subscribing.then((unlisten) => unlisten());
@@ -96,18 +124,10 @@ export function VoiceTypingHud() {
     setElapsedMs(0);
   }, [state]);
 
-  const label =
-    state === "preparing"
-      ? t("settings.voice.voiceTyping.hudPreparing")
-      : state === "recording"
-        ? t("settings.voice.voiceTyping.hudListening")
-        : state === "transcribing"
-          ? t("settings.voice.voiceTyping.hudTranscribing")
-          : state === "done"
-            ? t("settings.voice.voiceTyping.hudInserted")
-            : "";
+  const fallback = FALLBACK_LABELS[state] ?? "";
+  const label = customLabel || fallback;
 
-  if (!label) {
+  if (!fallback) {
     // Nothing recorded yet: keep the (transparent) window empty.
     return null;
   }
@@ -115,6 +135,7 @@ export function VoiceTypingHud() {
   const accent = ACCENTS[state] ?? "#8b93a1";
   const heights = barHeights(level, state);
   const active = state === "preparing" || state === "recording";
+  const displayCopy = sublabel ? tailPreview(sublabel) : label;
 
   return (
     <div className="vt-stage">
@@ -131,10 +152,16 @@ export function VoiceTypingHud() {
               className="vt-bar"
               style={{
                 height: `${heights[index]}px`,
-                animationDelay: `${index * 70}ms`,
+                animationDelay: `${index * 60}ms`,
               }}
             />
           ))}
+        </span>
+        <span
+          className={`vt-copy ${sublabel ? "vt-copy-live" : ""}`}
+          aria-hidden="true"
+        >
+          {displayCopy}
         </span>
         <span className="vt-time" aria-hidden="true">
           {state === "done" ? (

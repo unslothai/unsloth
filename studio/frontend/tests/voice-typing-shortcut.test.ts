@@ -8,6 +8,7 @@ import {
   DEFAULT_VOICE_TYPING_SHORTCUT,
   chordFromEvent,
   formatShortcut,
+  isConflictingShortcut,
   isModifierCode,
   isValidShortcut,
   keyFromCode,
@@ -72,4 +73,13 @@ test("shortcut validation matches the native parser's rules", () => {
 test("display formatting spells out the chord", () => {
   assert.equal(formatShortcut("Ctrl+Shift+Space"), "Ctrl + Shift + Space");
   assert.equal(formatShortcut("Super+A"), "Win + A");
+});
+
+test("navigation keys and conflict detection match expected rules", () => {
+  assert.equal(keyFromCode("Insert"), "Insert");
+  assert.equal(keyFromCode("ArrowUp"), "Up");
+  assert.equal(isValidShortcut("Ctrl+Insert"), true);
+  assert.equal(isConflictingShortcut("Ctrl+C"), true);
+  assert.equal(isConflictingShortcut("Ctrl+K"), true);
+  assert.equal(isConflictingShortcut(DEFAULT_VOICE_TYPING_SHORTCUT), false);
 });

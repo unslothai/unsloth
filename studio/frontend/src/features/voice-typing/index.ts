@@ -1,12 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export { chordFromEvent, formatShortcut, isModifierCode } from "./shortcut";
+export {
+  DEFAULT_VOICE_TYPING_SHORTCUT,
+  chordFromEvent,
+  formatShortcut,
+  isConflictingShortcut,
+  isModifierCode,
+} from "./shortcut";
 export { useVoiceTyping } from "./use-voice-typing";
 export {
   MIC_WARM_ALWAYS,
+  VOICE_TYPING_HUD_POSITIONS,
+  VOICE_TYPING_PASTE_METHODS,
   useVoiceTypingStore,
+  type VoiceTypingHudPosition,
   type VoiceTypingMode,
+  type VoiceTypingPasteMethod,
   type VoiceTypingReadiness,
 } from "./voice-typing-store";
 export {

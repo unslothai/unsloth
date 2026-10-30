@@ -32,10 +32,15 @@ interface VoiceTypingState {
   copyLastTranscript: boolean;
   micWarmSeconds: number;
   soundVolume: number;
+  pasteMethod: string;
+  hudPosition: string;
+  muteWhileRecording: boolean;
+  lastTranscript: string;
   hudEnabled?: unknown;
   hudShowTranscript?: unknown;
   keepOnClipboard?: unknown;
   setEnabled: (enabled: boolean) => void;
+  setLastTranscript: (text: string) => void;
 }
 
 let generation = 0;
@@ -126,15 +131,22 @@ test("out-of-range values are repaired instead of shown", async () => {
       enabled: false,
       micWarmSeconds: -7,
       soundVolume: 4,
+      pasteMethod: "bogus",
+      hudPosition: "middle",
+      muteWhileRecording: "yes",
     },
   });
   assert.equal(store.getState().micWarmSeconds, 15);
   assert.equal(store.getState().soundVolume, 1);
+  assert.equal(store.getState().pasteMethod, "ctrl_v");
+  assert.equal(store.getState().hudPosition, "bottom");
+  assert.equal(store.getState().muteWhileRecording, false);
 });
 
 test("new writes carry the current schema version", async () => {
   const store = await load();
   store.getState().setEnabled(true);
+  store.getState().setLastTranscript("Transient session text");
   const saved = JSON.parse(localStorage.get(STORAGE_KEY) ?? "{}") as {
     version?: number;
     state?: Record<string, unknown>;
@@ -143,4 +155,5 @@ test("new writes carry the current schema version", async () => {
   assert.equal(saved.state?.enabled, true);
   assert.ok(!("hudEnabled" in (saved.state ?? {})));
   assert.ok(!("keepOnClipboard" in (saved.state ?? {})));
+  assert.ok(!("lastTranscript" in (saved.state ?? {})));
 });
