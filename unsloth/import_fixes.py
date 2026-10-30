@@ -7959,9 +7959,7 @@ _SDPA_CUDNN_POLICY = _SdpaCudnnPolicy("unsloth_sdpa_cudnn_policy")
 
 def _sdpa_cudnn_off(key_length = None):
     """Turn cuDNN SDPA off unless it is the only enabled backend (or key_length, when given, is not
-    64 mod 128), saving the caller's flag. A graph call (allow_in_graph): eager graphs run it per
-    call; AOTAutograd runs it while tracing, so the traced SDPA avoids cuDNN, and the wrapper's
-    guarded _SDPA_CUDNN_POLICY read recompiles on a policy change. A symbolic length counts as hit."""
+    64 mod 128), saving the caller's flag. A symbolic length counts as a hit. Returns the switch."""
     import torch
 
     switch = (
@@ -7970,6 +7968,7 @@ def _sdpa_cudnn_off(key_length = None):
     _SDPA_CUDNN_SWITCHED.append(switch)
     if switch:
         torch._C._set_sdp_use_cudnn(False)
+    return switch
 
 
 def _sdpa_cudnn_restore():
@@ -7977,6 +7976,35 @@ def _sdpa_cudnn_restore():
     import torch
     if _SDPA_CUDNN_SWITCHED.pop():
         torch._C._set_sdp_use_cudnn(True)
+
+
+_SDPA_CUDNN_ORIGINALS = {}  # install token -> the SDPA it wraps (a graph constant, unlike a function)
+_SDPA_CUDNN_MESSAGES = {
+    _SDPA_CUDNN_DECODE: "single-token decode on this Blackwell GPU (cuDNN 9.19 - 9.25.0 "
+    "returns wrong attention there, pytorch#193893)",
+    _SDPA_CUDNN_DQ_NAN: "training with a key length of 64 mod 128 on this H100 / H200 (cuDNN "
+    "< 9.26 returns NaN query gradients there, pytorch#196678)",
+}
+
+
+def _sdpa_without_cudnn(token, bug, key_length, query, key, value, *args, **kwargs):
+    """Switch cuDNN off, run SDPA, restore the caller's flag, all in one call. Registered with
+    allow_in_graph, so an eager graph keeps it as one node and this finally runs at call time even
+    if SDPA raises; AOTAutograd traces through it, so the traced SDPA avoids cuDNN (the wrapper's
+    guarded _SDPA_CUDNN_POLICY read recompiles on a policy change)."""
+    import torch
+
+    switch = _sdpa_cudnn_off(key_length)
+    try:
+        if switch and not torch.compiler.is_compiling() and bug not in _SDPA_CUDNN_KNOWN_BAD_WARNED:
+            _SDPA_CUDNN_KNOWN_BAD_WARNED.add(bug)
+            logger.warning(
+                f"Unsloth: running SDPA without cuDNN attention for {_SDPA_CUDNN_MESSAGES[bug]}. "
+                "Upgrade to torch 2.15 / cuDNN 9.26, or set UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1."
+            )
+        return _SDPA_CUDNN_ORIGINALS[token](query, key, value, *args, **kwargs)
+    finally:
+        _sdpa_cudnn_restore()
 
 
 def fix_cudnn_sdpa_known_bad_shapes():
@@ -7999,17 +8027,13 @@ def fix_cudnn_sdpa_known_bad_shapes():
     if getattr(F.scaled_dot_product_attention, _SDPA_CUDNN_KNOWN_BAD_FLAG, False):
         return
 
-    # Dynamo folds the backend flags at trace time and bakes sdpa_kernel's restore: keep the switch
-    # and restore as graph calls, so an eager graph honours and restores the caller's policy.
-    for helper in (_sdpa_cudnn_off, _sdpa_cudnn_restore):
-        torch._dynamo.allow_in_graph(helper)
-    messages = {
-        _SDPA_CUDNN_DECODE: "single-token decode on this Blackwell GPU (cuDNN 9.19 - 9.25.0 "
-        "returns wrong attention there, pytorch#193893)",
-        _SDPA_CUDNN_DQ_NAN: "training with a key length of 64 mod 128 on this H100 / H200 (cuDNN "
-        "< 9.26 returns NaN query gradients there, pytorch#196678)",
-    }
+    # Dynamo folds the backend flags at trace time and bakes sdpa_kernel's restore: keep the
+    # switch, SDPA and restore as one graph call, so an eager graph honours the caller's policy
+    # and restores it even when SDPA raises (a trailing restore node would be skipped).
+    torch._dynamo.allow_in_graph(_sdpa_without_cudnn)
     original = F.scaled_dot_product_attention
+    token = f"sdpa_{len(_SDPA_CUDNN_ORIGINALS)}"  # a str: Dynamo may make an int symbolic
+    _SDPA_CUDNN_ORIGINALS[token] = original
 
     @functools.wraps(original)
     def scaled_dot_product_attention(
@@ -8026,21 +8050,11 @@ def fix_cudnn_sdpa_known_bad_shapes():
         # Compiled, this read is a guard: a graph traced under one policy decision (and so with
         # or without cuDNN in it) is not reused under the other.
         if bug is not None and _SDPA_CUDNN_POLICY.cudnn_off:
-            _sdpa_cudnn_off(key.shape[-2] if bug == _SDPA_CUDNN_DQ_NAN else None)
-            try:
-                if (
-                    not torch.compiler.is_compiling()
-                    and _SDPA_CUDNN_SWITCHED[-1]
-                    and bug not in _SDPA_CUDNN_KNOWN_BAD_WARNED
-                ):
-                    _SDPA_CUDNN_KNOWN_BAD_WARNED.add(bug)
-                    logger.warning(
-                        f"Unsloth: running SDPA without cuDNN attention for {messages[bug]}. "
-                        "Upgrade to torch 2.15 / cuDNN 9.26, or set UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1."
-                    )
-                return original(query, key, value, attn_mask, dropout_p, is_causal, *args, **kwargs)
-            finally:
-                _sdpa_cudnn_restore()
+            key_length = key.shape[-2] if bug == _SDPA_CUDNN_DQ_NAN else None
+            return _sdpa_without_cudnn(
+                token, bug, key_length, query, key, value, attn_mask, dropout_p, is_causal,
+                *args, **kwargs,
+            )  # fmt: skip
         return original(query, key, value, attn_mask, dropout_p, is_causal, *args, **kwargs)
 
     scaled_dot_product_attention.__wrapped__ = original

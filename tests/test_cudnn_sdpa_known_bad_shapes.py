@@ -318,10 +318,8 @@ class TestWrapper:
         out = torch.compile(fn, backend = backend, fullgraph = True)(q)
         torch.testing.assert_close(out, real(q, q, q))
         code = "\n".join(graphs)
-        # cuDNN switched off before the call and back after it, by graph calls (not trace-time).
-        first_switch = code.index("_sdpa_cudnn_off(")
-        call = code.index("_nn.scaled_dot_product_attention(")
-        assert first_switch < call < code.index("_sdpa_cudnn_restore("), code
+        # cuDNN switched off around the call by one graph call (not at trace time).
+        assert "_sdpa_without_cudnn(" in code, code
         torch._dynamo.reset()
 
 
@@ -392,7 +390,8 @@ def test_compiled_dynamic_key_length_is_not_specialized(cpu_dq_nan, strict):
             fn(q, k, v).backward()
     assert len(graphs) == 1
     # The cuDNN switch is in the graph: the wrapper engaged.
-    assert any(name in graphs[0].code for name in ("_sdpa_cudnn_off(", "_sdpa_kernel("))
+    names = ("_sdpa_without_cudnn(", "_sdpa_cudnn_off(", "_sdpa_kernel(")
+    assert any(name in graphs[0].code for name in names)
 
 
 def test_compiled_call_reads_policy_at_call_time(cpu_dq_nan):
@@ -414,6 +413,55 @@ def test_compiled_call_reads_policy_at_call_time(cpu_dq_nan):
         with pytest.raises(RuntimeError, match = "No viable backend"):
             fn(q, k, v)
         assert not cuda.math_sdp_enabled() and cuda.cudnn_sdp_enabled()
+
+
+_RAISING = []
+
+
+def _raising_op():
+    """An opaque op that raises at run time (as a CUDA OOM would), not while Dynamo traces it."""
+    if not _RAISING:
+
+        @torch.library.custom_op("unsloth_cudnn_sdpa_probe::boom", mutates_args = ())
+        def boom(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+            raise RuntimeError("CUDA out of memory (simulated)")
+
+        @boom.register_fake
+        def _(q, k, v):
+            return torch.empty_like(q)
+
+        _RAISING.append(boom)
+    return _RAISING[0]
+
+
+@pytest.mark.parametrize("mode", ["plain", "eager_graph"])
+def test_raising_sdpa_restores_the_policy(cpu_dq_nan, monkeypatch, mode):
+    # SDPA raising mid-call (e.g. CUDA OOM) must still restore the caller's flags and leave no
+    # unmatched switch, also from an executable FX graph, where a Python finally around separate
+    # switch / restore nodes does not survive.
+    import torch.nn.functional as F
+
+    boom = _raising_op()
+    monkeypatch.setattr(F, "scaled_dot_product_attention", lambda q, k, v, *a, **kw: boom(q, k, v))
+    fixes.fix_cudnn_sdpa_known_bad_shapes()
+    wrapped = F.scaled_dot_product_attention
+    torch._dynamo.reset()
+    fn = lambda q, k, v: wrapped(q, k, v)  # noqa: E731
+    if mode == "eager_graph":
+        fn = torch.compile(fn, backend = "eager", fullgraph = True, dynamic = False)
+    depth = len(fixes._SDPA_CUDNN_SWITCHED)
+    try:
+        with sdpa_kernel(CUDNN_MATH):
+            before = _sdp_flags()
+            for _ in range(2):
+                with pytest.raises(RuntimeError, match = "simulated"):
+                    fn(*_qkv(192))
+                # Checked inside the context: its exit would restore the flags itself.
+                assert _sdp_flags() == before
+                assert len(fixes._SDPA_CUDNN_SWITCHED) == depth
+    finally:
+        del fixes._SDPA_CUDNN_SWITCHED[depth:]
+        torch._dynamo.reset()
 
 
 _PROBE = []
