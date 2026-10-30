@@ -13,10 +13,7 @@ import {
 } from "@/components/ui/empty";
 import { useOptionalSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  holdSidebarUnpinned,
-  releaseSidebarPinned,
-} from "@/hooks/use-sidebar-pin";
+import { shouldUseNativeMacWindowTitlebar } from "@/components/tauri/window-titlebar";
 import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useReactFlow } from "@xyflow/react";
@@ -91,13 +88,9 @@ function EditorBody({
   const { screenToFlowPosition } = useReactFlow();
   const sidebar = useOptionalSidebar();
   const sidebarBeside = !!sidebar?.open && !sidebar.isMobile;
+  // On Mac the toolbar takes the titlebar row itself, on the canvas colour, as chat's header does.
+  const [macChrome] = useState(shouldUseNativeMacWindowTitlebar);
   useEditorShortcuts(!readOnly);
-  // The Nodes panel owns the left edge here: the app sidebar unpins (Desktop peeks it from the
-  // window edge) without touching the saved pin, which comes back on leaving.
-  useEffect(() => {
-    holdSidebarUnpinned();
-    return releaseSidebarPinned;
-  }, []);
   useAutosave(!readOnly);
   // Every way out (the window's back arrow, a link, the sidebar, Play) saves first.
   useBlocker({ shouldBlockFn: stayUnlessSaved, enableBeforeUnload: false });
@@ -118,10 +111,14 @@ function EditorBody({
   return (
     <div
       // The titlebar strip and toolbar share the sidebar's colour, so the top reads as one surface with it.
-      className={`flows-editor flex h-full min-h-0 w-full flex-col bg-sidebar ${BELOW_TITLEBAR} text-foreground`}
+      className={`flows-editor flex h-full min-h-0 w-full flex-col text-foreground ${macChrome ? "bg-background" : `bg-sidebar ${BELOW_TITLEBAR}`}`}
       data-testid="flows-editor"
     >
-      <Toolbar readOnly={readOnly} />
+      <Toolbar
+        readOnly={readOnly}
+        titlebar={macChrome}
+        clearNav={macChrome && !(sidebar?.pinned ?? true)}
+      />
       {readOnly && (
         <Alert className="rounded-none border-x-0 border-t-0 py-2">
           <AlertDescription className="text-xs text-amber-700 dark:text-amber-300">
@@ -133,7 +130,7 @@ function EditorBody({
       {!readOnly && <CapabilityBanner flowId={flowId} />}
       <div
         // Curves into the app sidebar only while it is open beside it.
-        className={`relative flex min-h-0 flex-1 overflow-hidden bg-background transition-[border-radius] duration-200 ease-out ${sidebarBeside ? "rounded-tl-xl" : "rounded-tl-none"}`}
+        className={`relative flex min-h-0 flex-1 overflow-hidden bg-background transition-[border-radius] duration-200 ease-out ${sidebarBeside && !macChrome ? "rounded-tl-xl" : "rounded-tl-none"}`}
       >
         {paletteOpen && !readOnly && <Palette onDrop={dropAt} />}
         <div className="flex min-w-0 flex-1 flex-col">

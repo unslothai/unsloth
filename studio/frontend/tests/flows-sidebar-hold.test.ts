@@ -1,39 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Flows' editor unpins the app sidebar while it is open; the user's saved pin must survive it.
+// Opening a flow leaves the app sidebar as the user had it; on Mac the toolbar takes the titlebar row.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-test("holding the sidebar unpinned and releasing it never writes the saved pin", async () => {
-  const writes: string[] = [];
-  Object.assign(globalThis, {
-    window: {
-      addEventListener: () => undefined,
-      removeEventListener: () => undefined,
-      localStorage: {
-        getItem: () => "true",
-        setItem: (key: string, value: string) => writes.push(`${key}=${value}`),
-        removeItem: (key: string) => writes.push(`-${key}`),
-      },
-    },
-  });
-  const tag = "flows-hold";
-  const pin = await import(`../src/hooks/use-sidebar-pin.ts?${tag}`);
-  pin.holdSidebarUnpinned();
-  pin.releaseSidebarPinned();
-  assert.deepEqual(writes, []);
+const read = (path: string) =>
+  readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
+
+test("the Flows editor never pins or unpins the app sidebar", () => {
+  const page = read("features/flows/editor/flows-editor-page.tsx");
+  assert.doesNotMatch(page, /holdSidebar|releaseSidebarPinned|setPinned|togglePinned/);
+  assert.doesNotMatch(read("hooks/use-sidebar-pin.ts"), /holdSidebarUnpinned/);
 });
 
-test("the Flows editor holds the sidebar while mounted and releases it on leaving", () => {
-  const src = readFileSync(
-    new URL("../src/features/flows/editor/flows-editor-page.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(
-    src,
-    /useEffect\(\(\) => \{\s*holdSidebarUnpinned\(\);\s*return releaseSidebarPinned;\s*\}, \[\]\);/,
-  );
+test("on Mac the toolbar is the titlebar row, on the canvas colour, clear of the window buttons", () => {
+  const page = read("features/flows/editor/flows-editor-page.tsx");
+  assert.match(page, /const \[macChrome\] = useState\(shouldUseNativeMacWindowTitlebar\);/);
+  assert.match(page, /\$\{macChrome \? "bg-background" : `bg-sidebar \$\{BELOW_TITLEBAR\}`\}/, "no titlebar strip on Mac");
+  assert.match(page, /clearNav=\{macChrome && !\(sidebar\?\.pinned \?\? true\)\}/);
+  assert.match(page, /sidebarBeside && !macChrome \? "rounded-tl-xl"/);
+  const bar = read("features/flows/editor/toolbar.tsx");
+  assert.match(bar, /data-tauri-drag-region=\{titlebar \|\| undefined\}/);
+  assert.match(bar, /\$\{titlebar \? "bg-background" : "bg-sidebar"\}/);
+  assert.match(bar, /clearNav \? "pl-\[var\(--studio-collapsed-chat-controls-inset,0\.5rem\)\]"/);
 });

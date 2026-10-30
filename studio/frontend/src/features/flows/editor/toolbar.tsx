@@ -149,7 +149,17 @@ function IconButton({
   );
 }
 
-function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
+function ToolbarImpl({
+  readOnly = false,
+  titlebar = false,
+  clearNav = false,
+}: {
+  readOnly?: boolean;
+  /** Mac: the toolbar is the window's titlebar row, so it drags the window. */
+  titlebar?: boolean;
+  /** Leave room for the traffic lights and the sidebar and back/forward buttons. */
+  clearNav?: boolean;
+}) {
   const name = useDocStore((s) => s.meta.name);
   const kind = useDocStore((s) => s.meta.kind);
   const canUndo = useDocStore((s) => s.past.length > 0);
@@ -160,7 +170,10 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
   const wireStyle = useUiStore((s) => s.wireStyle);
 
   return (
-    <div className="grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 bg-sidebar px-2 text-foreground">
+    <div
+      data-tauri-drag-region={titlebar || undefined}
+      className={`grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-2 text-foreground transition-[padding] duration-200 ease-out ${titlebar ? "bg-background" : "bg-sidebar"} ${clearNav ? "pl-[var(--studio-collapsed-chat-controls-inset,0.5rem)]" : ""}`}
+    >
       <div className="flex min-w-0 items-center gap-2">
         {/* Sized to the name: the hidden copy sets the width, the input fills it. */}
         <div className="inline-grid min-w-0 max-w-[min(22rem,50vw)] font-semibold text-sm">

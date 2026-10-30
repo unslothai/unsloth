@@ -3,7 +3,7 @@
 
 import type { InternalNode } from "@xyflow/react";
 import { getSpec } from "../stores/catalog-store";
-import { type DocGraph, NOTE_KEY, useDocStore } from "../stores/doc-store";
+import { type DocGraph, useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import { CARD_MIN_WIDTH } from "./card-size";
 import { inHandle, outHandle } from "./connection-rules";
@@ -116,25 +116,7 @@ function fitCards(
   return out;
 }
 
-/** Notes resized to their text. */
-function fitNotes(graph: DocGraph): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const id of graph.noteOrder) {
-    if (!graph.notes[id].text) continue;
-    const body = rfElement(NOTE_KEY + id)?.querySelector<HTMLElement>(
-      ".overflow-y-auto",
-    );
-    if (!body) continue;
-    // The body fills the note, so measure what is in it (plus its py-2 padding and the border).
-    let content = 16 + 4;
-    for (const child of body.children) content += (child as HTMLElement).offsetHeight;
-    const height = Math.min(480, Math.max(60, content));
-    if (Math.abs(height - graph.notes[id].rect[3]) > 6) out[id] = height;
-  }
-  return out;
-}
-
-/** Tidy up: fit cards to their output, lay out cards and groups, then put notes and reroutes back. */
+/** Tidy up: fit cards to their output, lay out cards and groups, then move notes and put reroutes back. Frames and notes keep their sizes. */
 export async function autoLayout(
   getInternalNode: (id: string) => InternalNode | undefined,
   direction: "LR" | "TB" = "LR",
@@ -164,9 +146,5 @@ export async function autoLayout(
   };
   const result = await runLayout(tidyRequest(ctx));
   const patch = tidyPatch(ctx, result, sizes);
-  for (const [id, height] of Object.entries(fitNotes(graph))) {
-    const rect = patch.notes[id] ?? graph.notes[id].rect;
-    patch.notes[id] = [rect[0], rect[1], rect[2], height];
-  }
   useDocStore.getState().applyTidy(patch);
 }

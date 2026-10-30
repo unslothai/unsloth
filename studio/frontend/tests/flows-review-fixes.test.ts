@@ -159,7 +159,7 @@ test("the inspector shows a Preview block's value, not an empty Output section",
 
 test("a read-only flow's toolbar cannot edit the document", () => {
   const page = readSrc("features/flows/editor/flows-editor-page.tsx");
-  assert.match(page, /<Toolbar readOnly=\{readOnly\} \/>/);
+  assert.match(page, /<Toolbar\s+readOnly=\{readOnly\}/);
   const bar = readSrc("features/flows/editor/toolbar.tsx");
   assert.match(bar, /<input\s+value=\{name\}\s+readOnly=\{readOnly\}/);
   assert.match(bar, /<TidyButton disabled=\{readOnly\} \/>/);
