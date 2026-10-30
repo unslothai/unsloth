@@ -1030,7 +1030,11 @@ def test_only_a_result_the_user_must_unblock_marks_the_turn_as_awaiting_them():
         ("m", "Error: [needs_user_load kind=audio page=Audio] The music model is off.", True),
         ("n", "Error: [not_loaded kind=audio] Load one with load_model(kind='tts') first.", False),
         ("o", "Error: [not_loaded kind=audio] Ask the user to load one on the Audio page.", True),
-        ("p", "Error: [multi_model_always kind=chat] (HTTP 409) Call unload_model(kind='llm').", False),
+        (
+            "p",
+            "Error: [multi_model_always kind=chat] (HTTP 409) Call unload_model(kind='llm').",
+            False,
+        ),
         ("q", "Error: [multi_model_always kind=chat] (HTTP 409) Ask the user to unload it.", True),
     ):
         controller.record_result(controller.prepare_call(_call(name, {"model": model})), result)

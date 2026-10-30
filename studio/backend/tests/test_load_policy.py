@@ -50,4 +50,6 @@ def test_owner_chat_loads_beside(role, value, beside, read):
 
 def test_routes_and_media_switch_do_not_read_the_mcp_caller():
     for name in ("routes/inference.py", "routes/video.py", "core/inference/media_auto_switch.py"):
-        assert "studio_mcp" not in (Path(__file__).parents[1] / name).read_text(encoding = "utf-8"), name
+        assert "studio_mcp" not in (Path(__file__).parents[1] / name).read_text(
+            encoding = "utf-8"
+        ), name
