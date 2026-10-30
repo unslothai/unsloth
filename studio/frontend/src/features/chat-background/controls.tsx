@@ -242,7 +242,7 @@ export function ChatBackgroundControls() {
 			<div className="flex flex-wrap items-center justify-between gap-3 pt-2">
 				{value && (
 					<Button
-						className="text-foreground"
+						className="border-0 px-0 text-foreground"
 						type="button"
 						variant="ghost"
 						size="sm"
@@ -254,7 +254,7 @@ export function ChatBackgroundControls() {
 
 				<div className="ml-auto flex justify-end">
 					<Button
-						className="text-foreground"
+						className="border-0 px-0 text-foreground"
 						variant="ghost"
 						size="sm"
 						disabled={!value || busy}
