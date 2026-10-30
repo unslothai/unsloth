@@ -115,6 +115,7 @@ function generalTab(initialToken: string) {
         { getState: () => runtime },
       ),
     },
+    "@/features/chat-background": { resetChatBackground: async () => true },
     "@/features/chat/stores/sidebar-organization-keys": {
       SIDEBAR_ORGANIZATION_STORAGE_KEY: "sidebar-order",
     },
