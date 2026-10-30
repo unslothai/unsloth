@@ -146,3 +146,71 @@ def test_the_trainer_init_wrapper_calls_the_decline():
 
     source = inspect.getsource(_utils.patch_gradient_accumulation_fix)
     assert "is_fsdp_enabled" in source and "_decline_fused_lora_for_fsdp" in source
+
+
+class _GroupedMLP(__import__("torch").nn.Module):
+    """A dense MLP whose instance forward was replaced (grouped MoE / mxfp4 / accelerate hook style)."""
+
+    def __init__(self):
+        import torch
+
+        super().__init__()
+        self.up = torch.nn.Linear(4, 4)
+
+    def forward(self, x):
+        return self.up(x)
+
+
+def _adopted_forward(self, x):
+    return self.up(x) * 3
+
+
+@pytest.mark.parametrize("tiled", [False, True, "after"])
+def test_declining_restores_the_forward_before_the_fused_kernel(tiled):
+    """An instance forward that ran before the fused LoRA MLP (adopted by tiling as its inner forward, or left as the
+    module's own forward) must come back on decline, not the class forward."""
+    import types
+
+    import torch
+    from unsloth.models import llama
+
+    mlp = _GroupedMLP()
+    mlp.forward = types.MethodType(_adopted_forward, mlp)
+    registry = pytest.importorskip("unsloth_zoo.tiling_registry") if tiled else None
+    if tiled is True:
+        registry.install_module(mlp, "rows:2")
+        assert mlp.__dict__["_unsloth_forward"].__func__ is _adopted_forward
+    llama._install_fused_lora_mlp(mlp, llama.apply_lora_mlp_swiglu)
+    if tiled == "after":
+        # Trainer revalidation tiles after the kernel went in: the kernel is adopted as the inner forward.
+        registry.install_module(mlp, "rows:2")
+    assert mlp in llama._fused_lora_modules(mlp)
+    assert llama._decline_fused_lora_for_fsdp(mlp) == 1
+    slot = "_unsloth_forward" if tiled else "forward"
+    assert registry is None or registry.is_tiled(mlp)
+    assert mlp.__dict__[slot].__func__ is _adopted_forward
+    x = torch.randn(2, 3, 4)
+    torch.testing.assert_close(mlp(x), mlp.up(x) * 3)
+    assert llama._decline_fused_lora_for_fsdp(mlp) == 0
+
+
+@pytest.mark.parametrize("tiled", [False, True])
+def test_declining_a_plain_module_still_restores_the_class_forward(tiled):
+    import types
+
+    import torch
+    from unsloth.models import llama
+
+    mlp = _GroupedMLP()
+    if tiled:
+        registry = pytest.importorskip("unsloth_zoo.tiling_registry")
+        registry.install_module(mlp, "rows:2")
+    llama._install_fused_lora_mlp(mlp, llama.apply_lora_mlp_swiglu)
+    llama._install_fused_lora_mlp(mlp, llama.apply_lora_mlp_swiglu)  # a second patch pass keeps the first record
+    assert llama._decline_fused_lora_for_fsdp(mlp) == 1
+    if tiled:
+        assert mlp.__dict__["_unsloth_forward"] is _GroupedMLP.forward
+    else:
+        assert "forward" not in mlp.__dict__
+    x = torch.randn(2, 3, 4)
+    torch.testing.assert_close(mlp(x), mlp.up(x))

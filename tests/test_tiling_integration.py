@@ -45,7 +45,7 @@ def _model(n = 2):
 def _env(monkeypatch):
     monkeypatch.delenv("UNSLOTH_TILED_MLP", raising = False)
     monkeypatch.delenv("UNSLOTH_TILED_MLP_MODULES", raising = False)
-    registry.set_engine("reference")
+    registry.set_engine("checkpoint")
     yield
     registry.set_engine(None)
 

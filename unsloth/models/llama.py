@@ -3394,6 +3394,26 @@ def _fused_lora_modules(model) -> list:
     return fused
 
 
+_PRE_FUSED_FORWARD = "_unsloth_forward_before_fused_lora"
+
+
+def _install_fused_lora_mlp(mlp_module, kernel):
+    """Bind the fused LoRA MLP kernel as the forward this MLP runs.
+
+    A tiled MLP (unsloth_zoo.tiling_registry) keeps its inner forward in `_unsloth_forward`, so the kernel goes there
+    and runs per tile; otherwise it becomes the instance forward. MethodType binds the replacement.
+    """
+    slot = "_unsloth_forward" if hasattr(mlp_module, "_unsloth_forward") else "forward"
+    d = mlp_module.__dict__
+    current = d.get(slot)
+    func = getattr(current, "__func__", None)
+    if _PRE_FUSED_FORWARD not in d and getattr(func, "func", func) not in _FUSED_LORA_MLPS:
+        # What ran before the kernel (an adopted grouped MoE / mxfp4 / accelerate-hook forward, or None for the
+        # class forward); _decline_fused_lora_for_fsdp puts it back.
+        d[_PRE_FUSED_FORWARD] = current
+    setattr(mlp_module, slot, types.MethodType(kernel, mlp_module))
+
+
 def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
     """Put peft's forwards back on layers patch_peft_model gave a fused LoRA kernel.
 
@@ -3415,10 +3435,16 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
             func = getattr(module.__dict__.get(name), "__func__", None)
             if getattr(func, "func", func) not in _FUSED_LORA_MLPS:
                 continue
+            # Tiling may have moved the kernel from forward into _unsloth_forward after the install, so the record
+            # is read whichever slot holds it.
+            previous = module.__dict__.pop(_PRE_FUSED_FORWARD, None)
             if name == "forward":
-                delattr(module, "forward")
+                if previous is None:
+                    delattr(module, "forward")
+                else:
+                    module.forward = previous
             else:
-                module._unsloth_forward = module.__class__.forward
+                module._unsloth_forward = module.__class__.forward if previous is None else previous
             n += 1
     if n:
         if reason is None:
@@ -5371,14 +5397,7 @@ class FastLlamaModel:
                         and not _fast_lora.lora_bias_blocks_fused(up_proj)
                         and not _fast_lora.lora_bias_blocks_fused(down_proj)
                     ):
-                        # MethodType binds the replacement; see stackoverflow.com/questions/50599045.
-                        if hasattr(mlp_module, "_unsloth_forward"):
-                            # _unsloth_forward is the tiled MLP inner-forward slot (unsloth_zoo.tiling_registry): the kernel runs per tile.
-                            mlp_module._unsloth_forward = types.MethodType(
-                                _apply_lora_mlp, mlp_module
-                            )
-                        else:
-                            mlp_module.forward = types.MethodType(_apply_lora_mlp, mlp_module)
+                        _install_fused_lora_mlp(mlp_module, _apply_lora_mlp)
                         n_mlp += 1
                     else:
                         logger.warning_once(
