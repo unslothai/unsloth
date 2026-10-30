@@ -443,8 +443,10 @@ export const BUDGET = {
   // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
   // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
   // the eager English catalog and its search rows. Raised by that.
-  transferBytes: 1_850_410,
-  rawBytes: 5_991_390,
+  // Chat wallpaper prefs, reset and English strings: +6,365 B raw / +3,589 B transfer (Node 24,
+  // 85 -> 89 eager chunks). Renderer, contrast and pixel worker stay lazy.
+  transferBytes: 1_853_999,
+  rawBytes: 5_997_755,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

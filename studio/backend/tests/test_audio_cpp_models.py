@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference import audio_cpp_backend, audio_cpp_files, audio_cpp_music
+from core.inference import audio_cpp_backend, audio_cpp_failures, audio_cpp_files, audio_cpp_music
 from core.inference import audio_cpp_models as acm
 from core.inference.audio_cpp_models import (
     AUDIO_CPP_REPO,
@@ -882,6 +882,65 @@ def test_the_folder_name_never_names_a_variant(hub):
     assert "not found" in model.unsupported
     anime = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "v4.1-anime/Q8_0", network = False)
     assert anime.unsupported is None and anime.variant.key == "v4.1-anime/Q8_0"
+
+
+VIBEVOICE = f"{AUDIO_CPP_REPO}/VibeVoice-1.5B-GGUF"
+VIBEVOICE_Q4 = "VibeVoice-1.5B-GGUF/vibevoice-1.5b-q4-ios"
+
+
+def _vibevoice(root, *names):
+    spec = {"family": "vibevoice", "tasks": ["tts"]}
+    pads = {"bf16": 300, "q8_0": 200, "q4-ios": 100}
+    snap = _snapshot(root)
+    return {
+        name: _put(
+            snap,
+            f"VibeVoice-1.5B-GGUF/vibevoice-1.5b-{name}.gguf",
+            _gguf_bytes(family = "vibevoice", spec = spec) + b"\0" * pads[name],
+        )
+        for name in names
+    }
+
+
+def test_a_published_file_the_runtime_cannot_load_is_never_offered(hub):
+    _vibevoice(hub, "bf16", "q8_0", "q4-ios")
+    model = acm.resolve(VIBEVOICE, network = False)
+    assert [v.key for v in model.variants] == ["Q8_0", "BF16"]
+    assert model.unsupported is None
+    assert audio_cpp_failures.smaller_variants(model) == []
+    # A saved or requested Q4 is refused, not swapped for another variant.
+    assert "not found" in acm.resolve(VIBEVOICE, "Q4", network = False).unsupported
+
+
+def test_an_unloadable_file_alone_offers_nothing_but_stays_deletable(hub, monkeypatch):
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    paths = _vibevoice(hub, "q4-ios")
+    model = acm.resolve(VIBEVOICE, network = False)
+    assert model.variants == () and "cannot be loaded" in model.unsupported
+    assert "cannot be loaded" in acm.resolve(str(paths["q4-ios"]), network = False).unsupported
+    from hub.services.models import gguf_variants as gv
+
+    acm.forget()
+    listing = asyncio.run(gv._audio_cpp_variants_answer(VIBEVOICE, None, True)).response
+    assert listing.variants == [] and listing.loadable_variants == [] and not listing.loadable
+    [cached] = [m for m in acm.downloaded_models() if m.id == VIBEVOICE]
+    assert "cannot be loaded" in cached.unsupported
+    assert acm.cached_folder_target(VIBEVOICE, "Q4") == (AUDIO_CPP_REPO, [VIBEVOICE_Q4])
+    assert acm.cached_folder_target(VIBEVOICE) == (AUDIO_CPP_REPO, [VIBEVOICE_Q4])
+
+
+def test_deleting_a_folder_includes_its_unloadable_file(hub):
+    _vibevoice(hub, "q8_0", "q4-ios")
+    q8 = "VibeVoice-1.5B-GGUF/vibevoice-1.5b-q8_0"
+    assert [v.key for v in acm.resolve(VIBEVOICE, network = False).variants] == ["Q8_0"]
+    assert acm.cached_folder_target(VIBEVOICE, "Q4") == (AUDIO_CPP_REPO, [VIBEVOICE_Q4])
+    assert acm.cached_folder_target(VIBEVOICE, "Q8_0") == (AUDIO_CPP_REPO, [q8])
+    assert acm.cached_folder_target(VIBEVOICE) == (AUDIO_CPP_REPO, [q8, VIBEVOICE_Q4])
+    from hub.services.models import deletion
+
+    repo = SimpleNamespace(repo_id = AUDIO_CPP_REPO)
+    own, protected = deletion._umbrella_variant_scope(repo, VIBEVOICE_Q4)
+    assert own == {f"{VIBEVOICE_Q4}.gguf"} and protected == {f"{q8}.gguf"}
 
 
 MIOCODEC_Q8 = "MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-q8_0.gguf"
