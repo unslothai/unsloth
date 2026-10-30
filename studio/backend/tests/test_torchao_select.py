@@ -277,7 +277,6 @@ _MIRROR_WHL = "https://mirror.example/whl"
 @pytest.mark.parametrize(
     "is_windows, torch_version, family, url, base, expected",
     [
-        # download.pytorch.org's cuNNN leaves publish torchao for Linux only.
         (True, "2.13.0+cu130", "", "", _PYTORCH_WHL, None),
         (True, "2.12.0+cu126", "", "", _PYTORCH_WHL, None),
         (True, "2.10.0+cu128", "", "", _PYTORCH_WHL, None),
