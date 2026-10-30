@@ -605,27 +605,34 @@ def _too_many(rows: Any) -> FlowNodeError:
     )
 
 
+def _stream_rows(streamed: Any, start: int, end: Optional[int]) -> Any:
+    """Rows start..end of a streamed dataset, reading no further than the slice end or the cap plus one."""
+    from datasets import Dataset
+
+    if end is not None and end + 1 - start > HOLDOUT_MAX_ROWS:
+        raise _too_many(end + 1 - start)
+    count = HOLDOUT_MAX_ROWS + 1 if end is None else max(end + 1 - start, 0)
+    rows = list((streamed.skip(start) if start else streamed).take(count))
+    if len(rows) > HOLDOUT_MAX_ROWS:
+        raise _too_many(f"More than {HOLDOUT_MAX_ROWS}")
+    return Dataset.from_list(rows)
+
+
 def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
     """A Hub split, without downloading more than the hold-out can use: a slice streams just its
     rows, a split the Hub says is over the cap is refused before anything is fetched, and one of
     unknown size streams at most the cap plus one row."""
-    from datasets import Dataset, load_dataset, load_dataset_builder
+    from datasets import load_dataset, load_dataset_builder
 
     ref, subset = str(dataset["ref"]), dataset.get("subset") or None
     split = dataset.get("split") or "train"
 
-    def stream(count: int) -> Any:
+    def stream() -> Any:
         streamed = load_dataset(ref, subset, split = split, token = token, streaming = True)
-        rows = list((streamed.skip(start) if start else streamed).take(count))
-        if len(rows) > HOLDOUT_MAX_ROWS:
-            raise _too_many(f"More than {HOLDOUT_MAX_ROWS}")
-        return Dataset.from_list(rows)
+        return _stream_rows(streamed, start, end)
 
     if end is not None:
-        count = end + 1 - start
-        if count > HOLDOUT_MAX_ROWS:
-            raise _too_many(count)
-        return stream(max(count, 0))
+        return stream()
     try:
         known = load_dataset_builder(ref, subset, token = token).info.splits[split].num_examples
     except Exception:
@@ -633,7 +640,7 @@ def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
     if not known or start:
         if known and known - start > HOLDOUT_MAX_ROWS:
             raise _too_many(known - start)
-        return stream(HOLDOUT_MAX_ROWS + 1)
+        return stream()
     if known > HOLDOUT_MAX_ROWS:
         raise _too_many(known)
     return load_dataset(ref, subset, split = split, token = token)
@@ -659,10 +666,9 @@ def _load_rows(
             raise FlowNodeError(
                 "Hold-out works on Parquet, CSV or JSON datasets; set Hold out % to 0 for this one"
             )
-        loaded = load_dataset(builder, data_files = path, split = "train")
-        stop = len(loaded) if end is None else min(len(loaded), end + 1)
-        if start or end is not None:
-            loaded = loaded.select(range(min(start, stop), stop))
+        # Streamed, so a big local file is never read past the slice end or the cap.
+        streamed = load_dataset(builder, data_files = path, split = "train", streaming = True)
+        loaded = _stream_rows(streamed, start, end)
     if len(loaded) > HOLDOUT_MAX_ROWS:
         raise _too_many(len(loaded))
     return _jsonable(loaded.to_list())
