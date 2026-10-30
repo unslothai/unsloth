@@ -239,7 +239,10 @@ _ULYSSES_CLASSES = ULYSSES_ATTENTION_CLASSES + DEEPSEEK_ULYSSES_ATTENTION_CLASSE
 
 
 def _runs_every_expert(block) -> bool:
-    # Unsloth's train-mode remote MoE (Kimi-Linear) gives unrouted experts zero gradients under CP.
+    # Unsloth's train-mode remote MoE (Kimi-Linear) gives unrouted experts zero gradients under CP;
+    # expert parallel blocks (ep_size > 1) keep the remote forward, so they do not.
+    if (getattr(block, "ep_size", 1) or 1) > 1:
+        return False
     return getattr(getattr(type(block), "forward", None), "_unsloth_remote_moe_shim", False)
 
 
