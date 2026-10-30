@@ -280,6 +280,78 @@ def _runs_every_expert(block) -> bool:
     return getattr(getattr(type(block), "forward", None), "_unsloth_remote_moe_shim", False)
 
 
+def record_expert_tokens(block, token_counts) -> None:
+    # Per-expert routed token counts since the last optimizer step (no host sync). Only forwards
+    # that build a graph count: checkpoint recomputes count twice, which only matters as > 0.
+    if not torch.is_grad_enabled():
+        return
+    seen = block.__dict__.get("_unsloth_cp_expert_tokens")
+    block.__dict__["_unsloth_cp_expert_tokens"] = (
+        token_counts.detach().clone() if seen is None else seen.add_(token_counts)
+    )
+
+
+def drop_idle_expert_grads(blocks, group = None) -> int:
+    """Set .grad = None on experts (incl. their LoRA adapters) that no rank routed a token to since
+    the last optimizer step. Under CP they ran on no tokens so DDP sees a gradient, but the
+    single-process run leaves them None, so AdamW must not decay them or advance their state.
+    One all-reduce and one host sync for all layers. Returns the number of experts dropped."""
+    if not blocks:
+        return 0
+    counts = []
+    for block in blocks:
+        seen = block.__dict__.pop("_unsloth_cp_expert_tokens", None)
+        if seen is None:
+            device = next(block.experts.parameters()).device
+            seen = torch.zeros(len(block.experts), dtype = torch.long, device = device)
+        counts.append(seen.to(torch.long))
+    device = counts[0].device
+    total = torch.cat([c.to(device) for c in counts])
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(total, group = group)
+    idle = total.eq(0).tolist()
+    dropped = 0
+    offset = 0
+    for block in blocks:
+        for expert_index, expert in enumerate(block.experts):
+            if idle[offset + expert_index]:
+                for param in expert.parameters():
+                    param.grad = None
+                dropped += 1
+        offset += len(block.experts)
+    return dropped
+
+
+def install_idle_expert_grad_hook(optimizer, model, group = None) -> bool:
+    """Once per optimizer: a step pre-hook running drop_idle_expert_grads over model's every-expert
+    MoE blocks. It runs after backward (DDP reduction) and all gradient accumulation micro-steps."""
+    while not isinstance(optimizer, torch.optim.Optimizer) or (
+        # accelerate's AcceleratedOptimizer subclasses Optimizer but steps the one it wraps.
+        isinstance(getattr(optimizer, "optimizer", None), torch.optim.Optimizer)
+    ):
+        optimizer = getattr(optimizer, "optimizer", None)
+        if optimizer is None:
+            return False
+    if optimizer.__dict__.get("_unsloth_idle_expert_hook") is not None:
+        return True
+    if not isinstance(model, torch.nn.Module):
+        return False
+    blocks = [
+        m
+        for m in model.modules()
+        if isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and _runs_every_expert(m)
+    ]
+    if not blocks:
+        return False
+    blocks = [weakref.ref(b) for b in blocks]
+
+    def hook(_optimizer, _args, _kwargs):
+        drop_idle_expert_grads([b for b in (ref() for ref in blocks) if b is not None], group)
+
+    optimizer.__dict__["_unsloth_idle_expert_hook"] = optimizer.register_step_pre_hook(hook)
+    return True
+
+
 def _supports_context_parallel(model, backend = "ring") -> bool:
     from .models.llama import LlamaAttention_fast_forward, runs_fast_forward
 
@@ -1044,6 +1116,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             # Without gradient checkpointing the model would build a cache for the sharded scans.
             if hasattr(inputs, "setdefault"):
                 inputs.setdefault("use_cache", False)
+            install_idle_expert_grad_hook(getattr(self, "optimizer", None), getattr(self, "model", None))
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
         with manager.apply(inputs) if manager else contextlib.nullcontext():
             return original_training_step(self, model, inputs, *args, **kwargs)
@@ -1536,6 +1609,8 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
                 return original(self, *args, **kwargs)
             for decoder in _decoders(self.model):
                 decoder._unsloth_cp_rl_stack.clear()
+            if name == "training_step":
+                install_idle_expert_grad_hook(getattr(self, "optimizer", None), self.model)
             # Backward, and checkpoint recompute in it, run Ulysses attention too, so the scope spans them.
             with _manager_scope(manager if activate_at_step else None):
                 return original(self, *args, **kwargs)

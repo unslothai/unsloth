@@ -159,6 +159,64 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
     assert seen[-1][1].dtype == torch.int64
 
 
+def test_training_step_installs_the_idle_expert_hook_once(monkeypatch):
+    # Under CP every-expert MoE blocks get the optimizer pre-hook that drops globally idle experts'
+    # zero gradients; through accelerate's wrapper, once, and not for a model without such blocks.
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+
+    class Experts(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = torch.nn.ModuleList(torch.nn.Linear(2, 2) for _ in range(3))
+
+        def forward(self, x):
+            return x
+
+    Experts.forward._unsloth_remote_moe_shim = True
+
+    class Wrapped:  # accelerate's AcceleratedOptimizer steps the optimizer it wraps
+        def __init__(self, optimizer):
+            self.optimizer = optimizer
+
+    class Trainer:
+        def __init__(self):
+            pass
+
+        def training_step(self, model, inputs, num_items_in_batch = None):
+            pass
+
+        def prediction_step(self, model, inputs, prediction_loss_only):
+            return (None, None, None)
+
+        def train(self):
+            pass
+
+        def evaluate(self):
+            pass
+
+        def evaluation_loop(self, *a, **k):
+            pass
+
+    import trl
+
+    monkeypatch.setattr(trl, "SFTTrainer", Trainer)
+    cp.patch_sft_trainer(install_cp_methods = True)
+    trainer = Trainer()
+    trainer.model = torch.nn.Sequential(Experts())
+    inner = torch.optim.AdamW(trainer.model.parameters())
+    trainer.optimizer = Wrapped(inner)
+    manager = _manager(size = 2)
+    manager.mesh = None
+    trainer._context_parallel_manager = manager
+    for _ in range(2):
+        trainer.training_step(None, {"input_ids": torch.ones(1, 4, dtype = torch.long)}, 4)
+    assert len(inner._optimizer_step_pre_hooks) == 1
+    plain = torch.optim.AdamW(torch.nn.Linear(2, 2).parameters())
+    trainer.model, trainer.optimizer = torch.nn.Linear(2, 2), plain
+    trainer.training_step(None, {"input_ids": torch.ones(1, 4, dtype = torch.long)}, 4)
+    assert not plain._optimizer_step_pre_hooks
+
+
 def test_shift_labels_is_not_an_eval_label_name():
     # A named shift_labels made find_labels treat it as a required eval label.
     from transformers.utils import find_labels
