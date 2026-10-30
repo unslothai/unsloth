@@ -53,7 +53,7 @@ function IconButton({
       onClick={onClick}
       className={
         active
-          ? "bg-background text-foreground shadow-sm dark:bg-input/30"
+          ? "bg-sidebar-accent text-foreground shadow-sm"
           : "text-muted-foreground"
       }
     >
@@ -73,7 +73,7 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
   const { getInternalNode, getViewport, fitView } = useReactFlow();
 
   return (
-    <div className="grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-border border-b bg-background px-2 text-foreground">
+    <div className="grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 bg-sidebar px-2 text-foreground">
       <div className="flex min-w-0 items-center gap-2">
         {/* Sized to the name: the hidden copy sets the width, the input fills it. */}
         <div className="inline-grid min-w-0 max-w-[min(22rem,50vw)] font-semibold text-sm">
@@ -102,7 +102,7 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
         </div>
         <Badge
           variant="secondary"
-          className="h-6 shrink-0 text-ui-10 capitalize"
+          className="h-6 shrink-0 bg-background text-ui-10 capitalize"
         >
           {kind}
         </Badge>
@@ -114,7 +114,8 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
         </span>
       </div>
 
-      <div className="flex h-9 items-center gap-0.5 rounded-full bg-muted p-[3px]">
+      {/* Inverted against the sidebar-coloured bar: the pill takes the canvas colour, a pressed item the bar's. */}
+      <div className="flex h-9 items-center gap-0.5 rounded-full bg-background p-[3px]">
         <IconButton
           icon={Undo02Icon}
           label="Undo (Ctrl+Z)"
@@ -146,7 +147,7 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
               type="button"
               aria-pressed={wireStyle === style}
               onClick={() => useUiStore.getState().setWireStyle(style)}
-              className={`h-8 rounded-full px-2.5 text-xs capitalize transition ${wireStyle === style ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              className={`h-8 rounded-full px-2.5 text-xs capitalize transition ${wireStyle === style ? "bg-sidebar-accent text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
               data-testid={`flows-wire-style-${style}`}
             >
               {style}

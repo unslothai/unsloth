@@ -36,7 +36,7 @@ test("the toolbar holds no run or share actions; they float at the bottom of the
 
 test("the run bar sits on the editor body, so opening the Nodes panel or the inspector never moves it", () => {
   const page = read("features/flows/editor/flows-editor-page.tsx");
-  const body = page.slice(page.indexOf('<div className="relative flex min-h-0 flex-1">'));
+  const body = page.slice(page.indexOf('<div className="relative flex min-h-0 flex-1 bg-background">'));
   const canvasColumn = body.slice(body.indexOf('<div className="relative min-h-0 flex-1">'), body.indexOf("<RunDrawer />"));
   assert.ok(!canvasColumn.includes("<RunBar"), "the bar is not inside the canvas column");
   assert.ok(body.indexOf("<RunBar") > body.indexOf("<Inspector />"), "the bar is a child of the body row");
@@ -50,4 +50,15 @@ test("the game player starts below the titlebar too, so the window buttons never
   const outer = page.slice(page.indexOf("return ("), page.indexOf('data-testid="flow-player-page"'));
   assert.match(outer, /pt-\[var\(--studio-non-chat-content-top-inset,var\(--studio-content-top-inset,0px\)\)\]/);
   assert.ok(outer.indexOf("pt-[var(") < outer.indexOf("ref={box}"), "the inset wraps the player box");
+});
+
+test("the titlebar strip and toolbar share the sidebar's colour with no rule under them; the pill inverts", () => {
+  const page = read("features/flows/editor/flows-editor-page.tsx");
+  assert.match(page, /flows-editor flex h-full min-h-0 w-full flex-col bg-sidebar/);
+  assert.match(page, /<div className="relative flex min-h-0 flex-1 bg-background">/);
+  const bar = read("features/flows/editor/toolbar.tsx");
+  assert.match(bar, /items-center gap-3 bg-sidebar px-2 text-foreground">/);
+  assert.doesNotMatch(bar, /border-b bg-background px-2/);
+  assert.match(bar, /rounded-full bg-background p-\[3px\]/);
+  assert.match(bar, /wireStyle === style \? "bg-sidebar-accent/);
 });
