@@ -450,3 +450,170 @@ def test_banner_names_the_mesh_backend_and_batch():
     assert "effective batch 2 x 4 accumulation x 2 data parallel = 16 rows" in line
     assert "cp backend ulysses" in line and "attention sdpa" in line and "gradient checkpointing off" in line
     assert pe.announce(trainer, layout, manager) is None  # once per trainer
+
+
+# The modularity contract: declarations, composition from them, and evidence per cell.
+
+
+def test_every_contract_axis_has_declared_features():
+    from unsloth import parallel_capabilities as caps
+
+    kinds = {f.kind for f in caps.FEATURES}
+    assert {"parallel", "precision", "compile", "attention", "packing", "memory", "kernels", "loss"} <= kinds
+    names = {f.name for f in caps.FEATURES}
+    assert {"ddp", "fsdp2", "tp", "pp", "cp.ulysses", "cp.ring", "block_compile", "flash_varlen", "flex"} <= names
+    for f in caps.FEATURES:
+        assert f.module and f.scope in ("instance", "class"), f
+        assert set(f.hooks) | set(f.exclusive) <= set(caps.HOOKS), (f.name, f.hooks, f.exclusive)
+        assert set(f.consumes) | set(f.uses) | set(f.produces) <= set(caps.METADATA), f.name
+        assert set(f.mesh) <= {"dp", "tp", "pp", "cp"}, f.name
+    table = caps.markdown_table("features")
+    assert table.count("\n") == len(caps.FEATURES) + 1
+
+
+@pytest.mark.parametrize(
+    "query, match",
+    [
+        (dict(pp = 2, cp = 2, cp_backend = "ulysses"), r"pp x cp.ulysses: both run Trainer.training_step"),
+        (dict(attention = "flash_varlen"), r"flash_varlen consumes cu_seqlens"),
+    ],
+)
+def test_composition_follows_from_the_declarations(query, match):
+    from unsloth import parallel_capabilities as caps
+
+    with pytest.raises(NotImplementedError, match = match):
+        caps.check_features(_q(**query))
+
+
+def test_declarations_accept_what_composes():
+    from unsloth import parallel_capabilities as caps
+
+    assert caps.check_features(_q(attention = "flash_varlen", packing = True)) == [
+        "lora", "flash_varlen", "packing"
+    ]
+    assert "cp.ulysses" in caps.check_features(_q(tp = 2, cp = 2, cp_backend = "ulysses", compile = "block"))
+
+
+def test_every_cell_carries_three_kinds_of_evidence_that_exist():
+    import os
+    import re
+
+    from unsloth import parallel_capabilities as caps
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cell in caps.CELLS:
+        assert not cell.missing(), cell.name
+        for kind in ("parity", "engagement", "compile"):
+            ref = getattr(cell, kind)
+            if ref.startswith("eager:"):
+                assert cell.match["compile"] == ("eager",), cell.name
+                continue
+            path, name = re.match(r"(tests/[\w.]+\.py)::(\w+)", ref).groups()
+            with open(os.path.join(os.path.dirname(here), path)) as f:
+                assert f"def {name}(" in f.read(), ref
+    assert caps.markdown_table("cells").count("\n") == len(caps.CELLS) + 1
+
+
+@pytest.mark.parametrize(
+    "extra, missing",
+    [
+        (dict(memory = "unsloth_offload"), "memory='unsloth_offload'"),
+        (dict(mode = "qlora"), "mode='qlora'"),
+        (dict(kernels = True), "kernels=True"),
+        (dict(family = "qwen3"), "family='qwen3'"),
+        (dict(dp = 4), "dp=4"),
+    ],
+)
+def test_a_composed_cell_without_evidence_is_refused(extra, missing):
+    from unsloth import parallel_capabilities as caps
+
+    query = _q(tp = 2, cp = 2, cp_backend = "ulysses", **extra)
+    assert caps.cell_status(query)[0] == "unverified"
+    with pytest.raises(NotImplementedError, match = "no numeric parity / engagement / compile evidence") as info:
+        caps.check(query)
+    assert missing in str(info.value)
+
+
+def test_supported_cells_and_legacy_layouts(clean_env):
+    from unsloth import parallel_capabilities as caps
+
+    for query in (
+        _q(tp = 2, cp = 2, cp_backend = "ulysses"),
+        _q(tp = 2, cp = 2, dp = 2, cp_backend = "ulysses", memory = "gc"),
+        _q(tp = 2, cp = 2, dp = 2, fsdp2 = True, cp_backend = "ulysses", compile = "block"),
+    ):
+        assert caps.cell_status(query)[0] == "supported", query
+        caps.check(query)
+    legacy = _q(tp = 2, dp = 2)
+    assert caps.cell_status(legacy)[0] == "unverified"
+    caps.check(legacy)  # shipped before the registry: runs unless strict
+    assert caps.cell_status(_q(tp = 2))[0] == "single"
+    clean_env.setenv("UNSLOTH_PARALLEL_STRICT", "1")
+    with pytest.raises(NotImplementedError, match = "composition"):
+        caps.check(legacy)
+    caps.check(legacy, cells = False)  # the layout-only check at from_pretrained
+
+
+@pytest.mark.parametrize(
+    "query, axis",
+    [
+        (dict(cp = 2, cp_backend = "ulysses", attention = "flex_sparse"), "cp x attention"),
+        (dict(cp = 2, cp_backend = "ulysses", mode = "fp8"), "cp x precision"),
+        (dict(tp = 2, mode = "nvfp4"), "tp / pp x precision"),
+        (dict(pp = 2, pp_schedule = "interleaved"), "pp x schedule"),
+    ],
+)
+def test_new_axis_rules(query, axis):
+    from unsloth import parallel_capabilities as caps
+
+    with pytest.raises(NotImplementedError, match = f"^Unsloth: {axis}: .*Instead: "):
+        caps.check(_q(**query))
+
+
+def test_query_reads_compile_memory_and_attention_from_the_model():
+    import types
+
+    import torch.utils.checkpoint as checkpoint
+
+    from unsloth import parallel_capabilities as caps
+
+    class Layer(torch.nn.Module):
+        def forward(self, x):
+            return x
+
+    model = torch.nn.Sequential(Layer())
+    model.config = types.SimpleNamespace(model_type = "llama", _attn_implementation = "flex_attention")
+    q = caps.query_from(None, None, model, types.SimpleNamespace(gradient_checkpointing = True))
+    assert (q.compile, q.attention, q.memory) == ("eager", "flex", "gc")
+    Layer.forward._unsloth_block_compiled = True
+    original = checkpoint.checkpoint
+
+    def unsloth_offloaded_gradient_checkpoint(*a, **k):
+        return original(*a, **k)
+
+    checkpoint.checkpoint = unsloth_offloaded_gradient_checkpoint
+    try:
+        q = caps.query_from(None, None, model, types.SimpleNamespace(gradient_checkpointing = True, packing = True))
+    finally:
+        checkpoint.checkpoint = original
+    assert (q.compile, q.memory, q.packing) == ("block", "unsloth_offload", True)
+
+
+def test_compile_counters_count_breaks_and_recompiles():
+    from unsloth.utils import compile_counters as cc
+
+    torch._dynamo.reset()
+    before = cc.snapshot()
+
+    @torch.compile(backend = "aot_eager")
+    def f(x):
+        return x * 2 + 1
+
+    f(torch.ones(3))
+    f(torch.ones(3, 2))  # a rank change: one recompile
+    used = cc.since(before)
+    assert used["recompiles"] >= 1 and used["unique_graphs"] >= 2 and used["graph_breaks"] == 0
+    assert cc.not_above(used, used) == []
+    assert cc.not_above({"graph_breaks": 1, "recompiles": 0}, {"graph_breaks": 0, "recompiles": 0}) == [
+        "graph_breaks 1 > 0"
+    ]

@@ -66,7 +66,30 @@ def _full(t):
     return (t.full_tensor() if isinstance(t, DTensor) else t).detach().float().clone()
 
 
-def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = True, keep = False):
+def _block_compile_on_cpu(model):
+    """Unsloth's block compile (one torch.compile region per decoder layer) on CPU ranks: its CUDA gate opened
+    and the aot_eager backend instead of inductor. Graph breaks and recompiles are Dynamo's, so they count the
+    same; the generated kernels are not under test here."""
+    from unsloth.models import _block_compile as bc
+
+    real_compile = torch.compile
+
+    def compile_aot_eager(fn, **kwargs):
+        kwargs.pop("options", None)
+        kwargs["backend"] = "aot_eager"
+        return real_compile(fn, **kwargs)
+
+    available = torch.cuda.is_available
+    bc.torch.cuda.is_available = lambda: True
+    bc.torch.compile = compile_aot_eager
+    try:
+        return bc.patch_block_compile(model)
+    finally:
+        bc.torch.cuda.is_available = available
+        bc.torch.compile = real_compile
+
+
+def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = True, keep = False, compile = False):
     error = _import_checkout_unsloth()
     if error is not None:
         return {"skip": error}
@@ -110,6 +133,7 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
     for name, module in model.named_modules():
         if name.endswith("self_attn"):
             install_hf_attention_wrapper(module, "sdpa", cpm.get_cp_manager)
+    compiled = _block_compile_on_cpu(model) if compile else []
 
     dp = 1 if layout is None else layout.dp
     data_dp = getattr(layout, "data_dp", dp) if layout is not None else 1
@@ -187,8 +211,15 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
         ulysses_calls.append(1)
         return original_ulysses(*a, **k)
 
-    ulysses_hybrid._ulysses_hf_attention = counted
+    if not compile:
+        # A Python counter inside a compiled region would be guarded on (a recompile per call).
+        ulysses_hybrid._ulysses_hf_attention = counted
+    from unsloth.utils import compile_counters
+
+    torch._dynamo.reset()
+    before = compile_counters.snapshot()
     trainer.train()
+    compile_used = compile_counters.since(before)
     logs = [h for h in trainer.state.log_history if "loss" in h]
     is_tp = tp_native.is_tensor_parallel(trainer.model)
     if is_tp:
@@ -206,8 +237,10 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
         "is_tp": is_tp,
         "stage": None if stage is None else int(stage.stage_index),
         "seen_lengths": sorted(seen_lengths),
-        "ulysses_calls": len(ulysses_calls),
+        "ulysses_calls": None if compile else len(ulysses_calls),
         "cp_backend": None if manager is None else manager.backend,
+        "compiled_classes": [getattr(c, "__name__", c) for c in compiled],
+        "compile": compile_used,
     }
     if dist.is_initialized():
         dist.barrier()
@@ -280,11 +313,11 @@ def _spawn(case, world = 1, env = None, **kwargs):
 _REF = {}
 
 
-def _ref(bs):
-    if bs not in _REF:
-        (_REF[bs],) = _spawn("train", 1, bs = bs)
-        assert "error" not in _REF[bs], _REF[bs]
-    return _REF[bs]
+def _ref(bs, compile = False):
+    if (bs, compile) not in _REF:
+        (_REF[bs, compile],) = _spawn("train", 1, bs = bs, compile = compile)
+        assert "error" not in _REF[bs, compile], _REF[bs, compile]
+    return _REF[bs, compile]
 
 
 def _close(got, want, rel = 1e-4, what = ""):
@@ -358,3 +391,25 @@ def test_cp_x_pp_is_refused_by_the_registry_before_the_split(flag):
         error = res.get("error") or ""
         assert "cp x pp" in error and "Instead:" in error, error or res["losses"]
         assert res.get("stage") is None
+
+
+@pytest.mark.parametrize(
+    "world, flag, ref_bs",
+    [(4, "tp=2,cp=2", 2), (8, "dp=2,tp=2,cp=2,fsdp=1", 4)],
+    ids = ["cp2_tp2", "fsdp2_cp2_tp2"],
+)
+def test_block_compile_composes_like_one_process(world, flag, ref_bs):
+    """Unsloth's block compile under cp x tp: the same numbers as one eager process, every decoder layer compiled,
+    and no more graph breaks / recompiles than the same compiled script in one process (Dynamo's counters)."""
+    from unsloth.utils.compile_counters import not_above
+
+    eager = _ref(ref_bs)
+    single = _ref(ref_bs, compile = True)
+    assert single["compiled_classes"] == ["LlamaDecoderLayer"] and single["compile"]["unique_graphs"] > 0
+    _close(single, eager, what = "one process compiled")
+    for rank, res in enumerate(_spawn("train", world, {"UNSLOTH_PARALLEL": flag}, bs = 2, cp = 2, sft_cp = False, compile = True)):
+        assert "error" not in res, (rank, res.get("trace"))
+        assert res["compiled_classes"] == ["LlamaDecoderLayer"] and res["compile"]["unique_graphs"] > 0
+        assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], res["seen_lengths"]
+        assert not not_above(res["compile"], single["compile"]), (rank, res["compile"], single["compile"])
+        _close(res, eager, what = (flag, "compiled", rank))
