@@ -14,15 +14,14 @@ _SEM_FAILCRITICALERRORS = 0x0001
 
 
 def _process_error_mode_state() -> types.ModuleType:
-    """One per process, not per module copy: the installer loads this file as
-    backend.utils.subprocess_compat while the backend loads it as utils.subprocess_compat."""
+    """One per process: the installer imports this file as backend.utils.subprocess_compat, the backend as utils.subprocess_compat."""
     name = "_unsloth_windows_error_mode"
     state = sys.modules.get(name)
     if state is None:
         fresh = types.ModuleType(name)
         fresh.lock = threading.Lock()
-        fresh.held = {}  # holder token -> the flags it needs
-        fresh.before = 0  # the mode before the first holder entered
+        fresh.held = {}  # token -> flags
+        fresh.before = 0
         state = sys.modules.setdefault(name, fresh)
     return state
 
@@ -61,10 +60,8 @@ def _apply_held_error_mode(kernel32) -> None:
 
 @contextlib.contextmanager
 def windows_loader_error_boxes_suppressed(flags: int = _SEM_FAILCRITICALERRORS) -> Iterator[None]:
-    """Hold around a test-launch: the child inherits SEM_FAILCRITICALERRORS, so a missing DLL
-    exits 0xC0000135 instead of blocking on a modal box until someone dismisses it. The mode is
-    process-wide, so every holder (the installer's too) shares one record: the mode is the one
-    before the first holder plus every current holder's flags, and the last one out restores it."""
+    """The child inherits SEM_FAILCRITICALERRORS, so a missing DLL exits 0xC0000135 instead of a modal box.
+    Process-wide: mode = the one before the first holder | every holder's flags; the last out restores it."""
     if sys.platform != "win32":
         yield
         return
