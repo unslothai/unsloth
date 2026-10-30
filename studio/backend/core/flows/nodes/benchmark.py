@@ -78,7 +78,12 @@ async def _load_export(ctx: NodeContext, model: dict) -> tuple[str, bool]:
     ctx.set_status("loading_model", f"Loading {name}")
     try:
         trained = await trained_models.resolve_by(
-            deadline, ctx.caller, model = None, checkpoint = None, export = name, kind = "llm",
+            deadline,
+            ctx.caller,
+            model = None,
+            checkpoint = None,
+            export = name,
+            kind = "llm",
             variant = model.get("variant") or None,
         )
         await loading.load_llm(

@@ -136,7 +136,9 @@ def test_split_is_disjoint_covering_and_stable():
 
 
 def test_seed_rows_rewrite_failures_then_fresh():
-    rows = loop_rounds.seed_rows([{"prompt": "a", "reference": "b", "output": "c"}], 4, 50, per_failure = 2)
+    rows = loop_rounds.seed_rows(
+        [{"prompt": "a", "reference": "b", "output": "c"}], 4, 50, per_failure = 2
+    )
     assert [r["origin"] for r in rows] == ["failure", "failure", "fresh", "fresh"]
     assert rows[0] == {
         "origin": "failure",
@@ -154,10 +156,26 @@ def test_seed_rows_rewrite_failures_then_fresh():
 
 def test_few_failures_never_flood_the_seed_with_near_copies():
     failures = [
-        {"prompt": "My card was charged twice for one order!", "reference": "billing", "output": "refunds"},
-        {"prompt": "my card was charged twice for one order", "reference": "billing", "output": "refunds"},
-        {"prompt": "My card was charged twice for 1 order.", "reference": "billing", "output": "shipping"},
-        {"prompt": "the package never arrived at my door", "reference": "shipping", "output": "returns"},
+        {
+            "prompt": "My card was charged twice for one order!",
+            "reference": "billing",
+            "output": "refunds",
+        },
+        {
+            "prompt": "my card was charged twice for one order",
+            "reference": "billing",
+            "output": "refunds",
+        },
+        {
+            "prompt": "My card was charged twice for 1 order.",
+            "reference": "billing",
+            "output": "shipping",
+        },
+        {
+            "prompt": "the package never arrived at my door",
+            "reference": "shipping",
+            "output": "returns",
+        },
     ]
     rows = loop_rounds.seed_rows(failures, 60, 50)
     fed = [r for r in rows if r["origin"] == "failure"]
@@ -168,12 +186,19 @@ def test_few_failures_never_flood_the_seed_with_near_copies():
         "the package never arrived at my door",
     ]
     # The same prompt filed under a different queue is a different failure.
-    moved = failures + [{"prompt": "the package never arrived at my door", "reference": "returns", "output": "x"}]
+    moved = failures + [
+        {"prompt": "the package never arrived at my door", "reference": "returns", "output": "x"}
+    ]
     assert len([r for r in loop_rounds.seed_rows(moved, 60, 50) if r["origin"] == "failure"]) == 6
     # Many distinct failures still fill the share, never more.
     many = [{"prompt": t, "reference": "billing", "output": "x"} for t in HELD]
     assert len([r for r in loop_rounds.seed_rows(many, 8, 25) if r["origin"] == "failure"]) == 2
-    assert next(p for p in SPECS_BY_TYPE["logic.loop"]["params"] if p["id"] == "failure_percent")["default"] == 25
+    assert (
+        next(p for p in SPECS_BY_TYPE["logic.loop"]["params"] if p["id"] == "failure_percent")[
+            "default"
+        ]
+        == 25
+    )
 
 
 class LoopEngine(FlowEngine):
