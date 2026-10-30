@@ -2526,6 +2526,9 @@ def tp_trainer_setup(
         from .fsdp2_native import _inner_optimizer, _mixed_param_groups, _split_mixed_param_groups
 
         inner = _inner_optimizer(optimizer)
+        from ..parallel_capabilities import refuse_shard_unaware_optimizer
+
+        refuse_shard_unaware_optimizer(inner, "tp")  # Muon would orthogonalize the tp shards
         if getattr(trainer, "lr_scheduler", None) is not None and _mixed_param_groups(inner):
             # A prebuilt scheduler keeps one base LR / lambda per original group: split groups would go unscheduled.
             raise ValueError(

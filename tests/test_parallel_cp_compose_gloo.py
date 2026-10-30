@@ -49,13 +49,22 @@ SEQ = 16
 N_LAYERS = 4
 
 
-def _checkpoint(tmp):
-    # 4 heads / 4 kv heads: tp 2 leaves 2 local heads, which Ulysses splits over cp 2.
-    path = _save_checkpoint("llama", os.path.join(tmp, "ckpt"), {"num_hidden_layers": N_LAYERS})
+def _checkpoint(tmp, arch = "llama"):
     from transformers import AutoTokenizer
 
-    from test_tp_native_oracle import LLAMA
+    from test_tp_native_oracle import LLAMA, QWEN3, QWEN3_MOE, build
 
+    if arch in ("qwen3_moe", "qwen3"):
+        # qwen3_moe: 4 heads / 2 kv heads, 4 experts (2 per token), router aux loss off as shipped.
+        repo = QWEN3_MOE if arch == "qwen3_moe" else QWEN3
+        path = os.path.join(tmp, "ckpt")
+        model = build(repo, {"num_hidden_layers": 2}, lora = False)
+        model.generation_config.pad_token_id = None
+        model.save_pretrained(path, safe_serialization = True)
+        AutoTokenizer.from_pretrained(repo).save_pretrained(path)
+        return path
+    # 4 heads / 4 kv heads: tp 2 leaves 2 local heads, which Ulysses splits over cp 2.
+    path = _save_checkpoint("llama", os.path.join(tmp, "ckpt"), {"num_hidden_layers": N_LAYERS})
     AutoTokenizer.from_pretrained(LLAMA).save_pretrained(path)
     return path
 
@@ -89,7 +98,10 @@ def _block_compile_on_cpu(model):
         bc.torch.compile = real_compile
 
 
-def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = True, keep = False, compile = False):
+def _case_train(
+    rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = True, keep = False, compile = False,
+    arch = "llama", router_aux = False, attn = "sdpa", ungate = False,
+):
     error = _import_checkout_unsloth()
     if error is not None:
         return {"skip": error}
@@ -109,6 +121,11 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
     cpm.DEVICE_TYPE_TORCH = "cpu"
     # The test seam: CPU ranks run the Hugging Face attention through the Ulysses wrapper.
     cpm._supports_context_parallel = lambda model, backend = "ring": True
+    if ungate:
+        # Measure a cell the registry refuses for lack of evidence (the evidence run itself).
+        from unsloth import parallel_capabilities
+
+        parallel_capabilities._gated = lambda query: False
     from unsloth.utils import attention_dispatch
 
     attention_dispatch.HAS_XFORMERS = False  # CUDA only: torch SDPA on the CPU ranks
@@ -117,7 +134,7 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
 
     def load(model_name, load_in_4bit = True, **kwargs):
         return AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype = torch.float32, attn_implementation = "sdpa"
+            model_name, torch_dtype = torch.float32, attn_implementation = attn
         )
 
     def peft(model):
@@ -130,13 +147,16 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
     model = peft(load(ckpt, load_in_4bit = False))
+    if router_aux:
+        model.config.output_router_logits = True
     for name, module in model.named_modules():
         if name.endswith("self_attn"):
             install_hf_attention_wrapper(module, "sdpa", cpm.get_cp_manager)
     compiled = _block_compile_on_cpu(model) if compile else []
 
-    dp = 1 if layout is None else layout.dp
-    data_dp = getattr(layout, "data_dp", dp) if layout is not None else 1
+    # Data parallel replicas read different rows; cp / tp / pp peers share theirs.
+    model_ranks = cp * (1 if layout is None else layout.tp * layout.pp)
+    data_dp = world // model_ranks
     g = torch.Generator().manual_seed(1)
     ids = torch.randint(0, 1000, (steps * ga * bs * data_dp, SEQ), generator = g)
     import datasets
@@ -240,6 +260,8 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
         "ulysses_calls": None if compile else len(ulysses_calls),
         "cp_backend": None if manager is None else manager.backend,
         "compiled_classes": [getattr(c, "__name__", c) for c in compiled],
+        "native_fsdp2": __import__("unsloth.models.fsdp2_native", fromlist = ["x"]).is_native_fsdp2(trainer.model),
+        "banner": trainer.__dict__.get("_unsloth_parallel_announced"),
         "compile": compile_used,
     }
     if dist.is_initialized():
@@ -285,7 +307,7 @@ def _spawn(case, world = 1, env = None, **kwargs):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        kwargs["ckpt"] = _checkpoint(tmp)
+        kwargs["ckpt"] = _checkpoint(tmp, kwargs.get("arch", "llama"))
         procs = [
             ctx.Process(target = _worker, args = (r, world, port, case, tmp, env or {}, kwargs))
             for r in range(world)
@@ -313,11 +335,12 @@ def _spawn(case, world = 1, env = None, **kwargs):
 _REF = {}
 
 
-def _ref(bs, compile = False):
-    if (bs, compile) not in _REF:
-        (_REF[bs, compile],) = _spawn("train", 1, bs = bs, compile = compile)
-        assert "error" not in _REF[bs, compile], _REF[bs, compile]
-    return _REF[bs, compile]
+def _ref(bs, compile = False, arch = "llama"):
+    key = (bs, compile, arch)
+    if key not in _REF:
+        (_REF[key],) = _spawn("train", 1, bs = bs, compile = compile, arch = arch)
+        assert "error" not in _REF[key], _REF[key]
+    return _REF[key]
 
 
 def _close(got, want, rel = 1e-4, what = ""):
@@ -414,3 +437,67 @@ def test_block_compile_composes_like_one_process(world, flag, ref_bs):
         assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], res["seen_lengths"]
         assert not not_above(res["compile"], single["compile"]), (rank, res["compile"], single["compile"])
         _close(res, eager, what = (flag, "compiled", rank))
+
+
+@pytest.mark.parametrize(
+    "env, sft_cp",
+    [({"UNSLOTH_FSDP2": "1"}, True), ({"UNSLOTH_PARALLEL": "cp=2,fsdp=1"}, False)],
+    ids = ["fsdp2_env_cp_config", "unsloth_parallel"],
+)
+def test_cp_with_native_fsdp2_matches_one_process(env, sft_cp):
+    """Native FSDP2 (UNSLOTH_FSDP2=1) never reads context_parallel_size: it must shard over the whole
+    (dp_shard, cp) world so cp peers' gradients are reduced together, and the loss is normalised over dp x cp."""
+    ref = _ref(4)
+    for rank, res in enumerate(_spawn("train", 4, env, bs = 2, cp = 2, sft_cp = sft_cp)):
+        assert "error" not in res, (rank, res.get("trace"))
+        assert res["native_fsdp2"] and res["cp_group"] == [rank - rank % 2, rank - rank % 2 + 1]
+        assert res["seen_lengths"] == [SEQ // 2] and res["ulysses_calls"] >= N_LAYERS
+        assert "FSDP2 shards and reduces over dp_shard x cp" in (res["banner"] or ""), res["banner"]
+        _close(res, ref, what = (env, rank))
+
+
+def test_moe_under_cp_is_refused_until_its_cell_has_evidence():
+    for res in _spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe"):
+        error = res.get("error") or ""
+        assert "MoE (router aux loss off) x cp" in error and "lacks parity" in error, error or res["losses"]
+
+
+def test_dense_qwen3_under_cp_matches_one_process():
+    """The control for the MoE cell below: the same family without experts trains like one process."""
+    ref = _ref(2, arch = "qwen3")
+    for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2, arch = "qwen3")):
+        assert "error" not in res, (rank, res.get("trace"))
+        assert res["seen_lengths"] == [SEQ // 2] and res["ulysses_calls"] >= 2
+        _close(res, ref, what = ("qwen3", rank))
+
+
+@pytest.mark.xfail(
+    strict = True,
+    reason = "MoE x cp parity: router LoRA grads up to 5% off one process (A/A 1e-6); an XPASS means the cell can open",
+)
+@pytest.mark.parametrize("compile", [False, True], ids = ["eager", "block_compile"])
+def test_moe_without_aux_loss_under_cp_matches_one_process(compile):
+    """Qwen3-MoE (router aux loss off) under Ulysses cp 2: routed experts are per token, so the shards should train
+    like one process, and block compile should add no graph breaks / recompiles. Run with the registry gate
+    lifted: this is the evidence the cell is waiting for."""
+    from unsloth.utils.compile_counters import not_above
+
+    ref = _ref(2, arch = "qwen3_moe")
+    single = _ref(2, compile = True, arch = "qwen3_moe") if compile else None
+    for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", compile = compile, ungate = True)):
+        assert "error" not in res, (rank, res.get("trace"))
+        assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2]
+        if compile:
+            assert res["compiled_classes"] and not not_above(res["compile"], single["compile"]), (
+                res["compile"],
+                single["compile"],
+            )
+        else:
+            assert res["ulysses_calls"] >= 2
+        _close(res, ref, what = ("qwen3_moe", compile, rank))
+
+
+def test_moe_with_router_aux_loss_under_cp_is_refused():
+    for res in _spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", router_aux = True):
+        error = res.get("error") or ""
+        assert "MoE x pp / cp" in error and "Instead: output_router_logits = False" in error, error or res["losses"]

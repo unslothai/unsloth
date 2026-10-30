@@ -6234,7 +6234,39 @@ def _trainer_init_args(trainer, init, args, kwargs):
     return training_args
 
 
+def _prebuilt_optimizer(trainer, init, args, kwargs):
+    optimizers = kwargs.get("optimizers")
+    if optimizers is None:
+        try:
+            import inspect
+            bound = inspect.signature(init).bind_partial(trainer, *args, **kwargs)
+            optimizers = bound.arguments.get("optimizers")
+        except (TypeError, ValueError):
+            optimizers = None
+    if isinstance(optimizers, (tuple, list)) and optimizers:
+        return optimizers[0]
+    return None
+
+
 def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
+    from .. import fsdp2_launch as _launch
+
+    try:
+        native_fsdp2 = bool(_launch.unsloth_fsdp2_native_requested())
+    except Exception:
+        native_fsdp2 = False
+    tp_env_set = os.environ.get("UNSLOTH_TP_SIZE", "").strip() not in ("", "1")
+    if native_fsdp2 or tp_env_set:
+        # Before anything is sharded: a prebuilt Muon (or args.optim naming one) would orthogonalize shards.
+        from ..parallel_capabilities import refuse_shard_unaware_optimizer
+
+        optimizer = _prebuilt_optimizer(trainer, init, args, kwargs)
+        if optimizer is None:
+            optim = getattr(_trainer_init_args(trainer, init, args, kwargs), "optim", None)
+            optimizer = str(getattr(optim, "value", optim) or "")  # its name only
+        for what, on in (("fsdp2", native_fsdp2), ("tp", tp_env_set)):
+            if on:
+                refuse_shard_unaware_optimizer(optimizer, what)
     if not any(
         os.environ.get(name, "").strip() not in ("", "1")
         for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")

@@ -10,8 +10,10 @@
     unsloth.parallelize(tp = 2, cp = 2)                                    # before from_pretrained
 
 Keys: dp, tp, pp, cp (positive integers; dp may be omitted and then fills the world), cp_backend (auto, ulysses,
-ring), fsdp (0 / 1: native FSDP2 over the data parallel ranks instead of DDP-style averaging), pp_schedule
-(gpipe, 1f1b), pp_microbatches. The flag is parsed once, at `import unsloth`, and translated to the variables
+ring), fsdp (0 / 1: native FSDP2 over the data parallel ranks instead of DDP-style averaging; fsdp=N with N > 1
+is dp_shard=N), dp_shard=N / dp_replicate=N (dp with FSDP2 / DDP), pp_schedule (gpipe, 1f1b), pp_microbatches.
+transformers' DistributedConfig names are accepted too (tp_size, pp_size, fsdp_size, cp_size); ep / ep_size and
+efsdp are reserved and refused until expert parallel lands. The flag is parsed once, at `import unsloth`, and translated to the variables
 the existing paths read: UNSLOTH_TP_SIZE, UNSLOTH_PP_SIZE, UNSLOTH_FSDP2, UNSLOTH_PP_SCHEDULE,
 UNSLOTH_PP_MICROBATCHES, UNSLOTH_CP_SIZE and UNSLOTH_CP_BACKEND. Those variables keep working on their own; a
 variable that disagrees with the flag is refused.
@@ -52,8 +54,20 @@ _ALIASES = {
     "schedule": "pp_schedule",
     "backend": "cp_backend",
     "fsdp2": "fsdp",
+    # transformers' DistributedConfig names (tp_size, fsdp_size, pp_size, ep_size) and the mesh axis names.
+    "tp_size": "tp",
+    "pp_size": "pp",
+    "cp_size": "cp",
+    "dp_size": "dp",
+    "fsdp_size": "dp_shard",
+    "ep_size": "ep",
 }
-_KEYS = _SIZE_KEYS + ("cp_backend", "fsdp", "pp_schedule", "pp_microbatches")
+# Kept for compatibility with transformers' naming; refused until Unsloth implements them.
+_RESERVED = {
+    "ep": "expert parallel (ep) is not supported yet; MoE trains with its experts whole on every rank",
+    "efsdp": "expert FSDP (efsdp) is not supported yet",
+}
+_KEYS = _SIZE_KEYS + ("dp_shard", "dp_replicate", "cp_backend", "fsdp", "pp_schedule", "pp_microbatches")
 _TRUTHY = ("1", "true", "yes", "on")
 _FALSY = ("0", "false", "no", "off")
 # The variables each key writes, in the form the legacy readers expect.
@@ -109,13 +123,17 @@ def parse_parallel_spec(raw, source = FLAG):
             )
         key, value = (x.strip() for x in part.split("=", 1))
         key = _ALIASES.get(key.lower(), key.lower())
+        if key in _RESERVED:
+            raise ValueError(f"Unsloth: {source}={raw!r}: {_RESERVED[key]}; drop {key}=.")
+        if key == "fsdp" and value.strip().isdigit() and int(value) > 1:
+            key = "dp_shard"  # fsdp=N: N FSDP2 shards (transformers' fsdp_size); fsdp=0 / 1 stays the switch
         if key not in _KEYS:
             raise ValueError(
                 f"Unsloth: {source}={raw!r}: unknown key {key!r}; the keys are {', '.join(_KEYS)}."
             )
         if key in spec:
             raise ValueError(f"Unsloth: {source}={raw!r} gives {key} twice.")
-        if key in _SIZE_KEYS or key == "pp_microbatches":
+        if key in _SIZE_KEYS or key in ("pp_microbatches", "dp_shard", "dp_replicate"):
             spec[key] = _positive(key, value, source)
         elif key == "fsdp":
             low = value.lower()
@@ -142,6 +160,21 @@ def parse_parallel_spec(raw, source = FLAG):
                     f"{', '.join(PP_SCHEDULES)}{hint}."
                 )
             spec[key] = low
+    shard, replicate = spec.pop("dp_shard", None), spec.pop("dp_replicate", None)
+    if shard is not None and replicate is not None and shard > 1 and replicate > 1:
+        raise ValueError(
+            f"Unsloth: {source}={raw!r}: dp_shard x dp_replicate (HSDP) is not supported by {FLAG} yet; give one."
+        )
+    for size, fsdp in ((shard, True), (replicate, False)):
+        if size is None:
+            continue
+        if "dp" in spec and spec["dp"] != size:
+            raise ValueError(f"Unsloth: {source}={raw!r}: dp={spec['dp']} disagrees with the dp_shard / dp_replicate size.")
+        if "fsdp" in spec and spec["fsdp"] != fsdp and size > 1:
+            raise ValueError(f"Unsloth: {source}={raw!r}: fsdp={_format(spec['fsdp'])} disagrees with the dp_shard / dp_replicate key.")
+        spec["dp"] = size
+        if size > 1:
+            spec["fsdp"] = fsdp
     if "cp_backend" in spec and spec.get("cp", 1) == 1:
         raise ValueError(f"Unsloth: {source}={raw!r}: cp_backend needs cp > 1.")
     for key in ("pp_schedule", "pp_microbatches"):
@@ -602,6 +635,8 @@ def describe_trainer_layout(trainer, layout = None, cp_manager = None):
     if cp > 1:
         backend = getattr(cp_manager, "backend", None) or getattr(layout, "cp_backend", None) or "auto"
         parts.append(f"cp backend {backend}")
+        if fsdp2 or getattr(cp_manager, "fsdp2_native", False):
+            parts.append("FSDP2 shards and reduces over dp_shard x cp")
     model = getattr(trainer, "model", None)
     config = getattr(model, "config", None)
     attention = getattr(config, "_attn_implementation", None)

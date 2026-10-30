@@ -3751,7 +3751,12 @@ def _refuse_bnb_optimizer_instance(optimizer):
     """A prebuilt optimizer passed as Trainer(optimizers = (opt, ...)) or to accelerator.prepare:
     _swap_bnb_optimizer only edits args.optim, so a bitsandbytes instance would be kept and step
     DTensor shards it cannot handle. Torch optimizers pass."""
-    if optimizer is None or _localize_bnb_optimizer(optimizer):
+    if optimizer is None:
+        return
+    from ..parallel_capabilities import refuse_shard_unaware_optimizer
+
+    refuse_shard_unaware_optimizer(_inner_optimizer(optimizer), "fsdp2")  # Muon would orthogonalize shards
+    if _localize_bnb_optimizer(optimizer):
         return
     inner = _inner_optimizer(optimizer)
     if "galore" in type(inner).__name__.lower():

@@ -50,6 +50,7 @@ __all__ = [
     "check",
     "check_layout",
     "query_from",
+    "refuse_shard_unaware_optimizer",
     "markdown_table",
 ]
 
@@ -78,6 +79,9 @@ class Query:
     memory: str = "none"  # none, gc (torch checkpoint), unsloth_gc, unsloth_offload, tiled_mlp
     kernels: bool = False  # Unsloth's fused RoPE / RMSNorm / SwiGLU / LoRA kernels
     loss: str = "standard"  # standard, fused_ce, chunked_ce, fused_rl
+    moe: bool = False  # routed experts
+    router_aux_loss: bool = False  # output_router_logits: the load balancing loss is on
+    optim: str = ""  # the optimizer (args.optim or the class of a prebuilt one), lower case
 
 
 @dataclasses.dataclass(frozen = True)
@@ -228,6 +232,30 @@ RULES = (
         lambda q: (q.tp > 1 or q.pp > 1) and q.mode in ("fp8", "nvfp4", "mxfp8"),
         "the low precision linear layers are not sharded by tensor parallel or split by pipeline parallel",
         "UNSLOTH_FSDP2=1 (dp) for FP8 / NVFP4, or 16-bit LoRA with tp / pp",
+    ),
+    Rule(
+        "MoE x pp / cp",
+        "the MoE router auxiliary loss (output_router_logits) under pipeline / context parallel",
+        lambda q: q.moe and q.router_aux_loss and (q.pp > 1 or q.cp > 1),
+        "the load balancing loss is a product of whole-batch means; per stage / per shard pieces would be "
+        "summed wrong (the aux-loss injection design has not landed)",
+        "output_router_logits = False (router_aux_loss_coef unused), or drop pp / cp",
+    ),
+    Rule(
+        "MoE x tp",
+        "MoE models under tensor parallel",
+        lambda q: q.moe and q.tp > 1,
+        "tensor parallel shards attention / MLP projections, not routed experts (expert parallel is not "
+        "supported yet)",
+        "drop tp (FSDP2 / DDP keep the experts whole), or a dense model",
+    ),
+    Rule(
+        "fsdp2 / tp x optimizer",
+        "Muon under native FSDP2 or tensor parallel",
+        lambda q: (q.fsdp2 or q.tp > 1) and "muon" in q.optim,
+        "Muon orthogonalizes each weight matrix, and every rank holds only a shard of it, so it would "
+        "orthogonalize the shards",
+        "adamw_torch / adamw_8bit (they step shards exactly), or DDP (dp without fsdp) for Muon",
     ),
     Rule(
         "pp / tp x vLLM",
@@ -450,6 +478,7 @@ class Cell:
     parity: Optional[str]
     engagement: Optional[str]
     compile: Optional[str]
+    note: str = ""
 
     def covers(self, query: Query) -> bool:
         return all(getattr(query, k) in v for k, v in self.match.items())
@@ -474,9 +503,40 @@ _CP_TP = {
     "kernels": (False,),
     "loss": ("standard",),
     "vllm": (False,),
+    "moe": (False,),
 }
 _PARITY = _GLOO + "test_cp_x_tp_from_unsloth_parallel_matches_one_process"
+_CP_DP = {**_CP_TP, "tp": (1,), "moe": (False,)}
+_FSDP2_CP = _GLOO + "test_cp_with_native_fsdp2_matches_one_process"
+_MOE_CP = _GLOO + "test_moe_without_aux_loss_under_cp_matches_one_process"
 CELLS = (
+    Cell(
+        "cp x native FSDP2 (dp_shard x cp), eager",
+        {**_CP_DP, "fsdp2": (True,), "compile": ("eager",), "dp": (1, 2), "cp": (2,)},
+        parity = _FSDP2_CP,
+        engagement = _FSDP2_CP + " (FSDP2 mesh covers the cp group, seq / cp tokens, Ulysses exchanges)",
+        compile = "eager: no compiled region",
+    ),
+    Cell(
+        "MoE (router aux loss off) x cp",
+        {"moe": (True,), "router_aux_loss": (False,), "cp": (2, 4, 8)},
+        parity = None,
+        engagement = _MOE_CP + " (seq / cp tokens, Ulysses exchanges)",
+        compile = None,
+        note = (
+            "parity fails on CPU gloo (qwen3_moe, cp 2): router LoRA grads up to 5% and attention LoRA grads ~1e-3 "
+            "off one process, while dense qwen3 under cp 2 and a one-process A/A agree to 1e-6; block compile adds "
+            f"recompiles (28 > 22). See {_MOE_CP}"
+        ),
+    ),
+    Cell(
+        "MoE (router aux loss off) x pp",
+        {"moe": (True,), "router_aux_loss": (False,), "pp": (2, 4, 8)},
+        parity = None,
+        engagement = None,
+        compile = None,
+        note = "pipeline parallel refuses MoE (stage receive-buffer liveness test first)",
+    ),
     Cell(
         "cp x tp (DDP dp), eager",
         {**_CP_TP, "fsdp2": (False,), "compile": ("eager",), "dp": (1, 2), "tp": (2,), "cp": (2,)},
@@ -508,8 +568,11 @@ def _strict() -> bool:
 
 
 def _gated(query: Query) -> bool:
-    """Compositions opened by the one-flag work: they run only with a cell."""
-    return query.cp > 1 and (query.tp > 1 or query.pp > 1)
+    """Compositions opened by the one-flag work, and MoE under any model parallel axis: they run only with a
+    cell carrying all three kinds of evidence."""
+    return (query.cp > 1 and (query.tp > 1 or query.pp > 1)) or (
+        query.moe and (query.cp > 1 or query.pp > 1 or query.tp > 1)
+    )
 
 
 def cell_status(query: Query) -> tuple:
@@ -520,7 +583,8 @@ def cell_status(query: Query) -> tuple:
             missing = cell.missing()
             if not missing:
                 return ("supported", cell)
-            return ("unverified", f"cell {cell.name!r} lacks {', '.join(missing)} evidence")
+            note = f"; {cell.note}" if cell.note else ""
+            return ("unverified", f"cell {cell.name!r} lacks {', '.join(missing)} evidence{note}")
     if axes <= 1 and not _gated(query):
         return ("single", None)
     differ = []
@@ -694,8 +758,34 @@ def _kernels(model):
     return False
 
 
-def query_from(layout = None, trainer_cls = None, model = None, args = None, cp = None, cp_backend = None):
+def _moe(model):
+    config = getattr(model, "config", None)
+    text = getattr(config, "text_config", None) or config
+    experts = 0
+    for name in ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts"):
+        value = getattr(text, name, None)
+        if isinstance(value, int):
+            experts = max(experts, value)
+    dense = list(getattr(text, "mlp_only_layers", None) or [])
+    layers = getattr(text, "num_hidden_layers", None)
+    if experts > 1 and dense and isinstance(layers, int) and sorted(dense) == list(range(layers)):
+        experts = 0  # every layer dense
+    return experts > 1, bool(getattr(text, "output_router_logits", False)) and experts > 1
+
+
+def _optimizer_name(args, optimizer = None):
+    if optimizer is not None:
+        inner = getattr(optimizer, "optimizer", optimizer)
+        return type(inner).__name__.lower()
+    optim = getattr(args, "optim", "") if args is not None else ""
+    return str(getattr(optim, "value", optim) or "").lower()
+
+
+def query_from(
+    layout = None, trainer_cls = None, model = None, args = None, cp = None, cp_backend = None, optimizer = None
+):
     family, hybrid, multimodal, windowed = _model_traits(model)
+    moe, router_aux_loss = _moe(model)
     packing = bool(getattr(args, "packing", False) or getattr(args, "padding_free", False))
     kernels = _kernels(model)
     return Query(
@@ -722,10 +812,23 @@ def query_from(layout = None, trainer_cls = None, model = None, args = None, cp 
         kernels = kernels,
         # Unsloth's fast models compute the loss fused / chunked unless logits are asked for.
         loss = "fused_ce" if kernels and __import__("os").environ.get("UNSLOTH_RETURN_LOGITS", "0") != "1" else "standard",
+        moe = moe,
+        router_aux_loss = router_aux_loss,
+        optim = _optimizer_name(args, optimizer),
     )
 
 
-def check_layout(layout, trainer_cls = None, model = None, args = None, cp = None, cp_backend = None, cells = True):
+def refuse_shard_unaware_optimizer(optimizer, what: str) -> None:
+    """At the optimizer hooks of native FSDP2 / tensor parallel (the optimizer exists only then): the
+    "fsdp2 / tp x optimizer" rule on the optimizer actually built."""
+    name = optimizer.lower() if isinstance(optimizer, str) else _optimizer_name(None, optimizer)
+    check(Query(trainer = "trainer", fsdp2 = what == "fsdp2", tp = 2 if what == "tp" else 1, optim = name,
+                torch = _torch_version()), cells = False)
+
+
+def check_layout(
+    layout, trainer_cls = None, model = None, args = None, cp = None, cp_backend = None, cells = True, optimizer = None
+):
     """`check` for a ParallelLayout (and what is known of the trainer / model / arguments). `cells = False`:
     the rules and feature declarations only (the model and trainer are not known yet)."""
     size = cp if cp is not None else getattr(layout, "cp", 1)
@@ -733,7 +836,7 @@ def check_layout(layout, trainer_cls = None, model = None, args = None, cp = Non
         from .context_parallel import resolve_cp_backend
 
         cp_backend = resolve_cp_backend("auto", size, model, tp = getattr(layout, "tp", 1))
-    check(query_from(layout, trainer_cls, model, args, cp, cp_backend), cells = cells)
+    check(query_from(layout, trainer_cls, model, args, cp, cp_backend, optimizer), cells = cells)
 
 
 def markdown_table(kind = "rules") -> str:
@@ -748,11 +851,11 @@ def markdown_table(kind = "rules") -> str:
             lines.append(f"| {f.name} | {f.kind} | " + " | ".join(cols) + f" | {f.scope} | {f.module} |")
         return "\n".join(lines)
     if kind == "cells":
-        lines = ["| cell | covers | parity | engagement | compile |", "|---|---|---|---|---|"]
+        lines = ["| cell | covers | parity | engagement | compile | note |", "|---|---|---|---|---|---|"]
         for c in CELLS:
             covers = "; ".join(f"{k} {'/'.join(map(str, v))}" for k, v in c.match.items())
             lines.append(f"| {c.name} | {covers} | {c.parity or 'missing'} | {c.engagement or 'missing'} | "
-                         f"{c.compile or 'missing'} |")
+                         f"{c.compile or 'missing'} | {c.note or '-'} |")
         return "\n".join(lines)
     lines = ["| axis | refused cell | why | instead |", "|---|---|---|---|"]
     for rule in RULES:

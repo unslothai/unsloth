@@ -718,9 +718,29 @@ def _refuse_model_parallel_cp(size: int, model, trainer_cls = None, config = Non
     and train on mixed-up shards. Context parallel composes through the root mesh only (cp in UNSLOTH_PARALLEL
     or UNSLOTH_CP_SIZE, read with the layout); the capability registry decides which compositions run."""
     axes = _model_parallel_axes(model)
-    if not axes:
-        return
     import os
+
+    if not axes:
+        # Context parallel alone (DDP or native FSDP2 over the rest): the registry's rules and cells too.
+        import types
+
+        from .fsdp2_launch import unsloth_fsdp2_native_requested
+        from .parallel_capabilities import check_layout
+
+        try:
+            world = int(os.environ.get("WORLD_SIZE", "1") or 1)
+        except ValueError:
+            world = 1
+        try:
+            fsdp2 = bool(unsloth_fsdp2_native_requested())
+        except Exception:
+            fsdp2 = False
+        alone = types.SimpleNamespace(
+            dp = max(world // size, 1), tp = 1, pp = 1, cp = size, fsdp2 = fsdp2, cp_backend = None, schedule = None
+        )
+        backend = getattr(config, "context_parallel_backend", None)
+        check_layout(alone, trainer_cls, model, config, cp_backend = backend)
+        return
 
     layout = _composed_layout(size) if all("UNSLOTH_" in a for a in axes) else None
     if layout is not None:
@@ -798,6 +818,33 @@ def _resolve_auto_backend(config, kwargs, size: int, model, rl: bool = False) ->
             config._unsloth_cp_backend_auto = True
         except Exception:
             pass
+
+
+def _check_native_fsdp2_reduces_over_cp(model, manager) -> None:
+    """UNSLOTH_FSDP2=1 (native FSDP2, models/fsdp2_native.py) shards inside Trainer.__init__ without knowing about
+    context parallel. CP peers hold different tokens of the same rows, so their gradients must be reduced together:
+    the FSDP2 mesh must contain the cp group (the world mesh does: FSDP2 then shards over dp_shard x cp, and its
+    gradient average over dp x cp matches the CP token count). A sub-mesh that splits a cp group is refused."""
+    try:
+        from .models.fsdp2_native import is_native_fsdp2
+        from .models.fsdp2_save import model_mesh
+    except Exception:
+        return
+    if not is_native_fsdp2(model):
+        return
+    mesh = model_mesh(model)
+    manager.fsdp2_native = True
+    if mesh is None:
+        return  # the default world group
+    fsdp_ranks = set(int(r) for r in mesh.mesh.flatten().tolist())
+    cp_ranks = set(int(r) for r in manager.mesh.mesh.flatten().tolist())
+    if not cp_ranks <= fsdp_ranks:
+        raise NotImplementedError(
+            f"Unsloth: cp x fsdp2: native FSDP2 shards over ranks {sorted(fsdp_ranks)}, which leaves out context "
+            f"parallel peers {sorted(cp_ranks - fsdp_ranks)}; their gradients would not be reduced together. "
+            "Instead: let UNSLOTH_PARALLEL / UNSLOTH_FSDP2=1 shard over the whole (dp_shard, cp) mesh (no FSDP2 "
+            "sub-mesh), or drop cp."
+        )
 
 
 def _check_cp_runtime(self, size: int, backend: str) -> None:
@@ -1029,6 +1076,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         manager = ContextParallelManager(
             size, backend, rotate_method, fsdp2 = fsdp2, **({"layout": layout} if layout is not None else {})
         )
+        _check_native_fsdp2_reduces_over_cp(self.model, manager)
         self._context_parallel_manager = manager
         install_methods()
         manager.attach_attention_hooks(self.model)

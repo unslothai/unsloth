@@ -502,9 +502,13 @@ def test_every_cell_carries_three_kinds_of_evidence_that_exist():
 
     here = os.path.dirname(os.path.abspath(__file__))
     for cell in caps.CELLS:
-        assert not cell.missing(), cell.name
+        if cell.missing():
+            # A cell waiting for evidence says why, and is refused (tests below).
+            assert cell.note, cell.name
         for kind in ("parity", "engagement", "compile"):
             ref = getattr(cell, kind)
+            if ref is None:
+                continue
             if ref.startswith("eager:"):
                 assert cell.match["compile"] == ("eager",), cell.name
                 continue
@@ -617,3 +621,113 @@ def test_compile_counters_count_breaks_and_recompiles():
     assert cc.not_above({"graph_breaks": 1, "recompiles": 0}, {"graph_breaks": 0, "recompiles": 0}) == [
         "graph_breaks 1 > 0"
     ]
+
+
+
+# transformers DistributedConfig names, reserved axes, HSDP.
+
+
+@pytest.mark.parametrize(
+    "raw, want",
+    [
+        ("fsdp=4,tp=2", {"tp": 2, "dp": 4, "fsdp": True}),
+        ("fsdp_size=2,tp_size=2,cp_size=2,pp_size=2", {"tp": 2, "cp": 2, "pp": 2, "dp": 2, "fsdp": True}),
+        ("dp_shard=2,cp=2", {"cp": 2, "dp": 2, "fsdp": True}),
+        ("dp_replicate=2,tp=2", {"tp": 2, "dp": 2, "fsdp": False}),
+        ("fsdp=1,dp=2", {"fsdp": True, "dp": 2}),  # 0 / 1 stays the switch
+        ("fsdp=0,tp=2", {"fsdp": False, "tp": 2}),
+    ],
+)
+def test_distributed_config_names_are_accepted(raw, want):
+    from unsloth import parallel_env as pe
+
+    assert dict(pe.parse_parallel_spec(raw)) == want
+
+
+@pytest.mark.parametrize(
+    "raw, match",
+    [
+        ("ep=2", "expert parallel"),
+        ("ep_size=2,tp=2", "expert parallel"),
+        ("efsdp=2", "expert FSDP"),
+        ("dp_shard=2,dp_replicate=2", "HSDP"),
+        ("dp=4,dp_shard=2", "disagrees"),
+        ("fsdp=0,dp_shard=2", "disagrees"),
+    ],
+)
+def test_reserved_and_conflicting_dp_keys_are_refused(raw, match):
+    from unsloth import parallel_env as pe
+
+    with pytest.raises(ValueError, match = match):
+        pe.parse_parallel_spec(raw)
+
+
+# Muon on shards.
+
+
+def test_muon_is_refused_on_fsdp2_and_tp_shards():
+    from unsloth import parallel_capabilities as caps
+
+    muon = torch.optim.Muon([torch.nn.Parameter(torch.randn(4, 4))])
+    adamw = torch.optim.AdamW([torch.nn.Parameter(torch.randn(4, 4))])
+    for what in ("fsdp2", "tp"):
+        with pytest.raises(NotImplementedError, match = r"^Unsloth: fsdp2 / tp x optimizer: Muon .*Instead: adamw"):
+            caps.refuse_shard_unaware_optimizer(muon, what)
+        caps.refuse_shard_unaware_optimizer(adamw, what)
+    caps.check(_q(dp = 2, optim = "muon"))  # DDP holds whole matrices
+    from unsloth.models import fsdp2_native
+
+    with pytest.raises(NotImplementedError, match = "Muon"):
+        fsdp2_native._refuse_bnb_optimizer_instance(muon)  # every native FSDP2 optimizer hook calls it
+
+
+def test_muon_is_refused_before_native_fsdp2_shards(clean_env):
+    import transformers
+
+    from unsloth.models import _utils
+
+    clean_env.setenv("UNSLOTH_FSDP2", "1")
+    clean_env.setenv("WORLD_SIZE", "2")
+    muon = torch.optim.Muon([torch.nn.Parameter(torch.randn(4, 4))])
+
+    class Plain(transformers.Trainer):
+        def __init__(self, model = None, args = None, optimizers = (None, None)):
+            pass
+
+    with pytest.raises(NotImplementedError, match = "Muon"):
+        _utils._parallel_capabilities_pre(Plain(), Plain.__init__, (), {"optimizers": (muon, None)}, None)
+
+
+# MoE cells.
+
+
+def test_moe_cells_are_separate_from_the_router_aux_loss():
+    import types
+
+    from unsloth import parallel_capabilities as caps
+
+    config = types.SimpleNamespace(model_type = "qwen3_moe", num_experts = 4, output_router_logits = False)
+    q = caps.query_from(types.SimpleNamespace(dp = 1, tp = 1, pp = 1, cp = 2, fsdp2 = False, cp_backend = None),
+                        None, types.SimpleNamespace(config = config), None, cp_backend = "ulysses")
+    assert (q.moe, q.router_aux_loss) == (True, False)
+    with pytest.raises(NotImplementedError, match = r"MoE \(router aux loss off\) x cp' lacks parity, compile"):
+        caps.check(q)
+    with pytest.raises(NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*Instead: output_router_logits = False"):
+        caps.check(_q(cp = 2, cp_backend = "ulysses", moe = True, router_aux_loss = True))
+    with pytest.raises(NotImplementedError, match = r"^Unsloth: MoE x pp / cp"):
+        caps.check(_q(pp = 2, moe = True, router_aux_loss = True))
+    with pytest.raises(NotImplementedError, match = r"MoE \(router aux loss off\) x pp' lacks parity"):
+        caps.check(_q(pp = 2, moe = True))
+    with pytest.raises(NotImplementedError, match = r"^Unsloth: MoE x tp"):
+        caps.check(_q(tp = 2, moe = True))
+    caps.check(_q(dp = 2, fsdp2 = True, moe = True, router_aux_loss = True))  # dp alone keeps experts whole
+    dense = types.SimpleNamespace(model_type = "qwen3_next", num_experts = 2, num_hidden_layers = 2,
+                                  mlp_only_layers = [0, 1])
+    assert caps.query_from(None, None, types.SimpleNamespace(config = dense)).moe is False
+
+
+def test_cp_with_native_fsdp2_is_a_supported_cell():
+    from unsloth import parallel_capabilities as caps
+
+    status, cell = caps.cell_status(_q(dp = 2, cp = 2, fsdp2 = True, cp_backend = "ulysses"))
+    assert status == "supported" and "native FSDP2" in cell.name
