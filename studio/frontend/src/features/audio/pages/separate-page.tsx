@@ -59,7 +59,6 @@ import {
   ClipsCard,
   ClipsCardEmpty,
 } from "../components/clips-card";
-import { audioWorkflowTab } from "../workflows";
 import { TtsFooter, TtsRailFields } from "./tts-workspace";
 
 export function separateOutputStems(
@@ -455,7 +454,6 @@ export function SeparateOutput({
       </output>
       <ClipsCard
         label={groups.length > 0 ? "Separations" : "Separate audio"}
-        icon={audioWorkflowTab("separate").icon}
         title={groups.length > 0 ? "Separations" : "Separate audio"}
         count={groups.length}
         countMore={hasMore}

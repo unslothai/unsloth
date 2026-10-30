@@ -452,7 +452,7 @@ export function TtsFooter({
         {secondaryAction}
         <Button
           className={cn(
-            "relative z-10 min-w-[calc(168px*var(--ui-space-scale,1))] px-6 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
+            "relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
             // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
             generationPresentation && "hover:bg-muted dark:hover:bg-muted",
           )}
@@ -724,7 +724,6 @@ export function TtsOutput({
       {/* One results card: the player is the selected clip's expanded top row, the rest list below. */}
       <ClipsCard
         label={clips.length > 0 ? "Clips" : tab.heading}
-        icon={tab.icon}
         title={clips.length > 0 ? "Clips" : (emptyTitle ?? tab.heading)}
         count={clips.length}
         countMore={hasMore}

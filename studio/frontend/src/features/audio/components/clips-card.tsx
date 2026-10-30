@@ -51,7 +51,6 @@ export function ClipsIconTile({
 /** The results section on every Audio workflow: top-anchored, a header, then a top row and the list. */
 export function ClipsCard({
   label,
-  icon,
   title,
   count,
   countMore = false,
@@ -59,7 +58,6 @@ export function ClipsCard({
   children,
 }: {
   label: string;
-  icon: IconSvgElement;
   title: ReactNode;
   count?: number | null;
   countMore?: boolean;
@@ -72,8 +70,8 @@ export function ClipsCard({
       // No box of its own: the top row is the one tinted block, so nothing sits block-in-block.
       className="flex min-h-0 w-full flex-col"
     >
+      {/* No icon tile: the rail title beside it already carries the workflow's icon. */}
       <header className="flex items-center gap-3 px-3 pt-2 pb-3">
-        <ClipsIconTile icon={icon} />
         <div className="flex min-w-0 flex-1 items-center gap-2 text-ui-14 font-medium text-foreground">
           <h2 className="min-w-0 truncate">{title}</h2>
           {count ? (
@@ -99,8 +97,8 @@ export function ClipsCardEmpty({
   actions?: ReactNode;
 }) {
   return (
-    // 64px: the header's 12px inset + the 52px title inset, so the hint starts under the title.
-    <div className="grid gap-3 ps-[calc(64px*var(--ui-space-scale,1))] pe-3 pb-3">
+    // The header's 12px inset, so the hint starts under the title.
+    <div className="grid gap-3 px-3 pb-3">
       <p className="text-ui-13 leading-normal text-muted-foreground">{text}</p>
       {actions ? <div className="[&>div]:justify-start">{actions}</div> : null}
     </div>

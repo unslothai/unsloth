@@ -487,7 +487,7 @@ export function TranscribeFooter({
       ) : null}
       <div className="flex items-center justify-center gap-2">
         <Button
-          className="relative z-10 min-w-[calc(168px*var(--ui-space-scale,1))] px-6 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          className="relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
           onClick={running ? onStop : onTranscribe}
           disabled={running ? stopping : busy !== null || blocker !== null}
           variant={running ? "destructive" : "dark"}

@@ -261,7 +261,6 @@ export function TranscriptGallery({
     <div className="contents">
       <ClipsCard
         label="Transcripts"
-        icon={ClosedCaptionIcon}
         title={
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -418,7 +417,7 @@ export function TranscriptGallery({
           </div>
         ))}
         {archived && !loading && !records.length ? (
-          <p className="ps-[calc(64px*var(--ui-space-scale,1))] py-1.5 text-ui-13 text-muted-foreground">
+          <p className="px-3 py-1.5 text-ui-13 text-muted-foreground">
             No archived transcripts.
           </p>
         ) : null}

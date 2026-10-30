@@ -33,7 +33,10 @@ export function WorkflowTitleMenu({
           aria-label={`${current.heading}, switch Audio page`}
           className="-mx-2 -my-1 flex max-w-full items-center gap-2 rounded-full px-2 py-1 outline-none transition-colors duration-150 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-accent"
         >
-          {/* No icon: the sidebar row beside it already shows the workflow's icon. */}
+          <HugeiconsIcon
+            icon={current.icon}
+            className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
+          />
           <span className="truncate">{current.heading}</span>
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
