@@ -17,7 +17,9 @@ registry = pytest.importorskip("unsloth_zoo.tiling_registry")
 
 
 def _tiling():
-    spec = importlib.util.spec_from_file_location("_unsloth_tiling_under_test", ROOT / "unsloth" / "tiling.py")
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_tiling_under_test", ROOT / "unsloth" / "tiling.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -50,22 +52,25 @@ def _env(monkeypatch):
     registry.set_engine(None)
 
 
-@pytest.mark.parametrize(("env", "kwarg", "want"), [
-    (None, False, None),
-    (None, None, None),
-    (None, True, True),
-    (None, "auto", "auto"),
-    (None, "rows:256", "rows:256"),
-    (None, "0", None),
-    ("0", False, None),
-    ("0", True, True),           # old behaviour: the kwarg turns it on even with UNSLOTH_TILED_MLP=0
-    ("arctic", False, "arctic"),
-    ("1", False, "1"),
-    ("target", False, "target"),
-    ("target:2", True, "target:2"),
-    ("target:2:mlp,ffn", False, "target:2:mlp,ffn"),
-    ("auto", "rows:8", "auto"),  # the environment wins over the kwarg, as before
-])
+@pytest.mark.parametrize(
+    ("env", "kwarg", "want"),
+    [
+        (None, False, None),
+        (None, None, None),
+        (None, True, True),
+        (None, "auto", "auto"),
+        (None, "rows:256", "rows:256"),
+        (None, "0", None),
+        ("0", False, None),
+        ("0", True, True),  # old behaviour: the kwarg turns it on even with UNSLOTH_TILED_MLP=0
+        ("arctic", False, "arctic"),
+        ("1", False, "1"),
+        ("target", False, "target"),
+        ("target:2", True, "target:2"),
+        ("target:2:mlp,ffn", False, "target:2:mlp,ffn"),
+        ("auto", "rows:8", "auto"),  # the environment wins over the kwarg, as before
+    ],
+)
 def test_loader_mode_spellings(monkeypatch, env, kwarg, want):
     if env is not None:
         monkeypatch.setenv("UNSLOTH_TILED_MLP", env)
@@ -113,7 +118,9 @@ def test_trainer_revalidation_covers_peft_added_modules():
     tiling = _tiling()
     model = _model()
     tiling.loader_tile_mlp(model, "rows:2")
-    model = peft.get_peft_model(model, peft.LoraConfig(r = 2, target_modules = ["up", "down"], lora_dropout = 0.1))
+    model = peft.get_peft_model(
+        model, peft.LoraConfig(r = 2, target_modules = ["up", "down"], lora_dropout = 0.1)
+    )
     extra = torch.nn.Module()
     extra.mlp = FooMLP()
     model.base_model.model.layers.append(extra)
@@ -132,7 +139,9 @@ def test_trainer_revalidation_covers_peft_added_modules():
 
 def _calls(path, name):
     tree = ast.parse((ROOT / path).read_text())
-    return [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == name]
+    return [
+        n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == name
+    ]
 
 
 def test_loader_call_sites_use_the_new_install():
@@ -147,7 +156,11 @@ def test_loader_call_sites_use_the_new_install():
 
 def test_trainer_init_revalidates():
     tree = ast.parse((ROOT / "unsloth" / "models" / "_utils.py").read_text())
-    init = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_unsloth_trainer_init")
+    init = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_unsloth_trainer_init"
+    )
     names = [getattr(n.func, "id", None) for n in ast.walk(init) if isinstance(n, ast.Call)]
     assert "revalidate_for_trainer" in names
     # After the original __init__ and the FSDP fused-LoRA decline, so the model it sees is final.
@@ -158,8 +171,11 @@ def test_trainer_init_revalidates():
 def test_sentence_transformer_passes_the_kwarg_through():
     tree = ast.parse((ROOT / "unsloth" / "models" / "sentence_transformer.py").read_text())
     passed = [
-        kw for n in ast.walk(tree) if isinstance(n, ast.Call)
-        for kw in n.keywords if kw.arg == "unsloth_tiled_mlp" and getattr(kw.value, "id", None) == "unsloth_tiled_mlp"
+        kw
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        for kw in n.keywords
+        if kw.arg == "unsloth_tiled_mlp" and getattr(kw.value, "id", None) == "unsloth_tiled_mlp"
     ]
     assert passed
 

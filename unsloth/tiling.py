@@ -31,7 +31,14 @@ def _registry():
     return tiling_registry
 
 
-def tile_mlp(model, rows = None, target_gb = None, modules = None, mode = None, verbose = True):
+def tile_mlp(
+    model,
+    rows = None,
+    target_gb = None,
+    modules = None,
+    mode = None,
+    verbose = True,
+):
     """Tile every eligible MLP / MoE / projector in `model`; idempotent. Returns the coverage report.
 
     rows: fixed rows per tile. target_gb: activation budget per tile in GB. Neither: `mode`, which defaults to

@@ -34,6 +34,7 @@ def _registry():
         finally:
             torch.cuda.is_available = is_available
     from unsloth_zoo import tiling_registry
+
     tiling_registry.set_engine(os.environ.get("UNSLOTH_TILED_ENGINE", "auto"))
     return tiling_registry
 
@@ -82,7 +83,10 @@ def _worker(rank, init_file, queue):
                     fired = {}
                     for name, p in inner.named_parameters():
                         if p.requires_grad:
-                            p.register_hook(lambda g, name = name: fired.__setitem__(name, fired.get(name, 0) + 1) or g)
+                            p.register_hook(
+                                lambda g, name = name: fired.__setitem__(name, fired.get(name, 0) + 1)
+                                or g
+                            )
                     model = torch.nn.parallel.DistributedDataParallel(inner, **ddp_kwargs)
                     out[key] = []
                     for step in range(3):

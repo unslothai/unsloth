@@ -153,7 +153,6 @@ class _GroupedMLP(__import__("torch").nn.Module):
 
     def __init__(self):
         import torch
-
         super().__init__()
         self.up = torch.nn.Linear(4, 4)
 
@@ -206,7 +205,9 @@ def test_declining_a_plain_module_still_restores_the_class_forward(tiled):
         registry = pytest.importorskip("unsloth_zoo.tiling_registry")
         registry.install_module(mlp, "rows:2")
     llama._install_fused_lora_mlp(mlp, llama.apply_lora_mlp_swiglu)
-    llama._install_fused_lora_mlp(mlp, llama.apply_lora_mlp_swiglu)  # a second patch pass keeps the first record
+    llama._install_fused_lora_mlp(
+        mlp, llama.apply_lora_mlp_swiglu
+    )  # a second patch pass keeps the first record
     assert llama._decline_fused_lora_for_fsdp(mlp) == 1
     if tiled:
         assert mlp.__dict__["_unsloth_forward"] is _GroupedMLP.forward
