@@ -891,7 +891,7 @@ def test_video_tool_support_is_classified_from_the_processor_template():
 
     assert backend.calls, "generation never ran"
     assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
-    assert backend.calls[0]["video"] == clip
+    assert backend.calls[0]["videos"] == [clip]
 
 
 def test_mlx_selects_structured_content_for_a_processor_render():

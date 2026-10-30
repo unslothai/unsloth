@@ -135,10 +135,17 @@ def _probe(workdir: str, rels: "Iterable[str]") -> dict:
     """Regular files among *rels*, keyed as a walk keys them; one behind a linked folder counts as gone."""
     root = os.path.realpath(workdir)
     found = {}
+    listings: dict = {}
     for rel in rels:
         path = os.path.join(root, *rel.split("/"))
+        parent = os.path.dirname(path)
         try:
-            if os.path.realpath(os.path.dirname(path)) != os.path.dirname(path):
+            if os.path.realpath(parent) != parent:
+                continue
+            # A case-insensitive volume finds "Readme.md" after a rename to "README.md".
+            if parent not in listings:
+                listings[parent] = set(os.listdir(parent))
+            if os.path.basename(path) not in listings[parent]:
                 continue
             info = os.lstat(path)
         except OSError:
@@ -278,6 +285,9 @@ class FileHistory:
         ``paths`` limits the sync to those names (edit_file knows its one file); ``complete`` says
         whether a name missing from ``snap`` is really gone (a capped walk cannot say so)."""
         state = self._load_state(workdir)
+        if paths is None and complete:
+            # edit_file records files no walk lists, such as .github/workflows/ci.yml.
+            snap = {**_probe(workdir, [rel for rel in state if rel not in snap]), **snap}
         first = (
             not state
             and self._db.execute("SELECT 1 FROM workdirs WHERE workdir=?", (workdir,)).fetchone()
@@ -334,13 +344,20 @@ class FileHistory:
             return {}  # the baseline is where history starts, not a change
         return changes
 
-    def _walk_sync(self, workdir: str, walk) -> dict:
+    def _walk_sync(
+        self,
+        workdir: str,
+        walk,
+        extra = (),
+    ) -> dict:
         snap, complete = walk(workdir)
         changes = self._sync(workdir, snap, None, complete)
+        missed = {rel for rel in extra if rel not in snap}
         if not complete:
             # A capped walk never reached these: read them directly, or a rewind trusts a stale state
             # and overwrites the user's later edit.
-            missed = {rel for rel in self._load_state(workdir) if rel not in snap}
+            missed.update(rel for rel in self._load_state(workdir) if rel not in snap)
+        if missed:
             changes.update(self._sync(workdir, _probe(workdir, missed), missed))
         return changes
 
@@ -522,23 +539,23 @@ class FileHistory:
         return report
 
     def _rewind_folder(self, chat_id, workdir, rows, walk, report, dry_run, force, undo_turn):
+        target: dict = {}
+        # Written while another chat's call ran in this folder: either chat's, so never ours to undo.
+        shared = set()
+        for wd, rel, kind, blob, mode, ambiguous in rows:
+            if wd == workdir:
+                target.setdefault(rel, (kind, blob, mode))
+                if ambiguous:
+                    shared.add(rel)
         with self._lock:
             # Edits made since the last call (by the user, or another chat) are stored first, so the
             # rewind can tell them apart from this chat's own and they stay restorable too.
             self._transaction(
                 workdir,
                 lambda: self._record(
-                    None, workdir, None, "external", self._walk_sync(workdir, walk)
+                    None, workdir, None, "external", self._walk_sync(workdir, walk, target)
                 ),
             )
-            target: dict = {}
-            # Written while another chat's call ran in this folder: either chat's, so never ours to undo.
-            shared = set()
-            for wd, rel, kind, blob, mode, ambiguous in rows:
-                if wd == workdir:
-                    target.setdefault(rel, (kind, blob, mode))
-                    if ambiguous:
-                        shared.add(rel)
             last_after = {
                 row[0]: (row[1], row[2])
                 for row in self._db.execute(
@@ -584,7 +601,7 @@ class FileHistory:
             self._transaction(
                 workdir,
                 lambda: self._record(
-                    chat_id, workdir, undo_turn, "rewind", self._walk_sync(workdir, walk)
+                    chat_id, workdir, undo_turn, "rewind", self._walk_sync(workdir, walk, target)
                 ),
             )
 

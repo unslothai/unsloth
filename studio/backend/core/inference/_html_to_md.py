@@ -334,6 +334,7 @@ _MAX_REPEATED_CELL_CHARS = 200
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -1068,7 +1069,7 @@ class _MarkdownRenderer(HTMLParser):
     def _prefix_blockquote(self, content: str) -> str:
         """Prefix every line of *content* with ``> ``."""
         content = re.sub(r"[ \t]+$", "", content, flags = re.MULTILINE)
-        content = re.sub(r"\n{3,}", "\n\n", content).strip()
+        content = _BLANK_LINE_RUN.sub("\n\n", content).strip()
         if not content:
             return ""
         lines = content.split("\n")
@@ -2158,7 +2159,7 @@ def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> 
             continue
         out.append(line)
     # Collapse blank runs the dropped lines may have left behind.
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return _BLANK_LINE_RUN.sub("\n\n", "\n".join(out)).strip()
 
 
 class _TokenLog:

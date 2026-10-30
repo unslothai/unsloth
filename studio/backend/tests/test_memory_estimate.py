@@ -820,12 +820,17 @@ class TestEstimateMemoryRoute:
         monkeypatch.setattr(
             spec, "speculation_refusal", lambda kv_quant, **_: spec.KV_QUANT if kv_quant else None
         )
+        fit = False
         monkeypatch.setattr(
             mlx_inference,
             "mlx_drafter_fit",
-            lambda d, ceiling, pinned, source, **_: (
-                source.path == "/ok" and (pinned or 0) <= 8192,
-                None if pinned else 12288,
+            lambda d, ceiling, pinned, source, reserve = True, **_: (
+                None
+                if fit in ("unpriced", "unsizable")
+                else source.path == "/ok" and (pinned or 0) <= 8192 and not fit
+                if reserve
+                else (pinned or 0) <= 32768,  # MLX's own cap, spending the prompt cache's share
+                None if pinned or fit in ("unpriced", "unsizable") else 12288,
             ),
         )
         monkeypatch.setattr(ri, "_mlx_estimate_ceiling", lambda model_dir: 32768)
@@ -837,31 +842,66 @@ class TestEstimateMemoryRoute:
             mlx_memory,
             "mlx_memory_breakdown",
             lambda d, *, n_ctx, **kw: priced.append((n_ctx, kw.get("drafter"), kw.get("vision")))
-            or mlx_memory.MlxMemoryBreakdown(1, 0, 0, 1, 1, n_ctx = n_ctx),
+            or (
+                None
+                if fit == "unsizable" and kw.get("drafter")
+                else mlx_memory.MlxMemoryBreakdown(1, 0, 0, 1, 1, n_ctx = n_ctx)
+            ),
+        )
+        rooms, estimates, load_estimate = [], [], ri._mlx_load_estimate
+        monkeypatch.setattr(
+            mlx_inference,
+            "mlx_prompt_cache_room",
+            lambda d, n_ctx, source, **_: rooms.append((n_ctx, source.path)) or 7,
+        )
+        monkeypatch.setattr(
+            ri,
+            "_mlx_load_estimate",
+            lambda *a: (result := load_estimate(*a), estimates.append(result[1]))[0],
         )
         assert _estimate(model_path = "org/model", speculative_type = "mtp").context_fitted == 12288
-        for pinned in (4096, 65536):
+        for pinned in (4096, 16384, 65536):
             _estimate(model_path = "org/model", speculative_type = "mtp", max_seq_length = pinned)
         _estimate(model_path = "org/model", speculative_type = "mtp", mlx_kv_quant = "8")
         _estimate(model_path = "org/model")
         _estimate(model_path = "o/m", speculative_type = "ngram", mlx_kv_quant = "auto", mlx_kv_bits = 8)
         _estimate(model_path = "org/model", spec_draft_model = "org/d")  # named under Auto
-        assert [route for *_, route in priced] == [True, True, True, None, None, True, True]
-        assert [row[:2] for row in priced[:6]] == [
+        fit = "unfit"
+        assert _estimate(model_path = "org/model", speculative_type = "mtp").context_fitted == 12288
+        fit = "unpriced"  # no fit to go on: the drafter the load attaches is still charged
+        _estimate(model_path = "org/model", speculative_type = "mtp")
+        fit = "unsizable"  # one the breakdown cannot size leaves the rest of the load priced
+        assert _estimate(model_path = "org/model", speculative_type = "mtp").available
+        assert [route for *_, route in priced] == [True] * 4 + [None] * 2 + [True] * 6
+        assert [row[:2] for row in priced[:7] + priced[8:]] == [
             (12288, ("/ok", False)),
             (4096, ("/ok", False)),
-            (65536, None),
+            (16384, ("/big", True)),
+            (65536, None),  # past MLX's own cap the load falls back, so no drafter is charged
             (20480, None),
             (20480, None),
             (24576, None),
+            (12288, ("/big", True)),
+            (24576, ("/big", True)),
+            (24576, ("/big", True)),
+            (24576, None),
         ]
+        # Only a drafter that spent the prompt cache's share caps the cache admission charges.
+        assert rooms == [(16384, "/big"), (12288, "/big"), (24576, "/big")]
+        assert [e.cache_room for e in estimates if e and e.cache_room] == [7, 7, 7]
 
     def test_a_drafter_attaches_where_its_priced_fit_holds_and_a_pin_fits_whole(self, monkeypatch):
         import core.inference.mlx_inference as mlx_inference
         import core.inference.mlx_memory as mlx_memory
         from core.inference.mlx_speculative import DrafterSource
 
-        monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda **_: 8 << 30)
+        budgets = []
+        monkeypatch.setattr(mlx_inference, "mlx_vlm_snapshot_store_available", lambda: True)
+        monkeypatch.setattr(
+            mlx_inference,
+            "mlx_memory_budget",
+            lambda *, retains_history: budgets.append(retains_history) or 8 << 30,
+        )
         priced = []
 
         def fit(pinned, outcome, *bare):
@@ -902,6 +942,9 @@ class TestEstimateMemoryRoute:
             prefill_chunk = 8192,
         )
         assert (asked["offload"], asked["prefill_chunk"]) == ((None, 0.6), 8192)
+        assert set(budgets) == {True}
+        mlx_inference.mlx_drafter_fit("/m", 32768, None, source, load_in_4bit = False, reserve = False)
+        assert budgets[-1] is False  # MLX's own cap: the prompt cache's share is spendable
         seen = []
 
         def costless(attached, alone):
@@ -1557,33 +1600,50 @@ class TestEstimateMemoryRoute:
         assert resp.n_ctx == 4096
 
 
-class TestInt8PrefillAvailabilityRoute:
+class TestPrefillOptionAvailabilityRoute:
     @pytest.mark.parametrize(
-        "downloaded,takes_int8,answer",
+        "option,scope,takes",
+        [
+            ("int8", "nax_quantized_linear", lambda m, int8_prefill = None: m),
+            ("ane", "ane_prefill_mlp", lambda m, ane_prefill = None: m),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "downloaded,takes_option,answer",
         [
             (True, True, (True, None)),
             (False, True, (False, "not_downloaded")),
             (True, False, (False, "unsupported_zoo")),
         ],
     )
-    def test_the_answer(self, monkeypatch, tmp_path, downloaded, takes_int8, answer):
+    def test_the_answer(
+        self, monkeypatch, tmp_path, option, scope, takes, downloaded, takes_option, answer
+    ):
         from core.inference import mlx_inference
-        from models.inference import Int8PrefillAvailabilityRequest
+        import models.inference as models
 
         asked = []
         zoo = _types.ModuleType("unsloth_zoo.mlx.inference")
-        zoo.nax_quantized_linear = (lambda m, int8_prefill = None: m) if takes_int8 else len
+        setattr(zoo, scope, takes if takes_option else len)
         verdict = SimpleNamespace(available = True, reason = "")
-        zoo.int8_prefill_checkpoint_available = lambda path: asked.append(path) or verdict
+        setattr(
+            zoo,
+            f"{option}_prefill_checkpoint_available",
+            lambda path: asked.append(path) or verdict,
+        )
         monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", zoo)
-        monkeypatch.setattr(mlx_inference, "_int8_prefill_checkpoint_cache", {})
+        monkeypatch.setattr(mlx_inference, f"_{option}_prefill_checkpoint_cache", {})
         model_dir = str(tmp_path) if downloaded else None
         TestEstimateMemoryRoute._mlx_target(monkeypatch, model_dir)
-        request = Int8PrefillAvailabilityRequest(model_path = "org/model")
-        resp = asyncio.run(ri.int8_prefill_availability(request, current_subject = "test"))
+        request = getattr(models, f"{option.capitalize()}PrefillAvailabilityRequest")(
+            model_path = "org/model"
+        )
+        route = getattr(ri, f"{option}_prefill_availability")
+        resp = asyncio.run(route(request, current_subject = "test"))
         assert (resp.available, resp.reason) == answer
         if answer[0]:
-            assert mlx_inference.mlx_int8_prefill_checkpoint_status(model_dir) == (True, "")
+            status = getattr(mlx_inference, f"mlx_{option}_prefill_checkpoint_status")
+            assert status(model_dir) == (True, "")
         assert asked == ([model_dir] if answer[0] else [])
 
 
@@ -2828,6 +2888,11 @@ class TestAnAutoContextIsMarkedShrinkable:
 
     @pytest.fixture(autouse = True)
     def wide(self, tmp_path, monkeypatch):
+        import utils.hardware as hardware
+
+        # The layer-split floor (8192). Metal reprices down to 256 instead; that path is
+        # TestTheContextFloorFollowsThePlacementPath's, and on a Mac runner it would be taken here.
+        monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
         gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
         config = SimpleNamespace(
             identifier = "local/wide",
@@ -4795,6 +4860,10 @@ class TestPricingALoad:
             str(tmp_path), budget_bytes = price + (2 << 30), max_ctx = 1 << 20, offload = offload
         )
         assert fit((None, 0.5)) == ("fitted", 8192) != fit(None)
+        room = lambda offload: mm.mlx_headroom(
+            str(tmp_path), budget_bytes = price + (2 << 30) + 5, n_ctx = 8192, offload = offload
+        )
+        assert room((None, 0.5)) == 5  # the room keeps the same margin free as the fit
 
     def test_a_quantizing_load_is_priced_below_the_shards(self, tmp_path):
         config = self._checkpoint(tmp_path)
@@ -5205,8 +5274,12 @@ class TestTheContextSearch:
             "no_fit",
             None,
         )
+        assert mm.mlx_headroom("x", budget_bytes = 9000, n_ctx = 8192) == 808
+        assert mm.mlx_headroom("x", budget_bytes = 9000, n_ctx = 100) == 9000 - 256
+        assert mm.mlx_headroom("x", budget_bytes = 7000, n_ctx = 8192) == 0
         monkeypatch.setattr(mm, "_size_load", lambda *a, **kw: None)
         assert mm.mlx_fit_outcome("x", budget_bytes = 7000, max_ctx = 8192) == ("unsizable", None)
+        assert mm.mlx_headroom("x", budget_bytes = 7000, n_ctx = 8192) is None
 
 
 @_NEEDS_MLX

@@ -4,6 +4,8 @@
 use std::ffi::{OsStr, OsString};
 use std::os::unix::net::UnixStream;
 
+use crate::gpu_rendering::GpuRendering;
+
 const APPIMAGE: &str = "APPIMAGE";
 const GLES_V2: &[u8] = b"libGLESv2.so.2\0";
 
@@ -45,6 +47,23 @@ const NVIDIA_APPIMAGE_GLES_REASON: &str =
 const WAYLAND_REASON: &str = "Wayland session";
 const APPIMAGE_GLES_REASON: &str = "AppImage without a usable GLES library";
 const COMPOSITING_FORCED_REASON: &str = "compositing workaround requested by the environment";
+const GPU_OFF_REASON: &str = "GPU rendering off (setting)";
+const GPU_ON_REASON: &str = "GPU rendering on (setting)";
+const GPU_ON_OLD_NVIDIA_REASON: &str =
+    "GPU rendering on (setting), held off: NVIDIA drivers before 610 leak with compositing on X11";
+const GPU_UNSAFE_REASON: &str = "GPU rendering crashed at launch on this host before";
+const NVIDIA_WAYLAND_GPU_REASON: &str = "NVIDIA driver loaded (Wayland session, WebKitGTK 2.54.2+)";
+const FORCE_DMABUF_REASON: &str = "DMA-BUF renderer requested by the environment (Wayland session)";
+// 2.54.0 and 2.54.1 die with Error 71 under explicit sync (WebKit bug 280210); the fix (bug 324551)
+// first shipped in 2.54.2. Other hosts can still crash at launch, so this path is supervised.
+const NVIDIA_WAYLAND_GPU_MIN_VERSION: (u32, u32, u32) = (2, 54, 2);
+
+/// The user's "GPU rendering" choice plus whether an earlier launch fell back on this host.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuInputs {
+    pub setting: GpuRendering,
+    pub unsafe_flag: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RenderingWorkaround {
@@ -55,6 +74,8 @@ enum RenderingWorkaround {
     /// The same, plus the non-GL video sink the bundled GStreamer needs.
     ForceSharedMemoryOnNvidiaAppImage,
     DisableCompositingOnNvidiaX11,
+    /// The CPU path on X11 off NVIDIA: SHM keeps a transport, unlike DISABLE_DMABUF.
+    DisableCompositingOnX11,
     /// Compositing off on top of the NVIDIA Wayland transport, not instead of it: since
     /// WebKitGTK 2.53 non-composited mode still renders over DMA-BUF (#13875).
     DisableCompositingOnNvidiaWayland,
@@ -74,6 +95,7 @@ impl RenderingWorkaround {
             Self::DisableCompositingOnNvidiaX11 => {
                 &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
             }
+            Self::DisableCompositingOnX11 => &[FORCE_SHARED_MEMORY, DISABLE_COMPOSITING],
             Self::DisableCompositingOnNvidiaWayland => &[DISABLE_DMABUF, DISABLE_COMPOSITING],
             Self::DisableDmabuf => &[DISABLE_DMABUF],
             Self::DisableCompositing => &[DISABLE_COMPOSITING],
@@ -85,6 +107,59 @@ impl RenderingWorkaround {
 enum RenderingPlan {
     Apply(RenderingWorkaround, &'static str),
     PreserveEnvironment,
+    /// Keep WebKit's GPU path. `force_dmabuf` also stands down disable-nvidia-dmabuf.patch.
+    Gpu {
+        force_dmabuf: bool,
+        reason: &'static str,
+    },
+}
+
+/// Names of the variables an earlier launch of this tree set (see APPLIED_WORKAROUND).
+fn claimed_by_this_app(env: &impl Fn(&str) -> Option<OsString>, variable: &str) -> bool {
+    env(APPLIED_WORKAROUND)
+        .unwrap_or_default()
+        .to_string_lossy()
+        .split(',')
+        .any(|claimed| claimed == variable)
+}
+
+/// The operator variable that takes the decision away from the GPU rendering setting, if any.
+fn env_override(env: &impl Fn(&str) -> Option<OsString>) -> Option<&'static str> {
+    let operator = |variable: &str| env(variable).is_some() && !claimed_by_this_app(env, variable);
+    for variable in [DISABLE_DMABUF, FORCE_SHARED_MEMORY, DISABLE_COMPOSITING] {
+        if operator(variable) {
+            return Some(variable);
+        }
+    }
+    if env(DISABLE_COMPOSITING_SETTING)
+        .as_deref()
+        .and_then(compositing_setting)
+        .is_some()
+    {
+        return Some(DISABLE_COMPOSITING_SETTING);
+    }
+    if operator(FORCE_DMABUF)
+        && env(FORCE_DMABUF)
+            .as_deref()
+            .is_some_and(force_dmabuf_requested)
+    {
+        return Some(FORCE_DMABUF);
+    }
+    None
+}
+
+fn session_is_wayland(
+    env: &impl Fn(&str) -> Option<OsString>,
+    wayland_socket: bool,
+    x11_open: bool,
+) -> bool {
+    // Decide by which backend opens: WAYLAND_DISPLAY and DISPLAY are inherited and outlive
+    // their servers. Unset GDK_BACKEND is GDK's "*" (wayland before x11).
+    selected_backend_is_wayland(
+        env(GDK_BACKEND).as_deref().unwrap_or(OsStr::new("*")),
+        wayland_socket,
+        x11_open,
+    )
 }
 
 /// Resolve GDK_BACKEND as gdk_display_manager_open_display does: exact comma entries in order,
@@ -138,17 +213,12 @@ fn rendering_plan(
     nvidia_driver_branch: Option<u32>,
     wayland_socket: bool,
     x11_open: bool,
+    gpu: GpuInputs,
 ) -> RenderingPlan {
     let nvidia_driver_loaded = nvidia_driver_branch.is_some();
     // Either variable is an operator override when present (even `=0` or empty) unless the marker
     // says we wrote it. DISABLE_DMABUF=0 is how a host gets its accelerated path back.
-    let applied_by_this_app = env(APPLIED_WORKAROUND).unwrap_or_default();
-    let ours = |variable: &str| {
-        applied_by_this_app
-            .to_string_lossy()
-            .split(',')
-            .any(|claimed| claimed == variable)
-    };
+    let ours = |variable: &str| claimed_by_this_app(&env, variable);
 
     if env(DISABLE_DMABUF).is_some() && !ours(DISABLE_DMABUF) {
         return RenderingPlan::PreserveEnvironment;
@@ -167,21 +237,15 @@ fn rendering_plan(
     }
     let operator_compositing_off = operator_compositing.is_some();
 
-    // Stands the NVIDIA branch down only, not the missing-GLES fallback below.
+    // The operator asked for WebKit's DMA-BUF renderer: only a missing GLES library or a crash
+    // at an earlier launch outranks it (see the force_dmabuf branch below).
     let force_dmabuf = !ours(FORCE_DMABUF)
         && env(FORCE_DMABUF)
             .as_deref()
             .is_some_and(force_dmabuf_requested);
 
-    let is_appimage = env(APPIMAGE).is_some();
-    // Decide by which backend opens: WAYLAND_DISPLAY and DISPLAY are inherited and outlive
-    // their servers.
-    // Unset GDK_BACKEND is GDK's "*" (wayland before x11).
-    let wayland_session = selected_backend_is_wayland(
-        env(GDK_BACKEND).as_deref().unwrap_or(OsStr::new("*")),
-        wayland_socket,
-        x11_open,
-    );
+    let is_appimage = crate::appimage_webkit::bundled_runtime(&env);
+    let wayland_session = session_is_wayland(&env, wayland_socket, x11_open);
     let nvidia_x11 = nvidia_driver_loaded
         && !force_dmabuf
         && !wayland_session
@@ -214,10 +278,108 @@ fn rendering_plan(
         return RenderingPlan::Apply(workaround, COMPOSITING_FORCED_REASON);
     }
 
+    // libepoxy loads GLES at runtime; without it no setting can keep DMA-BUF.
+    let missing_appimage_gles = is_appimage && !gles_usable;
+    // Composited SHM on NVIDIA; an AppImage also needs the non-GL video sink, unless the operator
+    // chose one.
+    let nvidia_shared_memory = || {
+        let operator_sink = env(GST_DISABLE_GL_SINK).is_some() && !ours(GST_DISABLE_GL_SINK);
+        if is_appimage && !operator_sink {
+            RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage
+        } else {
+            RenderingWorkaround::ForceSharedMemoryOnNvidia
+        }
+    };
+    // The operator asked for WebKit's DMA-BUF renderer; only a missing GLES library outranks it.
+    // On Wayland that is the path WebKit bug 280210 can crash at launch, so it is supervised
+    // like the setting's GPU path, and a crash recorded for this host sends it to the CPU path.
+    if force_dmabuf {
+        if missing_appimage_gles {
+            return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, APPIMAGE_GLES_REASON);
+        }
+        if !wayland_session {
+            return RenderingPlan::PreserveEnvironment;
+        }
+        if gpu.unsafe_flag {
+            return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, GPU_UNSAFE_REASON);
+        }
+        return RenderingPlan::Gpu {
+            force_dmabuf: false,
+            reason: FORCE_DMABUF_REASON,
+        };
+    }
+
+    // The GPU rendering setting, only while no operator variable has decided already.
+    if setting.as_deref().and_then(compositing_setting).is_none() {
+        if missing_appimage_gles && gpu.setting != GpuRendering::Auto {
+            let reason = if nvidia_driver_loaded {
+                NVIDIA_APPIMAGE_GLES_REASON
+            } else {
+                APPIMAGE_GLES_REASON
+            };
+            return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, reason);
+        }
+        let shared_memory = gles_usable && supports_force_shared_memory(webkit_version);
+        match gpu.setting {
+            GpuRendering::Off => {
+                // X11 keeps an SHM transport with compositing off; DISABLE_DMABUF can leave none.
+                let workaround = if wayland_session || !shared_memory {
+                    RenderingWorkaround::DisableDmabuf
+                } else if nvidia_driver_loaded {
+                    RenderingWorkaround::DisableCompositingOnNvidiaX11
+                } else {
+                    RenderingWorkaround::DisableCompositingOnX11
+                };
+                return RenderingPlan::Apply(workaround, GPU_OFF_REASON);
+            }
+            GpuRendering::On if gpu.unsafe_flag && wayland_session => {
+                return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, GPU_UNSAFE_REASON);
+            }
+            // NVIDIA X11's hardware transport fails; SHM keeps GPU compositing without it.
+            // Below the minimum branch On still keeps compositing off: those drivers leak until the
+            // window stops drawing, minutes after launch, where no fallback can catch it.
+            GpuRendering::On if nvidia_driver_loaded && !wayland_session && shared_memory => {
+                if nvidia_driver_branch
+                    .is_some_and(|branch| branch >= NVIDIA_COMPOSITING_MIN_BRANCH)
+                {
+                    return RenderingPlan::Apply(nvidia_shared_memory(), GPU_ON_REASON);
+                }
+                return RenderingPlan::Apply(
+                    RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                    GPU_ON_OLD_NVIDIA_REASON,
+                );
+            }
+            GpuRendering::On => {
+                return RenderingPlan::Gpu {
+                    force_dmabuf: nvidia_driver_loaded,
+                    reason: GPU_ON_REASON,
+                };
+            }
+            GpuRendering::Auto
+                if nvidia_driver_loaded
+                    && wayland_session
+                    && !missing_appimage_gles
+                    && webkit_version >= NVIDIA_WAYLAND_GPU_MIN_VERSION =>
+            {
+                if gpu.unsafe_flag {
+                    return RenderingPlan::Apply(
+                        RenderingWorkaround::DisableDmabuf,
+                        GPU_UNSAFE_REASON,
+                    );
+                }
+                // Auto leaves a distribution's NVIDIA DMA-BUF patch in charge.
+                return RenderingPlan::Gpu {
+                    force_dmabuf: false,
+                    reason: NVIDIA_WAYLAND_GPU_REASON,
+                };
+            }
+            GpuRendering::Auto => {}
+        }
+    }
+
     // Wayland: DISABLE_DMABUF (FORCE_SHM hits bug 315436). X11: SHM, with compositing off below
     // the minimum driver branch; DISABLE_DMABUF can leave no transport there.
-    if nvidia_driver_loaded && !force_dmabuf {
-        let missing_appimage_gles = is_appimage && !gles_usable;
+    if nvidia_driver_loaded {
         let reason = if missing_appimage_gles {
             NVIDIA_APPIMAGE_GLES_REASON
         } else if wayland_session {
@@ -236,21 +398,14 @@ fn rendering_plan(
         } else if requested(false)
             || nvidia_driver_branch.is_some_and(|branch| branch >= NVIDIA_COMPOSITING_MIN_BRANCH)
         {
-            // An operator's own video sink choice stays.
-            let operator_sink = env(GST_DISABLE_GL_SINK).is_some() && !ours(GST_DISABLE_GL_SINK);
-            if is_appimage && !operator_sink {
-                RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage
-            } else {
-                RenderingWorkaround::ForceSharedMemoryOnNvidia
-            }
+            nvidia_shared_memory()
         } else {
             RenderingWorkaround::DisableCompositingOnNvidiaX11
         };
         return RenderingPlan::Apply(workaround, reason);
     }
 
-    // libepoxy loads GLES at runtime; disabling DMA-BUF handles a missing copy.
-    if is_appimage && !gles_usable {
+    if missing_appimage_gles {
         return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, APPIMAGE_GLES_REASON);
     }
 
@@ -390,33 +545,109 @@ fn release_claimed(drop: impl Fn(&str) -> bool) {
     std::env::remove_var(APPLIED_WORKAROUND);
 }
 
-/// Must run before GTK initialization.
-pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
-    let gles_usable = std::env::var_os(APPIMAGE).is_none() || gles_is_usable();
+/// What `configure_renderer` decided, for the startup log and the GPU rendering setting.
+#[derive(Debug)]
+pub struct RendererDecision {
+    /// Variables set to 1 and why.
+    pub applied: Option<(&'static [&'static str], &'static str)>,
+    /// Reason, when WebKit keeps its GPU path because of the setting.
+    pub gpu_path: Option<&'static str>,
+    pub env_override: Option<&'static str>,
+    pub webkit_version: (u32, u32, u32),
+    pub wayland_session: bool,
+    pub nvidia_driver_branch: Option<u32>,
+}
+
+impl RendererDecision {
+    /// A GPU path on Wayland can die with Error 71 before the window shows (WebKit bug 280210).
+    pub fn wants_supervision(&self) -> bool {
+        self.gpu_path.is_some() && self.wayland_session
+    }
+}
+
+fn claim(variables: &'static [&'static str]) {
+    release_claimed(|name| !variables.contains(&name));
+    for variable in variables {
+        std::env::set_var(variable, "1");
+    }
+    // Claim them, so the next launch re-decides rather than reading them as overrides.
+    std::env::set_var(APPLIED_WORKAROUND, variables.join(","));
+}
+
+/// Must run before GTK initialization. `unsafe_flag` gets the runtime WebKitGTK version and
+/// whether the session is Wayland, and says whether an earlier GPU launch crashed on this host.
+pub fn configure_renderer(
+    setting: GpuRendering,
+    unsafe_flag: impl FnOnce((u32, u32, u32), bool) -> bool,
+) -> RendererDecision {
+    let gles_usable =
+        !crate::appimage_webkit::bundled_runtime(|name| std::env::var_os(name)) || gles_is_usable();
+    let env = |name: &str| std::env::var_os(name);
+    let webkit_version = runtime_webkit_version();
+    let nvidia = nvidia_driver_branch();
+    let wayland_socket = wayland_socket_present();
+    let x11_open = x11_display_open(std::env::var_os(X11_DISPLAY), X11_SOCKET_DIR);
+    let mut decision = RendererDecision {
+        applied: None,
+        gpu_path: None,
+        env_override: env_override(&env),
+        webkit_version,
+        wayland_session: session_is_wayland(&env, wayland_socket, x11_open),
+        nvidia_driver_branch: nvidia,
+    };
+    let gpu = GpuInputs {
+        setting,
+        unsafe_flag: unsafe_flag(webkit_version, decision.wayland_session),
+    };
     match rendering_plan(
-        |name| std::env::var_os(name),
-        runtime_webkit_version(),
+        env,
+        webkit_version,
         gles_usable,
-        nvidia_driver_branch(),
-        wayland_socket_present(),
-        x11_display_open(std::env::var_os(X11_DISPLAY), X11_SOCKET_DIR),
+        nvidia,
+        wayland_socket,
+        x11_open,
+        gpu,
     ) {
         RenderingPlan::Apply(workaround, reason) => {
             let variables = workaround.variables();
-            release_claimed(|name| !variables.contains(&name));
-            for variable in variables {
-                std::env::set_var(variable, "1");
-            }
-            // Claim them, so the next launch re-decides rather than reading them as overrides.
-            std::env::set_var(APPLIED_WORKAROUND, variables.join(","));
-            Some((variables, reason))
+            claim(variables);
+            decision.applied = Some((variables, reason));
+        }
+        RenderingPlan::Gpu {
+            force_dmabuf: true,
+            reason,
+        } => {
+            claim(&[FORCE_DMABUF]);
+            decision.gpu_path = Some(reason);
+        }
+        RenderingPlan::Gpu { reason, .. } => {
+            release_claimed(|_| true);
+            decision.gpu_path = Some(reason);
         }
         RenderingPlan::PreserveEnvironment => {
             // Drop the values too, or the next launch would read them as operator overrides.
             release_claimed(|_| true);
-            None
         }
     }
+    decision
+}
+
+/// The NVIDIA branch to name next to On, when On keeps compositing off on X11 (unreadable is "unknown").
+pub fn old_nvidia_driver_warning(branch: Option<u32>, wayland_session: bool) -> Option<String> {
+    let branch =
+        branch.filter(|branch| !wayland_session && *branch < NVIDIA_COMPOSITING_MIN_BRANCH)?;
+    Some(if branch == 0 {
+        "unknown".to_string()
+    } else {
+        branch.to_string()
+    })
+}
+
+/// First line of the NVIDIA kernel module banner, which names its version and flavour.
+pub fn nvidia_driver_version_line() -> Option<String> {
+    let text = std::fs::read_to_string(NVIDIA_DRIVER_VERSION_PATH).ok()?;
+    let line = text.lines().next()?.trim();
+    (!line.is_empty()).then(|| line.to_string())
 }
 
 #[cfg(test)]
@@ -480,6 +711,46 @@ mod tests {
             nvidia_driver_loaded.then_some(LEAKING_NVIDIA_BRANCH),
             wayland_socket,
             x11_open,
+            GpuInputs::default(),
+        )
+    }
+
+    /// A host with the GPU rendering setting applied; displays follow the variables.
+    fn plan_with_setting(
+        vars: &[(&str, &str)],
+        webkit_version: (u32, u32, u32),
+        gles_usable: bool,
+        nvidia_driver_loaded: bool,
+        gpu: GpuInputs,
+    ) -> RenderingPlan {
+        plan_with_setting_on_branch(
+            vars,
+            webkit_version,
+            gles_usable,
+            nvidia_driver_loaded.then_some(LEAKING_NVIDIA_BRANCH),
+            gpu,
+        )
+    }
+
+    fn plan_with_setting_on_branch(
+        vars: &[(&str, &str)],
+        webkit_version: (u32, u32, u32),
+        gles_usable: bool,
+        nvidia_driver_branch: Option<u32>,
+        gpu: GpuInputs,
+    ) -> RenderingPlan {
+        rendering_plan(
+            |name| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| OsString::from(value))
+            },
+            webkit_version,
+            gles_usable,
+            nvidia_driver_branch,
+            named(vars, WAYLAND_DISPLAY),
+            named(vars, X11_DISPLAY),
+            gpu,
         )
     }
 
@@ -496,6 +767,7 @@ mod tests {
             nvidia_driver_loaded.then_some(LEAKING_NVIDIA_BRANCH),
             live,
             named(vars, X11_DISPLAY),
+            GpuInputs::default(),
         )
     }
 
@@ -511,6 +783,7 @@ mod tests {
             Some(branch),
             named(vars, WAYLAND_DISPLAY),
             named(vars, X11_DISPLAY),
+            GpuInputs::default(),
         )
     }
 
@@ -771,10 +1044,44 @@ mod tests {
     }
 
     #[test]
-    fn force_dmabuf_still_leaves_the_wayland_workaround_in_place() {
+    fn force_dmabuf_on_wayland_keeps_the_gpu_path_under_supervision() {
+        // Vendor, packaging and setting do not matter: the operator asked for the DMA-BUF
+        // renderer. It stays unclaimed (the operator's value), and a recorded crash wins.
+        for nvidia in [true, false] {
+            for appimage in [false, true] {
+                let mut vars = vec![(FORCE_DMABUF, "1"), (WAYLAND_DISPLAY, "wayland-0")];
+                if appimage {
+                    vars.push((APPIMAGE, "/tmp/Unsloth.AppImage"));
+                }
+                for setting in [GpuRendering::Auto, GpuRendering::On, GpuRendering::Off] {
+                    let label = format!("nvidia={nvidia} appimage={appimage} setting={setting:?}");
+                    assert_eq!(
+                        plan_with_setting(&vars, MODERN_WEBKIT, true, nvidia, gpu(setting, false)),
+                        RenderingPlan::Gpu {
+                            force_dmabuf: false,
+                            reason: FORCE_DMABUF_REASON
+                        },
+                        "{label}"
+                    );
+                    assert_eq!(
+                        plan_with_setting(&vars, MODERN_WEBKIT, true, nvidia, gpu(setting, true)),
+                        RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, GPU_UNSAFE_REASON),
+                        "{label}"
+                    );
+                }
+            }
+        }
+        // X11 keeps the operator's environment as before.
+        let x11 = [(FORCE_DMABUF, "1"), (X11_DISPLAY, ":0")];
         assert_eq!(
-            plan_on_nvidia(&[(FORCE_DMABUF, "1"), (WAYLAND_DISPLAY, "wayland-0")]),
-            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
+            plan_with_setting(
+                &x11,
+                MODERN_WEBKIT,
+                true,
+                true,
+                gpu(GpuRendering::Off, true)
+            ),
+            RenderingPlan::PreserveEnvironment
         );
     }
 
@@ -1539,6 +1846,478 @@ mod tests {
         assert_eq!(
             plan_on_graphics(vars, true),
             RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+    }
+
+    const WEBKIT_2_54: (u32, u32, u32) = (2, 54, 2);
+    const WEBKIT_2_53: (u32, u32, u32) = (2, 53, 99);
+    const WEBKIT_BUNDLED: (u32, u32, u32) = (2, 50, 4);
+    const WAYLAND_HOST: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0")];
+    const X11_HOST: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
+    const APPIMAGE_WAYLAND_HOST: &[(&str, &str)] = &[
+        (WAYLAND_DISPLAY, "wayland-0"),
+        (APPIMAGE, "/tmp/Unsloth.AppImage"),
+    ];
+
+    fn gpu(setting: GpuRendering, unsafe_flag: bool) -> GpuInputs {
+        GpuInputs {
+            setting,
+            unsafe_flag,
+        }
+    }
+
+    #[test]
+    fn auto_keeps_the_gpu_path_on_nvidia_wayland_from_webkit_2_54_2() {
+        for vars in [WAYLAND_HOST, APPIMAGE_WAYLAND_HOST] {
+            for version in [WEBKIT_2_54, (2, 54, 3), (2, 56, 0)] {
+                assert_eq!(
+                    plan_with_setting(vars, version, true, true, GpuInputs::default()),
+                    RenderingPlan::Gpu {
+                        force_dmabuf: false,
+                        reason: NVIDIA_WAYLAND_GPU_REASON
+                    },
+                    "{version:?} {vars:?}"
+                );
+            }
+            // 2.54.0 and 2.54.1 crash at launch with Error 71 under explicit sync (bug 280210).
+            for version in [(2, 54, 0), (2, 54, 1)] {
+                assert_eq!(
+                    plan_with_setting(vars, version, true, true, GpuInputs::default()),
+                    RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON),
+                    "{version:?} {vars:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn auto_below_2_54_2_keeps_todays_nvidia_wayland_workaround() {
+        for version in [
+            (2, 54, 1),
+            (2, 54, 0),
+            WEBKIT_2_53,
+            WEBKIT_BUNDLED,
+            MODERN_WEBKIT,
+        ] {
+            for vars in [WAYLAND_HOST, APPIMAGE_WAYLAND_HOST] {
+                assert_eq!(
+                    plan_with_setting(vars, version, true, true, GpuInputs::default()),
+                    RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON),
+                    "{version:?} {vars:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn auto_off_nvidia_or_off_wayland_matches_the_plan_without_a_setting() {
+        // Every Auto path except NVIDIA Wayland 2.54.2+ is today's plan, flag or not.
+        let hosts: &[&[(&str, &str)]] = &[
+            WAYLAND_HOST,
+            X11_HOST,
+            APPIMAGE_WAYLAND_HOST,
+            &[(X11_DISPLAY, ":0"), (APPIMAGE, "/tmp/Unsloth.AppImage")],
+            &[
+                (WAYLAND_DISPLAY, "wayland-0"),
+                (GDK_BACKEND, "x11"),
+                (X11_DISPLAY, ":0"),
+            ],
+        ];
+        for vars in hosts {
+            for version in [WEBKIT_2_54, WEBKIT_BUNDLED, (2, 42, 0)] {
+                for gles in [true, false] {
+                    for nvidia in [false, true] {
+                        if nvidia
+                            && named(vars, WAYLAND_DISPLAY)
+                            && !vars.contains(&(GDK_BACKEND, "x11"))
+                            && version == WEBKIT_2_54
+                            && (gles || !named(vars, APPIMAGE))
+                        {
+                            continue;
+                        }
+                        for unsafe_flag in [false, true] {
+                            assert_eq!(
+                                plan_with_setting(vars, version, gles, nvidia, gpu(GpuRendering::Auto, unsafe_flag)),
+                                plan_on_host(vars, version, gles, nvidia),
+                                "{vars:?} {version:?} gles={gles} nvidia={nvidia} flag={unsafe_flag}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_crash_flag_sends_auto_and_on_to_the_cpu_path() {
+        for setting in [GpuRendering::Auto, GpuRendering::On] {
+            assert_eq!(
+                plan_with_setting(WAYLAND_HOST, WEBKIT_2_54, true, true, gpu(setting, true)),
+                RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, GPU_UNSAFE_REASON),
+                "{setting:?}"
+            );
+        }
+        assert_eq!(
+            plan_with_setting(
+                WAYLAND_HOST,
+                WEBKIT_2_54,
+                true,
+                true,
+                gpu(GpuRendering::Off, true)
+            ),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, GPU_OFF_REASON)
+        );
+    }
+
+    #[test]
+    fn on_forces_the_gpu_path_and_stands_the_distribution_patch_down_on_nvidia() {
+        for version in [WEBKIT_BUNDLED, WEBKIT_2_54] {
+            for vars in [WAYLAND_HOST, APPIMAGE_WAYLAND_HOST] {
+                assert_eq!(
+                    plan_with_setting(vars, version, true, true, gpu(GpuRendering::On, false)),
+                    RenderingPlan::Gpu {
+                        force_dmabuf: true,
+                        reason: GPU_ON_REASON
+                    }
+                );
+                assert_eq!(
+                    plan_with_setting(vars, version, true, false, gpu(GpuRendering::On, false)),
+                    RenderingPlan::Gpu {
+                        force_dmabuf: false,
+                        reason: GPU_ON_REASON
+                    }
+                );
+            }
+        }
+        assert_eq!(
+            plan_with_setting(
+                X11_HOST,
+                MODERN_WEBKIT,
+                true,
+                false,
+                gpu(GpuRendering::On, false)
+            ),
+            RenderingPlan::Gpu {
+                force_dmabuf: false,
+                reason: GPU_ON_REASON
+            }
+        );
+    }
+
+    #[test]
+    fn on_nvidia_x11_below_the_minimum_branch_keeps_compositing_off() {
+        let appimage_x11: &[(&str, &str)] =
+            &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
+        for vars in [X11_HOST, appimage_x11] {
+            for branch in [0, 580, 609] {
+                assert_eq!(
+                    plan_with_setting_on_branch(
+                        vars,
+                        MODERN_WEBKIT,
+                        true,
+                        Some(branch),
+                        gpu(GpuRendering::On, false)
+                    ),
+                    RenderingPlan::Apply(
+                        RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                        GPU_ON_OLD_NVIDIA_REASON
+                    ),
+                    "{branch} {vars:?}"
+                );
+            }
+        }
+        assert_eq!(
+            old_nvidia_driver_warning(Some(580), false).as_deref(),
+            Some("580")
+        );
+        assert_eq!(
+            old_nvidia_driver_warning(Some(0), false).as_deref(),
+            Some("unknown")
+        );
+        assert_eq!(old_nvidia_driver_warning(Some(610), false), None);
+        assert_eq!(old_nvidia_driver_warning(Some(580), true), None);
+        assert_eq!(old_nvidia_driver_warning(None, false), None);
+    }
+
+    #[test]
+    fn on_nvidia_x11_keeps_gpu_compositing_over_shared_memory() {
+        assert_eq!(
+            plan_with_setting_on_branch(
+                X11_HOST,
+                MODERN_WEBKIT,
+                true,
+                Some(615),
+                gpu(GpuRendering::On, false)
+            ),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                GPU_ON_REASON
+            )
+        );
+        // The AppImage composites too, so it gets the non-GL video sink its GStreamer needs.
+        let appimage_x11: &[(&str, &str)] =
+            &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
+        assert_eq!(
+            plan_with_setting_on_branch(
+                appimage_x11,
+                MODERN_WEBKIT,
+                true,
+                Some(615),
+                gpu(GpuRendering::On, false)
+            ),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage,
+                GPU_ON_REASON
+            )
+        );
+        // Below 2.44 there is no SHM switch, so On is WebKit's own default there.
+        assert_eq!(
+            plan_with_setting(
+                X11_HOST,
+                (2, 42, 0),
+                true,
+                true,
+                gpu(GpuRendering::On, false)
+            ),
+            RenderingPlan::Gpu {
+                force_dmabuf: true,
+                reason: GPU_ON_REASON
+            }
+        );
+    }
+
+    #[test]
+    fn off_takes_the_cpu_path_without_stranding_x11() {
+        for nvidia in [false, true] {
+            for vars in [WAYLAND_HOST, APPIMAGE_WAYLAND_HOST] {
+                assert_eq!(
+                    plan_with_setting(
+                        vars,
+                        WEBKIT_2_54,
+                        true,
+                        nvidia,
+                        gpu(GpuRendering::Off, false)
+                    ),
+                    RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, GPU_OFF_REASON)
+                );
+            }
+        }
+        assert_eq!(
+            plan_with_setting(
+                X11_HOST,
+                MODERN_WEBKIT,
+                true,
+                true,
+                gpu(GpuRendering::Off, false)
+            ),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                GPU_OFF_REASON
+            )
+        );
+        assert_eq!(
+            plan_with_setting(
+                X11_HOST,
+                MODERN_WEBKIT,
+                true,
+                false,
+                gpu(GpuRendering::Off, false)
+            ),
+            RenderingPlan::Apply(RenderingWorkaround::DisableCompositingOnX11, GPU_OFF_REASON)
+        );
+        assert_eq!(
+            RenderingWorkaround::DisableCompositingOnX11.variables(),
+            &[FORCE_SHARED_MEMORY, DISABLE_COMPOSITING]
+        );
+        // No SHM switch below 2.44: the renderer switch is the only CPU path there.
+        assert_eq!(
+            plan_with_setting(
+                X11_HOST,
+                (2, 42, 0),
+                true,
+                false,
+                gpu(GpuRendering::Off, false)
+            ),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, GPU_OFF_REASON)
+        );
+    }
+
+    #[test]
+    fn a_missing_gles_library_outranks_every_setting() {
+        let vars = APPIMAGE_WAYLAND_HOST;
+        for setting in [GpuRendering::Auto, GpuRendering::On, GpuRendering::Off] {
+            assert_eq!(
+                plan_with_setting(vars, WEBKIT_2_54, false, true, gpu(setting, false)),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::DisableDmabuf,
+                    NVIDIA_APPIMAGE_GLES_REASON
+                ),
+                "{setting:?}"
+            );
+            assert_eq!(
+                plan_with_setting(vars, WEBKIT_2_54, false, false, gpu(setting, false)),
+                RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, APPIMAGE_GLES_REASON),
+                "{setting:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn operator_variables_outrank_the_setting_and_are_named() {
+        let overrides: &[(&str, &str)] = &[
+            (DISABLE_DMABUF, "0"),
+            (DISABLE_DMABUF, "1"),
+            (FORCE_SHARED_MEMORY, "1"),
+            (DISABLE_COMPOSITING, "0"),
+            (DISABLE_COMPOSITING, "1"),
+            (DISABLE_COMPOSITING_SETTING, "1"),
+            (DISABLE_COMPOSITING_SETTING, "0"),
+            (FORCE_DMABUF, "1"),
+        ];
+        for &(name, value) in overrides {
+            let vars = [(WAYLAND_DISPLAY, "wayland-0"), (name, value)];
+            let expected = plan_on_host(&vars, WEBKIT_BUNDLED, true, true);
+            // A recorded crash does count for FORCE_DMABUF on Wayland (tested above).
+            let flag = name != FORCE_DMABUF;
+            for setting in [GpuRendering::Auto, GpuRendering::On, GpuRendering::Off] {
+                assert_eq!(
+                    plan_with_setting(&vars, WEBKIT_BUNDLED, true, true, gpu(setting, flag)),
+                    expected,
+                    "{name}={value} {setting:?}"
+                );
+            }
+            let env = |key: &str| {
+                vars.iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| OsString::from(v))
+            };
+            assert_eq!(env_override(&env), Some(name), "{name}={value}");
+        }
+    }
+
+    #[test]
+    fn variables_this_app_claimed_are_not_overrides() {
+        for (name, claimed) in [
+            (DISABLE_DMABUF, DISABLE_DMABUF.to_string()),
+            (FORCE_DMABUF, FORCE_DMABUF.to_string()),
+            (
+                DISABLE_COMPOSITING,
+                [FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING].join(","),
+            ),
+        ] {
+            let vars = [
+                (WAYLAND_DISPLAY, "wayland-0"),
+                (name, "1"),
+                (APPLIED_WORKAROUND, claimed.as_str()),
+            ];
+            let env = |key: &str| {
+                vars.iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| OsString::from(v))
+            };
+            assert_eq!(env_override(&env), None, "{name}");
+            // An earlier Off launch relaunched under Auto re-decides as Auto.
+            assert_eq!(
+                plan_with_setting(&vars, WEBKIT_2_54, true, true, GpuInputs::default()),
+                RenderingPlan::Gpu {
+                    force_dmabuf: false,
+                    reason: NVIDIA_WAYLAND_GPU_REASON
+                },
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn setting_decisions_are_a_fixed_point_across_a_relaunch() {
+        for setting in [GpuRendering::Auto, GpuRendering::On, GpuRendering::Off] {
+            for nvidia in [true, false] {
+                for host in [WAYLAND_HOST, X11_HOST, APPIMAGE_WAYLAND_HOST] {
+                    let inputs = gpu(setting, false);
+                    let first = plan_with_setting(host, WEBKIT_2_54, true, nvidia, inputs);
+                    let mut relaunch: Vec<(&str, &str)> = host.to_vec();
+                    let claimed = match &first {
+                        RenderingPlan::Apply(workaround, _) => workaround.variables().join(","),
+                        RenderingPlan::Gpu {
+                            force_dmabuf: true, ..
+                        } => FORCE_DMABUF.to_string(),
+                        _ => String::new(),
+                    };
+                    for name in claimed.split(',').filter(|name| !name.is_empty()) {
+                        relaunch.push((name, "1"));
+                    }
+                    if !claimed.is_empty() {
+                        relaunch.push((APPLIED_WORKAROUND, claimed.as_str()));
+                    }
+                    assert_eq!(
+                        plan_with_setting(&relaunch, WEBKIT_2_54, true, nvidia, inputs),
+                        first,
+                        "{setting:?} nvidia={nvidia} {host:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_gpu_path_on_wayland_asks_for_supervision() {
+        let decision = |gpu_path: Option<&'static str>, wayland_session: bool| RendererDecision {
+            applied: None,
+            gpu_path,
+            env_override: None,
+            webkit_version: WEBKIT_2_54,
+            wayland_session,
+            nvidia_driver_branch: None,
+        };
+        assert!(decision(Some(GPU_ON_REASON), true).wants_supervision());
+        assert!(!decision(Some(GPU_ON_REASON), false).wants_supervision());
+        assert!(!decision(None, true).wants_supervision());
+    }
+
+    const HOST_MODE: (&str, &str) = (crate::appimage_webkit::MODE_ENV, "host");
+
+    #[test]
+    fn a_host_mode_appimage_on_wayland_gets_the_native_plan() {
+        let vars = [
+            (WAYLAND_DISPLAY, "wayland-0"),
+            (APPIMAGE, "/tmp/Unsloth.AppImage"),
+            HOST_MODE,
+        ];
+        assert_eq!(
+            plan(&vars),
+            RenderingPlan::Apply(RenderingWorkaround::ForceSharedMemory, WAYLAND_REASON)
+        );
+        // Bundled keeps the AppImage switch.
+        assert_eq!(
+            plan(&vars[..2]),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, WAYLAND_REASON)
+        );
+    }
+
+    #[test]
+    fn a_host_mode_appimage_on_nvidia_x11_reports_the_native_reason() {
+        assert_eq!(
+            plan_on_nvidia(&[
+                (APPIMAGE, "/tmp/Unsloth.AppImage"),
+                HOST_MODE,
+                (GDK_BACKEND, "x11")
+            ]),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_REASON
+            )
+        );
+    }
+
+    #[test]
+    fn a_host_mode_appimage_is_not_held_to_the_bundled_gles_check() {
+        assert_eq!(
+            plan_with_version_and_gles(
+                &[(APPIMAGE, "/tmp/Unsloth.AppImage"), HOST_MODE],
+                MODERN_WEBKIT,
+                false
+            ),
+            RenderingPlan::PreserveEnvironment
         );
     }
 }

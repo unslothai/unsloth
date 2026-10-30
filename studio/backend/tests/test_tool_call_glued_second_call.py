@@ -140,3 +140,8 @@ def test_glued_parsing_stays_linear_on_large_inputs():
         assert time.perf_counter() - t0 < 5.0
         if want is not None:
             assert len(calls) == want
+
+
+def test_a_near_json_first_object_glues_nothing():
+    first = "{'name': 'web_search', 'arguments': {'query': 'mars rover news'}}"
+    assert _calls("<tool_call>\n" + first + "\n" + _obj(*B) + "\n</tool_call>") == [A]

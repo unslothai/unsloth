@@ -372,7 +372,11 @@ import {
   createTrailingPlaceholderWatch,
   stripTrailingTemplatePlaceholder,
 } from "../utils/trailing-template-placeholder";
-import { createStreamPublishGate } from "../utils/stream-pacing";
+import {
+  TRAILING_PUBLISH,
+  createStreamPublishGate,
+  withTrailingPublish,
+} from "../utils/stream-pacing";
 import {
   countReasoningGroups,
   createReasoningDurationTracker,
@@ -2726,6 +2730,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "mlxKvQuantNote",
   "mlxInt8Prefill",
   "loadedMlxInt8PrefillRequested",
+  "mlxAnePrefill",
+  "loadedMlxAnePrefillRequested",
   "mlxPleOffload",
   "mlxExpertOffload",
   "loadedMlxPleOffloadRequested",
@@ -3700,6 +3706,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       cache_type_kv: config.kvCacheDtype,
       mlx_kv_quant: config.mlxKvQuant ?? null,
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
+      mlx_ane_prefill: config.mlxAnePrefill ?? false,
       mlx_ple_offload: config.mlxPleOffload ?? null,
       mlx_expert_offload: config.mlxExpertOffload ?? null,
       speculative_type: effectiveSpeculativeType,
@@ -7098,7 +7105,7 @@ export function createOpenAIStreamAdapter(
               }
             };
             // The window lets a length-stop tell user Max Tokens from the backend's stand-in for Max.
-            const stream =
+            const sourceStream =
               generationDecision === "durable"
                 ? durableStream()
                 : streamChatCompletions(
@@ -7108,8 +7115,25 @@ export function createOpenAIStreamAdapter(
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
+            const stream = withTrailingPublish(sourceStream, canPublish);
 
             for await (const chunk of stream) {
+              if (chunk === TRAILING_PUBLISH) {
+                if (canPublish(streamedChars)) {
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
+                continue;
+              }
               const chunkModel = (chunk as { model?: unknown }).model;
               if (typeof chunkModel === "string" && chunkModel.length > 0) {
                 responseModelId = chunkModel;
@@ -7370,6 +7394,7 @@ export function createOpenAIStreamAdapter(
                 if (toolEvent.type === "context_window_exceeded") {
                   contextWindowExceeded = true;
                   // assistant-ui saves the last STREAMED yield, so publish why the turn ended now.
+                  canPublish.published();
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -7439,6 +7464,7 @@ export function createOpenAIStreamAdapter(
                       ),
                     } as PositionedToolCallPart;
                     // A stop before the next chunk saves only what was yielded.
+                    canPublish.published();
                     yield {
                       content: liveAssistantContent(),
                       metadata: {
@@ -7773,6 +7799,7 @@ export function createOpenAIStreamAdapter(
                     };
                   }
                 }
+                canPublish.published();
                 yield {
                   content: liveAssistantContent(),
                   metadata: {
@@ -8371,6 +8398,7 @@ export function createOpenAIStreamAdapter(
                 const forcePublish =
                   addedToolCall || replayStateChanged || stampedProvenance;
                 if (forcePublish || canPublish(streamedChars)) {
+                  canPublish.published();
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -8392,6 +8420,7 @@ export function createOpenAIStreamAdapter(
               if (replayStateChanged && !delta && !reasoning) {
                 const replayContent = liveAssistantContent();
                 if (replayContent.length > 0) {
+                  canPublish.published();
                   yield {
                     content: replayContent,
                     metadata: {
@@ -8482,6 +8511,7 @@ export function createOpenAIStreamAdapter(
               }
 
               if (assistantContent.length > 0) {
+                canPublish.published();
                 yield {
                   content: assistantContent,
                   metadata: {

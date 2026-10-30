@@ -688,6 +688,17 @@ def _trim_param_value(val: str) -> str:
     return val
 
 
+def _json_object_body(body: str) -> dict | None:
+    """Arguments of a Hermes/XML mix ``<function=NAME>{json}</function>``; a heal, so Auto-Heal only."""
+    if not body.lstrip().startswith("{"):
+        return None
+    try:
+        value = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
     """Unbalanced braces cover to EOF; a closeless balanced call covers only braces, so siblings survive."""
     n = len(content)
@@ -770,6 +781,14 @@ def marker_coverage(content: str) -> list[tuple[int, int]]:
     return _marker_coverage(content, _build_markers(content))
 
 
+def _is_strict_json(text: str) -> bool:
+    try:
+        json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return True
+
+
 def _glued_call_objects(content: str, pos: int, end: int):
     """Call objects glued after a parsed one inside the same ``<tool_call>``, up to its paired close at
     ``end``: ``[(start, name, arguments_json)]``, or None unless every object between is a strict
@@ -808,6 +827,33 @@ def _glued_call_objects(content: str, pos: int, end: int):
     return out or None
 
 
+def _relaxed_allowed_at(content: str, pos: int) -> bool:
+    from core.inference.relaxed_json import relaxed_allowed_at  # noqa: PLC0415 -- cycle at import time
+    return relaxed_allowed_at(content, pos)
+
+
+def _relaxed_object_end(content: str, start: int):
+    from core.inference.relaxed_json import relaxed_object_end  # noqa: PLC0415 -- cycle at import time
+    return relaxed_object_end(content, start)
+
+
+def _loads_wrapped_call(text: str, *, relaxed: bool = True) -> dict:
+    """A wrapped call's JSON object; near-JSON a model sampled (single quotes, a trailing comma, True/None,
+    unquoted keys) is read only after strict JSON fails and only when healing is on. Raises ValueError
+    when neither reads an object."""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        if not relaxed:
+            raise
+        from core.inference.relaxed_json import relaxed_json_object  # noqa: PLC0415 -- failure path only
+
+        obj = relaxed_json_object(text)
+        if obj is None:
+            raise
+        return obj
+
+
 def parse_tool_calls_from_text(
     content: str,
     *,
@@ -844,11 +890,25 @@ def parse_tool_calls_from_text(
     ]
     coverage = _marker_coverage(content, markers)
     covered_until = -1
+    relaxed = allow_incomplete
     for idx, (start, brace_end, kind, m) in enumerate(markers):
         covered_by_earlier_marker = start < covered_until
         covered_until = max(covered_until, coverage[idx][1])
         if covered_by_earlier_marker:
             continue
+        relaxed_end = None
+        if relaxed and kind == "json" and not _relaxed_allowed_at(content, m.end() - 1):
+            relaxed = False
+        if relaxed and kind == "json":
+            # JSON brace matching ends a single-quoted argument at a brace inside it; markers in that
+            # argument are data. An object that never closes this way leaves the rest strict.
+            relaxed_end = _relaxed_object_end(content, m.end() - 1)
+            if relaxed_end is None:
+                relaxed = False
+            elif relaxed_end != brace_end:
+                brace_end = relaxed_end
+            else:
+                relaxed_end = None
         if brace_end < 0:
             continue
         if not allow_incomplete:
@@ -858,7 +918,14 @@ def parse_tool_calls_from_text(
                 continue
         try:
             if kind == "json":
-                obj = json.loads(content[m.end() - 1 : brace_end + 1])
+                try:
+                    obj = _loads_wrapped_call(content[m.end() - 1 : brace_end + 1], relaxed = relaxed)
+                except ValueError:
+                    if relaxed_end is not None:
+                        relaxed = False
+                    raise
+                if relaxed_end is not None:
+                    covered_until = max(covered_until, relaxed_end + 1)
                 name = obj.get("name", "")
                 # Accept "parameters" (Llama-3.2) and "args" (TML Inkling) as aliases.
                 arguments = obj.get("arguments")
@@ -887,7 +954,13 @@ def parse_tool_calls_from_text(
         if close_m:
             span_end = close_m.end()
         glued = None
-        if allow_incomplete and kind == "json" and close_m is None and name:
+        if (
+            allow_incomplete
+            and kind == "json"
+            and close_m is None
+            and name
+            and _is_strict_json(content[m.end() - 1 : brace_end + 1])
+        ):
             glued = _glued_call_objects(content, span_end, coverage[idx][1])
         if glued:
             # Heal: several call objects glued inside one closed tag; the spans tile up to the close.
@@ -963,6 +1036,8 @@ def parse_tool_calls_from_text(
                 arguments[param_name] = _trim_param_value(val)
             if not valid_params:
                 continue
+        if allow_incomplete and not param_starts:
+            arguments = _json_object_body(body) or arguments
 
         span_start = fm.start()
         wrap_open = re.search(r"<tool_call>\s*$", content[:span_start])
