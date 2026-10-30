@@ -5672,6 +5672,28 @@ def requested_video_fps(
     return rate if rate > 0 else None
 
 
+def _video_tools_reachable(
+    cmd: Sequence[str],
+    env: Optional[Mapping[str, str]] = None,
+    cwd: Optional[str] = None,
+) -> bool:
+    """Whether the child can launch ffmpeg and ffprobe, which /props' video modality never checks (#16065)."""
+    source = os.environ if env is None else env
+    try:
+        bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}))
+    except Exception:
+        return True
+    search = bin_dir or source.get("LLAMA_ARG_VIDEO_FFMPEG_DIR")
+    names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
+    if not search:
+        search = source.get("PATH", os.defpath)
+        if sys.platform == "win32":
+            # CreateProcess also searches the binary's folder and the working directory.
+            launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
+            search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
+    return all(shutil.which(name, path = search) for name in names)
+
+
 def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
     """Presence, not value, decides: LLAMA_ARG_NO_MMPROJ_OFFLOAD= counts, as llama.cpp tests with getenv."""
     source = os.environ if env is None else env
@@ -7922,6 +7944,19 @@ class CountAborted(Exception):
     """A token count stood down mid-flight because its answer stopped mattering."""
 
     __slots__ = ()
+
+
+# Single-threaded render + tokenize ran ~600K chars/s on the #15800 reporter's CPU; a sixth of that still catches a hang.
+_COUNT_TIMEOUT_FLOOR_S = 10.0
+_COUNT_TIMEOUT_CHARS_PER_S = 100_000
+
+
+def _count_timeout(messages, system_text, tools) -> float:
+    try:
+        chars = len(json.dumps([system_text, messages, tools], ensure_ascii = False, default = str))
+    except Exception:  # noqa: BLE001 -- an unmeasurable prompt keeps the floor
+        chars = 0
+    return _COUNT_TIMEOUT_FLOOR_S + chars / _COUNT_TIMEOUT_CHARS_PER_S
 
 
 # Module level so tests can point the orphan sweep at a fixture tree.
@@ -20038,8 +20073,31 @@ class LlamaCppBackend:
 
         # Header-rejected basenames, so the search moves past an impostor to the real sidecar.
         rejected: set[str] = set()
+        # Once per call; an empty answer (also a failed model_info) is asked again, as before.
+        remote_sizes: dict[str, int] = {}
 
-        def _pick_dflash(candidates: list[str]) -> Optional[str]:
+        def _remote_sizes() -> dict[str, int]:
+            nonlocal remote_sizes
+            if not remote_sizes:
+                remote_sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
+            return remote_sizes
+
+        snap = _snapshot_dir_of(near_path) if near_path else None
+
+        def _local_sizes(candidates: list[str]) -> dict[str, int]:
+            sizes: dict[str, int] = {}
+            if snap is None:
+                return sizes
+            for name in candidates:
+                if "/" in name:
+                    continue
+                try:
+                    sizes[name] = (snap / name).stat().st_size
+                except OSError:
+                    continue
+            return sizes
+
+        def _pick_dflash(candidates: list[str], *, local: bool = False) -> Optional[str]:
             # Ranked against the weight loaded, not precision alone, so model B does not get model A's drafter; a sidecar naming no family stays eligible.
             from utils.models.drafters import (
                 dflash_repo_preference_key,
@@ -20062,22 +20120,28 @@ class LlamaCppBackend:
             ]
             if not eligible:
                 return None
-            # Same size bound as dflash_plan_files: header reads only after download, a drafter is a few layers of its target, and an unlisted size keeps the candidate.
-            sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
             try:
                 target_bytes = (self._get_gguf_size_bytes(near_path) or 0) if near_path else 0
             except OSError:
                 target_bytes = 0
-            files = sorted(
-                (
+
+            def _under_bound(sizes: Mapping[str, int]) -> list[str]:
+                # Same size bound as dflash_plan_files: header reads only after download, a drafter is a few layers of its target, and an unlisted size keeps the candidate.
+                return [
                     name
                     for name in eligible
                     # Whole set, not the picked shard: each half of a split weight can sit under the target while the set does not.
                     if not (
                         target_bytes and _drafter_set_bytes(sizes, Path(name).name) >= target_bytes
                     )
-                ),
-                key = lambda name: dflash_repo_preference_key(name, weight_name, others),
+                ]
+
+            # On-disk sizes settle it only when they keep every candidate, as an unanswered model_info does; else ask the Hub.
+            kept = _under_bound(_local_sizes(candidates)) if local else None
+            if kept is None or len(kept) != len(eligible):
+                kept = _under_bound(_remote_sizes())
+            files = sorted(
+                kept, key = lambda name: dflash_repo_preference_key(name, weight_name, others)
             )
             return files[0] if files else None
 
@@ -20097,7 +20161,9 @@ class LlamaCppBackend:
         cached: Optional[str] = None
         seen_siblings: set[str] = set()
         while near_path and not cancel_event.is_set():
-            sibling = _companion_snapshot_sibling(near_path, _pick_dflash)
+            sibling = _companion_snapshot_sibling(
+                near_path, functools.partial(_pick_dflash, local = True)
+            )
             if sibling is None or sibling in seen_siblings:
                 break
             seen_siblings.add(sibling)
@@ -32346,6 +32412,13 @@ class LlamaCppBackend:
                 self._has_video_input = False
                 # Use _extra_args_as_requested: the drafter-drop snapshot would restore the Metal zero-context strip.
                 self._reconcile_effective_ctx_with_server(ctx_override or 0)
+                if self._has_video_input:
+                    self._has_video_input = _video_tools_reachable(_last_spawn_cmd, env, _spawn_cwd)
+                    if not self._has_video_input:
+                        logger.warning(
+                            "Video input disabled: llama-server decodes video with ffmpeg and "
+                            "ffprobe, and neither --video-ffmpeg-dir nor PATH provides both."
+                        )
                 if self._kv_cache_context_total is not None:
                     self._n_ubatch = min(
                         self._n_ubatch,
@@ -40742,7 +40815,9 @@ class LlamaCppBackend:
 
         try:
             with httpx.Client(
-                timeout = 10,
+                timeout = httpx.Timeout(
+                    _COUNT_TIMEOUT_FLOOR_S, read = _count_timeout(messages, system_text, tools)
+                ),
                 headers = self._auth_headers,
                 trust_env = False,
                 verify = _local_ssl_context(),
@@ -40824,6 +40899,11 @@ class LlamaCppBackend:
                     except CountAborted:
                         # Not a template failure. Must precede the generic except.
                         raise
+                    except httpx.TimeoutException:
+                        if strict:
+                            raise RuntimeError(
+                                "llama-server timed out counting the prompt"
+                            ) from None
                     except Exception:
                         pass
                     return None, False
