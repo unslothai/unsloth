@@ -105,6 +105,7 @@ def test_loop_body_takes_the_fed_recipe_group_and_stays_acyclic():
         (lambda d: d["edges"].pop(1), "so each round scores the model it just trained"),
         (lambda d: d["nodes"][2]["params"].pop("holdout_percent"), "Hold out % above 0"),
         (lambda d: d["nodes"][2]["params"].update(holdout_percent = 0), "Hold out % above 0"),
+        (lambda d: d["nodes"][2]["params"].update(holdout_percent = 0.5), "Hold out % above 0"),
         (
             lambda d: d["edges"][2].update(source = "gen", source_port = "dataset"),
             "needs held-out rows",

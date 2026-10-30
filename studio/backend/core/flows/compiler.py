@@ -572,9 +572,10 @@ def _check_feedback(
         percent = next((p for p in specs[held[0]]["params"] if p["id"] == "holdout_percent"), None)
         if percent:
             raw = (nodes[held[0]].get("params") or {}).get("holdout_percent", percent["default"])
+            # int(), as the run reads it: 0.5 truncates to no hold-out at all.
             try:
-                unset = float(raw or 0) <= 0
-            except (TypeError, ValueError):
+                unset = int(raw or 0) < 1
+            except (TypeError, ValueError, OverflowError):
                 unset = False
             if unset:
                 errors.append(
