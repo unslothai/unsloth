@@ -88,8 +88,7 @@ def _proj_parts(
     K,
     allow_bias = False,
 ):
-    """(W, quant_state, N, (A, B, S) or None, bias or None) of a 4bit NF4 projection the kernel can
-    read, else a str."""
+    """(W, quant_state, N, (A, B, S) or None, bias or None) of a kernel-readable NF4 projection, else a str."""
     if (
         KU._has_non_lora_adapter(proj)
         or KU._has_multiple_active_adapters(proj)

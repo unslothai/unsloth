@@ -182,8 +182,7 @@ def _qk_norm_rope_kv_kernel(
     n_heads, n_kv_heads, stride_cos, stride_cache_h, stride_cache_l,
     HEAD_DIM: tl.constexpr, EPS_Q: tl.constexpr, EPS_K: tl.constexpr,
 ):  # fmt: skip
-    # One head per program over the raw q|k|v row (Qwen3): per-head RMSNorm (q_norm / k_norm) then RoPE
-    # for Q and K, V copied; K / V go to cache row SLOT. Roundings as decode_qk_norm_rope.
+    # Qwen3, one head per program: q / k RMSNorm then RoPE, V copied, K / V to cache row SLOT (roundings as decode_qk_norm_rope).
     h = tl.program_id(0)
     HALF: tl.constexpr = HEAD_DIM // 2
     j = tl.arange(0, HALF)
@@ -327,7 +326,6 @@ class FusedSite:
         bias = None,
     ):
         self.kind = kind
-        # Per-segment bias tensors (no copies), padded to 3.
         self.bias = None if bias is None else tuple(bias) + (bias[-1],) * (3 - len(bias))
         self.packed = packed
         self.absmax = absmax
