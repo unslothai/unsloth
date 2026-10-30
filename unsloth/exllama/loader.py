@@ -50,7 +50,11 @@ class Exl3LoadPlan:
 EXL3_ADAPTER_STAMP = "unsloth_exl3.json"
 
 
-def set_exl3_source_model_reference(model, source_model, config = None):
+def set_exl3_source_model_reference(
+    model,
+    source_model,
+    config = None,
+):
     """Keep PEFT's saved base-model reference pointed at the requested source.
 
     The EXL3 loader temporarily replaces ``model_name`` with a local cache
@@ -108,7 +112,13 @@ def _patch_peft_save_for_exl3_stamp():
     PeftModel.save_pretrained = save_pretrained
 
 
-def read_exl3_adapter_stamp(model_name, *, token = None, revision = None, local_files_only = False):
+def read_exl3_adapter_stamp(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+    local_files_only = False,
+):
     """``(source_model, Exl3Config)`` for an adapter saved from an EXL3 base, else None."""
     if not isinstance(model_name, str) or not is_exllama_available():
         return None
@@ -122,7 +132,6 @@ def read_exl3_adapter_stamp(model_name, *, token = None, revision = None, local_
     else:
         try:
             from huggingface_hub import hf_hub_download
-
             stamp = hf_hub_download(
                 model_name,
                 EXL3_ADAPTER_STAMP,
@@ -167,7 +176,9 @@ def resolve_exl3_adapter(
     source_model, config = stamp
     if _looks_like_exl3_request(load_in_exl3, quantization_config):
         # A bare True means "EXL3, as trained"; a bpw or config overrides it.
-        return source_model, (config if load_in_exl3 is True and quantization_config is None else load_in_exl3)
+        return source_model, (
+            config if load_in_exl3 is True and quantization_config is None else load_in_exl3
+        )
     if not exl3_is_default_backend(
         load_in_4bit = load_in_4bit,
         load_in_8bit = load_in_8bit,

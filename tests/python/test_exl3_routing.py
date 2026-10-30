@@ -397,9 +397,15 @@ class TestFastLanguageModelExl3Intent(unittest.TestCase):
 class TestExl3AdapterStamp(unittest.TestCase):
     """Adapters trained on EXL3 record their base so a reload rebuilds it."""
 
-    def _base(self, source = "org/base", config = None):
+    def _base(
+        self,
+        source = "org/base",
+        config = None,
+    ):
         base = SimpleNamespace(config = SimpleNamespace(), name_or_path = "/cache/exl3/x")
-        EL.set_exl3_source_model_reference(base, source, config or Exl3Config(bits = 3.5, head_bits = 8))
+        EL.set_exl3_source_model_reference(
+            base, source, config or Exl3Config(bits = 3.5, head_bits = 8)
+        )
         return base
 
     def test_stamp_round_trip(self):
