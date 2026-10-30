@@ -625,6 +625,51 @@ def _install_accelerator_state(self):
             handler.find_unused_parameters = False
 
 
+def _model_parallel_axes(model) -> list:
+    """The tensor / pipeline parallel axes a trainer would combine with context parallelism: from
+    UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (read without building anything) or a model split by hand."""
+    import os
+
+    axes = []
+    for name, what in (("UNSLOTH_PP_SIZE", "pipeline parallel"), ("UNSLOTH_TP_SIZE", "tensor parallel")):
+        raw = str(os.environ.get(name, "")).strip()
+        if raw.isdigit() and int(raw) > 1:
+            axes.append(f"{what} ({name}={raw})")
+    if isinstance(model, torch.nn.Module):
+        try:
+            from .models.pp_native import is_pipeline_parallel
+            from .models.tp_native import is_tensor_parallel
+        except Exception:
+            return axes
+        if is_pipeline_parallel(model) and not any(a.startswith("pipeline") for a in axes):
+            axes.append("pipeline parallel (apply_pipeline_parallel)")
+        if is_tensor_parallel(model) and not any(a.startswith("tensor") for a in axes):
+            axes.append("tensor parallel (apply_tensor_parallel)")
+    return axes
+
+
+def _refuse_model_parallel_cp(size: int, model) -> None:
+    """Before the trainer's __init__ touches the model: context parallelism builds its own (dp, cp) mesh, whose cp
+    groups are the tensor parallel / pipeline data parallel groups of a tp / pp launch, so the step would run and
+    train on mixed-up shards."""
+    axes = _model_parallel_axes(model)
+    if not axes:
+        return
+    raise NotImplementedError(
+        f"Unsloth: context parallelism (context_parallel_size = {size}) does not compose with "
+        f"{' and '.join(axes)} yet: its context parallel groups would be the other axis' groups, and training "
+        "would run with wrong gradients. Use context parallelism alone (with DDP or UNSLOTH_FSDP2=1), or "
+        "tensor / pipeline parallelism with context_parallel_size = 1."
+    )
+
+
+def _trainer_model_argument(args, kwargs):
+    if "model" in kwargs:
+        return kwargs["model"]
+    # (self, model, args, ...) for every Trainer / TRL trainer __init__.
+    return args[1] if len(args) > 1 else None
+
+
 def _check_cp_runtime(self, size: int, backend: str) -> None:
     # train() would swap in a fresh model without the attention hooks or the support check.
     if getattr(self, "model_init", None) is not None:
@@ -775,6 +820,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             valid = isinstance(forwarded, int) and not isinstance(forwarded, bool)
             requested = forwarded if valid else 1
         if requested > 1:
+            _refuse_model_parallel_cp(requested, _trainer_model_argument((self,) + args, kwargs))
             # Before the original __init__: Unsloth wraps instance methods there (auto packing's
             # train reset, the token budget's training_step), and they must capture the CP ones.
             install_methods()
@@ -1392,6 +1438,7 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
         except ValueError:
             requested = 1  # Raised again after the original __init__.
         if requested > 1:
+            _refuse_model_parallel_cp(requested, _trainer_model_argument((self,) + args, kwargs))
             # Before the original __init__, so instance wrappers made there capture the CP methods.
             install_methods()
         original_init(self, *args, **kwargs)
