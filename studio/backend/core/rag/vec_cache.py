@@ -212,16 +212,18 @@ def _search_entry(np, entry: _Entry, vector, fetch: int):
         best = scores[idx]
     else:
         buf = np.empty(_BLOCK, dtype = np.float32)
-        parts_i, parts_s = [], []
+        idx = np.empty(0, dtype = np.int64)
+        best = np.empty(0, dtype = np.float32)
+        # Running top-f: scratch is O(block + fetch), not O(scope).
         for s0 in range(0, n, _BLOCK):
             out = buf[: min(n, s0 + _BLOCK) - s0]
             np.matmul(store.mat[s0 : s0 + len(out)], q, out = out)
             part = _top(np, out, min(f, len(out)))
-            parts_i.append(part + s0)
-            parts_s.append(out[part])
-        idx, best = np.concatenate(parts_i), np.concatenate(parts_s)
-        keep = _top(np, best, f)
-        idx, best = idx[keep], best[keep]
+            idx = np.concatenate([idx, part + s0])
+            best = np.concatenate([best, out[part]])
+            if len(best) > f:
+                keep = _top(np, best, f)
+                idx, best = idx[keep], best[keep]
     # Same order vec0 gives: distance ascending, ties by rowid.
     order = np.lexsort((store.rowids[idx], -best))
     ids = store.ids

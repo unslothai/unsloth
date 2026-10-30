@@ -323,3 +323,21 @@ def test_appends_write_in_place_and_an_older_entry_keeps_its_rows(rag_conn, monk
         _hit(rag_conn, "kb_a", q, 70, monkeypatch),
         _search(rag_conn, "kb_a", q, 70, monkeypatch, False),
     )
+
+
+def test_block_scan_scratch_stays_bounded_by_block_plus_fetch(monkeypatch):
+    import tracemalloc
+
+    monkeypatch.setattr(vec_cache, "_BLOCK", 4096)
+    n, f = 200_000, 4096
+    store = vec_cache._Store(np, n, 1)
+    store.mat[:] = np.random.default_rng(0).standard_normal((n, 1), dtype = np.float32)
+    store.rowids[:] = np.arange(n)
+    store.ids[:] = "c"
+    entry = vec_cache._Entry((0, 0, 0), n, store, 0)
+    tracemalloc.start()
+    vec_cache._search_entry(np, entry, [1.0], f)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    # Result list aside, a scan that kept every block's candidates would hold ~n * 12 bytes (2.4 MB).
+    assert peak < 1.5 * 2**20, peak
