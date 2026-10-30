@@ -243,6 +243,23 @@ def _format_sharegpt(rows, template):
     )
 
 
+@pytest.mark.parametrize("content", ["", None])
+def test_mixed_sharegpt_native_tool_calls_render(content):
+    messages = _tool_call_row('{"city": "Paris"}')
+    messages[0] = {"from": "human", "value": "Weather in Paris?"}
+    messages[-1] = {"from": "gpt", "value": "It is 21C in Paris."}
+    messages[1]["content"] = content
+
+    result = _format_sharegpt([{"conversations": messages}], _LLAMA3_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert '{"name": "get_weather", "parameters": {"city": "Paris"}}' in text
+    assert "Weather in Paris?" in text
+    assert "It is 21C in Paris." in text
+    assert "<|start_header_id|>ipython<|end_header_id|>\n\n21C" in text
+
+
 def test_sharegpt_function_call_and_observation_train_as_tool_turns():
     call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
 
@@ -264,6 +281,35 @@ class _JinjaProcessor(_JinjaTokenizer):
     @property
     def tokenizer(self):
         return self
+
+
+@pytest.mark.parametrize("processor", [False, True])
+def test_mixed_sharegpt_native_calls_keep_null_content_for_templates(processor):
+    messages = _tool_call_row('{"city": "Paris"}')
+    messages[0] = {"from": "human", "value": "Weather in Paris?"}
+    messages[-1] = {"from": "gpt", "value": "It is 21C in Paris."}
+    messages[1]["content"] = None
+    tokenizer = (
+        _JinjaProcessor(_GEMMA4_TEMPLATE.read_text(encoding = "utf-8"))
+        if processor
+        else _JinjaTokenizer(_DEEPSEEK_TEMPLATE)
+    )
+    result = format_and_template_dataset(
+        Dataset.from_list([{"conversations": messages}]),
+        model_name = "stub-model",
+        tokenizer = tokenizer,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    expected = (
+        'call:get_weather{city:<|"|>Paris<|"|>}'
+        if processor
+        else '<call>get_weather\n{"city": "Paris"}</call>'
+    )
+    assert expected in text
+    assert "21C" in text
 
 
 def test_sharegpt_tool_turns_train_natively_on_a_processor_loaded_gemma4():
