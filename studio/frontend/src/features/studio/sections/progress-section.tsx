@@ -50,7 +50,6 @@ import {
   ChartAverageIcon,
   Clock01Icon,
   DashboardSpeed01Icon,
-  FolderExportIcon,
   GpuIcon,
   Notebook01Icon,
   RamMemoryIcon,
@@ -59,6 +58,7 @@ import {
   Timer01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderExportIcon } from "@/lib/folder-icons";
 import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";

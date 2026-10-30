@@ -143,6 +143,7 @@ def test_resolve_prefers_a_family_declared_filename():
     src = resolve_prequant_source(fam, "int8")
     assert src.filename == "Model-INT8-ConvRot-ComfyUI.safetensors"
     assert src.fallback_filenames == (
+        "Model-INT8-ConvRot.safetensors",
         "Model-INT8-ConvRot.pt",
         "Model-INT8-ComfyUI.safetensors",
         "Model-INT8.safetensors",
@@ -2884,3 +2885,71 @@ def test_task_specific_artifacts_get_no_twin():
     )
     src = resolve_prequant_source(fam, "int8", task = "keyframe")
     assert src.candidate_filenames == ("Model-KF-INT8.safetensors",)
+
+
+def _qwen_int8_ckpt():
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    ckpt = _good_ckpt(scheme = "int8")
+    ckpt["metadata"].update(
+        {
+            "family": "qwen-image",
+            "exclude_name_tokens": list(
+                exclude_tokens_for_scheme("int8", "qwen-image", baked = True)
+            ),
+            "min_features": 512,
+        }
+    )
+    return ckpt
+
+
+def test_load_tops_up_the_dense_text_stream_of_a_baked_artifact(monkeypatch, tmp_path):
+    import core.inference.diffusion_transformer_quant as tq
+
+    seen = []
+    monkeypatch.setattr(
+        tq,
+        "quantize_runtime_leftovers",
+        lambda transformer, scheme, family, baked, **kw: seen.append(
+            (scheme, family, list(baked), kw)
+        )
+        or 0,
+    )
+    ckpt = _qwen_int8_ckpt()
+    t = _load(monkeypatch, tmp_path, ckpt, scheme = "int8")
+    assert t is not None
+    assert len(seen) == 1
+    scheme, family, baked, kw = seen[0]
+    assert (scheme, family) == ("int8", "qwen-image")
+    assert baked == ckpt["metadata"]["exclude_name_tokens"]
+    assert kw["min_features"] == 512 and kw["device"] == "cuda"
+
+
+def test_load_survives_a_failed_top_up(monkeypatch, tmp_path):
+    import core.inference.diffusion_transformer_quant as tq
+
+    def boom(*a, **k):
+        raise RuntimeError("no torchao")
+
+    monkeypatch.setattr(tq, "quantize_runtime_leftovers", boom)
+    assert _load(monkeypatch, tmp_path, _qwen_int8_ckpt(), scheme = "int8") is not None
+
+
+def test_kill_switch_refuses_an_artifact_built_with_the_int8_text_stream(monkeypatch, tmp_path):
+    from core.inference.diffusion_transformer_quant import (
+        INT8_TEXT_STREAM_ENV,
+        exclude_tokens_for_scheme,
+    )
+
+    ckpt = _qwen_int8_ckpt()
+    from core.inference.diffusion_transformer_quant import int8_text_stream_scope
+
+    with int8_text_stream_scope(True):
+        ckpt["metadata"]["exclude_name_tokens"] = list(
+            exclude_tokens_for_scheme("int8", "qwen-image")
+        )
+        assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
+    monkeypatch.setenv(INT8_TEXT_STREAM_ENV, "0")
+    with int8_text_stream_scope(True):
+        assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None

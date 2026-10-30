@@ -132,12 +132,10 @@ import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import {
-  ArrowUpDownIcon,
   Cancel01Icon,
   DashboardCircleIcon,
   Flag01Icon,
   FlimSlateIcon,
-  Folder02Icon,
   HelpCircleIcon,
   ImageIcon,
   InformationCircleIcon,
@@ -148,10 +146,12 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { SortIcon } from "@/lib/sort-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type Dispatch,
@@ -5993,7 +5993,7 @@ export function HubModelPicker({
   const sortTriggerContent = (label: ReactNode) => (
     <span className="flex items-center gap-1">
       <HugeiconsIcon
-        icon={ArrowUpDownIcon}
+        icon={SortIcon}
         strokeWidth={1.75}
         className="size-3.5 shrink-0 text-foreground"
       />

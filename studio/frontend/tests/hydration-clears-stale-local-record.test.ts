@@ -30,13 +30,18 @@ const {
 const MODEL = "unsloth/Model-GGUF";
 const VARIANT = "q4_k_m";
 
-test("int8 prefill reaches the server row only when on", () => {
-  const on = { ...DEFAULT_PER_MODEL_CONFIG, mlxInt8Prefill: true };
-  assert.equal(toApiOverride(on).mlx_int8_prefill, true);
-  assert.equal("mlx_int8_prefill" in toApiOverride(DEFAULT_PER_MODEL_CONFIG), false);
-  assert.equal(fromApiOverride({ mlx_int8_prefill: true }).mlxInt8Prefill, true);
-  assert.equal(fromApiOverride({}, on).mlxInt8Prefill, true);
-});
+for (const [key, wire] of [
+  ["mlxInt8Prefill", "mlx_int8_prefill"],
+  ["mlxAnePrefill", "mlx_ane_prefill"],
+] as const) {
+  test(`${key} reaches the server row only when on`, () => {
+    const on = { ...DEFAULT_PER_MODEL_CONFIG, [key]: true };
+    assert.equal(toApiOverride(on)[wire], true);
+    assert.equal(wire in toApiOverride(DEFAULT_PER_MODEL_CONFIG), false);
+    assert.equal(fromApiOverride({ [wire]: true })[key], true);
+    assert.equal(fromApiOverride({}, on)[key], true);
+  });
+}
 
 test("MLX offload is always sent, null clearing to Auto, and hydrates from the row else the local value", () => {
   const set = { ...DEFAULT_PER_MODEL_CONFIG, mlxPleOffload: 0.5, mlxExpertOffload: "off" as const };

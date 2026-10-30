@@ -18,6 +18,7 @@ for _up in _iso.parents:
 
 import contextlib
 import errno
+import functools
 import itertools
 import os
 import shutil
@@ -391,6 +392,28 @@ def _no_sandbox_mover_outlives_its_test(monkeypatch):
     _drain_sandbox_movers()
     yield
     _drain_sandbox_movers()
+
+
+@pytest.fixture(autouse = True)
+def _no_crash_watchdog_outlives_its_test(monkeypatch):
+    # Every load arms the crash watchdog, and one left running replays a real load_model in a later test.
+    llama = sys.modules.get("core.inference.llama_cpp")
+    backend = getattr(llama, "LlamaCppBackend", None)
+    if backend is None:
+        yield
+        return
+    armed = []
+    start = backend._start_mtp_crash_watchdog
+
+    @functools.wraps(start)
+    def _tracked(self):
+        armed.append(self)
+        return start(self)
+
+    monkeypatch.setattr(backend, "_start_mtp_crash_watchdog", _tracked)
+    yield
+    for armed_backend in armed:
+        armed_backend._stop_mtp_crash_watchdog()
 
 
 def pytest_configure(config):
