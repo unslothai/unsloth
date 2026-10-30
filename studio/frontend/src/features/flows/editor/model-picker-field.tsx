@@ -12,6 +12,7 @@ import {
 } from "@/features/model-picker/components/model-selector/pickers";
 import { type ModelOption, ModelSelector } from "@/features/model-picker";
 import { usePlatformStore } from "@/config/env";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { priorityTrainingModels } from "@/config/training";
 import { type ComponentProps, useEffect, useState } from "react";
 import { choiceFromPick, isTrainableRepo } from "./model-choice";
@@ -72,6 +73,14 @@ export function FlowModelPicker({
   const textKind = kind === "chat" || kind === "vision" || kind === "train";
   const [models, setModels] = useState<ModelOption[]>([]);
   const deviceType = usePlatformStore((s) => s.deviceType);
+  // Chat's check mark, only when this exact repo (and quant) is the server's resident model.
+  const resident = useChatRuntimeStore(
+    (s) =>
+      Boolean(choice.repo) &&
+      s.residentCheckpoint?.toLowerCase() === choice.repo.toLowerCase() &&
+      (!choice.variant ||
+        s.activeGgufVariant?.toLowerCase() === choice.variant.toLowerCase()),
+  );
   useEffect(() => {
     if (!textKind) return;
     let alive = true;
@@ -91,13 +100,16 @@ export function FlowModelPicker({
     <ModelSelector
       models={models}
       value={choice.repo}
-      loaded={false}
+      loaded={resident}
+      loadedMark="check"
+      // Names the picked quant in the trigger ("GGUF · Q4_K_M"), as Chat does for the loaded one.
+      activeGgufVariant={choice.variant ?? null}
       selectedGgufVariant={choice.variant ?? null}
       onValueChange={(id, meta) => onChange(choiceFromPick(id, meta))}
-      variant="outline"
+      variant="ghost"
       size="sm"
       placeholder={`Choose a ${kind === "tts" ? "speech" : kind === "train" ? "base" : kind} model`}
-      className="nodrag h-8 w-full max-w-full justify-between rounded-md px-2.5 text-ui-12"
+      className="nodrag -ml-2 h-8 w-fit max-w-[calc(100%+0.5rem)] !pl-2 !pr-1.5"
       contentClassName="nodrag nowheel"
       {...KIND_PROPS[kind]}
       // Recommended lists GGUF on a GPU, which `rowFilter` drops; the Train page's picks fill it.
