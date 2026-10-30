@@ -64,6 +64,7 @@ test("an interaction on a toast does not dismiss the dialog under it", () => {
     },
     "@/lib/utils": { cn: (...classes: unknown[]) => classes.join(" ") },
     "@hugeicons/core-free-icons": { Cancel01Icon: {} },
+    "@/lib/folder-icons": { Cancel01Icon: {} },
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
   });
 
@@ -110,6 +111,7 @@ test("an interaction on a toast does not dismiss the sheet under it", () => {
     },
     "@/lib/utils": { cn: (...classes: unknown[]) => classes.join(" ") },
     "@hugeicons/core-free-icons": { Cancel01Icon: {} },
+    "@/lib/folder-icons": { Cancel01Icon: {} },
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
   });
 

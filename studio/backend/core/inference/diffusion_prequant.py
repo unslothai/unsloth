@@ -2402,7 +2402,25 @@ def load_prequantized_transformer(
             except Exception:  # noqa: BLE001
                 pass
         # Small-M padding, else quantised small-M linears raise in _int_mm. After load and .to().
-        from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
+        from .diffusion_transformer_quant import (
+            apply_small_m_padding,
+            apply_zero_row_guard,
+            quantize_runtime_leftovers,
+        )
+
+        # Must run before padding (it reparents Linears); a failure keeps the artifact, leftovers stay dense.
+        try:
+            quantize_runtime_leftovers(
+                transformer,
+                scheme,
+                metadata.get("family") or family,
+                metadata.get("exclude_name_tokens"),
+                min_features = int(metadata.get("min_features") or min_features or 512),
+                device = device,
+                logger = logger,
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, f"{scheme}:runtime leftovers", exc)
 
         apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
         apply_zero_row_guard(transformer, scheme, metadata.get("family"), logger = logger)
