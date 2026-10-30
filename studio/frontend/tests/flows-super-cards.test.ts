@@ -31,6 +31,9 @@ const { combineSelection, setSuperCardOpen, ungroupSuperCard } = await import(
   "../src/features/flows/editor/super-card-actions.ts"
 );
 const { useUiStore } = await import("../src/features/flows/stores/ui-store.ts");
+const { rememberSizes, sizeLookup } = await import(
+  "../src/features/flows/editor/layout.ts"
+);
 
 // prompt -> [template -> image] -> preview, with a second preview fed by the template.
 function comic() {
@@ -378,6 +381,32 @@ test("auto layout places a closed card as one block and moves its blocks with it
   assert.deepEqual(result["group:g"], [360, 20]);
   assert.deepEqual(result["note:n1"], [400, 160]);
   assert.equal(result["note:n2"], undefined);
+});
+
+test("auto layout moves a note a wide block folded, after the block left React Flow", () => {
+  const d = doc(
+    [node("a", "input.text", [0, 0]), node("b", "image.generate", [300, 0])],
+    [],
+  );
+  // Centred inside b's measured 500x400 box, outside the 260x140 default.
+  d.notes = [{ id: "n1", text: "beside", rect: [700, 250, 100, 60] }];
+  useDocStore.getState().load(d);
+  select("a", "b");
+  combineSelection();
+  const state = useDocStore.getState();
+  const request = {
+    direction: "LR" as const,
+    nodes: state.graph.nodeOrder.map((id) => ({ id, width: 260, height: 140 })),
+    edges: [],
+  };
+  rememberSizes(new Map([["b", { width: 500, height: 400 }]]));
+  // A closed card's blocks are not in React Flow, so it reports no size for them.
+  const lookup = sizeLookup(() => undefined);
+  const result = foldLayout(request, state, lookup).unfold({
+    "super:sc1": [100, 50],
+  });
+  assert.deepEqual(result.b, [400, 50]);
+  assert.deepEqual(result["note:n1"], [800, 300]);
 });
 
 test("notes and reroutes drawn among a card's blocks fold with it", () => {

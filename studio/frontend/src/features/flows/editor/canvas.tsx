@@ -47,6 +47,7 @@ import {
   type RfNode,
 } from "./derive-rf";
 import { addFileNodes } from "./file-drop";
+import { rememberSizes } from "./layout";
 import {
   OpenSuperCards,
   SuperCardCombineToolbar,
@@ -253,7 +254,10 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         }
       }
       if (nextDrag) setDrag(nextDrag);
-      if (nextSizes) setSizes(nextSizes);
+      if (nextSizes) {
+        setSizes(nextSizes);
+        rememberSizes(nextSizes);
+      }
       if (selection) {
         const ui = useUiStore.getState();
         const next = new Set(ui.selectedNodes);

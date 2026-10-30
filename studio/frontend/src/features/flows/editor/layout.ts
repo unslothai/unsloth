@@ -30,6 +30,22 @@ function getWorker(): Worker {
   return worker;
 }
 
+// A closed card's blocks leave React Flow, so it no longer knows their sizes; the canvas keeps
+// the last ones here so layout folds the same notes the card does.
+const remembered = new Map<string, { width: number; height: number }>();
+
+export function rememberSizes(
+  sizes: ReadonlyMap<string, { width: number; height: number }>,
+): void {
+  for (const [id, size] of sizes) remembered.set(id, size);
+}
+
+export function sizeLookup(
+  getInternalNode: (id: string) => InternalNode | undefined,
+): (id: string) => { width?: number; height?: number } | undefined {
+  return (id) => getInternalNode(id)?.measured ?? remembered.get(id);
+}
+
 export async function autoLayout(
   getInternalNode: (id: string) => InternalNode | undefined,
   direction: "LR" | "TB" = "LR",
@@ -51,8 +67,10 @@ export async function autoLayout(
     })),
   };
   const id = ++nextId;
-  const folded = foldLayout(request, useDocStore.getState(), (key) =>
-    getInternalNode(key)?.measured,
+  const folded = foldLayout(
+    request,
+    useDocStore.getState(),
+    sizeLookup(getInternalNode),
   );
   const result = await new Promise<LayoutResult>((resolve, reject) => {
     pending.set(id, { resolve, reject });
