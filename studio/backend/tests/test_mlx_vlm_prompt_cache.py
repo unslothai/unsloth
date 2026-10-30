@@ -780,6 +780,10 @@ def test_a_lone_batched_row_holds_its_snapshots_from_the_cache_it_hands_back(rin
     assert [n for n, _skeleton, _replay in row._skeletons] == [768, 899]
     row.retire(take)
     holds([768, 899])
+    # A short turn inside that boundary's chunk banks only its replay and holds the boundary again.
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: alone[0])
+    row.retire(prefill(row, ids[:950]))
+    holds([768, 949])
 
     # Held only by a row alone in the batch, from a cache holding its rows in order, and only
     # where unsloth-zoo hands that cache back.
@@ -1292,3 +1296,54 @@ def test_a_compacted_window_updates_exactly_as_the_full_one(keep, next_rows):
         want = full.update_and_fetch(rows(start, n), -rows(start, n))
         for a, b in zip(got, want):
             assert a.shape == b.shape and mx.array_equal(a, b).item()
+
+
+def test_a_short_turn_holds_again_the_boundary_it_resumed_from():
+    mx = pytest.importorskip("mlx.core")
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+
+    def positions(start, n):
+        return mx.arange(start, start + n, dtype = mx.float32).reshape(1, 1, n, 1) * mx.ones(
+            (1, 2, 1, 8)
+        )
+
+    class Model:
+        def __call__(
+            self,
+            inputs,
+            cache = None,
+            **_kwargs,
+        ):
+            start = cache_entries_offset(cache)
+            for entry in cache:
+                entry.update_and_fetch(
+                    positions(start, len(inputs)), -positions(start, len(inputs))
+                )
+            mx.eval([entry.state for entry in cache])
+
+    model, ids = Model(), list(range(1000))
+    make = lambda: [cache.KVCache(), cache.KVCache()]
+
+    def turn(store, n):
+        with Session(store, "m", model, make) as session:
+            prefix = session.find_prefix_length(ids[:n])
+            run_generation(model, ids[:n], session.cache, prefix)
+            for step in range(4):
+                model([0], cache = session.cache)
+            session.finish()
+        return prefix
+
+    def held(store):
+        for (_key, prefix), (entries, _nbytes) in store._held._entries.items():
+            n = len(prefix)
+            assert [entry.offset for entry in entries] == [n, n]
+            assert mx.array_equal(entries[0].keys[..., :n, :], positions(0, n)).item()
+        return [len(item[1]) for item in store._held._entries]
+
+    store = VLMPromptSnapshotStore(max_bytes = 1)
+    assert turn(store, 700) == 0 and held(store) == [512, 699]
+    # Each short turn stays inside the 512 boundary's chunk, so it banks only its replay.
+    for n in (720, 740, 760):
+        assert turn(store, n) == 512
+        assert held(store) == [512, n - 1]
+    assert turn(store, 800) == 512 and turn(store, 800) == 799

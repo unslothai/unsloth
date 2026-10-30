@@ -805,6 +805,7 @@ class VLMPromptCacheSession:
         self._token_ids = None
         self._media_end = 0
         self._handed_over = False
+        self._rehold = None
 
     def __enter__(self):
         self._forward.__enter__()
@@ -842,6 +843,14 @@ class VLMPromptCacheSession:
         self._handed_over = (
             entries is not None and (self._key, tuple(token_ids[:prefix_len])) not in self._store
         )
+        if self._handed_over and prefix_len == boundary:
+            # Banking no boundary past it, the request holds again what served it, from its final cache.
+            try:
+                self._rehold = kv_skeleton(entries)
+            except Exception as exc:
+                logger.info(
+                    "MLX VLM prompt cache: served snapshot not kept to hold again (%s)", exc
+                )
         if entries is None and origin:
             # Produced here instead, in the one square forward the vision tokens need.
             self._keep(None)
@@ -879,6 +888,7 @@ class VLMPromptCacheSession:
     def _detach_served(self, offset):
         prefix_ids = self._token_ids[: self.reused_tokens]
         if offset != self.reused_tokens:
+            self._rehold = None
             # Declined: freed now, before the fresh-cache request's media pass evaluates.
             self._store.discard((self._key, tuple(prefix_ids)))
             try:
@@ -909,6 +919,7 @@ class VLMPromptCacheSession:
             return False
         record = self._forward.record
         stored = self._store_boundary(record.snapshot)
+        stored = self._store_rehold() or stored
         replay = len(self._token_ids) - 1
         if (
             record.tail is not None
@@ -920,6 +931,18 @@ class VLMPromptCacheSession:
                 or stored
             )
         return stored
+
+    def _store_rehold(self):
+        skeleton, self._rehold = self._rehold, None
+        try:
+            if not skeleton or not fill_kv_skeleton(skeleton, self.cache):
+                return False
+            import mlx.core as mx
+            mx.eval(list(_arrays(skeleton, mx)))
+        except Exception as exc:
+            logger.info("MLX VLM prompt cache: served snapshot not held again (%s)", exc)
+            return False
+        return self._store.store(self._key, self._token_ids[: self.reused_tokens], skeleton)
 
     def _store_boundary(self, snapshot):
         if snapshot is None:
@@ -998,8 +1021,8 @@ class VLMBatchRowCache:
         replay = len(token_ids) - 1
         self._replay = replay if replay != boundary else None
         lengths = [length for length in (boundary, replay) if length > prefix]
-        if handed and not lengths:
-            # Banking nothing, the row holds again what served it and the prefixes it extends.
+        if handed and boundary <= prefix:
+            # Banking no boundary past it, the row holds again what served it and the prefixes it extends.
             self._skeletons = [
                 (len(ids), skeleton, is_replay)
                 for ids, held_entries, is_replay in held
