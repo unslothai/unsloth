@@ -84,18 +84,32 @@ const MULTI_SELECT_KEYS = multiSelectKeys(PLATFORM);
 const APPLE = isApplePlatform(PLATFORM);
 const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.1 };
 
+// React Flow reports box-selection changes before it stores the new rect, so read the pointer ourselves.
+const pointer = { x: 0, y: 0 };
+
 /** A selection box drawn inside a group touches it; only a box around the whole group takes it. */
 function boxSkips(state: ReactFlowState<RfNode, RfEdge>, id: string): boolean {
   if (!id.startsWith(GROUP_PREFIX)) return false;
-  const { userSelectionActive, userSelectionRect, transform, nodeLookup } =
-    state;
+  const { userSelectionRect: box, transform, nodeLookup, domNode } = state;
   const node = nodeLookup.get(id);
-  if (!userSelectionActive || !userSelectionRect || !node) return false;
-  return !boxCovers(userSelectionRect, transform, {
-    ...node.internals.positionAbsolute,
-    width: node.measured.width ?? 0,
-    height: node.measured.height ?? 0,
-  });
+  const pane = domNode?.getBoundingClientRect();
+  if (!box || !node || !pane) return false;
+  const x = pointer.x - pane.left;
+  const y = pointer.y - pane.top;
+  return !boxCovers(
+    {
+      x: Math.min(x, box.startX),
+      y: Math.min(y, box.startY),
+      width: Math.abs(x - box.startX),
+      height: Math.abs(y - box.startY),
+    },
+    transform,
+    {
+      ...node.internals.positionAbsolute,
+      width: node.measured.width ?? 0,
+      height: node.measured.height ?? 0,
+    },
+  );
 }
 
 type Size = { width: number; height: number };
@@ -500,6 +514,10 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       ref={setWrapper}
       className="relative h-full w-full"
       onDoubleClick={onDoubleClick}
+      onPointerMoveCapture={(event) => {
+        pointer.x = event.clientX;
+        pointer.y = event.clientY;
+      }}
       onDragEnter={fileDrop.dragHandlers.onDragEnter}
       onDragOver={(event) => {
         if (dragHasFiles(Array.from(event.dataTransfer.types)))
