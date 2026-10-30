@@ -393,6 +393,7 @@ from typing import Optional, Tuple, List, Union
 import re, inspect, sys
 import contextlib
 import threading
+import weakref
 
 try:
     from huggingface_hub.utils import get_token
@@ -1541,6 +1542,42 @@ class _EagerDecodeSteps:
 # UNSLOTH_FLEX_ATTENTION_GENERATE=1 keeps flex for every generate step.
 _FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
 _FLEX_GENERATE_LOCK = threading.Lock()
+
+
+# Per underlying model, outside its state (an RLock in __dict__ breaks deepcopy / pickle): the
+# serialising lock, and how many calls have its configs switched right now.
+class _ModelMap:
+    """Weakly keyed by model where it can be (nn.Module), else by id()."""
+
+    def __init__(self):
+        self.weak, self.strong = weakref.WeakKeyDictionary(), {}
+
+    def _where(self, model):
+        try:
+            weakref.ref(model)
+            return self.weak, model
+        except TypeError:
+            return self.strong, id(model)
+
+    def get(
+        self,
+        model,
+        default = None,
+    ):
+        table, key = self._where(model)
+        return table.get(key, default)
+
+    def set(self, model, value):
+        table, key = self._where(model)
+        table[key] = value
+
+    def pop(self, model):
+        table, key = self._where(model)
+        table.pop(key, None)
+
+
+_FLEX_GENERATE_SERIAL = _ModelMap()
+_FLEX_GENERATE_ROUTING = _ModelMap()
 _NON_FLEX_DECODE = "eager"
 
 
@@ -1584,15 +1621,8 @@ class _NonFlexGenerate:
         self.model = model
         self.active = False
         self.serial = None
-
-    def _serial_lock(self):
         # One per underlying model: a PEFT wrapper and its base model share the config.
-        base = self.model.get_base_model() if hasattr(self.model, "get_base_model") else self.model
-        owner = base.__dict__
-        lock = owner.get("_unsloth_flex_generate_serial")
-        if lock is None:
-            lock = owner["_unsloth_flex_generate_serial"] = threading.RLock()
-        return lock
+        self.base = model.get_base_model() if hasattr(model, "get_base_model") else model
 
     def _set(self, decode):
         state = self.model.__dict__
@@ -1629,14 +1659,16 @@ class _NonFlexGenerate:
     def __enter__(self):
         state = self.model.__dict__
         with _FLEX_GENERATE_LOCK:
-            # Keyed on the family, not the live config: another thread's decode step reads "eager".
-            config = getattr(self.model, "config", None)
-            routed = (
-                os.environ.get(_FLEX_GENERATE_ENV_VAR, "0") != "1"
-                and config is not None
-                and _config_prefers_flex_attention(config)
+            # A running call's decode step reads "eager", so its routing count decides too.
+            routed = _FLEX_GENERATE_ROUTING.get(self.base, 0) > 0 or bool(
+                _flex_generate_configs(self.model)
             )
-            serial = self._serial_lock() if routed else None
+            serial = None
+            if routed:
+                serial = _FLEX_GENERATE_SERIAL.get(self.base)
+                if serial is None:
+                    serial = threading.RLock()
+                    _FLEX_GENERATE_SERIAL.set(self.base, serial)
         if serial is not None:
             serial.acquire()
             self.serial = serial
@@ -1657,6 +1689,7 @@ class _NonFlexGenerate:
                 ]
                 state["_unsloth_non_flex_generate_saved"] = saved
                 state["_unsloth_non_flex_generate_configs"] = configs
+                _FLEX_GENERATE_ROUTING.set(self.base, _FLEX_GENERATE_ROUTING.get(self.base, 0) + 1)
                 self.steps = 0
                 # The generate loop calls prepare_inputs_for_generation on the transformers model that
                 # runs it: for a PEFT model that is the base model (PeftModelForCausalLM.generate hands
@@ -1711,7 +1744,12 @@ class _NonFlexGenerate:
             state["_unsloth_non_flex_generate"] = depth
             if depth == 0:
                 state.pop("_unsloth_non_flex_generate", None)
-                state.pop("_unsloth_non_flex_generate_configs", None)
+                if state.pop("_unsloth_non_flex_generate_configs", None) is not None:
+                    left = _FLEX_GENERATE_ROUTING.get(self.base, 1) - 1
+                    if left > 0:
+                        _FLEX_GENERATE_ROUTING.set(self.base, left)
+                    else:
+                        _FLEX_GENERATE_ROUTING.pop(self.base)
                 state.pop("_unsloth_non_flex_generate_pinned", None)
                 for target, had, previous in state.pop("_unsloth_non_flex_generate_prepare", ()):
                     if had:

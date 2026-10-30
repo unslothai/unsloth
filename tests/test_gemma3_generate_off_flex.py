@@ -157,6 +157,18 @@ def test_overlapping_thread_waits_for_the_running_generate():
     assert not [k for k in model.__dict__ if k.startswith("_unsloth_non_flex")]
 
 
+def test_model_stays_copyable_after_generate():
+    # The serialising lock lives outside the model: deepcopy / pickle must keep working.
+    import copy, pickle
+
+    model = _text_model()
+    with _NonFlexGenerate(model):
+        _steps(model)
+    copy.deepcopy(model)
+    pickle.dumps(model.config)
+    assert not [k for k in model.__dict__ if "flex_generate" in k]
+
+
 def test_restored_when_generate_raises():
     model = _text_model()
     prepare = model.prepare_inputs_for_generation
