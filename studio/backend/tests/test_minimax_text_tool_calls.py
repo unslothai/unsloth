@@ -251,3 +251,79 @@ def test_a_megabyte_of_adversarial_markup_parses_in_linear_time(text):
     strip_tool_markup(text, final = True, enabled_tool_names = ENABLED)
     # Each took 35-90 s with a per-tag scan of the text.
     assert time.perf_counter() - start < 5.0
+
+
+def _client_view(events, strip):
+    """What the GGUF streaming route sends: each cumulative event goes through the display strip and only the
+    growth is forwarded (append-only); an empty status or a tool_start starts a new turn."""
+    shown, prev = "", ""
+    for event in events:
+        if event.get("type") == "tool_start" or (
+            event.get("type") == "status" and not event.get("text")
+        ):
+            prev = ""
+        elif event.get("type") == "content":
+            clean = strip.strip(event.get("text", ""))
+            shown += clean[len(prev) :]
+            prev = clean
+    return shown
+
+
+@pytest.mark.parametrize("closed", [True, False], ids = ["closed", "unclosed"])
+def test_the_route_display_strip_hides_a_block(closed):
+    from routes.inference import _strip_tool_xml_for_display
+
+    text = "Let me look that up.\n" + (SEARCH if closed else SEARCH[: -len("</minimax:tool_call>")])
+    shown = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED)
+    assert shown == "Let me look that up.\n"
+    prose = 'MiniMax writes calls as `<invoke name="x">` blocks.'
+    assert (
+        _strip_tool_xml_for_display(prose, auto_heal_tool_calls = True, enabled_tool_names = ENABLED)
+        == prose
+    )
+
+
+def test_a_block_in_the_final_answer_pass_never_reaches_the_client(monkeypatch):
+    """The capped final pass sends tool_choice "none", so llama-server leaves the block in content; its
+    streaming stripper keeps an open block and the route forwards growth only, so the route must hide it."""
+    from routes.inference import _StreamingDisplayStrip
+
+    reply = "Let me look that up.\n" + SEARCH
+    streams = [
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": "weather in Paris"}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": reply[i : i + 7]}) for i in range(0, len(reply), 7)] + [_done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "result")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "weather in Paris?"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+    )
+
+    assert payloads[-1].get("tool_choice") == "none"
+    assert calls == [("web_search", {"query": "weather in Paris"})]
+    shown = _client_view(
+        events, _StreamingDisplayStrip(auto_heal_tool_calls = True, enabled_tool_names = ENABLED)
+    )
+    assert "Let me look that up." in shown
+    assert "<invoke" not in shown and "<parameter" not in shown, shown
+    assert "</minimax:tool_call>" not in shown, shown
