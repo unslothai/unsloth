@@ -852,7 +852,7 @@ export function DateHeader({
   const Arrow = active && !desc ? ArrowUpIcon : ArrowDownIcon;
   const label = t(DATE_LABELS[field]);
   return (
-    <span className={cn(DATE_COLUMN, "items-center gap-1 @xl:flex")}>
+    <span className={cn(DATE_COLUMN, "group/datecol items-center gap-1 @xl:flex")}>
       {fields.length > 1 ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -867,7 +867,7 @@ export function DateHeader({
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}
                 strokeWidth={2}
-                className="size-3 opacity-0 transition-opacity group-hover/date:opacity-100 group-focus-visible/date:opacity-100 group-data-[state=open]/date:opacity-100"
+                className="size-3 opacity-0 transition-opacity group-hover/datecol:opacity-100 group-focus-visible/date:opacity-100 group-data-[state=open]/date:opacity-100"
               />
             </button>
           </DropdownMenuTrigger>
