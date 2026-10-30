@@ -17,6 +17,7 @@ from auth import policy
 from core.inference import mcp_client, tools
 from state import tool_policy
 from storage import mcp_servers_db
+from utils import managed_provider_url_settings
 from utils.account_context import OWNER, AccountContext, arun_as, current_account_id, run_as
 
 ALICE = AccountContext("alice-id", "alice")
@@ -347,6 +348,110 @@ def test_mcp_dns_rejects_mixed_public_and_private_answers(monkeypatch):
     )
     with pytest.raises(HTTPException):
         run_as(ALICE, mcp_client.validate_mcp_address, "https://mixed.example/mcp")
+
+
+def _resolve_literal(host, port, **kwargs):
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (host, port))]
+
+
+@pytest.mark.parametrize(
+    "url", ["http://127.0.0.1:8321/mcp", "http://[::1]:8321/mcp", "http://192.168.1.20/mcp"]
+)
+def test_mcp_private_urls_follow_the_owners_local_connections_switch(monkeypatch, url):
+    monkeypatch.setattr(socket, "getaddrinfo", _resolve_literal)
+    switch = {"on": False}
+    monkeypatch.setattr(
+        managed_provider_url_settings,
+        "get_managed_private_provider_urls_allowed",
+        lambda: switch["on"],
+    )
+    with pytest.raises(HTTPException) as refusal:
+        run_as(ALICE, mcp_servers_db.create_server, id = "off", display_name = "Local", url = url)
+    assert "Settings > Accounts" in refusal.value.detail
+    switch["on"] = True
+    run_as(ALICE, mcp_servers_db.create_server, id = "on", display_name = "Local", url = url)
+    assert run_as(ALICE, mcp_servers_db.get_server, "on")["url"] == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/mcp",
+        "http://metadata.google.internal/mcp",
+        "http://user:pw@127.0.0.1/mcp",
+        "python local.py",
+    ],
+)
+def test_mcp_switch_never_opens_metadata_credentials_or_stdio(monkeypatch, url):
+    monkeypatch.setattr(socket, "getaddrinfo", _resolve_literal)
+    monkeypatch.setattr(
+        managed_provider_url_settings, "get_managed_private_provider_urls_allowed", lambda: True
+    )
+    with pytest.raises(HTTPException):
+        run_as(ALICE, mcp_client.validate_mcp_address, url)
+
+
+def test_mcp_public_transport_dials_loopback_once_the_owner_allows_it(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        managed_provider_url_settings, "get_managed_private_provider_urls_allowed", lambda: True
+    )
+
+    async def check():
+        client = mcp_client._public_http_client_factory()
+        http = sys.modules[type(client).__module__.split(".")[0]]
+
+        async def send(transport, request):
+            seen.append(str(request.url))
+            if request.url.path == "/mcp":
+                return http.Response(302, headers = {"location": "http://169.254.169.254/x"})
+            return http.Response(200)
+
+        monkeypatch.setattr(http.AsyncHTTPTransport, "handle_async_request", send)
+        monkeypatch.setattr(socket, "getaddrinfo", _resolve_literal)
+        async with client:
+            with pytest.raises(HTTPException):
+                await client.get("http://127.0.0.1:8321/mcp")
+
+    asyncio.run(check())
+    assert seen == ["http://127.0.0.1:8321/mcp"]
+
+
+def test_mcp_public_transport_falls_back_to_the_next_localhost_address(monkeypatch):
+    import http.server
+
+    class NoContent(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(204)
+            self.end_headers()
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), NoContent)
+    port = server.server_address[1]
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    resolve = socket.getaddrinfo
+
+    def localhost_ipv6_first(host, *args, **kwargs):
+        if host == "localhost":
+            return [
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+            ]
+        return resolve(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", localhost_ipv6_first)
+    monkeypatch.setattr(
+        managed_provider_url_settings, "get_managed_private_provider_urls_allowed", lambda: True
+    )
+
+    async def check():
+        async with mcp_client._public_http_client_factory() as client:
+            return (await client.get(f"http://localhost:{port}/mcp")).status_code
+
+    try:
+        assert asyncio.run(check()) == 204
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_mcp_cache_and_failure_cooloffs_are_private():
