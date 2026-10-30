@@ -6,6 +6,7 @@
 import functools
 import re
 from pathlib import Path
+from tests.studio._en_catalog import en_string
 from tests.studio._js_source import (
     attribute_expressions,
     binding_joining,
@@ -696,6 +697,24 @@ def _new_chat_button_class_tokens(chat_page: str) -> list[str]:
     return match.group(1).split()
 
 
+def _aria_label_count(source: str, label: str) -> int:
+    """aria-labels reading `label`, written literally or as a t("key") call en.ts maps to it."""
+    count = source.count(f'aria-label="{label}"')
+    for call in re.finditer(r"""aria-label=\{t\(\s*["']([\w.]+)["']\s*\)\}""", source):
+        try:
+            count += en_string(call.group(1)) == label
+        except (KeyError, ValueError):
+            continue
+    return count
+
+
+def test_aria_labels_are_counted_literally_and_through_the_catalog():
+    both = 'aria-label="Go back" aria-label={t("desktopShell.goBack")} aria-label={t("desktopShell.goForward")}'
+    assert _aria_label_count(both, "Go back") == 2
+    assert _aria_label_count(both, "Go forward") == 1
+    assert _aria_label_count('aria-label={t("no.such.key")}', "Go back") == 0
+
+
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
     titlebar = _ui_source(TITLEBAR)
     chat_page = _ui_source(CHAT_PAGE)
@@ -704,8 +723,8 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     )[0]
 
     assert "{expanded && (" not in navigation
-    assert navigation.count('aria-label="Go back"') == 1
-    assert navigation.count('aria-label="Go forward"') == 1
+    assert _aria_label_count(navigation, "Go back") == 1
+    assert _aria_label_count(navigation, "Go forward") == 1
 
     assert "inline-flex size-[30px] shrink-0" in navigation
 

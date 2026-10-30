@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { resetChatBackground } from "@/features/chat-background";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -34,7 +35,7 @@ import {
   type NotificationChannel,
 } from "@/hooks/use-notification-frequency";
 import { useHfTokenValidation } from "@/hooks";
-import { LOCALE_STORAGE_KEY, type TranslationKey, useT } from "@/i18n";
+import { LOCALE_STORAGE_KEY, getLocale, translate, type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
   SPELLCHECK_STORAGE_KEY,
@@ -199,7 +200,11 @@ const PREFS_KEYS: string[] = [
 // Set by resetAllPrefs so the unmount commit skips writing back the in-memory draft.
 let resetInProgress = false;
 
-function resetAllPrefs() {
+async function resetAllPrefs() {
+  if (!(await resetChatBackground())) {
+    toast.error(translate("chatBackground.storageError", {}, getLocale()));
+    return;
+  }
   resetInProgress = true;
   for (const key of PREFS_KEYS) {
     try {

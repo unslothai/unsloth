@@ -2326,12 +2326,96 @@ def parse_tool_calls_from_text(
         return calls
 
     # Gemma wrapper-less ``call:NAME{...}``: markerless, so the same enabled-name gate applies
-    return _parse_gemma_tool_calls(
+    calls = _parse_gemma_tool_calls(
         fallback_content,
         id_offset = id_offset,
         allow_incomplete = allow_incomplete,
         enabled_tool_names = enabled_tool_names,
     )
+    if calls or not allow_incomplete:
+        return calls
+    # Last, and only when nothing parsed: a closed call whose one string argument holds unescaped quotes.
+    return _parse_closed_call_unescaped_quotes(content, id_offset = id_offset)
+
+
+# ``{"name": N, "arguments"|"parameters": {"KEY": "VALUE"}}`` with nothing after VALUE but the closers.
+_ONE_STRING_ARG_CALL_RE = re.compile(
+    r'\A\s*\{\s*"name"\s*:\s*"([\w.\-]+)"\s*,\s*"(?:arguments|parameters)"\s*:\s*'
+    r'\{\s*"([A-Za-z_][\w\-]*)"\s*:\s*"(.*)"\s*\}\s*\}\s*\Z',
+    re.DOTALL,
+)
+# A lost second argument or outer key (``", "key":``, ``", 'key':``, ``", key:``, ``"}, "key":``): the
+# value's end is no longer knowable, so it is refused.
+_SECOND_KEY_RE = re.compile(
+    r'"[\s}\]]*,\s*(?:"[A-Za-z_][\w\-]*"|\'[A-Za-z_][\w\-]*\'|[A-Za-z_][\w\-]*)\s*:'
+)
+
+
+def _escape_bare_quotes(raw: str) -> str:
+    """Escape the ``"`` no backslash escapes. A model that left bare quotes was not JSON-escaping quotes, so a
+    ``\\"`` it wrote next to them is the code's own escape and stays a backslash-quote; other escapes (``\\n``)
+    are JSON's. With no bare quote at all, every escape is JSON's."""
+    tokens: list[str] = []
+    bare = False
+    i, n = 0, len(raw)
+    while i < n:
+        if raw[i] == "\\" and i + 1 < n:
+            tokens.append(raw[i : i + 2])
+            i += 2
+            continue
+        bare = bare or raw[i] == '"'
+        tokens.append(raw[i])
+        i += 1
+    if not bare:
+        return raw
+    return "".join('\\"' if tok == '"' else '\\\\\\"' if tok == '\\"' else tok for tok in tokens)
+
+
+def _parse_closed_call_unescaped_quotes(content: str, *, id_offset: int) -> list[dict]:
+    """A ``<tool_call>`` closed by ``</tool_call>`` whose single string argument (code, a command) holds
+    quotes the model did not escape, so strict JSON and brace matching both lose the call. The closer
+    bounds the body, so the value is everything between its opening quote and the final ``"}}``. Only a
+    single-argument call, outside reasoning and code fences, with no sign of a second argument."""
+    out: list[dict] = []
+    if _TC_JSON_START_RE.search(content) is None:
+        return out
+    think_spans = _tool_healing._think_spans_outside_tool_markup(content)
+    code_spans = _tool_healing._code_spans(content)
+    # Inside another marker's span (an unclosed call before it) the opener is that call's argument data.
+    coverage = _tool_healing.marker_coverage(content)
+    pos = 0
+    while True:
+        start = content.find(_OPEN_CALL_OPENER, pos)
+        if start < 0:
+            return out
+        body_start = start + len(_OPEN_CALL_OPENER)
+        end = content.find("</tool_call>", body_start)
+        if end < 0:
+            return out
+        pos = end + len("</tool_call>")
+        if (
+            any(a <= start < b for a, b in think_spans)
+            or any(a < start < b for a, b in coverage)
+            or _tool_healing._in_code(code_spans, start)
+        ):
+            continue
+        body = content[body_start:end]
+        if _OPEN_CALL_OPENER in body:
+            continue
+        m = _ONE_STRING_ARG_CALL_RE.match(body)
+        if m is None or _SECOND_KEY_RE.search(m.group(3)):
+            continue
+        try:
+            value = json.loads('"' + _escape_bare_quotes(m.group(3)) + '"', strict = False)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": m.group(1), "arguments": json.dumps({m.group(2): value})},
+            }
+        )
 
 
 def _parse_tool_call_json(

@@ -41,13 +41,67 @@ def _budget() -> int:
         return 0
 
 
+# Rows per matvec: per-query scratch stays O(block) however large the scope.
+_BLOCK = 32768
+_FETCH = 4096
+
+
+class _Store:
+    """Growable unit-row float32 matrix + rowids + chunk ids. Successive entries of one scope share it: an
+    entry reads only its first ``n`` rows and appends write past every published ``n``."""
+
+    __slots__ = ("mat", "rowids", "ids")
+
+    def __init__(self, np, cap: int, dim: int):
+        cap = max(int(cap), 1)
+        self.mat = np.empty((cap, dim), dtype = np.float32)
+        self.rowids = np.empty(cap, dtype = np.int64)
+        self.ids = np.empty(cap, dtype = object)
+
+    def grown(self, np, n: int, need: int) -> "_Store":
+        """Self if ``need`` rows fit, else a copy of the first ``n`` rows with geometric headroom."""
+        cap = len(self.rowids)
+        if need <= cap:
+            return self
+        new = _Store(np, max(need, cap + cap // 4 + 16), self.mat.shape[1])
+        new.mat[:n] = self.mat[:n]
+        new.rowids[:n] = self.rowids[:n]
+        new.ids[:n] = self.ids[:n]
+        return new
+
+    def write(self, np, n: int, rows, rowids, ids) -> int:
+        """Normalise ``rows`` (float32, writable) in place and store the scorable ones at ``n``; returns the new n."""
+        valid = _normalise(np, rows)
+        keep = np.flatnonzero(valid)
+        k = len(keep)
+        if k == len(rows):
+            self.mat[n : n + k] = rows
+            self.rowids[n : n + k] = rowids
+            self.ids[n : n + k] = ids
+        else:
+            self.mat[n : n + k] = rows[keep]
+            self.rowids[n : n + k] = np.asarray(rowids, dtype = np.int64)[keep]
+            self.ids[n : n + k] = [ids[i] for i in keep]
+        return n + k
+
+    def nbytes(self, avg_id: int) -> int:
+        return self.mat.nbytes + self.rowids.nbytes + len(self.rowids) * (avg_id + _ID_OVERHEAD)
+
+
+def _normalise(np, rows):
+    """Unit rows in place; mask of the rows vec0 can score (it answers NULL for NaN / inf / zero rows)."""
+    with np.errstate(all = "ignore"):
+        norms = np.sqrt(np.einsum("ij,ij->i", rows, rows))
+        valid = np.isfinite(norms) & (norms > 0)
+        rows /= norms[:, None]
+    return valid
+
+
 @dataclass(frozen = True)
 class _Entry:
     epoch: tuple
-    rowids: object
-    chunk_ids: object
-    mat: object
-    inv: object
+    n: int
+    store: _Store
     nbytes: int
 
 
@@ -82,24 +136,6 @@ def read_epoch(conn: sqlite3.Connection, scope: str) -> tuple | None:
         )
     except sqlite3.Error:
         return None
-
-
-def _make_entry(np, epoch, rowids, chunk_ids, blob: bytes, dim: int) -> _Entry:
-    mat = np.frombuffer(blob, dtype = np.float32).reshape(-1, dim)
-    with np.errstate(all = "ignore"):
-        norms = np.sqrt(np.einsum("ij,ij->i", mat, mat, dtype = np.float64))
-    # vec0 answers NULL for NaN / inf / zero rows, which _search_dense drops.
-    valid = np.isfinite(norms) & (norms > 0)
-    mat = np.ascontiguousarray(mat[valid])
-    inv = (1.0 / norms[valid]).astype(np.float32)
-    rowids = np.asarray(rowids, dtype = np.int64)[valid]
-    ids = np.empty(len(chunk_ids), dtype = object)
-    ids[:] = chunk_ids
-    ids = ids[valid]
-    for a in (mat, inv, rowids, ids):
-        a.setflags(write = False)
-    nbytes = mat.nbytes + inv.nbytes + rowids.nbytes + sum(len(c) + _ID_OVERHEAD for c in ids)
-    return _Entry(epoch, rowids, ids, mat, inv, nbytes)
 
 
 def _publish(
@@ -155,18 +191,43 @@ def search(conn, db_file: str, scope: str, vector, fetch: int):
         return None
 
 
+def _top(np, scores, f: int):
+    """Indices of the ``f`` largest scores, unordered."""
+    m = len(scores)
+    return np.argpartition(scores, m - f)[m - f :] if f < m else np.arange(m)
+
+
 def _search_entry(np, entry: _Entry, vector, fetch: int):
-    q = np.asarray(vector, dtype = np.float32)
-    qn = float(np.sqrt(np.dot(q.astype(np.float64), q.astype(np.float64))))
-    n = len(entry.rowids)
+    n = entry.n
+    q = np.array(vector, dtype = np.float32)
+    qn = float(np.sqrt(np.dot(q, q)))
     if not np.isfinite(qn) or qn == 0.0 or n == 0:
         return [], n
-    scores = (entry.mat @ q) * entry.inv
-    scores = scores.astype(np.float64) / qn
+    q /= qn
+    store = entry.store
     f = min(int(fetch), n)
-    idx = np.argpartition(-scores, f - 1)[:f] if f < n else np.arange(n)
-    order = idx[np.lexsort((entry.rowids[idx], -scores[idx]))]
-    return [(entry.chunk_ids[i], 1.0 - float(scores[i])) for i in order], n
+    if n <= _BLOCK:
+        scores = store.mat[:n] @ q
+        idx = _top(np, scores, f)
+        best = scores[idx]
+    else:
+        buf = np.empty(_BLOCK, dtype = np.float32)
+        idx = np.empty(0, dtype = np.int64)
+        best = np.empty(0, dtype = np.float32)
+        # Running top-f: scratch is O(block + fetch), not O(scope).
+        for s0 in range(0, n, _BLOCK):
+            out = buf[: min(n, s0 + _BLOCK) - s0]
+            np.matmul(store.mat[s0 : s0 + len(out)], q, out = out)
+            part = _top(np, out, min(f, len(out)))
+            idx = np.concatenate([idx, part + s0])
+            best = np.concatenate([best, out[part]])
+            if len(best) > f:
+                keep = _top(np, best, f)
+                idx, best = idx[keep], best[keep]
+    # Same order vec0 gives: distance ascending, ties by rowid.
+    order = np.lexsort((store.rowids[idx], -best))
+    ids = store.ids
+    return [(ids[i], 1.0 - float(s)) for i, s in zip(idx[order], best[order])], n
 
 
 def note_append(
@@ -182,6 +243,7 @@ def note_append(
     try:
         dim = len(vectors[0])
         key = _key(db_file, scope, dim)
+        rows = np.array(vectors, dtype = np.float32).reshape(len(rowids), dim)
         with _lock:
             entry = _entries.get(key)
             if entry is None:
@@ -189,20 +251,10 @@ def note_append(
             if after[:2] != before[:2] or appended != len(rowids) or entry.epoch != before:
                 _publish(key, None)
                 return
-        rows = np.asarray(vectors, dtype = np.float32).reshape(len(rowids), dim)
-        add = _make_entry(np, after, rowids, list(chunk_ids), rows.tobytes(), dim)
-        merged = _Entry(
-            after,
-            np.concatenate([entry.rowids, add.rowids]),
-            np.concatenate([entry.chunk_ids, add.chunk_ids]),
-            np.concatenate([entry.mat, add.mat]),
-            np.concatenate([entry.inv, add.inv]),
-            entry.nbytes + add.nbytes,
-        )
-        for a in (merged.rowids, merged.chunk_ids, merged.mat, merged.inv):
-            a.setflags(write = False)
-        with _lock:
-            _publish(key, merged, expect = before)
+            # Under the lock with the epoch check, so no other append writes the same rows.
+            store = entry.store.grown(np, entry.n, entry.n + len(rows))
+            n = store.write(np, entry.n, rows, rowids, list(chunk_ids))
+            _publish(key, _Entry(after, n, store, store.nbytes(_avg_id(store, n))), expect = before)
     except Exception:  # noqa: BLE001
         logger.debug("vec_cache.note_append failed", exc_info = True)
         with _lock:
@@ -268,26 +320,32 @@ def _build(key: tuple) -> None:
         if epoch is None or rag_db.vec_table_dim(conn) != dim:
             return
         count = conn.execute("SELECT count(*) FROM chunks WHERE scope=?", (scope,)).fetchone()[0]
-        if count * (dim * 4 + _ID_OVERHEAD) > _budget():
+        if count * (dim * 4 + 8 + _ID_OVERHEAD) > _budget():
             with _lock:
                 _too_big[key] = epoch
             return
-        rows = conn.execute(
+        # Streamed into one preallocated matrix: peak is the matrix plus one fetch block.
+        store = _Store(np, count, dim)
+        n = 0
+        cur = conn.execute(
             "SELECT rowid, chunk_id, embedding FROM chunks_vec WHERE scope=?", (scope,)
-        ).fetchall()
+        )
+        while rows := cur.fetchmany(_FETCH):
+            blk = np.frombuffer(b"".join(r[2] for r in rows), dtype = np.float32)
+            blk = blk.reshape(len(rows), dim).copy()
+            store = store.grown(np, n, n + len(rows))
+            n = store.write(np, n, blk, [r[0] for r in rows], [r[1] for r in rows])
     finally:
         conn.close()
-    entry = _make_entry(
-        np,
-        epoch,
-        [r[0] for r in rows],
-        [r[1] for r in rows],
-        b"".join(r[2] for r in rows),
-        dim,
-    )
+    entry = _Entry(epoch, n, store, store.nbytes(_avg_id(store, n)))
     with _lock:
         _too_big.pop(key, None)
         _publish(key, entry)
+
+
+def _avg_id(store: _Store, n: int) -> int:
+    sample = store.ids[: min(n, 64)]
+    return int(sum(len(c) for c in sample) / len(sample)) if len(sample) else 0
 
 
 def drain(timeout: float = 30.0) -> bool:

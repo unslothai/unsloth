@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from _en_catalog import en_string
 from growth import assert_linear  # tests/_shared, on sys.path via tests/conftest.py
 
 REPO = Path(__file__).resolve().parents[2]
@@ -937,11 +938,33 @@ def test_update_popups_share_the_notes_width(banner):
     assert "400px" not in _max_widths(llama)
 
 
+def _shown_at(src: str, label: str) -> int:
+    """Where a banner renders `label`: as literal English, or as a t("key") call en.ts maps to it."""
+    if label in src:
+        return src.index(label)
+    for call in re.finditer(r"""\bt\(\s*["']([\w.]+)["']\s*\)""", src):
+        try:
+            if en_string(call.group(1)) == label:
+                return call.start()
+        except (KeyError, ValueError):
+            continue
+    raise ValueError(f"the banner renders {label!r} neither literally nor through t()")
+
+
+def test_a_label_is_found_literally_or_through_the_catalog():
+    assert _shown_at("<b>Show release notes</b>", "Show release notes") == 3
+    key = 'x {t("desktopUpdate.banner.showNotes")}'
+    assert _shown_at(key, "Show release notes") == key.index("t(")
+    with pytest.raises(ValueError):
+        _shown_at('{t("desktopUpdate.banner.later")}', "Remind me later")
+
+
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
 def test_banners_toggle_inline_release_notes(banner):
     src = banner.read_text(encoding = "utf-8")
     assert "ReleaseNotesPanel" in src
-    assert "Show release notes" in src and "Hide release notes" in src
+    _shown_at(src, "Show release notes")
+    _shown_at(src, "Hide release notes")
     assert "notesVersion" in src
 
 
@@ -956,7 +979,7 @@ def test_notes_toggle_shares_the_action_row(banner, toggle, action):
     """The toggle sits in the same row as the actions, not on its own line."""
     src = banner.read_text(encoding = "utf-8")
     row = src.index("mt-4 flex")
-    assert row < src.index(toggle) < src.index(action)
+    assert row < src.index(toggle) < _shown_at(src, action)
     toggle_line = next(line for line in src.splitlines() if toggle in line)
     toggle_block = src[src.index("Button", row) : src.index(toggle_line)]
     assert "text-ui-13" in toggle_block and "whitespace-nowrap" in toggle_block

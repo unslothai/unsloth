@@ -41,6 +41,7 @@ from core.inference.diffusion_families import (
     supported_family_names,
 )
 from core.inference import mlx_diffusion_convert as convert
+from core.inference.mlx_diffusion_routing import mlx_capabilities
 from core.inference.diffusion_batched import SEED_MASK
 from loggers import get_logger
 from utils.account_context import account_thread, current_account_id
@@ -421,6 +422,48 @@ class MfluxRuntime:
         mx.eval(model.parameters())
         return model
 
+    def apply_loras(self, model: Any, loras: list[tuple[str, float]]) -> None:
+        """Swap in ``loras`` ((path, scale) pairs) unbaked, since baking requantizes; [] restores the base layers."""
+        import mlx.core as mx
+        from mflux.models.common.lora.mapping.lora_loader import LoRALoader
+        from mflux.models.z_image.weights.z_image_lora_mapping import ZImageLoRAMapping
+
+        self.strip_loras(model)
+        if not loras:
+            return
+        try:
+            LoRALoader.load_and_apply_lora(
+                lora_mapping = ZImageLoRAMapping.get_mapping(),
+                transformer = model.transformer,
+                lora_paths = [path for path, _scale in loras],
+                lora_scales = [float(scale) for _path, scale in loras],
+                bake_lora = False,
+            )
+            mx.eval(model.transformer.parameters())
+        except BaseException:
+            self.strip_loras(model)
+            raise
+
+    def strip_loras(self, model: Any) -> None:
+        from mflux.models.common.lora.layer.fused_linear_lora_layer import FusedLoRALinear
+        from mflux.models.common.lora.layer.linear_lokr_layer import LoKrLinear
+        from mflux.models.common.lora.layer.linear_lora_layer import LoRALinear
+        from mflux.models.common.lora.mapping.lora_loader import LoRALoader
+
+        transformer = model.transformer
+        wrapped = [
+            name
+            for name, module in transformer.named_modules()
+            if isinstance(module, (LoRALinear, LoKrLinear, FusedLoRALinear))
+        ]
+        # A fused layer lists its adapters as children: restore only the outermost wrapper.
+        for name in wrapped:
+            if any(name.startswith(outer + ".") for outer in wrapped):
+                continue
+            module = LoRALoader._get_target_module(transformer, name)
+            base = module.base_linear if isinstance(module, FusedLoRALinear) else module.linear
+            LoRALoader._replace_target_module(transformer, name, base)
+
     def generate(
         self,
         model: Any,
@@ -566,6 +609,8 @@ class _MlxState:
     convert_dir: str
     timings: dict = field(default_factory = dict)
     gguf_path: Optional[str] = None
+    hf_token: Optional[str] = None
+    loras: tuple = ()
 
 
 @dataclass
@@ -945,8 +990,10 @@ class MlxDiffusionBackend:
         convertible, why = convert.quant_convertible(gguf_filename)
         if not convertible:
             raise ValueError(why or "This GGUF quant is not convertible to MLX.")
-        if loras:
-            raise ValueError("LoRA adapters are not supported on the MLX engine yet.")
+        if loras and not mlx_capabilities(fam.name).loras:
+            raise ValueError(
+                f"LoRA adapters are not supported on the MLX engine for {fam.name} yet."
+            )
         base = resolve_base_repo(fam, base_repo)
         named = _named_mlx_base(fam, base) if _is_local_path(base) else None
         model_config = mlx_model_config_for(fam, named or base)
@@ -1137,6 +1184,7 @@ class MlxDiffusionBackend:
                 convert_dir = str(out_dir),
                 timings = timings,
                 gguf_path = str(gguf_path),
+                hf_token = hf_token,
             )
             with self._lock:
                 if self._load_token != _load_token:
@@ -1304,8 +1352,7 @@ class MlxDiffusionBackend:
             )
         if controlnet is not None and controlnet[3] not in (None, 0, 0.0):
             raise ValueError("ControlNet is not supported on the MLX engine.")
-        if loras:
-            raise ValueError("LoRA adapters are not supported on the MLX engine yet.")
+        specs = [(i, w) for (i, w) in (loras or []) if w != 0]
         steps = int(steps)
         if steps < 1:
             raise ValueError("steps must be at least 1")
@@ -1337,6 +1384,7 @@ class MlxDiffusionBackend:
                 self._gen = _MlxGen(total_steps = steps * batch)
             try:
                 runtime = self._rt()
+                self._apply_loras(runtime, state, specs, cancel)
                 cfg = float(guidance or 0.0) if runtime.supports_guidance(state.model) else None
                 images = []
                 seeds_out = []
@@ -1438,6 +1486,35 @@ class MlxDiffusionBackend:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
                         self._active_generate_account = None
+
+    @staticmethod
+    def _apply_loras(
+        runtime: Any, state: _MlxState, specs: list[tuple[str, float]], cancel: threading.Event
+    ) -> None:
+        from core.inference import diffusion_lora
+
+        if specs and not mlx_capabilities(state.family.name).loras:
+            raise ValueError(
+                f"LoRA adapters are not supported on the MLX engine for {state.family.name} yet."
+            )
+        resolved = diffusion_lora.resolve_specs(
+            specs, family = state.family.name, hf_token = state.hf_token, cancel_event = cancel
+        )
+        bad = [r.id for r in resolved if r.fmt != "safetensors"]
+        if bad:
+            raise ValueError(
+                "GGUF LoRA adapters are not supported on the MLX engine "
+                f"({', '.join(bad)}); use a .safetensors adapter, or the native engine."
+            )
+        desired = tuple((r.path, float(r.weight)) for r in resolved)
+        if desired == state.loras:
+            return
+        state.loras = ()
+        try:
+            runtime.apply_loras(state.model, list(desired))
+        except Exception as exc:  # noqa: BLE001 -- surface as a clean 400; the base layers are restored
+            raise ValueError(f"Failed to apply LoRA: {exc}") from exc
+        state.loras = desired
 
     def generate_progress(self) -> dict[str, Any]:
         gen = self._gen
@@ -1573,6 +1650,7 @@ class MlxDiffusionBackend:
                 "conditioning": None,
             }
         from core.inference.diffusion_conditioning import conditioning_capabilities
+        from core.inference.diffusion_lora import lora_unavailable_reason
         from hub.utils.gguf import extract_quant_token
 
         conditioning = conditioning_capabilities(state.family, ["txt2img"])
@@ -1582,6 +1660,9 @@ class MlxDiffusionBackend:
             guided = bool(self._rt().supports_guidance(state.model))
         except Exception:  # noqa: BLE001
             guided = False
+        lora_reason = lora_unavailable_reason(
+            engine = ENGINE_NAME, family = state.family.name, model_kind = "gguf", transformer_quant = None
+        )
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -1614,7 +1695,8 @@ class MlxDiffusionBackend:
                 "dense_bits": state.dense_bits,
                 "timings": dict(state.timings),
             },
-            "supports_lora": False,
+            "supports_lora": lora_reason is None,
+            "lora_unavailable_reason": lora_reason,
             "supports_controlnet": False,
             "supports_negative_prompt": guided,
             # CFG, and with it the negative prompt, engages only above guidance 1 (cache_text_encodings, generate).
