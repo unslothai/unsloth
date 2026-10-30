@@ -63,7 +63,10 @@ def test_server_min_p_clears_the_cards_own():
     card = param_values(GENERATE, {"params": {"min_p": 0.3}})
     out = model_settings.overlay(card, {"minPMode": "server-default"}, GENERATE)
     assert out["min_p"] is None and "min_p" not in model_settings.sampling(out)
-    assert model_settings.overlay(card, {"minPMode": "server-default"}, GENERATE, {"min_p"})["min_p"] == 0.3
+    assert (
+        model_settings.overlay(card, {"minPMode": "server-default"}, GENERATE, {"min_p"})["min_p"]
+        == 0.3
+    )
 
 
 def test_saved_values_are_clamped_to_the_node():
