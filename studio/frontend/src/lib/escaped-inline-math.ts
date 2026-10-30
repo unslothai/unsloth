@@ -51,6 +51,8 @@ const HTML_LITERAL_TAG_START_RE = /^<\/?(code|pre|textarea)(?=[\s/>])/i;
 const CURRENCY_OPENER_RE =
   /(?<![\\$])\$(?!\$)(?=\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d]))/g;
 const DIGIT_RE = /\d/;
+const LINE_BREAK_RE = /[\r\n]/;
+const PAIR_BUDGET = 4096;
 const MASKED_DOLLAR = "＄";
 const TEXT_COMMANDS = new Set([
   "emph",
@@ -479,9 +481,53 @@ function escapedMathRanges(markdown: string): EscapedMathRange[] {
   return ranges.sort((left, right) => left.start - right.start);
 }
 
+/** False only when no `\$` pair can tokenize as math; past PAIR_BUDGET pairs it defers to the parse. */
+export function mayHoldEscapedInlineMath(markdown: string): boolean {
+  const budget = { pairs: PAIR_BUDGET };
+  for (
+    let open = markdown.indexOf("\\$");
+    open >= 0;
+    open = markdown.indexOf("\\$", open + 1)
+  ) {
+    if (mayCloseEscapedMath(markdown, open, budget)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function mayCloseEscapedMath(
+  markdown: string,
+  open: number,
+  budget: { pairs: number },
+): boolean {
+  for (
+    let close = markdown.indexOf("\\$", open + 2);
+    close >= 0 && close - open - 2 <= MAX_BODY_LENGTH;
+    close = markdown.indexOf("\\$", close + 1)
+  ) {
+    budget.pairs -= 1;
+    if (budget.pairs < 0) {
+      return true;
+    }
+    const body = markdown.slice(open + 2, close);
+    if (LINE_BREAK_RE.test(body)) {
+      return false;
+    }
+    if (looksLikeEscapedInlineMath(body)) {
+      return true;
+    }
+    // The tokenizer reads past a `\$` only while a brace is open; otherwise it ends here.
+    if (braceBalance(body) <= 0) {
+      return false;
+    }
+  }
+  return false;
+}
+
 /** Runs before currency and streaming repair. */
 export function normalizeEscapedInlineMath(markdown: string): string {
-  if (!markdown.includes("\\$")) {
+  if (!mayHoldEscapedInlineMath(markdown)) {
     return markdown;
   }
   const ranges = escapedMathRanges(markdown);

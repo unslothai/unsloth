@@ -127,17 +127,19 @@ def test_claude_desktops_per_request_billing_header_is_not_part_of_the_prompt():
     )
 
 
-def test_other_clients_keep_the_billing_header_as_upstream():
+def test_other_clients_drop_the_leading_billing_line_as_upstream():
+    # Upstream (#15845) strips the first billing line for every client.
     msgs = [{"role": "user", "content": "hi"}]
     text = "x-anthropic-billing-header: cc_version=1; cch=abc;\nYou are helpful"
-    assert anthropic_messages_to_openai(msgs, text)[0] == {"role": "system", "content": text}
+    assert anthropic_messages_to_openai(msgs, text)[0] == {
+        "role": "system",
+        "content": "You are helpful",
+    }
     blocks = [
         {"type": "text", "text": "x-anthropic-billing-header: cch=1;"},
         {"type": "text", "text": "Hi"},
     ]
-    assert anthropic_messages_to_openai(msgs, blocks)[0]["content"] == (
-        "x-anthropic-billing-header: cch=1;\nHi"
-    )
+    assert anthropic_messages_to_openai(msgs, blocks)[0]["content"] == "Hi"
 
 
 class _Headers(dict):

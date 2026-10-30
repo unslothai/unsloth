@@ -2,6 +2,7 @@
 
 mod app_layout;
 mod app_menu;
+mod appimage_webkit;
 mod browser_capture;
 #[cfg(target_os = "macos")]
 mod browser_context_downloads;
@@ -21,8 +22,11 @@ mod desktop_backend_owner;
 mod desktop_update_policy;
 mod desktop_updater;
 mod diagnostics;
+mod gpu_rendering;
 mod install;
 mod install_watchdog;
+#[cfg(target_os = "linux")]
+mod linux_gpu_supervisor;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
 mod long_paths;
@@ -66,6 +70,36 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 /// Serializes the exit paths that reap the backend (request_quit, the Unix signal listener,
 /// RunEvent::Exit). Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Mutex<bool> = Mutex::new(false);
+
+/// Supervisor control and native signals share the first-request state. A repeated native
+/// signal must still force exit when cleanup began through the supervisor's control channel.
+#[cfg(unix)]
+static UNIX_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// Whether a native signal already arrived. `pkill unsloth-studio` or a session stop signals the
+/// supervisor and the app together, so the app's first native signal can land after the
+/// supervisor's request: that is the same shutdown, not a repeat.
+#[cfg(unix)]
+static UNIX_NATIVE_TERMINATION_SEEN: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+enum NativeTermination {
+    StartCleanup,
+    JoinCleanup,
+    ForceExit,
+}
+
+/// Only a second native signal forces exit; a first one after a supervisor request joins it.
+#[cfg(unix)]
+fn native_termination(native_seen: &AtomicBool, requested: &AtomicBool) -> NativeTermination {
+    if native_seen.swap(true, Ordering::SeqCst) {
+        NativeTermination::ForceExit
+    } else if requested.swap(true, Ordering::SeqCst) {
+        NativeTermination::JoinCleanup
+    } else {
+        NativeTermination::StartCleanup
+    }
+}
 
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
 
@@ -162,7 +196,14 @@ fn resolve_launched_hidden(app: &tauri::AppHandle) -> bool {
     let relaunched = in_app_relaunch_config_dir(app)
         .map(|dir| take_in_app_relaunch_marker(&dir))
         .unwrap_or(false);
-    argv_has_hidden_flag() && !relaunched
+    let hidden = argv_has_hidden_flag();
+    // The marker is gone now, so a GPU crash before the window reports in must not relaunch
+    // hidden.
+    #[cfg(target_os = "linux")]
+    if hidden && relaunched {
+        linux_gpu_supervisor::note_window_will_show();
+    }
+    hidden && !relaunched
 }
 
 /// True for a login autostart; false for an in-app relaunch that inherits `--hidden`.
@@ -893,6 +934,31 @@ impl Write for RotatingLogFile {
     }
 }
 
+fn tauri_log_dir() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(
+        studio_home::chosen_root_for_home(&home)
+            .filter(|root| root.is_dir())
+            .unwrap_or_else(|| studio_home::default_root_for_home(&home)),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn tauri_log_path() -> Option<PathBuf> {
+    tauri_log_dir().map(|dir| dir.join("tauri.log"))
+}
+
+/// The supervisor parent has no logger (it never runs setup_logging), so it appends directly.
+#[cfg(target_os = "linux")]
+fn append_supervisor_log(path: Option<&Path>, line: &str) {
+    eprintln!("[gpu-supervisor] {line}");
+    if let Some(path) = path {
+        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "[gpu-supervisor] {line}");
+        }
+    }
+}
+
 fn setup_logging() {
     let mut loggers: Vec<Box<dyn SharedLogger>> = vec![];
 
@@ -904,10 +970,7 @@ fn setup_logging() {
     ));
 
     // Try to set up file logging to ~/.unsloth/studio/tauri.log (a chosen root once it exists).
-    if let Some(home) = dirs::home_dir() {
-        let log_dir = studio_home::chosen_root_for_home(&home)
-            .filter(|root| root.is_dir())
-            .unwrap_or_else(|| studio_home::default_root_for_home(&home));
+    if let Some(log_dir) = tauri_log_dir() {
         if fs::create_dir_all(&log_dir).is_ok() {
             let log_path = log_dir.join("tauri.log");
             let rotated_path = log_dir.join("tauri.log.1");
@@ -1450,16 +1513,24 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
                 app.exit(exit_code);
             };
 
-            let mut cleanup_started = false;
             for signal in signals.forever() {
                 let name = signal_hook::low_level::signal_name(signal).unwrap_or("unknown signal");
                 let exit_code = 128 + signal;
-                if cleanup_started {
-                    // A repeat signal means stop waiting: exit straight away.
-                    warn!("Received {name} ({signal}) while cleaning up, exiting immediately");
-                    std::process::exit(exit_code);
+                match native_termination(&UNIX_NATIVE_TERMINATION_SEEN, &UNIX_TERMINATION_REQUESTED)
+                {
+                    NativeTermination::ForceExit => {
+                        // A repeat signal means stop waiting: exit straight away.
+                        warn!("Received {name} ({signal}) while cleaning up, exiting immediately");
+                        // SAFETY: this is an explicit forced exit. libc exit handlers may wait on
+                        // GTK/driver locks held by the cleanup we are being asked to abandon.
+                        unsafe { libc::_exit(exit_code) };
+                    }
+                    NativeTermination::JoinCleanup => {
+                        info!("Received {name} ({signal}) during the supervisor's shutdown");
+                        continue;
+                    }
+                    NativeTermination::StartCleanup => {}
                 }
-                cleanup_started = true;
                 info!("Received Unix termination signal {name} ({signal})");
 
                 // Clean up on another thread so this one can still observe a repeat signal.
@@ -1485,8 +1556,35 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        #[cfg(target_os = "linux")]
+        linux_gpu_supervisor::note_window_shown();
     }
     browser_webview::window_changed(app, None);
+}
+
+/// The frontend calls this once the main window is on screen. Under the GPU supervisor it is
+/// the point after which a crash is no longer a launch failure.
+#[tauri::command]
+fn renderer_ready() {
+    #[cfg(target_os = "linux")]
+    linux_gpu_supervisor::note_window_shown();
+}
+
+/// Restart to apply a new GPU rendering setting, through the same confirmations as Quit.
+/// False when a quit is already waiting for an answer.
+#[tauri::command]
+fn relaunch_to_apply_gpu_rendering(app: tauri::AppHandle) -> bool {
+    spawn_quit_confirmation(&app, None, |app, proceed| {
+        if !proceed {
+            info!("GPU rendering relaunch cancelled");
+            return;
+        }
+        if let Err(error) = mark_in_app_relaunch(app.clone()) {
+            warn!("Could not mark the GPU rendering relaunch: {error}");
+        }
+        info!("Relaunching to apply the GPU rendering setting");
+        app.request_restart();
+    })
 }
 
 struct QuitConfirmationState {
@@ -2163,6 +2261,11 @@ fn extend_csp_with_hf_endpoints<R: tauri::Runtime>(context: &mut tauri::Context<
 }
 
 fn main() {
+    // AppRun's host-stack probe: answer and exit before anything else loads or logs.
+    #[cfg(target_os = "linux")]
+    if let Some(code) = appimage_webkit::run_probe() {
+        std::process::exit(code);
+    }
     #[cfg(target_os = "linux")]
     if let Some(result) = debian_update::run_installer() {
         match result {
@@ -2177,9 +2280,99 @@ fn main() {
     // Must precede any Xlib call; see x11_threads.
     x11_threads::init_x11_threads();
 
+    let mut context = tauri::generate_context!();
+    let config_dir = dirs::config_dir().map(|dir| dir.join(&context.config().identifier));
+    // Read before the webview starts: a changed setting applies on the next launch.
+    let gpu_setting = gpu_rendering::launch_setting(config_dir.as_deref());
+
+    // A supervised GPU launch (see linux_gpu_supervisor) learns that from inherited state.
+    #[cfg(target_os = "linux")]
+    let gpu_child = linux_gpu_supervisor::take_child_channel();
+    #[cfg(target_os = "linux")]
+    linux_gpu_supervisor::install_gdk_hook();
+
     // Pick a WebKitGTK rendering fallback before any GTK/WebKit object is initialized.
     #[cfg(target_os = "linux")]
-    let webkit_rendering_workaround = linux_webkit::configure_renderer();
+    let mut gpu_notes: Vec<String> = Vec::new();
+    #[cfg(target_os = "linux")]
+    let mut gpu_fallback_active = gpu_child.fallback.is_some();
+    #[cfg(target_os = "linux")]
+    let webkit_rendering =
+        linux_webkit::configure_renderer(gpu_setting, |webkit_version, wayland_session| {
+            let key = gpu_rendering::HostKey {
+                webkit_version,
+                nvidia_driver: linux_webkit::nvidia_driver_version_line(),
+                wayland_session,
+            };
+            if let Some(dir) = config_dir.as_deref() {
+                match gpu_rendering::check_unsafe_flag(dir, &key) {
+                    gpu_rendering::FlagState::Honoured => gpu_fallback_active = true,
+                    gpu_rendering::FlagState::Cleared(line) => gpu_notes.push(line),
+                    gpu_rendering::FlagState::Absent => {}
+                }
+            }
+            gpu_fallback_active
+        });
+
+    // Error 71 kills a GPU launch before anything can catch it in-process, so a parent watches
+    // and relaunches on the CPU path. It never starts GTK, Tauri or the single-instance lock.
+    #[cfg(target_os = "linux")]
+    if !gpu_child.supervised
+        && (webkit_rendering.wants_supervision() || linux_gpu_supervisor::test_hook_requested())
+    {
+        if let Some(dir) = config_dir.clone() {
+            let key = gpu_rendering::HostKey {
+                webkit_version: webkit_rendering.webkit_version,
+                nvidia_driver: linux_webkit::nvidia_driver_version_line(),
+                wayland_session: webkit_rendering.wayland_session,
+            };
+            let log_path = tauri_log_path();
+            let log = |line: &str| append_supervisor_log(log_path.as_deref(), line);
+            // The child re-plans and sees no flag, so a flag this parent dropped is logged here.
+            for note in &gpu_notes {
+                log(note);
+            }
+            let started = linux_gpu_supervisor::run_parent(
+                || {
+                    if let Err(error) = gpu_rendering::write_unsafe_flag(&dir, &key) {
+                        log(&format!("Could not save the GPU rendering fallback flag: {error}"));
+                    }
+                },
+                log,
+            );
+            // run_parent only returns when it could not start the app.
+            let Err(error) = started;
+            append_supervisor_log(
+                tauri_log_path().as_deref(),
+                &format!("GPU rendering supervisor could not start the app ({error}); running unsupervised"),
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    if let Some(args) = gpu_rendering::windows_main_browser_args(gpu_setting) {
+        if let Some(window) = context.config_mut().app.windows.get_mut(0) {
+            window.additional_browser_args = Some(args);
+        }
+        gpu_rendering::set_pages_disable_gpu(true);
+    }
+
+    #[cfg(target_os = "linux")]
+    let gpu_launch = gpu_rendering::LaunchState::new(
+        gpu_setting,
+        gpu_fallback_active,
+        webkit_rendering.env_override,
+        gpu_rendering::old_webkit_warning(
+            webkit_rendering.webkit_version,
+            webkit_rendering.wayland_session,
+        ),
+        linux_webkit::old_nvidia_driver_warning(
+            webkit_rendering.nvidia_driver_branch,
+            webkit_rendering.wayland_session,
+        ),
+    );
+    #[cfg(not(target_os = "linux"))]
+    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None);
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -2188,11 +2381,19 @@ fn main() {
     setup_logging();
     log_panics();
     info!("Unsloth desktop app starting");
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("APPIMAGE").is_some() {
+        let (major, minor, micro) = appimage_webkit::linked_webkit_version();
+        info!(
+            "AppImage WebKitGTK runtime: {}; WebKitGTK {major}.{minor}.{micro}",
+            appimage_webkit::mode_label(|name| std::env::var_os(name))
+        );
+    }
     #[cfg(target_os = "macos")]
     macos_event_guard::install();
 
     #[cfg(target_os = "linux")]
-    if let Some((variables, reason)) = webkit_rendering_workaround {
+    if let Some((variables, reason)) = webkit_rendering.applied {
         let applied = variables
             .iter()
             .map(|variable| format!("{variable}=1"))
@@ -2200,9 +2401,34 @@ fn main() {
             .join(" ");
         info!("{reason}; set {applied} for WebKitGTK compatibility");
     }
+    #[cfg(target_os = "linux")]
+    {
+        for note in &gpu_notes {
+            info!("{note}");
+        }
+        if let Some(reason) = &gpu_child.fallback {
+            warn!("GPU rendering fell back to the CPU path after a launch crash ({reason})");
+        }
+        let (major, minor, micro) = webkit_rendering.webkit_version;
+        info!(
+            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={}",
+            gpu_setting.as_str(),
+            if webkit_rendering.gpu_path.is_some() { "gpu" } else { "default-or-cpu" },
+            webkit_rendering
+                .gpu_path
+                .or(webkit_rendering.applied.map(|(_, reason)| reason))
+                .unwrap_or("WebKit defaults"),
+            webkit_rendering.env_override.unwrap_or("none"),
+            gpu_fallback_active,
+            gpu_child.supervised,
+        );
+    }
+    #[cfg(windows)]
+    if gpu_setting == gpu_rendering::GpuRendering::Off {
+        info!("GPU rendering: setting=off; WebView2 starts with --disable-gpu");
+    }
     windows_job::initialize();
 
-    let mut context = tauri::generate_context!();
     extend_csp_with_hf_endpoints(&mut context);
     // Restore while hidden, else the 760x560 setup size overwrites the saved layout.
     let restore_initial_layout = dirs::config_dir().is_some_and(|dir| {
@@ -2249,6 +2475,7 @@ fn main() {
         .manage(update::new_update_state())
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
+        .manage(gpu_launch)
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .manage(native_file_dialogs::NativeSaveRegistry::default())
         .manage(browser_webview::new_browser_views())
@@ -2362,6 +2589,10 @@ fn main() {
             has_saved_window_state,
             was_launched_hidden,
             mark_in_app_relaunch,
+            gpu_rendering::get_gpu_rendering,
+            gpu_rendering::set_gpu_rendering,
+            relaunch_to_apply_gpu_rendering,
+            renderer_ready,
             clear_in_app_relaunch,
             reveal_main_window,
             get_close_to_tray,
@@ -2386,6 +2617,26 @@ fn main() {
             }
 
             initialize_close_to_tray(app.handle());
+            #[cfg(target_os = "linux")]
+            {
+                let handle = app.handle().clone();
+                linux_gpu_supervisor::start_control_reader(move || {
+                    // A control close after a native signal is a duplicate shutdown request.
+                    if UNIX_TERMINATION_REQUESTED.swap(true, Ordering::SeqCst) {
+                        return;
+                    }
+                    info!("GPU rendering supervisor asked the app to exit");
+                    let handle = handle.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("supervisor-termination".to_string())
+                        .spawn(move || {
+                            cleanup_child_processes(&handle);
+                            handle.exit(128 + libc::SIGTERM);
+                        });
+                });
+                #[cfg(debug_assertions)]
+                linux_gpu_supervisor::maybe_simulate_error71();
+            }
             reconcile_autostart_entry(app.handle());
             if let Err(error) = process::with_studio_runtime_launch_guard(|| {
                 staged_update::reconcile_legacy_at_launch(&diagnostics::studio_dir());
@@ -2489,6 +2740,32 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_first_native_signal_joins_a_supervisor_shutdown_and_only_a_repeat_forces_exit() {
+        // Native signal alone: the first cleans up, the second forces exit.
+        let (native, requested) = (AtomicBool::new(false), AtomicBool::new(false));
+        assert_eq!(
+            native_termination(&native, &requested),
+            NativeTermination::StartCleanup
+        );
+        assert_eq!(
+            native_termination(&native, &requested),
+            NativeTermination::ForceExit
+        );
+
+        // The supervisor asked first (pkill or a session stop reaching both processes).
+        let (native, requested) = (AtomicBool::new(false), AtomicBool::new(true));
+        assert_eq!(
+            native_termination(&native, &requested),
+            NativeTermination::JoinCleanup
+        );
+        assert_eq!(
+            native_termination(&native, &requested),
+            NativeTermination::ForceExit
+        );
+    }
 
     #[test]
     fn log_file_rotates_mid_session_and_keeps_one_generation() {

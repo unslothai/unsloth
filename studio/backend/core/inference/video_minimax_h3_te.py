@@ -412,6 +412,63 @@ def h3_te_pin_allowed(payload_bytes: int = 0, device: Any = None) -> bool:
         return False
 
 
+H3_TE_PIN_YIELD_ENV = "UNSLOTH_H3_TE_PIN_YIELD"
+
+
+def h3_te_pin_yields(
+    text_encoder: Any,
+    streamed_denoiser: Any,
+    device: Any = None,
+    logger: Any = None,
+) -> Optional[bool]:
+    """False when the conditioner alone fits the pin budget but not beside the denoiser that will stream: the
+    denoiser's blocks are read every step, the conditioner once per prompt, so the denoiser keeps the budget. None
+    leaves the decision to ``stream_h3_text_encoder``. ``UNSLOTH_H3_TE_PIN_YIELD=0`` turns it off. Never raises."""
+    try:
+        import os
+
+        if str(os.environ.get(H3_TE_PIN_YIELD_ENV, "")).strip().lower() in (
+            "0",
+            "off",
+            "false",
+            "no",
+        ):
+            return None
+        if text_encoder is None or streamed_denoiser is None:
+            return None
+        te_bytes = _module_payload_bytes(text_encoder)
+        dit_bytes = _host_payload_bytes(streamed_denoiser)
+        if dit_bytes <= 0 or not h3_te_pin_allowed(te_bytes, device):
+            return None
+        if h3_te_pin_allowed(te_bytes + dit_bytes, device):
+            return None
+        if logger is not None:
+            from .diffusion_memory import _pin_budget_mib
+            logger.info(
+                "video.h3_te_stream: the conditioner (%.1f GB) streams from pageable memory so the streamed "
+                "denoiser (%.1f GB) can pin first (%s MiB pinnable)",
+                te_bytes / 1e9,
+                dit_bytes / 1e9,
+                _pin_budget_mib(),
+            )
+        return False
+    except Exception:  # noqa: BLE001 -- keep the stock decision
+        return None
+
+
+def _host_payload_bytes(module: Any) -> int:
+    """Host bytes of ``module``'s CPU tensors, torchao subclasses at their inner (int8) size, not their bf16 shape."""
+    from .diffusion_prequant import tensor_payload_bytes
+
+    seen: set = set()
+    total = 0
+    for tensor in list(module.parameters()) + list(module.buffers()):
+        if id(tensor) not in seen and tensor.device.type == "cpu":
+            seen.add(id(tensor))
+            total += tensor_payload_bytes(tensor)
+    return total
+
+
 def _module_payload_bytes(module: Any) -> int:
     seen: set = set()
     total = 0
