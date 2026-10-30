@@ -132,6 +132,14 @@ def _check_labels_range(flat_labels, vocab_size) -> None:
         _raise_bad_label(bad, vocab_size)
 
 
+def _raise_bad_token(bad, vocab_size):
+    raise ValueError(
+        f"Pre-tokenized dataset: token id {bad} is outside this model's vocabulary "
+        f"(size {vocab_size}). The dataset was likely "
+        "tokenized for a different model; re-tokenize it with this model's tokenizer."
+    )
+
+
 def _raise_bad_label(bad, vocab_size):
     limit = f"in [0, {vocab_size})" if vocab_size else "non-negative"
     raise ValueError(
@@ -211,11 +219,7 @@ def _check_arrow_table(
         bounds = pc.min_max(flat).as_py() if len(flat) else {"min": 0, "max": 0}
         if bounds["min"] < 0 or bounds["max"] >= vocab_size:
             bad = bounds["min"] if bounds["min"] < 0 else bounds["max"]
-            raise ValueError(
-                f"Pre-tokenized dataset: token id {bad} is outside this model's vocabulary "
-                f"(size {vocab_size}). The dataset was likely "
-                "tokenized for a different model; re-tokenize it with this model's tokenizer."
-            )
+            _raise_bad_token(bad, vocab_size)
     if "labels" in others:
         _check_labels_range(pc.list_flatten(table.column("labels")), vocab_size)
     longest = pc.max(lengths).as_py() or 0
@@ -306,6 +310,11 @@ def prepare_pretokenized_dataset(
                 for c in columns:
                     if isinstance(out[c][i], (list, tuple)) and None in out[c][i]:
                         _raise_null_values(c, row_index)
+                ids = out["input_ids"][i]
+                if vocab_size and ids:
+                    low, high = min(ids), max(ids)
+                    if low < 0 or high >= vocab_size:
+                        _raise_bad_token(low if low < 0 else high, vocab_size)
                 labels = out["labels"][i] if "labels" in out else None
                 if labels is not None and len(labels) != len(out["input_ids"][i]):
                     raise _mask_error("labels")
