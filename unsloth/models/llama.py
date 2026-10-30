@@ -3386,12 +3386,28 @@ def _fused_lora_modules(model) -> list:
         ):
             fused.append(module)
             continue
-        for name in ("forward", "_unsloth_forward"):
-            func = getattr(module.__dict__.get(name), "__func__", None)
-            if getattr(func, "func", func) in _FUSED_LORA_MLPS:
-                fused.append(module)
-                break
+        if _fused_lora_mlp_slot(module) is not None:
+            fused.append(module)
     return fused
+
+
+# Every instance slot a fused LoRA MLP kernel can end up in: the instance forward, a tiled MLP's inner forward, and the
+# saved forward behind an accelerate hook / MoE wrapper that tiling adopted (the hook calls `_old_forward`).
+_MLP_FORWARD_SLOTS = ("forward", "_unsloth_forward", "_old_forward", "_orig_moe_forward")
+
+
+def _is_fused_lora_mlp(fn) -> bool:
+    func = getattr(fn, "__func__", None)
+    return getattr(func, "func", func) in _FUSED_LORA_MLPS
+
+
+def _fused_lora_mlp_slot(module):
+    """The slot holding a fused LoRA MLP kernel on `module`, or None."""
+    d = getattr(module, "__dict__", {})
+    for name in _MLP_FORWARD_SLOTS:
+        if _is_fused_lora_mlp(d.get(name)):
+            return name
+    return None
 
 
 _PRE_FUSED_FORWARD = "_unsloth_forward_before_fused_lora"
@@ -3401,19 +3417,33 @@ def _install_fused_lora_mlp(mlp_module, kernel):
     """Bind the fused LoRA MLP kernel as the forward this MLP runs.
 
     A tiled MLP (unsloth_zoo.tiling_registry) keeps its inner forward in `_unsloth_forward`, so the kernel goes there
-    and runs per tile; otherwise it becomes the instance forward. MethodType binds the replacement.
+    and runs per tile; otherwise it becomes the instance forward. An accelerate hook (`_hf_hook`) calls the module's
+    `_old_forward`, so the kernel goes there instead and the hook keeps running around it. MethodType binds the
+    replacement.
     """
-    slot = "_unsloth_forward" if hasattr(mlp_module, "_unsloth_forward") else "forward"
     d = mlp_module.__dict__
+    if "_hf_hook" in d and "_old_forward" in d:
+        slot = "_old_forward"
+    elif hasattr(mlp_module, "_unsloth_forward"):
+        slot = "_unsloth_forward"
+    else:
+        slot = "forward"
     current = d.get(slot)
-    func = getattr(current, "__func__", None)
-    if _PRE_FUSED_FORWARD not in d and getattr(func, "func", func) not in _FUSED_LORA_MLPS:
+    if _PRE_FUSED_FORWARD not in d and not _is_fused_lora_mlp(current):
         # What ran before the kernel (an adopted grouped MoE / mxfp4 / accelerate-hook forward, or None for the
-        # class forward); _decline_fused_lora_for_fsdp puts it back.
+        # class forward); _decline_fused_lora_for_fsdp puts it back, possibly into another slot once tiling moved it.
         # The class forward (what tiling stores when nothing was adopted) is recorded as None: restoring it into the
-        # instance `forward` slot unbound would drop `self`.
-        d[_PRE_FUSED_FORWARD] = None if current is type(mlp_module).forward else current
+        # instance `forward` slot unbound would drop `self`. A plain instance function (`mlp.forward = f`, or a
+        # compiler.disable wrapper) already takes x: wrap it so a tiled inner slot does not bind `self` again.
+        if current is type(mlp_module).forward:
+            previous = None
+        elif slot == "forward" and isinstance(current, types.FunctionType):
+            previous = functools.partial(current)
+        else:
+            previous = current
+        d[_PRE_FUSED_FORWARD] = previous
     setattr(mlp_module, slot, types.MethodType(kernel, mlp_module))
+    return True
 
 
 def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
@@ -3433,12 +3463,11 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
         if getattr(module, "apply_o", None) is apply_lora_o:
             module.apply_o = original_apply_o
             n += 1
-        for name in ("forward", "_unsloth_forward"):
-            func = getattr(module.__dict__.get(name), "__func__", None)
-            if getattr(func, "func", func) not in _FUSED_LORA_MLPS:
+        for name in _MLP_FORWARD_SLOTS:
+            if not _is_fused_lora_mlp(module.__dict__.get(name)):
                 continue
-            # Tiling may have moved the kernel from forward into _unsloth_forward after the install, so the record
-            # is read whichever slot holds it.
+            # Tiling may have moved the kernel (into _unsloth_forward, or behind an adopted accelerate hook in
+            # _old_forward) after the install, so the record is read whichever slot holds it.
             previous = module.__dict__.pop(_PRE_FUSED_FORWARD, None)
             if previous is type(module).forward:
                 previous = None
@@ -3447,8 +3476,13 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
                     delattr(module, "forward")
                 else:
                     module.forward = previous
-            else:
+            elif name == "_unsloth_forward":
                 module._unsloth_forward = module.__class__.forward if previous is None else previous
+            else:
+                # Called as module._old_forward(x): a bound method.
+                module.__dict__[name] = (
+                    types.MethodType(module.__class__.forward, module) if previous is None else previous
+                )
             n += 1
     if n:
         if reason is None:
@@ -3468,9 +3502,9 @@ def _fused_lora_layers(layers, mlp_function):
         if getattr(getattr(layer, "self_attn", None), "apply_qkv", None) is apply_lora_qkv
         or getattr(getattr(layer, "self_attn", None), "apply_o", None) is apply_lora_o
         or any(
-            getattr(getattr(getattr(layer, "mlp", None), name, None), "__func__", None)
+            getattr(getattr(getattr(layer, "mlp", None), "__dict__", {}).get(name), "__func__", None)
             is mlp_function
-            for name in ("forward", "_unsloth_forward")
+            for name in _MLP_FORWARD_SLOTS
         )
     ]
 

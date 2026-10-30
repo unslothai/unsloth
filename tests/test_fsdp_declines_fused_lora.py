@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import os
+import types
 from pathlib import Path
 
 import pytest
@@ -232,3 +233,84 @@ def test_tile_fuse_untile_decline_leaves_a_callable_module():
     assert "forward" not in mlp.__dict__
     x = torch.randn(2, 3, 4)
     torch.testing.assert_close(mlp(x), mlp.up(x))
+
+
+def _counting_hook():
+    hooks = pytest.importorskip("accelerate.hooks")
+
+    class _Count(hooks.ModelHook):
+        calls = 0
+
+        def pre_forward(self, module, *args, **kwargs):
+            type(self).calls += 1
+            return args, kwargs
+
+    return hooks, _Count
+
+
+def test_a_kernel_behind_an_adopted_accelerate_hook_is_found_and_declined():
+    """Tile, fuse, attach an accelerate hook, revalidate: tiling adopts the hook and the kernel moves into the hook's
+    `_old_forward`. The FSDP detector and the decline must still see it, and the hook must keep running."""
+    import torch
+    from unsloth.models import llama
+
+    registry = pytest.importorskip("unsloth_zoo.tiling_registry")
+    hooks, count = _counting_hook()
+    mlp = _GroupedMLP()
+    registry.install_module(mlp, "rows:2")
+    llama._install_fused_lora_mlp(mlp, llama.apply_lora_mlp_swiglu)
+    hooks.add_hook_to_module(mlp, count())
+    registry.install_module(mlp, "rows:2")  # Trainer revalidation
+    assert mlp in llama._fused_lora_modules(mlp)
+    assert llama._decline_fused_lora_for_fsdp(mlp) == 1
+    assert llama._fused_lora_modules(mlp) == []
+    x = torch.randn(2, 3, 4)
+    before = count.calls
+    torch.testing.assert_close(mlp(x), mlp.up(x))
+    assert count.calls > before
+
+
+@pytest.mark.parametrize("tiled", [False, True])
+def test_installing_the_kernel_keeps_an_accelerate_hook_running(tiled):
+    import torch
+    from unsloth.models import llama
+
+    hooks, count = _counting_hook()
+    mlp = _GroupedMLP()
+    registry = pytest.importorskip("unsloth_zoo.tiling_registry") if tiled else None
+    if tiled:
+        registry.install_module(mlp, "rows:2")
+    hooks.add_hook_to_module(mlp, count())
+    if tiled:
+        registry.install_module(mlp, "rows:2")  # the hook is adopted as the inner forward
+    seen = []
+    kernel = llama.apply_lora_mlp_swiglu
+    llama._install_fused_lora_mlp(mlp, kernel)
+    assert mlp in llama._fused_lora_modules(mlp)
+    # Swap the real kernel for a spy only to observe the call; it is a plain function, not the fused kernel.
+    slot = llama._fused_lora_mlp_slot(mlp)
+    mlp.__dict__[slot] = types.MethodType(lambda self, x: (seen.append(1), self.up(x))[1], mlp)
+    x = torch.randn(2, 3, 4)
+    before = count.calls
+    mlp(x)
+    assert count.calls > before and seen
+
+
+@pytest.mark.parametrize("wrap", ["lambda", "compiler_disable"])
+def test_instance_forward_fuse_tile_decline_still_calls(wrap):
+    """An instance function forward (no `self`) recorded before the kernel must not get `self` twice when the
+    decline puts it into a tiled MLP's inner slot."""
+    import torch
+    from unsloth.models import llama
+
+    registry = pytest.importorskip("unsloth_zoo.tiling_registry")
+    mlp = _GroupedMLP()
+    if wrap == "lambda":
+        mlp.forward = lambda x: mlp.up(x) * 3
+    else:
+        mlp.forward = torch.compiler.disable(types.MethodType(_adopted_forward, mlp))
+    llama._install_fused_lora_mlp(mlp, llama.apply_lora_mlp_swiglu)
+    registry.install_module(mlp, "rows:2")
+    assert llama._decline_fused_lora_for_fsdp(mlp) == 1
+    x = torch.randn(2, 3, 4)
+    torch.testing.assert_close(mlp(x), mlp.up(x) * 3)
