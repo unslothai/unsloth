@@ -23,9 +23,6 @@ from core.inference.diffusion_autoopt import targets  # noqa: E402
 LOG = logging.getLogger("test_unet_block_compile")
 
 
-# ---------------------------------------------------------------- switches
-
-
 @pytest.mark.parametrize(
     "raw, on",
     [
@@ -72,9 +69,6 @@ def test_slice_seconds(monkeypatch, raw, eager_s, want):
     else:
         monkeypatch.setenv(bg.SLICE_ENV, raw)
     assert bg.slice_seconds(eager_s) == pytest.approx(want)
-
-
-# ---------------------------------------------------------------- the per-block compile of a real (tiny) U-Net
 
 
 def _tiny_unet():
@@ -165,9 +159,6 @@ def test_compile_cache_key_names_the_block_graphs(monkeypatch):
     # a DiT pipe's key is unchanged
     monkeypatch.delenv(targets.UNET_REGIONAL_ENV, raising = False)
     assert "unet_graph" not in plan.compile_cache_kwargs(SimpleNamespace(vae = None), **kw)
-
-
-# ---------------------------------------------------------------- the yielding background compile
 
 
 class _Blocks(torch.nn.Module):
@@ -344,9 +335,6 @@ def test_yield_point_is_a_no_op_off_the_compile_thread():
     bg.yield_point()  # no active compile on this thread
 
 
-# ---------------------------------------------------------------- the render side
-
-
 class _FakeBg:
     def __init__(
         self,
@@ -423,9 +411,6 @@ def test_note_eager_render_keeps_the_fastest_eager_render():
     assert state.pipe._unsloth_eager_render_s == pytest.approx(2.8)
     d._note_eager_render(compiled, True, 2.0)  # eager beside a pending compile
     assert state.pipe._unsloth_eager_render_s == pytest.approx(2.0)
-
-
-# ---------------------------------------------------------------- compile worker warm-up on the 2nd image
 
 
 @pytest.fixture

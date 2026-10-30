@@ -3734,11 +3734,8 @@ def _progress_latch_enabled() -> bool:
 
 
 def _wait_or_pause_bg_compile(bg: Any, state: Any, loras: Any, cancel: Any) -> Any:
-    """Before a render: a background compile in flight either finishes (the render waits, as always) or, when it
-    compiles per block (``BackgroundCompile.yields``), runs on for one slice (``diffusion_bg_compile.slice_seconds``:
-    about one eager render) and is then parked at its next block boundary while this render runs eager. Returns the
-    paused compile, which the caller resumes when the render ends; None when nothing was paused. A render that
-    attaches or keeps LoRA adapters waits for the whole compile (it would change the module mid-trace)."""
+    """Wait for an in-flight bg compile, or (per-block) let it run one slice then park it; returns the paused
+    compile for the caller to resume, else None. LoRA renders always wait (they would change the module mid-trace)."""
     if bg is None or not bg.compiling():
         return None
     pipe = getattr(state, "pipe", None)
@@ -13287,8 +13284,7 @@ class DiffusionBackend:
         if _hires_pass is None:
             bind_generation_cancel(cancel)
         with nullcontext() if _hires_pass is not None else self._generation_slot(cancel):
-            # Never render beside a running background compile; wait outside the state lock so status polls keep
-            # answering. A per-block compile is paused at its next block boundary instead (this render runs eager).
+            # Wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
             paused_bg = _wait_or_pause_bg_compile(pending_bg, self._state, loras, cancel)
             try:
@@ -13358,8 +13354,7 @@ class DiffusionBackend:
                     and not aux_pass
                     and str(getattr(state, "device", "")).startswith("cuda")
                 ):
-                    # The 2nd image: start inductor's compile workers now, so the deferred compile after the 3rd
-                    # does not spend its first block graph waiting for them. Non-blocking, once per process.
+                    # 2nd image: warm inductor's workers so the deferred compile does not wait on them.
                     bg_compile.warm_compile_pool(logger)
                 if (
                     state.speed_deferred

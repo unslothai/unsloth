@@ -1175,7 +1175,6 @@ def _compile_repeated_blocks(
             pin_reduction_configs(unet_kwargs, logger)
         if unet_compiles_regionally(unet, max_autotune = max_autotune):
             return _compile_unet_blocks(unet, unet_kwargs, logger)
-        # Whole-module U-Net compile.
         try:
             unet.compile(**unet_kwargs)
             return True
@@ -1277,7 +1276,6 @@ def _compile_repeated_blocks(
 
 
 def _unet_blocks(unet: Any) -> list:
-    """The U-Net's repeated blocks (``UNET_REGIONAL_BLOCKS``), in module order; [] when it has none."""
     names = set(_targets.UNET_REGIONAL_BLOCKS)
     try:
         return [m for m in unet.modules() if m is not unet and type(m).__name__ in names]
@@ -1286,8 +1284,6 @@ def _unet_blocks(unet: Any) -> list:
 
 
 def unet_compiles_regionally(unet: Any, *, max_autotune: bool = False) -> bool:
-    """A U-Net denoiser with repeated blocks compiles per block (``UNET_REGIONAL_BLOCKS``) on the default tier;
-    max-autotune and ``UNSLOTH_DIFFUSION_UNET_REGIONAL=0`` keep the whole-module compile."""
     return (
         unet is not None
         and not max_autotune
@@ -1300,9 +1296,7 @@ _UNET_RECOMPILE_LIMIT = 256
 
 
 def _compile_unet_blocks(unet: Any, unet_kwargs: dict[str, Any], logger: Any) -> bool:
-    """``Module.compile`` on every repeated U-Net block, guarded like a DiT's regional blocks (a compile failure runs
-    that load eager; a pending background compile routes them eager). The outer forward stays eager: the denoiser
-    CUDA graph captures it whole, so its launches cost nothing."""
+    """Compile each repeated U-Net block (guarded; the outer forward stays eager for the CUDA graph)."""
     count = 0
     try:
         # One ResnetBlock2D forward serves ~14 graphs per (height, width, batch): 64 would stop at the 5th size.
@@ -1331,7 +1325,6 @@ def _compile_unet_blocks(unet: Any, unet_kwargs: dict[str, Any], logger: Any) ->
     guard_compiled_blocks(unet, logger)
     try:
         unet._unsloth_regional_compile_kwargs = dict(unet_kwargs)
-        # A background compile of this U-Net may stop between blocks for a render (diffusion_bg_compile.yield_point).
         unet._unsloth_bg_yield = True
     except Exception:  # noqa: BLE001 - not a settable module (tests/fakes)
         pass
@@ -1503,7 +1496,6 @@ class _CompileGuard:
         def guarded(*args: Any, **kwargs: Any) -> Any:
             # Compile still in flight in the background: entering it here would compile inline.
             if guard.error is None and not _bg_eager_forced():
-                # On a yielding background compile thread: park here, between two block graphs, while a render runs.
                 _bg_yield_point()
                 compile_config.apply()
                 try:
@@ -1561,7 +1553,6 @@ def _guarded_dits(pipe: Any) -> list:
         extra = getattr(pipe, attr, None)
         if extra is not None and extra not in dits:
             dits.append(extra)
-    # A per-block compiled U-Net carries the same guard.
     unet = _denoiser_unet(pipe)
     if (
         unet is not None

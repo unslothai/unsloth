@@ -15,13 +15,10 @@ HOOKED_ATTRS: tuple[str, ...] = DIT_ATTRS + ("unet",)
 # Named partitions a modular workflow compiles through a view (MiniMax-H3's reference DiT).
 PARTITION_ATTRS: tuple[str, ...] = ("transformer_ref",)
 
-# U-Net denoisers on the default tier compile per block (UNET_REGIONAL_BLOCKS, diffusion_speed); max-autotune and
-# UNSLOTH_DIFFUSION_UNET_REGIONAL=0 keep the WHOLE-module static compile.
+# Whole-module U-Net compile only under max-autotune or UNSLOTH_DIFFUSION_UNET_REGIONAL=0.
 UNET_WHOLE_COMPILE: frozenset[str] = frozenset({"UNet2DConditionModel"})
-# Every repeated block of the SDXL / SD U-Net. One graph per distinct (channels, resolution): 19 for SDXL at 1024^2
-# (A100: 55 s cold against 154 s for the whole module), the largest one block, so a background compile can stop
-# between blocks. The resnets and samplers carry half the compiled speed-up (A100 U-Net step, CUDA graph on top:
-# eager 97.3 ms, transformer blocks only 91.2, these four 83.1, whole module 82.5).
+# SDXL 1024^2 on A100: 19 graphs, 55 s cold vs 154 s whole. Resnets/samplers are needed: step 97.3 ms eager,
+# transformer blocks only 91.2, all four 83.1, whole module 82.5.
 UNET_REGIONAL_BLOCKS: tuple[str, ...] = (
     "BasicTransformerBlock",
     "ResnetBlock2D",

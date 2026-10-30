@@ -20,8 +20,6 @@ from typing import Any, Callable, Optional
 
 _ENV = "UNSLOTH_DIFFUSION_BG_COMPILE"
 OFFLOADED_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED"
-# A render that finds a per-block compile in flight pauses it at the next block boundary and runs eager, instead of
-# waiting for the whole compile; =0 waits as before.
 YIELD_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_YIELD"
 # Seconds of compile a render lets run before it pauses it; unset = this load's fastest eager render.
 SLICE_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_SLICE_S"
@@ -73,10 +71,7 @@ _POOL_WARMED = False
 
 
 def warm_compile_pool(logger: Any = None) -> bool:
-    """Start inductor's compile worker pool ahead of the deferred compile (``AsyncCompile.warm_pool`` + ``wakeup``:
-    the workers spawn in the background, nothing here waits for them). Until the pool is ready inductor compiles
-    kernels in-process, which made the first block graph 2-3x the others. Once per process; ``WARM_POOL_ENV=0``
-    disables. Returns whether a warm-up was started."""
+    """Start inductor's compile worker pool ahead of the deferred compile."""
     global _POOL_WARMED
     if _POOL_WARMED or not enabled():
         return False
@@ -555,7 +550,6 @@ class BackgroundCompile:
         self.error: Optional[str] = None
         self.compile_s: Optional[float] = None
         self.eager_generations = 0
-        # Pause protocol (yielding compiles only): renders hold _pause_depth > 0; the thread parks at a yield point.
         self._cv = threading.Condition(threading.Lock())
         self._pause_depth = 0
         self._parked = False
@@ -564,14 +558,12 @@ class BackgroundCompile:
         self.pauses = 0
         self.paused_s = 0.0
         self.yield_points = 0
-        # Seconds between two yield points that compiled a block graph (EMA), and whether the thread still owes one
-        # graph since it was last resumed (so back-to-back renders cannot starve it).
+        # _owe_graph: one graph per resume, so back-to-back renders cannot starve the compile.
         self.graph_s: Optional[float] = None
         self._last_yield: Optional[float] = None
         self._owe_graph = False
 
     def yields(self) -> bool:
-        """Whether this compile stops between blocks for a render (a per-block compiled U-Net)."""
         return bool(getattr(self.module, "_unsloth_bg_yield", False)) and yield_enabled()
 
     def pause(
@@ -587,9 +579,7 @@ class BackgroundCompile:
         thread = self._thread
         if thread is None or thread is threading.current_thread() or not thread.is_alive():
             return 0.0, False
-        # The pause takes effect after the block graph in flight: ask that much before the slice ends, so the wait
-        # stays about one slice. Unmeasured yet: ask at once. Already paused (a hires pass inside its render): the
-        # compile is parked, so no slice runs.
+        # Ask one graph_s early: the pause lands after the block graph in flight.
         budget = max(0.0, float(budget_s or 0.0))
         lead = self.graph_s if self.graph_s is not None else budget
         deadline = t0 + (0.0 if self._pause_depth else max(0.0, budget - lead))
@@ -625,7 +615,6 @@ class BackgroundCompile:
             raise _Closed()
         now = time.perf_counter()
         if self._last_yield is not None and now - self._last_yield > _GRAPH_SEGMENT_S:
-            # the segment since the last yield point compiled a block graph
             seg = now - self._last_yield
             self.graph_s = seg if self.graph_s is None else 0.5 * (self.graph_s + seg)
             self._owe_graph = False
