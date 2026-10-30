@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cached, coalesced nvidia-smi reads: drop-in for ``subprocess.run`` with a bounded wait.
-
-Categories: ``static`` (inventory fields, TTL 60 s like the eGPU-aware physical inventory),
-``display`` (live fields inside :func:`display_reads`, TTL 3 s, stale-while-revalidate),
-``critical`` (live fields anywhere else: never cached or joined, since another process's
-allocation raises no Studio event). ``subprocess.run(timeout=...)`` waits unboundedly for a
-killed child on a blocked driver, so the child runs on a daemon thread. Failures are never
-served and replace older answers. ``UNSLOTH_GPU_QUERY_CACHE=0`` disables all of this.
-"""
+"""Cached nvidia-smi reads (static 60 s, display 3 s TTL); critical live fields never cached or
+joined; failures never served; UNSLOTH_GPU_QUERY_CACHE=0 disables all"""
 
 from __future__ import annotations
 

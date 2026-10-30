@@ -50,6 +50,7 @@ function chatApi(body: Record<string, unknown>) {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
       },
+      "../utils/openapi-support": { readAdvertisedPatchGuards: () => null },
       "../utils/load-warning-toast": {
         showLoadWarning: (warning: string | null | undefined) => shown.push(warning),
       },

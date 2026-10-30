@@ -1274,6 +1274,62 @@ def test_a_new_prompt_length_after_the_first_render_records_nothing(stub_torch, 
     assert handle.stats["length_eager"] == 3
 
 
+def _planned_len_handle(stub_torch, monkeypatch):
+    import contextlib
+
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImage21Transformer2DModel"))
+    orig = handle.orig
+    handle.plan = lambda mod, args, kwargs: (orig, {"hidden_states": args[0], **kwargs})
+    monkeypatch.setattr(_FakeTensor, "is_inference", lambda self: False, raising = False)
+    monkeypatch.setattr(
+        stub_torch, "inference_mode", lambda *a, **k: contextlib.nullcontext(), raising = False
+    )
+    monkeypatch.setattr(cg, "_graph_without_flush", stub_torch.cuda.graph)
+    return handle
+
+
+def test_a_planned_negative_of_another_length_records_on_the_first_render(stub_torch, monkeypatch):
+    """The negative is still warming when the positive's replay seals the scope; it must still record."""
+    handle = _planned_len_handle(stub_torch, monkeypatch)
+    for _ in range(2):
+        _render(handle, 3, steps = 4)
+        cg.seal_lengths((handle,))
+    assert handle.length_sealed is True
+    assert handle.stats["captures"] == 2 and handle.stats["shape_warmups"] == 1
+    assert handle.stats["length_eager"] == 0
+    assert handle.stats["replays"] == 2 * 4 * 2 - 1
+    _render(handle, 15, steps = 2, negative_len = 3)
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 2
+
+
+def test_a_warmup_from_before_a_reset_does_not_reopen_the_sealed_scope(stub_torch, monkeypatch):
+    handle = _planned_len_handle(stub_torch, monkeypatch)
+    _step(handle, 3)
+    _step(handle, 7)
+    assert handle.stats["captures"] == 1 and handle.stats["shape_warmups"] == 1
+    handle.reset()
+    for i in range(3):
+        _step(handle, 3, value = float(i))
+    cg.seal_lengths((handle,))
+    assert handle.length_sealed is True
+    captures = handle.stats["captures"]
+    for i in range(3):
+        _step(handle, 7, value = float(i))
+    assert handle.stats["captures"] == captures
+    assert handle.stats["length_eager"] == 3
+
+
+def test_a_warmup_from_an_earlier_render_does_not_reopen_the_sealed_scope(stub_torch, monkeypatch):
+    handle = _planned_len_handle(stub_torch, monkeypatch)
+    _step(handle, 3)
+    _step(handle, 7)
+    cg.seal_lengths((handle,))
+    assert handle.length_sealed is True
+    _render(handle, 3, steps = 2)
+    assert handle.stats["captures"] == 1 and handle.stats["length_eager"] == 2
+
+
 def test_the_ungraphed_step_returns_what_the_step_itself_returns(stub_torch, monkeypatch):
     monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
     handle = _armed(_len_dit("ZImageTransformer2DModel"))

@@ -151,3 +151,16 @@ def test_an_api_key_caller_cannot_force_a_rescan(monkeypatch):
     assert asked == []
     assert remote.get("/api/settings/caches").status_code == 200
     assert asked == [False]
+
+
+def test_hf_breakdown_requires_ui_session_and_is_only_requested_on_demand(monkeypatch, client):
+    calls = []
+    monkeypatch.setattr(
+        settings_route, "cache_breakdown", lambda key: calls.append(key) or {"entries": []}
+    )
+    response = client.get("/api/settings/caches/hf_hub/breakdown")
+    assert response.status_code == 200
+    assert calls == ["hf_hub"]
+    client.app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    assert client.get("/api/settings/caches/hf_hub/breakdown").status_code == 403
+    assert calls == ["hf_hub"]

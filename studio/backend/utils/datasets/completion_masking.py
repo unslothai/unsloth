@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Completion-only masking policy shared by the CUDA and MLX training paths.
-
-Decides how train_on_responses_only is applied for a model: explicit dataset
-markers when requested, otherwise chat template auto-detection with manual
-TEMPLATE_TO_RESPONSES_MAPPER markers as the fallback. gpt-oss included: its
-quantized checkpoints ship a different chat template, so only detection from
-the actual template is reliable.
-"""
+"""Completion-only masking for CUDA and MLX: explicit dataset markers if requested, else template
+detection with manual markers as fallback; gpt-oss must use detection, not markers"""
 
 from .iterable import is_streaming_dataset
 from .model_mappings import (

@@ -689,6 +689,7 @@ export interface DiffusionTrainingStatus {
   num_images: number | null;
   in_model_load: boolean;
   preparation?: { stage?: string | null; done?: number | null; total?: number | null } | null;
+  download_progress?: { bytes_done: number; bytes_total: number; label?: string; scope?: "active_files" } | null;
   output_dir: string | null;
   lora_path: string | null;
   ema_path?: string | null;
@@ -825,6 +826,7 @@ export interface DiffusionTrainableFamily {
   supports_checkpoints?: boolean;
   // Absent on an older backend: "Sample every" hidden.
   supports_samples?: boolean;
+  is_video?: boolean;
   // Undefined on an older backend (control hidden).
   supports_bucketing?: boolean;
   /** 1 for a family whose forward covers one packed sequence; null/absent means unrestricted. */

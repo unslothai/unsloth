@@ -994,12 +994,12 @@ def test_the_pip_fallback_never_names_one_project_twice() -> None:
             "--upgrade-package",
             "mlx-vlm",
             "mlx==0.32.3",
-            "mlx-vlm>=0.4.4,<=0.7.9",
+            "mlx-vlm>=0.4.4,<=0.7.11",
         )
     )
     assert "--upgrade" in cmd and "--upgrade-package" not in cmd
     assert cmd.count("mlx") == 0 and cmd.count("mlx-vlm") == 0
-    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.4.4,<=0.7.9" in cmd
+    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.4.4,<=0.7.11" in cmd
 
 
 def test_a_package_named_only_by_the_flag_is_still_passed() -> None:

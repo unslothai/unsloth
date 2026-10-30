@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Image upscalers for Hires fix and the Upscale workflow: Lanczos, latent, and ESRGAN-family models via spandrel.
-
-The catalog holds only redistributable weights (Real-ESRGAN, BSD-3-Clause, pinned by size and SHA-256); others
-(4x-UltraSharp is CC BY-NC-SA) stay user-supplied in ``<workspace>/upscale_models``. A request never carries a path.
-"""
+"""Upscaler catalog holds only redistributable weights pinned by SHA-256; others are user-supplied
+in workspace upscale_models; a request never carries a path"""
 
 from __future__ import annotations
 

@@ -200,12 +200,20 @@ def _checkpoint_tensors(model_dir: str, config: Optional[dict], dtype):
 def _resident_bytes(model_dir: str, config: dict, quantize: bool) -> int:
     """Parameter bytes the load leaves resident, at the width it holds them."""
     import contextlib
+    import inspect
     import io
 
     from mlx.utils import tree_flatten
     from unsloth_zoo.mlx.loader import (
         _apply_mlx_quantization,
         _resolve_mlx_quantization_spec,
+    )
+
+    # Chat loads quantize embeddings with the rest; an older unsloth_zoo keeps them full width.
+    embeddings = (
+        {"quantize_embeddings": True}
+        if "quantize_embeddings" in inspect.signature(_resolve_mlx_quantization_spec).parameters
+        else {}
     )
 
     spec = (
@@ -227,6 +235,7 @@ def _resident_bytes(model_dir: str, config: dict, quantize: bool) -> int:
             quant_predicate = None,
             quantize_modules = None,
             force_requantize = False,
+            **embeddings,
         )
     )
     if quantize and not spec.enabled:
@@ -455,6 +464,8 @@ def _whole_model(config: dict, dtype):
         raise ValueError("this checkpoint carries its own model module")
     if _builds_on_mlx_vlm(config):
         from mlx_vlm.utils import get_model_and_args
+
+        _install_oq_renames(config)
         arch = get_model_and_args(config)[0]
         model = arch.Model(_loader_config(arch, config))
     else:
@@ -1149,9 +1160,41 @@ def _lazy_checkpoint(model_dir: str, config: dict):
     with weightless_forward():
         if _builds_on_mlx_vlm(config):
             from mlx_vlm.utils import load_model
-            return load_model(Path(model_dir), lazy = True, strict = False)
+
+            _install_oq_renames(config)
+            view, owner = _loader_view(model_dir, config)
+            if owner is None:
+                return load_model(Path(view), lazy = True, strict = False)
+            model = owner.call(load_model, Path(view), lazy = True, strict = False)
+            owner.transfer_to(model)
+            return model
         from mlx_lm.utils import load_model
         return load_model(Path(model_dir), lazy = True, strict = False)[0]
+
+
+def _loader_view(model_dir: str, config: dict) -> tuple:
+    """``(path, owner)``: unsloth_zoo's config view of ``model_dir`` (owner None without unsloth_zoo)."""
+    import io
+
+    try:
+        from unsloth_zoo.mlx.loader import (
+            _MLXVLMConfigViewOwner,
+            _materialize_mlx_vlm_config_override,
+        )
+    except Exception:
+        return model_dir, None
+    with contextlib.redirect_stdout(io.StringIO()):
+        view, _ = _materialize_mlx_vlm_config_override(model_dir, config)
+    return view, _MLXVLMConfigViewOwner(view, model_dir)
+
+
+def _install_oq_renames(config: dict) -> None:
+    """unsloth_zoo's sanitize renames for DeepSeek-V4.1 oQ quants, as its load installs them."""
+    try:
+        from unsloth_zoo.mlx.loader import _ensure_deepseek_v41_omlx_layout
+    except Exception:
+        return
+    _ensure_deepseek_v41_omlx_layout(config.get("model_type"))
 
 
 @functools.lru_cache(maxsize = 4)
@@ -1443,9 +1486,7 @@ def mlx_fit_outcome(
     sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter, offload)
     if sizing is None:
         return "unsizable", None
-    if any(sizing.offload):
-        least, share = mlx_offload_planner().SAFETY_MARGIN
-        budget_bytes = min(budget_bytes - least, budget_bytes / (1 + share))
+    budget_bytes = _fit_budget(sizing, budget_bytes)
     ceiling = max(int(max_ctx or 0), MLX_KV_BLOCK)
     at_ceiling = _priced_at(sizing, ceiling)
     if at_ceiling is None:
@@ -1467,6 +1508,33 @@ def mlx_fit_outcome(
     return ("no_fit", None) if best is None else ("fitted", (best // MLX_KV_BLOCK) * MLX_KV_BLOCK)
 
 
+def _fit_budget(sizing: _MlxSizing, budget_bytes: int) -> float:
+    if not any(sizing.offload):
+        return budget_bytes
+    least, share = mlx_offload_planner().SAFETY_MARGIN
+    return min(budget_bytes - least, budget_bytes / (1 + share))
+
+
+def mlx_headroom(
+    model_dir: str,
+    *,
+    budget_bytes: int,
+    n_ctx: int,
+    kv_bits: Optional[int] = None,
+    prefill_chunk: Optional[int] = None,
+    load_in_4bit: bool = False,
+    vision: Optional[bool] = None,
+    drafter: Optional[tuple] = None,
+    offload: Optional[tuple] = None,
+) -> Optional[int]:
+    """Bytes of ``budget_bytes`` a load at ``n_ctx`` leaves free (as ``mlx_fit_outcome`` prices it), None if unsized."""
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter, offload)
+    priced = None if sizing is None else _priced_at(sizing, max(int(n_ctx or 0), MLX_KV_BLOCK))
+    if priced is None:
+        return None
+    return max(int(_fit_budget(sizing, budget_bytes) - priced.total_bytes), 0)
+
+
 def mlx_offload_plan(
     model_dir: str,
     *,
@@ -1479,12 +1547,17 @@ def mlx_offload_plan(
     prefill_chunk: Optional[int] = None,
     load_in_4bit: bool = False,
     vision: Optional[bool] = None,
+    drafter: Optional[tuple] = None,
 ) -> Optional[tuple]:
     """The ``(ple, experts, prefill_step)`` unsloth_zoo's 50/50 rule takes for this load, priced
-    as Studio prices it; a knob not ``"auto"`` and a pinned ``context`` are kept. When nothing fits,
-    everything offloadable goes to disk. None when the load cannot be planned."""
+    as Studio prices it, with ``drafter`` when given; a knob not ``"auto"`` and a pinned ``context``
+    are kept. When nothing fits, everything offloadable goes to disk. None when the load cannot be planned."""
     planner = mlx_offload_planner()
-    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision)
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter)
+    if sizing is None and drafter is not None:
+        # A drafter that cannot be sized cannot attach either: plan the target as if none was asked for.
+        drafter = None
+        sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision)
     if planner is None or sizing is None:
         return None
     with _on_route(vision):
@@ -1493,7 +1566,7 @@ def mlx_offload_plan(
 
     def context_cost(tokens, step):
         if step not in sized:
-            sized[step] = _size_load(model_dir, kv_bits, step, load_in_4bit, vision)
+            sized[step] = _size_load(model_dir, kv_bits, step, load_in_4bit, vision, drafter)
         priced = sized[step] and _priced_at(sized[step], tokens)
         if priced is None:
             raise ValueError(f"cannot price {tokens} tokens")

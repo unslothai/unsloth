@@ -1,35 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persistent ``sd-server`` (stable-diffusion.cpp) process manager.
-
-The native diffusion tier used to shell out to one-shot ``sd-cli`` per image, which
-reloaded the multi-GB GGUF from disk every generation. ``sd-server`` (the upstream
-``examples/server`` target) loads the model once at spawn and serves many generations
-over HTTP, exactly like the chat backend's persistent ``llama-server``. This manager
-owns ONLY the process + HTTP lifecycle; the backend (``sd_cpp_backend.py``) still owns
-asset resolution, request validation, and the public Unsloth surface.
-
-Shape mirrors ``core/rag/embed_llama_server.py``:
-  * ``start``      -- pick a free loopback port, spawn the server (model loads here),
-                      drain stdout on a daemon thread, poll until ready.
-  * ``img_gen``    -- POST ``/sdcpp/v1/img_gen`` (the whole batch in one request),
-                      poll the async job to a terminal state, return image bytes.
-  * ``vid_gen``    -- POST ``/sdcpp/v1/vid_gen`` (MiniMax-H3 native video), same polling,
-                      return the encoded container (video + muxed audio).
-  * ``stop``       -- SIGTERM -> wait -> SIGKILL, join the drain thread (idempotent).
-
-Readiness is real: upstream ``main.cpp`` loads the model BEFORE it binds the port and
-prints ``listening on:``, so a 200 from ``GET /v1/models`` (a trivial handler) means the
-model is loaded; a load failure exits the process before listening and is surfaced with
-the captured log tail. (The richer ``/sdcpp/v1/capabilities`` handler can block in some
-builds, so it is not used for readiness.) The job JSON has no per-step field, so step progress is recovered by
-parsing the server's stdout (the same ``N/M`` lines ``sd-cli`` emits), routed to the
-active generation's callback.
-
-Import-light on purpose (no torch / diffusers / PIL), so selecting the native tier on
-a CPU box never drags the GPU stack into the process.
-"""
+"""Persistent sd-server; ready on 200 from GET /v1/models (not capabilities, which can block);
+routes POST /sdcpp/v1/img_gen and POST /sdcpp/v1/vid_gen; import-light, no torch/diffusers/PIL"""
 
 from __future__ import annotations
 

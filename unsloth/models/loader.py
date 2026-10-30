@@ -1195,6 +1195,27 @@ def _drop_vllm_engine_kwargs(kwargs):
         print(f"Unsloth: Ignoring vLLM-only arguments {dropped} since vLLM is not used.")
 
 
+def _agree_fast_inference_across_ranks(requested, fast_inference, kwargs):
+    """Under torchrun keep vLLM only if every rank kept it, so one rank never waits alone in vLLM's collectives.
+
+    The capability gates read each rank's own card: on a mixed host (an A100 and a T4) one rank would build an external_launcher engine while the other loads HF and starts training. Outside torchrun, or with an older unsloth_zoo, the local answer stands."""
+    if not requested:
+        return fast_inference
+    try:
+        from unsloth_zoo.vllm_utils import torchrun_ranks_agree
+    except Exception:
+        return fast_inference
+    # Every rank that asked for vLLM takes part, including the ones that already dropped it.
+    if torchrun_ranks_agree(fast_inference) or not fast_inference:
+        return fast_inference
+    print(
+        "Unsloth: fast_inference (vLLM) is off on another torchrun rank (such as an older GPU) - "
+        "every rank will switch to Unsloth inference!"
+    )
+    _drop_vllm_engine_kwargs(kwargs)
+    return False
+
+
 class FastLanguageModel(FastLlamaModel):
     reap_prune = staticmethod(_reap_prune)
 
@@ -1375,6 +1396,7 @@ class FastLanguageModel(FastLlamaModel):
             or dtype == torch.float32
         )
 
+        fast_inference_requested = fast_inference
         # Same fallback as FastModel, before requiring vLLM: it cannot run below compute capability 7.
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
@@ -1393,6 +1415,9 @@ class FastLanguageModel(FastLlamaModel):
                         fast_inference = False
                         _drop_vllm_engine_kwargs(kwargs)
                         break
+        fast_inference = _agree_fast_inference_across_ranks(
+            fast_inference_requested, fast_inference, kwargs
+        )
         raise_if_fast_inference_under_fsdp2(fast_inference)
 
         # bitsandbytes unusable (absent, or unstable on some AMD stacks). A capability check, so not gated on use_exact_model_name, which only suppresses repo-name remapping.
@@ -2372,6 +2397,7 @@ class FastModel(FastBaseModel):
                 # One whole model per rank; sharding one across the ranks' GPUs too would have every rank fighting for the same cards.
                 device_map = distributed_device_map
 
+        fast_inference_requested = fast_inference
         # Same fallback as FastLanguageModel, before requiring vLLM: zoo's vLLM loader raises on compute capability < 7.
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
@@ -2674,6 +2700,10 @@ class FastModel(FastBaseModel):
             )
             fast_inference = False
             _drop_vllm_engine_kwargs(kwargs)
+        # After the last per-card gate: under torchrun every rank takes the same vLLM-or-HF path.
+        fast_inference = _agree_fast_inference_across_ranks(
+            fast_inference_requested, fast_inference, kwargs
+        )
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
         # Remote-code checkpoints can report their backbone's type (Nemotron-Labs-Diffusion says "nemotron"), so also match the raw config.
@@ -2727,11 +2757,14 @@ class FastModel(FastBaseModel):
             except GptOssUnknownExpertLayoutError:
                 # Only fatal where the layout decides the expert classes or the float16 refusal.
                 if (load_in_4bit and _bnb_compatible_quant) or (
-                    _gpt_oss_bnb_4bit and dtype == torch.float16
+                    _gpt_oss_bnb_4bit
+                    and (
+                        dtype == torch.float16 or (not SUPPORTS_BFLOAT16 and dtype == torch.float32)
+                    )
                 ):
                     raise
         if _gpt_oss_fused and _gpt_oss_bnb_4bit:
-            refuse_gpt_oss_fused_4bit_float16(dtype)
+            refuse_gpt_oss_fused_4bit_float16(dtype, SUPPORTS_BFLOAT16)
         if load_in_4bit and _bnb_compatible_quant and not _gpt_oss_fused:
             string += "_load_in_4bit_"
         elif load_in_4bit and _bnb_compatible_quant:

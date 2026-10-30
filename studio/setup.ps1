@@ -31,6 +31,10 @@ $PackageDir = Split-Path -Parent $ScriptDir
 $script:SetupSelfPath = $MyInvocation.MyCommand.Path
 $script:SetupSelfAtStart = $null
 try { $script:SetupSelfAtStart = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { }
+# Node is provisioned before the dependency pass can install a newer pin.
+$script:SetupNodePinsPath = Join-Path $ScriptDir 'node_prebuilt_pins.json'
+$script:SetupNodePinsAtStart = $null
+try { $script:SetupNodePinsAtStart = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupNodePinsPath)) } catch { }
 $script:SetupArgs = @($args)
 $script:SetupStartEnv = $null
 try { $script:SetupStartEnv = [System.Environment]::GetEnvironmentVariables() } catch { }
@@ -154,6 +158,7 @@ $script:NvidiaLibraryInventoryProbed = $false
 $script:NvidiaLibraryInventory = $null
 # Initialised for Set-StrictMode and for a dot-sourced rerun in the same session.
 $script:OfflineFastPath = $false
+$script:SetupVenvChanged = $false
 $script:CudaToolkitReady = $false
 $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
@@ -329,7 +334,10 @@ function Complete-FrontendBuildBackground {
 function Test-SetupScriptReplaced {
     if ($env:UNSLOTH_SETUP_RERUN -eq '1' -or -not $script:SetupSelfAtStart) { return $false }
     try { $now = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { return $false }
-    return ($now -cne $script:SetupSelfAtStart)
+    if ($now -cne $script:SetupSelfAtStart) { return $true }
+    $nowPins = $null
+    try { $nowPins = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupNodePinsPath)) } catch { }
+    return ($nowPins -cne $script:SetupNodePinsAtStart)
 }
 
 function Restore-SetupStartEnvironment {
@@ -3214,6 +3222,21 @@ function Invoke-NpmMirrorRetry {
     return $true
 }
 
+# install-stamp.mjs check/write; any doubt returns $false so setup runs `npm ci`.
+function Invoke-OxcInstallStamp {
+    param([Parameter(Mandatory = $true)][ValidateSet("check", "write")][string]$Mode)
+    $helper = Join-Path $OxcValidatorDir "install-stamp.mjs"
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { return $false }
+    # Resolved first: a lookup failure must never read an earlier command's exit code as a pass.
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $node) { return $false }
+    try {
+        $global:LASTEXITCODE = 1
+        & $node.Source $helper $Mode *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+
 function Show-NpmRegistryHint {
     param([string]$FailureOutput = "")
     if ($FailureOutput) {
@@ -5093,8 +5116,11 @@ function Get-NodeDecision {
     param(
         [string]$NodeVersion,    # `node -v` output, e.g. v22.17.1 (or empty)
         [string]$NpmVersion,     # `npm -v`  output, e.g. 10.9.2  (or empty)
-        [string]$SkipInstall     # "1" => never auto-install
+        [string]$SkipInstall,    # "1" => never auto-install
+        [bool]$ManagedOnPath = $false
     )
+    # An inherited managed Node must go through the pin check, even when compatible.
+    if ($ManagedOnPath -and $SkipInstall -ne "1") { return "bundled" }
     $node = ($NodeVersion -replace '^v', '').Trim()
     $npm = "$NpmVersion".Trim()
     if ($node -match '^\d+\.\d+' -and $npm -match '^\d+') {
@@ -5108,6 +5134,15 @@ function Get-NodeDecision {
     }
     if ($SkipInstall -eq "1") { return "skip" }
     return "bundled"
+}
+
+
+function Test-ManagedNodeOnPath {
+    # Only installer metadata marks it managed (wherever NodeDir is); a bare path match may be a user's link.
+    $command = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $command -or -not $command.Path) { return $false }
+    $parent = Split-Path -Parent $command.Path
+    return (Test-Path -LiteralPath (Join-Path $parent "UNSLOTH_NODE_PREBUILT_INFO.json") -PathType Leaf)
 }
 
 
@@ -5127,6 +5162,7 @@ $NodeDir = $null
 $SysNodeVersion = ""
 $SysNpmVersion = ""
 $NodeSource = $null
+$NodeOnPathIsManaged = $false
 
 if (-not $IsPipInstall) {
     $_masterRoot = Get-MasterRootOverride
@@ -5167,7 +5203,9 @@ if (-not $IsPipInstall) {
     # Under Stop a bare `node -v` throws past 2>$null.
     $SysNodeVersion = try { if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" } } catch { "" }
     $SysNpmVersion = try { if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" } } catch { "" }
-    $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)"
+    $NodeOnPathIsManaged = Test-ManagedNodeOnPath
+    $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" `
+        -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)" -ManagedOnPath $NodeOnPathIsManaged
 }
 
 if ($IsPipInstall) {
@@ -5177,6 +5215,8 @@ if ($IsPipInstall) {
 } else {
     if ($NodeSource -eq "system") {
         substep "Node $SysNodeVersion and npm $SysNpmVersion already meet requirements (system)."
+    } elseif ($NodeSource -eq "bundled" -and $NodeOnPathIsManaged) {
+        substep "Checking the isolated Node against the configured version (system Node/npm left untouched)."
     } elseif ($NodeSource -eq "bundled") {
         substep "Node='$SysNodeVersion' npm='$SysNpmVersion' unsuitable; will use an isolated Node (system left untouched)."
     } else {
@@ -5464,7 +5504,8 @@ if ($NeedNodeForSetup) {
         Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
         step "node" "$(node -v) | npm $(npm -v) (isolated)"
 
-        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        # Only the frontend build uses bun (as in setup.sh); OXC-only Node (Desktop) skips it.
+        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue) -and $NeedFrontendBuild) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -5599,18 +5640,27 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
     $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
-    $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
-    if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
-    if ($oxcInstallExit -ne 0) {
+    if ($NpmInstallVerb -eq "ci" -and (Invoke-OxcInstallStamp -Mode check)) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
-        Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
-        Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
-        Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
+        step "oxc runtime" "up to date"
+    } else {
+        # Gone before npm touches the tree, so an interrupted install is never trusted.
+        Remove-Item -LiteralPath (Join-Path $OxcValidatorDir "node_modules\.unsloth-install-stamp.json") -Force -ErrorAction SilentlyContinue
+        $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
+        if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
+        if ($oxcInstallExit -ne 0) {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP_oxc
+            Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
+            Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
+            Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
+        }
+        if ($NpmInstallVerb -eq "ci") { $null = Invoke-OxcInstallStamp -Mode write }
+        Pop-Location
+        $ErrorActionPreference = $prevEAP_oxc
+        step "oxc runtime" "installed"
     }
-    Pop-Location
-    $ErrorActionPreference = $prevEAP_oxc
-    step "oxc runtime" "installed"
 } elseif ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
@@ -8370,6 +8420,7 @@ if (-not $NoTorchMode) {
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
+$script:SetupVenvChanged = $true
 
 # ── Intel XPU: bitsandbytes must carry XPU kernels ──
 # Only bitsandbytes' XPU library exports the 4-bit kernels; floor 0.50.0 (<=0.49.2 NaNs on AMD).
@@ -8510,7 +8561,7 @@ if ($stackExit -ne 0) {
 # run's variables from the new copy; it cannot see $PSDefaultParameterValues, so those are passed in.
 if (Test-SetupScriptReplaced) {
     Complete-FrontendBuildBackground
-    step "setup" "the update replaced this setup script; finishing with the new version"
+    step "setup" "the update changed setup or its Node pin; finishing with the new version"
     $_setupRerunArgs = $script:SetupArgs
     Restore-SetupStartEnvironment
     Remove-Item Env:UNSLOTH_STUDIO_FULL_DEPS -ErrorAction SilentlyContinue
@@ -10009,6 +10060,11 @@ if ($LocalLlamaCppLinked) {
         $null = cmake --build $BuildDir --config Release --target llama-diffusion-gemma-visual-server -j $NumCpu 2>&1 | Out-String
     }
 
+    # -- Step F: llama-bench (best-effort) --
+    if ($BuildOk) {
+        $null = cmake --build $BuildDir --config Release --target llama-bench -j $NumCpu 2>&1 | Out-String
+    }
+
     # Swap temp build dir into final location (only if we built in a temp dir)
     if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
         Assert-StudioOwnedOrAbsent -Path $OriginalLlamaCppDir -Label "llama.cpp install" -IsCustom $RuntimeRootIsCustom
@@ -10081,6 +10137,24 @@ if (-not $llamaCppIsLink -and (
 }
 
 Complete-FrontendBuildBackground
+
+# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
+$_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
+$_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
+$_pycSwitches = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
+    Where-Object { $_ } | ForEach-Object { $_.Trim().ToLowerInvariant() })
+$_pycOptedOut = @($_pycSwitches | Where-Object { @('0', 'false', 'no', 'off') -contains $_ }).Count -gt 0
+$_pycOptedIn = @($_pycSwitches | Where-Object { @('1', 'true', 'yes', 'on') -contains $_ }).Count -gt 0
+if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and $_pycOptedIn -and -not $_pycOptedOut -and
+    (Test-Path -LiteralPath $_pycPython -PathType Leaf) -and
+    (Test-Path -LiteralPath $_pycHelper -PathType Leaf)) {
+    step "python" "precompiling bytecode..."
+    $_pycPrevExit = $global:LASTEXITCODE
+    $_pycPrevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $_pycPython -I $_pycHelper } catch { } finally { $ErrorActionPreference = $_pycPrevEAP }
+    $global:LASTEXITCODE = $_pycPrevExit
+}
 
 # ─────────────────────────────────────────────
 # Footer
