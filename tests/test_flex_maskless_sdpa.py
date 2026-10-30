@@ -74,6 +74,14 @@ def test_a_dropped_mask_runs_sdpa_is_causal(qkv):
     assert torch.equal(out, reference)
 
 
+def test_a_dropped_mask_is_still_causal_in_a_compiled_block(qkv):
+    # Training compiles each decoder layer, where torch < 2.10 reads hasattr(q, "dim") as False.
+    q, k, v = qkv
+    torch._dynamo.reset()
+    out, _ = torch.compile(_flex(), backend = "eager")(Causal(), q, k, v, None, scaling = D**-0.5)
+    assert (out.float() - _causal_reference(q, k, v, D**-0.5)).abs().max() < 2e-2
+
+
 @pytest.mark.parametrize("case", ["softcap", "head_dim_512"])
 def test_a_dropped_mask_that_stays_on_flex_is_still_causal(case):
     # Never hand flex a None mask for a causal call: it would attend to future tokens.
