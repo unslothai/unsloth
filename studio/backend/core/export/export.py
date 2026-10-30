@@ -1178,6 +1178,34 @@ class ExportBackend:
                     **_offload_kw,
                 )
 
+            elif self._audio_type == "audio_vlm" and not self.is_vision:
+                # LFM3-Audio: the text load builds the bare backbone with no LM head; Training and Chat use this class.
+                from unsloth import FastModel
+                from transformers import AutoModelForMultimodalLM
+
+                logger.info("Loading as audio-input model (AutoModelForMultimodalLM)...")
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name = checkpoint_path,
+                    auto_model = AutoModelForMultimodalLM,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    **_load_in_4bit_kwargs(load_in_4bit),
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    local_files_only = local_files_only,
+                    **_device_map_kw,
+                    **_offload_kw,
+                )
+                if base_model and not hasattr(tokenizer, "feature_extractor"):
+                    with _offline_window_if(local_files_only):
+                        tokenizer = _with_base_processor(
+                            tokenizer,
+                            base_model,
+                            trust_remote_code = trust_remote_code,
+                            token = token,
+                            local_files_only = local_files_only,
+                        )
+
             elif self.diffusion_lm_profile:
                 from unsloth import FastModel
                 logger.info(f"Loading as text-diffusion model ({self.diffusion_lm_profile})...")
