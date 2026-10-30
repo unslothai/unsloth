@@ -10,6 +10,7 @@ from .format_detection import (
     detect_multimodal_dataset,
     detect_vlm_dataset_structure,
     detect_custom_format_heuristic,
+    is_plain_text_dataset,
 )
 from .format_conversion import (
     standardize_chat_format,
@@ -434,6 +435,10 @@ def _format_dataset(
     """Formats dataset and returns {dataset, detected_format, final_format, chat_column, is_standardized, requires_manual_mapping, warnings}."""
 
     multimodal_info = detect_multimodal_dataset(dataset)
+
+    if format_type == "auto" and not custom_format_mapping and is_plain_text_dataset(dataset):
+        # Matches the preview's "raw" verdict; auto would otherwise fail as "unknown".
+        format_type = "raw"
 
     if format_type == "raw":
         raw_result = prepare_raw_text_dataset(

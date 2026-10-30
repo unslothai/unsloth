@@ -28,6 +28,56 @@ const handleToastPointerDownCapture = (
   event.stopPropagation();
 };
 
+// Sonner has no line count: tag toasts whose text runs past one line, so CSS can
+// centre a one-line toast's icon and top-align a longer one's.
+function markMultilineToasts(scope: HTMLElement): () => void {
+  const sized = new ResizeObserver((entries) => {
+    for (const { target } of entries) {
+      const toast = target.closest("[data-sonner-toast]");
+      const text = target.querySelector("[data-title], [data-description]");
+      if (!(toast && text)) continue;
+      const line = Number.parseFloat(getComputedStyle(text).lineHeight);
+      toast.toggleAttribute(
+        "data-multiline",
+        target.getBoundingClientRect().height > line * 1.5,
+      );
+    }
+  });
+  const observed = new Set<Element>();
+  const watch = () => {
+    for (const content of observed) {
+      if (!scope.contains(content)) {
+        sized.unobserve(content);
+        observed.delete(content);
+      }
+    }
+    for (const content of scope.querySelectorAll("[data-sonner-toast] [data-content]")) {
+      if (!observed.has(content)) {
+        sized.observe(content);
+        observed.add(content);
+      }
+    }
+  };
+  watch();
+  const added = new MutationObserver(watch);
+  added.observe(scope, { childList: true, subtree: true });
+  return () => {
+    added.disconnect();
+    sized.disconnect();
+    observed.clear();
+  };
+}
+
+function toasterScope(element: HTMLDivElement | null) {
+  if (!element) return undefined;
+  const releaseInsets = cornerInsetScope(element);
+  const releaseLines = markMultilineToasts(element);
+  return () => {
+    releaseInsets?.();
+    releaseLines();
+  };
+}
+
 const Toaster = ({ ...props }: ToasterProps) => {
   // Use the resolved mode so data-sonner-theme matches the class on <html>.
   const { resolved } = useTheme();
@@ -36,7 +86,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
     // display:contents adds no box; only carries the selection-fix handler.
     // biome-ignore lint/a11y/noStaticElementInteractions: capture-only guard, not interactive
     <div
-      ref={cornerInsetScope}
+      ref={toasterScope}
       style={{ display: "contents" }}
       onPointerDownCapture={handleToastPointerDownCapture}
     >

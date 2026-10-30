@@ -10,37 +10,13 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""PrefixGrouper layout builder + completion-logprob extraction for the Unsloth GRPO
-packed path (all archs that route through the varlen attention dispatch).
+"""GRPO PrefixGrouper: each group of ``num_generations`` rows with a byte-identical prompt becomes
+one flat stream ``[prefix_g, suffix_g_0 .. suffix_g_{G-1}, ...]`` gathered from the original
+(row, col) coordinates, so the shared prefix gets grad once (= sum of the G repeats). Completion
+logprobs are scattered back to ``orig_row * L + orig_col``, byte-compatible with the packed path.
 
-Given the de-padded, LEFT-PACKED input_ids the packed GRPO path already works with, this
-module:
-
-  1. Detects consecutive ``num_generations`` rows that share a prompt prefix (byte-
-     identical prompt precondition; falls back / returns None otherwise).
-  2. Builds ONE flat shared-prefix stream across all groups
-     ``[ prefix_g0, suf_g0_0 .. suf_g0_{G-1}, prefix_g1, ... ]`` with position_ids that
-     continue each prefix positionally, plus a ``PrefixSegInfo`` segment table for the
-     FlexAttention shared-prefix kernel.
-  3. Extracts completion logprobs via the index map (completion pos ``j==0`` predicted
-     from the shared prefix's last token; ``j>=1`` from the preceding suffix token) and
-     scatters them back into ``[total_rows, W]`` EXACTLY where the full-row packed path
-     puts them (dest = ``orig_row*L + orig_col``), so grpo_compute_loss / completion_mask
-     / TIS / metrics are byte-untouched.
-
-The flat stream is built by GATHERING original (row, col) coordinates out of input_ids,
-so the grad path's autograd flows to the same embedding rows as today (the shared prefix
-now contributes grad once = the sum of the G repeats, which is mathematically identical).
-
-``chunked_hidden_states_selective_log_softmax`` (from unsloth_zoo, passed in) is reused
-verbatim over the gathered predicting-position hidden states, so fp32 accumulation,
-logit_scale/softcapping/temperature are all preserved.
-
-Env:
-  UNSLOTH_GRPO_PREFIX_GROUPER=1            engage (default ON; set 0 to disable). Auto-off under vLLM.
-  UNSLOTH_GRPO_PREFIX_GROUPER_TOKR=1.3     tok_r auto-gate threshold (env-overridable)
-  UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY=1     first-step self-verify (default ON)
-  UNSLOTH_GRPO_PREFIX_GROUPER_TOL=0.7      self-verify PASS band (nats)
+Env: UNSLOTH_GRPO_PREFIX_GROUPER (default 1, off under vLLM), _TOKR (1.3), _VERIFY (1),
+_TOL (0.7 nats), _COMPILE_CHECK (1).
 """
 
 from __future__ import annotations
@@ -53,6 +29,7 @@ import torch
 
 from .prefix_grouper_kernel import (
     build_seg_info_multigroup,
+    compile_check_failed,
     PrefixSegInfo,
     PREFIX_GROUPER_MIN_TORCH,
     TORCH_SUPPORTS_PREFIX_GROUPER,
@@ -75,7 +52,7 @@ _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
 
 def prefix_grouper_enabled() -> bool:
-    """Needs seq-packing (reuses its de-pad + scatter) and torch >= 2.7; unsloth_zoo gates on it too."""
+    """Needs seq-packing, torch >= 2.7 and a flex kernel that passed its compile check."""
     global _OFF_LOGGED
     if _ENV_ENABLED and not _ENABLED and not _OFF_LOGGED:
         _OFF_LOGGED = True
@@ -85,7 +62,7 @@ def prefix_grouper_enabled() -> bool:
             "does not compile there); using the packed path.",
             flush = True,
         )
-    return _ENABLED
+    return _ENABLED and compile_check_failed() is None
 
 
 def verify_on() -> bool:
@@ -111,7 +88,6 @@ class GroupLayout:
     flat_ids: torch.Tensor  # [1, T]  (T == seg.T)
     position_ids: torch.Tensor  # [1, T]
     prefix_seg_info: PrefixSegInfo
-    # Per completion target token, aligned 1:1.
     tgt_rows: torch.Tensor  # [N] original row index
     tgt_cols: torch.Tensor  # [N] original padded column in that row
     tgt_pred: torch.Tensor  # [N] flat predicting index (into the T stream)
@@ -159,16 +135,10 @@ class GroupLayout:
 
 
 def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows):
-    """CPU-side grouping. Returns group dicts or None. Mirrors the packed _pk_* partition.
+    """CPU-side grouping mirroring the packed _pk_* partition, or None.
 
-    A row's REAL tokens are the columns where input != pad. Its completion region (what
-    the packed path scatters, then completion_mask masks) is the real columns with
-    original col >= cstart_r, where cstart_r = (L - logits_to_keep) - left_pad_r. The
-    prompt is the real columns < cstart_r. Within a GRPO group all G rows share the same
-    prompt => same left_pad => same cstart => the prompt real columns are BYTE-IDENTICAL
-    across the group (the shared prefix). We require that byte-identity (falls back
-    otherwise). No prompt-tail special-casing: every suffix token is scattered exactly
-    like the packed path; completion_mask masks the leading prompt-tail positions.
+    Prompt = real columns < cstart_r = (L - logits_to_keep) - left_pad_r; every row of a group
+    must have a byte-identical prompt. Suffix tokens scatter exactly like the packed path.
     """
     G = num_generations
     if G is None or G < 2 or total_rows % G != 0:
@@ -189,7 +159,6 @@ def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_row
             comp_cols_per_row.append(c_cols)
         if any(len(p) == 0 for p in prompt_toks_per_row):
             return None
-        # Require BYTE-IDENTICAL prompts across the group, the shared-prefix precondition.
         P = len(prompt_toks_per_row[0])
         if any(len(prompt_toks_per_row[k]) != P for k in range(1, G)):
             return None
@@ -235,14 +204,9 @@ def _build_group_layout_reference(
     apply_tokr_gate = True,
     max_segment_cap = None,
 ):
-    """Build the shared-prefix GroupLayout, or return None to fall back to the packed path.
-    Token-by-token builder; build_group_layout's fallback for inputs its fast path skips.
+    """Token-by-token shared-prefix GroupLayout (build_group_layout's fallback), or None.
 
-    input_ids : [B, L]. GRPO's layout is left-padded in the prompt and right-padded in
-        the completion. Real tokens of a row are a contiguous run not necessarily
-        starting at column 0.
-    logits_to_keep : int
-    left_pad_tokens_per_prompt : [B] long tensor (per-row left-pad count in the prompt).
+    input_ids [B, L]: prompt left-padded, completion right-padded.
     """
     device = input_ids.device
     total_rows, L = input_ids.shape
@@ -290,7 +254,6 @@ def _build_group_layout_reference(
     if apply_tokr_gate and tok_r < tokr_threshold():
         return None  # low reuse -> not worth it; use the full-row packed path
 
-    # Build flat stream by gathering original (row, col) coordinates.
     group_specs = [(gm["P"], gm["R_list"]) for gm in groups]
     seg, group_meta = build_seg_info_multigroup(group_specs, device)
 
@@ -308,11 +271,9 @@ def _build_group_layout_reference(
         r0 = gm["prefix_row"]
         prefix_cols = gm["prefix_cols"]  # ORIGINAL real prompt columns (len P) of row0
         plast = meta["prefix_last_index"]  # base + P - 1
-        # Gather the shared prefix once, from row0.
         flat_src_rows.extend([r0] * P)
         flat_src_cols.extend(prefix_cols)
         pos_list.extend(range(P))
-        # Every suffix token is a completion-region target, scattered like the packed path; completion_mask hides prompt-tail positions.
         for i, r in enumerate(rows):
             cols = gm["suf_cols"][i]
             r_i = len(cols)
