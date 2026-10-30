@@ -295,6 +295,68 @@ def test_cancel_stops_started_reads_promptly(monkeypatch):
     assert rec.running == 0
 
 
+def test_closing_the_stream_between_calls_stops_started_reads(monkeypatch):
+    """Closed at a yield where no tool stream is open (the next card's tool_start), the reads started
+    for later calls must stop as a closed running stream does, not run on against a gone turn."""
+    lock = threading.Lock()
+    running: list = []
+    seen: list = []
+
+    def execute(name, arguments, **kwargs):
+        url = arguments["url"]
+        with lock:
+            seen.append(url)
+            running.append(url)
+        try:
+            if "a.example" in url:
+                time.sleep(0.2)
+            else:
+                kwargs["cancel_event"].wait(5.0)
+            return f"RESULT {url}"
+        finally:
+            with lock:
+                running.remove(url)
+
+    monkeypatch.setattr(loop_mod, "execute_tool", execute)
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    cancel = threading.Event()
+    calls = [_url("a.example"), _url("b.example"), _url("c.example")]
+
+    async def close_at_second_card():
+        gen = stream_with_studio_tools(
+            Transport(calls),
+            run = ToolLoopRun(
+                messages = [{"role": "user", "content": "read"}], session_id = "s1", thread_id = "t1"
+            ),
+            policy = ToolLoopPolicy(
+                tools = [WEB, PY],
+                max_calls = 25,
+                timeout = 60,
+                permission_mode = "off",
+                confirm_calls = False,
+                bypass_permissions = False,
+                rag_scope = None,
+            ),
+            cancel_event = cancel,
+        )
+        starts = 0
+        async for line in gen:
+            if '"tool_start"' in line:
+                starts += 1
+                if starts == 2:
+                    break
+        await gen.aclose()
+
+    asyncio.run(asyncio.wait_for(close_at_second_card(), timeout = 10))
+    # The reads for c1 and c2 were started early, so the overlap was exercised.
+    assert len(seen) == 3
+    deadline = time.monotonic() + 2
+    while running and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert running == []
+    assert cancel.is_set()
+
+
 # ---------------------------------------------------------------------------------------------
 # Real guarded fetcher through the overlapped path
 # ---------------------------------------------------------------------------------------------
@@ -426,6 +488,8 @@ def fake_ddgs(monkeypatch, tmp_path):
         tools, "_ddgs_text", lambda client, q, n, backend: client.text(q, max_results = n)
     )
     monkeypatch.setattr(tools, "_resolve_engine_tiers", lambda engines: ["auto"])
+    # A failure recorded by another test must not hold this one's lookups back.
+    monkeypatch.setattr(tools, "_text_search_failed_at", None, raising = False)
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path)
     # Registrations made here must not leak into other tests' registry.
     monkeypatch.setattr(search_images, "_registry", {})
@@ -510,3 +574,39 @@ def test_cancel_during_text_search_discards_images(monkeypatch, fake_ddgs):
     result = tools._web_search("paris", timeout = 20, include_images = True, cancel_event = cancel)
     assert result == "Search cancelled."
     assert fake_ddgs == []
+
+
+def test_failing_text_engines_hold_back_the_early_image_lookup(monkeypatch, fake_ddgs):
+    """While text search keeps failing (a rate limited machine), only the first failure pays a discarded
+    lookup; the next searches send none until the engines answer again."""
+    monkeypatch.setattr(_FakeDDGS, "text_error", RuntimeError("202 Ratelimit"))
+    monkeypatch.setattr(
+        tools, "_wikipedia_search", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down"))
+    )
+    for named in (False, True, False):
+        extra = {"image_queries": ["eiffel tower"]} if named else {}
+        result = tools._web_search("paris", timeout = 20, include_images = True, **extra)
+        assert result.startswith("Search failed") and "img" not in result
+    time.sleep(0.5)
+    assert len(_FakeDDGS.image_queries) == 1
+    # An empty sweep is an answer, not a failure: it lifts the hold, and so do results.
+    monkeypatch.setattr(_FakeDDGS, "text_error", None)
+    found = tools._web_search("paris", timeout = 20, include_images = True)
+    assert "img" in found
+    assert tools._text_search_failed_at is None
+    before = len(_FakeDDGS.image_queries)
+    t0 = time.perf_counter()
+    tools._web_search("paris", timeout = 20, include_images = True)
+    # Overlapped again: about one 0.3 s round trip, not two.
+    assert time.perf_counter() - t0 < 0.5
+    assert len(_FakeDDGS.image_queries) == before + 1
+    # The hold expires on its own too.
+    monkeypatch.setattr(_FakeDDGS, "text_error", RuntimeError("202 Ratelimit"))
+    tools._web_search("paris", timeout = 20, include_images = True)
+    monkeypatch.setattr(
+        tools, "_text_search_failed_at", time.monotonic() - tools._TEXT_SEARCH_FAILURE_HOLD_S - 1
+    )
+    before = len(_FakeDDGS.image_queries)
+    tools._web_search("paris", timeout = 20, include_images = True)
+    time.sleep(0.5)
+    assert len(_FakeDDGS.image_queries) == before + 1

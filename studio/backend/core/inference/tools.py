@@ -133,6 +133,10 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
+# While the text engines are failing (rate limited, blocked, down), the image lookup is not sent beside
+# the text search: its answer would be thrown away and the extra requests add to the rate limiting.
+_TEXT_SEARCH_FAILURE_HOLD_S = 120.0
+_text_search_failed_at: "float | None" = None
 # Not "connection error": DNS failures and refused connections are not resets (#12638).
 _DDGS_RESET_MARKERS = (
     "connection reset",
@@ -16815,6 +16819,16 @@ def _usable_search_results(results, website_policy):
     ]
 
 
+def _note_text_search_outcome(found: bool, error, timeout) -> None:
+    """Holds back early image lookups after a text search the engines failed; an answer, even empty, ends it."""
+    global _text_search_failed_at
+    if found:
+        _text_search_failed_at = None
+    elif error is not None:
+        empty = _search_failure_message(error, timeout) == EMPTY_SEARCH_RESULTS[0]
+        _text_search_failed_at = None if empty else time.monotonic()
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -16879,7 +16893,10 @@ def _web_search(
                 raise RuntimeError("no approved search engine is available.")
             # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
             deadline = time.monotonic() + timeout if timeout else None
-            if include_images:
+            failed_at = _text_search_failed_at
+            if include_images and (
+                failed_at is None or time.monotonic() - failed_at > _TEXT_SEARCH_FAILURE_HOLD_S
+            ):
                 # The image lookup needs nothing from the text results, so its round trip overlaps theirs.
                 sweep = _ImageSweep.start(
                     subjects, effective_query, wanted, timeout, website_policy
@@ -16905,6 +16922,7 @@ def _web_search(
                     break
         except Exception as exc:
             last_error = exc
+        _note_text_search_outcome(bool(results) or rejected_results, last_error, timeout)
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
