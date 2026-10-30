@@ -177,7 +177,7 @@ export function StudioPage(): ReactElement {
   const showHistoryBack = activeTab === "history" && !!selectedHistoryRunId;
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
+    <div data-wallpaper-page-canvas="" className="flex h-full min-h-0 flex-col bg-background">
       <Tabs
         value={activeTab}
         onValueChange={(value) => handleTabChange(value as TrainSubTab)}

@@ -9399,11 +9399,18 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 # because its allowlist permits only multimodal kimi-k3/k2.5/k2.6.
 # Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
 # registry default: no model catalog exists to check the configured endpoint.
-_MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen", "qwencloud", "zai"})
+_MIXED_CATALOG_PROVIDER_TYPES = frozenset(
+    {"huggingface", "openrouter", "qwen", "qwencloud", "zai", "opencode", "opencode_go"}
+)
 
 # Mixed catalogs whose models.dev namespace answers vision per model.
 # Mirrors CATALOG_VISION_PROVIDER_TYPES in external-providers.ts.
-_CATALOG_VISION_NAMESPACES = {"qwencloud": "qwen", "zai": "zai"}
+_CATALOG_VISION_NAMESPACES = {
+    "qwencloud": "qwen",
+    "zai": "zai",
+    "opencode": "opencode",
+    "opencode_go": "opencode_go",
+}
 
 
 def _external_takes_mcp_images(
@@ -24487,7 +24494,11 @@ async def openai_audio_speech(
         max_tokens = body.max_new_tokens or AUDIO_GENERATION_MAX_TOKENS,
         audio_instructions = body.instructions,
         audio_language = body.language,
-        audio_options = body.audio_options,
+        audio_options = (
+            {"speed": body.speed, **(body.audio_options or {})}
+            if body.speed is not None
+            else body.audio_options
+        ),
         seed = body.seed,
     )
     # Redact up front: a failure before relabel would leave a host path on a tunneled row.
@@ -27798,6 +27809,8 @@ def _build_external_messages(
         # Thinking mode with tools answers 400 without it, and ignores it elsewhere
         # (api-docs.deepseek.com/guides/thinking_mode).
         or provider_type == "deepseek"
+        # Tool turns need the thinking back (platform.minimax.io/docs/api-reference/text-openai-api).
+        or provider_type == "minimax"
     )
     result = []
     for msg in messages:
@@ -47589,7 +47602,6 @@ def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
 def _mlx_load_blocker(request: DiffusionLoadRequest) -> Optional[str]:
     from core.inference.diffusion_engine_router import mlx_load_blocker
     return mlx_load_blocker(
-        loras = request.loras,
         component_files = _component_file_kwargs(request),
         transformer_quant = request.transformer_quant,
         text_encoder_quant = request.text_encoder_quant,
@@ -47601,12 +47613,14 @@ def _has_active_loras(loras: Any) -> bool:
     return has_active_loras(loras)
 
 
-def _refuse_mlx_loras(request: DiffusionLoadRequest) -> None:
+def _refuse_mlx_loras(request: DiffusionLoadRequest, fam: Any) -> None:
     # Zero-weight entries are dropped before loading, so only an applied adapter is refused.
-    if _has_active_loras(request.loras):
+    from core.inference.mlx_diffusion_routing import mlx_capabilities
+    name = getattr(fam, "name", None)
+    if _has_active_loras(request.loras) and not mlx_capabilities(name).loras:
         raise HTTPException(
             status_code = 400,
-            detail = "LoRA adapters are not supported on the MLX engine yet.",
+            detail = f"LoRA adapters are not supported on the MLX engine for {name} yet.",
         )
 
 
@@ -47710,7 +47724,7 @@ async def diffusion_download_plan(
             planner = get_sd_cpp_backend()
         elif predicted == ENGINE_MLX:
             _refuse_native_component_files(request)
-            _refuse_mlx_loras(request)
+            _refuse_mlx_loras(request, fam)
             from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
 
             planner = get_mlx_diffusion_backend()
@@ -48072,7 +48086,7 @@ async def load_diffusion_model_gated(
             # The opt-in MLX engine shares the native contract: one GGUF, no dense-quant knobs.
             _refuse_native_component_files(request)
             if pending_name == ENGINE_MLX:
-                _refuse_mlx_loras(request)
+                _refuse_mlx_loras(request, fam)
             # The native engine accepts both knobs for interface parity and ignores them. It was
             # excluded from the gate above so as not to refuse loads that work today, but the
             # loads it "works" for are precisely the silent mismatch this whole change exists to
@@ -48167,7 +48181,7 @@ async def load_diffusion_model_gated(
             if activated in (ENGINE_SD_CPP, ENGINE_MLX):
                 _refuse_native_component_files(request)
                 if activated == ENGINE_MLX:
-                    _refuse_mlx_loras(request)
+                    _refuse_mlx_loras(request, fam)
                 _assert_native_precision_unset(
                     transformer_quant = request.transformer_quant,
                     text_encoder_quant = request.text_encoder_quant,
