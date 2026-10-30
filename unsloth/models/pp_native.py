@@ -897,6 +897,7 @@ class PipelineParallel:
         self._global_ranks = [dist.get_global_rank(self.group, i) for i in range(self.num_stages)]
         self._shapes = collections.OrderedDict()
         self._scaler = None
+        self._step_scaler = None  # the enabled GradScaler of the last step (clip_grad_norm_ checks it)
         self._mb_losses = []
         self._loss_multiplier = 1
         self.dp_mesh = None  # set by shard_model (FSDP2 over the data parallel dimension)
@@ -1121,6 +1122,8 @@ class PipelineParallel:
                 torch.zeros((), device = device)
             )  # every stage's scaler holds the scale (unscale_)
             self._scaler = scaler
+            self._bind_scaler(scaler)
+        self._step_scaler = scaler if scaler is not None and scaler.is_enabled() else None
         self._mb_losses = []
         args = (input_ids.to(device),) if self.is_first else ()
         target = step_kwargs["labels"] if self.is_last else None
@@ -1202,6 +1205,7 @@ class PipelineParallel:
         divided by the ranks holding a copy of it, summed over every rank)."""
         import torch.distributed as dist
 
+        self._check_unscaled()
         params = self.parameters() if parameters is None else list(parameters)
         params = [p for p in params if p.grad is not None]
         device = self.device
@@ -1227,11 +1231,52 @@ class PipelineParallel:
     def unscale_(self, scaler, optimizer):
         """scaler.unscale_(optimizer), then found_inf is the MAX over every stage, so all stages skip the
         same steps (scaler.step / scaler.update after this)."""
-        import torch.distributed as dist
-
         scaler.unscale_(optimizer)
         if not scaler.is_enabled():
             return
+        self._agree_found_inf(scaler, optimizer)
+
+    def _bind_scaler(self, scaler):
+        """Make scaler.unscale_ agree over every stage too: the plain torch AMP loop calls
+        scaler.unscale_(optimizer) before clipping, or only scaler.step(optimizer), which unscales itself.
+        Either way a stage-local found_inf would let one stage step while another skips."""
+        import weakref
+
+        if getattr(scaler, "_unsloth_pp_agree", None) is self:
+            return
+        unscale = type(scaler).unscale_.__get__(scaler)
+        pipeline = weakref.ref(self)
+
+        def unscale_(optimizer):
+            unscale(optimizer)
+            pp = pipeline()
+            if pp is not None and scaler.is_enabled():
+                pp._agree_found_inf(scaler, optimizer)
+
+        scaler.unscale_ = unscale_
+        scaler._unsloth_pp_agree = self
+
+    def _check_unscaled(self):
+        """clip_grad_norm_ on gradients still multiplied by the loss scale clips the wrong norm."""
+        scaler = self._step_scaler
+        if scaler is None or not scaler.is_enabled():
+            return
+        try:
+            from torch.amp.grad_scaler import OptState
+        except ImportError:
+            return
+        states = getattr(scaler, "_per_optimizer_states", {}) or {}
+        if any(state.get("stage") is OptState.UNSCALED for state in states.values()):
+            return
+        raise ValueError(
+            "Unsloth: PipelineParallel.clip_grad_norm_ got gradients still multiplied by the float16 "
+            "loss scale. Call scaler.unscale_(optimizer) (or pp.unscale_(scaler, optimizer)) first, as "
+            "torch.amp requires before clipping."
+        )
+
+    def _agree_found_inf(self, scaler, optimizer):
+        import torch.distributed as dist
+
         state = scaler._per_optimizer_states[id(optimizer)]
         found = state["found_inf_per_device"]
         device = self.device
