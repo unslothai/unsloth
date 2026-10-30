@@ -403,12 +403,17 @@ def test_cp_from_the_config_beside_a_tp_launch_is_refused_with_the_layout_hint()
         (4, "tp=2,cp=2", 2, 2, "cp 2 x tp 2"),
         (8, "tp=2,cp=2", 2, 4, "dp 2 (DDP) x cp 2 x tp 2"),
         (8, "dp=2,tp=2,cp=2,fsdp=1", 2, 4, "dp 2 (native FSDP2) x cp 2 x tp 2"),
+        (8, "dp=2,tp=2,pp=1,cp=2,fsdp=1,cp_backend=ulysses", 2, 4, "dp 2 (native FSDP2) x cp 2 x tp 2"),
     ],
-    ids = ["cp2_tp2", "dp2_cp2_tp2", "fsdp2_cp2_tp2"],
+    ids = ["cp2_tp2", "dp2_cp2_tp2", "fsdp2_cp2_tp2", "launcher_form"],
 )
 def test_cp_x_tp_from_unsloth_parallel_matches_one_process(world, flag, bs, ref_bs, layout):
     ref = _ref(ref_bs)
-    results = _spawn("train", world, {"UNSLOTH_PARALLEL": flag}, bs = bs, cp = 2, sft_cp = False)
+    env = {"UNSLOTH_PARALLEL": flag}
+    if flag.startswith("dp=2,tp=2,pp=1"):
+        # What the notebooks launcher exports: every axis, plus agreeing single-axis variables.
+        env.update(UNSLOTH_FSDP2 = "1", UNSLOTH_TP_SIZE = "2", UNSLOTH_CP_SIZE = "2", UNSLOTH_PP_SIZE = "1")
+    results = _spawn("train", world, env, bs = bs, cp = 2, sft_cp = False)
     for rank, res in enumerate(results):
         assert "error" not in res, (rank, res.get("trace"))
         assert res["layout"] == layout and res["is_tp"], res["layout"]

@@ -175,11 +175,8 @@ def parse_parallel_spec(raw, source = FLAG):
         spec["dp"] = size
         if size > 1:
             spec["fsdp"] = fsdp
-    if "cp_backend" in spec and spec.get("cp", 1) == 1:
-        raise ValueError(f"Unsloth: {source}={raw!r}: cp_backend needs cp > 1.")
-    for key in ("pp_schedule", "pp_microbatches"):
-        if key in spec and spec.get("pp", 1) == 1:
-            raise ValueError(f"Unsloth: {source}={raw!r}: {key} needs pp > 1.")
+    # cp_backend with cp = 1 and pp_schedule / pp_microbatches with pp = 1 are accepted and unused: a launcher
+    # writes every axis, and may pass the user's backend / schedule through for a layout without that axis.
     return spec
 
 

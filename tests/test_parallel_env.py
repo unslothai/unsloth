@@ -124,8 +124,6 @@ def test_flag_parses_every_key_and_fills_dp(clean_env):
         ("tp", "not key=value"),
         ("xp=2", "unknown key"),
         ("tp=2,tp=2", "twice"),
-        ("cp_backend=ring", "needs cp > 1"),
-        ("pp_schedule=1f1b", "needs pp > 1"),
         ("pp=2,pp_schedule=interleaved", "interleaved virtual stages are not supported yet"),
         ("cp=2,cp_backend=tree", "must be one of"),
         ("fsdp=maybe", "must be 0 or 1"),
@@ -762,3 +760,68 @@ def test_cp_with_native_fsdp2_is_a_supported_cell():
 
     status, cell = caps.cell_status(_q(dp = 2, cp = 2, fsdp2 = True, cp_backend = "ulysses"))
     assert status == "supported" and "native FSDP2" in cell.name
+
+
+
+# The notebooks launcher (fsdp2_scripts, M4) writes every axis and an agreeing UNSLOTH_FSDP2.
+
+LAUNCHER_KEYS = ("dp", "tp", "pp", "cp", "fsdp", "cp_backend", "pp_schedule")
+
+
+@pytest.mark.parametrize(
+    "flag, world, legacy",
+    [
+        ("dp=2,tp=1,pp=1,cp=1,fsdp=1", "2", {"UNSLOTH_FSDP2": "1"}),
+        ("dp=2,tp=1,pp=1,cp=1,fsdp=0", "2", {"UNSLOTH_FSDP2": "0"}),
+        ("dp=1,tp=2,pp=1,cp=1,fsdp=0", "2", {"UNSLOTH_FSDP2": "0", "UNSLOTH_TP_SIZE": "2"}),
+        ("dp=1,tp=1,pp=2,cp=1,fsdp=0,pp_schedule=1f1b", "2",
+         {"UNSLOTH_FSDP2": "0", "UNSLOTH_PP_SIZE": "2", "UNSLOTH_PP_SCHEDULE": "1F1B"}),
+        ("dp=1,tp=1,pp=1,cp=2,fsdp=1,cp_backend=ulysses", "2",
+         {"UNSLOTH_FSDP2": "true", "UNSLOTH_CP_SIZE": "2", "UNSLOTH_CP_BACKEND": "Ulysses"}),
+        ("dp=2,tp=2,pp=2,cp=2,fsdp=1", "16",
+         {"UNSLOTH_FSDP2": "1", "UNSLOTH_TP_SIZE": "2", "UNSLOTH_PP_SIZE": "2", "UNSLOTH_CP_SIZE": "2"}),
+        ("dp=2,tp=1,pp=1,cp=1,fsdp=0,cp_backend=auto", "2", {"UNSLOTH_TP_SIZE": "1", "UNSLOTH_CP_SIZE": "1"}),
+    ],
+)
+def test_launcher_flag_with_agreeing_legacy_variables_is_accepted(clean_env, flag, world, legacy):
+    import os
+
+    from unsloth import parallel_env as pe
+
+    clean_env.setenv("WORLD_SIZE", world)
+    clean_env.setenv("UNSLOTH_PARALLEL", flag)
+    for key, value in legacy.items():
+        clean_env.setenv(key, value)
+    spec = pe.apply_parallel_env()
+    assert set(spec) <= set(LAUNCHER_KEYS)
+    assert pe.apply_parallel_env() == spec  # idempotent: the second read agrees with what the first wrote
+    fsdp = os.environ.get("UNSLOTH_FSDP2")
+    assert fsdp in ("1", "0", "true") and (fsdp in ("1", "true")) == spec["fsdp"]
+
+
+@pytest.mark.parametrize(
+    "flag, legacy, name",
+    [
+        ("dp=2,tp=1,pp=1,cp=1,fsdp=1", {"UNSLOTH_FSDP2": "0"}, "UNSLOTH_FSDP2"),
+        ("dp=1,tp=2,pp=1,cp=1,fsdp=0", {"UNSLOTH_TP_SIZE": "4"}, "UNSLOTH_TP_SIZE"),
+        ("dp=1,tp=1,pp=1,cp=2,fsdp=0", {"UNSLOTH_CP_SIZE": "4"}, "UNSLOTH_CP_SIZE"),
+        ("dp=1,tp=1,pp=1,cp=2,fsdp=0,cp_backend=ring", {"UNSLOTH_CP_BACKEND": "ulysses"}, "UNSLOTH_CP_BACKEND"),
+        ("dp=2,tp=1,pp=1,cp=1,fsdp=0", {"UNSLOTH_PP_SIZE": "2"}, "UNSLOTH_PP_SIZE"),
+    ],
+)
+def test_launcher_flag_with_a_disagreeing_legacy_variable_is_refused(clean_env, flag, legacy, name):
+    from unsloth import parallel_env as pe
+
+    clean_env.setenv("WORLD_SIZE", "2")
+    clean_env.setenv("UNSLOTH_PARALLEL", flag)
+    for key, value in legacy.items():
+        clean_env.setenv(key, value)
+    with pytest.raises(ValueError, match = f"{name}=.*asks for something else"):
+        pe.apply_parallel_env()
+
+
+def test_the_launcher_keys_are_accepted_and_ep_is_reserved():
+    from unsloth import parallel_env as pe
+
+    assert set(LAUNCHER_KEYS) <= set(pe._KEYS)
+    assert {"ep", "efsdp"} <= set(pe._RESERVED)
