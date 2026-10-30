@@ -9396,11 +9396,18 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 # because its allowlist permits only multimodal kimi-k3/k2.5/k2.6.
 # Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
 # registry default: no model catalog exists to check the configured endpoint.
-_MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen", "qwencloud", "zai"})
+_MIXED_CATALOG_PROVIDER_TYPES = frozenset(
+    {"huggingface", "openrouter", "qwen", "qwencloud", "zai", "opencode", "opencode_go"}
+)
 
 # Mixed catalogs whose models.dev namespace answers vision per model.
 # Mirrors CATALOG_VISION_PROVIDER_TYPES in external-providers.ts.
-_CATALOG_VISION_NAMESPACES = {"qwencloud": "qwen", "zai": "zai"}
+_CATALOG_VISION_NAMESPACES = {
+    "qwencloud": "qwen",
+    "zai": "zai",
+    "opencode": "opencode",
+    "opencode_go": "opencode_go",
+}
 
 
 def _external_takes_mcp_images(
@@ -15964,6 +15971,8 @@ async def _preflight_native_audio_placement(
             load_in_4bit = False,
             max_seq_length = request.max_seq_length,
             required_override_gb = required_gb,
+            # Past one card, fallback_all lets the branch below weigh every card after the handoff.
+            max_gpus = 1,
         )
         post_handoff_free_gb = None
         if required_gb is None:
@@ -15983,7 +15992,11 @@ async def _preflight_native_audio_placement(
             if not fitting:
                 refusal = ValueError(
                     "No single GPU has enough free memory for this native audio model. "
-                    "Select a GPU with enough free memory and try again."
+                    + (
+                        "Free GPU memory and try again."
+                        if audio_type == "minimax_music3"
+                        else "Free GPU memory, or load it into CPU RAM, and try again."
+                    )
                 )
                 if audio_type in AUDIO_CPP_AUDIO_TYPES and audio_cpp_model is not None:
                     from core.inference.audio_cpp_failures import (
@@ -24286,7 +24299,11 @@ async def openai_audio_speech(
         max_tokens = body.max_new_tokens or AUDIO_GENERATION_MAX_TOKENS,
         audio_instructions = body.instructions,
         audio_language = body.language,
-        audio_options = body.audio_options,
+        audio_options = (
+            {"speed": body.speed, **(body.audio_options or {})}
+            if body.speed is not None
+            else body.audio_options
+        ),
         seed = body.seed,
     )
     # Redact up front: a failure before relabel would leave a host path on a tunneled row.
@@ -27597,6 +27614,8 @@ def _build_external_messages(
         # Thinking mode with tools answers 400 without it, and ignores it elsewhere
         # (api-docs.deepseek.com/guides/thinking_mode).
         or provider_type == "deepseek"
+        # Tool turns need the thinking back (platform.minimax.io/docs/api-reference/text-openai-api).
+        or provider_type == "minimax"
     )
     result = []
     for msg in messages:
@@ -34611,9 +34630,22 @@ async def produce_openai_chat_completions(
 
                 # A cancelled stream must not heal incomplete markup into a tool the user cancelled.
                 _cancelled = cancel_event.is_set()
+                # Request-scoped holder so concurrent streams cannot read each other's stats.
+                _stats = stats_holder.get("stats")
+                # A cancelled turn is never 'length'.
+                _finish = (
+                    "stop"
+                    if _cancelled
+                    else _safetensors_finish_reason(
+                        _stats,
+                        payload,
+                        is_mlx = bool(_sf_model_info.get("is_mlx", False)),
+                        durable_run = not cancel_on_disconnect,
+                    )
+                )
                 if healer is not None and not _cancelled:
                     for line in _sf_heal_events_to_sse(
-                        healer.finalize(),
+                        healer.finalize(promote = _finish != "length"),
                         completion_id,
                         created,
                         model_name,
@@ -34623,23 +34655,9 @@ async def produce_openai_chat_completions(
                     ):
                         yield line
 
-                # Request-scoped holder so concurrent streams cannot read each other's stats.
-                _stats = stats_holder.get("stats")
-                # A healed tool call wins; a cancelled turn is never 'length'.
-                _finish = (
-                    "tool_calls"
-                    if (healer is not None and not _cancelled and healer.healed)
-                    else (
-                        "stop"
-                        if _cancelled
-                        else _safetensors_finish_reason(
-                            _stats,
-                            payload,
-                            is_mlx = bool(_sf_model_info.get("is_mlx", False)),
-                            durable_run = not cancel_on_disconnect,
-                        )
-                    )
-                )
+                # Truncation wins over a healed call so the client still sees the cut.
+                if healer is not None and not _cancelled and healer.healed and _finish != "length":
+                    _finish = "tool_calls"
                 yield _chat_final_chunk(completion_id, created, model_name, _finish)
                 # Outside the stats block: a run with unknown token count reports no stats.
                 api_monitor.set_perf(monitor_id, stop_reason = _finish)
@@ -34858,8 +34876,12 @@ async def produce_openai_chat_completions(
                     else _stats_finish_reason(stats_holder.get("stats"))
                 )
                 if _sf_heal:
-                    if heal_openai_message(_msg, _sf_heal, _sf_healing_tools):
-                        _finish = "tool_calls"
+                    # Truncation wins: a call open at the cut stays text and the reason stays 'length'.
+                    if heal_openai_message(
+                        _msg, _sf_heal, _sf_healing_tools, allow_incomplete = _finish != "length"
+                    ):
+                        if _finish != "length":
+                            _finish = "tool_calls"
                     elif nudge_enabled(
                         payload.nudge_tool_calls,
                         response_format = _sf_response_format,
@@ -34908,11 +34930,17 @@ async def produce_openai_chat_completions(
                                 if _retry_reasoning:
                                     retry_msg["reasoning_content"] = _retry_reasoning
                                 # The winning attempt's prompt is reported; completions of both are summed.
-                                if heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools):
+                                _retry_finish = _stats_finish_reason(stats_holder.get("stats"))
+                                if heal_openai_message(
+                                    retry_msg,
+                                    _sf_heal,
+                                    _sf_healing_tools,
+                                    allow_incomplete = _retry_finish != "length",
+                                ):
                                     _visible_text, _msg, _finish = (
                                         _retry_visible,
                                         retry_msg,
-                                        "tool_calls",
+                                        "length" if _retry_finish == "length" else "tool_calls",
                                     )
                                     stats_holder["stats"] = _summed_tool_loop_stats(
                                         _first_stats, stats_holder.get("stats")
@@ -39557,7 +39585,9 @@ class _ResponsesStreamTranslator:
         # Heal held residue (an unclosed tool block) before the trailing text, keeping healer order.
         healer = self.healer
         if healer is not None:
-            events = (healer.feed(final_visible) if final_visible else []) + healer.finalize()
+            events = (healer.feed(final_visible) if final_visible else []) + healer.finalize(
+                promote = self.stream_finish_reason != "length"
+            )
             final_visible = ""
             if events:
                 # Same as the in-loop stamp: this is where the client first sees
@@ -45186,7 +45216,11 @@ def _anthropic_message_from_openai_completion(
 
     healing_active = bool(allowed_tools)
     healed_events = (
-        heal_openai_message_events(message, allowed_tools, openai_tools) if healing_active else None
+        heal_openai_message_events(
+            message, allowed_tools, openai_tools, allow_incomplete = finish_reason != "length"
+        )
+        if healing_active
+        else None
     )
 
     content_blocks = []
@@ -45230,8 +45264,10 @@ def _anthropic_message_from_openai_completion(
             # Keep unpromoted bytes when healing is active; legacy stripping is only for opted-out
             # or no-client-tool requests. The protected helper preserves <think> rehearsal and
             # balanced [TOOL_CALLS] prose, gated on the declared tools so an inactive
-            # NAME[ARGS]{...} example is kept.
-            if not healing_active and response_format is None:
+            # NAME[ARGS]{...} example is kept. A client-tool reply cut at the limit keeps its unfinished
+            # call: the in-process route already healed it, and that text is all the client gets of it.
+            keep_cut_call = openai_tools and finish_reason == "length"
+            if not healing_active and response_format is None and not keep_cut_call:
                 text = _strip_tool_xml_for_display(
                     text,
                     auto_heal_tool_calls = True,
@@ -46373,14 +46409,14 @@ async def _openai_passthrough_stream_admitted(
                     if not finish:
                         return [raw_line]
                     # On the finish chunk, heal the residue one last time and rewrite "stop" to "tool_calls" if healed.
-                    lines = _healer_sse_lines(healer.finalize())
+                    lines = _healer_sse_lines(healer.finalize(promote = finish != "length"))
                     if healer.healed and finish == "stop":
                         choice["finish_reason"] = "tool_calls"
                         return lines + ["data: " + json.dumps(chunk_data, ensure_ascii = False)]
                     return lines + [raw_line]
                 events = healer.feed(content)
                 if finish:
-                    events += healer.finalize()
+                    events += healer.finalize(promote = finish != "length")
                 if not finish and events == [("text", content)]:
                     # Nothing held or promoted: the healer passed the chunk whole, so keep the verbatim upstream bytes.
                     return [raw_line]
@@ -47044,9 +47080,14 @@ async def _openai_passthrough_non_streaming_upstream(
         if not isinstance(msg, dict):
             continue
 
-        # Promote text-form tool calls (declared tools only). Truncation wins: a call cut at max_tokens
-        # keeps finish_reason='length'.
-        if _allowed_tools and heal_openai_message(msg, _allowed_tools, body.get("tools")):
+        # Promote text-form tool calls (declared tools only). Truncation wins: a reply cut at max_tokens
+        # keeps finish_reason='length', and a call still open at the cut stays text.
+        if _allowed_tools and heal_openai_message(
+            msg,
+            _allowed_tools,
+            body.get("tools"),
+            allow_incomplete = choice.get("finish_reason") != "length",
+        ):
             if choice.get("finish_reason") == "stop":
                 choice["finish_reason"] = "tool_calls"
             changed = True
@@ -47391,7 +47432,6 @@ def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
 def _mlx_load_blocker(request: DiffusionLoadRequest) -> Optional[str]:
     from core.inference.diffusion_engine_router import mlx_load_blocker
     return mlx_load_blocker(
-        loras = request.loras,
         component_files = _component_file_kwargs(request),
         transformer_quant = request.transformer_quant,
         text_encoder_quant = request.text_encoder_quant,
@@ -47403,12 +47443,14 @@ def _has_active_loras(loras: Any) -> bool:
     return has_active_loras(loras)
 
 
-def _refuse_mlx_loras(request: DiffusionLoadRequest) -> None:
+def _refuse_mlx_loras(request: DiffusionLoadRequest, fam: Any) -> None:
     # Zero-weight entries are dropped before loading, so only an applied adapter is refused.
-    if _has_active_loras(request.loras):
+    from core.inference.mlx_diffusion_routing import mlx_capabilities
+    name = getattr(fam, "name", None)
+    if _has_active_loras(request.loras) and not mlx_capabilities(name).loras:
         raise HTTPException(
             status_code = 400,
-            detail = "LoRA adapters are not supported on the MLX engine yet.",
+            detail = f"LoRA adapters are not supported on the MLX engine for {name} yet.",
         )
 
 
@@ -47512,7 +47554,7 @@ async def diffusion_download_plan(
             planner = get_sd_cpp_backend()
         elif predicted == ENGINE_MLX:
             _refuse_native_component_files(request)
-            _refuse_mlx_loras(request)
+            _refuse_mlx_loras(request, fam)
             from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
 
             planner = get_mlx_diffusion_backend()
@@ -47874,7 +47916,7 @@ async def load_diffusion_model_gated(
             # The opt-in MLX engine shares the native contract: one GGUF, no dense-quant knobs.
             _refuse_native_component_files(request)
             if pending_name == ENGINE_MLX:
-                _refuse_mlx_loras(request)
+                _refuse_mlx_loras(request, fam)
             # The native engine accepts both knobs for interface parity and ignores them. It was
             # excluded from the gate above so as not to refuse loads that work today, but the
             # loads it "works" for are precisely the silent mismatch this whole change exists to
@@ -47969,7 +48011,7 @@ async def load_diffusion_model_gated(
             if activated in (ENGINE_SD_CPP, ENGINE_MLX):
                 _refuse_native_component_files(request)
                 if activated == ENGINE_MLX:
-                    _refuse_mlx_loras(request)
+                    _refuse_mlx_loras(request, fam)
                 _assert_native_precision_unset(
                     transformer_quant = request.transformer_quant,
                     text_encoder_quant = request.text_encoder_quant,

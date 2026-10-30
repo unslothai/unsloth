@@ -177,7 +177,7 @@ def test_every_prequant_container_installs_the_dispatch(monkeypatch, container):
     from core.inference import prequant_safetensors as ps
 
     calls = []
-    monkeypatch.setattr(us, "install", lambda logger = None: calls.append(container) or True)
+    monkeypatch.setattr(us, "install", lambda logger = None, **kw: calls.append(container) or True)
     monkeypatch.setattr(ps, "is_safetensors_checkpoint", lambda path: container == "safetensors")
     monkeypatch.setattr(ps, "load_prequant_safetensors", lambda path, mmap = False: {"format": "fp8"})
     monkeypatch.setattr(dp, "_torch_load_prequant", lambda path, **kwargs: {"format": "fp8"})
@@ -381,3 +381,93 @@ def test_installed_dispatcher_keys_studio_compile_bundles(monkeypatch):
     assert cc.cache_key(plain, {}) != cc.cache_key(tagged, {})
     us.uninstall()
     assert cc.environment_fingerprint() == plain
+
+
+def test_auto_never_installs_for_fast_accumulate(monkeypatch):
+    # Installing at fast accumulate would only split every later compile's cache key.
+    import torch.compiler.config as ccfg
+
+    monkeypatch.setattr(ccfg, "cache_key_tag", "")
+    _caps(monkeypatch, {0: (8, 9)})
+    before = f8t.addmm_float8_unwrapped_inference
+    assert us.install(fast_accum = True) is False
+    assert f8t.addmm_float8_unwrapped_inference is before and ccfg.cache_key_tag == ""
+    assert us.install(fast_accum = False) is True
+    us.uninstall()
+    assert us.install(fast_accum = None) is True
+    us.uninstall()
+    monkeypatch.setenv(us.UNIT_SCALE_ENV, "1")
+    assert us.install(fast_accum = True) is True
+
+
+def test_fp8_quant_config_installs_only_for_precise_accumulate(monkeypatch):
+    from core.inference import diffusion_transformer_quant as tq
+
+    _caps(monkeypatch, {0: (8, 9)})
+    tq._make_quant_config(tq.TQ_FP8)
+    assert us.stats()["installed"] is False
+    tq._make_quant_config(tq.TQ_FP8, fast_accum = True)
+    assert us.stats()["installed"] is False
+    tq._make_quant_config(tq.TQ_FP8, fast_accum = False)
+    assert us.stats()["installed"] is True
+
+
+@pytest.mark.parametrize(
+    "metadata, installs",
+    [
+        ({"scheme": "int8"}, False),
+        ({"scheme": "fp8", "fast_accum": True}, False),
+        ({"scheme": "fp8", "fast_accum": False}, True),
+        ({"scheme": "nvfp4"}, True),
+        ({}, True),
+    ],
+)
+def test_prequant_checkpoint_installs_only_when_its_fp8_layers_can_engage(
+    monkeypatch, metadata, installs
+):
+    from core.inference import diffusion_prequant as dp
+    from core.inference import prequant_safetensors as ps
+
+    _caps(monkeypatch, {0: (8, 9)})
+    ckpt = {"format": dp.PREQUANT_FORMAT, "state_dict": {}, "metadata": metadata}
+    monkeypatch.setattr(ps, "is_safetensors_checkpoint", lambda path: True)
+    monkeypatch.setattr(ps, "load_prequant_safetensors", lambda path, mmap = False: ckpt)
+    assert dp._load_prequant_checkpoint("model.safetensors") is ckpt
+    assert us.stats()["installed"] is installs
+
+
+def test_every_off_word_of_the_compile_cache_key_turns_the_dispatcher_off(monkeypatch):
+    from core.inference import diffusion_compile_cache as cc
+
+    _caps(monkeypatch, {0: (8, 9)})
+    for word in cc._OFF_WORDS:
+        monkeypatch.setenv(us.UNIT_SCALE_ENV, word.upper())
+        assert cc.graph_switches().get(us.UNIT_SCALE_ENV) == "off"
+        assert us._mode() == "off" and us.install(fast_accum = False) is False
+    for word in cc._ON_WORDS:
+        monkeypatch.setenv(us.UNIT_SCALE_ENV, word)
+        assert us._mode() == "force"
+
+
+@pytest.mark.parametrize("bias", [False, True])
+def test_eager_epilogue_writes_into_the_accumulator_bitwise_as_before(monkeypatch, bias):
+    produced = []
+
+    def scaled_mm(*args, **kwargs):
+        acc = _emulated_scaled_mm(*args, **kwargs)
+        produced.append(acc)
+        return acc
+
+    fn = _install_emulated(monkeypatch, scaled_mm)
+    monkeypatch.setattr(us, "_EAGER_EPILOGUE_ELEMS", 48 * 300)
+    a, sa, b, sb = _operands(2048)
+    bv = torch.randn(48).to(torch.bfloat16) if bias else None
+    got = fn(_Dev(a), sa, b, sb, torch.bfloat16, bias = bv)
+    acc = produced[-1]
+    assert got.data_ptr() == acc.data_ptr()
+    unit = _emulated_scaled_mm(a, b, torch.tensor(1.0), torch.tensor(1.0), torch.bfloat16)
+    want = unit * sa.float()
+    want.mul_(sb.float())
+    if bv is not None:
+        want.add_(bv.float())
+    assert torch.equal(got, want.to(torch.bfloat16))
