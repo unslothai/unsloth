@@ -211,7 +211,12 @@ function NoteFrameImpl({ id, data, selected }: NodeProps<RfNode>) {
               <p className="whitespace-pre-wrap text-xs">{note.text}</p>
             }
           >
-            <MarkdownPreview markdown={note.text} plain={true} />
+            {/* Not its own scroller: plain text takes no pointer, so the note body has to be the one that scrolls. */}
+            <MarkdownPreview
+              markdown={note.text}
+              plain={true}
+              className="h-auto overflow-visible"
+            />
           </Suspense>
         </BaseNodeContent>
       )}

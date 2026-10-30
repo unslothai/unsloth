@@ -50,3 +50,10 @@ test("the canvas decides in the capture phase, and React Flow's nowheel class no
   assert.match(canvas, /onWheelCapture=\{\(event\) => \{[\s\S]{0,300}wheelScrollsInside\([\s\S]{0,200}event\.stopPropagation\(\)/);
   assert.match(canvas, /noWheelClassName="flows-wheel-unused"/);
 });
+
+test("a note's text is laid out in the note body, so the body is the box the wheel scrolls", () => {
+  const frames = readSrc("features/flows/editor/frame-nodes.tsx");
+  // Plain markdown takes no pointer; as its own h-full scroller it could never be wheeled.
+  assert.match(frames, /<MarkdownPreview\s*markdown=\{note\.text\}\s*plain=\{true\}\s*className="h-auto overflow-visible"/);
+  assert.match(frames, /<BaseNodeContent className="[^"]*h-full overflow-y-auto/);
+});
