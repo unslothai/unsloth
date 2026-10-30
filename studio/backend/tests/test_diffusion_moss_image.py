@@ -596,9 +596,6 @@ def test_step_callback_latents_are_bchw(pipelines):
     assert shapes == [(1, 128, 2, 3)] * 2
 
 
-# Per-checkpoint negative-branch skip (reference workflows): SFT none, Base block 22 for sigma-percent 0 .. 0.5.
-
-
 @pytest.mark.parametrize(
     "identity, expected",
     [
@@ -641,7 +638,7 @@ def _uncond_skips(
     schedule = "sgm_uniform",
     **kwargs,
 ):
-    """``skip_layers`` of every negative-branch forward over a ``steps`` render (positive calls carry none)."""
+    """Negative-branch ``skip_layers`` per step."""
     import torch
 
     pipe = moss.MOSSImagePipeline(transformer, moss.MOSSImageScheduler(sigma_schedule = schedule))
@@ -651,7 +648,6 @@ def _uncond_skips(
     calls = []
 
     def spy(latents, *args, **kw):
-        # Only the call pattern matters here: a zero prediction keeps the 25-step renders cheap on CPU.
         calls.append(kw.get("skip_layers"))
         return (torch.zeros_like(latents),)
 
@@ -677,7 +673,6 @@ def _uncond_skips(
 def test_base_skips_block_22_for_the_first_half_of_sigma(
     moss, transformers_pair, monkeypatch, schedule
 ):
-    """25 steps: the reference workflow's sigma >= sigma(0.5) window covers steps 0 .. 12 (13 of 25)."""
     _, ours = transformers_pair
     monkeypatch.delenv(moss.REFERENCE_SKIP_ENV, raising = False)
     skips = _uncond_skips(moss, ours, monkeypatch, 25, "OpenMOSS-Team/MOSS-Image-Base", schedule)
@@ -690,7 +685,6 @@ def test_sft_skips_nothing_and_unknown_pipe_keeps_the_official_default(
     _, ours = transformers_pair
     monkeypatch.delenv(moss.REFERENCE_SKIP_ENV, raising = False)
     assert _uncond_skips(moss, ours, monkeypatch, 4, "OpenMOSS-Team/MOSS-Image-SFT") == [None] * 4
-    # Built without the loader (the reference-parity path): block 22 on every step, as the official pipeline.
     assert _uncond_skips(moss, ours, monkeypatch, 4, None) == [(22,)] * 4
 
 
