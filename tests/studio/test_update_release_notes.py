@@ -952,7 +952,7 @@ def _shown_at(src: str, label: str) -> int:
 
 
 def test_a_label_is_found_literally_or_through_the_catalog():
-    assert _shown_at('<b>Show release notes</b>', "Show release notes") == 3
+    assert _shown_at("<b>Show release notes</b>", "Show release notes") == 3
     key = 'x {t("desktopUpdate.banner.showNotes")}'
     assert _shown_at(key, "Show release notes") == key.index("t(")
     with pytest.raises(ValueError):
