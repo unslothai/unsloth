@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""studio_generation(): the scope Studio's inference worker enters around its chat generate(). With
-UNSLOTH_DECODE_CUDA_GRAPHS unset it turns CUDA-graph decode on for that thread on NVIDIA CUDA, like
-rl_generation(); =0 still wins, other accelerators stay eager, and plain generate() outside it is
-unchanged. The decision tests load _decode_graphs.py by file path (importing unsloth needs an
-accelerator); the generate test needs CUDA."""
+"""studio_generation() turns graphed decode on per thread on NVIDIA CUDA; =0 wins, others stay eager.
+Loads _decode_graphs.py by file path (importing unsloth needs an accelerator)."""
 
 import importlib.util
 import threading
@@ -125,7 +122,6 @@ def test_studio_generate_graphed_plain_generate_eager():
         graphed = gen()
     assert replays() == 24 - 2 and G.stats(model)["disabled"] is None
     assert torch.equal(eager[0], graphed[0]) and torch.equal(eager[1], graphed[1])
-    # Plain generate() after the scope stays eager.
     assert torch.equal(gen()[1], eager[1]) and replays() == 24 - 2
     G.release_for_training(model)
     assert G.stats(model)["graphs"] == 0

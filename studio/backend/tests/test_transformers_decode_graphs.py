@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The transformers chat backend runs generate() with CUDA-graph decode on by default (NVIDIA CUDA
-only, UNSLOTH_DECODE_CUDA_GRAPHS=0 opts out), and unloading a model frees its graphs and decode
-buffers. The real unsloth/models/_decode_graphs.py is loaded by file path: importing unsloth needs
-an accelerator, and its top level is torch and the standard library only."""
+"""Studio chat generate() graphs decode by default; unload frees graphs. _decode_graphs.py is
+loaded by file path since importing unsloth needs an accelerator."""
 
 import importlib
 import importlib.util
@@ -62,8 +60,7 @@ ENV = "UNSLOTH_DECODE_CUDA_GRAPHS"
 
 @pytest.fixture
 def graphs(monkeypatch):
-    """The real decode-graph module, reachable as unsloth.models._decode_graphs, with the runtime
-    decision (no programmatic override, variable unset) on a spoofed NVIDIA CUDA host."""
+    """Real _decode_graphs module with the default decision on a spoofed NVIDIA CUDA host."""
     spec = importlib.util.spec_from_file_location("_studio_decode_graphs", _DECODE_GRAPHS)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -109,7 +106,6 @@ class _Model:
         self.seen = []
 
     def generate(self, streamer, max_new_tokens, **_kwargs):
-        # What unsloth_fast_generate decides on the thread generate() runs on.
         self.seen.append(self.graphs.enabled())
         ids = torch.tensor([[0, 2, 3]])
         streamer.put(ids[:, :1])

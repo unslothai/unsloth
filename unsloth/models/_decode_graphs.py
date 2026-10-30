@@ -94,15 +94,12 @@ class rl_generation:
         return False
 
 
-# Studio's default is Linux / WSL only: graph capture under native Windows CUDA drivers is unverified
-# there (=1 still forces graphs on).
+# Native Windows CUDA capture is unverified: Studio default off there (=1 still forces).
 _STUDIO_DEFAULT_OK = sys.platform != "win32"
 
 
 class studio_generation(rl_generation):
-    """Scope of a generate() call in Studio's inference worker (per thread): graphs default on inside
-    it, as in RL rollouts. That process only serves inference, so graphs and buffers live until the
-    model is unloaded (release()). Plain model.generate() elsewhere stays eager by default."""
+    """Per-thread scope for Studio's chat generate(): graphs default on, freed on unload (release())."""
 
     __slots__ = ("_entered",)
 
@@ -706,18 +703,14 @@ def _capture(
     step = _Step(st)
     try:
         with torch.cuda.stream(stream), no_cache():
-            # Warmup: Triton JIT, cuBLAS workspaces, lazily built RoPE rows / LoRA casts. It writes this
-            # step's K / V into its cache slot, the same values the replay writes again.
+            # Warmup (JIT, workspaces, lazy RoPE / LoRA casts); its K / V write equals the replay's.
             _run_step(model, fast_forward_inference, logits_fn, s, st, past_key_values)
             stream.synchronize()
 
             def split(fn):
-                # Close the segment, run the attention core once (its output address is what the next
-                # segment reads), open the next segment.
+                # The next segment reads the attention core's output address.
                 _end(step.segments[-1])
-                # Two calls with the first result alive: the same address means the core writes into a
-                # persistent buffer (bsz == 1 writes the query buffer); else (SDPA allocates) its
-                # result is copied into a fixed buffer.
+                # Same address on two calls = persistent output buffer; else (SDPA) copy to a fixed one.
                 out = fn()
                 fixed = out if fn().data_ptr() == out.data_ptr() else torch.empty_like(out)
                 step.cores.append(fn if fixed is out else (lambda: fixed.copy_(fn())))
