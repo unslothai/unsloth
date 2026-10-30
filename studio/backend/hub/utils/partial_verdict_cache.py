@@ -46,7 +46,9 @@ from utils.scan_memo import memoized, scan_memo_active
 _MAX_ENTRIES = 4096
 # A change inside this window of the signature can share its timestamp (coarse clocks, FAT 2 s).
 _RACY_NS = 3_000_000_000
-_MAX_AGE_NS = 300_000_000_000
+# The checks swallow most OSErrors, so a transient one (EMFILE, EIO) can store a wrong verdict the signature
+# cannot see; recompute after a minute so it does not outlive the error for long.
+_MAX_AGE_NS = 60_000_000_000
 _ABSENT_ERRNOS = frozenset({2, 20})  # ENOENT, ENOTDIR
 # Local filesystems whose directory mtime moves on every create, rename and unlink in it.
 _TRUSTED_FS_TYPES = frozenset(
