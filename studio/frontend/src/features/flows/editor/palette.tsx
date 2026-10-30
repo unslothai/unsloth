@@ -1,49 +1,151 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { CollapsibleSectionTriggerButton } from "@/features/recipe-studio/dialogs/shared/collapsible-section-trigger";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useDeferredValue, useMemo, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  memo,
+  useDeferredValue,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useCatalogStore } from "../stores/catalog-store";
+import { useUiStore } from "../stores/ui-store";
 import type { NodeSpec } from "../types";
-import { Search01Icon } from "./icon-data";
+import { Cancel01Icon, Search01Icon } from "./icon-data";
 import { nodeIcon } from "./icons";
-import { NODE_DRAG_MIME } from "./node-factory";
+import { NodeIconTile } from "./node-card";
+import { CATEGORY_TONES } from "./node-tones";
+import { stopPlacement, togglePlacement, usePlacement } from "./placement";
+import { PlacementGhost } from "./placement-ghost";
 
+type Ghost = { spec: NodeSpec | null; body: ReactNode; x: number; y: number };
+type DropFn = (type: string, x: number, y: number) => void;
+const DRAG_SLOP = 5;
+
+/** Click arms `type` for placing; a drag past the slop drops one. Pointer events, not HTML5
+ *  drag, which Tauri's macOS webview eats. */
+function usePlacementPress(
+  type: string,
+  ghostOf: () => Pick<Ghost, "spec" | "body">,
+  onGhost: (ghost: Ghost | null) => void,
+  onDrop: DropFn,
+) {
+  const press = useRef<{ x: number; y: number; dragging: boolean } | null>(
+    null,
+  );
+  const dragged = useRef(false);
+  return {
+    onPointerDown: (e: ReactPointerEvent<HTMLButtonElement>) => {
+      if (e.button !== 0) return;
+      press.current = { x: e.clientX, y: e.clientY, dragging: false };
+      e.currentTarget.setPointerCapture(e.pointerId);
+    },
+    onPointerMove: (e: ReactPointerEvent<HTMLButtonElement>) => {
+      const p = press.current;
+      if (!p) return;
+      if (
+        !p.dragging &&
+        Math.hypot(e.clientX - p.x, e.clientY - p.y) < DRAG_SLOP
+      )
+        return;
+      p.dragging = true;
+      onGhost({ ...ghostOf(), x: e.clientX, y: e.clientY });
+    },
+    onPointerUp: (e: ReactPointerEvent<HTMLButtonElement>) => {
+      const p = press.current;
+      press.current = null;
+      if (!p?.dragging) return;
+      dragged.current = true;
+      onGhost(null);
+      onDrop(type, e.clientX, e.clientY);
+    },
+    onPointerCancel: () => {
+      press.current = null;
+      onGhost(null);
+    },
+    onClick: () => {
+      if (dragged.current) {
+        dragged.current = false;
+        return;
+      }
+      togglePlacement(type);
+    },
+  };
+}
+
+/** Recipe Studio's block sheet row (BlockSheetButton), at palette density. */
 function PaletteItem({
   spec,
   color,
-  onAdd,
-}: { spec: NodeSpec; color: string; onAdd: (type: string) => void }) {
+  armed,
+  onGhost,
+  onDrop,
+}: {
+  spec: NodeSpec;
+  color: string;
+  armed: boolean;
+  onGhost: (ghost: Ghost | null) => void;
+  onDrop: DropFn;
+}) {
+  const handlers = usePlacementPress(
+    spec.type,
+    () => ({ spec, body: null }),
+    onGhost,
+    onDrop,
+  );
   return (
     <button
       type="button"
-      draggable={true}
-      onDragStart={(e) => {
-        e.dataTransfer.setData(NODE_DRAG_MIME, spec.type);
-        e.dataTransfer.effectAllowed = "move";
-      }}
-      onClick={() => onAdd(spec.type)}
+      {...handlers}
+      aria-pressed={armed}
       title={spec.description}
       data-testid={`palette-${spec.type}`}
-      className="group flex w-full cursor-grab items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-300 hover:bg-white/5 hover:text-white active:cursor-grabbing"
+      className={`flex w-full touch-none select-none items-center gap-2.5 border-l-2 px-3 py-1.5 text-left transition ${armed ? "border-primary bg-muted" : "border-transparent bg-background hover:border-border/60 hover:bg-muted/35"}`}
     >
-      <HugeiconsIcon
-        icon={nodeIcon(spec.icon)}
-        size={14}
-        strokeWidth={1.8}
-        style={{ color }}
-      />
-      <span className="flex-1 truncate">{spec.title}</span>
-      {spec.lane === "gpu" && (
-        <span className="text-[9px] uppercase text-zinc-600 group-hover:text-zinc-400">
-          gpu
-        </span>
-      )}
+      <PaletteRowBody spec={spec} color={color} />
     </button>
   );
 }
 
-function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
+function PaletteRowBody({ spec, color }: { spec: NodeSpec; color: string }) {
+  return (
+    <>
+      <NodeIconTile
+        icon={nodeIcon(spec.icon)}
+        tone={CATEGORY_TONES[spec.category]}
+        accent={color}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-sm font-semibold text-foreground">
+            {spec.title}
+          </p>
+          {spec.lane === "gpu" && (
+            <Badge variant="outline" className="rounded-full text-ui-10">
+              GPU
+            </Badge>
+          )}
+        </div>
+        <p className="truncate text-ui-11 text-muted-foreground">
+          {spec.description}
+        </p>
+      </div>
+    </>
+  );
+}
+
+function PaletteImpl({
+  onDrop,
+}: { onDrop: DropFn }) {
+  const armed = usePlacement((s) => s.armed);
+  const [ghost, setGhost] = useState<Ghost | null>(null);
   const catalog = useCatalogStore((s) => s.catalog);
   const [query, setQuery] = useState("");
   const deferred = useDeferredValue(query.trim().toLowerCase());
@@ -67,18 +169,38 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
   }, [catalog, deferred]);
 
   return (
-    <div className="flex h-full w-58 shrink-0 flex-col border-white/10 border-r bg-zinc-950/80">
-      <div className="flex items-center gap-2 border-white/10 border-b px-3 py-2">
+    <div
+      className="flex h-full w-64 shrink-0 flex-col border-border border-r bg-background"
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        if (usePlacement.getState().armed) stopPlacement();
+        else useUiStore.getState().togglePalette();
+      }}
+    >
+      <div className="flex items-center justify-between pt-2 pr-1.5 pl-4">
+        <span className="font-semibold text-sm text-foreground">Nodes</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Hide nodes"
+          title="Hide nodes (Esc)"
+          onClick={() => useUiStore.getState().togglePalette()}
+          className="text-muted-foreground"
+        >
+          <HugeiconsIcon icon={Cancel01Icon} size={15} />
+        </Button>
+      </div>
+      <div className="relative border-border border-b px-3 pt-1 pb-2">
         <HugeiconsIcon
           icon={Search01Icon}
-          size={14}
-          className="text-zinc-500"
+          className="pointer-events-none absolute top-1/2 left-5.5 size-3.5 -translate-y-1/2 text-muted-foreground"
         />
-        <input
+        <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search nodes"
-          className="w-full bg-transparent text-sm text-zinc-200 outline-none placeholder:text-zinc-600"
+          className="h-8 pl-8"
           data-testid="flows-palette-search"
         />
       </div>
@@ -86,40 +208,54 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
         {groups.map(({ category, specs }) => {
           const isCollapsed = !deferred && collapsed[category.id];
           return (
-            <div key={category.id} className="mb-1.5">
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 px-2 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
+            <div key={category.id} className="mb-2">
+              <CollapsibleSectionTriggerButton
+                label={category.title}
+                open={!isCollapsed}
+                summary={String(specs.length)}
+                className="px-3 py-1.5"
                 onClick={() =>
                   setCollapsed((c) => ({
                     ...c,
                     [category.id]: !c[category.id],
                   }))
                 }
-              >
-                <span
-                  className="h-2 w-2 rounded-full"
-                  style={{ background: category.color }}
-                />
-                <span className="flex-1 text-left">{category.title}</span>
-                <span className="text-zinc-600">{isCollapsed ? "+" : "−"}</span>
-              </button>
+              />
               {!isCollapsed &&
                 specs.map((spec) => (
                   <PaletteItem
                     key={spec.type}
                     spec={spec}
                     color={category.color}
-                    onAdd={onAdd}
+                    armed={armed === spec.type}
+                    onGhost={setGhost}
+                    onDrop={onDrop}
                   />
                 ))}
             </div>
           );
         })}
+        {deferred && groups.length === 0 && (
+          <p className="px-3 py-2 text-xs text-muted-foreground">
+            No matching nodes.
+          </p>
+        )}
       </div>
-      <p className="border-white/10 border-t px-3 py-2 text-[10.5px] leading-snug text-zinc-600">
-        Drag onto the canvas, or double-click the canvas to search.
+      <p className="border-border border-t px-3 py-2 text-ui-11 leading-snug text-muted-foreground">
+        Click a node, then click the canvas to place it (Esc to stop). Drag
+        to drop one, or double-click the canvas to search.
       </p>
+      {ghost &&
+        (ghost.spec ? (
+          <PlacementGhost spec={ghost.spec} x={ghost.x} y={ghost.y} />
+        ) : (
+          <div
+            className="pointer-events-none fixed z-[1000] flex w-56 items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-1.5 opacity-90 shadow-md"
+            style={{ left: ghost.x + 8, top: ghost.y + 8 }}
+          >
+            {ghost.body}
+          </div>
+        ))}
     </div>
   );
 }

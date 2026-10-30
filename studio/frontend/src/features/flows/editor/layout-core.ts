@@ -7,6 +7,8 @@ export interface LayoutRequest {
   nodes: { id: string; width: number; height: number }[];
   edges: { source: string; target: string }[];
   direction: "LR" | "TB";
+  nodesep?: number;
+  ranksep?: number;
 }
 
 export type LayoutResult = Record<string, [number, number]>;
@@ -15,8 +17,8 @@ export function computeLayout(request: LayoutRequest): LayoutResult {
   const graph = new dagre.graphlib.Graph();
   graph.setGraph({
     rankdir: request.direction,
-    nodesep: 40,
-    ranksep: 90,
+    nodesep: request.nodesep ?? 40,
+    ranksep: request.ranksep ?? 90,
     marginx: 20,
     marginy: 20,
   });

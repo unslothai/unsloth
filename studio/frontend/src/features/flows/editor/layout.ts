@@ -2,8 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { InternalNode } from "@xyflow/react";
-import { useDocStore } from "../stores/doc-store";
+import { getSpec } from "../stores/catalog-store";
+import { type DocGraph, useDocStore } from "../stores/doc-store";
+import { useUiStore } from "../stores/ui-store";
+import { CARD_MIN_WIDTH } from "./card-size";
+import { inHandle, outHandle } from "./connection-rules";
 import type { LayoutRequest, LayoutResult } from "./layout-core";
+import {
+  type TidyContext,
+  fittedCardSize,
+  tidyPatch,
+  tidyRequest,
+} from "./tidy";
 
 let worker: Worker | null = null;
 let nextId = 0;
@@ -29,30 +39,112 @@ function getWorker(): Worker {
   return worker;
 }
 
+function runLayout(request: LayoutRequest): Promise<LayoutResult> {
+  const id = ++nextId;
+  return new Promise<LayoutResult>((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    getWorker().postMessage({ id, request });
+  });
+}
+
+function rfElement(id: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `.react-flow__node[data-id="${CSS.escape(id)}"]`,
+  );
+}
+
+/** How much of an element's content is cut off, the most of it or any descendant. */
+function hiddenBelow(root: HTMLElement): number {
+  let hidden = root.scrollHeight - root.clientHeight;
+  for (const el of root.querySelectorAll<HTMLElement>("*"))
+    if (el.clientHeight) hidden = Math.max(hidden, el.scrollHeight - el.clientHeight);
+  return hidden;
+}
+
+/** Empty space at the bottom of a sized card's output area. */
+function slackBelow(grow: HTMLElement): number {
+  let bottom = 0;
+  for (const child of grow.children)
+    bottom = Math.max(
+      bottom,
+      (child as HTMLElement).offsetTop + (child as HTMLElement).offsetHeight,
+    );
+  return grow.clientHeight - (bottom - grow.offsetTop);
+}
+
+/**
+ * Each card's size after fitting: one with output is sized to show it (up to a cap), an oversized
+ * one shrinks, and a card with nothing to show goes back to its automatic size. A card in a group
+ * never grows out of the frame.
+ */
+function fitCards(
+  graph: DocGraph,
+  measured: (id: string) => { width: number; height: number } | undefined,
+): Record<string, [number, number] | null> {
+  const out: Record<string, [number, number] | null> = {};
+  for (const id of graph.nodeOrder) {
+    const node = graph.nodes[id];
+    const size = measured(id);
+    const card = rfElement(id);
+    // Zoomed far out a card draws no body, so there is nothing to measure.
+    if (node.collapsed || !size || !card?.querySelector("[data-card-body]"))
+      continue;
+    const grow = card.querySelector<HTMLElement>("[data-card-grow]");
+    if (!grow) {
+      if (node.size) out[id] = null;
+      continue;
+    }
+    const spec = getSpec(node.type);
+    let fit = fittedCardSize(
+      size,
+      hiddenBelow(grow),
+      node.size ? slackBelow(grow) : 0,
+      spec ? CARD_MIN_WIDTH : 0,
+    );
+    if (!fit) continue;
+    const frame = node.group ? graph.groups[node.group]?.rect : undefined;
+    if (frame) {
+      const pad = 12;
+      fit = [
+        Math.min(fit[0], frame[0] + frame[2] - node.pos[0] - pad),
+        Math.min(fit[1], frame[1] + frame[3] - node.pos[1] - pad),
+      ];
+      if (fit[0] < size.width && fit[1] < size.height && !node.size) continue;
+    }
+    out[id] = fit;
+  }
+  return out;
+}
+
+/** Tidy up: fit cards to their output, lay out cards and groups, then move notes and put reroutes back. Frames and notes keep their sizes. */
 export async function autoLayout(
   getInternalNode: (id: string) => InternalNode | undefined,
   direction: "LR" | "TB" = "LR",
 ): Promise<void> {
   const { graph } = useDocStore.getState();
-  const request: LayoutRequest = {
-    direction,
-    nodes: graph.nodeOrder.map((id) => {
-      const measured = getInternalNode(id)?.measured;
-      return {
-        id,
-        width: measured?.width ?? 260,
-        height: measured?.height ?? 140,
-      };
-    }),
-    edges: graph.edgeOrder.map((id) => ({
-      source: graph.edges[id].source,
-      target: graph.edges[id].target,
-    })),
+  const measured = (id: string) => {
+    const m = getInternalNode(id)?.measured;
+    return m?.width && m.height ? { width: m.width, height: m.height } : undefined;
   };
-  const id = ++nextId;
-  const result = await new Promise<LayoutResult>((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    getWorker().postMessage({ id, request });
-  });
-  useDocStore.getState().moveNodes(result);
+  const sizes = fitCards(graph, measured);
+  const ctx: TidyContext = {
+    direction,
+    graph,
+    wireStyle: useUiStore.getState().wireStyle,
+    size: (id) => {
+      const fit = sizes[id];
+      return fit
+        ? { width: fit[0], height: fit[1] }
+        : (measured(id) ?? { width: 260, height: 140 });
+    },
+    portY: (id, port, side) => {
+      const handle = getInternalNode(id)?.internals.handleBounds?.[
+        side === "out" ? "source" : "target"
+      ]?.find((h) => h.id === (side === "out" ? outHandle(port) : inHandle(port)));
+      return handle ? handle.y + handle.height / 2 : undefined;
+    },
+  };
+  const result = await runLayout(tidyRequest(ctx));
+  const patch = tidyPatch(ctx, result, sizes);
+  useDocStore.getState().applyTidy(patch);
 }

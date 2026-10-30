@@ -194,7 +194,7 @@ test("an undefined rowFilter leaves the picker rows untouched", () => {
     "features/model-picker/components/model-selector/pickers.tsx",
   );
   const guards = pickers.match(/\(!rowFilter \|\|\s*rowFilter\(\{/g) ?? [];
-  assert.equal(guards.length, 5);
+  assert.equal(guards.length, 6); // the five lists below plus the loaded rows pinned to Recommended
   for (const list of [
     "sortedCachedGguf",
     "sortedCachedModels",

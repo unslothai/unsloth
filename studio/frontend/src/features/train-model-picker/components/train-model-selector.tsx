@@ -288,19 +288,17 @@ function resolveFreeformTrainingModelPick(
 
 export function TrainModelSelector({
   requiredModelType,
+  value,
+  onValueChange,
 }: {
   requiredModelType?: ModelType;
+  /** Controlled mode (Flows): show `value` and report picks instead of using the Train page's store. */
+  value?: string | null;
+  onValueChange?: (model: string) => void;
 }) {
   const t = useT();
   const gpu = useGpuInfo();
-  const {
-    selectedModel,
-    modelKnownCached,
-    modelLocalPath,
-    modelFormat: selectedModelFormat,
-    selectTrainingModel,
-    trainingMethod,
-  } = useTrainingConfigStore(
+  const store = useTrainingConfigStore(
     useShallow((s) => ({
       selectedModel: s.selectedModel,
       modelKnownCached: s.modelKnownCached,
@@ -310,6 +308,15 @@ export function TrainModelSelector({
       trainingMethod: s.trainingMethod,
     })),
   );
+  const controlled = onValueChange !== undefined;
+  const selectedModel = controlled ? value || null : store.selectedModel;
+  const modelKnownCached = controlled ? false : store.modelKnownCached;
+  const modelLocalPath = controlled ? null : store.modelLocalPath;
+  const selectedModelFormat = controlled ? null : store.modelFormat;
+  const { trainingMethod } = store;
+  const selectTrainingModel: typeof store.selectTrainingModel = controlled
+    ? (model) => model && onValueChange(model)
+    : store.selectTrainingModel;
   const [selectedDeviceKey, setSelectedDeviceKey] = useState<string | null>(
     null,
   );

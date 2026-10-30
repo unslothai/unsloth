@@ -8,9 +8,19 @@ from __future__ import annotations
 import json
 import math
 import re
-from typing import Any
+from typing import Any, Optional
 
-from core.flows.nodes._common import as_text, first_json, lookup, render, template_vars
+from core.flows import model_settings
+from core.flows.model_settings import request_params
+from core.flows.nodes._common import (
+    as_text,
+    first_json,
+    lookup,
+    render,
+    resident_gguf_variant,
+    resident_name,
+    template_vars,
+)
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 
@@ -42,6 +52,32 @@ def _prompt(ctx: NodeContext, param: str, port: str) -> str:
     return prompt.strip()
 
 
+async def _model_and_load(ctx: NodeContext, kind: str) -> tuple[Any, Optional[dict]]:
+    """The model to ask for and the load options its card wants. A card on the loaded model that has load
+    settings names that model, so a different load reloads it."""
+    choice = ctx.params.get("model")
+    load = ctx.params.get(model_settings.LOAD)
+    if not load:
+        return choice, None
+    repo = choice.get("repo") if isinstance(choice, dict) else None
+    variant = choice.get("variant") if isinstance(choice, dict) else None
+    if not repo:
+        repo = await resident_name(ctx, kind)
+        if not repo:
+            return choice, None
+        # The loaded quant, or a reload for different settings would fall back to the repo's default one.
+        variant = await resident_gguf_variant(ctx)
+        choice = {"repo": repo, "variant": variant}
+    return choice, model_settings.load_kwargs(
+        load, is_gguf = model_settings.looks_gguf(repo, variant)
+    )
+
+
+def _temperature(ctx: NodeContext) -> float:
+    value = ctx.params.get("temperature")
+    return float(0.8 if value is None else value)
+
+
 @handler("llm.generate")
 async def generate(ctx: NodeContext) -> dict:
     prompt = _prompt(ctx, "prompt", "prompt")
@@ -50,32 +86,33 @@ async def generate(ctx: NodeContext) -> dict:
     system = render(str(ctx.params.get("system") or ""), template_vars(ctx))
     images = [ctx.inputs["image"]] if ctx.inputs.get("image") else None
     schema = _schema(ctx.params.get("json_schema"))
+    model, load = await _model_and_load(ctx, "vision" if images else "chat")
     if schema is not None:
         value = await ctx.llm_json(
-            model = ctx.params.get("model"),
+            model = model,
             system = system,
             prompt = prompt,
             schema = schema,
-            temperature = float(
-                0.8 if ctx.params.get("temperature") is None else ctx.params["temperature"]
-            ),
+            temperature = _temperature(ctx),
             max_tokens = int(ctx.params.get("max_tokens") or 1024),
             seed = ctx.seed,
             images = images,
+            sampling = request_params(ctx.params),
+            load = load,
         )
         return {"text": json.dumps(value, ensure_ascii = False, indent = 1), "json": value}
     text = await ctx.llm_text(
-        model = ctx.params.get("model"),
+        model = model,
         system = system,
         prompt = prompt,
-        temperature = float(
-            0.8 if ctx.params.get("temperature") is None else ctx.params["temperature"]
-        ),
+        temperature = _temperature(ctx),
         max_tokens = int(ctx.params.get("max_tokens") or 1024),
         images = images,
         thinking = bool(ctx.params.get("thinking")),
         seed = ctx.seed,
         stream_port = "text",
+        sampling = request_params(ctx.params),
+        load = load,
     )
     outputs: dict[str, Any] = {"text": text}
     try:
@@ -88,26 +125,35 @@ async def generate(ctx: NodeContext) -> dict:
 @handler("llm.vision")
 async def vision(ctx: NodeContext) -> dict:
     question = _prompt(ctx, "question", "question") or "Describe this image."
+    system = render(str(ctx.params.get("system") or ""), template_vars(ctx))
     schema = _schema(ctx.params.get("json_schema"))
     images = [ctx.inputs["image"]]
+    model, load = await _model_and_load(ctx, "vision")
     if schema is not None:
         value = await ctx.llm_json(
-            model = ctx.params.get("model"),
-            system = "",
+            model = model,
+            system = system,
             prompt = question,
             schema = schema,
+            temperature = _temperature(ctx),
             max_tokens = int(ctx.params.get("max_tokens") or 512),
             seed = ctx.seed,
             images = images,
+            sampling = request_params(ctx.params),
+            load = load,
         )
         return {"text": json.dumps(value, ensure_ascii = False), "json": value}
     text = await ctx.llm_text(
-        model = ctx.params.get("model"),
-        system = "",
+        model = model,
+        system = system,
         prompt = question,
+        temperature = _temperature(ctx),
         max_tokens = int(ctx.params.get("max_tokens") or 512),
         images = images,
+        thinking = bool(ctx.params.get("thinking")),
         seed = ctx.seed,
+        sampling = request_params(ctx.params),
+        load = load,
     )
     outputs: dict[str, Any] = {"text": text}
     try:
