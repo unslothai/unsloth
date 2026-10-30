@@ -261,7 +261,11 @@ def drop_idle_expert_grads(blocks, group = None) -> int:
     return dropped
 
 
-def install_idle_expert_grad_hook(optimizer, model, group = None) -> bool:
+def install_idle_expert_grad_hook(
+    optimizer,
+    model,
+    group = None,
+) -> bool:
     """Once per optimizer: a step pre-hook running drop_idle_expert_grads over model's every-expert
     MoE blocks. It runs after backward (DDP reduction) and all gradient accumulation micro-steps."""
     while not isinstance(optimizer, torch.optim.Optimizer) or (
@@ -1055,7 +1059,9 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             # Without gradient checkpointing the model would build a cache for the sharded scans.
             if hasattr(inputs, "setdefault"):
                 inputs.setdefault("use_cache", False)
-            install_idle_expert_grad_hook(getattr(self, "optimizer", None), getattr(self, "model", None))
+            install_idle_expert_grad_hook(
+                getattr(self, "optimizer", None), getattr(self, "model", None)
+            )
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
         with manager.apply(inputs) if manager else contextlib.nullcontext():
             return original_training_step(self, model, inputs, *args, **kwargs)
