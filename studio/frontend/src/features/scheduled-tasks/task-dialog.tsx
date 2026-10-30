@@ -67,6 +67,7 @@ import { useScheduledTasksStore } from "./store";
 
 const REPEAT_LABELS: Record<RepeatKind, TranslationKey> = {
   once: "scheduledTasks.form.once",
+  hourly: "scheduledTasks.form.hourly",
   daily: "scheduledTasks.form.daily",
   weekdays: "scheduledTasks.form.weekdays",
   weekly: "scheduledTasks.form.weekly",
@@ -503,6 +504,21 @@ export function TaskDialog({
               </SelectContent>
             </Select>
           </Row>
+          {form.repeat === "hourly" && (
+            <Row id={`${ids}-hours`} label={t("scheduledTasks.form.intervalHours")}>
+              <Input
+                id={`${ids}-hours`}
+                type="number"
+                min={1}
+                max={24}
+                step={1}
+                value={Number.isNaN(form.hours) ? "" : form.hours}
+                onChange={(event) => patchForm({ hours: event.target.valueAsNumber })}
+                disabled={busy}
+                className={cn(BARE_INPUT, "w-24 pr-8")}
+              />
+            </Row>
+          )}
           {form.repeat === "once" && (
             <Row id={`${ids}-date`} label={t("scheduledTasks.form.date")}>
               <Input
@@ -563,27 +579,34 @@ export function TaskDialog({
               </div>
             </Row>
           )}
-          <Row id={`${ids}-time`} label={t("scheduledTasks.form.time")}>
-            <Select
-              value={form.time}
-              onValueChange={(value) => patchForm({ time: value })}
-              disabled={busy}
-            >
-              <SelectTrigger id={`${ids}-time`} title={timezone} className={BARE_SELECT}>
-                <SelectValue>
-                  {`${formatClock(form.time, locale)} ${zoneLabel(timezone, locale, now.getTime())}`}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent align="end" className={LONG_LIST}>
-                {timeChoices(form.time).map((time) => (
-                  <SelectItem key={time} value={time}>
-                    {formatClock(time, locale)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Row>
+          {form.repeat !== "hourly" && (
+            <Row id={`${ids}-time`} label={t("scheduledTasks.form.time")}>
+              <Select
+                value={form.time}
+                onValueChange={(value) => patchForm({ time: value })}
+                disabled={busy}
+              >
+                <SelectTrigger id={`${ids}-time`} title={timezone} className={BARE_SELECT}>
+                  <SelectValue>
+                    {`${formatClock(form.time, locale)} ${zoneLabel(timezone, locale, now.getTime())}`}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="end" className={LONG_LIST}>
+                  {timeChoices(form.time).map((time) => (
+                    <SelectItem key={time} value={time}>
+                      {formatClock(time, locale)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Row>
+          )}
         </div>
+        {form.repeat === "hourly" && (
+          <p className="-mt-2 px-1 text-ui-13 text-muted-foreground">
+            {t("scheduledTasks.form.hourlyNote")}
+          </p>
+        )}
         {form.repeat === "monthly" && form.dayOfMonth > 28 && (
           <p className="-mt-2 px-1 text-ui-13 text-muted-foreground">
             {t("scheduledTasks.form.lastDayNote")}

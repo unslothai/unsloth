@@ -33,6 +33,8 @@ class FakeRuntime:
     def __init__(self):
         self.builds = []
         self.generates = []
+        self.lora_calls = []
+        self.lora_error: Exception | None = None
         self.freed = 0
         self.step_gate: threading.Event | None = None
         self.in_step = threading.Event()
@@ -70,6 +72,13 @@ class FakeRuntime:
                 self.step_gate.wait(5)
             on_step(t + 1)
         return Image.new("RGB", (width, height), (seed % 255, 0, 0))
+
+    def apply_loras(self, model, loras):
+        self.lora_calls.append(list(loras))
+        if self.lora_error is not None:
+            model["loras"] = []
+            raise self.lora_error
+        model["loras"] = list(loras)
 
     def free(self):
         self.freed += 1
@@ -206,6 +215,8 @@ def test_load_then_status_and_guards(env):
     assert status["gguf_filename"] == GGUF and status["model_kind"] == "gguf"
     assert status["workflows"] == ["txt2img"]
     assert status["mlx"]["precision"] == "float16" and status["mlx"]["text_encoder_bits"] == 4
+    assert status["supports_lora"] is True
+    assert status["lora_unavailable_reason"] is None
     assert runtime.builds[0]["model_config"] == "z-image-turbo"
     model_dir = Path(runtime.builds[0]["model_path"])
     for sub in ("text_encoder", "tokenizer", "vae"):
@@ -252,7 +263,6 @@ def test_local_files_only_reaches_every_fetch(env):
         ({"gguf_filename": "z-image-turbo-Q3_K_M.gguf"}, "Q3_K_M"),
         ({"gguf_filename": GGUF, "model_kind": "pipeline"}, "GGUF"),
         ({"gguf_filename": "sdxl-Q4_0.gguf", "family_override": "sdxl"}, "no MLX implementation"),
-        ({"gguf_filename": GGUF, "loras": [("a/b", 1.0)]}, "LoRA"),
     ],
 )
 def test_begin_load_refuses_what_it_cannot_run(env, kwargs, needle):
@@ -320,7 +330,6 @@ def test_generate_batch_seeds_and_progress(env):
         {"upscale": 2.0},
         {"prompts": ["a", "b"]},
         {"seeds": [1, 2]},
-        {"loras": [("x/y", 1.0)]},
         {"controlnet": ("c", "img", "canny", 1.0, 0.0, 1.0)},
     ],
 )
@@ -1472,6 +1481,78 @@ def test_cache_only_companions_skip_an_incomplete_upstream_for_the_staged_mirror
         mb.fetch_base_snapshot(BASE, None, local_files_only = True)
 
 
+def _resolved_loras(monkeypatch, fmt = "safetensors"):
+    from core.inference import diffusion_lora
+
+    seen = []
+
+    def _resolve(
+        specs,
+        *,
+        family,
+        hf_token,
+        cancel_event = None,
+    ):
+        seen.append((list(specs), family))
+        return [
+            diffusion_lora.ResolvedLora(
+                i, diffusion_lora.sanitize_alias(i), f"/loras/{i}.{fmt}", fmt, w
+            )
+            for i, w in specs
+        ]
+
+    monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
+    return seen
+
+
+def test_generate_attaches_resolved_loras_and_reattaches_only_on_change(env, monkeypatch):
+    backend, runtime, _calls = env
+    seen = _resolved_loras(monkeypatch)
+    _load(backend, loras = [("style", 1.0)])
+    backend.generate(prompt = "x", steps = 1, loras = [("style", 0.8), ("off", 0.0)])
+    assert seen[-1] == ([("style", 0.8)], "z-image")
+    assert runtime.lora_calls == [[("/loras/style.safetensors", 0.8)]]
+    backend.generate(prompt = "x", steps = 1, loras = [("style", 0.8)])
+    assert len(runtime.lora_calls) == 1
+    backend.generate(prompt = "x", steps = 1, loras = [("style", 0.5)])
+    assert runtime.lora_calls[-1] == [("/loras/style.safetensors", 0.5)]
+    backend.generate(prompt = "x", steps = 1)
+    assert runtime.lora_calls[-1] == []
+    assert len(runtime.generates) == 4
+    backend.generate(prompt = "x", steps = 1)
+    assert len(runtime.lora_calls) == 3
+
+
+def test_generate_refuses_a_gguf_adapter_and_reports_a_failed_attach(env, monkeypatch):
+    backend, runtime, _calls = env
+    _load(backend)
+    _resolved_loras(monkeypatch, fmt = "gguf")
+    with pytest.raises(ValueError, match = "GGUF LoRA adapters are not supported on the MLX engine"):
+        backend.generate(prompt = "x", steps = 1, loras = [("style", 1.0)])
+    assert runtime.lora_calls == [] and runtime.generates == []
+    _resolved_loras(monkeypatch)
+    runtime.lora_error = RuntimeError("no layer matched")
+    with pytest.raises(ValueError, match = "Failed to apply LoRA: no layer matched"):
+        backend.generate(prompt = "x", steps = 1, loras = [("style", 1.0)])
+    assert backend._state.loras == () and runtime.generates == []
+    runtime.lora_error = None
+    backend.generate(prompt = "x", steps = 1, loras = [("style", 1.0)])
+    assert backend._state.loras == (("/loras/style.safetensors", 1.0),)
+
+
+def test_a_family_without_mlx_loras_is_still_refused(env, monkeypatch):
+    from core.inference import mlx_diffusion_routing as routing
+
+    backend, _runtime, _calls = env
+    monkeypatch.setitem(routing.MLX_CAPABILITIES, "z-image", routing.MlxCapabilities(loras = False))
+    with pytest.raises(ValueError, match = "LoRA"):
+        backend.begin_load(REPO, gguf_filename = GGUF, loras = [("a/b", 1.0)])
+    _load(backend)
+    with pytest.raises(ValueError, match = "LoRA"):
+        backend.generate(prompt = "x", steps = 1, loras = [("a/b", 1.0)])
+    assert backend.status()["supports_lora"] is False
+
+
 def _mlx_route_stubs(monkeypatch, *, predicted = "mlx"):
     import core.inference.diffusion_engine_router as router_module
     import core.inference.gpu_arbiter as arbiter
@@ -1498,8 +1579,26 @@ def _mlx_route_stubs(monkeypatch, *, predicted = "mlx"):
     return touched
 
 
+def _mlx_without_lora(monkeypatch):
+    from core.inference import mlx_diffusion_routing as routing
+    monkeypatch.setitem(routing.MLX_CAPABILITIES, "z-image", routing.MlxCapabilities(loras = False))
+
+
+def test_the_load_route_keeps_z_image_loras_on_mlx():
+    from core.inference.diffusion_families import detect_family
+    from models.inference import DiffusionLoadRequest
+    from routes.inference import _refuse_mlx_loras
+
+    request = DiffusionLoadRequest(
+        model_path = REPO, gguf_filename = GGUF, loras = [{"id": "a/b", "weight": 1.0}]
+    )
+    _refuse_mlx_loras(request, detect_family("z-image"))
+
+
 def test_the_load_route_refuses_mlx_loras_before_activation_or_eviction(monkeypatch):
     import asyncio
+
+    _mlx_without_lora(monkeypatch)
 
     from fastapi import HTTPException
 
@@ -1519,6 +1618,8 @@ def test_the_load_route_refuses_mlx_loras_before_activation_or_eviction(monkeypa
 
 def test_the_download_plan_refuses_mlx_loras_before_planning(monkeypatch):
     import asyncio
+
+    _mlx_without_lora(monkeypatch)
 
     from fastapi import HTTPException
 
