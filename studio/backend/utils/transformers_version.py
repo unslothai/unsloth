@@ -1142,10 +1142,16 @@ def _remote_code_tier(cfg: dict | None) -> str | None:
     return min(fits)[3] if fits else None
 
 
-def _route_remote_code(model_name: str, cfg: dict | None) -> str | None:
+def _route_remote_code(
+    model_name: str,
+    cfg: dict | None,
+    above: str | None = None,
+) -> str | None:
     """Tier for a custom-code config, or None to fall through. When nothing installed is new
-    enough, the newest tier beats the probe's 530 floor; /validate offers the latest sidecar."""
-    if _remote_code_min_version(cfg) is None:
+    enough, the newest tier beats the probe's 530 floor; /validate offers the latest sidecar.
+    ``above``: fall through when that version already satisfies the saving version."""
+    required = _remote_code_min_version(cfg)
+    if required is None or (above is not None and required <= _release_tuple(above)):
         return None
     tier = _remote_code_tier(cfg)
     if tier is None:
@@ -1780,7 +1786,8 @@ def _native_transformers_tier(model_name: str, hf_token: str | None, probe: bool
                     model_name,
                 )
                 return static
-            remote_code = _route_remote_code(model_name, cfg)
+            # The fall-through's 530 floor fits these; routing here would lower them to default.
+            remote_code = _route_remote_code(model_name, cfg, above = TRANSFORMERS_530_VERSION)
             if remote_code is not None:
                 return remote_code
             local_tc = Path(model_name) / "tokenizer_config.json"
@@ -1863,7 +1870,7 @@ def _native_transformers_tier(model_name: str, hf_token: str | None, probe: bool
                 model_name,
             )
             return static
-        remote_code = _route_remote_code(model_name, remote_cfg)
+        remote_code = _route_remote_code(model_name, remote_cfg, above = TRANSFORMERS_530_VERSION)
         if remote_code is not None:
             return remote_code
     if _check_tokenizer_config_needs_v5(model_name, hf_token):

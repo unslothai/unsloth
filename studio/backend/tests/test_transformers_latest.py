@@ -1654,6 +1654,13 @@ class TestCustomCodeRouting:
     def test_default_kept_when_new_enough(self, tmp_path: Path):
         assert get_transformers_tier(_custom_code_model(tmp_path, "5.3.0")) == "default"
 
+    def test_v5_tokenizer_saved_at_530_keeps_530(self, tmp_path: Path):
+        d = Path(_custom_code_model(tmp_path, "5.3.0"))
+        (d / "tokenizer_config.json").write_text(
+            json.dumps({"tokenizer_class": "TokenizersBackend"})
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
     def test_upgrade_offered_when_pypi_is_new_enough(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
         result = check_upgrade_for_model(_custom_code_model(tmp_path, "5.12.0.dev0"))
