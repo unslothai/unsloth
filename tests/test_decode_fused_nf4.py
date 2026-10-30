@@ -400,3 +400,75 @@ def test_device_moves_release_the_fused_caches():
     D._track_moves(inner)  # idempotent
     model.to(torch.float32)
     assert inner.weight.dtype == torch.float32
+
+
+def test_vllm_shared_weights_are_refused():
+    # fast_inference: the base weights view vLLM's; re-homing would copy them and move captured buffers.
+    D = _driver()
+    model = types.SimpleNamespace(
+        config = types.SimpleNamespace(model_type = "llama"), vllm_engine = object()
+    )
+    assert "vLLM" in D._build(model, torch.zeros(1, 1, 8))
+
+
+class _Lora:
+    def __init__(self):
+        self.disable_adapters, self.merged = False, False
+        self.active_adapters, self.scaling = ["default"], {"default": 2.0, "other": 0.5}
+
+
+def test_plan_goes_stale_when_adapters_change():
+    # Checked every step, so a toggle inside one continuation does not keep the old LoRA terms.
+    D = _driver()
+    layer = _Lora()
+    plan = types.SimpleNamespace(watch = [layer], adapter_state = D._adapter_state([layer]))
+    assert not D._plan_stale(plan)
+    for change in (
+        lambda: setattr(layer, "disable_adapters", True),
+        lambda: setattr(layer, "merged", True),
+        lambda: setattr(layer, "active_adapters", ["other"]),
+        lambda: layer.scaling.update(default = 1.0),
+    ):
+        layer.__init__()
+        assert not D._plan_stale(plan)
+        change()
+        assert D._plan_stale(plan)
+    assert not D._plan_stale(types.SimpleNamespace(watch = [], adapter_state = ()))
+
+
+def test_signature_follows_saved_norm_weights():
+    # A norm in modules_to_save: its weight follows the active adapter, so it must key the plan.
+    peft_other = pytest.importorskip("peft.utils.other")
+    D = _driver()
+
+    class Norm(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(8))
+            self.variance_epsilon = 1e-5
+
+    wrapper = peft_other.ModulesToSaveWrapper(Norm(), "default")
+    t = torch.zeros(4)
+    site = types.SimpleNamespace(packed = t, absmax = t, absmax2 = t, lora = None, bounds = [4], bias = None)
+
+    def plan(qk_norm = None):
+        entry = types.SimpleNamespace(
+            ln1 = wrapper.weight, ln2 = wrapper.weight, sites = {"o": site}, qk_norm = qk_norm
+        )
+        return types.SimpleNamespace(
+            device = t.device, dtype = torch.bfloat16, hidden = 8, intermediate = 16, eps = 1e-5,
+            final_norm = wrapper.weight, layers = [entry],
+        )  # fmt: skip
+
+    on = D._signature(plan())
+    assert D._adapter_key(wrapper) == D._adapter_key(wrapper)
+    before = D._adapter_key(wrapper)
+    wrapper.enable_adapters(False)
+    assert D._signature(plan()) != on
+    assert D._adapter_key(wrapper) != before
+    # Qwen3: a saved q_norm / k_norm keys the plan the same way.
+    wrapper.enable_adapters(True)
+    k = torch.ones(8)
+    q_on = D._signature(plan((wrapper.weight, k, 1e-6, 1e-6)))
+    wrapper.enable_adapters(False)
+    assert D._signature(plan((wrapper.weight, k, 1e-6, 1e-6))) != q_on
