@@ -267,3 +267,17 @@ def test_the_warmup_reads_the_source_it_was_handed(monkeypatch):
 def test_the_warmup_optimizer_is_normalised_for_xpu():
     assert rl_format._warmup_optimizer("cuda") == "adamw_8bit"
     assert rl_format._warmup_optimizer("xpu") == "adamw_torch"
+
+
+def test_the_reasoning_format_refuses_turns_its_template_drops():
+    from datasets import Dataset
+
+    from core.training.rl import reasoning_format_refusal
+
+    system = {"role": "system", "content": "s"}
+    user = {"role": "user", "content": "q"}
+    assert reasoning_format_refusal(Dataset.from_list([{"prompt": [system, user]}])) is None
+    developer = [{"role": "developer", "content": "d"}, user]
+    assert "developer" in reasoning_format_refusal(Dataset.from_list([{"prompt": developer}]))
+    late_system = [user, {"role": "assistant", "content": "a"}, system, user]
+    assert "system" in reasoning_format_refusal(Dataset.from_list([{"prompt": late_system}]))
