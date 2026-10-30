@@ -71,3 +71,10 @@ test("a resized card writes lists and objects out in full", () => {
   assert.match(view, /expanded=\{!!node\.size\}/);
   assert.match(view, /if \(expanded && typeof value === "object"\)/);
 });
+
+test("a card shows its long text (system prompt, template) clamped, with Show inputs for the rest", () => {
+  const card = readSrc("features/flows/editor/node-card.tsx");
+  const fn = card.slice(card.indexOf("export function NodeDisclosure"), card.indexOf("export function NodeError"));
+  assert.match(fn, /\{!open &&\s*sections\.map[\s\S]*?line-clamp-2[\s\S]*?\{section\.text\}/);
+  assert.ok(fn.indexOf("line-clamp-2") < fn.indexOf("Show inputs"), "the preview sits above the toggle");
+});

@@ -329,7 +329,7 @@ export function NodeFieldRows({ rows }: { rows: FieldRow[] }) {
   );
 }
 
-/** Recipe Studio's "Show inputs" disclosure for long text kept off the card. */
+/** Long text (a system prompt, a template) clamped on the card, with Recipe Studio's "Show inputs" for the rest. */
 export function NodeDisclosure({
   sections,
 }: { sections: { label: string; text: string }[] }) {
@@ -337,6 +337,16 @@ export function NodeDisclosure({
   if (!sections.length) return null;
   return (
     <div className="flow-detail flex flex-col gap-1.5 px-3">
+      {!open &&
+        sections.map((section) => (
+          <p
+            key={section.label}
+            data-testid="flow-node-long-text"
+            className="line-clamp-2 whitespace-pre-wrap text-ui-11 leading-snug text-muted-foreground"
+          >
+            {section.text}
+          </p>
+        ))}
       <Button
         type="button"
         size="xs"
