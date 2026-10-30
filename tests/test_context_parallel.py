@@ -182,7 +182,12 @@ def test_training_step_installs_the_idle_expert_hook_once(monkeypatch):
         def __init__(self):
             pass
 
-        def training_step(self, model, inputs, num_items_in_batch = None):
+        def training_step(
+            self,
+            model,
+            inputs,
+            num_items_in_batch = None,
+        ):
             pass
 
         def prediction_step(self, model, inputs, prediction_loss_only):

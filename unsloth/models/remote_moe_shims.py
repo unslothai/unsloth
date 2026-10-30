@@ -151,7 +151,13 @@ class _CopyRouterScores(torch.overrides.TorchFunctionMode):
     saved: hand the gate a copy instead. Only the scores are copied and no saved-tensor hooks are
     pushed, so gradient checkpointing and activation offload still own the gate's saved tensors."""
 
-    def __torch_function__(self, func, types, args = (), kwargs = None):
+    def __torch_function__(
+        self,
+        func,
+        types,
+        args = (),
+        kwargs = None,
+    ):
         out = func(*args, **(kwargs or {}))
         if func in _ROUTER_SCORE_FUNCTIONS and isinstance(out, torch.Tensor) and out.requires_grad:
             out = out.clone()
