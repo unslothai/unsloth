@@ -49,7 +49,7 @@ def loop_doc(gen_rows = 4, **loop_params):
         [
             node("loop", "logic.loop", group = "L", **loop_params),
             node("gen", "recipe.generate", group = "R", rows = gen_rows),
-            node("train", "train.finetune", group = "L"),
+            node("train", "train.finetune", group = "L", holdout_percent = 20),
             node("bench", "test.bench", group = "L"),
             node("col", "recipe.column", group = "R", column = COLUMN),
         ],
@@ -103,6 +103,8 @@ def test_loop_body_takes_the_fed_recipe_group_and_stays_acyclic():
         ),
         (lambda d: d["edges"].pop(2), "needs held-out rows"),
         (lambda d: d["edges"].pop(1), "so each round scores the model it just trained"),
+        (lambda d: d["nodes"][2]["params"].pop("holdout_percent"), "Hold out % above 0"),
+        (lambda d: d["nodes"][2]["params"].update(holdout_percent = 0), "Hold out % above 0"),
         (
             lambda d: d["edges"][2].update(source = "gen", source_port = "dataset"),
             "needs held-out rows",
