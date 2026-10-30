@@ -78,6 +78,7 @@ class NodeContext(Protocol):
         seed: Optional[int] = None,
         stream_port: Optional[str] = "text",
         sampling: Optional[dict] = None,
+        load: Optional[dict] = None,
     ) -> str: ...
 
     async def llm_json(
@@ -94,6 +95,7 @@ class NodeContext(Protocol):
         on_text: Optional[Callable[[str], None]] = None,
         retry_bad_json: bool = True,
         sampling: Optional[dict] = None,
+        load: Optional[dict] = None,
     ) -> Any:
         """Structured output (`response_format` json_schema); falls back to parsing the first JSON object in the text.
         With ``on_text`` the answer streams, and it gets the raw JSON written so far after every chunk."""

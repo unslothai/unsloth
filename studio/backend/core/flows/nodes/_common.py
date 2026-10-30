@@ -238,7 +238,9 @@ def chat_model_name(ctx: Any) -> str:
 MULTI_MODEL_MODES = ("fit", "always")
 
 
-async def _alongside(ctx: Any, repo: str, variant: Optional[str]) -> Optional[dict]:
+async def _alongside(
+    ctx: Any, repo: str, variant: Optional[str], options: Optional[dict] = None
+) -> Optional[dict]:
     """Under Keep multiple models loaded (fit or always), serve ``repo`` from its own slot beside the primary chat
     model instead of replacing it: bind to it when it is already kept alongside, else load it alongside. None means
     the setting is off (or unreadable) and the step loads into the primary slot as before."""
@@ -254,6 +256,8 @@ async def _alongside(ctx: Any, repo: str, variant: Optional[str]) -> Optional[di
     if not serving or loading._same_id(serving[0], repo):
         return None
     name = f"{repo}:{variant}" if variant else repo
+    for gone in [r for r in _ALONGSIDE_OPTIONS if not any(loading._same_id(s, r) for s in serving[1:])]:
+        _ALONGSIDE_OPTIONS.pop(gone, None)
     if any(loading._same_id(s, repo) for s in serving[1:]):
         kept = await loading._read_json(
             _caller(ctx), f"/api/inference/status?model={quote(repo, safe='')}"
@@ -263,6 +267,12 @@ async def _alongside(ctx: Any, repo: str, variant: Optional[str]) -> Optional[di
             raise FlowNodeError(
                 f"{repo} is already loaded alongside as {held}. Two quantizations of one model cannot be kept "
                 f"loaded at once: pick {held} on this node, or unload it first."
+            )
+        # Unknown provenance (loaded in Chat) only matches a card that asks for no settings of its own.
+        if _ALONGSIDE_OPTIONS.get(repo.lower()) != options_hash(options):
+            raise FlowNodeError(
+                f"{repo} is already loaded alongside with other load settings. Give this node the same "
+                f"settings, or unload it first."
             )
         ctx.chat_model = name
         return {"repo": repo, "variant": variant}
@@ -276,17 +286,19 @@ async def _alongside(ctx: Any, repo: str, variant: Optional[str]) -> Optional[di
             None,
             model = repo,
             variant = variant,
-            max_seq_length = FLOW_CHAT_CONTEXT,
+            max_seq_length = _load_context(options),
             load_in_4bit = True,
             hf_token = None,
             deadline = time.monotonic() + LOAD_DEADLINE_S,
             alongside = True,
+            extra_body = {k: v for k, v in (options or {}).items() if k != "max_seq_length"} or None,
         )
     except FlowNodeError:
         raise
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo} alongside {serving[0]}: {exc}") from None
     ctx.resident.clear()
+    _ALONGSIDE_OPTIONS[repo.lower()] = options_hash(options)
     ctx.chat_model = name
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
@@ -309,6 +321,19 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
 
 _LOADED_VARIANT: dict[str, tuple[str, str]] = {}
 _LOADED_OPTIONS: dict[str, tuple[str, str, int]] = {}
+# repo -> options_hash it was loaded alongside with; pruned once it stops being served.
+_ALONGSIDE_OPTIONS: dict[str, Optional[str]] = {}
+
+
+def loaded_options(slot: str) -> Optional[tuple[str, str, int]]:
+    """(repo, options hash, load count) the flow loaded ``slot`` with; dropped once any other load happened."""
+    from core.inference import gpu_arbiter
+
+    found = _LOADED_OPTIONS.get(slot)
+    if found is not None and found[2] != gpu_arbiter.load_count(gpu_arbiter.CHAT):
+        _LOADED_OPTIONS.pop(slot, None)
+        return None
+    return found
 
 
 def options_hash(options: Optional[dict]) -> Optional[str]:
@@ -331,6 +356,18 @@ async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
         return None
     variant = status.get("gguf_variant")
     return variant.lower() if isinstance(variant, str) else None
+
+
+async def resident_gguf_variant(ctx: Any) -> Optional[str]:
+    """The quant the loaded chat model runs, as its status spells it, or None."""
+    from studio_mcp import loading
+
+    try:
+        _slots, status = await loading._resident(_caller(ctx))
+    except Exception:
+        return None
+    variant = status.get("gguf_variant") if isinstance(status, dict) else None
+    return variant if isinstance(variant, str) and variant else None
 
 
 async def ensure_model(
@@ -400,20 +437,17 @@ async def _ensure_model(
     if (
         slot == "llm"
         and model_kind in ("chat", "vision")
-        and not options
         and not (resident and resident.lower() == repo.lower())
     ):
-        kept = await _alongside(ctx, repo, variant)
+        # The card's load settings ride along, so they never cost the resident model its slot.
+        kept = await _alongside(ctx, repo, variant, options)
         if kept is not None:
             return kept
     wanted = (repo.lower(), (variant or "").lower())
     settings = options_hash(options)
     from core.inference import gpu_arbiter
 
-    loaded_with = _LOADED_OPTIONS.get(slot)
-    if loaded_with is not None and loaded_with[2] != gpu_arbiter.load_count(gpu_arbiter.CHAT):
-        _LOADED_OPTIONS.pop(slot, None)
-        loaded_with = None
+    loaded_with = loaded_options(slot)
     same_settings = (
         loaded_with is None or loaded_with[0] != repo.lower()
         if settings is None
@@ -438,7 +472,7 @@ async def _ensure_model(
                 None,
                 model = repo,
                 variant = variant,
-                max_seq_length = int((options or {}).get("max_seq_length") or FLOW_CHAT_CONTEXT),
+                max_seq_length = _load_context(options),
                 load_in_4bit = True,
                 hf_token = None,
                 kind = LOAD_KIND.get(model_kind, "llm"),
@@ -472,6 +506,13 @@ async def _ensure_model(
         _LOADED_OPTIONS[slot] = (repo.lower(), settings, gpu_arbiter.load_count(gpu_arbiter.CHAT))
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
+
+
+def _load_context(options: Optional[dict]) -> int:
+    """An explicit 0 hands sizing to llama.cpp's fit (Manual GPU memory with Auto layers), so only an absent
+    context falls back to the Flows default."""
+    value = (options or {}).get("max_seq_length")
+    return FLOW_CHAT_CONTEXT if value is None else int(value)
 
 
 def note_loaded(ctx: Any, slot: str, repo: str) -> None:
@@ -552,6 +593,9 @@ async def _chat_body(
     if seed is not None:
         body["seed"] = int(seed)
     body.update(sampling or {})
+    # Effort is a level of thinking, as in Chat's composer: off sends none.
+    if not thinking:
+        body.pop("reasoning_effort", None)
 
     _register_chat_cancel(ctx, cancel_id)
     return body
@@ -577,12 +621,13 @@ async def llm_text(
     seed: Optional[int] = None,
     stream_port: Optional[str] = "text",
     sampling: Optional[dict] = None,
+    load: Optional[dict] = None,
 ) -> str:
     from core.flows import caller as flow_caller
     from state.tool_policy import tools_force_disabled
 
     kind = "vision" if images else "chat"
-    await ensure_model(ctx, kind, model)
+    await (ensure_model(ctx, kind, model, load) if load else ensure_model(ctx, kind, model))
     body = await _chat_body(
         ctx,
         system = system,
@@ -718,6 +763,7 @@ async def llm_json(
     on_text: Optional[Callable[[str], None]] = None,
     retry_bad_json: bool = True,
     sampling: Optional[dict] = None,
+    load: Optional[dict] = None,
 ) -> Any:
     """``on_text`` streams the answer: it is called with the raw JSON written so far after every chunk.
     ``retry_bad_json = False`` raises on an unparsable answer instead of asking again (servers without
@@ -725,7 +771,7 @@ async def llm_json(
     from state.tool_policy import tools_force_disabled
 
     kind = "vision" if images else "chat"
-    await ensure_model(ctx, kind, model)
+    await (ensure_model(ctx, kind, model, load) if load else ensure_model(ctx, kind, model))
     body = await _chat_body(
         ctx,
         system = system,

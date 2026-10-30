@@ -1,9 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LLM nodes with "Use the model's saved settings" on read Chat's per-model memory (the
-`inferenceParamsByModel` chat setting) at run time. No store of their own: Save and Load in the editor
-write and read that same row. Keys a connected input sets are left alone."""
+"""LLM nodes with "Use the model's saved settings" on read Chat's per-model memory at run time: the
+`inferenceParamsByModel` chat setting for sampling, and the per-model launch override (what Chat's run settings
+remember, and what an API load applies) for load settings. No store of their own: Save and Load in the editor
+write and read those same rows. Keys a connected input sets are left alone.
+
+A card's own load settings are kept in that override's shape (`load`), so one mapping turns either into the
+load request: the one auto-switch loads use."""
 
 from __future__ import annotations
 
@@ -26,7 +30,15 @@ SAVED_TO_PARAM = {
     "maxTokens": "max_tokens",
 }
 
-SAMPLING_PARAMS = ("top_p", "top_k", "min_p", "repetition_penalty", "presence_penalty")
+# Sent as the request field of the same name when set; unset leaves the server's choice.
+REQUEST_PARAMS = (
+    "top_p",
+    "top_k",
+    "min_p",
+    "repetition_penalty",
+    "presence_penalty",
+    "reasoning_effort",
+)
 
 # Chat records a "Max" output cap as this, meaning the load's whole window.
 _MAX_TOKENS_AS_MAX = 2**31 - 1
@@ -91,6 +103,52 @@ def read_saved(model_id: Optional[str]) -> Optional[dict]:
         return None
 
 
-def sampling(params: dict) -> dict:
-    """The optional sampling knobs a node sets; unset ones are left to the server."""
-    return {k: params[k] for k in SAMPLING_PARAMS if params.get(k) is not None}
+def request_params(params: dict) -> dict:
+    return {k: params[k] for k in REQUEST_PARAMS if params.get(k) not in (None, "")}
+
+
+LOAD = "load"
+
+
+def saved_load(model_id: Optional[str], variant: Optional[str] = None) -> dict:
+    if not model_id:
+        return {}
+    try:
+        from utils.openai_auto_switch_settings import resolve_override_for_load
+
+        return dict(resolve_override_for_load(model_id, None, variant)[1] or {})
+    except Exception:
+        logger.debug("flows: could not read saved load settings", exc_info = True)
+        return {}
+
+
+def looks_gguf(repo: Optional[str], variant: Optional[str]) -> bool:
+    return bool(variant) or "gguf" in (repo or "").lower()
+
+
+def load_kwargs(load: Any, *, is_gguf: bool) -> Optional[dict]:
+    """The load options a card's settings ask for, or None for "however it loads by default"."""
+    if not isinstance(load, dict) or not load:
+        return None
+    from utils.openai_auto_switch_settings import model_override_load_kwargs, normalize_model_override
+
+    return model_override_load_kwargs(normalize_model_override(load), is_gguf = is_gguf) or None
+
+
+def card_load_kwargs(
+    params: dict, resident: Optional[str] = None, resident_variant: Optional[str] = None
+) -> Optional[dict]:
+    """What the scheduler groups by, before the run resolves saved settings: theirs when the card follows them.
+    A card with Model unset reads as the resident model and its quant, so GGUF-only and quant-specific settings
+    match what the run resolves."""
+    choice = params.get("model")
+    picked = choice.get("repo") if isinstance(choice, dict) else None
+    repo = picked or resident
+    variant = (choice.get("variant") if isinstance(choice, dict) else None) if picked else resident_variant
+    load = params.get(LOAD) or {}
+    if params.get(USE_SAVED) and repo:
+        load = {**load, **saved_load(repo, variant)}
+    try:
+        return load_kwargs(load, is_gguf = looks_gguf(repo, variant))
+    except Exception:
+        return None

@@ -214,6 +214,7 @@ class RunState:
     app: Any = None
     resident: dict[str, Optional[str]] = field(default_factory = dict)
     initial_resident: dict[str, list[str]] = field(default_factory = dict)
+    resident_variant: dict[str, Optional[str]] = field(default_factory = dict)
     fresh: set[str] = field(default_factory = set)
     prefetch_task: Optional[asyncio.Task] = field(default = None, repr = False)
     prefetched: int = 0
@@ -1383,6 +1384,7 @@ class FlowEngine:
             if gpu_running == 0:
                 gpu_ready = [n for n in ready if plan.specs[n]["lane"] == "gpu"]
                 if gpu_ready:
+                    await self._probe_resident_variant(rs, gpu_ready)
                     launch.append(self._pick_gpu(rs, gpu_ready))
             for nid in launch:
                 pending.remove(nid)
@@ -1658,21 +1660,71 @@ class FlowEngine:
         repo = choice.get("repo", "") if isinstance(choice, dict) else ""
         return MODEL_SLOT.get(kind, kind), str(repo or "").lower()
 
+    async def _probe_resident_variant(self, rs: RunState, ready: list[str]) -> None:
+        """The loaded chat model's quant, for Model-unset cards that follow saved settings: their saved load can
+        be quant-specific. Read only when one is ready; nothing else is on the GPU at this point."""
+        from studio_mcp import loading
+
+        if not any(
+            self._model_of(rs.plan, nid) == ("llm", "")
+            and (rs.plan.nodes[nid].get("params") or {}).get(model_settings.USE_SAVED)
+            for nid in ready
+        ):
+            return
+        try:
+            _slots, status = await asyncio.wait_for(loading._resident(rs.caller), RESIDENT_PROBE_S)
+            variant = status.get("gguf_variant")
+        except Exception:
+            variant = None
+        rs.resident_variant["llm"] = variant if isinstance(variant, str) and variant else None
+
     def _pick_gpu(self, rs: RunState, ready: list[str]) -> str:
         plan = rs.plan
 
         def model_of(nid: str) -> tuple[str, str]:
             return self._model_of(plan, nid)
 
+        from core.flows.nodes._common import loaded_options, options_hash
+
+        variants = getattr(rs, "resident_variant", None) or {}
+
+        # Cards with their own load settings group by them too, so same-settings cards run back to back.
+        loads: dict[str, Optional[str]] = {}
+
+        def load_of(nid: str) -> Optional[str]:
+            if nid not in loads:
+                params = plan.nodes[nid].get("params") or {}
+                slot, repo = model_of(nid)
+                loads[nid] = (
+                    options_hash(
+                        model_settings.card_load_kwargs(
+                            params, None if repo else rs.resident.get(slot), variants.get(slot)
+                        )
+                    )
+                    if model_settings.LOAD in params or params.get(model_settings.USE_SAVED)
+                    else None
+                )
+            return loads[nid]
+
+        def loaded_with(slot: str, repo: str) -> Optional[str]:
+            found = loaded_options(slot)
+            return found[1] if found and found[0] == repo else None
+
         for nid in ready:
             slot, repo = model_of(nid)
-            if not repo or (rs.resident.get(slot) or "").lower() == repo:
+            resident = (rs.resident.get(slot) or "").lower()
+            if not repo:
+                # A card on the loaded model with its own load settings goes first only if they match the load.
+                if load_of(nid) is None or (resident and load_of(nid) == loaded_with(slot, resident)):
+                    return nid
+            elif resident == repo and load_of(nid) == loaded_with(slot, repo):
                 return nid
         counts: dict[tuple, int] = {}
         for nid in ready:
-            counts[model_of(nid)] = counts.get(model_of(nid), 0) + 1
+            key = (*model_of(nid), load_of(nid))
+            counts[key] = counts.get(key, 0) + 1
         best = max(counts.values())
-        return next(n for n in ready if counts[model_of(n)] == best)
+        return next(n for n in ready if counts[(*model_of(n), load_of(n))] == best)
 
     def _gather_inputs(self, rs: RunState, nid: str, env: Env) -> tuple[dict, Optional[str]]:
         plan = rs.plan
@@ -2162,11 +2214,18 @@ async def _apply_saved_settings(ctx: Any, spec: dict, params: dict, bound: set[s
     """In place, before the cache key: a saved setting that changes must miss the cache."""
     choice = params.get("model")
     model_id = choice.get("repo") if isinstance(choice, dict) else None
+    variant = choice.get("variant") if isinstance(choice, dict) else None
     if not model_id:
-        from core.flows.nodes._common import resident_name
+        from core.flows.nodes._common import resident_gguf_variant, resident_name
+
         model_id = await resident_name(ctx, spec["model_kind"])
+        variant = await resident_gguf_variant(ctx) if model_id else None
     saved = await asyncio.to_thread(model_settings.read_saved, model_id)
     params.update(model_settings.overlay(params, saved, spec, bound))
+    if any(p["id"] == model_settings.LOAD for p in spec["params"]):
+        load = await asyncio.to_thread(model_settings.saved_load, model_id, variant)
+        if load:
+            params[model_settings.LOAD] = {**(params.get(model_settings.LOAD) or {}), **load}
 
 
 def _bind_params(spec: dict, params: dict, inputs: dict) -> None:

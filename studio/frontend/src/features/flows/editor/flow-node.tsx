@@ -28,6 +28,8 @@ import {
 import { CARD_MIN_WIDTH, cardMinHeight } from "./card-size";
 import type { RfNode } from "./derive-rf";
 import { nodeIcon } from "./icons";
+import { LLM_SETTINGS_NODES } from "./llm-settings";
+import { LlmReloadHint } from "./llm-settings-panel";
 import { MediaThumb, isMediaValue } from "./media";
 import {
   CollapsedPorts,
@@ -384,6 +386,7 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
           {flowOuts.length > 0 && <NodePorts inputs={[]} outputs={flowOuts} />}
           {Body ? <Body node={node} /> : null}
           {fields && <NodeFieldRows rows={fields.rows} />}
+          {LLM_SETTINGS_NODES.has(node.type) && <LlmReloadHint node={node} />}
           {fields && <NodeDisclosure sections={fields.long} />}
           {(runtime.outputs ||
             runtime.partial ||
