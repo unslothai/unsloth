@@ -19,3 +19,20 @@ def test_custom_generate_drops_rejected_kwargs():
 
 def test_regular_model_keeps_all_kwargs():
     assert _supported_generate_kwargs(types.SimpleNamespace(), _KWARGS) is _KWARGS
+
+
+class _TextFirst:
+    def __call__(self, text = None, audio = None, images = None, **kwargs):
+        return text, images
+
+
+class _ImagesFirst:
+    def __call__(self, images = None, text = None, **kwargs):
+        return images, text
+
+
+def test_text_first_processor_detected():
+    from core.inference.inference import _processor_takes_text_first
+
+    assert _processor_takes_text_first(_TextFirst()) is True
+    assert _processor_takes_text_first(_ImagesFirst()) is False

@@ -11,6 +11,7 @@ from transformers import TextIteratorStreamer, TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
 import contextlib
+import inspect
 import json
 import re
 import sys
@@ -704,6 +705,15 @@ def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
     if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
         return generation_kwargs
     return {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
+
+
+def _processor_takes_text_first(processor) -> bool:
+    """LFM3-Omni's processor is (text, audio, ..., images); the usual VLM order is (images, text)."""
+    try:
+        params = list(inspect.signature(processor.__call__).parameters)
+    except (TypeError, ValueError):
+        return False
+    return bool(params) and params[0] == "text"
 
 
 # LlamaModel_fast_forward cuts input_ids at max_seq_length, so decoding past it crashes; FastModel's stock forward does not.
@@ -2184,12 +2194,21 @@ class InferenceBackend:
                         input_text = _render_plain_vision(vision_messages)
                     else:
                         raise
-            inputs = processor(
-                attached[0] if len(attached) == 1 else attached,
-                input_text,
-                add_special_tokens = False,
-                return_tensors = "pt",
-            ).to(model.device)
+            _images = attached[0] if len(attached) == 1 else attached
+            if _processor_takes_text_first(processor):
+                inputs = processor(
+                    text = input_text,
+                    images = _images,
+                    add_special_tokens = False,
+                    return_tensors = "pt",
+                ).to(model.device)
+            else:
+                inputs = processor(
+                    _images,
+                    input_text,
+                    add_special_tokens = False,
+                    return_tensors = "pt",
+                ).to(model.device)
             prompt_text = input_text
         else:
             formatted_prompt = self.format_chat_prompt(
