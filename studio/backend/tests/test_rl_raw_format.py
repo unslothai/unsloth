@@ -279,11 +279,16 @@ def test_images_late_in_a_chat_column_are_found():
     from datasets import Dataset
 
     text = [{"role": "user", "content": [{"type": "text", "text": "q", "image": None}]}]
-    for source in ("cat.png", "https://example.com/render?id=7"):
-        block = {"type": "image", "image": source, "text": None}
-        image = [{"role": "user", "content": [block]}]
+    blocks = [
+        {"type": "image", "image": "cat.png"},
+        {"type": "image", "image": "https://example.com/render?id=7"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/render?id=7"}},
+        {"type": "input_image", "image_url": "https://example.com/render?id=7"},
+    ]
+    for block in blocks:
+        image = [{"role": "user", "content": [{"text": None, **block}]}]
         dataset = Dataset.from_dict({"messages": [text] * 150 + [image]})
-        assert tmod._image_columns(dataset) == ["messages"], source
+        assert tmod._image_columns(dataset) == ["messages"], block
         assert tmod._image_columns(dataset.select(range(150))) == []
     late_bytes = [b"plain"] * 150 + [b"\x89PNG\r\n"]
     assert tmod._image_columns(Dataset.from_dict({"blob": late_bytes})) == ["blob"]
