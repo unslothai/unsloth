@@ -5683,15 +5683,14 @@ def _video_tools_reachable(
         bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}))
     except Exception:
         return True
-    bin_dir = bin_dir or source.get("LLAMA_ARG_VIDEO_FFMPEG_DIR")
+    search = bin_dir or source.get("LLAMA_ARG_VIDEO_FFMPEG_DIR")
     names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
-    if bin_dir:
-        return all(os.path.isfile(os.path.join(bin_dir, name)) for name in names)
-    search = source.get("PATH", os.defpath)
-    if sys.platform == "win32":
-        # CreateProcess also searches the binary's folder and the working directory.
-        launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
-        search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
+    if not search:
+        search = source.get("PATH", os.defpath)
+        if sys.platform == "win32":
+            # CreateProcess also searches the binary's folder and the working directory.
+            launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
+            search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
     return all(shutil.which(name, path = search) for name in names)
 
 

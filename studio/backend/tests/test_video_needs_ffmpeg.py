@@ -54,6 +54,16 @@ def test_the_ffmpeg_dir_flag_beats_path_and_env(tmp_path):
     )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "no execute bit on Windows")
+def test_non_executable_tools_in_the_ffmpeg_dir_drop_video(tmp_path):
+    tools = _tools_dir(tmp_path / "tools", "ffmpeg", "ffprobe")
+    for tool in tools.iterdir():
+        tool.chmod(0o644)
+    assert not llama_cpp._video_tools_reachable(
+        ["llama-server", "--video-ffmpeg-dir", str(tools)], {}
+    )
+
+
 def test_the_ffmpeg_dir_env_var_is_read_without_the_flag(tmp_path):
     good = _tools_dir(tmp_path / "good", "ffmpeg", "ffprobe")
     empty = _tools_dir(tmp_path / "empty")
