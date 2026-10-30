@@ -36,7 +36,7 @@ test("the toolbar holds no run or share actions; they float at the bottom of the
 
 test("the run bar sits on the editor body, so opening the Nodes panel or the inspector never moves it", () => {
   const page = read("features/flows/editor/flows-editor-page.tsx");
-  const body = page.slice(page.indexOf("// Curves into the app sidebar only while it is open beside it."));
+  const body = page.slice(page.indexOf('<div className="relative flex min-h-0 flex-1 overflow-hidden bg-background">'));
   const canvasColumn = body.slice(body.indexOf('<div className="relative min-h-0 flex-1">'), body.indexOf("<RunDrawer />"));
   assert.ok(!canvasColumn.includes("<RunBar"), "the bar is not inside the canvas column");
   assert.ok(body.indexOf("<RunBar") > body.indexOf("<Inspector />"), "the bar is a child of the body row");
@@ -56,7 +56,8 @@ test("the titlebar strip and toolbar share the sidebar's colour with no rule und
   const page = read("features/flows/editor/flows-editor-page.tsx");
   assert.match(page, /flows-editor flex h-full min-h-0 w-full flex-col text-foreground/);
   assert.match(page, /const sidebarBeside = !!sidebar\?\.open && !sidebar\.isMobile;/);
-  assert.match(page, /transition-\[border-radius\] duration-200 ease-out \$\{sidebarBeside && !macChrome \? "rounded-tl-xl" : "rounded-tl-none"\}/, "rounded beside the open sidebar, eased away when it closes");
+  assert.match(page, /origin-top-left bg-\[radial-gradient\(circle_at_100%_100%,transparent_11px,var\(--color-sidebar\)_12px\)\] transition-transform duration-200 ease-out \$\{sidebarBeside && !macChrome \? "scale-100" : "scale-0"\}/, "a painted corner that eases in and out with the sidebar");
+  assert.doesNotMatch(page, /rounded-tl-xl/, "no clipped radius: WebKit repaints it late");
   const bar = read("features/flows/editor/toolbar.tsx");
   assert.match(bar, /\$\{titlebar \? "bg-background" : "bg-sidebar"\}/);
   assert.doesNotMatch(bar, /border-b bg-background px-2/);

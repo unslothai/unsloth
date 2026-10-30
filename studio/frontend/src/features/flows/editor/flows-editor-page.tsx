@@ -128,10 +128,14 @@ function EditorBody({
         </Alert>
       )}
       {!readOnly && <CapabilityBanner flowId={flowId} />}
-      <div
-        // Curves into the app sidebar only while it is open beside it.
-        className={`relative flex min-h-0 flex-1 overflow-hidden bg-background transition-[border-radius] duration-200 ease-out ${sidebarBeside && !macChrome ? "rounded-tl-xl" : "rounded-tl-none"}`}
-      >
+      <div className="relative flex min-h-0 flex-1 overflow-hidden bg-background">
+        {/* Curves into the app sidebar while it is open beside it. A painted corner, not a clipped
+            radius: WebKit can leave a clip over the canvas layer stale for seconds. */}
+        <span
+          aria-hidden="true"
+          className={`pointer-events-none absolute top-0 left-0 z-[1002] size-3 origin-top-left bg-[radial-gradient(circle_at_100%_100%,transparent_11px,var(--color-sidebar)_12px)] transition-transform duration-200 ease-out ${sidebarBeside && !macChrome ? "scale-100" : "scale-0"}`}
+          data-testid="flows-editor-corner"
+        />
         {paletteOpen && !readOnly && <Palette onDrop={dropAt} />}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="relative min-h-0 flex-1">

@@ -21,7 +21,7 @@ test("on Mac the toolbar is the titlebar row, on the canvas colour, clear of the
   assert.match(page, /const \[macChrome\] = useState\(shouldUseNativeMacWindowTitlebar\);/);
   assert.match(page, /\$\{macChrome \? "bg-background" : `bg-sidebar \$\{BELOW_TITLEBAR\}`\}/, "no titlebar strip on Mac");
   assert.match(page, /clearNav=\{macChrome && !\(sidebar\?\.pinned \?\? true\)\}/);
-  assert.match(page, /sidebarBeside && !macChrome \? "rounded-tl-xl"/);
+  assert.match(page, /sidebarBeside && !macChrome \? "scale-100"/);
   const bar = read("features/flows/editor/toolbar.tsx");
   assert.match(bar, /data-tauri-drag-region=\{titlebar \|\| undefined\}/);
   assert.match(bar, /\$\{titlebar \? "bg-background" : "bg-sidebar"\}/);
