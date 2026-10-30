@@ -23,8 +23,7 @@ function write(flowId: string, pins: Pins): void {
     if (Object.keys(pins).length)
       globalThis.localStorage?.setItem(KEY(flowId), JSON.stringify(pins));
     else globalThis.localStorage?.removeItem(KEY(flowId));
-  } catch {
-  }
+  } catch {}
 }
 
 interface PinsState {
@@ -83,4 +82,88 @@ export function historyPreview(
   const text =
     typeof first === "string" ? first : JSON.stringify(first ?? null);
   return { text: text.length > 80 ? `${text.slice(0, 79)}…` : text };
+}
+
+export type HistoryKind =
+  | "image"
+  | "audio"
+  | "video"
+  | "text"
+  | "number"
+  | "list"
+  | "json"
+  | "dataset";
+
+/** A history entry as a small Library-style card: what it is, a name, and one line of detail. */
+export function historyCard(outputs: Record<string, unknown>): {
+  kind: HistoryKind;
+  title: string;
+  detail: string;
+  media?: MediaValue;
+} {
+  const preview = historyPreview(outputs);
+  if ("media" in preview) {
+    const m = preview.media;
+    const size =
+      m.kind === "image" && m.width && m.height
+        ? `${m.width}×${m.height}`
+        : m.duration_s
+          ? `${Math.round(m.duration_s)}s`
+          : "";
+    const name = m.kind[0].toUpperCase() + m.kind.slice(1);
+    return {
+      kind: m.kind,
+      title: m.prompt?.trim() || name,
+      detail: size || name,
+      media: m,
+    };
+  }
+  const value = Object.values(outputs)[0];
+  if (typeof value === "string")
+    return {
+      kind: "text",
+      title: value.trim() || "Empty text",
+      detail: `${value.length} chars`,
+    };
+  if (typeof value === "number" || typeof value === "boolean")
+    return {
+      kind: "number",
+      title: String(value),
+      detail: typeof value === "boolean" ? "Toggle" : "Number",
+    };
+  if (Array.isArray(value))
+    return {
+      kind: "list",
+      title: `${value.length} item${value.length === 1 ? "" : "s"}`,
+      detail: "List",
+    };
+  if (
+    value &&
+    typeof value === "object" &&
+    (value as { kind?: unknown }).kind === "dataset"
+  ) {
+    const rows = (value as { rows?: number | null }).rows;
+    const ref = String((value as { ref?: unknown }).ref ?? "Dataset");
+    return {
+      kind: "dataset",
+      title: ref.split("/").pop() || ref,
+      detail: rows ? `${rows} rows` : "Dataset",
+    };
+  }
+  const keys =
+    value && typeof value === "object" ? Object.keys(value).length : 0;
+  return {
+    kind: "json",
+    title: "JSON",
+    detail: `${keys} key${keys === 1 ? "" : "s"}`,
+  };
+}
+
+/** "just now", "5m ago", "3h ago", then the date. */
+export function historyAgo(iso: string, now = Date.now()): string {
+  const seconds = Math.max(0, (now - Date.parse(iso)) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return new Date(iso).toLocaleDateString();
 }

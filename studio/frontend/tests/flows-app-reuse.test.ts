@@ -12,7 +12,7 @@ registerBundlerResolver();
 const { appFields, applyAppValues, appOutputs, foldAppEvents } = await import(
   "../src/features/flows/app/app-form.ts"
 );
-const { historyPreview, pinsForRun, sameOutputs, usePinsStore } = await import(
+const { historyAgo, historyCard, historyPreview, pinsForRun, sameOutputs, usePinsStore } = await import(
   "../src/features/flows/stores/pins-store.ts"
 );
 
@@ -259,4 +259,34 @@ test("a Document input is an app field that takes an upload", () => {
   const media = { kind: "document", ref: "sha256:ab", name: "q3.pdf" };
   const filled = applyAppValues(d as never, [field], { [field.key]: media });
   assert.deepEqual(filled.doc.nodes[0].params.asset, media);
+});
+
+test("history entries read like small Library cards: type, name and detail", () => {
+  const media = { kind: "image", ref: "image:1", width: 1024, height: 768, prompt: "a sloth" };
+  assert.deepEqual(historyCard({ image: media }), {
+    kind: "image",
+    title: "a sloth",
+    detail: "1024×768",
+    media,
+  });
+  assert.deepEqual(historyCard({ text: "  hello there " }), {
+    kind: "text",
+    title: "hello there",
+    detail: "14 chars",
+  });
+  assert.equal(historyCard({ items: ["a", "b"] }).title, "2 items");
+  assert.equal(historyCard({ n: 3 }).kind, "number");
+  assert.deepEqual(historyCard({ out: { kind: "dataset", source: "hf", ref: "org/rows", rows: 50 } }), {
+    kind: "dataset",
+    title: "rows",
+    detail: "50 rows",
+  });
+  assert.deepEqual(historyCard({ obj: { a: 1, b: 2 } }), { kind: "json", title: "JSON", detail: "2 keys" });
+});
+
+test("history captions say how long ago", () => {
+  const now = Date.parse("2026-10-30T12:00:00Z");
+  assert.equal(historyAgo("2026-10-30T11:59:30Z", now), "just now");
+  assert.equal(historyAgo("2026-10-30T11:55:00Z", now), "5m ago");
+  assert.equal(historyAgo("2026-10-30T09:00:00Z", now), "3h ago");
 });
