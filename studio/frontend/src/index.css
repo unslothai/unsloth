@@ -3144,17 +3144,6 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 0 0 1px var(--ring-soft) !important;
 	}
 
-	/* Green track when on, slider-gray thumb in both states. */
-	.panel-switch[data-state="checked"] {
-		background-color: var(--primary) !important;
-	}
-	.panel-switch [data-slot="switch-thumb"] {
-		background-color: var(--panel-slider-fg) !important;
-	}
-	.panel-switch[data-state="checked"] [data-slot="switch-thumb"] {
-		background-color: #ffffff !important;
-	}
-
 	.tooltip-compact {
 		@apply rounded-[11px] border-transparent bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-(--tooltip-fg) shadow-(--tooltip-shadow);
 	}
@@ -4386,7 +4375,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="context-menu-item"],
 			[data-slot="context-menu-sub-trigger"]
 		)
-		svg:not(.unsloth-tick) {
+		svg:not(.unsloth-tick):not(.permission-mode-icon) {
 		width: var(--ui-icon-size) !important;
 		height: var(--ui-icon-size) !important;
 	}

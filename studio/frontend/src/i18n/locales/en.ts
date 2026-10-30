@@ -2187,8 +2187,8 @@ export const en = {
       avatarShape: "Avatar shape",
       avatarShapeCircle: "Circle",
       avatarShapeRounded: "Rounded",
-      greetingSloth: "Sloth in greeting",
-      greetingSlothDescription: "Show the sloth in the chat greeting.",
+      greetingSloth: "Greeting",
+      greetingSlothDescription: "Show the greeting on new chats.",
       chooseSloth: "Or pick a sloth",
       noPicture: "No profile picture",
       noneLabel: "None",
@@ -2888,9 +2888,8 @@ export const en = {
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
-      modelDisclaimer: "Model disclaimer",
-      modelDisclaimerDescription:
-        'Show "LLMs can make mistakes" under the chat box.',
+      composerAtBottom: "Composer at the bottom",
+      composerAtBottomDescription: "Start new chats with the composer at the bottom of the page instead of the middle.",
       projectAttachments: "Share files across a project",
       projectAttachmentsDescription:
         "Make new chat attachments available to every chat in the project.",
@@ -3346,6 +3345,16 @@ export const en = {
         placeholderModel: "The model shown is an example. Load a model on the Images or Video page and open this from its API button to fill it in.",
         autoSwitchOff: "Media auto-switch is off, so requests run on the model the page has loaded, whatever they name.",
       },
+      trainingApi: {
+        title: "Training API",
+        description: "Fine-tune models from your own code with the OpenAI-compatible fine-tuning endpoints: upload a JSONL file, create a job, follow its events, then chat with the trained model.",
+        placeholder: "The model and settings shown are an example. Open this from the API button on the Train page to fill in your current setup.",
+        hubDataset: "Your Train page uses a Hugging Face or S3 dataset. The API trains on uploaded files, so save the dataset as JSONL and upload that.",
+        batching: "Compatible jobs waiting in the queue train together automatically.",
+        chatNote: "Chatting with the trained model by name needs Model auto-switch on, or load it on the Chat page first.",
+        cancelTitle: "Cancel a job",
+        cancelDescription: "Stops a queued or running job. Not part of the example above.",
+      },
       decisionApi: {
         title: "Decision API",
         docs: "Docs",
@@ -3728,6 +3737,8 @@ export const en = {
       history: "History",
     },
     goToLibrary: "Go to Library",
+    imageTraining: "Image training",
+    goToImageTraining: "Train image LoRAs",
     loadingRuntime: "Loading training runtime...",
     checkingSupport: "Checking this machine for training support...",
     backToHistory: "Back to history",

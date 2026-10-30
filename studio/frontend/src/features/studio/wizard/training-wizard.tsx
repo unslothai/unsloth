@@ -31,10 +31,10 @@ import {
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
-  ChipIcon,
   Database02Icon,
   PencilEdit01Icon,
   Settings02Icon,

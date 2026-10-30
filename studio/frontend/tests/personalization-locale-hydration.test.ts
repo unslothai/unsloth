@@ -183,6 +183,8 @@ function setup(
       chatWidthSaved?: boolean;
       sentAttachmentsSaved?: boolean;
     };
+    // Holds the personalization GET open until it resolves.
+    remoteGate?: Promise<void>;
   } = {},
 ) {
   const runTimers = installWindow();
@@ -232,8 +234,10 @@ function setup(
       isDefaultCustomization: (value: unknown) =>
         Object.keys(value as object).length === 0,
       isPalette: (value: unknown) => typeof value === "string",
-      loadPersonalization: () =>
-        Promise.resolve(options.remote ?? remotePersonalization("de")),
+      loadPersonalization: async () => {
+        await options.remoteGate;
+        return options.remote ?? remotePersonalization("de");
+      },
       migrateShippedSidebarNavDefault: (value: unknown) => value,
       sanitizeCustomization,
       savePersonalization: (data: SavedPayload) => {
@@ -281,6 +285,10 @@ function setup(
     runTimers,
     saves,
     customization: () => customization,
+    // What a settings control does: a new customization object in the store.
+    edit(next: Record<string, unknown>) {
+      customization = sanitizeCustomization({ ...customization, ...next });
+    },
     rename(displayName: string) {
       profile = { ...profile, displayName };
     },
@@ -473,5 +481,56 @@ test("an older server without attachment display keys preserves the local choice
   await settle();
   app.render();
   assert.equal(app.customization().sentAttachments, "list");
+  app.host.unmount();
+});
+
+test("an edit made while the personalization request is in flight is not overwritten by it", async () => {
+  // The server still holds an older size (a save cut short by a reload); the user changes it
+  // before that answer arrives.
+  let releaseRemote!: () => void;
+  const remote = remotePersonalization("auto");
+  const app = setup("stalled", {
+    localCustomization: { uiFontSize: 12 },
+    remote: {
+      ...remote,
+      version: 5,
+      appearance: { ...remote.appearance, customization: { uiFontSize: 20 } },
+    },
+    remoteGate: new Promise<void>((resolve) => {
+      releaseRemote = resolve;
+    }),
+  });
+  app.render();
+  await settle();
+
+  app.edit({ uiFontSize: 15 });
+  app.render();
+  releaseRemote();
+  await settle();
+  app.render();
+
+  assert.equal(app.customization().uiFontSize, 15);
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 1);
+  assert.equal(app.saves[0]?.appearance.customization.uiFontSize, 15);
+  app.host.unmount();
+});
+
+test("without an edit in flight the saved server customization still wins", async () => {
+  const remote = remotePersonalization("auto");
+  const app = setup("stalled", {
+    localCustomization: { uiFontSize: 12 },
+    remote: {
+      ...remote,
+      version: 5,
+      appearance: { ...remote.appearance, customization: { uiFontSize: 20 } },
+    },
+  });
+  app.render();
+  await settle();
+  app.render();
+
+  assert.equal(app.customization().uiFontSize, 20);
   app.host.unmount();
 });

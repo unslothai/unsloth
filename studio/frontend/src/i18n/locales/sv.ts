@@ -2300,8 +2300,8 @@ export const sv = {
       avatarShape: "Avatarform",
       avatarShapeCircle: "Cirkel",
       avatarShapeRounded: "Avrundad",
-      greetingSloth: "Sengångare i hälsning",
-      greetingSlothDescription: "Visa sengångaren i chatthälsningen.",
+      greetingSloth: "Hälsning",
+      greetingSlothDescription: "Visa hälsningen i nya chattar.",
       chooseSloth: "Eller välj en sengångare",
       noPicture: "Ingen profilbild",
       noneLabel: "Ingen",
@@ -3038,9 +3038,8 @@ export const sv = {
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
-      modelDisclaimer: "Modellfriskrivning",
-      modelDisclaimerDescription:
-        "Visa ”LLM:er kan göra misstag” under chattrutan.",
+      composerAtBottom: "Inmatningsfält längst ned",
+      composerAtBottomDescription: "Starta nya chattar med inmatningsfältet längst ned på sidan i stället för i mitten.",
       projectAttachments: "Dela filer i ett projekt",
       projectAttachmentsDescription:
         "Gör nya chattbilagor tillgängliga för alla chattar i projektet.",
@@ -3913,6 +3912,8 @@ export const sv = {
       history: "Historik",
     },
     goToLibrary: "Gå till biblioteket",
+    imageTraining: "Bildträning",
+    goToImageTraining: "Träna bild-LoRA",
     loadingRuntime: "Läser in träningsmiljö ...",
     checkingSupport: "Kontrollerar denna dators stöd för träning ...",
     backToHistory: "Tillbaka till historiken",

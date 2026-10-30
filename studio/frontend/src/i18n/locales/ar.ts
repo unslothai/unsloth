@@ -2134,8 +2134,8 @@ export const ar = {
       uploadPhoto: "رفع صورة",
       removePhoto: "إزالة",
       pictureOptions: "خيارات صورة الملف الشخصي",
-      greetingSloth: "الكسلان في التحية",
-      greetingSlothDescription: "إظهار الكسلان في تحية المحادثة.",
+      greetingSloth: "التحية",
+      greetingSlothDescription: "إظهار التحية في المحادثات الجديدة.",
       noPicture: "لا توجد صورة ملف شخصي",
       noneLabel: "بلا",
       stats: {
@@ -2824,9 +2824,8 @@ export const ar = {
         "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
-      modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
-      modelDisclaimerDescription:
-        'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
+      composerAtBottom: "حقل الكتابة في الأسفل",
+      composerAtBottomDescription: "ابدأ المحادثات الجديدة وحقل الكتابة أسفل الصفحة بدلًا من منتصفها.",
       projectAttachments: "مشاركة الملفات عبر المشروع",
       projectAttachmentsDescription:
         "أتِح مرفقات الدردشة الجديدة لكل دردشة في المشروع.",
@@ -3472,6 +3471,8 @@ export const ar = {
   },
   studio: {
     goToLibrary: "الانتقال إلى المكتبة",
+    imageTraining: "تدريب الصور",
+    goToImageTraining: "تدريب LoRA للصور",
     routeTitle: "تدريب",
     wizard: {
       modelTitle: "النموذج",

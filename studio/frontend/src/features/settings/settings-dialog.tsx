@@ -26,7 +26,6 @@ import {
   Cancel01Icon,
   CloudIcon,
   ComputerTerminal01Icon,
-  CpuIcon,
   DatabaseSettingIcon,
   EnergyRectangleIcon,
   InternetIcon,
@@ -38,7 +37,7 @@ import {
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { ShieldCogIcon } from "@/lib/shield-cog-icon";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { ChipIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -201,7 +200,7 @@ const TABS: TabDef[] = [
   {
     id: "resources",
     labelKey: "settings.tabs.resources",
-    icon: CpuIcon,
+    icon: ChipIcon,
   },
   {
     id: "chat",
