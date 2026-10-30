@@ -304,6 +304,22 @@ def test_pip_gets_a_writable_prefix_inside_the_workdir(prepared):
     )
 
 
+def test_prefix_dirs_ignore_scheme_paths_on_another_drive(monkeypatch):
+    from core.inference import os_sandbox
+
+    real = os_sandbox.sysconfig.get_paths
+
+    def get_paths(scheme, vars):
+        # relpath raises on nt for a path on another drive; None makes it raise here too.
+        return {**real(scheme, vars = vars), "stdlib": None, "include": None}
+
+    monkeypatch.setattr(os_sandbox.sysconfig, "get_paths", get_paths)
+    assert os_sandbox._pip_prefix_dirs() == (
+        os_sandbox._PIP_PREFIX_LIB_DIRS,
+        os_sandbox._PIP_PREFIX_SCRIPTS_DIR,
+    )
+
+
 def test_commands_follow_the_prefix_schemes_scripts_dir(monkeypatch):
     from core.inference import os_sandbox
 

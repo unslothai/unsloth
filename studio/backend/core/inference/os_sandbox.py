@@ -46,11 +46,12 @@ def _pip_prefix_dirs() -> "tuple[tuple[str, ...], str]":
         scheme = "nt" if os.name == "nt" else "posix_prefix"
     # A bare separator base turns nt's "{base}/Lib" into a UNC path that relpath rejects.
     base = os.path.join(os.path.abspath(os.sep), "prefix")
-    paths = {
-        key: os.path.relpath(path, base)
-        for key, path in sysconfig.get_paths(scheme, vars = {"base": base, "platbase": base}).items()
-    }
-    return tuple(dict.fromkeys((paths["purelib"], paths["platlib"]))), paths["scripts"]
+    paths = sysconfig.get_paths(scheme, vars = {"base": base, "platbase": base})
+    # Only these: nt's stdlib/include sit on the install drive, where relpath raises.
+    purelib, platlib, scripts = (
+        os.path.relpath(paths[key], base) for key in ("purelib", "platlib", "scripts")
+    )
+    return tuple(dict.fromkeys((purelib, platlib))), scripts
 
 
 _PIP_PREFIX_LIB_DIRS, _PIP_PREFIX_SCRIPTS_DIR = _pip_prefix_dirs()
