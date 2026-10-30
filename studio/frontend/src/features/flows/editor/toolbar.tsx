@@ -7,18 +7,26 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useReactFlow } from "@xyflow/react";
 import { memo } from "react";
 import { toast } from "sonner";
-import { newId, useDocStore } from "../stores/doc-store";
+import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import { FIT_MIN_ZOOM } from "./canvas-rules";
 import {
-  GridViewIcon,
+  GroupItemsIcon,
   HierarchySquare02Icon,
   MagnetIcon,
   Redo02Icon,
+  Route01Icon,
   StickyNote01Icon,
   Undo02Icon,
 } from "./icon-data";
 import { autoLayout } from "./layout";
+import {
+  PLACE_GROUP,
+  PLACE_NOTE,
+  togglePlacement,
+  usePlacement,
+} from "./placement";
+import { REROUTE_TYPE } from "./reroutes";
 import { groupSelection } from "./use-editor-shortcuts";
 
 const SAVE_LABEL: Record<string, string> = {
@@ -53,7 +61,7 @@ function IconButton({
       onClick={onClick}
       className={
         active
-          ? "bg-background text-foreground shadow-sm dark:bg-input/30"
+          ? "bg-sidebar-accent text-foreground shadow-sm"
           : "text-muted-foreground"
       }
     >
@@ -68,12 +76,13 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
   const canUndo = useDocStore((s) => s.past.length > 0);
   const canRedo = useDocStore((s) => s.future.length > 0);
   const saveState = useUiStore((s) => s.saveState);
+  const armed = usePlacement((s) => s.armed);
   const snap = useUiStore((s) => s.snapToGrid);
   const wireStyle = useUiStore((s) => s.wireStyle);
-  const { getInternalNode, getViewport, fitView } = useReactFlow();
+  const { getInternalNode, fitView } = useReactFlow();
 
   return (
-    <div className="grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-border border-b bg-background px-2 text-foreground">
+    <div className="grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 bg-sidebar px-2 text-foreground">
       <div className="flex min-w-0 items-center gap-2">
         {/* Sized to the name: the hidden copy sets the width, the input fills it. */}
         <div className="inline-grid min-w-0 max-w-[min(22rem,50vw)] font-semibold text-sm">
@@ -102,7 +111,7 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
         </div>
         <Badge
           variant="secondary"
-          className="h-6 shrink-0 text-ui-10 capitalize"
+          className="h-6 shrink-0 bg-background text-ui-10 capitalize"
         >
           {kind}
         </Badge>
@@ -114,7 +123,8 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
         </span>
       </div>
 
-      <div className="flex h-9 items-center gap-0.5 rounded-full bg-muted p-[3px]">
+      {/* Inverted against the sidebar-coloured bar: the pill takes the canvas colour, a pressed item the bar's. */}
+      <div className="flex h-9 items-center gap-0.5 rounded-full bg-background p-[3px]">
         <IconButton
           icon={Undo02Icon}
           label="Undo (Ctrl+Z)"
@@ -146,7 +156,7 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
               type="button"
               aria-pressed={wireStyle === style}
               onClick={() => useUiStore.getState().setWireStyle(style)}
-              className={`h-8 rounded-full px-2.5 text-xs capitalize transition ${wireStyle === style ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              className={`h-8 rounded-full px-2.5 text-xs capitalize transition ${wireStyle === style ? "bg-sidebar-accent text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
               data-testid={`flows-wire-style-${style}`}
             >
               {style}
@@ -175,39 +185,30 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
           }}
         />
         <IconButton
-          icon={GridViewIcon}
-          label="Group selection (Shift+G)"
+          icon={GroupItemsIcon}
+          label="Add group (Shift+G groups the selection)"
           disabled={readOnly}
+          active={armed === PLACE_GROUP}
           onClick={() => {
-            const vp = getViewport();
-            groupSelection([
-              -vp.x / vp.zoom + 80,
-              -vp.y / vp.zoom + 80,
-              520,
-              340,
-            ]);
+            if (useUiStore.getState().selectedNodes.length) groupSelection();
+            else togglePlacement(PLACE_GROUP);
           }}
         />
         <IconButton
           icon={StickyNote01Icon}
           label="Add note"
           disabled={readOnly}
-          onClick={() => {
-            const vp = getViewport();
-            useDocStore.getState().upsertNote({
-              id: newId("note"),
-              text: "",
-              rect: [
-                Math.round(-vp.x / vp.zoom + 120),
-                Math.round(-vp.y / vp.zoom + 120),
-                240,
-                140,
-              ],
-            });
-          }}
+          active={armed === PLACE_NOTE}
+          onClick={() => togglePlacement(PLACE_NOTE)}
+        />
+        <IconButton
+          icon={Route01Icon}
+          label="Add reroute (drop it on a wire to split it)"
+          disabled={readOnly}
+          active={armed === REROUTE_TYPE}
+          onClick={() => togglePlacement(REROUTE_TYPE)}
         />
       </div>
-
     </div>
   );
 }

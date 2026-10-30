@@ -23,13 +23,8 @@ import { nodeIcon } from "./icons";
 import { NodeIconTile } from "./node-card";
 import { CATEGORY_TONES } from "./node-tones";
 import { stopPlacement, togglePlacement, usePlacement } from "./placement";
-import { REROUTE_TYPE } from "./reroutes";
 import { PlacementGhost } from "./placement-ghost";
 
-const REROUTE_HINT =
-  "Steer a wire by hand: drop it on a wire to split it, or wire into it.";
-
-// Node rows show the card-to-be at canvas zoom; the Reroute row keeps its own chip.
 type Ghost = { spec: NodeSpec | null; body: ReactNode; x: number; y: number };
 type DropFn = (type: string, x: number, y: number) => void;
 const DRAG_SLOP = 5;
@@ -115,46 +110,6 @@ function PaletteItem({
       className={`flex w-full touch-none select-none items-center gap-2.5 border-l-2 px-3 py-1.5 text-left transition ${armed ? "border-primary bg-muted" : "border-transparent bg-background hover:border-border/60 hover:bg-muted/35"}`}
     >
       <PaletteRowBody spec={spec} color={color} />
-    </button>
-  );
-}
-
-function RerouteBody() {
-  return (
-    <>
-      <span className="flex w-3.5 justify-center">
-        <span className="h-2 w-3.5 rounded-full border border-muted-foreground" />
-      </span>
-      <span className="flex-1 truncate">Reroute</span>
-    </>
-  );
-}
-
-function RerouteItem({
-  armed,
-  onGhost,
-  onDrop,
-}: {
-  armed: boolean;
-  onGhost: (ghost: Ghost | null) => void;
-  onDrop: DropFn;
-}) {
-  const handlers = usePlacementPress(
-    REROUTE_TYPE,
-    () => ({ spec: null, body: <RerouteBody /> }),
-    onGhost,
-    onDrop,
-  );
-  return (
-    <button
-      type="button"
-      {...handlers}
-      aria-pressed={armed}
-      title={REROUTE_HINT}
-      data-testid="palette-reroute"
-      className={`mb-1.5 flex w-full touch-none select-none items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui-12p5 ${armed ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/35 hover:text-foreground"}`}
-    >
-      <RerouteBody />
     </button>
   );
 }
@@ -250,13 +205,6 @@ function PaletteImpl({
         />
       </div>
       <div className="flex-1 overflow-y-auto px-1.5 py-2">
-        {(!deferred || "reroute wire".includes(deferred)) && (
-          <RerouteItem
-            armed={armed === REROUTE_TYPE}
-            onGhost={setGhost}
-            onDrop={onDrop}
-          />
-        )}
         {groups.map(({ category, specs }) => {
           const isCollapsed = !deferred && collapsed[category.id];
           return (
