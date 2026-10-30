@@ -883,8 +883,11 @@ def _inference_wrapper_spans(text: str) -> list:
         spans.append((m.end(), len(text) if end is None else end))
     # Attribute-form calls have no JSON body; protect the element interior so a genuine call's
     # arguments are not masked.
+    close = -2  # Not yet sought, as ``brace`` above.
     for m in _ATTR_FUNC_OPEN_RE.finditer(text):
-        close = text.find("</function>", m.end())
+        # Re-seek only once the close falls behind this opener; seeking per opener is quadratic.
+        if close != -1 and close < m.end():
+            close = text.find("</function>", m.end())
         spans.append((m.end(), len(text) if close < 0 else close))
     # A streaming Mistral array has no ``]`` yet but is still parsed; trust the envelope through EOS.
     pos = text.find(_MISTRAL_TRIGGER)
@@ -1173,9 +1176,8 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
     """Strip ``<function=...>`` calls by mirroring the parser: an opener inside an open
     ``<parameter>`` is data and each call closes at its first ``</function>`` that is not
     parameter data; ``final`` drops a trailing unclosed call."""
-    starts = [
-        m for m in _TC_FUNC_START_RE.finditer(text) if not _inside_open_parameter(text, m.start())
-    ]
+    inside = _tool_healing._OpenParameterIndex(text, **_OPEN_PARAMETER_TAGS).inside
+    starts = [m for m in _TC_FUNC_START_RE.finditer(text) if not inside(m.start())]
     if not starts:
         return text
     out: list[str] = []
@@ -1187,7 +1189,7 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
         next_start = starts[idx + 1].start() if idx + 1 < len(starts) else len(text)
         close = None
         for cm in _FUNC_CLOSE_TAG_RE.finditer(text, m.end(), next_start):
-            if not _inside_open_parameter(text, cm.start()):
+            if not inside(cm.start()):
                 close = cm  # first close that is not parameter data = the real close
                 break
         if close is not None:
@@ -2380,15 +2382,17 @@ _trim_param_value = _tool_healing._trim_param_value
 _json_object_body = _tool_healing._json_object_body
 
 
+# Shared by the helper and ``_tool_healing._OpenParameterIndex`` so the two cannot drift.
+_OPEN_PARAMETER_TAGS = {
+    "param_start_re": _TC_PARAM_START_RE,
+    "param_closers": ("</parameter>", "</param>"),
+    "func_closers": ("</function>", "</tool_call>"),
+}
+
+
 def _inside_open_parameter(text: str, pos: int) -> bool:
     """An opener inside an unclosed parameter block is a literal in an argument value, not a nested call."""
-    return _tool_healing._inside_open_parameter(
-        text,
-        pos,
-        param_start_re = _TC_PARAM_START_RE,
-        param_closers = ("</parameter>", "</param>"),
-        func_closers = ("</function>", "</tool_call>"),
-    )
+    return _tool_healing._inside_open_parameter(text, pos, **_OPEN_PARAMETER_TAGS)
 
 
 def _parse_function_xml(
@@ -2399,11 +2403,8 @@ def _parse_function_xml(
 ) -> list[dict]:
     out: list[dict] = []
     # Skip openers inside an open parameter value, else they become a second call.
-    func_starts = [
-        fm
-        for fm in _TC_FUNC_START_RE.finditer(content)
-        if not _inside_open_parameter(content, fm.start())
-    ]
+    inside = _tool_healing._OpenParameterIndex(content, **_OPEN_PARAMETER_TAGS).inside
+    func_starts = [fm for fm in _TC_FUNC_START_RE.finditer(content) if not inside(fm.start())]
     for idx, fm in enumerate(func_starts):
         # group(1) is ``<function=name>``, group(2) is ``<function name="...">``.
         func_name = fm.group(1) or fm.group(2)
@@ -2412,7 +2413,7 @@ def _parse_function_xml(
         # The first close not inside an open parameter ends the call (mirrors _strip_function_xml_calls).
         close_match = None
         for cm in _TC_END_TAG_RE.finditer(content, body_start, next_func):
-            if not _inside_open_parameter(content, cm.start()):
+            if not inside(cm.start()):
                 close_match = cm
                 break
         has_close = close_match is not None
@@ -2430,10 +2431,9 @@ def _parse_function_xml(
         args: dict = {}
         param_unclosed = False
         # A ``<parameter>`` opener inside an open parameter value is literal text.
+        body_inside = _tool_healing._OpenParameterIndex(body, **_OPEN_PARAMETER_TAGS).inside
         param_starts = [
-            pm
-            for pm in _TC_PARAM_START_RE.finditer(body)
-            if not _inside_open_parameter(body, pm.start())
+            pm for pm in _TC_PARAM_START_RE.finditer(body) if not body_inside(pm.start())
         ]
         if len(param_starts) == 1:
             pm = param_starts[0]

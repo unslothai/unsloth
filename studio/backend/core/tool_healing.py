@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import itertools
 import json
 import re
 
@@ -200,6 +201,8 @@ _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _GEMMA_QUOTE = '<|"|>'
 _PARAM_CLOSE_TAG = "</parameter>"
 _FUNC_CLOSE_TAG = "</function>"
+_WRAP_OPEN_RE = re.compile(r"<tool_call>\s*$")
+_WRAP_CLOSE_RE = re.compile(r"\s*</tool_call>")
 # A comma not followed by a key token is part of a bare Gemma value (New York, NY).
 _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w.\-]*\s*:")
 
@@ -667,11 +670,102 @@ def _inside_open_parameter(
     return True
 
 
-def _func_close_index(content: str, body_start: int, body: str) -> int:
+# A few direct scans beat building an index on the per-token streaming strip; past them the index wins.
+_OPEN_PARAMETER_SCAN_LIMIT = 16
+
+
+class _OpenParameterIndex:
+    """``_inside_open_parameter`` for many offsets of one text: per-tag calls were quadratic on long output.
+    The first few queries scan as the helper does; then sorted tag offsets answer each in O(log n). Valid
+    for the ``<parameter``/``<param`` openers (a tag ends at its first ``>``), as the reverse search is."""
+
+    __slots__ = (
+        "_content",
+        "_param_start_re",
+        "_param_closer_tags",
+        "_func_closer_tags",
+        "_scans",
+        "_param_starts",
+        "_param_ends",
+        "_param_closers",
+        "_func_closers",
+    )
+
+    def __init__(
+        self,
+        content: str,
+        *,
+        param_start_re = None,
+        param_closers = (_PARAM_CLOSE_TAG,),
+        func_closers = (_FUNC_CLOSE_TAG,),
+    ):
+        self._content = content
+        self._param_start_re = _TC_PARAM_START_RE if param_start_re is None else param_start_re
+        self._param_closer_tags = param_closers
+        self._func_closer_tags = func_closers
+        self._scans = 0
+        self._param_starts = None
+
+    def _build(self) -> None:
+        content = self._content
+        starts = [m.start() for m in self._param_start_re.finditer(content)]
+        self._param_starts = starts
+        # Bounded at the tag's own ">", as the helper's endpos-limited match is.
+        self._param_ends = [content.index(">", start) + 1 for start in starts]
+        self._param_closers = self._positions(content, self._param_closer_tags)
+        self._func_closers = self._positions(content, self._func_closer_tags)
+
+    @staticmethod
+    def _positions(content: str, tags) -> list[int]:
+        found: list[int] = []
+        for tag in tags:
+            at = content.find(tag)
+            while at >= 0:
+                found.append(at)
+                at = content.find(tag, at + 1)
+        return sorted(found)
+
+    def inside(self, pos: int) -> bool:
+        if self._param_starts is None:
+            if self._scans < _OPEN_PARAMETER_SCAN_LIMIT:
+                self._scans += 1
+                return _inside_open_parameter(
+                    self._content,
+                    pos,
+                    param_start_re = self._param_start_re,
+                    param_closers = self._param_closer_tags,
+                    func_closers = self._func_closer_tags,
+                )
+            self._build()
+        idx = bisect.bisect_right(self._param_ends, pos) - 1
+        if idx < 0:
+            return False
+        last = self._param_starts[idx]
+        # A parameter close at or after the opener and at or before pos ends the value.
+        closers = self._param_closers
+        i = bisect.bisect_left(closers, last)
+        if i < len(closers) and closers[i] <= pos:
+            return False
+        if closers and closers[-1] > pos:
+            return True
+        closers = self._func_closers
+        i = bisect.bisect_left(closers, last)
+        return not (i < len(closers) and closers[i] <= pos)
+
+
+def _func_close_index(
+    content: str,
+    body_start: int,
+    body: str,
+    *,
+    inside = None,
+) -> int:
     """First close outside a parameter value; taking the last one swallowed prose after the real close."""
+    if inside is None:
+        inside = lambda pos: _inside_open_parameter(content, pos)  # noqa: E731
     idx = body.find(_FUNC_CLOSE_TAG)
     while idx >= 0:
-        if not _inside_open_parameter(content, body_start + idx):
+        if not inside(body_start + idx):
             return idx
         idx = body.find(_FUNC_CLOSE_TAG, idx + 1)
     return -1
@@ -759,8 +853,10 @@ def _build_markers(content: str):
     many_candidates = len(candidates) > 1
     has_parameter = "<parameter=" in content if many_candidates else True
     last_brace = content.rfind("}") if many_candidates else None
+    # One index answers every candidate; a per-candidate scan was quadratic on long output.
+    inside = _OpenParameterIndex(content).inside
     for m, gemma, kind in candidates:
-        if has_parameter and _inside_open_parameter(content, m.start()):
+        if has_parameter and inside(m.start()):
             continue
         brace_start = m.end() - 1
         brace_end = (
@@ -861,26 +957,37 @@ def parse_tool_calls_from_text(
             span_end = close_m.end()
         parsed_items.append((start, span_end, name, arguments))
 
+    inside = _OpenParameterIndex(content).inside
+    # Coverage follows the markers' start order, so a running max of ends answers each opener by
+    # bisect; scanning every span per opener was quadratic.
+    coverage_starts = [s for s, _e in coverage]
+    coverage_max_ends = list(itertools.accumulate((e for _s, e in coverage), max))
+
+    def _covered(pos: int) -> bool:
+        i = bisect.bisect_right(coverage_starts, pos) - 1
+        return i >= 0 and pos < coverage_max_ends[i]
+
     func_starts = [
         fm
         for fm in _TC_FUNC_START_RE.finditer(content)
-        if not _inside_open_parameter(content, fm.start())
+        if not inside(fm.start())
         and not _in_think(fm.start())
         and not _in_blocked(fm.start())
-        and not any(s <= fm.start() < e for s, e in coverage)
+        and not _covered(fm.start())
     ]
     for idx, fm in enumerate(func_starts):
         func_name = fm.group(1)
         body_start = fm.end()
         next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
-        end_tag = _TC_END_TAG_RE.search(content[body_start:])
+        # Bounded at the next opener (body_end is capped there anyway); a search to EOF per call was quadratic.
+        end_tag = _TC_END_TAG_RE.search(content, body_start, next_func)
         if end_tag:
-            body_end = body_start + end_tag.start()
+            body_end = end_tag.start()
         else:
             body_end = len(content)
         body_end = min(body_end, next_func)
         body = content[body_start:body_end]
-        close_idx = _func_close_index(content, body_start, body)
+        close_idx = _func_close_index(content, body_start, body, inside = inside)
         if close_idx >= 0:
             span_end = body_start + close_idx + len(_FUNC_CLOSE_TAG)
             body = body[:close_idx]
@@ -930,11 +1037,15 @@ def parse_tool_calls_from_text(
             arguments = _json_object_body(body) or arguments
 
         span_start = fm.start()
-        wrap_open = re.search(r"<tool_call>\s*$", content[:span_start])
-        wrap_close = re.match(r"\s*</tool_call>", content[span_end:])
+        # Anchored scans, not a search over the whole prefix and a copy of the suffix per call.
+        ws_start = span_start
+        while ws_start > 0 and content[ws_start - 1].isspace():
+            ws_start -= 1
+        wrap_open = _WRAP_OPEN_RE.search(content, max(0, ws_start - len("<tool_call>")), span_start)
+        wrap_close = _WRAP_CLOSE_RE.match(content, span_end)
         if wrap_open and wrap_close:
             span_start = wrap_open.start()
-            span_end += wrap_close.end()
+            span_end = wrap_close.end()
         parsed_items.append((span_start, span_end, func_name, json.dumps(arguments)))
 
     parsed_items.sort(key = lambda item: item[0])
