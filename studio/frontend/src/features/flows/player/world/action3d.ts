@@ -119,6 +119,17 @@ function nearBoxes(w: ActionWorld, x: number, y: number, r: number): Box[] {
   return near;
 }
 
+// The capsule can reach into a door's box from the next tile, which a tile check misses.
+export function capsuleOverlapsProp(
+  p: WorldProp3d,
+  ground: (x: number, y: number) => number,
+  x: number,
+  y: number,
+): boolean {
+  const b = propBox(p, ground);
+  return b !== null && circleHitsBox(b, x, y, RADIUS);
+}
+
 export function circleHitsBox(
   b: Box,
   x: number,
