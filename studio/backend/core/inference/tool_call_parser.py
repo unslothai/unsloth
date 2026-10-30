@@ -385,6 +385,8 @@ _GEMMA_STR_END = '<|"|>'
 _GEMMA_TC_END = "<tool_call|>"
 
 # skip_special_tokens strips the wrapper, so streamed Gemma calls arrive bare.
+# A value OPENED by Gemma's string delimiter (``key:<|"|>``); a literal one inside another quote is data.
+_GEMMA_QUOTED_VALUE_RE = re.compile(r'(?:^|[{,\[])\s*[A-Za-z_][\w.\-]*\s*:\s*<\|"\|>')
 _GEMMA_BARE_TC_RE = re.compile(r"(?<!\w)call\s*:\s*([\w\.\-]+)\s*\{")
 # Partial prefix so the streaming buffer holds it instead of leaking visible text.
 _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
@@ -3141,7 +3143,7 @@ def _parse_gemma_tool_calls(
             code_spans, code_from = None, cursor
         body = content[body_start + 1 : end]
         try:
-            args = _gemma_parse_stripped_body(body)
+            args = _gemma_bare_body_arguments(body)
         except Exception:
             args = {}
         out.append(
@@ -3671,6 +3673,77 @@ def _gemma_strip_quoted_leaves(value: Any) -> Any:
     if isinstance(value, list):
         return [_gemma_strip_quoted_leaves(v) for v in value]
     return value
+
+
+_GEMMA_SLOT = "\ue000"
+_GEMMA_SLOT_RE = re.compile(_GEMMA_SLOT + r"(\d+)" + _GEMMA_SLOT)
+
+
+def _slot_gemma_values(body: str) -> "tuple[str, list[str]]":
+    """``body`` with each ``<|"|>`` value that opens a value outside an ordinary quoted string replaced by a
+    placeholder, and the raw values in order. Quotes open where the quote-less parser opens them."""
+    out: list[str] = []
+    raw: list[str] = []
+    quote = ""
+    prev = ":"
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if quote:
+            if ch == "\\" and i + 1 < n:
+                out.append(body[i : i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif prev in ":{[," and body.startswith(_GEMMA_STR_END, i):
+            end = body.find(_GEMMA_STR_END, i + len(_GEMMA_STR_END))
+            if end < 0:
+                out.append(body[i:])
+                break
+            raw.append(body[i + len(_GEMMA_STR_END) : end])
+            out.append(f'"{_GEMMA_SLOT}{len(raw) - 1}{_GEMMA_SLOT}"')
+            i = end + len(_GEMMA_STR_END)
+            prev = '"'
+            continue
+        elif ch in "\"'" and prev in ":{[(,=":
+            quote = ch
+        out.append(ch)
+        if not ch.isspace():
+            prev = ch
+        i += 1
+    return "".join(out), raw
+
+
+def _gemma_bare_body_arguments(body: str) -> dict[str, Any]:
+    """Each ``<|"|>``-quoted value is read raw, every other value as the quote-less parser reads it (single
+    quotes, nesting). A delimiter that does not end up a whole value (a literal one inside another quoted
+    value) keeps the quote-less reading of the whole body."""
+    if _GEMMA_QUOTED_VALUE_RE.search(body) is None or _GEMMA_SLOT in body:
+        return _gemma_parse_stripped_body(body)
+    slotted, raw = _slot_gemma_values(body)
+    used: list[int] = []
+
+    def fill(v: Any) -> Any:
+        if isinstance(v, dict):
+            return {k: fill(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [fill(x) for x in v]
+        if isinstance(v, str) and _GEMMA_SLOT in v:
+            m = _GEMMA_SLOT_RE.fullmatch(v)
+            if m is None:
+                raise ValueError("delimiter inside a value")
+            used.append(int(m.group(1)))
+            return raw[used[-1]]
+        return v
+
+    try:
+        args = fill(_gemma_parse_stripped_body(slotted))
+    except ValueError:
+        args = None
+    if args is None or sorted(used) != list(range(len(raw))):
+        return _gemma_parse_stripped_body(body)
+    return args
 
 
 def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:

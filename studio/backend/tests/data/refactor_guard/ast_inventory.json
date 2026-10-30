@@ -1116,6 +1116,8 @@
       "_GEMMA_BARE_TC_RE": "'(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
       "_GEMMA_JSON_NUMBER_RE": "'-?(?:0|[1-9]\\\\d*)(\\\\.\\\\d+)?([eE][+-]?\\\\d+)?' flags=256",
       "_GEMMA_KEY_RE": "'\\\\s*([A-Za-z_][\\\\w.\\\\-]*)\\\\s*:' flags=32",
+      "_GEMMA_QUOTED_VALUE_RE": "'(?:^|[{,\\\\[])\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:\\\\s*<\\\\|\"\\\\|>' flags=32",
+      "_GEMMA_SLOT_RE": "'\\ue000(\\\\d+)\\ue000' flags=32",
       "_GEMMA_TC_RE": "'<\\\\|tool_call>\\\\s*call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
       "_GLM_JSON_NUMERIC_RE": "'-?\\\\d+(?:\\\\.\\\\d+)?(?:[eE][+-]?\\\\d+)?' flags=32",
       "_GLM_TC_OPEN_RE": "'<tool_call>\\\\s*([\\\\w.\\\\-]+)\\\\s*(?=\\\\n|<arg_key>|</tool_call>)' flags=32",
@@ -1172,6 +1174,7 @@
       "re.compile(\"(?im)(\\\\b(i['\\\\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\\\\b(?!\\\\s+(?:not|never)\\\\b)(?!\\\\s+\" + _HELP_OFFER + ')|\\\\b(?:let me|allow me)\\\\b(?!\\\\s+(?:not|never|know)\\\\b)(?!\\\\s+' + _SIGN_OFF + ')(?!\\\\s+to\\\\s+' + _HELP_OFFER + \")|(?:^|[.!?]\\\\s+)\\\\s*(?:the\\\\s+)?first\\\\s+step\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:my|our)\\\\s+(?:plan|approach|step)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:i|we|let['’]?s|let us)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+\" + _ACTION_VERB + \"\\\\b|\\\\bstep \\\\d+[ \\\\t*_]*(?::[ \\\\t*_\\\\r]*$|(?:[:,.)\\\\u2013\\\\u2014-][ \\\\t*_]*)?(?:\\\\r?\\\\n(?:[ \\\\t]*\\\\r?\\\\n)?[ \\\\t*_#>-]*(?:\\\\d+[.)][ \\\\t*_]*)?)?(?:(?:let['’]?s|let us)\\\\b|\" + _ACTION_VERB + \"\\\\b))|\\\\bhere['\\\\u2019]?s (?:my |the |a )?(?:plan|approach)|\\\\b(?:now i|next i)\\\\b)\")": 1,
       "re.compile('\"[\\\\s}\\\\]]*,\\\\s*(?:\"[A-Za-z_][\\\\w\\\\-]*\"|\\\\\\'[A-Za-z_][\\\\w\\\\-]*\\\\\\'|[A-Za-z_][\\\\w\\\\-]*)\\\\s*:')": 1,
       "re.compile('\"name\"\\\\s*:\\\\s*\"([^\"]+)\"')": 1,
+      "re.compile('(?:^|[{,\\\\[])\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:\\\\s*<\\\\|\"\\\\|>')": 1,
       "re.compile('(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$')": 1,
       "re.compile('(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{')": 1,
       "re.compile('-?(?:0|[1-9]\\\\d*)(\\\\.\\\\d+)?([eE][+-]?\\\\d+)?', re.ASCII)": 1,
@@ -1221,7 +1224,8 @@
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '(?=\\\\s*(?:<｜tool▁call▁begin｜>|function)|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '.*?<｜tool▁calls▁end｜>', re.DOTALL)": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '|' + re.escape(_KIMI_SECTION_BEGIN) + '|' + re.escape(_KIMI_CALL_BEGIN))": 1,
-      "re.compile(_DEEPSEEK_OPEN_RE_SRC)": 1
+      "re.compile(_DEEPSEEK_OPEN_RE_SRC)": 1,
+      "re.compile(_GEMMA_SLOT + '(\\\\d+)' + _GEMMA_SLOT)": 1
     },
     "symbols": {
       "BUDGET_EXHAUSTED_NUDGE": {
@@ -1410,6 +1414,15 @@
         "kind": "assign"
       },
       "_GEMMA_KEY_RE": {
+        "kind": "assign"
+      },
+      "_GEMMA_QUOTED_VALUE_RE": {
+        "kind": "assign"
+      },
+      "_GEMMA_SLOT": {
+        "kind": "assign"
+      },
+      "_GEMMA_SLOT_RE": {
         "kind": "assign"
       },
       "_GEMMA_STR_BEGIN": {
@@ -1671,6 +1684,11 @@
         "kind": "def",
         "signature": "text: str, brace_pos: int, hard_stop: int"
       },
+      "_gemma_bare_body_arguments": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str"
+      },
       "_gemma_body_brace_end": {
         "decorators": [],
         "kind": "def",
@@ -1917,6 +1935,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, pos: int"
+      },
+      "_slot_gemma_values": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str"
       },
       "_strictly_inside": {
         "decorators": [],
