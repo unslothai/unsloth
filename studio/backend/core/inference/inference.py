@@ -698,11 +698,51 @@ class _StopSequenceStreamer:
 _CUSTOM_GENERATE_REJECTED_KWARGS = ("logits_processor", "stopping_criteria")
 
 
+class _GenerationHalted(Exception):
+    pass
+
+
+class _HaltingStreamer:
+    """Ends a generate that takes no stopping_criteria: put() raises once a cancel or stop event is set."""
+
+    def __init__(self, streamer, events):
+        self.streamer = streamer
+        self.events = events
+
+    def put(self, value):
+        if any(ev.is_set() for ev in self.events):
+            raise _GenerationHalted
+        return self.streamer.put(value)
+
+    def end(self):
+        return self.streamer.end()
+
+    def __getattr__(self, name):
+        return getattr(self.streamer, name)
+
+
 def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
-    """Drops kwargs a custom-code generate rejects (no presence penalty or early cancel there)."""
+    """Drops kwargs a custom-code generate rejects (no presence penalty there); cancel and stop
+    sequences move onto the streamer."""
     if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
         return generation_kwargs
-    return {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
+    kept = {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
+    events = [
+        c.ev
+        for c in (generation_kwargs.get("stopping_criteria") or ())
+        if getattr(c, "ev", None) is not None
+    ]
+    if events and kept.get("streamer") is not None:
+        kept["streamer"] = _HaltingStreamer(kept["streamer"], events)
+    return kept
+
+
+def _generate_supported(model, generation_kwargs: dict):
+    """model.generate with _supported_generate_kwargs; None when a cancel or stop ended it early."""
+    try:
+        return model.generate(**_supported_generate_kwargs(model, generation_kwargs))
+    except _GenerationHalted:
+        return None
 
 
 def _processor_takes_text_first(processor) -> bool:
@@ -2317,9 +2357,9 @@ class InferenceBackend:
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        gen_outputs["sequences"] = model.generate(
-                            **_supported_generate_kwargs(model, generation_kwargs)
-                        )
+                        sequences = _generate_supported(model, generation_kwargs)
+                        if sequences is not None:
+                            gen_outputs["sequences"] = sequences
                     except Exception as e:
                         err["msg"] = str(e)
                         stop_streamer.abort()
@@ -2516,9 +2556,9 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        gen_outputs["sequences"] = model.generate(
-                            **_supported_generate_kwargs(model, generation_kwargs)
-                        )
+                        sequences = _generate_supported(model, generation_kwargs)
+                        if sequences is not None:
+                            gen_outputs["sequences"] = sequences
                     except Exception as e:
                         err["msg"] = str(e)
                         logger.error(f"Audio input generation error in thread: {e}")
@@ -2910,9 +2950,9 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact token count.
-                        gen_outputs["sequences"] = model.generate(
-                            **_supported_generate_kwargs(model, generation_kwargs)
-                        )
+                        sequences = _generate_supported(model, generation_kwargs)
+                        if sequences is not None:
+                            gen_outputs["sequences"] = sequences
                     except Exception as e:
                         err["msg"] = str(e)
                         stop_streamer.abort()
