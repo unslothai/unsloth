@@ -27608,6 +27608,8 @@ def _build_external_messages(
         # Thinking mode with tools answers 400 without it, and ignores it elsewhere
         # (api-docs.deepseek.com/guides/thinking_mode).
         or provider_type == "deepseek"
+        # Tool turns need the thinking back (platform.minimax.io/docs/api-reference/text-openai-api).
+        or provider_type == "minimax"
     )
     result = []
     for msg in messages:
