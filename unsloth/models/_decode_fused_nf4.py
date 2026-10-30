@@ -441,7 +441,10 @@ def _decode_forward(
     new_sequence = not hasattr(layers[0].self_attn, "paged_attention")
     plan = model.__dict__.get(_PLAN)
     if new_sequence or plan is None or (isinstance(plan, _Plan) and _plan_stale(plan)):
+        rehomed = STATS["rehomed_sites"]
         built = _build(model, X)
+        # A refusal after some sites were re-homed still moved their weights.
+        moved = STATS["rehomed_sites"] != rehomed
         if isinstance(built, str):
             STATS["refused"] = built
             built = _Refused(built)
@@ -450,7 +453,7 @@ def _decode_forward(
                 plan.watch, plan.adapter_state = built.watch, built.adapter_state
                 built = plan
         if built is not plan:
-            if plan is not None or getattr(built, "rehomed", False):
+            if plan is not None or moved:
                 # Captured decode steps read the old plan's buffers / weight storage, freed now.
                 _decode_graphs.invalidate(model)
             plan = model.__dict__[_PLAN] = built
