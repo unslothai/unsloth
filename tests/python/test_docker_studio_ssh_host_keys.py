@@ -81,9 +81,7 @@ def test_each_container_gets_its_own_host_key(tmp_path: Path, cleanup: bool):
     built = _fingerprint(image)
     if cleanup:
         for step in _cleanup_steps():
-            subprocess.run(
-                ["bash", "-c", step.replace("/etc/ssh", f"{image}/etc/ssh")], check = True
-            )
+            subprocess.run(["bash", "-c", step.replace("/etc/ssh", f"{image}/etc/ssh")], check = True)
         assert not list((image / "etc/ssh").glob("ssh_host_*"))
 
     a = _boot(image, tmp_path / "a")
