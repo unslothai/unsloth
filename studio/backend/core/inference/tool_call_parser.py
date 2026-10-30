@@ -2344,7 +2344,11 @@ def _loads_call_object(text: str, *, relaxed: bool = True):
         return relaxed_json_object(text) if relaxed else None
 
 
-def _call_object_end(text: str, start: int, relaxed: bool) -> "tuple[int | None, bool]":
+def _call_object_end(
+    text: str,
+    start: int,
+    relaxed: bool = True,
+) -> "tuple[int | None, bool]":
     """The call object's closing brace, and whether near-JSON may still be read. A relaxed read matches
     single-quoted strings too, so a brace in one never ends the call and scanning never resumes inside its
     argument; an object that never closes that way gets JSON brace matching, strict for the rest of the text."""

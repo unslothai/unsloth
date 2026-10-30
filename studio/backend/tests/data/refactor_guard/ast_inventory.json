@@ -1614,7 +1614,7 @@
       "_call_object_end": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, start: int, relaxed: bool"
+        "signature": "text: str, start: int, relaxed: bool=True"
       },
       "_consume_mistral_call": {
         "decorators": [],
