@@ -7924,6 +7924,19 @@ class CountAborted(Exception):
     __slots__ = ()
 
 
+# Single-threaded render + tokenize ran ~600K chars/s on the #15800 reporter's CPU; a sixth of that still catches a hang.
+_COUNT_TIMEOUT_FLOOR_S = 10.0
+_COUNT_TIMEOUT_CHARS_PER_S = 100_000
+
+
+def _count_timeout(messages, system_text, tools) -> float:
+    try:
+        chars = len(json.dumps([system_text, messages, tools], ensure_ascii = False, default = str))
+    except Exception:  # noqa: BLE001 -- an unmeasurable prompt keeps the floor
+        chars = 0
+    return _COUNT_TIMEOUT_FLOOR_S + chars / _COUNT_TIMEOUT_CHARS_PER_S
+
+
 # Module level so tests can point the orphan sweep at a fixture tree.
 _PROC_ROOT = "/proc"
 
@@ -40742,7 +40755,9 @@ class LlamaCppBackend:
 
         try:
             with httpx.Client(
-                timeout = 10,
+                timeout = httpx.Timeout(
+                    _COUNT_TIMEOUT_FLOOR_S, read = _count_timeout(messages, system_text, tools)
+                ),
                 headers = self._auth_headers,
                 trust_env = False,
                 verify = _local_ssl_context(),
@@ -40824,6 +40839,11 @@ class LlamaCppBackend:
                     except CountAborted:
                         # Not a template failure. Must precede the generic except.
                         raise
+                    except httpx.TimeoutException:
+                        if strict:
+                            raise RuntimeError(
+                                "llama-server timed out counting the prompt"
+                            ) from None
                     except Exception:
                         pass
                     return None, False
