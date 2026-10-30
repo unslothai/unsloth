@@ -521,7 +521,13 @@ async def logout(
 # Sync def: PBKDF2 + SQLite would block the event loop.
 @router.post("/desktop-login", response_model = Token)
 def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Response:
-    """Before reading the bucket: the shell probes with an invalid secret every tick and needs 401, since any other status reads as unmanageable."""
+    """Exchange a local desktop secret for normal admin-subject tokens. Per-IP rate-limited.
+
+    Throttled because the route takes no credential and the KDF runs before an attacker-chosen
+    secret can be rejected, so without it one unauthenticated request buys unbounded work. On its
+    own account bucket, contributing to the shared per-IP aggregate exactly as /login does.
+    """
+    # Before reading the bucket: the shell probes with an invalid secret every tick and needs 401, since any other status reads as unmanageable.
     if not storage.desktop_secret_is_well_formed(payload.secret):
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
