@@ -367,6 +367,7 @@ import {
   shouldOfferGenerateAnyway,
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
+import { HELD_BY_OTHER_ACCOUNT_NOTICE, heldByOtherAccount, ownDiffusionStatus } from "./lib/resident-owner";
 import {
   AUTOMATIC_SCHEDULE,
   DEFAULT_SAMPLER,
@@ -3197,7 +3198,7 @@ export function ImagesPage({
   const refreshStatus = useCallback(async () => {
     const ticket = ++statusTicket.current;
     try {
-      setStatusIfNewest(ticket, await getDiffusionStatus());
+      setStatusIfNewest(ticket, ownDiffusionStatus(await getDiffusionStatus()));
     } catch {
       // Status is best-effort; a failed poll should not surface an error toast.
     }
@@ -3313,7 +3314,7 @@ export function ImagesPage({
       if (p.phase === "ready") {
         dismissLoadToast();
         const ticket = ++statusTicket.current;
-        const loaded = await getDiffusionStatus();
+        const loaded = ownDiffusionStatus(await getDiffusionStatus());
         if (seq !== cancelSeq.current) {
           // Cancelled mid-read: drop it, the unload's own response is authoritative.
           return;
@@ -3480,7 +3481,7 @@ export function ImagesPage({
           void pollLoadProgress();
         } else if (p.phase === "ready") {
           const ticket = ++statusTicket.current;
-          const loaded = await getDiffusionStatus();
+          const loaded = ownDiffusionStatus(await getDiffusionStatus());
           setStatusIfNewest(ticket, loaded);
           const resumed = finishedLoadTarget<LastLoad>(null, loaded);
           if (resumed) {
@@ -6929,6 +6930,11 @@ export function ImagesPage({
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
           <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
+            {!external && busy === null && heldByOtherAccount(status) && (
+              <p role="status" className="w-full text-center text-ui-11 leading-snug text-muted-foreground">
+                {HELD_BY_OTHER_ACCOUNT_NOTICE}
+              </p>
+            )}
             {busy === "generating" ? (
               <Button
                 className="relative z-10 text-ui-13 hover:bg-muted dark:hover:bg-muted"
