@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Default steps / guidance follow the reference workflows for the same checkpoint, and the Images / Video page
-tables agree with the backend's."""
+"""Default steps / guidance match the reference workflows; frontend tables match the backend."""
 
 from __future__ import annotations
 
@@ -49,7 +48,6 @@ def test_minimax_h3_default_is_the_non_lora_reference_recipe():
     assert vf.default_video_generation_params(
         "MiniMaxAI/MiniMax-H3", fallback = (fam.default_steps, fam.default_guidance), family = fam.name
     ) == (20, 1.0)
-    # The turbo (PDD) recipe stays 8 steps.
     assert vf.default_video_generation_params(
         "someone/MiniMax-H3-PDD", fallback = (20, 1.0), family = fam.name
     ) == (8, 1.0)

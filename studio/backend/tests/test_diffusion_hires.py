@@ -1553,7 +1553,6 @@ def test_generation_log_line_takes_a_latent_base_pass():
 
 @pytest.mark.parametrize("strength", [0.3, 0.5, 0.6, 0.75, 0.99])
 def test_img2img_never_schedules_zero_steps_on_a_floor_pipeline(strength):
-    # SDXL-Turbo defaults to 1 step: int(1 * 0.6) == 0 would denoise nothing.
     n = hires.min_inference_steps(1, strength, hires.RULE_FLOOR)
     assert hires.steps_run(n, strength, hires.RULE_FLOOR) == 1
     assert hires.steps_run(n - 1, strength, hires.RULE_FLOOR) == 0
