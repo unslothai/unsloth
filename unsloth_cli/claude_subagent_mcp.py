@@ -82,13 +82,52 @@ def _result_payload(stdout: str) -> dict:
     return {}
 
 
+class _DeniedResult(str):
+    shell_denied = False
+
+
+def _denials(payload: dict) -> list[tuple[str, str]]:
+    denials = payload.get("permission_denials")
+    if not isinstance(denials, list):
+        return []
+    found = []
+    for denial in denials:
+        if not isinstance(denial, dict) or not isinstance(denial.get("tool_name"), str):
+            continue
+        tool_input = denial.get("tool_input")
+        tool_input = tool_input if isinstance(tool_input, dict) else {}
+        detail = next(
+            (
+                tool_input[key]
+                for key in ("command", "file_path", "path", "pattern")
+                if isinstance(tool_input.get(key), str)
+            ),
+            "",
+        )
+        found.append((denial["tool_name"], detail[:500]))
+    return list(dict.fromkeys(found))
+
+
 def _result_text(stdout: str) -> str:
     payload = _result_payload(stdout)
     result = payload.get("result")
     if payload.get("is_error"):
         raise RuntimeError(str(result or "The local Claude agent failed."))
     if isinstance(result, str) and result.strip():
-        return _bounded(result.strip())
+        text = _bounded(result.strip())
+        denied = _denials(payload)
+        if not denied:
+            return text
+        # Headless Claude denies anything that would prompt and still exits 0, so the parent must hear what never ran.
+        listed = "\n".join(
+            f"- {tool}: {detail}" if detail else f"- {tool}" for tool, detail in denied
+        )
+        text = _DeniedResult(
+            f"{text}\n\nThe local agent was not allowed to run these tool calls, so they did "
+            f"not happen:\n{listed}\nRun them yourself."
+        )
+        text.shell_denied = any(tool in ("Bash", "PowerShell") for tool, _ in denied)
+        return text
     raise RuntimeError("The local Claude agent returned no readable result.")
 
 
@@ -485,6 +524,12 @@ def _with_fallback(run_agent: Callable[..., str], marker: str) -> Callable[..., 
                 "next successful unsloth_agent call. "
                 "Do this step yourself."
             ) from exc
+        if getattr(text, "shell_denied", False):
+            Path(marker).touch()
+            return (
+                f"{text}\n\nYour own Read, Grep, Glob, Bash, PowerShell, Monitor, NotebookRead "
+                "and Agent tools are unblocked until the next successful unsloth_agent call."
+            )
         Path(marker).unlink(missing_ok = True)
         return text
 
