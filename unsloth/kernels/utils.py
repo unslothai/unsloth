@@ -1920,13 +1920,19 @@ def matmul_lora(
         if XA is None:
             XA = torch_matmul(X, A.t().to(dtype))
         B = B.t().to(dtype)
-        if out is None:
+        caller_out = out is not None
+        if caller_out:
+            addmm_(out, XA, B, alpha = s, beta = 0)
+        else:
             # Functional with beta = 0: an empty buffer mutated in place breaks block compiles (aliasing).
             out = torch.addmm(XA.new_zeros(1), XA, B, beta = 0, alpha = s)
-        else:
-            addmm_(out, XA, B, alpha = s, beta = 0)
         W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
-        addmm_(out, X, W.t())
+        if _is_compiling() and not caller_out:
+            # Traced, an in-place accumulate onto a buffer the region saves for backward breaks the block
+            # compile (the saved tensor aliases a mutated intermediate); Inductor plans the buffer itself.
+            out = torch.addmm(out, X, W.t())
+        else:
+            out.addmm_(X, W.t())
         A = None
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
