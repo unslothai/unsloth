@@ -30,6 +30,7 @@ import { LlmSettingsPanel } from "./llm-settings-panel";
 import { NodeIconTile } from "./node-card";
 import { NodeHistory } from "./node-history";
 import { rerollNode, runToNode } from "./node-actions";
+import { CopyTextButton } from "./copy-text";
 import { OutputValue } from "./output-value";
 import { ParamField } from "./param-fields";
 import { CATEGORY_TONES } from "./node-tones";
@@ -51,9 +52,10 @@ function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
     <section className="flex flex-col gap-2 border-border/60 border-t px-4 py-3">
       <InspectorHeading>Output</InspectorHeading>
       {runtime.error && (
-        <p className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-          {runtime.error}
-        </p>
+        <div className="flex items-start gap-1 rounded-lg border border-destructive/40 bg-destructive/5 py-2 pr-1.5 pl-3">
+          <p className="min-w-0 flex-1 text-xs text-destructive">{runtime.error}</p>
+          <CopyTextButton text={runtime.error} label="Copy error" className="-my-1 text-destructive/70" />
+        </div>
       )}
       {!hasOutputs && runtime.text && <OutputValue value={runtime.text} />}
       {hasOutputs &&

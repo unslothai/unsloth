@@ -46,7 +46,8 @@ import {
 } from "./node-card";
 import { NODE_LOOKS } from "./node-looks";
 import { CATEGORY_TONES } from "./node-tones";
-import { shownOutputIds } from "./value-kinds";
+import { CopyTextButton } from "./copy-text";
+import { outputCopyText, shownOutputIds } from "./value-kinds";
 import { StructuredBadge, isStructuredValue } from "./value-viewers";
 
 /** Below this zoom the text is unreadable anyway; hiding it (layout kept, so handles stay put)
@@ -339,6 +340,10 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
     }))
     .filter((port) => !port.hidden);
   const { HeaderExtra, Ports, Body } = look;
+  const copyText =
+    (runtime.status === "running" || !runtime.outputs) && runtime.text
+      ? runtime.text
+      : outputCopyText(spec.outputs, runtime.outputs ?? runtime.partial);
 
   return (
     <NodeCard
@@ -414,7 +419,14 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
             runtime.preview) && (
             <div
               data-card-grow={true}
-              className="flow-detail px-3 group-data-[sized]/node:flex group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:flex-col">
+              className="flow-detail relative px-3 group-data-[sized]/node:flex group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:flex-col">
+              {copyText && (
+                <CopyTextButton
+                  text={copyText}
+                  label="Copy output"
+                  className="absolute -top-1 right-2 z-10 bg-card opacity-0 group-hover/node:opacity-100 focus-visible:opacity-100"
+                />
+              )}
               <OutputPreview
                 runtime={runtime}
                 spec={spec}

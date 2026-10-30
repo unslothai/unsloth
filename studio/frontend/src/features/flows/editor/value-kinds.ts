@@ -297,3 +297,34 @@ export function shownOutputIds(
 ): string[] {
   return ports.length ? ports.map((port) => port.id) : Object.keys(outputs);
 }
+
+/** The text a copy button takes from a step's outputs: the first shown text, list or object;
+ *  null when the step only made media or nothing. */
+export function outputCopyText(
+  ports: readonly { id: string }[],
+  outputs: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!outputs) return null;
+  for (const id of shownOutputIds(ports, outputs)) {
+    const value = outputs[id];
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string") return value || null;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (isMediaLike(value) || (Array.isArray(value) && value.some(isMediaLike))) continue;
+    if (Array.isArray(value))
+      return value
+        .map((item) => (typeof item === "string" ? item : JSON.stringify(item, null, 2)))
+        .join("\n");
+    return JSON.stringify(value, null, 2);
+  }
+  return null;
+}
+
+function isMediaLike(value: unknown): boolean {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as { ref?: unknown }).ref === "string" &&
+    typeof (value as { kind?: unknown }).kind === "string"
+  );
+}

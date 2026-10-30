@@ -17,6 +17,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { Handle, Position } from "@xyflow/react";
 import { type ComponentProps, type ReactNode, useState } from "react";
 import type { NodeRuntime } from "../stores/runtime-store";
+import { CopyTextButton } from "./copy-text";
 import { accentTone } from "./node-tones";
 import { portInk } from "./theme-colors";
 
@@ -365,9 +366,16 @@ export function NodeDisclosure({
             key={section.label}
             className="nowheel max-h-40 overflow-auto rounded-md border border-border/60 bg-muted/40 px-2 py-1.5"
           >
-            <p className="text-ui-10 font-semibold uppercase tracking-wide text-muted-foreground">
-              {section.label}
-            </p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-ui-10 font-semibold uppercase tracking-wide text-muted-foreground">
+                {section.label}
+              </p>
+              <CopyTextButton
+                text={section.text}
+                label={`Copy ${section.label.toLowerCase()}`}
+                className="-my-1 -mr-1 size-5"
+              />
+            </div>
             <p className="whitespace-pre-wrap text-ui-11 leading-snug text-foreground">
               {section.text}
             </p>
@@ -379,8 +387,12 @@ export function NodeDisclosure({
 
 export function NodeError({ message }: { message: string }) {
   return (
-    <p className="mx-3 line-clamp-3 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-ui-11 text-destructive">
-      {message}
-    </p>
+    <div className="mx-3 flex items-start gap-1 rounded-md border border-destructive/40 bg-destructive/5 py-1 pr-1 pl-2">
+      {/* The clamp sits on the text, not the padded box, so a fourth line can't show in the padding. */}
+      <p className="line-clamp-3 min-w-0 flex-1 text-ui-11 text-destructive">
+        {message}
+      </p>
+      <CopyTextButton text={message} label="Copy error" className="size-5 text-destructive/70" />
+    </div>
   );
 }
