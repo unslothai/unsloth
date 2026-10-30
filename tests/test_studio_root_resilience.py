@@ -17,10 +17,20 @@ STORAGE_ROOTS = REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_
 LLAMA_CPP = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
 
 
-# storage_roots.py imports `loggers` from studio/backend, so put it on sys.path explicitly.
+# storage_roots.py imports `loggers` and `utils` from studio/backend. Other root tests prepend
+# tests/ itself to sys.path at collection (tests/test_tp_native_gloo.py, for its spawned ranks),
+# and tests/utils is a package too, so a first `import utils` here can land on the wrong one.
+# Pin the backend copy per test instead of once at import.
 _BACKEND = REPO_ROOT / "studio" / "backend"
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
+
+
+@pytest.fixture(autouse = True)
+def _backend_imports(monkeypatch):
+    monkeypatch.syspath_prepend(str(_BACKEND))
+    for name in [m for m in sys.modules if m == "utils" or m.startswith("utils.")]:
+        file = getattr(sys.modules[name], "__file__", None) or ""
+        if not file.startswith(str(_BACKEND)):
+            monkeypatch.delitem(sys.modules, name)
 
 
 def _backend_imports(monkeypatch):
