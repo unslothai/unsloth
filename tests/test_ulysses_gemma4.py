@@ -752,7 +752,7 @@ def test_gemma4_window_exemption_stays_narrow(monkeypatch):
     assert "sliding window" in _check(model)
     assert "sliding window" in _check(model, allow_hybrids = False)
     monkeypatch.undo()
-    # Multimodal Gemma 4: image features would stay whole on every rank.
+    # Multimodal Gemma 4 stays refused (a vision_config alone no longer names the reason).
     vision = gemma4.Gemma4VisionConfig(
         hidden_size = 16,
         intermediate_size = 32,
@@ -768,7 +768,7 @@ def test_gemma4_window_exemption_stays_narrow(monkeypatch):
             audio_config = None,
         )
     )
-    assert "multimodal" in _check(multimodal)
+    assert _check(multimodal) is not None
     # Other windowed model types, and Gemma 4 with softcapping or chunked layers, stay refused.
     for model_type in ("gemma3_text", "mistral", "qwen2"):
         other = types.SimpleNamespace(
