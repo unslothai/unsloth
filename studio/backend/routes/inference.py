@@ -2969,9 +2969,14 @@ async def _tunnel_safe_json(coro, *, label: str):
     """Pad a slow call's body; early failures keep their status; a disconnect does not cancel the work."""
     from hub.utils.host_paths import restore_inventory_handles
 
+    from core.inference.llama_keepwarm import detached_work_hold
+
     task = asyncio.ensure_future(coro)
     # Retrieve the exception to avoid 'never retrieved' logs; result() below still raises.
     task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    hold = detached_work_hold.get()
+    if hold is not None:
+        task.add_done_callback(lambda _t, release = hold(): release())
     done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
     if done:
         # Here rather than at each `return LoadResponse`: the one funnel every answer passes.
@@ -38035,6 +38040,50 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     return Response(
         content = resp.content,
         status_code = resp.status_code,
+        media_type = "application/json",
+    )
+
+
+# =====================================================================
+
+# llama.cpp tokenize passthrough  (/tokenize → llama-server /tokenize)
+# =====================================================================
+
+
+@router.post("/tokenize")
+@account_access.gpu_busy_route
+async def llama_tokenize(request: Request, current_subject: str = Depends(get_current_subject)):
+    """llama.cpp ``/tokenize`` passthrough (GGUF only).
+
+    Exposed for clients that need the server's exact tokenization — notably
+    lm_eval's ``gguf`` backend, which tokenizes contexts with the model's own
+    tokenizer to split context/continuations at true token boundaries for
+    teacher-forced loglikelihood scoring.
+    """
+    llama_backend = get_llama_cpp_backend()
+    body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
+    if not llama_backend.is_loaded:
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _raw_body_model(body) if isinstance(body, dict) else None,
+            request,
+            status = 503,
+        )
+        raise HTTPException(status_code = _status, detail = _detail)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+
+    # Through _LlamaUpstream: the child's key, plus one respawn if llama-server died mid-eval.
+    try:
+        async with _LlamaUpstream(llama_backend, "/tokenize") as upstream:
+            _resp = await upstream.post(body, timeout = 30)
+    except httpx.RequestError as _exc:
+        raise HTTPException(status_code = 502, detail = _friendly_error(_exc))
+    if _resp.status_code != 200:
+        raise _openai_passthrough_error(_resp.status_code, _resp.text)
+    return Response(
+        content = _resp.content,
+        status_code = _resp.status_code,
         media_type = "application/json",
     )
 

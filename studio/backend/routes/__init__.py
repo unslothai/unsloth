@@ -12,6 +12,7 @@ from routes.video import openai_router as video_openai_router
 from routes.datasets import router as datasets_router
 from routes.auth import router as auth_router
 from routes.data_recipe import router as data_recipe_router
+from routes.benchmark import router as benchmark_router
 from routes.export import router as export_router
 from routes.training_history import router as training_history_router
 from routes.chat_history import router as chat_history_router
@@ -26,6 +27,7 @@ from routes.research_runs import router as research_runs_router
 from routes.chat_generation_runs import router as chat_generation_runs_router
 from routes.youtube import router as youtube_router
 from routes.openai_fine_tuning import router as openai_fine_tuning_router
+from routes.benchmarks import router as benchmarks_router
 
 __all__ = [
     "training_router",
@@ -37,6 +39,7 @@ __all__ = [
     "datasets_router",
     "auth_router",
     "data_recipe_router",
+    "benchmark_router",
     "export_router",
     "training_history_router",
     "chat_history_router",
@@ -50,6 +53,7 @@ __all__ = [
     "chat_generation_runs_router",
     "youtube_router",
     "openai_fine_tuning_router",
+    "benchmarks_router",
 ]
 
 # Bind the re-export so the import-hoist verifier counts it as used.
@@ -61,4 +65,5 @@ _ = (
     chat_generation_runs_router,
     youtube_router,
     openai_fine_tuning_router,
+    benchmarks_router,
 )

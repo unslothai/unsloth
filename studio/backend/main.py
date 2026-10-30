@@ -388,6 +388,7 @@ from datetime import datetime
 
 from routes import (
     auth_router,
+    benchmark_router,
     chat_history_router,
     data_recipe_router,
     datasets_router,
@@ -409,6 +410,7 @@ from routes import (
     video_router,
     video_openai_router,
     youtube_router,
+    benchmarks_router,
 )
 import routes.browser as _browser_routes
 from routes.llama import router as llama_router
@@ -1821,6 +1823,10 @@ app.add_middleware(
     upload_passthrough_pattern = _UPLOAD_PASSTHROUGH_RE,
 )
 
+from routes.benchmarks import BenchmarkTrafficMiddleware  # noqa: E402
+
+app.add_middleware(BenchmarkTrafficMiddleware)
+
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
 
@@ -1941,6 +1947,7 @@ app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(scheduled_tasks_router, prefix = "/api/scheduled-tasks", tags = ["scheduled-tasks"])
 app.include_router(library_router, prefix = "/api/library", tags = ["library"])
+app.include_router(benchmarks_router, prefix = "/api/benchmarks", tags = ["benchmarks"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
@@ -1948,6 +1955,7 @@ app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(engines_router, prefix = "/api/engines", tags = ["engines"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
+app.include_router(benchmark_router, prefix = "/api/benchmarks/evals", tags = ["benchmarks"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(external_import_router, prefix = "/api/import", tags = ["import"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])

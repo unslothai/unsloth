@@ -235,6 +235,11 @@ const AudioPage = lazy(() =>
   import("@/features/audio").then((m) => ({ default: m.AudioPage })),
 );
 
+// Global Evals driver, same job as useExportRuntimeLifecycle; lazy so its API and store stay out of the startup bundle.
+const BenchmarkRuntimeLifecycle = lazy(
+  () => import("@/features/benchmark/benchmark-runtime-lifecycle"),
+);
+
 // Enabled once the session settles: a read refused mid password change would never retry until reload.
 function PersonalizationSyncMount() {
   useRouterState({ select: (s) => s.location.pathname });
@@ -341,6 +346,8 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/export",
   // Must stay reachable on chat-only hosts: the overlay "Expand" and Settings API card link here.
   "/api-monitor",
+  // Inference only: a sweep reloads the chat model, which chat-only hosts run like any other.
+  "/benchmarks",
 ]);
 
 // Paths that render their own "still checking" state and self-gate once the verdict lands.
@@ -848,6 +855,9 @@ function RootLayout() {
 
   return (
     <AppProvider>
+      <Suspense fallback={null}>
+        <BenchmarkRuntimeLifecycle />
+      </Suspense>
       <CredentialBootstrapGate active={!isAuthFlowRoute}>
         <SharedRunConfigLinkHandler
           chatSearch={shouldMountChat ? chatSearch : null}
