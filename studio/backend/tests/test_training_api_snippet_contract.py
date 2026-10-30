@@ -55,8 +55,9 @@ def test_generated_body_is_accepted_with_its_settings(name):
         if key not in OPENAI_FIELDS and key != "learning_rate"
     }
     assert extras
+    plain = request.model_dump(mode = "json")
     for key, value in extras.items():
-        assert getattr(request, key) == value, key
+        assert plain[key] == value, key
     assert request.training_type == body.get("training_type", "LoRA/QLoRA")
     assert request.format_type == body.get("format_type", "auto")
     assert request.hf_token is None and request.hf_dataset is None

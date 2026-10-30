@@ -1,0 +1,195 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+from typing import Annotated, Any, Literal, Optional, Union
+
+from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool, StrictStr
+
+from auth.authentication import get_current_subject
+from utils.account_context import current_account_id
+from core.training.rewards import (
+    MAX_REWARD_MD_BYTES,
+    RewardError,
+    RewardExistsError,
+    RewardNotFoundError,
+    delete_reward,
+    export_reward,
+    get_reward,
+    import_reward,
+    list_rewards,
+    parse_reward_markdown,
+    preview_scores,
+)
+
+
+router = APIRouter()
+
+
+class RewardRecord(BaseModel):
+    name: str
+    kind: Literal["rule", "python"] = "rule"
+    description: str = ""
+    source: Literal["user", "bundled"]
+    valid: bool
+    shadowed: bool = False
+    error: Optional[str] = None
+    rule: Optional[dict[str, Any]] = None
+    entry: Optional[str] = None
+    code: Optional[str] = None
+
+
+class RewardImportRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    markdown: StrictStr = Field(..., max_length = MAX_REWARD_MD_BYTES)
+    overwrite: StrictBool = False
+
+
+class RewardExport(BaseModel):
+    name: str
+    markdown: str
+
+
+class RewardPreviewItem(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    name: Optional[StrictStr] = None
+    markdown: Optional[StrictStr] = Field(None, max_length = MAX_REWARD_MD_BYTES)
+    weight: float = Field(1.0, ge = -10, le = 10, allow_inf_nan = False)
+
+
+class RewardPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    rewards: list[RewardPreviewItem] = Field(..., min_length = 1, max_length = 16)
+    completion: StrictStr = Field(..., max_length = 64 * 1024)
+    reference: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
+    # Row 1 of the dataset with its own value types, as a Python reward gets it in training.
+    # Training keeps every column for Python rewards; the cap only bounds the request.
+    row: Optional[dict[StrictStr, JsonValue]] = Field(None, max_length = 1024)
+    # The mapped prompt cell as the dataset holds it (text or chat turns), plus the system prompt
+    # the run adds, so a reward sees the same turns as in training.
+    prompt: Optional[
+        Union[
+            Annotated[StrictStr, Field(max_length = 16 * 1024)],
+            Annotated[list[dict[StrictStr, JsonValue]], Field(max_length = 64)],
+        ]
+    ] = None
+    system_prompt: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
+    # Same choice as a run's grpo_python_reward_isolation: no OS sandbox, no Python preview.
+    python_reward_isolation: Literal["required", "auto"] = "required"
+
+
+class RewardPreviewScore(BaseModel):
+    name: str
+    score: Optional[float]
+    weighted: Optional[float]
+    # Set when this reward could not score; the others still did.
+    error: Optional[str] = None
+
+
+class RewardPreviewIsolation(BaseModel):
+    backend: str
+    os_isolation: bool
+
+
+class RewardPreviewResponse(BaseModel):
+    scores: list[RewardPreviewScore]
+    total: float
+    isolation: Optional[RewardPreviewIsolation] = None
+
+
+def _http_error(exc: RewardError) -> HTTPException:
+    if isinstance(exc, RewardNotFoundError):
+        return HTTPException(status_code = 404, detail = str(exc))
+    if isinstance(exc, RewardExistsError):
+        return HTTPException(status_code = 409, detail = str(exc))
+    return HTTPException(status_code = 400, detail = str(exc))
+
+
+@router.get("", response_model = list[RewardRecord])
+def get_rewards(current_subject: str = Depends(get_current_subject)) -> list[dict[str, Any]]:
+    try:
+        return list_rewards()
+    except OSError as exc:
+        raise HTTPException(status_code = 500, detail = "Could not read the reward library.") from exc
+
+
+@router.post("", response_model = RewardRecord, status_code = 201)
+def import_reward_route(
+    payload: RewardImportRequest, current_subject: str = Depends(get_current_subject)
+) -> dict[str, Any]:
+    try:
+        return import_reward(payload.markdown, overwrite = payload.overwrite)
+    except RewardError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/preview", response_model = RewardPreviewResponse)
+def preview_rewards(
+    payload: RewardPreviewRequest, current_subject: str = Depends(get_current_subject)
+) -> dict[str, Any]:
+    try:
+        specs = []
+        for item in payload.rewards:
+            if item.markdown is not None:
+                specs.append(parse_reward_markdown(item.markdown))
+            elif item.name:
+                specs.append(get_reward(item.name))
+            else:
+                raise RewardError("Each preview item needs a name or markdown.")
+        results, isolation = preview_scores(
+            specs,
+            payload.completion,
+            payload.reference,
+            payload.row,
+            payload.prompt,
+            owner = current_account_id(),
+            python_isolation = payload.python_reward_isolation,
+            system_prompt = payload.system_prompt,
+        )
+    except RewardError as exc:
+        raise _http_error(exc) from exc
+    scores = [
+        {**r, "weighted": None if r["score"] is None else r["score"] * item.weight}
+        for r, item in zip(results, payload.rewards)
+    ]
+    return {
+        "scores": scores,
+        "total": sum(s["weighted"] for s in scores if s["weighted"] is not None),
+        "isolation": isolation,
+    }
+
+
+class PythonIsolationStatus(BaseModel):
+    # What Start would be refused with under this isolation setting; None when it can run.
+    refusal: Optional[str] = None
+
+
+@router.get("/python-isolation", response_model = PythonIsolationStatus)
+def python_isolation_status(
+    mode: Literal["required", "auto"] = "required",
+    current_subject: str = Depends(get_current_subject),
+) -> dict[str, Any]:
+    from core.training.python_rewards import python_isolation_refusal
+    return {"refusal": python_isolation_refusal(mode)}
+
+
+@router.get("/{name}/export", response_model = RewardExport)
+def export_reward_route(
+    name: str, current_subject: str = Depends(get_current_subject)
+) -> dict[str, Any]:
+    try:
+        return {"name": name, "markdown": export_reward(name)}
+    except RewardError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.delete("/{name}", status_code = 204, response_class = Response)
+def delete_reward_route(name: str, current_subject: str = Depends(get_current_subject)) -> Response:
+    try:
+        delete_reward(name)
+    except RewardError as exc:
+        raise _http_error(exc) from exc
+    return Response(status_code = 204)

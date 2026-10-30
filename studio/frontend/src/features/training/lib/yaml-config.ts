@@ -5,8 +5,18 @@ import * as yaml from "js-yaml";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState } from "../types/config";
 import { drafterRequestFrom } from "./drafter-config";
+import { effectiveTrainingObjective } from "./rl-roles";
+import { type YamlRlSettings, parseRlSection } from "./rl-settings-config";
 
-const EXPECTED_TOP_KEYS = new Set(["training", "lora", "logging", "inference"]);
+export type { YamlRlSettings };
+
+const EXPECTED_TOP_KEYS = new Set([
+  "training",
+  "lora",
+  "logging",
+  "inference",
+  "rl",
+]);
 
 export function parseYamlConfig(text: string): BackendModelConfig {
   const parsed = yaml.load(text);
@@ -17,9 +27,7 @@ export function parseYamlConfig(text: string): BackendModelConfig {
   }
 
   const raw = parsed as Record<string, unknown>;
-  const unknownKeys = Object.keys(raw).filter(
-    (k) => !EXPECTED_TOP_KEYS.has(k),
-  );
+  const unknownKeys = Object.keys(raw).filter((k) => !EXPECTED_TOP_KEYS.has(k));
   if (unknownKeys.length > 0) {
     console.warn("Ignored unknown YAML keys:", unknownKeys.join(", "));
   }
@@ -31,13 +39,13 @@ export function parseYamlConfig(text: string): BackendModelConfig {
     typeof rawTraining === "object" &&
     !Array.isArray(rawTraining);
   let trainingObj: Record<string, unknown>;
-  if (!isPlainTrainingObject) {
-    trainingObj = { vision_image_size: null };
-  } else {
+  if (isPlainTrainingObject) {
     trainingObj = { ...(rawTraining as Record<string, unknown>) };
     if (!Object.hasOwn(trainingObj, "vision_image_size")) {
       trainingObj.vision_image_size = null;
     }
+  } else {
+    trainingObj = { vision_image_size: null };
   }
 
   return {
@@ -102,7 +110,7 @@ export function serializeConfigToYaml(
     training.vision_image_size = state.visionImageSize;
   }
 
-  const config = {
+  const config: Record<string, unknown> = {
     training,
     lora,
     // Include every non-secret logging field read by parseYamlConfig.
@@ -115,5 +123,36 @@ export function serializeConfigToYaml(
     },
   };
 
+  // What the run would train: a model that forces SFT exports no RL section.
+  const objective = effectiveTrainingObjective(state);
+  if (objective !== "sft") {
+    config.rl = {
+      objective,
+      beta: state.rlBeta,
+      max_prompt_length: state.rlMaxPromptLength,
+      ...(objective === "grpo"
+        ? {
+            variant: state.grpoVariant,
+            num_generations: state.grpoNumGenerations,
+            max_completion_length: state.grpoMaxCompletionLength,
+            temperature: state.grpoTemperature,
+            epsilon_high: state.grpoEpsilonHigh,
+            mask_truncated_completions: state.grpoMaskTruncatedCompletions,
+            python_reward_isolation: state.grpoPythonRewardIsolation,
+            enable_thinking: state.grpoEnableThinking,
+            system_prompt: state.grpoSystemPrompt,
+            rewards: state.grpoRewards,
+          }
+        : {}),
+    };
+  }
+
   return yaml.dump(config, { lineWidth: -1, noRefs: true });
+}
+
+/** The objective and RL settings from a saved YAML. A file with no rl section is SFT;
+ * fields with the wrong type are dropped so the current value stays. */
+export function parseYamlRlSettings(text: string): YamlRlSettings {
+  const parsed = yaml.load(text) as Record<string, unknown> | null;
+  return parseRlSection(parsed?.rl);
 }

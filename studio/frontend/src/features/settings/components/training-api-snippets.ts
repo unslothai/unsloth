@@ -71,6 +71,19 @@ export const TRAINING_FIELD_ROUTE: Record<keyof TrainingStartRequest, "openai" |
   is_embedding: "extra",
   is_decision: "extra",
   model_subfolder: "extra",
+  objective: "extra",
+  rl_beta: "extra",
+  rl_max_prompt_length: "extra",
+  rl_system_prompt: "extra",
+  grpo_num_generations: "extra",
+  grpo_max_completion_length: "extra",
+  grpo_temperature: "extra",
+  grpo_enable_thinking: "extra",
+  grpo_variant: "extra",
+  grpo_mask_truncated_completions: "extra",
+  grpo_epsilon_high: "extra",
+  grpo_python_reward_isolation: "extra",
+  grpo_rewards: "extra",
   use_lora: "derived",
   actual_model_repo_id: "host",
   hf_token: "host",
@@ -126,6 +139,22 @@ const EXTRA_DEFAULTS = {
   "finetune_mlp_modules": true,
 } as const;
 
+/** Sent only for DPO, ORPO and GRPO, where the objective decides which of them apply. */
+const RL_EXTRAS = [
+  "rl_beta",
+  "rl_max_prompt_length",
+  "rl_system_prompt",
+  "grpo_num_generations",
+  "grpo_max_completion_length",
+  "grpo_temperature",
+  "grpo_enable_thinking",
+  "grpo_variant",
+  "grpo_mask_truncated_completions",
+  "grpo_epsilon_high",
+  "grpo_python_reward_isolation",
+  "grpo_rewards",
+] as const satisfies readonly (keyof TrainingStartRequest)[];
+
 /**
  * The "extra" fields of `TRAINING_FIELD_ROUTE`, as the Studio settings a fine-tuning job takes beyond
  * the OpenAI fields.
@@ -175,6 +204,13 @@ function trainingExtras(payload: TrainingStartRequest): Record<string, unknown> 
     Object.keys(payload.custom_format_mapping).length > 0
   ) {
     extras.custom_format_mapping = payload.custom_format_mapping;
+  }
+  if (payload.objective && payload.objective !== "sft") {
+    extras.objective = payload.objective;
+    for (const key of RL_EXTRAS) {
+      if (key.startsWith("grpo_") && payload.objective !== "grpo") continue;
+      if (payload[key] != null) extras[key] = payload[key];
+    }
   }
   return extras;
 }
