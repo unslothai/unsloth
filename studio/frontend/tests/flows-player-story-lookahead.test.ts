@@ -350,3 +350,52 @@ test("the story player routes scenes through the write-ahead and the two lanes",
     /state\.status === "ended" \|\| state\.status === "error"\) \{\s*writeAhead\.plan\(\[\]\);/,
   );
 });
+
+test("restarting during a live miss cancels it and the next playthrough writes ahead at once", async () => {
+  const { calls, write } = fakeWriter();
+  const wa = new L.WriteAhead(write);
+  const live = R.reduce(m, readToChoice(R.initialState(m)), {
+    type: "choose",
+    choiceId: "c1",
+  });
+  const req = L.nextSceneRequest(m, live) as Req;
+  const missed = wa.take(req, L.writeKey(live, req)).catch(() => "stopped");
+  assert.equal(calls.length, 1);
+  wa.close();
+  assert.ok(calls[0].signal.aborted, "the live request is cancelled");
+  wa.open();
+  wa.plan(L.planWriteAhead(m, R.initialState(m), 1, () => undefined));
+  assert.equal(
+    calls.length,
+    2,
+    "the new playthrough is not held by the old miss",
+  );
+  assert.equal(await missed, "stopped");
+  await tick();
+  wa.plan([]);
+});
+
+test("a new playthrough cancels a live miss without letting it end a later hold early", async () => {
+  const { calls, write } = fakeWriter();
+  const wa = new L.WriteAhead(write);
+  const live = R.reduce(m, readToChoice(R.initialState(m)), {
+    type: "choose",
+    choiceId: "c1",
+  });
+  const req = L.nextSceneRequest(m, live) as Req;
+  const missed = wa.take(req, L.writeKey(live, req)).catch(() => "stopped");
+  wa.reset();
+  assert.ok(calls[0].signal.aborted, "the live request is cancelled");
+  let release: () => void = () => undefined;
+  const held = wa.hold(() => new Promise<void>((r) => (release = r)), false);
+  assert.equal(await missed, "stopped");
+  wa.plan(L.planWriteAhead(m, R.initialState(m), 1, () => undefined));
+  assert.equal(
+    calls.length,
+    1,
+    "the hold still keeps background writing waiting",
+  );
+  release();
+  await held;
+  assert.equal(calls.length, 2);
+});
