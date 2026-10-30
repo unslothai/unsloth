@@ -705,7 +705,7 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
     from unsloth import parallel_capabilities as caps
 
     moe = [c for c in caps.CELLS if c.name.startswith("MoE ")]
-    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 5
+    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 6
     proven = sorted(c.name for c in moe if not c.missing())
     assert "MoE qwen3_moe x lora+experts x aux off x cp" in proven
     assert "MoE qwen3_moe x full x aux off x fsdp2" in proven
@@ -714,6 +714,9 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
     assert caps.cell_status(_q(cp = 2, cp_backend = "ulysses", **moe_q))[0] == "supported"
     caps.check(_q(cp = 2, cp_backend = "ulysses", compile = "block", **moe_q))
     caps.check(_q(dp = 2, cp = 2, fsdp2 = True, cp_backend = "ulysses", **moe_q))
+    caps.check(_q(cp = 2, cp_backend = "ulysses", compile = "block", **{**moe_q, "mode": "full", "expert_lora": False}))
+    # FSDP2 x cp block compile recompiles more than one process (measured): eager only.
+    assert caps.cell_status(_q(dp = 2, cp = 2, fsdp2 = True, cp_backend = "ulysses", compile = "block", **moe_q))[0] != "supported"
     for extra, why in (
         (dict(family = "qwen3_5_moe"), "no tiny-checkpoint gloo run"),
         (dict(mode = "qlora"), "4-bit experts need bitsandbytes on a GPU"),
@@ -825,3 +828,28 @@ def test_the_launcher_keys_are_accepted_and_ep_is_reserved():
 
     assert set(LAUNCHER_KEYS) <= set(pe._KEYS)
     assert {"ep", "efsdp"} <= set(pe._RESERVED)
+
+
+@pytest.mark.parametrize("kind", ["sft", "dpo", "grpo"])
+def test_router_aux_loss_after_init_is_refused_under_cp_for_each_trl_trainer(kind):
+    """SFTTrainer writes output_router_logits into the config; DPOTrainer / GRPOTrainer only set aux_loss_enabled
+    and pass the flag per forward. The post-init guard reads both; router_aux_loss_coef = 0.0 runs."""
+    import types
+
+    from unsloth import context_parallel as cpm
+    from unsloth import parallel_capabilities as caps
+
+    def trainer(aux, coef):
+        config = types.SimpleNamespace(model_type = "qwen3_moe", num_experts = 4, router_aux_loss_coef = 0.001,
+                                       output_router_logits = aux and kind == "sft")
+        model = types.SimpleNamespace(config = config)
+        args = types.SimpleNamespace(router_aux_loss_coef = coef)
+        return types.SimpleNamespace(model = model, args = args, aux_loss_enabled = aux), model, args
+
+    on, model, args = trainer(True, None)
+    with pytest.raises(NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"):
+        cpm._refuse_router_aux_loss_after_init(on, 2)
+    assert caps.query_from(None, type(f"{kind.upper()}Trainer", (), {}), model, args).router_aux_loss is True
+    off, model, args = trainer(False, 0.0)
+    cpm._refuse_router_aux_loss_after_init(off, 2)
+    assert caps.query_from(None, type(f"{kind.upper()}Trainer", (), {}), model, args).router_aux_loss is False

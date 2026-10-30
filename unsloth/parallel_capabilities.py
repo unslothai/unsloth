@@ -558,7 +558,8 @@ _ONE = (1,)
 _MOE_MODES = {
     "ddp": {"dp": (2, 4, 8), "fsdp2": (False,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
     "fsdp2": {"dp": (2, 4, 8), "fsdp2": (True,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
-    "cp": {"dp": (1, 2, 4), "fsdp2": (False, True), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE},
+    "cp": {"dp": (1, 2, 4), "fsdp2": (False,), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE},
+    "fsdp2_cp": {"dp": (1, 2, 4), "fsdp2": (True,), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE},
     "pp": {"pp": (2, 4, 8)},
     "tp": {"tp": (2, 4, 8)},
 }
@@ -579,9 +580,13 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_EVIDENCE = {
     ("qwen3_moe", "lora+experts", False, "ddp"): (_MOE_TEST + "[lora-ddp]",) * 2 + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "fsdp2"): (_MOE_TEST + "[lora-fsdp2]",) * 2 + ("eager: no compiled region",),
-    ("qwen3_moe", "lora+experts", False, "cp"): (_MOE_TEST + "[lora-cp2|lora-fsdp2_cp2]",) * 2 + (_MOE_COMPILE,),
+    ("qwen3_moe", "lora+experts", False, "cp"): (_MOE_TEST + "[lora-cp2]",) * 2 + (_MOE_COMPILE + "[lora]",),
+    # Block compile under FSDP2 x cp measured 28 recompiles against 26 in one process (one more
+    # ParametrizedQwen3MoeTopKRouter type guard in the router forward and in PEFT's get_base_layer): eager only.
+    ("qwen3_moe", "lora+experts", False, "fsdp2_cp"): (_MOE_TEST + "[lora-fsdp2_cp2]",) * 2
+    + ("eager: block compile recompiles more than one process",),
     ("qwen3_moe", "full", False, "fsdp2"): (_MOE_TEST + "[full-fsdp2]",) * 2 + ("eager: no compiled region",),
-    ("qwen3_moe", "full", False, "cp"): (_MOE_TEST + "[full-cp2]",) * 2 + ("eager: no compiled region",),
+    ("qwen3_moe", "full", False, "cp"): (_MOE_TEST + "[full-cp2]",) * 2 + (_MOE_COMPILE + "[full]",),
     ("qwen3_moe", "lora+experts", True, "ddp"): (_MOE_AUX_TEST,) * 2 + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", True, "fsdp2"): (_MOE_AUX_TEST,) * 2 + ("eager: no compiled region",),
 }

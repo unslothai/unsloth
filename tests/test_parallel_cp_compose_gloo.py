@@ -101,7 +101,7 @@ def _block_compile_on_cpu(model):
 def _case_train(
     rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = True, keep = False, compile = False,
     arch = "llama", router_aux = False, attn = "sdpa", ungate = False, mode = "lora", trl_aux = False,
-    device = "cpu",
+    device = "cpu", bypass_pre = False, bypass_post = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -134,6 +134,14 @@ def _case_train(
         torch.use_deterministic_algorithms(True, warn_only = True)
     # The test seam: CPU ranks run the Hugging Face attention through the Ulysses wrapper.
     cpm._supports_context_parallel = lambda model, backend = "ring": True
+    if bypass_pre or bypass_post:
+        # Evidence runs only: switch off the aux-loss guards to show what each one catches.
+        from unsloth import parallel_capabilities
+
+        if bypass_pre:
+            parallel_capabilities._aux_loss_on = lambda *a, **k: False
+        if bypass_post:
+            cpm._refuse_router_aux_loss_after_init = lambda *a, **k: None
     if ungate:
         # Measure a cell the registry refuses for lack of evidence (the evidence run itself).
         from unsloth import parallel_capabilities
@@ -541,18 +549,20 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
         _close(res, ref, what = (env, rank))
 
 
-def test_moe_block_compile_under_cp_is_compile_clean():
+@pytest.mark.parametrize("mode", ["lora", "full"])
+def test_moe_block_compile_under_cp_is_compile_clean(mode):
     from unsloth.utils.compile_counters import not_above
 
-    ref = _ref(2, arch = "qwen3_moe")
-    single = _ref(2, compile = True, arch = "qwen3_moe")
-    assert single["compiled_classes"]
-    _close(single, ref, what = "qwen3_moe one process compiled")
-    for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", compile = True)):
+    atol = 1e-5 if mode == "full" else 1e-6  # the embedding row note in the parity test above
+    ref = _ref(2, arch = "qwen3_moe", mode = mode)
+    single = _ref(2, compile = True, arch = "qwen3_moe", mode = mode)
+    assert single["compiled_classes"] and single["compile"]["unique_graphs"] > 0
+    _close(single, ref, what = "qwen3_moe one process compiled", state_atol = atol)
+    for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", mode = mode, compile = True)):
         assert "error" not in res, (rank, res.get("trace"))
         assert res["compiled_classes"] and res["seen_lengths"] == [SEQ // 2]
         assert not not_above(res["compile"], single["compile"]), (res["compile"], single["compile"])
-        _close(res, ref, what = ("qwen3_moe cp2 compiled", rank))
+        _close(res, ref, what = ("qwen3_moe cp2 compiled", mode, rank), state_atol = atol)
 
 
 @pytest.mark.parametrize("config_flag", [True, False], ids = ["output_router_logits", "trl_default_coef"])

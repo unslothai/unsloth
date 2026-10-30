@@ -854,6 +854,8 @@ def _refuse_router_aux_loss_after_init(trainer, size: int) -> None:
     from .parallel_capabilities import Query, _moe, check
 
     moe, aux = _moe(getattr(trainer, "model", None))
+    # DPO passes output_router_logits per forward instead of writing the config: read the trainer's switch too.
+    aux = aux or bool(getattr(trainer, "aux_loss_enabled", False))
     if moe and aux:
         check(Query(trainer = "sft", moe = True, router_aux_loss = True, cp = size, torch = (99, 0)), cells = False)
 

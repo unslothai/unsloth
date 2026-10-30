@@ -12,6 +12,8 @@ the same script in one process (`not_above`)."""
 
 from __future__ import annotations
 
+from collections import Counter
+
 __all__ = ["snapshot", "since", "not_above", "COUNTED"]
 
 COUNTED = ("graph_breaks", "recompiles", "unique_graphs", "frames")
@@ -31,7 +33,11 @@ def snapshot() -> dict:
         "unique_graphs": int(counters.get("stats", {}).get("unique_graphs", 0)),
         "frames": int(counters.get("frames", {}).get("ok", 0)),
         "graph_break_reasons": reasons,
-        "recompile_reasons": [str(r).split("\n", 1)[0] for v in failures.values() for r in v][-50:],
+        "recompile_reasons": [
+            f"{getattr(code, 'co_name', code)}: {str(r).splitlines()[0] if str(r) else ''}"
+            for code, v in failures.items()
+            for r in v
+        ],
     }
 
 
@@ -42,7 +48,14 @@ def since(before: dict) -> dict:
     out["graph_break_reasons"] = {
         k: v - old.get(k, 0) for k, v in now["graph_break_reasons"].items() if v - old.get(k, 0)
     }
-    out["recompile_reasons"] = now["recompile_reasons"][len(before.get("recompile_reasons", [])) :][:5]
+    seen = Counter(before.get("recompile_reasons", []))
+    new = []
+    for reason in now["recompile_reasons"]:
+        if seen[reason]:
+            seen[reason] -= 1
+        else:
+            new.append(reason)
+    out["recompile_reasons"] = new[:50]
     return out
 
 
