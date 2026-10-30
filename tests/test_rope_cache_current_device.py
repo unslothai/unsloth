@@ -647,3 +647,20 @@ def test_compiled_stock_call_serves_every_position_below_max_position(backend):
         assert torch.equal(sin[0], ref_sin[start : start + 4])
     explained = torch._dynamo.explain(lambda x, p: rope(x, p))(x, torch.tensor([[40000, 40001]]))
     assert explained.graph_break_count == 0, explained.break_reasons
+
+
+def test_compiled_preallocation_keeps_the_cache_dtype():
+    # A short bf16 call compiled first grows the cache only to preallocate rows: it must not round a
+    # float32 cache to bf16 for later float32 calls.
+    max_position = 1 << 16
+    rope = _llama(max_position)
+    torch._dynamo.reset()
+    compiled = torch.compile(rope, backend = "eager", fullgraph = True)
+    position_ids = torch.arange(3, 7)[None]
+    compiled(torch.zeros(1, 4, DIM, dtype = torch.bfloat16), position_ids)
+    torch._dynamo.reset()
+    cos, sin = rope(torch.zeros(1, 4, DIM), position_ids)
+    ref_cos, ref_sin = _reference(max_position)
+    assert cos.dtype == torch.float32
+    assert torch.equal(cos[0], ref_cos[3:7])
+    assert torch.equal(sin[0], ref_sin[3:7])

@@ -2519,7 +2519,8 @@ class _PerDeviceRopeCache:
     ):
         if position_ids is not None and seq_len is None:
             # Stock transformers call (a plain model built after the patch): per-position cos/sin.
-            if torch.compiler.is_compiling() and not self._rope_rows_pick_factors:
+            preallocate = torch.compiler.is_compiling() and not self._rope_rows_pick_factors
+            if preallocate:
                 # Reading max(position_ids) on the host breaks the graph, so a traced call builds
                 # every row below max_position_embeddings (as the fast model forward does for
                 # explicit positions) and indexes that: rows depend only on their position.
@@ -2530,7 +2531,8 @@ class _PerDeviceRopeCache:
             else:
                 rows = int(position_ids.max()) + 1
             if rows > self.current_rope_size:
-                self._grow_rope_cache(rows, x.dtype)
+                # Preallocating keeps the cache dtype, so a short compiled bf16 call cannot round a float32 cache.
+                self._grow_rope_cache(rows, self._rope_cache_dtype if preallocate else x.dtype)
             self._need_rope_rows(rows)
             device_index = self._ensure_rope_cache(x.device.index)
             cos, sin = self._slice_rope_cache(device_index, rows)
