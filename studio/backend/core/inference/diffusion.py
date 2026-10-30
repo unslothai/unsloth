@@ -13600,7 +13600,11 @@ class DiffusionBackend:
                         if inpaint_padding_applied is None and init_pil is not None:
                             soft_overlay = (init_pil, mask_pil)
 
-                if workflow in ("img2img", "inpaint") and init_pil is not None and "strength" in call_params:
+                if (
+                    workflow in ("img2img", "inpaint")
+                    and init_pil is not None
+                    and "strength" in call_params
+                ):
                     applied = strength if strength is not None else call_params["strength"].default
                     if isinstance(applied, (int, float)):
                         # SDXL-style img2img runs int(N * strength) steps: a 1-step default would denoise none.
