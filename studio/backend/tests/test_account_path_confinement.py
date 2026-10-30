@@ -277,6 +277,27 @@ def test_a_dotdot_through_a_link_that_stays_in_the_folder_passes(tmp_path, files
 
 
 @symlinks
+def test_a_module_path_that_reads_as_the_root_but_lands_elsewhere_has_its_index_read(tmp_path):
+    # link/.. is "." as text but opens deep/, whose index is not the model root's.
+    from utils.security.file_security import escaping_weight_references
+
+    folder = _write(
+        tmp_path / "m",
+        {"modules.json": [{"idx": 0, "name": "0", "path": "link/..", "type": "x"}]},
+    )
+    (folder / "deep" / "child").mkdir(parents = True)
+    (folder / "link").symlink_to(folder / "deep" / "child", target_is_directory = True)
+    index = {"weight_map": {"w": "../../victim.safetensors"}}
+    _write(folder / "deep", {"model.safetensors.index.json": index})
+    assert escaping_weight_references(folder) == ["link/../../../victim.safetensors"]
+    # A shard that stays in deep/ still passes.
+    _write(
+        folder / "deep", {"model.safetensors.index.json": {"weight_map": {"w": "s.safetensors"}}}
+    )
+    assert escaping_weight_references(folder) == []
+
+
+@symlinks
 def test_a_hub_cache_snapshot_with_blob_links_passes(tmp_path):
     from utils.security.file_security import escaping_weight_references
 
