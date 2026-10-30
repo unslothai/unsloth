@@ -5316,6 +5316,12 @@ export const sv = {
         none: "Ingen systemprompt",
         custom: "Anpassad",
       },
+      presetHints: {
+        notebook: "Ber om resonemanget i <reasoning> och svaret i <answer>, taggarna som de medföljande belöningarna läser.",
+        none: "Skickar inget systemmeddelande, så taggbelöningar ger inget förrän modellen skriver taggarna själv.",
+        custom: "Skriv en egen. Håll taggarna den ber om i takt med dina belöningar.",
+        reasoningTags: "Ber om uträkningen mellan <start_working_out>-taggar och svaret i <SOLUTION>, formatet som resonemangsbelöningarna läser.",
+      },
       systemPrompt: "Systemprompt",
       previewTitle: "Vad modellen ser, rad 1",
       system: "system",

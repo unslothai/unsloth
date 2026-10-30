@@ -4924,6 +4924,12 @@ export const zhCN = {
         none: "无系统提示",
         custom: "自定义",
       },
+      presetHints: {
+        notebook: "要求把推理写在 <reasoning> 中、答案写在 <answer> 中，即内置奖励读取的标签。",
+        none: "不发送系统消息，因此在模型自己写出标签之前，标签奖励不给分。",
+        custom: "自己编写。让它要求的标签与你的奖励保持一致。",
+        reasoningTags: "要求把解题过程写在 <start_working_out> 标签之间、答案写在 <SOLUTION> 中，即推理奖励读取的格式。",
+      },
       systemPrompt: "系统提示",
       previewTitle: "模型看到的内容，第 1 行",
       system: "system",

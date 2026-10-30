@@ -5058,6 +5058,12 @@ export const ptBR = {
         none: "Sem prompt de sistema",
         custom: "Personalizado",
       },
+      presetHints: {
+        notebook: "Pede o raciocínio em <reasoning> e a resposta em <answer>, as tags que as recompensas incluídas leem.",
+        none: "Não envia mensagem de sistema, então recompensas de tags não pontuam até o modelo escrever as tags sozinho.",
+        custom: "Escreva o seu. Mantenha as tags que ele pede alinhadas às suas recompensas.",
+        reasoningTags: "Pede o raciocínio entre tags <start_working_out> e a resposta em <SOLUTION>, o formato que as recompensas de raciocínio leem.",
+      },
       systemPrompt: "Prompt de sistema",
       previewTitle: "O que o modelo vê, linha 1",
       system: "system",

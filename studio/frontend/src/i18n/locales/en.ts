@@ -5114,6 +5114,12 @@ export const en = {
         none: "No system prompt",
         custom: "Custom",
       },
+      presetHints: {
+        notebook: "Asks for working in <reasoning> and the answer in <answer>, the tags the bundled rewards read.",
+        none: "Sends no system message, so tag rewards score nothing until the model writes the tags itself.",
+        custom: "Write your own. Keep the tags it asks for in step with your rewards.",
+        reasoningTags: "Asks for working out between <start_working_out> tags and the answer in <SOLUTION>, the format the reasoning rewards read.",
+      },
       systemPrompt: "System prompt",
       previewTitle: "What the model sees, row 1",
       system: "system",

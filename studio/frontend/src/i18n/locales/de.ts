@@ -5098,6 +5098,12 @@ export const de = {
         none: "Kein Systemprompt",
         custom: "Eigener",
       },
+      presetHints: {
+        notebook: "Verlangt den Lösungsweg in <reasoning> und die Antwort in <answer>, die Tags, die die mitgelieferten Belohnungen lesen.",
+        none: "Sendet keine Systemnachricht, also geben Tag-Belohnungen nichts, bis das Modell die Tags selbst schreibt.",
+        custom: "Schreib deinen eigenen. Halte die verlangten Tags mit deinen Belohnungen abgestimmt.",
+        reasoningTags: "Verlangt den Lösungsweg zwischen <start_working_out>-Tags und die Antwort in <SOLUTION>, das Format, das die Reasoning-Belohnungen lesen.",
+      },
       systemPrompt: "Systemprompt",
       previewTitle: "Was das Modell sieht, Zeile 1",
       system: "system",

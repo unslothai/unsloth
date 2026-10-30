@@ -5108,6 +5108,12 @@ export const fr = {
         none: "Aucun prompt système",
         custom: "Personnalisé",
       },
+      presetHints: {
+        notebook: "Demande le raisonnement dans <reasoning> et la réponse dans <answer>, les balises que lisent les récompenses fournies.",
+        none: "N'envoie aucun message système : les récompenses de balises ne donnent rien tant que le modèle n'écrit pas les balises lui-même.",
+        custom: "Écrivez le vôtre. Gardez les balises demandées en accord avec vos récompenses.",
+        reasoningTags: "Demande le raisonnement entre les balises <start_working_out> et la réponse dans <SOLUTION>, le format que lisent les récompenses de raisonnement.",
+      },
       systemPrompt: "Prompt système",
       previewTitle: "Ce que voit le modèle, ligne 1",
       system: "system",
