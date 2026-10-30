@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The OS counts a menu-dismissing press as click 1; later presses in that run select one step coarser
-// than the user meant, so they select as if it had not counted (2 = caret, 3 = word, 4+ = paragraph).
+// The OS counts a menu-dismissing press as click 1; later presses select as if it had not (caret, word, block).
 
 const OPEN_FLOATING =
   '[data-radix-popper-content-wrapper] :is([role="menu"],[role="listbox"],[role="dialog"])';
@@ -64,14 +63,13 @@ function unitRangeAt(
   return range;
 }
 
-/** Selects the press's unit and returns how a drag extends it, unit by unit like a native drag. */
 function selectAt(event: MouseEvent, target: Element | null): Extend | null {
   const selection = window.getSelection();
   if (!selection) return null;
   selection.removeAllRanges();
   const anchor =
     target && unitRangeAt(event.clientX, event.clientY, event.detail, target);
-  // Native selection never starts in unselectable text or jumps to text outside the pressed element.
+  // Native selection never starts in unselectable text or outside the pressed element.
   if (
     !anchor ||
     !target?.contains(anchor.startContainer) ||
@@ -104,7 +102,7 @@ function selectAt(event: MouseEvent, target: Element | null): Extend | null {
   };
 }
 
-/** `Selection.modify` word steps differ by platform (macOS stops at a word's end); segment instead. */
+/** Segmenter, not `Selection.modify`: its word steps differ by platform. */
 export function wordBounds(text: string, offset: number): [number, number] {
   if (!text) return [0, 0];
   const at = Math.min(offset, text.length - 1);
@@ -151,7 +149,7 @@ export function installDismissClickStreakGuard(
   let extend: Extend | null = null;
 
   const onPointerDown = (event: PointerEvent): void => {
-    // Capture: runs before Radix closes the menu on this press.
+    // Capture phase: runs before Radix closes the menu.
     const target = asElement(event.target);
     pressDismisses =
       event.button === 0 &&
