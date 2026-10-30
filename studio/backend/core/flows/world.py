@@ -659,7 +659,8 @@ def world_schema(npcs: int, items: int) -> dict:
 REPLY_ACTIONS = ("follow_player", "stop_following", "go_to")
 FOLLOW_ASK = re.compile(r"\b(follow me|come with me|come along|walk with me|tag along)\b")
 FOLLOW_STOP = re.compile(
-    r"\b(stop following|go (back )?home|you can go|wait (for me )?here|stay here)\b"
+    r"\b(stop following|go (back )?home|you can go|wait (for me )?here|stay here"
+    r"|(don['\u2019]?t|do not|never|no need to) (follow|come with|come along|walk with|tag along))\b"
 )
 TRADE_ASK = re.compile(r"\b(buy|sell|trade|for sale|wares|what do you have|how much)\b")
 
