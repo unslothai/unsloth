@@ -88,6 +88,7 @@ export interface LoadModelRequest {
   cache_type_kv?: string | null;
   mlx_kv_quant?: string | null;
   mlx_int8_prefill?: boolean;
+  mlx_ane_prefill?: boolean;
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlx_ple_offload?: "off" | number | null;
   mlx_expert_offload?: "off" | number | null;
@@ -268,6 +269,9 @@ export interface LoadModelResponse {
   mlx_int8_prefill?: boolean | null;
   mlx_int8_prefill_requested?: boolean | null;
   mlx_int8_prefill_reason?: string | null;
+  mlx_ane_prefill?: boolean | null;
+  mlx_ane_prefill_requested?: boolean | null;
+  mlx_ane_prefill_reason?: string | null;
   mlx_offload?: MlxOffloadReport | null;
   chat_template?: string | null;
   speculative_type?: string | null;
@@ -404,6 +408,9 @@ export interface InferenceStatusResponse {
   mlx_int8_prefill?: boolean | null;
   mlx_int8_prefill_requested?: boolean | null;
   mlx_int8_prefill_reason?: string | null;
+  mlx_ane_prefill?: boolean | null;
+  mlx_ane_prefill_requested?: boolean | null;
+  mlx_ane_prefill_reason?: string | null;
   mlx_offload?: MlxOffloadReport | null;
   chat_template_override?: string | null;
   speculative_type?: string | null;

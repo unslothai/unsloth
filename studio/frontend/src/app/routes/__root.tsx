@@ -3,6 +3,7 @@
 
 import { ImageViewer } from "@/components/image-viewer";
 import { useAppShellReadySignal } from "@/components/app-readiness";
+import { LazyImportFailure } from "@/components/lazy-import-boundary";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
 import { SpookyDecorations } from "@/features/halloween/spooky-decorations";
@@ -21,8 +22,9 @@ import {
   useIsAccountOwner,
 } from "@/features/auth";
 import {
-  ChatPage,
   type ChatSearch,
+  loadChatPage,
+  loadedChatPage,
   openFolderAsProject,
   startLlamaCppAutoReload,
   StopRunningChatsDialog,
@@ -75,10 +77,12 @@ import {
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  type ComponentType,
   lazy,
 
   type ReactNode,
   Suspense,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -157,6 +161,64 @@ function RouteBoundary({
     <Suspense fallback={<RouteFallback />}>
       {readyWhenCommitted && <ReloadSnapshotReady />}
       {children}
+    </Suspense>
+  );
+}
+
+type ChatPageProps = { search: ChatSearch; active: boolean };
+type ChatPageAttemptProps = ChatPageProps & { onRetry: () => void };
+
+function ChatPageLoadFailure({
+  active,
+  onRetry,
+}: {
+  active: boolean;
+  onRetry: () => void;
+}) {
+  const t = useT();
+  const signalReady = useAppShellReadySignal();
+  // The page it stands in for would have signalled; without this Desktop keeps its startup screen.
+  useLayoutEffect(() => {
+    signalReady();
+  }, [signalReady]);
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) {
+      onRetry();
+    }
+    wasActive.current = active;
+  }, [active, onRetry]);
+  return (
+    <LazyImportFailure
+      message={t("settings.dialog.panelFailed")}
+      reloadLabel={t("settings.dialog.panelReload")}
+      testId="chat-page-load-failure"
+      className="flex h-full min-h-0 flex-1 flex-col items-center justify-center p-6 text-center text-muted-foreground"
+    />
+  );
+}
+
+// A failed import resolves to the failure panel (not a throw), so a crash inside the page still
+// reaches the route boundary; a new lazy() per attempt since lazy() caches its result.
+function chatPageAttempt(): ComponentType<ChatPageAttemptProps> {
+  return (
+    loadedChatPage() ??
+    lazy<ComponentType<ChatPageAttemptProps>>(() =>
+      loadChatPage().then(
+        (m) => ({ default: m.ChatPage }),
+        () => ({ default: ChatPageLoadFailure }),
+      ),
+    )
+  );
+}
+
+function ChatPage(props: ChatPageProps) {
+  // Kept until a failure: swapping component type would remount the page and drop its state.
+  const [Page, setPage] = useState(chatPageAttempt);
+  const retry = useCallback(() => setPage(() => chatPageAttempt()), []);
+  return (
+    <Suspense fallback={<RouteFallback />}>
+      <Page {...props} onRetry={retry} />
     </Suspense>
   );
 }
