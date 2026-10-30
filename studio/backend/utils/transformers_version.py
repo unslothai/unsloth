@@ -1673,6 +1673,31 @@ def get_transformers_tier(
     probe: bool = True,
 ) -> str:
     """Returns 510, 550, 530 or default; local config.json is checked before name heuristics (dir-name false positives); probe=False skips sidecar subprocesses."""
+    tier = _native_transformers_tier(model_name, hf_token, probe)
+    # Native rules can place a custom-code checkpoint below its saving version; raise only, no new fetch.
+    cfg = (
+        _load_config_json(model_name, hf_token)
+        if _safe_is_file(Path(model_name) / "config.json")
+        else _cached_config_json(model_name, hf_token)
+    )
+    required = _remote_code_min_version(cfg)
+    current = _release_tuple(_tier_version(tier))
+    if required is not None and current is not None and current < required:
+        return _route_remote_code(model_name, cfg) or tier
+    return tier
+
+
+def _tier_version(tier: str) -> str | None:
+    return {
+        "default": TRANSFORMERS_DEFAULT_VERSION,
+        "457": TRANSFORMERS_457_VERSION,
+        "530": TRANSFORMERS_530_VERSION,
+        "550": TRANSFORMERS_550_VERSION,
+        "510": TRANSFORMERS_510_VERSION,
+    }.get(tier) or (latest_venv_pinned_version() if tier == "latest" else None)
+
+
+def _native_transformers_tier(model_name: str, hf_token: str | None, probe: bool) -> str:
     local_cfg = Path(model_name) / "config.json"
     if _safe_is_file(local_cfg):
         cfg = _load_config_json(model_name, hf_token)

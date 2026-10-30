@@ -1669,3 +1669,22 @@ class TestCustomCodeRouting:
         calls = _no_network(monkeypatch)
         assert check_upgrade_for_model(_custom_code_model(tmp_path, "5.8.0")) is None
         assert calls["n"] == 0
+
+    def test_native_tier_is_raised_to_saving_version(self, tmp_path: Path):
+        d = tmp_path / "custom_native"
+        d.mkdir()
+        cfg = {
+            "model_type": "qwen3_moe",
+            "architectures": ["Qwen3MoeForCausalLM"],
+            "auto_map": {"AutoConfig": "configuration_x.XConfig"},
+            "transformers_version": "5.8.0",
+        }
+        (d / "config.json").write_text(json.dumps(cfg))
+        assert get_transformers_tier(str(d)) == "510"
+
+    def test_main_offered_when_pypi_is_behind(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        result = check_upgrade_for_model(_custom_code_model(tmp_path, "5.14.0.dev0"))
+        assert result is not None
+        assert result["supported_in_pypi"] is False and result["supported_in_main"] is True
+        assert result["main_version"] == "5.14.0.dev0"

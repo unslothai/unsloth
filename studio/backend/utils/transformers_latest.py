@@ -402,7 +402,11 @@ def _remote_code_upgrade(model_name: str, cfg: dict) -> dict | None:
     if snapshot is None:
         return None
     pypi = _release_tuple(snapshot["pypi_version"])
-    if pypi is None or pypi < required:
+    main = _release_tuple(snapshot.get("main_version"))
+    in_pypi = pypi is not None and pypi >= required
+    # Main ships as the next release's .dev0, so a dev build of the required release counts.
+    offerable = in_pypi or (main is not None and main >= required)
+    if not offerable:
         return None
     logger.info(
         "Model %s has custom code saved by transformers %s, newer than every installed tier "
@@ -415,7 +419,7 @@ def _remote_code_upgrade(model_name: str, cfg: dict) -> dict | None:
     return {
         "model_type": types[0] if types else str(cfg.get("model_type") or ""),
         "pypi_version": snapshot["pypi_version"],
-        "supported_in_pypi": True,
+        "supported_in_pypi": in_pypi,
         "supported_in_main": True,
         "main_version": snapshot.get("main_version"),
     }
