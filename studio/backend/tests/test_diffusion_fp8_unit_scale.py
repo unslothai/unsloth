@@ -383,12 +383,8 @@ def test_installed_dispatcher_keys_studio_compile_bundles(monkeypatch):
     assert cc.environment_fingerprint() == plain
 
 
-# ── installed only where it can engage, consistent kill switch, eager epilogue memory ─────────
-
-
 def test_auto_never_installs_for_fast_accumulate(monkeypatch):
-    # Studio's default is fast accumulate, which the dispatcher never takes: installing would only tag every later
-    # compile in the process (a bf16 or GGUF model too) with a cache key that splits its bundles.
+    # Installing at fast accumulate would only split every later compile's cache key.
     import torch.compiler.config as ccfg
 
     monkeypatch.setattr(ccfg, "cache_key_tag", "")
@@ -398,10 +394,10 @@ def test_auto_never_installs_for_fast_accumulate(monkeypatch):
     assert f8t.addmm_float8_unwrapped_inference is before and ccfg.cache_key_tag == ""
     assert us.install(fast_accum = False) is True
     us.uninstall()
-    assert us.install(fast_accum = None) is True  # unknown accumulate keeps the speed-up
+    assert us.install(fast_accum = None) is True
     us.uninstall()
     monkeypatch.setenv(us.UNIT_SCALE_ENV, "1")
-    assert us.install(fast_accum = True) is True  # force covers both accumulate modes
+    assert us.install(fast_accum = True) is True
 
 
 def test_fp8_quant_config_installs_only_for_precise_accumulate(monkeypatch):
@@ -422,7 +418,7 @@ def test_fp8_quant_config_installs_only_for_precise_accumulate(monkeypatch):
         ({"scheme": "int8"}, False),
         ({"scheme": "fp8", "fast_accum": True}, False),
         ({"scheme": "fp8", "fast_accum": False}, True),
-        ({"scheme": "nvfp4"}, True),  # a policy over fp8, accumulate unrecorded
+        ({"scheme": "nvfp4"}, True),
         ({}, True),
     ],
 )
@@ -455,8 +451,6 @@ def test_every_off_word_of_the_compile_cache_key_turns_the_dispatcher_off(monkey
 
 @pytest.mark.parametrize("bias", [False, True])
 def test_eager_epilogue_writes_into_the_accumulator_bitwise_as_before(monkeypatch, bias):
-    # The fused expression materialized an fp32 [M, N] buffer plus a second bf16 output eagerly (the PR's own 662 vs
-    # 486 MiB). Chunked into the accumulator it allocates neither, and rounds every element the same way.
     produced = []
 
     def scaled_mm(*args, **kwargs):
@@ -465,9 +459,7 @@ def test_eager_epilogue_writes_into_the_accumulator_bitwise_as_before(monkeypatc
         return acc
 
     fn = _install_emulated(monkeypatch, scaled_mm)
-    monkeypatch.setattr(
-        us, "_EAGER_EPILOGUE_ELEMS", 48 * 300
-    )  # 300-row chunks: several, the last one partial
+    monkeypatch.setattr(us, "_EAGER_EPILOGUE_ELEMS", 48 * 300)
     a, sa, b, sb = _operands(2048)
     bv = torch.randn(48).to(torch.bfloat16) if bias else None
     got = fn(_Dev(a), sa, b, sb, torch.bfloat16, bias = bv)

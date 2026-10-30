@@ -3,7 +3,7 @@
 
 """sm_89 precise-accumulate fp8: unit-scale _scaled_mm beats torchao row-wise (fast accumulate stays
 on torchao, no gain); UNSLOTH_DIFFUSION_FP8_UNIT_SCALE=0 off. Installed only where it can
-engage (precise accumulate or force): installing tags the process-wide compile cache key."""
+engage: installing tags the process-wide compile cache key."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ UNIT_SCALE_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE"
 MIN_ROWS_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS"
 # Unit-scale wins from M = 256 up (L4: row-wise 2.5-4x slower from 512); below, tens of microseconds either way.
 _DEFAULT_MIN_ROWS = 256
-# Eager epilogue chunk: its fp32 temporary stays near this many elements (64 MiB) instead of a full [M, N] buffer.
+# Eager epilogue chunk size, avoids a full fp32 [M, N] buffer.
 _EAGER_EPILOGUE_ELEMS = 1 << 24
 _OFF_WORDS = ("0", "off", "false", "no", "none")
 _ON_WORDS = ("1", "on", "true", "yes", "force")
@@ -52,11 +52,8 @@ def _compiling() -> bool:
 def _scale_epilogue(
     acc: Any, a_scale: Any, b_scale: Any, bias: Optional[Any], output_dtype: Any
 ) -> Any:
-    """``(acc * a_scale * b_scale + bias)`` in fp32, rounded once to ``output_dtype`` (the bf16 ``acc``'s dtype).
-
-    Compiled, inductor fuses it into one pass. Eager, the fp32 product is formed a row chunk at a time and written back
-    into ``acc``: the same elementwise ops in the same order, so bitwise the same output, but the peak is the
-    accumulator plus one chunk rather than the accumulator, an fp32 [M, N] buffer and a second bf16 output."""
+    """``(acc * a_scale * b_scale + bias)`` in fp32, rounded once to ``output_dtype``. Eager runs it per row chunk
+    in place (bitwise identical) to bound peak memory."""
     import torch
 
     if _compiling():
@@ -72,20 +69,18 @@ def _scale_epilogue(
     out = acc if acc.dtype == output_dtype else torch.empty_like(acc, dtype = output_dtype)
     for start in range(0, rows, step):
         stop = min(rows, start + step)
-        # bf16 * fp32 promotes without an upcast copy of the chunk.
         tmp = acc[start:stop] * sa[start:stop]
         tmp.mul_(sb)
         if bf is not None:
             tmp.add_(bf)
         out[start:stop].copy_(tmp)
-        # Freed before the next chunk is formed, else two chunks are live at once.
+        # Free before the next chunk, else two are live.
         del tmp
     return out
 
 
 def can_engage(fast_accum: Optional[bool]) -> bool:
-    """Whether a load running fp8 at ``fast_accum`` can ever take the dispatcher: precise accumulate, an unknown one
-    (None: install rather than lose the speed-up), or ``force``. Pure: no device query."""
+    """False only for fast accumulate outside ``force``; None (unknown) installs."""
     return _mode() == "force" or fast_accum is not True
 
 
@@ -128,8 +123,8 @@ def _device_caps() -> dict:
 
 
 def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
-    """Patch torchao's fp8 addmm with the dispatcher; idempotent, False when off / no qualifying GPU / layout moved, and
-    in auto mode when the load runs fast accumulate (``fast_accum=True``), where it can never engage."""
+    """Patch torchao's fp8 addmm with the dispatcher; idempotent, False when off / no qualifying GPU / layout moved /
+    it cannot engage."""
     if _STATE["installed"]:
         return True
     mode = _mode()

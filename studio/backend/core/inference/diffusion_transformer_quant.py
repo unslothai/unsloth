@@ -1818,7 +1818,6 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # activation_value_lb floors the scale: an all-zero row otherwise gives NaN.
         from torchao.quantization import PerRow
 
-        # Only precise accumulate can take the sm_89 dispatcher; Studio's default fast one never does.
         _install_fp8_unit_scale(fast_accum = _resolve_fast_accum(fast_accum))
         fp8_kwargs: dict = {"granularity": PerRow()}
         config_params = _inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters

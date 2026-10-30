@@ -290,9 +290,7 @@ def _install_fp8_unit_scale(fast_accum: Optional[bool] = None) -> None:
 
 
 def _install_fp8_unit_scale_for(ckpt: Any) -> None:
-    """Install the sm_89 dispatcher only for a checkpoint whose torchao fp8 layers can take it: an int8 one holds none,
-    and one baked at fast accumulate (the builder's default) never reaches it. fp8 and nvfp4 (a policy over fp8) with
-    precise or unrecorded accumulate install, as before."""
+    """Skip int8 checkpoints and ones baked at fast accumulate (the builder's default)."""
     meta = (ckpt.get("metadata") if isinstance(ckpt, dict) else None) or {}
     if str(meta.get("scheme") or "").lower() == "int8" or _int8_only(ckpt):
         return
@@ -2292,8 +2290,7 @@ def load_prequantized_transformer(
                 config_subfolder = config_subfolder,
                 logger = logger,
             )
-            # ComfyUI files never pass through _load_prequant_checkpoint, which installs this for Studio's own. Their fp8
-            # layers are rebuilt at the load's accumulate, so only a precise one can take the dispatcher.
+            # ComfyUI files never pass through _load_prequant_checkpoint, which installs this for Studio's own.
             from .diffusion_transformer_quant import _resolve_fast_accum
 
             _install_fp8_unit_scale(fast_accum = _resolve_fast_accum(fast_accum))
