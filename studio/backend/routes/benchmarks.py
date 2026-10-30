@@ -266,7 +266,8 @@ def _eval_running() -> bool:
     from core.benchmark import orchestrator
 
     backend = orchestrator._orchestrator
-    return backend is not None and backend.is_active()
+    # A stopped run's in-flight requests still reach the server until its worker returns.
+    return backend is not None and (backend.is_active() or backend.is_draining())
 
 
 def note_inference_request(holder: Optional[str]) -> None:

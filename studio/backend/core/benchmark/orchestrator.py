@@ -147,6 +147,16 @@ def _run_benchmark_task(params: dict) -> dict:
         _uninstall_tqdm_progress_patch()
 
 
+# The running worker's Stop. lm_eval can't be interrupted, so StudioGGUFLM checks this before
+# each request; one worker runs at a time, so one slot is enough.
+_worker_cancel: Optional[threading.Event] = None
+
+
+def worker_cancelled() -> bool:
+    ev = _worker_cancel
+    return ev is not None and ev.is_set()
+
+
 class BenchmarkOrchestrator:
     def __init__(self):
         self._lock = threading.Lock()
@@ -333,6 +343,8 @@ class BenchmarkOrchestrator:
                 return {}  # stopped, or superseded, before it started
             cancel_event = self._cancel_event
             clear_progress()
+            global _worker_cancel
+            _worker_cancel = cancel_event
             future = self._executor.submit(_run_benchmark_task, params)
             self._worker = future
         my_seq = op_seq

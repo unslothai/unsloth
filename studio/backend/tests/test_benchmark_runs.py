@@ -283,6 +283,9 @@ def test_a_running_eval_refuses_loads_from_every_tab(monkeypatch):
         def is_active(self):
             return self.active
 
+        def is_draining(self):
+            return False
+
     running = _Eval()
     monkeypatch.setattr(benchmarks_routes, "_lease", None)
     monkeypatch.setattr(orchestrator, "_orchestrator", running)

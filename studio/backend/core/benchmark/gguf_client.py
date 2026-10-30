@@ -56,7 +56,11 @@ class StudioGGUFLM(GGUFLM):
                 "min_p": 0.0,
                 **payload,
             }
+        from core.benchmark.orchestrator import worker_cancelled
+
         for _ in range(retries):
+            if worker_cancelled():
+                raise RuntimeError("The benchmark was stopped.")
             try:
                 response = self._session.post(url, json = payload, timeout = self.timeout)
                 response.raise_for_status()

@@ -731,3 +731,36 @@ def test_an_eval_and_a_sweep_never_share_the_server(monkeypatch):
     assert not lease_routes.claim_run_lease("evals-test", "evals")
     monkeypatch.setattr(lease_routes, "_loads_in_flight", {})
     assert lease_routes.claim_run_lease("evals-test", "evals")
+
+
+def test_a_stopped_eval_stops_its_requests_and_keeps_loads_fenced_until_it_returns(monkeypatch):
+    # lm_eval can't be interrupted: the Studio backend checks Stop before every request, and
+    # until the worker returns its last requests can still reach the server.
+    from routes import benchmarks as lease_routes
+
+    left = threading.Event()
+
+    def task(params):
+        deadline = time.monotonic() + 5
+        while not orch.worker_cancelled() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        left.wait(5)  # the request already in flight
+        return {"results": {}}
+
+    backend = _orchestrator(monkeypatch, task)
+    monkeypatch.setattr(orch, "_orchestrator", backend)
+    worker = threading.Thread(target = backend.run, args = ({},))
+    worker.start()
+    deadline = time.monotonic() + 5
+    while not backend.is_draining() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert backend.is_draining() and not orch.worker_cancelled()
+    assert backend.cancel()
+    assert orch.worker_cancelled() and not backend.is_active()
+    assert lease_routes._eval_running()
+    left.set()
+    worker.join(5)
+    deadline = time.monotonic() + 5
+    while backend.is_draining() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not lease_routes._eval_running()
