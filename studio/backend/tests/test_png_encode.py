@@ -158,6 +158,48 @@ def test_an_encode_error_falls_back(monkeypatch):
     assert png_encode.encode(image, compress_level = 1) is None
 
 
+def test_the_filter_worker_stays_a_few_bands_ahead_of_deflate(monkeypatch):
+    # Deflate is the slow side at high levels; a worker free to run ahead would hold the whole filtered image.
+    import threading
+    import time
+
+    real = png_encode._filtered
+    lock = threading.Lock()
+    state = {"filtered": 0, "deflated": 0, "lead": 0}
+
+    def counted(*args):
+        out = real(*args)
+        with lock:
+            state["filtered"] += 1
+            state["lead"] = max(state["lead"], state["filtered"] - state["deflated"])
+        return out
+
+    compressobj = png_encode.zlib.compressobj
+
+    class SlowCompressor:
+        def __init__(self, *args):
+            self.inner = compressobj(*args)
+
+        def compress(self, data):
+            time.sleep(0.01)
+            with lock:
+                state["deflated"] += 1
+            return self.inner.compress(data)
+
+        def flush(self):
+            return self.inner.flush()
+
+    image = _image("RGB", 1200, 400)  # 1200 rows of 1201 bytes: 8 bands
+    expected = _pillow(image, compress_level = 1)
+    assert png_encode.encode(image, compress_level = 1) == expected  # probe with the real zlib
+    monkeypatch.setattr(png_encode, "_filtered", counted)
+    monkeypatch.setattr(png_encode.zlib, "compressobj", SlowCompressor)
+    assert png_encode.encode(image, compress_level = 1) == expected
+    assert state["filtered"] == state["deflated"] >= 6
+    # The band being deflated plus the ones queued behind it, however slow deflate is.
+    assert state["lead"] <= png_encode._AHEAD + 1
+
+
 def _meta(index = 0):
     return {
         "prompt": "a sloth",

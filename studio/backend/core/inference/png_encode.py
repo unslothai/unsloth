@@ -25,6 +25,8 @@ _MODES = {"L": (1, 0), "LA": (2, 4), "RGB": (3, 2), "RGBA": (4, 6)}
 # Bytes of rows filtered per task: small enough to stay in cache, large enough that a batch's concurrent encodes do
 # not queue on the GIL between numpy calls (32 rows of a 512 px image made four encodes at once 1.6x slower).
 _BAND_BYTES = 192 * 1024
+# Bands filtered or queued ahead of the one being deflated.
+_AHEAD = 2
 _PROBE_LOCK = threading.Lock()
 _PROBED: dict[tuple[str, int], bool] = {}
 # Encodes the fast path served, for tests and benchmarks; a batch encodes on several threads at once.
@@ -90,14 +92,24 @@ def _deflated(pixels: Any, bpp: int, level: int) -> Iterator[bytes]:
         for start, stop in bands:
             yield compressor.compress(_filtered(pixels, bpp, start, stop))
     else:
+        from collections import deque
         from concurrent.futures import ThreadPoolExecutor
+        from itertools import islice
 
-        # One worker runs the bands in order, ahead of the deflate below.
+        # One worker filters the bands in order, at most _AHEAD bands ahead of the deflate below: deflate is the slower
+        # side at higher levels, and a worker left to run ahead would hold a filtered copy of the whole image.
         with ThreadPoolExecutor(max_workers = 1, thread_name_prefix = "png-filter") as pool:
-            futures = [pool.submit(_filtered, pixels, bpp, start, stop) for start, stop in bands]
+            todo = iter(bands)
+            futures = deque(
+                pool.submit(_filtered, pixels, bpp, *band) for band in islice(todo, _AHEAD)
+            )
             try:
-                for future in futures:
-                    yield compressor.compress(future.result())
+                while futures:
+                    data = futures.popleft().result()
+                    band = next(todo, None)
+                    if band is not None:
+                        futures.append(pool.submit(_filtered, pixels, bpp, *band))
+                    yield compressor.compress(data)
             finally:
                 for future in futures:
                     future.cancel()
@@ -157,14 +169,25 @@ def _encode(image: Any, mode: str, level: int, save_kwargs: dict) -> Optional[by
     pixels = np.ascontiguousarray(pixels.reshape(image.height, image.width * bpp), dtype = np.uint8)
     # One IDAT per buffer ImageFile._save hands the encoder; every buffer but the last comes back full.
     bufsize = max(int(ImageFile.MAXBLOCK), image.width * 4)
-    stream = b"".join(_deflated(pixels, bpp, level))
-    parts = [framing[0]]
-    for start in range(0, len(stream), bufsize):
-        piece = stream[start : start + bufsize]
-        parts.append(struct.pack(">I", len(piece)) + b"IDAT" + piece)
-        parts.append(struct.pack(">I", zlib.crc32(piece, zlib.crc32(b"IDAT"))))
-    parts.append(framing[1])
-    return b"".join(parts)
+    out = io.BytesIO()
+    out.write(framing[0])
+    # IDAT chunks are cut while deflate runs, so the stream is never held twice beside the output.
+    pending = bytearray()
+
+    def idat(piece: Any) -> None:
+        out.write(struct.pack(">I", len(piece)) + b"IDAT")
+        out.write(piece)
+        out.write(struct.pack(">I", zlib.crc32(piece, zlib.crc32(b"IDAT"))))
+
+    for data in _deflated(pixels, bpp, level):
+        pending += data
+        while len(pending) >= bufsize:
+            idat(pending[:bufsize])
+            del pending[:bufsize]
+    if pending:
+        idat(pending)
+    out.write(framing[1])
+    return out.getvalue()
 
 
 def _probe_image(mode: str) -> Any:
