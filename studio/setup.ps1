@@ -8534,12 +8534,14 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
         if ($_rocmBlocked) {
             substep "[WARN] could not set the install manifest aside; $_rocmTritonFrom left in place -- flex attention decode may run unfused." "Yellow"
         } else {
-            # Inherited uv / pip inputs that would drop or replace the pin while still reporting success.
+            # Inherited uv / pip inputs that would drop or replace the pin while still reporting success, and
+            # require-hashes, which the unhashed pin can only fail (the dependency stack relaxes it the same way).
             $_rocmSavedEnv = @{}
-            foreach ($_n in 'UV_OVERRIDE', 'UV_EXCLUDE', 'UV_CONSTRAINT', 'PIP_CONSTRAINT') {
+            foreach ($_n in 'UV_OVERRIDE', 'UV_EXCLUDE', 'UV_CONSTRAINT', 'PIP_CONSTRAINT', 'UV_REQUIRE_HASHES', 'PIP_REQUIRE_HASHES') {
                 $_rocmSavedEnv[$_n] = [Environment]::GetEnvironmentVariable($_n)
                 Remove-Item "Env:$_n" -ErrorAction SilentlyContinue
             }
+            $env:PIP_REQUIRE_HASHES = "0"
             # A broken 3.8, or a record with no version, already satisfies the pin as far as the installer can
             # tell, so only a forced reinstall restores its files.
             $_rocmArgs = @($_rocmPair.Spec)
@@ -8550,7 +8552,10 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
                 $_rocmTritonOut = Fast-Install @_rocmArgs | Out-String
                 $_rocmTritonExit = $LASTEXITCODE
             } finally {
-                foreach ($_n in $_rocmSavedEnv.Keys) { if ($null -ne $_rocmSavedEnv[$_n]) { Set-Item "Env:$_n" $_rocmSavedEnv[$_n] } }
+                foreach ($_n in $_rocmSavedEnv.Keys) {
+                    if ($null -ne $_rocmSavedEnv[$_n]) { Set-Item "Env:$_n" $_rocmSavedEnv[$_n] }
+                    else { Remove-Item "Env:$_n" -ErrorAction SilentlyContinue }
+                }
             }
             # Exit 0 is not enough: an override-dependencies entry in a uv config keeps the old version, and a
             # probe that could not read the venv verifies nothing.

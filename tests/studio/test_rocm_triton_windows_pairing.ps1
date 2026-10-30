@@ -66,6 +66,7 @@ function Invoke-BoundedPythonProbe {
 function Fast-Install {
     $script:Installs += ,($args -join " ")
     $script:EnvSeen += ,(@('UV_OVERRIDE', 'UV_EXCLUDE', 'UV_CONSTRAINT', 'PIP_CONSTRAINT' | ForEach-Object { [Environment]::GetEnvironmentVariable($_) }) -join "|")
+    $script:HashSeen += ,(@('UV_REQUIRE_HASHES', 'PIP_REQUIRE_HASHES' | ForEach-Object { [Environment]::GetEnvironmentVariable($_) }) -join "|")
     if ($script:InstallLeaves) {
         $script:State.Triton = $script:InstallLeaves.Triton
         $script:State.Imports = $script:InstallLeaves.Imports
@@ -183,6 +184,16 @@ Check "and restored afterwards" (@($envNames | Where-Object { [Environment]::Get
 foreach ($n in $envNames) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30"
 Check "unset ones stay unset" (@($envNames | Where-Object { $null -ne [Environment]::GetEnvironmentVariable($_) }).Count -eq 0)
+# Require-hashes is relaxed for the unhashed pin like the dependency stack does, and put back after.
+$script:HashSeen = @()
+$env:UV_REQUIRE_HASHES = "1"; $env:PIP_REQUIRE_HASHES = "1"
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30"
+Check "UV_REQUIRE_HASHES is cleared and PIP_REQUIRE_HASHES is 0 for the install" ((Repaired $r) -and $script:HashSeen[0] -eq "|0")
+Check "and both are restored afterwards" ($env:UV_REQUIRE_HASHES -eq "1" -and $env:PIP_REQUIRE_HASHES -eq "1")
+Remove-Item Env:UV_REQUIRE_HASHES, Env:PIP_REQUIRE_HASHES -ErrorAction SilentlyContinue
+$script:HashSeen = @()
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30"
+Check "an unset PIP_REQUIRE_HASHES is 0 during the install and unset after" ($script:HashSeen[0] -eq "|0" -and $null -eq [Environment]::GetEnvironmentVariable('PIP_REQUIRE_HASHES'))
 # Finding 6: exit 0 that leaves the old version (a uv config override) is not accepted.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Leaves @{ Triton = "3.9.0.post30"; Imports = $true }
 Check "exit 0 with 3.9 still installed is not certified (manifest dropped, setup continues)" ((Repaired $r) -and -not $r.Manifest -and $r.StackExit -eq 0 -and $r.Pending -eq 0)
