@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resolve an OpenAI-request ``model`` string to a downloaded local model.
-
-Used by the opt-in auto-switch path. Two kinds of local model qualify: a GGUF
-(served by llama.cpp, with a quant that is actually on disk) and a non-GGUF
-checkpoint such as safetensors or MLX weights (served by the inference
-orchestrator). The match is conservative either way: only names that map to
-something already downloaded are eligible, so an arbitrary OpenAI model string
-still falls through to the loaded model (drop-in compat) and no surprise
-multi-GB download is ever triggered. The local-model scan is cached for a few
-seconds since auto-switch consults it per request.
-"""
+"""Maps an OpenAI model string to a downloaded GGUF or non-GGUF model; unknown names fall through to
+the loaded model; never triggers a download."""
 
 from __future__ import annotations
 
@@ -22,6 +13,7 @@ from typing import Optional
 
 from core.inference.model_ids import public_model_id
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 from utils.account_context import (
     AccountContext,
     account_thread,
@@ -628,18 +620,25 @@ def _weights_are_servable(load_dir) -> bool:
     return not (load_dir / "modules.json").is_file()
 
 
-def _config_is_servable_here(load_dir, config: dict) -> bool:
+def _config_is_servable_here(approval_ids, load_dir, config: dict) -> bool:
     """Only the approval boundary and category are decided here; remote code is read as data only."""
+    from utils.security.remote_code_approvals import approved_local_fingerprint
     from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
 
-    # trust_remote_code needs an approval fingerprint a switch has not got; read as data only.
+    auto_map = False
     for name in REMOTE_CODE_CONFIG_FILES:
         candidate = config if name == "config.json" else _read_json(load_dir / name)
         if not isinstance(candidate, dict):
             continue
         # model_file runs repo code and bypasses trust_remote_code (MLX loaders exec_module it).
-        if candidate.get("auto_map") or candidate.get("model_file"):
+        if candidate.get("model_file"):
             return False
+        auto_map = auto_map or bool(candidate.get("auto_map"))
+    # A switch can only pass on an approval the account already gave for exactly this code.
+    if auto_map and not approved_local_fingerprint(
+        current_account().username, approval_ids, str(load_dir)
+    ):
+        return False
     return _is_generative_chat_config(load_dir, config)
 
 
@@ -709,7 +708,11 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         if not _weights_are_servable(load_dir):
             return None
         config = _read_json(load_dir / "config.json")
-        if not isinstance(config, dict) or not _config_is_servable_here(load_dir, config):
+        # Listing passes the raw id, the index the alias: both must see a path-keyed approval.
+        approval_ids = (loader_id, getattr(info, "id", None), path, str(load_dir))
+        if not isinstance(config, dict) or not _config_is_servable_here(
+            approval_ids, load_dir, config
+        ):
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
@@ -780,6 +783,7 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
         return path
 
 
+@in_scan_memo
 def _build_index() -> dict[str, _LocalGgufEntry]:
     """Scans the model picker's roots; Ollama manifests are read only, since load materializes the .gguf."""
     # Lazy import: routes.models imports core.inference.

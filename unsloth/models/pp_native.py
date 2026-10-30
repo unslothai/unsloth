@@ -1,42 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pipeline parallelism (torch.distributed.pipelining) for any dense decoder, one stage per rank.
-
-    model = FastLanguageModel.get_peft_model(model, ...)  # LoRA first: same init as 1 GPU
-    pp = apply_pipeline_parallel(model, init_device_mesh("cuda", (pp,), mesh_dim_names = ("pp",))["pp"],
-                                 n_microbatches = 4)
-
-LoRA / QLoRA training of dense decoders (no Trainer, generate). Custom loop (torchrun --nproc_per_node pp),
-the same batch on every rank:
-
-    optimizer = torch.optim.AdamW(pp.parameters(), lr = 2e-4)  # this stage's trainable parameters
-    loss = pp.step(input_ids, labels)  # one optimizer step's batch: n_microbatches micro-batches
-    pp.clip_grad_norm_(1.0)            # global norm over every stage
-    optimizer.step(); optimizer.zero_grad()
-    pp.save_adapter("out")             # collective: the standard 1-GPU PEFT adapter, written by rank 0
-
-Each rank keeps its contiguous slice of decoder layers (FLOP balanced, lm_head + loss counted on the last
-stage). The other layers become parameter-free pass-throughs, so the ModuleList length, layer indices and
-parameter names (adapter keys) do not change. Every stage runs the model's own forward: the first stage from
-input_ids, later stages substitute the received hidden states before their first layer, earlier stages stop
-after their last layer, and the last stage returns the model's own loss (lm_head + fused cross entropy, no
-logits are sent). The loss of each micro-batch is its summed token loss over the token count of the whole
-batch, as with gradient accumulation on one GPU.
-
-Composed with data / tensor parallelism (torchtitan's order: pp outermost, then dp, then tp; split first,
-then parallelize each stage), on one mesh covering every rank:
-
-    mesh = init_device_mesh("cuda", (pp, dp, tp), mesh_dim_names = ("pp", "dp", "tp"))  # any 2 or all 3
-    pp = apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 4)  # 1. this rank's stage
-    apply_tensor_parallel(model, mesh["tp"])                             # 2. optional: tp inside the stage
-    shard_model(model, FSDP2Config(mesh = mesh["dp"]))                   # 3. optional: FSDP2 over dp
-    loss = pp.step(input_ids, labels)  # this dp replica's slice of the global batch (same on pp / tp peers)
-
-The loss then averages over the tokens of the whole global batch (every dp replica), clip_grad_norm_ counts
-every gradient element once over the world, the GradScaler skip is decided over the world and save_adapter
-writes the 1-GPU adapter from global rank 0.
-"""
+"""Pipeline parallel, one stage per rank; LoRA first; order pp outermost then dp then tp, split
+before parallelizing; save_adapter is collective, rank 0 writes; param names unchanged."""
 
 from __future__ import annotations
 
@@ -931,6 +897,9 @@ class PipelineParallel:
         self._global_ranks = [dist.get_global_rank(self.group, i) for i in range(self.num_stages)]
         self._shapes = collections.OrderedDict()
         self._scaler = None
+        self._step_scaler = (
+            None  # the enabled GradScaler of the last step (clip_grad_norm_ checks it)
+        )
         self._mb_losses = []
         self._loss_multiplier = 1
         self.dp_mesh = None  # set by shard_model (FSDP2 over the data parallel dimension)
@@ -1155,6 +1124,8 @@ class PipelineParallel:
                 torch.zeros((), device = device)
             )  # every stage's scaler holds the scale (unscale_)
             self._scaler = scaler
+            self._bind_scaler(scaler)
+        self._step_scaler = scaler if scaler is not None and scaler.is_enabled() else None
         self._mb_losses = []
         args = (input_ids.to(device),) if self.is_first else ()
         target = step_kwargs["labels"] if self.is_last else None
@@ -1236,6 +1207,7 @@ class PipelineParallel:
         divided by the ranks holding a copy of it, summed over every rank)."""
         import torch.distributed as dist
 
+        self._check_unscaled()
         params = self.parameters() if parameters is None else list(parameters)
         params = [p for p in params if p.grad is not None]
         device = self.device
@@ -1261,11 +1233,69 @@ class PipelineParallel:
     def unscale_(self, scaler, optimizer):
         """scaler.unscale_(optimizer), then found_inf is the MAX over every stage, so all stages skip the
         same steps (scaler.step / scaler.update after this)."""
-        import torch.distributed as dist
-
         scaler.unscale_(optimizer)
         if not scaler.is_enabled():
             return
+        self._agree_found_inf(scaler, optimizer)
+
+    def _bind_scaler(self, scaler):
+        """Make scaler.unscale_ / scaler.step agree found_inf over every stage, or one stage steps while another skips.
+        Bound until scaler.update(), so the scaler pickles again where torch.amp allows it and holds no pipeline."""
+        import weakref
+
+        bound = scaler.__dict__.get("_unsloth_pp_agree")
+        if bound is not None and bound() is self:
+            return
+        cls = type(scaler)
+        unscale = cls.unscale_.__get__(scaler)
+        update = cls.update.__get__(scaler)
+        pipeline = weakref.ref(self)
+
+        def unscale_(optimizer):
+            unscale(optimizer)
+            pp = pipeline()
+            if pp is not None and scaler.is_enabled():
+                pp._agree_found_inf(scaler, optimizer)
+
+        def update_(new_scale = None):
+            try:
+                return update(new_scale)
+            finally:
+                for name in ("unscale_", "update", "_unsloth_pp_agree"):
+                    scaler.__dict__.pop(name, None)
+                pp = pipeline()
+                if pp is not None and pp._step_scaler is scaler:
+                    pp._step_scaler = (
+                        None  # this step's gradients were unscaled (update follows step)
+                    )
+
+        scaler.unscale_ = unscale_
+        scaler.update = update_
+        scaler._unsloth_pp_agree = pipeline
+
+    def _check_unscaled(self):
+        """clip_grad_norm_ on gradients still multiplied by the loss scale clips the wrong norm."""
+        scaler = self._step_scaler
+        if scaler is None or not scaler.is_enabled():
+            return
+        try:
+            from torch.amp.grad_scaler import OptState
+        except ImportError:
+            return
+        states = getattr(scaler, "_per_optimizer_states", {}) or {}
+        if any(
+            state.get("stage") in (OptState.UNSCALED, OptState.STEPPED) for state in states.values()
+        ):
+            return  # scaler.step unscales first: STEPPED gradients are unscaled too
+        raise ValueError(
+            "Unsloth: PipelineParallel.clip_grad_norm_ got gradients still multiplied by the float16 "
+            "loss scale. Call scaler.unscale_(optimizer) (or pp.unscale_(scaler, optimizer)) first, as "
+            "torch.amp requires before clipping."
+        )
+
+    def _agree_found_inf(self, scaler, optimizer):
+        import torch.distributed as dist
+
         state = scaler._per_optimizer_states[id(optimizer)]
         found = state["found_inf_per_device"]
         device = self.device

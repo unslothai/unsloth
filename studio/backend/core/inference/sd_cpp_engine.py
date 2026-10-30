@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Native stable-diffusion.cpp (``sd-cli``) engine for the diffusion backend.
-
-Mirrors the chat backend's llama.cpp shell-out: locate a prebuilt / built binary, run it as a
-one-shot subprocess. The CPU / Apple-Silicon / low-VRAM tier; diffusers stays the default on
-CUDA / ROCm / XPU. Thin: ``find_sd_cpp_binary()`` (env -> install layouts -> in-tree -> PATH),
-``SdCppEngine`` (``is_available`` / ``version`` + a ``generate`` that builds argv, runs sd-cli,
-returns the PNG path), and the pure ``select_diffusion_engine(...)`` routing decision. Everything
-heavy is reached only inside ``generate`` / ``version``, so import is free and tests stay hermetic.
-"""
+"""sd-cli engine for CPU, Apple Silicon and low-VRAM; diffusers stays default on CUDA/ROCm/XPU;
+heavy work only in generate/version so import is free"""
 
 from __future__ import annotations
 
@@ -307,8 +300,19 @@ def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[
     if _needs_host_cuda_runtime(bindir):
         dirs.extend(d for d in host_cuda_runtime_dirs() if d not in dirs)
     existing = env.get(var, "")
-    env[var] = os.pathsep.join(dirs) + (os.pathsep + existing if existing else "")
+    # After the caller's PATH, so an SDK the user put on PATH still wins.
+    env[var] = os.pathsep.join(
+        [*dirs, *([existing] if existing else []), *host_hip_sdk_dirs(bindir)]
+    )
     return env
+
+
+def host_hip_sdk_dirs(bindir: str) -> list[str]:
+    try:
+        from core.inference import sd_cpp_backend  # noqa: PLC0415 - the backend imports this module
+        return sd_cpp_backend._installer_module().hip_sdk_dirs_for_bundle(bindir)
+    except Exception:  # noqa: BLE001 - without the installer the child keeps the caller's PATH
+        return []
 
 
 def _needs_host_cuda_runtime(bindir: str) -> bool:

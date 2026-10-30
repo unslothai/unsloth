@@ -428,7 +428,7 @@ export function InferenceEnginePicker({
                       {device.index}: {device.name}
                     </span>
                     <Switch
-                      className="panel-switch shrink-0"
+                      className="shrink-0"
                       aria-label={`GPU ${device.index}: ${device.name}`}
                       checked={checked}
                       disabled={checked && selectedGpuIds.length === 1}

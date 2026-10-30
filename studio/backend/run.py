@@ -615,6 +615,7 @@ def _emit_startup_output(
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
     lan_addresses: "tuple[str, ...]" = (),
+    remote_access_starting: bool = False,
 ) -> None:
     """A loopback launch with LAN addresses bound is network-reachable, so the banner must say so."""
     if secure:
@@ -631,6 +632,7 @@ def _emit_startup_output(
         include_stop_hint = False,
         lan_addresses = lan_addresses,
         scheme = _url_scheme,
+        remote_access_starting = remote_access_starting,
     )
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
@@ -640,12 +642,19 @@ def _emit_startup_output(
             _print_wsl_windows_hint(port)
         _verify_global_reachability(display_host, port, wsl_nat = wsl_nat)
         if _url_scheme == "http":  # --cloudflare is refused alongside --ssl-certfile
-            _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
+            _print_cloudflare_line(
+                loopback_host = _loopback_bind_host_for(host),
+                remote_access_starting = remote_access_starting,
+            )
     _emit_tool_policy_notice(lan_addresses[0] if lan_addresses else host, False, enable_tools)
     print_studio_stop_hint()
 
 
-def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1") -> None:
+def _print_cloudflare_line(
+    secure: bool = False,
+    loopback_host: str = "127.0.0.1",
+    remote_access_starting: bool = False,
+) -> None:
     from startup_banner import stdout_supports_color
 
     accent = "\033[38;5;150;1m"
@@ -678,6 +687,16 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
                     "firewall access to keep Unsloth private.",
                     warn,
                 )
+        return
+    if remote_access_starting:
+        # The banner already announces the saved auto-start tunnel; "OFF" would contradict it.
+        if _public_reachable is True:
+            _emit(
+                "  The raw port is also reachable from the public internet (see the "
+                "reachability check above): --no-cloudflare skips only the Cloudflare URL; "
+                f"bind {loopback_host} or close firewall access to keep Unsloth private.",
+                warn,
+            )
         return
     if _cloudflare_requested:
         if _public_reachable is True:
@@ -1576,6 +1595,24 @@ def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_T
     _flush_standard_streams()
 
 
+def _exit_without_finalizing() -> NoReturn:
+    """Exit as the interpreter would, minus finalization: freeing a loaded backend's heap takes seconds."""
+    import atexit
+    import threading
+
+    # CPython's exit order. Unbounded join: to_thread work (dataset import, export) must finish its writes.
+    threading._shutdown()
+    atexit._run_exitfuncs()
+    status = 0
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            # CPython's own exit status when it cannot flush a standard stream.
+            status = 120
+    os._exit(status)
+
+
 _server = None
 _server_thread = None
 # "https" for an --ssl-certfile launch, used by every URL the launch prints for itself
@@ -2427,7 +2464,16 @@ def run_server(
         pass
     write_startup_marker()
 
-    from main import app, setup_frontend, _desktop_owner, _IS_COLAB
+    import gc
+
+    # The import builds ~330k long-lived objects the default threshold rescans ~270 times; 0 (GC off) is left alone.
+    _gc_threshold = gc.get_threshold()
+    if _gc_threshold[0]:
+        gc.set_threshold(max(_gc_threshold[0], 100_000), *_gc_threshold[1:])
+    try:
+        from main import app, setup_frontend, _desktop_owner, _IS_COLAB
+    finally:
+        gc.set_threshold(*_gc_threshold)
 
     # A callable, re-asked at shutdown. On app.state: main.py must not import this module.
     app.state.live_sibling_backend = live_sibling_backend
@@ -2871,7 +2917,8 @@ def run_server(
 
     from utils.remote_access_settings import maybe_auto_start_remote_access
 
-    if maybe_auto_start_remote_access(app.state):
+    remote_access_starting = maybe_auto_start_remote_access(app.state)
+    if remote_access_starting:
         logger.info("Remote access auto-start scheduled")
 
     from lan_access import close_lan_listener_lifecycle, lan_listener_status
@@ -2889,6 +2936,7 @@ def run_server(
             secure = secure,
             enable_tools = enable_tools,
             lan_addresses = tuple(lan_listener_status()["addresses"]),
+            remote_access_starting = remote_access_starting,
         )
 
     return app
@@ -2934,8 +2982,9 @@ def _build_arg_parser():
         default = None,
         help = "Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
-        "pass --cloudflare to enable it (--secure implies it), --no-cloudflare to "
-        "force it off. It does not change a raw wildcard bind. If the admin "
+        "pass --cloudflare to enable it (--secure implies it). The Remote access "
+        "'Start automatically' setting also starts one on every launch, on any host. "
+        "--no-cloudflare forces both off. It does not change a raw wildcard bind. If the admin "
         "password was never changed, Unsloth asks for a new one in the terminal "
         "before publishing the URL.",
     )
@@ -3094,3 +3143,4 @@ if __name__ == "__main__":
     while not _shutdown_event.is_set():
         _shutdown_event.wait(timeout = 1)
     _wait_for_server_shutdown()
+    _exit_without_finalizing()

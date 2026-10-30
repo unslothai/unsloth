@@ -9,6 +9,7 @@ import {
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
+import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { Z_LAYER } from "@/lib/z-layers";
@@ -208,6 +209,7 @@ export function DesktopTitlebarNavigation({
   /** Off in mobile, where Navbar's SidebarTrigger owns the slot; a spacer holds it open. */
   showSidebarToggle?: boolean;
 }): ReactElement {
+  const t = useT();
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
   };
@@ -227,13 +229,13 @@ export function DesktopTitlebarNavigation({
         className,
       )}
       role="toolbar"
-      aria-label="Sidebar and page navigation"
+      aria-label={t("desktopShell.navigation")}
     >
       {showSidebarToggle ? (
         <button
           type="button"
-          title={expanded ? "Collapse sidebar" : "Expand sidebar"}
-          aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+          title={expanded ? t("desktopShell.collapseSidebar") : t("desktopShell.expandSidebar")}
+          aria-label={expanded ? t("desktopShell.collapseSidebar") : t("desktopShell.expandSidebar")}
           onMouseDown={stopTitlebarDrag}
           onDoubleClick={stopTitlebarDrag}
           onClick={(event) => {
@@ -254,8 +256,8 @@ export function DesktopTitlebarNavigation({
       )}
       <button
         type="button"
-        title="Go back"
-        aria-label="Go back"
+        title={t("desktopShell.goBack")}
+        aria-label={t("desktopShell.goBack")}
         onMouseDown={stopTitlebarDrag}
         onDoubleClick={stopTitlebarDrag}
         onClick={(event) => {
@@ -272,8 +274,8 @@ export function DesktopTitlebarNavigation({
       </button>
       <button
         type="button"
-        title="Go forward"
-        aria-label="Go forward"
+        title={t("desktopShell.goForward")}
+        aria-label={t("desktopShell.goForward")}
         onMouseDown={stopTitlebarDrag}
         onDoubleClick={stopTitlebarDrag}
         onClick={(event) => {
@@ -297,6 +299,7 @@ export function WindowTitlebar({
 }: {
   showSidebarSurface?: boolean;
 }): ReactElement | null {
+  const t = useT();
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const [focused, setFocused] = useState(true);
@@ -503,7 +506,7 @@ export function WindowTitlebar({
         data-slot="window-titlebar"
         data-viewport-backdrop-open={backdropOpen ? "" : undefined}
         data-viewport-backdrop-tone={backdropTone ?? undefined}
-        aria-label="Window titlebar"
+        aria-label={t("desktopShell.titlebar")}
       >
         {showSidebarSurface && (
           <div
@@ -537,16 +540,16 @@ export function WindowTitlebar({
             focused ? "text-foreground" : "text-muted-foreground",
           )}
           role="toolbar"
-          aria-label="Window controls"
+          aria-label={t("desktopShell.windowControls")}
         >
           <WindowControlButton
-            label="Minimize window"
+            label={t("desktopShell.minimize")}
             onClick={() => runWindowAction((appWindow) => appWindow.minimize())}
           >
             <CaptionGlyph kind="minimize" />
           </WindowControlButton>
           <WindowControlButton
-            label={maximized ? "Restore window" : "Maximize window"}
+            label={maximized ? t("desktopShell.restore") : t("desktopShell.maximize")}
             onClick={() =>
               runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
@@ -554,7 +557,7 @@ export function WindowTitlebar({
             <CaptionGlyph kind={maximized ? "restore" : "maximize"} />
           </WindowControlButton>
           <WindowControlButton
-            label="Close window"
+            label={t("desktopShell.close")}
             // No optimistic overlay: a quit confirmation may still be asking; Rust raises the overlay.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
             className="hover:bg-[#c42b1c] hover:text-white active:bg-[#c42b1c]/90"

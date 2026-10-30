@@ -121,6 +121,7 @@ def test_l4_float32_gemma3_does_not_get_the_small_tiles(cards, monkeypatch):
 
     monkeypatch.setattr(_utils.torch, "__version__", "2.10.0+cu130")
     monkeypatch.delenv("UNSLOTH_FLEX_SMALL_SMEM_TILES", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_FLOAT32", raising = False)
     cards(L4)
     resolve = lambda dtype: _utils.resolve_attention_implementation(
         SupportsFlex, _gemma3(), supports_sdpa = False, dtype = dtype
@@ -129,5 +130,9 @@ def test_l4_float32_gemma3_does_not_get_the_small_tiles(cards, monkeypatch):
     assert resolve(torch.bfloat16) == "flex_attention"
     assert resolve(torch.float16) == "flex_attention"
     assert resolve(None) == "flex_attention"
+    # Forced float32 loads bf16 but runs Gemma 3 attention in float32.
+    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
+    assert resolve(torch.bfloat16) == "eager"
+    monkeypatch.delenv("UNSLOTH_FORCE_FLOAT32")
     cards(A100)
     assert resolve(torch.float32) == "flex_attention"

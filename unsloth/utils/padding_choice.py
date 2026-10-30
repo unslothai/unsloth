@@ -1,33 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Choose between padding-free and padded batches for SFT when the user left `padding_free` unset.
-
-Padding-free removes pad tokens, but its varlen batches skip the per-block compile, so each step
-launches more kernels from Python. Padded batches pay for their pad tokens on the GPU but run the
-compiled blocks. Which one is faster depends on whether a micro batch is bound by the host or by the
-GPU: measured on A100, L4, T4 and RTX PRO 6000 Blackwell with Qwen3 0.6B / 4B LoRA (16 bit and
-4 bit), padded + block compile was 5-17% faster only when a padded micro batch costs the GPU well
-under the ~0.25-0.4 s the host spends launching it, and up to 57% slower once the GPU is the
-bottleneck.
-
-Rule (all estimates, every unknown keeps padding-free, the old default):
-    padded GPU time  = (linear FLOPs per token * padded tokens + attention FLOPs per pair * pairs)
-                       / (datasheet 16 bit peak * _EFFICIENCY)
-    pick padded iff  padded GPU time < the measured threshold for the GPU's compute capability
-                     (_MAX_PADDED_GPU_S_BY_CAPABILITY; any other capability keeps padding-free)
-                 and the run has enough micro batches to repay the extra block compile
-                     (about 25 s in 16 bit, 100 s in 4 bit) at ~_SAVED_S_PER_MICROBATCH each.
-
-Only Linux + NVIDIA CUDA on a measured compute capability is ever switched: ROCm / HIP, Windows,
-XPU, MPS, CPU and unmeasured capabilities (H100 / H200 sm90, B200 / B300 sm100 / sm103 have
-datasheet peaks but no measurement yet) keep padding-free, unless `UNSLOTH_PADDING_CHOICE=padded`
-is set explicitly.
-
-`UNSLOTH_PADDING_CHOICE=padding_free` restores the previous behaviour (always padding-free),
-`=padded` forces padded batches, `=auto` (default) applies the rule. An explicit
-`padding_free=True/False` on the config always wins.
-"""
+"""Unset padding_free: padded only on Linux CUDA with a measured capability; explicit padding_free
+always wins; UNSLOTH_PADDING_CHOICE sets the mode."""
 
 import logging
 import math

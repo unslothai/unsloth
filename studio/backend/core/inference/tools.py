@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool definitions and executors for LLM tool calling: web search (DuckDuckGo), Python code
-execution, and terminal commands."""
+"""Tool definitions and executors for LLM calls: DuckDuckGo search, Python code, terminal commands."""
 
 import ast
 import base64
@@ -8748,6 +8747,230 @@ def _sandbox_preexec():
             pass
 
 
+# _sandbox_preexec without a Python pre-exec (Linux): Popen does setsid/umask in C, setpriv and prlimit exec in
+# place (same PID), so the server is vforked instead of forked through interpreter code.
+_SANDBOX_SHIM_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+_sandbox_shims: "tuple[str, str] | None | bool" = False  # False = not probed yet
+_sandbox_shims_lock = threading.Lock()
+
+
+def _trusted_system_binary(name: str) -> "str | None":
+    """Root-owned, not group/world writable, no set-id bit or file capability: either would clear the death signal.
+    World-readable too: an unreadable binary runs non-dumpable, which hides /proc/<pid>/exe from the readiness wait."""
+    for directory in _SANDBOX_SHIM_DIRS:
+        path = os.path.join(directory, name)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        if (
+            not S_ISREG(st.st_mode)
+            or st.st_uid != 0
+            or st.st_mode & 0o022
+            or st.st_mode & (stat.S_ISUID | stat.S_ISGID)
+            or not st.st_mode & 0o111
+            or not st.st_mode & 0o004
+        ):
+            continue
+        try:
+            os.getxattr(path, "security.capability")
+            continue
+        except OSError:
+            pass
+        return path
+    return None
+
+
+def _probe_sandbox_shims() -> "tuple[str, str] | None":
+    setpriv = _trusted_system_binary("setpriv")
+    prlimit = _trusted_system_binary("prlimit")
+    if setpriv is None or prlimit is None:
+        return None
+    try:
+        # Old setpriv lacks --pdeathsig (util-linux < 2.33), and busybox-style builds take other flags.
+        # The limits a launch sets, so a policy refusing one of them (SELinux checks a changed hard limit) keeps
+        # the pre-exec, which skips a refused limit where prlimit would refuse the launch.
+        limits = _sandbox_rlimit_args()
+        if not limits:
+            soft, hard = _resource.getrlimit(_resource.RLIMIT_CPU)
+            limits = [
+                "--cpu={}:{}".format(
+                    "unlimited" if soft == _resource.RLIM_INFINITY else soft,
+                    "unlimited" if hard == _resource.RLIM_INFINITY else hard,
+                )
+            ]
+        result = subprocess.run(
+            [
+                setpriv,
+                "--no-new-privs",
+                "--pdeathsig",
+                "KILL",
+                "--",
+                prlimit,
+                *limits,
+                "--",
+                setpriv,
+                "--dump",
+            ],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            env = {"PATH": os.defpath, "LC_ALL": "C"},
+            timeout = 5,
+            start_new_session = True,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+        return None
+    # Read back after two more execs: an LSM transition on exec (AppArmor, SELinux) would clear the death signal.
+    dump = result.stdout.decode("ascii", "replace").splitlines()
+    if (
+        result.returncode != 0
+        or "no_new_privs: 1" not in dump
+        or not any(
+            line.startswith("Parent death signal:") and line.split(":", 1)[1].strip(" []") == "KILL"
+            for line in dump
+        )
+    ):
+        return None
+    try:
+        # Read by _wait_for_death_signal.
+        os.readlink("/proc/self/exe")
+    except OSError:
+        return None
+    return setpriv, prlimit
+
+
+def _sandbox_exec_shims() -> "tuple[str, str] | None":
+    global _sandbox_shims
+    if _sandbox_shims is False:
+        with _sandbox_shims_lock:
+            if _sandbox_shims is False:
+                _sandbox_shims = _probe_sandbox_shims()
+    return _sandbox_shims
+
+
+def _sandbox_rlimit_args() -> "list[str] | None":
+    """The limits _sandbox_preexec would set, as prlimit flags; None if one could fail there (it skips a failing
+    limit, prlimit refuses the launch), so the caller keeps the pre-exec for that host."""
+    if _resource is None:
+        return None
+    wanted = []
+    try:
+        wanted.append(
+            (
+                "nproc",
+                _resource.RLIMIT_NPROC,
+                int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")),
+            )
+        )
+    except ValueError:
+        pass
+    wanted.append(("fsize", _resource.RLIMIT_FSIZE, 100 * 1024 * 1024))
+    if _sandbox_as_bytes is not None:
+        wanted.append(("as", _resource.RLIMIT_AS, _sandbox_as_bytes))
+    try:
+        wanted.append(
+            (
+                "cpu",
+                _resource.RLIMIT_CPU,
+                int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
+            )
+        )
+    except ValueError:
+        pass
+    try:
+        nofile = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384"))
+        hard_cur = _resource.getrlimit(_resource.RLIMIT_NOFILE)[1]
+        target = nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
+        if target > _sandbox_nr_open():
+            # Above fs.nr_open setrlimit fails even under the hard limit: the pre-exec skips it.
+            return None
+        wanted.append(("nofile", _resource.RLIMIT_NOFILE, target))
+    except (ValueError, OSError):
+        pass
+    args = []
+    for flag, resource_id, value in wanted:
+        if not isinstance(value, int) or value < 0 or value >= 2**63:
+            return None
+        try:
+            hard_cur = _resource.getrlimit(resource_id)[1]
+        except (ValueError, OSError):
+            return None
+        if hard_cur != _resource.RLIM_INFINITY and value > hard_cur:
+            # Raising a hard limit needs CAP_SYS_RESOURCE: the pre-exec skips it without, raises it with.
+            if _has_cap_sys_resource():
+                return None
+            continue
+        args.append(f"--{flag}={value}:{value}")
+    return args
+
+
+def _sandbox_nr_open() -> int:
+    """fs.nr_open, or 0 when unreadable (which keeps the pre-exec)."""
+    try:
+        with open("/proc/sys/fs/nr_open", encoding = "ascii") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def _has_cap_sys_resource() -> bool:
+    """Unknown counts as held, which keeps the pre-exec."""
+    try:
+        with open("/proc/self/status", encoding = "ascii", errors = "replace") as f:
+            for line in f:
+                if line.startswith("CapEff:"):
+                    return bool(int(line.split()[1], 16) & (1 << 24))
+    except (OSError, ValueError, IndexError):
+        pass
+    return True
+
+
+def _sandbox_shim_argv(argv, env) -> "tuple[str, ...] | None":
+    """argv behind setpriv and prlimit, or None to keep _sandbox_preexec."""
+    # Python 3.9 forks (no vfork) even without a pre-exec, so the shims would only add two execs there.
+    if sys.platform != "linux" or sys.version_info < (3, 10) or not argv:
+        return None
+    shims = _sandbox_exec_shims()
+    if shims is None:
+        return None
+    # A missing program keeps Popen's own FileNotFoundError instead of a prlimit exit status.
+    search = os.pathsep.join(os.get_exec_path(env))
+    if shutil.which(argv[0], path = search) is None:
+        return None
+    limits = _sandbox_rlimit_args()
+    if not limits:
+        # Without a flag prlimit prints its limits table on a terminal before running the program.
+        return None
+    setpriv, prlimit = shims
+    return (setpriv, "--no-new-privs", "--pdeathsig", "KILL", "--", prlimit, *limits, "--", *argv)
+
+
+def _wait_for_death_signal(pid: int, setpriv: str) -> None:
+    """Popen returns before setpriv arms the death signal; the pre-exec armed it before Popen returned, so this
+    waits as long as Popen would have (no deadline: returning early would hand back an unarmed child)."""
+    delay = 0.0001
+    while True:
+        try:
+            exe = os.readlink(f"/proc/{pid}/exe")
+        except OSError:
+            return  # exited (setpriv is readable, so a live one is not hidden)
+        if exe not in (setpriv, setpriv + " (deleted)"):
+            return
+        time.sleep(delay)
+        delay = min(delay * 2, 0.005)
+
+
+def _spawn_behind_sandbox_shims(prepared, popen_kwargs):
+    proc = subprocess.Popen(prepared.argv, **popen_kwargs)
+    if prepared.execution_record is not None:
+        prepared.execution_record = dataclasses.replace(
+            prepared.execution_record, execution_status = "started"
+        )
+    _wait_for_death_signal(proc.pid, os.path.realpath(prepared.argv[0]))
+    return proc
+
+
 def _account_confinement():
     """Confinement for the acting account's next child: None for owner, raises if unavailable."""
     return account_confinement(_SANDBOX_SITE_DIR)
@@ -9096,7 +9319,22 @@ def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
     popen_kwargs["cwd"] = prepared.workdir
     popen_kwargs["env"] = prepared.env
     if sys.platform != "win32":
-        popen_kwargs["preexec_fn"] = prepared.preexec_fn
+        if prepared.preexec_fn is _bypass_preexec:
+            # setsid in C: a Python pre-exec forks the whole server instead of vfork.
+            popen_kwargs.pop("preexec_fn", None)
+            popen_kwargs["start_new_session"] = True
+        else:
+            shim_argv = None
+            if prepared.preexec_fn is _sandbox_preexec and prepared.spawn_callback is None:
+                shim_argv = _sandbox_shim_argv(prepared.argv, prepared.env)
+            if shim_argv is not None:
+                popen_kwargs.pop("preexec_fn", None)
+                popen_kwargs["start_new_session"] = True
+                popen_kwargs["umask"] = 0o077
+                prepared.argv = shim_argv
+                prepared.spawn_callback = _spawn_behind_sandbox_shims
+            else:
+                popen_kwargs["preexec_fn"] = prepared.preexec_fn
     popen_kwargs["close_fds"] = prepared.close_fds
     if prepared.pass_fds:
         # Empty for every fallback, so Windows never sees a kwarg it rejects.
@@ -12041,19 +12279,21 @@ DEEP_RESEARCH_TOOL = {
     "function": {
         "name": "deep_research",
         "description": (
-            "Start Deep Research on the user's question: a multi-step web investigation that "
-            "gathers current sources and writes a cited report, replacing your reply. The user "
-            "turned this on because they want researched answers, so call it for any question "
-            "about the world -- facts, events, laws, products, papers, prices, comparisons, "
-            "anything that may have changed since your training -- even when you think you know "
-            "the answer. Do not answer such questions from memory.\n"
-            "Do not call it for a message with no question in it, such as a hello or a thanks, or "
-            "for a request to write or transform text the user supplied.\n"
-            "If the topic is too vague to research well, do not call this yet: ask one short "
-            "clarifying question, then call it once the user has narrowed it down.\n"
-            "The question you pass is what gets researched, so make it specific and "
-            "self-contained: fold in what the conversation established rather than repeating "
-            "the user's words."
+            "Hand off the user's factual question or research request to Deep Research. This "
+            "workflow gathers current sources and writes a cited report that replaces your "
+            "reply. Call it before drafting an answer, outline, or report, even when you think "
+            "you know the answer. Do not use it only to look up individual details while "
+            "writing the report yourself.\n"
+            "Research requests include commands to investigate, compare, or write a report, "
+            "including detailed briefs in pasted text or attachments. They do not need to be "
+            "phrased as questions. A supplied research brief is not merely text to rewrite.\n"
+            "Do not call it for a hello, thanks, or a remark about you, or for a request only "
+            "to rewrite or transform supplied text without outside research. If the topic is "
+            "too vague to research well, ask one short clarifying question first.\n"
+            "Call once with a concise, self-contained question covering the whole request, "
+            "including its main topics and requested outputs. Summarize the brief in a few "
+            "sentences rather than copying it or answering it. Include relevant context from "
+            "the conversation so the research workflow can complete the report."
         ),
         "parameters": {
             "type": "object",
@@ -12061,8 +12301,9 @@ DEEP_RESEARCH_TOOL = {
                 "question": {
                     "type": "string",
                     "description": (
-                        "The specific, self-contained question to research. Not the user's raw "
-                        "message unless it already reads as one."
+                        "A concise, self-contained research brief in a few sentences: include the "
+                        "main topics and requested outputs, not just one detail to look up. "
+                        "Do not copy the full prompt or write the report in this argument."
                     ),
                 },
             },
@@ -13451,18 +13692,17 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     if not found:
         return "No earlier turns of this conversation matched that query."
 
-    # Halve until the rendered result fits: chunk size is a target, not a weight (overlap, other
-    # tokenizer, markup). A single chunk that still does not fit is refused.
+    # One fewer until the text the model reads fits: chunk size is a target, not a weight (overlap,
+    # other tokenizer, markup). A single chunk that still does not fit is refused.
     if budget is not None:
         counter = scope.get("token_counter")
         attempt = max(1, int(top_k or 1))
         while True:
-            rendered = _rendered_conversation_search(found)
-            if _conversation_search_cost(rendered, counter) <= int(budget):
-                return rendered
+            if _conversation_search_cost(found[0], counter) <= int(budget):
+                return _rendered_conversation_search(found)
             if attempt <= 1:
                 return "There is no room left in this context to search earlier conversation."
-            attempt = max(1, attempt // 2)
+            attempt -= 1
             found = _recall(attempt)
             if not found:
                 return "No earlier turns of this conversation matched that query."
@@ -13490,7 +13730,7 @@ def _conversation_search_tokens(text: str) -> int:
 
 
 def _rendered_conversation_search(found) -> str:
-    """The tool result exactly as the model would receive it."""
+    """The full result; the model never sees the source map."""
     text, sources = found
     if sources:
         import json as _json
@@ -15663,6 +15903,16 @@ def _window_context_tokens() -> int | None:
 
 def _dense_prefix_chars(text: str, token_budget: float) -> int:
     """Charges non-ASCII one token each: CJK runs 1.3-1.6 chars per token, so the share stays a share."""
+    # Escape-free ASCII costs 0.25 a char: the loop would stop at floor(budget * 4).
+    if (
+        type(text) is str
+        and type(token_budget) in (int, float)
+        and text.isascii()
+        and 0.0 <= token_budget < 2**50
+    ):
+        end = min(len(text), int(token_budget * 4))
+        if text.find("%", 0, end + 1) < 0:
+            return end
     spent = 0.0
     index = 0
     length = len(text)
@@ -20429,12 +20679,20 @@ def _stamp_size(stamp: str) -> "int | None":
 
 def _file_digest(path: str, expected_size: "int | None" = None) -> "str | None":
     """Opened with O_NOFOLLOW and O_NONBLOCK, so a symlink or FIFO swapped in at the path is rejected."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
     fd = None
     try:
+        # Windows has no O_NOFOLLOW: refuse a link up front, and a link swapped in before the
+        # open shows up as a different file once it is open.
+        named = None if no_follow else os.lstat(path)
+        if named is not None and not stat.S_ISREG(named.st_mode):
+            return None
         fd = os.open(path, flags)
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
+            return None
+        if named is not None and (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino):
             return None
         if expected_size is not None and info.st_size != expected_size:
             return None
@@ -20612,18 +20870,20 @@ def _spill_full_output(
         return None, True
 
 
-def _spill_files(root: str, directory: str, owned: "set[str]") -> "list[str]":
-    """The spills in one directory: the ones ``owned`` records this process having written.
-    Everything else there is the user's, whatever it is called. Links are never spills."""
+def _spill_files(root: str, directory: str, owned: "dict[str, tuple[str, str]]") -> "list[str]":
+    """The spills in one directory, by stamp only: hashing every kept spill on each prune costs up to
+    the whole byte cap, and `_unlink_verified_spill` checks the digest before anything is deleted."""
     try:
         names = os.listdir(directory)
     except OSError:
         return []
-    return [
-        path
-        for path in (os.path.join(directory, name) for name in names)
-        if _is_recorded_spill(root, path, owned)
-    ]
+    spills = []
+    for name in names:
+        path = os.path.join(directory, name)
+        recorded = owned.get(os.path.relpath(path, root).replace(os.sep, "/"))
+        if recorded is not None and recorded[0] == _spill_stamp(path):
+            spills.append(path)
+    return spills
 
 
 def _unlink_verified_spill(root: str, path: str, owned: "dict[str, tuple[str, str]]") -> bool:
@@ -20731,6 +20991,9 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
             if _unlink_verified_spill(root, path, owned):
                 removed.add(path)
         # Manifest follows the files: a name left after its file is gone would still count as owned.
+        # Sandbox removal drops the record without this lock; a recreated directory must not inherit it.
+        if not os.path.exists(_spill_record_path(root)):
+            identity = None
         _write_spill_manifest(
             root,
             {
@@ -20738,6 +21001,7 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
                 for name, stamp in owned.items()
                 if os.path.join(root, *name.split("/")) not in removed
             },
+            identity = identity,
         )
         # Remove emptied scopes so cleanup does not see the sandbox as non-empty.
         for name in sorted(os.listdir(root)):
@@ -21013,40 +21277,71 @@ def _snapshot_skips_dir(base: str, name: str) -> bool:
 
 def _snapshot_workdir_files(workdir: str | None, history: bool = False) -> "dict[str, tuple]":
     """Maps every regular file to a change key; digests are added only on coarse-timestamp volumes."""
-    snapshot: "dict[str, tuple]" = {}
+    return _snapshot_workdir_views(workdir, (history,))[0]
+
+
+def _snapshot_workdir_views(workdir: "str | None", views: "tuple") -> "list":
+    """One walk giving each view (False: files card, True: file history) exactly its own walk."""
+    snapshots: "list[dict[str, tuple]]" = [{} for _ in views]
     if not workdir or not os.path.isdir(workdir):
-        return snapshot
-    max_files, max_dirs = (
+        return snapshots
+    caps = [
         (_MAX_HISTORY_FILES, _MAX_HISTORY_DIRS)
         if history
         else (_MAX_SNAPSHOT_FILES, _MAX_SNAPSHOT_DIRS)
-    )
+        for history in views
+    ]
     # Directories are budgeted separately: empty folders never reach the file cap.
-    visited = 0
-    hash_budget = 0 if _volume_timestamps_finely(workdir) else _MAX_SNAPSHOT_HASH_BYTES
+    visited = [0] * len(views)
+    hash_budget = [0 if _volume_timestamps_finely(workdir) else _MAX_SNAPSHOT_HASH_BYTES] * len(
+        views
+    )
+    live = set(range(len(views)))
+    # Pre-order restricted to a view's directories is that view's own walk order.
+    owners: "dict[str, list[int]]" = {workdir: sorted(live)}
+    digests: "dict[str, str | None]" = {}
     # walked to include nested outputs such as outputs/report.csv that a top-level listing drops.
     for base, dirs, names in os.walk(workdir):
-        visited += 1
-        if visited > max_dirs:
-            return _CappedSnapshot(snapshot)
+        here = []
+        for v in owners.pop(base, ()):
+            if v not in live:
+                continue
+            visited[v] += 1
+            if visited[v] > caps[v][1]:
+                snapshots[v] = _CappedSnapshot(snapshots[v])
+                live.discard(v)
+            else:
+                here.append(v)
+        if not live:
+            break
+        if not here:
+            dirs[:] = []
+            continue
         # depth 0 is the workdir itself, whose files are one segment.
         folder = base[len(workdir) :].strip(os.sep)
         depth = len(_user_path_parts(folder.split(os.sep) if folder else []))
         prefix = folder.replace(os.sep, "/") + "/" if folder else ""
         # skip noisy dot directories except attachments; dot files like .gitignore remain valid artifacts.
-        dirs[:] = (
-            []
-            if not history and depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
-            else [
-                d
-                for d in dirs
-                if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
-                and _servable_segment(d)
-                and not _snapshot_skips_dir(base, d)
+        kept = [
+            d
+            for d in dirs
+            if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
+            and _servable_segment(d)
+            and not _snapshot_skips_dir(base, d)
+        ]
+        children: "dict[str, list[int]]" = {}
+        for v in here:
+            history = views[v]
+            if not history and depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1:
+                continue
+            for d in kept:
                 # history drops scratch anyway; a torch.compile cache there would spend the whole budget.
-                and not (history and base == workdir and not file_history.tracked(d + "/", ()))
-            ]
-        )
+                if history and base == workdir and not file_history.tracked(d + "/", ()):
+                    continue
+                children.setdefault(d, []).append(v)
+        dirs[:] = [d for d in kept if d in children]
+        for d in dirs:
+            owners[os.path.join(base, d)] = children[d]
         for name in names:
             # ignore internal markers only at the root; nested files with these names remain valid artifacts.
             if base == workdir and name in _INTERNAL_SANDBOX_FILES:
@@ -21057,20 +21352,30 @@ def _snapshot_workdir_files(workdir: str | None, history: bool = False) -> "dict
             try:
                 # one lstat replaces isfile, islink, and stat while rejecting the same non-regular entries.
                 stat = os.lstat(path)
-                if not S_ISREG(stat.st_mode):
-                    continue
-                relative = prefix + name
-                content = None
-                if hash_budget and hash_budget >= stat.st_size:
-                    content = _content_key(path, stat.st_size)
-                    if content is not None:
-                        hash_budget -= stat.st_size
-                snapshot[relative] = (stat.st_mtime_ns, stat.st_size, content)
             except OSError:
                 continue
-            if len(snapshot) >= max_files:
-                return _CappedSnapshot(snapshot)
-    return snapshot
+            if not S_ISREG(stat.st_mode):
+                continue
+            relative = prefix + name
+            for v in here:
+                if v not in live:
+                    continue
+                content = None
+                if hash_budget[v] and hash_budget[v] >= stat.st_size:
+                    if path not in digests:
+                        digests[path] = _content_key(path, stat.st_size)
+                    content = digests[path]
+                    if content is not None:
+                        hash_budget[v] -= stat.st_size
+                snapshots[v][relative] = (stat.st_mtime_ns, stat.st_size, content)
+                if len(snapshots[v]) >= caps[v][0]:
+                    snapshots[v] = _CappedSnapshot(snapshots[v])
+                    live.discard(v)
+            if live.isdisjoint(here):
+                break
+        if not live:
+            break
+    return snapshots
 
 
 class _CappedSnapshot(dict):
@@ -21121,33 +21426,51 @@ def _call_finished(token: "dict | None") -> None:
             _workdir_calls.pop(token["workdir"], None)
 
 
-def _history_walk(workdir: str) -> "tuple[dict, bool]":
+def _history_walk(workdir: str, snap: "dict | None" = None) -> "tuple[dict, bool]":
     """The walk as file history keeps it: without scratch scripts and Studio's own trees. The flag
     says whether the walk was whole, since a capped one cannot prove a file is gone."""
-    snap = _snapshot_workdir_files(workdir, history = True)
+    if snap is None:
+        snap = _snapshot_workdir_files(workdir, history = True)
     with _scratch_lock:
         scratch = set(_active_scratch)
     kept = {rel: key for rel, key in snap.items() if file_history.tracked(rel, scratch)}
     return kept, not isinstance(snap, _CappedSnapshot)
 
 
-def _history_begin(call_token: dict, session_id: "str | None") -> None:
+def _history_begin(
+    call_token: dict,
+    session_id: "str | None",
+    walked: "dict | None" = None,
+) -> None:
     if file_history.current_turn() is None:
         return
-    snap, complete = _history_walk(call_token["workdir"])
+    snap, complete = _history_walk(call_token["workdir"], walked)
     call_token["history"] = file_history.begin_call(
         session_id, call_token.get("workdir"), snap, complete = complete
     )
 
 
-def _history_end(call_token: "dict | None") -> None:
+def _history_end(call_token: "dict | None", walked: "dict | None" = None) -> None:
     if not call_token or call_token.get("history") is None:
         return
-    snap, complete = _history_walk(call_token["workdir"])
+    snap, complete = _history_walk(call_token["workdir"], walked)
     # Checked after the walk: an upload landing mid-walk is in `snap` and must not read as ours.
     if call_token.get("shared"):
         call_token["history"].ambiguous = True
     file_history.end_call(call_token["history"], snap, complete = complete)
+
+
+def _snapshot_and_history_begin(
+    workdir: "str | None", call_token: dict, session_id: "str | None"
+) -> dict:
+    """The pre-run files snapshot, then `_history_begin`, from one walk when history is on."""
+    if file_history.current_turn() is None or call_token.get("workdir") != workdir:
+        before = _snapshot_workdir_files(workdir)
+        _history_begin(call_token, session_id)
+        return before
+    before, walked = _snapshot_workdir_views(workdir, (False, True))
+    _history_begin(call_token, session_id, walked)
+    return before
 
 
 def _walk_lists(workdir: str, rel: str) -> bool:
@@ -21232,8 +21555,12 @@ def _created_file_sentinels(
         # Another call ran in this directory while this one did, so nothing here can be said to be ours. A missing
         # card beats one that names, and downloads, another chat's file.
         return ""
-    after = _snapshot_workdir_files(workdir)
-    _history_end(token)
+    if token is not None and token.get("history") is not None and token.get("workdir") == workdir:
+        after, walked = _snapshot_workdir_views(workdir, (False, True))
+        _history_end(token, walked)
+    else:
+        after = _snapshot_workdir_files(workdir)
+        _history_end(token)
     if token is not None and token.get("shared"):
         # Calls started mid-walk write into `after`, indistinguishable from ours; only known sharing skips.
         return ""
@@ -21352,8 +21679,7 @@ def _python_exec(
     spill_dir = workdir if session_id else None
     call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
-    _before = _snapshot_workdir_files(workdir)
-    _history_begin(call_token, session_id)
+    _before = _snapshot_and_history_begin(workdir, call_token, session_id)
     try:
         # In the workdir: sys.path[0] keeps earlier helpers importable and __file__ in the sandbox.
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
@@ -21600,8 +21926,7 @@ def _bash_exec(
         spill_dir = workdir if session_id else None
         call_token = _call_started(workdir)
         # Same pre-run snapshot as _python_exec, so files a command writes are reported, not "(no output)".
-        _before = _snapshot_workdir_files(workdir)
-        _history_begin(call_token, session_id)
+        _before = _snapshot_and_history_begin(workdir, call_token, session_id)
         safe_env = (
             _build_bypass_env(workdir)
             if disable_sandbox

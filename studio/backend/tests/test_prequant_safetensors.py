@@ -77,6 +77,55 @@ def test_safetensors_gate_still_needs_torchao_helpers(monkeypatch):
     assert pq.restricted_prequant_load_supported("fp8", "Model-FP8.safetensors") is False
 
 
+# torchao 0.16's safetensors allowlist, verbatim: flatten helpers present, no NVFP4Tensor / MXTensor.
+_TORCHAO_016_SUBCLASSES = [
+    "Float8Tensor",
+    "Int4Tensor",
+    "Int4TilePackedTo4dTensor",
+    "IntxUnpackedToInt8Tensor",
+    "Int8Tensor",
+    "Int4PlainInt32Tensor",
+]
+
+
+@pytest.mark.parametrize(("scheme", "name"), [("nvfp4", "Model-NVFP4"), ("mxfp8", "Model-MXFP8")])
+def test_a_torchao_that_cannot_unflatten_the_scheme_reads_its_safetensors_as_unreadable(
+    monkeypatch, scheme, name
+):
+    """torchao 0.16 has the helpers but raises 'Unsupported tensor type: NVFP4Tensor' on unflatten:
+    the twin must be skipped for the .pt, not picked and then failed into a dense download."""
+    utils = pytest.importorskip("torchao.prototype.safetensors.safetensors_utils")
+    monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: True)
+    monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
+    monkeypatch.setattr(utils, "ALLOWED_TENSORS_SUBCLASSES", list(_TORCHAO_016_SUBCLASSES))
+    assert pq.restricted_prequant_load_supported(scheme, f"{name}.safetensors") is False
+    assert pq.restricted_prequant_load_supported("fp8", "Model-FP8.safetensors") is True
+    assert pq.restricted_prequant_load_supported("int8", "Model-INT8.safetensors") is True
+    assert pq.restricted_prequant_load_supported(None, f"{name}.safetensors") is True
+    monkeypatch.setattr(
+        utils, "ALLOWED_TENSORS_SUBCLASSES", [*_TORCHAO_016_SUBCLASSES, "MXTensor", "NVFP4Tensor"]
+    )
+    assert pq.restricted_prequant_load_supported(scheme, f"{name}.safetensors") is True
+
+
+def test_an_unreadable_torchao_allowlist_keeps_the_scheme_free_answer(monkeypatch):
+    monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
+    monkeypatch.setattr(ps, "_torchao_safetensors_subclasses", lambda: None)
+    assert ps.safetensors_scheme_supported("nvfp4") is True
+    monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: False)
+    assert ps.safetensors_scheme_supported("nvfp4") is False
+
+
+def test_the_installed_torchao_answers_the_nvfp4_question():
+    """Not a stub: the allowlist this install really ships decides (0.17+ lists NVFP4Tensor)."""
+    utils = pytest.importorskip("torchao.prototype.safetensors.safetensors_utils")
+    if not ps.safetensors_prequant_supported():
+        pytest.skip("no safetensors pre-quant support on this install")
+    expected = "NVFP4Tensor" in utils.ALLOWED_TENSORS_SUBCLASSES
+    assert ps.safetensors_scheme_supported("nvfp4") is expected
+    assert pq.restricted_prequant_load_supported("nvfp4", "Model-NVFP4.safetensors") is expected
+
+
 def test_usable_source_survives_a_pickle_only_refusal(monkeypatch):
     """Resolve names before the gate, or a safetensors-primary pre-quant is invisible to memory planning."""
     fam = _family(

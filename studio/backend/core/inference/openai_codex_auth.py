@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ChatGPT/Codex public-client OAuth owned by the Unsloth backend.
-
-OAuth transient material never crosses the API boundary: callers receive only an
-opaque flow id and safe user-facing authorization metadata.
-"""
+"""ChatGPT/Codex OAuth; transient tokens never leave the backend, callers get only an opaque flow id."""
 
 from __future__ import annotations
 
