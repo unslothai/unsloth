@@ -10331,6 +10331,12 @@ def _gc_keep_layers_env():
         return 0
 
 
+def _local_numel(t):
+    """Elements this rank holds: an FSDP2 DTensor's numel() is the global size, its shard is local."""
+    local = getattr(t, "_local_tensor", None)
+    return (local if isinstance(local, torch.Tensor) else t).numel()
+
+
 class _AutoCheckpointSkip:
     """checkpoint_skip_layers = "auto": once, after step 1, un-checkpoint as many layers as fit.
     Per-layer cost = the largest allocation any eligible layer's reentrant recompute leaves in the
@@ -10538,7 +10544,7 @@ class _AutoCheckpointSkip:
     def _fresh_grad_bytes(self, device):
         # Only grads on the planned card are in its step peak (a vision tower may sit on another GPU).
         return sum(
-            p.grad.numel() * p.grad.element_size()
+            _local_numel(p.grad) * p.grad.element_size()
             for p in (self.fresh_grads or ())
             if p.grad is not None and p.grad.is_cuda and p.grad.device == device
         )
@@ -10627,13 +10633,13 @@ class _AutoCheckpointSkip:
         # (sparse MoE experts, unused towers and gradient accumulation have none yet).
         trainable = [p for p in self.model.parameters() if p.requires_grad]
         optimizer = sum(
-            p.numel() * 8
+            _local_numel(p) * 8
             for p in trainable
             if p.device == device and not self._has_optimizer_state(p)
         )
         # foreach AdamW allocates about one fp32 copy of the params (sqrt of exp_avg_sq) every step,
         # on each param's own card.
-        optimizer += sum(p.numel() * 4 for p in trainable if p.device == device)
+        optimizer += sum(_local_numel(p) * 4 for p in trainable if p.device == device)
         self.optimizers = []
         headroom = usable_cuda_bytes(device) - activation_peak - optimizer
         budget = headroom * self.FRACTION - self.MARGIN

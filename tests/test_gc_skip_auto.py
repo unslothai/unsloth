@@ -20,6 +20,7 @@ NAMES = (
     "_AutoCheckpointSkip",
     "usable_cuda_bytes",
     "_size_auto_checkpoint_skip_for_trainer",
+    "_local_numel",
 )
 
 
