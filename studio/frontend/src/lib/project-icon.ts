@@ -3,5 +3,4 @@
 
 import { Folder01Icon } from "./folder-icons";
 
-// A project while it is not open; Folder02Icon (open folder) stays for an expanded or opened project.
 export const ProjectIcon = Folder01Icon;

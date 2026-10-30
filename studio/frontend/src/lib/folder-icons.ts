@@ -4,10 +4,8 @@
 import { FolderOpenIcon as InstalledFolderOpenIcon } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 
-// Folder glyphs from @hugeicons/core-free-icons 4.4 (MIT); the installed 4.1 draws the older versions.
-// FolderOpenIcon stays on 4.1. 4.4 redrew Folder02 as a closed folder, so this Folder02Icon keeps
-// 4.1's open front flap and inset back under 4.4 Folder01's tab, matching the closed folders beside it.
-// Import folder icons from here, not the package, so they stay one family.
+// Hugeicons 4.4 folder glyphs (MIT); the installed 4.1 has older ones. Import folders from here only.
+// 4.4 redrew Folder02 closed, so this one is 4.4's tab over 4.1's open flap.
 export const Folder02Icon: IconSvgElement = [
   [
     "path",

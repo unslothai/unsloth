@@ -84,7 +84,7 @@ const CARD = cn(
   "group/chat relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-xl px-5 pt-5 pb-4.5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 
-// Fits the fullest card (bare icon, two-line title, two-line footer); rows grow past it, never to a square.
+// Fits the fullest card; rows grow past it, never to a square.
 export const CHAT_CARD_ROW_MIN =
   "calc(var(--spacing) * 20 + 2.75 * var(--text-ui-12p5) + 3 * var(--text-ui-11p5))";
 import {
@@ -562,7 +562,6 @@ function ChatMenu({
 const TILE =
   "flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
 const TILE_ICON = "size-5";
-// Grid cards show the kind icon on its own, without the tile box rows use.
 const CARD_ICON =
   "size-4.5 shrink-0 text-foreground/70 transition-colors group-hover/chat:text-primary";
 
@@ -1225,7 +1224,7 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
   );
 }
 
-// Without a tile the empty marks row collapses; the title keeps the full width and the hover menu overlays it.
+// The hover menu overlays the full-width title.
 const TILELESS_ROW = "empty:hidden pe-8";
 const TILELESS_ROW_NAME = "min-h-10";
 

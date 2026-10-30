@@ -304,7 +304,7 @@ function FolderCard({
           className="flex aspect-square items-center justify-center"
           style={{ minHeight: CARD_MIN_HEIGHT }}
         >
-          {/* The 4.4 folder sits a touch shorter than 4.1's; 30px keeps it the size it was at 28px. */}
+          {/* 4.4's folder draws smaller: 30px matches 4.1's at 28px. */}
           <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.5} className="size-7.5" />
         </div>
       </CardFrame>

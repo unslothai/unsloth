@@ -157,10 +157,9 @@ export function ProjectsPage({
   onToggleOrder,
 }: {
   embedded?: boolean;
-  /** The Library's filtered, sorted projects; its toolbar owns search and sort when embedded. */
+  /** The Library's filtered, sorted projects; its toolbar owns search and sort. */
   ordered?: ProjectRecord[];
   searching?: boolean;
-  /** The Updated header's direction and toggle, so it drives the Library's sort when embedded. */
   orderedDesc?: boolean;
   onToggleOrder?: () => void;
 } = {}) {
@@ -564,12 +563,11 @@ export function ProjectsPage({
     }
   }
 
-  // Names are emphasised inside the sentence, so each message splits around its placeholder.
+  // Split around {name} so the name can be emphasised.
   const deleteChatText = t("projectsPage.deleteChatDescription").split("{name}");
   const deleteProjectText = t("projectsPage.deleteProjectDescription").split("{name}");
   const importText = t("projectsPage.importDestination").split("{name}");
 
-  // Inside the Library the page header and tour belong to the Library, so only the body renders.
   const Shell = embedded ? "div" : "main";
   return (
     <Shell
