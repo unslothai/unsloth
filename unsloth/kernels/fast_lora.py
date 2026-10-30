@@ -453,7 +453,8 @@ class LoRA_MLP(torch.autograd.Function):
         plain = dropout_p is None and gateBias is None and upBias is None and downBias is None
         if plain:
             gateXA = upXA = None
-            if LORA_FUSED_PASSES and gateA is not None and upA is not None:
+            # Eager only: traced, the shared intermediate fails the block compile (saved output aliasing).
+            if LORA_FUSED_PASSES and not _is_compiling() and gateA is not None and upA is not None:
                 gateXA, upXA = _shared_XA(X.view(-1, X.shape[-1]), (gateA, upA), dtype)
             e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS, XA = gateXA)
             g = matmul_lora(X, upW, upW_quant, upA, upB, upS, XA = upXA)
@@ -903,7 +904,14 @@ class LoRA_QKV(torch.autograd.Function):
             X_for_matmul = X.view(-1, X.shape[-1])
         if dropout_p is None and QBias is None and KBias is None and VBias is None:
             QXA = KXA = VXA = None
-            if LORA_FUSED_PASSES and QA is not None and KA is not None and VA is not None:
+            # Eager only, as in LoRA_MLP.
+            if (
+                LORA_FUSED_PASSES
+                and not _is_compiling()
+                and QA is not None
+                and KA is not None
+                and VA is not None
+            ):
                 QXA, KXA, VXA = _shared_XA(X_for_matmul, (QA, KA, VA), dtype)
             Q = matmul_lora(X_for_matmul, QW, QW_quant, QA, QB, QS, XA = QXA)
             K = matmul_lora(X_for_matmul, KW, KW_quant, KA, KB, KS, XA = KXA)
