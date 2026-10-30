@@ -78,7 +78,11 @@ from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets.cells import csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
-from utils.datasets.completion_masking import apply_completion_masking
+from utils.datasets.completion_masking import (
+    apply_completion_masking,
+    count_truncated_drops,
+    truncated_drop_cause,
+)
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.pretokenized import (
     PRETOKENIZED_FORMAT,
@@ -5093,19 +5097,40 @@ class UnslothTrainer:
 
                             if filtered_len == 0 or drop_pct > 30:
                                 max_seq = training_args.get("max_seq_length", 2048)
+                                cause = None
+                                # Packed rows all reach the cap, so a truncated prompt cannot be told apart there.
+                                if not config_args.get("packing"):
+                                    try:
+                                        cap = (
+                                            getattr(self.trainer.args, "max_length", None)
+                                            or max_seq
+                                        )
+                                        cut = count_truncated_drops(
+                                            pre_mask_dataset["input_ids"],
+                                            self.trainer.train_dataset["input_ids"],
+                                            cap,
+                                        )
+                                        cause = truncated_drop_cause(cut, dropped, cap)
+                                    except Exception as e:  # noqa: BLE001 - keep the generic message
+                                        logger.info(f"Could not count truncated rows: {e}\n")
                                 error_msg = (
                                     f"{dropped}/{original_len} samples ({drop_pct}%) were "
                                     f"dropped after applying 'Train on completions': after "
                                     f"masking, those rows had no trainable response tokens "
-                                    f"left. The usual cause is that this model's response "
-                                    f"template was not found in the formatted samples, so "
-                                    f"every token was masked out. That typically means the "
-                                    f"dataset is already formatted, or its structure does "
-                                    f"not match the model's chat template, so 'Train on "
-                                    f"completions' should be turned off for this dataset. "
-                                    f"Less commonly, a max_seq_length ({max_seq}) shorter "
-                                    f"than the prompt can truncate the response away; only "
-                                    f"raise it if your samples are actually longer than that."
+                                    f"left. "
+                                ) + (
+                                    cause
+                                    or (
+                                        f"The usual cause is that this model's response "
+                                        f"template was not found in the formatted samples, so "
+                                        f"every token was masked out. That typically means the "
+                                        f"dataset is already formatted, or its structure does "
+                                        f"not match the model's chat template, so 'Train on "
+                                        f"completions' should be turned off for this dataset. "
+                                        f"Less commonly, a max_seq_length ({max_seq}) shorter "
+                                        f"than the prompt can truncate the response away; only "
+                                        f"raise it if your samples are actually longer than that."
+                                    )
                                 )
                                 logger.error(error_msg)
                                 self._update_progress(error = error_msg, is_training = False)
