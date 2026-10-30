@@ -1095,12 +1095,9 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
 
 
 def _torchao_index_url(torch_version: "str | None") -> "str | None":
-    """The torchao index serving the resident torch's build, or None to stay unpinned.
-
-    download.pytorch.org's cuNNN leaves publish torchao for Linux only, so on Windows that pin
-    always fails and the untagged PyPI fallback fails the next run's tag check, forcing a
-    reinstall on every update. Mirrors, explicit indexes and the cpu/xpu leaves stay pinned.
-    """
+    """_torch_accelerator_index_url, but None on Windows for download.pytorch.org's cuNNN leaves:
+    they serve torchao for Linux only, so the pin always fails and the untagged fallback then
+    fails every later update's tag check. Mirrors, explicit indexes and cpu/xpu stay pinned."""
     url = _torch_accelerator_index_url(torch_version)
     tag = _torch_index_tag(torch_version)
     if IS_WINDOWS and tag and _is_cuda_family_leaf(tag) and url == f"{_PYTORCH_DEFAULT_WHL}/{tag}":
