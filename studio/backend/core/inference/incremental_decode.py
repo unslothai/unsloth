@@ -96,18 +96,27 @@ class _SplitProfile:
     def _whole_piece(self, token_id: int) -> bool:
         whole = self._whole.get(token_id)
         if whole is None:
-            whole, text = False, ""
+            whole, text, later = False, "", ""
             if token_id not in self._added:
                 try:
                     piece = self._tokenizer.convert_ids_to_tokens(token_id)
                     if isinstance(piece, str) and not _BYTE_PIECE.fullmatch(piece):
                         text = self._tokenizer.decode([token_id], **_SPLIT_DECODE)
                         whole = isinstance(text, str) and bool(text) and "\ufffd" not in text
+                    if whole:
+                        # The piece also as a later id of its run: Metaspace drops every
+                        # replacement char of a run's first id only, so a piece ending in one
+                        # ends in "a" alone but in " " mid-reply, where " ." cleanup can span.
+                        pair = self._tokenizer.decode([token_id, token_id], **_SPLIT_DECODE)
+                        later = pair[len(text) :] if pair.startswith(text) else ""
+                        whole = bool(later) and "\ufffd" not in later
                 except Exception:  # noqa: BLE001 -- an id the tokenizer cannot name never splits
                     whole = False
             with self._lock:
                 self._whole[token_id] = whole
-                self._ends_clean[token_id] = whole and text[-1] not in _CLEANUP_CHARS
+                self._ends_clean[token_id] = (
+                    whole and text[-1] not in _CLEANUP_CHARS and later[-1] not in _CLEANUP_CHARS
+                )
         return whole
 
     def splits(self, left: int, right: int, cleanup: bool) -> bool:

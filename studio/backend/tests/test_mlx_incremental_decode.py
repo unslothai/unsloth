@@ -221,6 +221,24 @@ def test_an_unknown_decoder_keeps_the_full_decode(backend):
         )
 
 
+@pytest.mark.parametrize("scheme", ["always", "first"])
+def test_a_metaspace_piece_ending_in_its_replacement_never_splits_a_cleanup_pattern(scheme):
+    # Metaspace drops the replacement char of a run's first id only: "a▁" decodes alone
+    # to "a" but to "a " mid-reply, so cleanup's " ." spans a split taken after it.
+    vocab = {"<unk>": 0, "x": 1, "a▁": 2, ".": 3, "'s": 4, "▁b": 5}
+    backend = Tokenizer(models.WordLevel(vocab, unk_token = "<unk>"))
+    backend.decoder = decoders.Metaspace(prepend_scheme = scheme)
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object = backend, unk_token = "<unk>", clean_up_tokenization_spaces = True
+    )
+    assert split_profile(tokenizer) is not None
+    for ids in ([1, 2, 2, 3, 1], [5, 2, 2, 4, 2, 3, 5], [1, 2, 3, 1, 2, 2, 3]):
+        for kwargs in ({}, {"skip_special_tokens": True}, {"clean_up_tokenization_spaces": True}):
+            incremental = IncrementalDecode(_Wrapper(tokenizer), kwargs)
+            for count in range(1, len(ids) + 1):
+                assert incremental.feed(ids[count - 1]) == tokenizer.decode(ids[:count], **kwargs)
+
+
 def test_an_overridden_decode_keeps_the_full_decode():
     tokenizer = _byte_level()
 
