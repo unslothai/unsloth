@@ -202,6 +202,9 @@ def _tokenizer_config_audio_type(tok_file: Path, st: os.stat_result) -> Optional
     try:
         raw = tok_file.read_text(encoding = "utf-8-sig")
         audio_type = classify_audio_tokens(json.loads(raw)) if may_hold_audio_tokens(raw) else None
+    except OSError:
+        # Not cached: a failed read (EMFILE, EIO, a Windows sharing lock) can clear with no change to the file's stat.
+        return None
     except Exception:
         # Cached too: a writer that finishes the file moves its mtime or size, so this key misses.
         audio_type = None

@@ -7,6 +7,7 @@ identical to an uncached scan, notice every add / remove / rewrite, and skip rep
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import shutil
@@ -151,6 +152,21 @@ def test_rewrite_that_restores_size_and_mtime_is_still_reread(hub, tmp_path):
     assert (new.st_size, new.st_mtime_ns) == (old.st_size, old.st_mtime_ns)
 
     assert _row(_scan(tmp_path / "models"), "org/speech-csm")["audio_type"] is None
+
+
+def test_failed_tokenizer_read_is_retried_on_the_next_scan(hub, tmp_path, monkeypatch):
+    real_read_text = Path.read_text
+    failures = [OSError(errno.EMFILE, "Too many open files")]
+
+    def flaky_read_text(self, *args, **kwargs):
+        if self.name == "tokenizer_config.json" and failures:
+            raise failures.pop()
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    assert _row(_scan(tmp_path / "models"), "org/speech-csm")["audio_type"] is None
+    # The file never changed, so its stat key is the same: the failed read must not be what it answers.
+    assert _row(_scan(tmp_path / "models"), "org/speech-csm")["audio_type"] == "csm"
 
 
 def test_added_and_removed_models_show_up_on_the_next_scan(hub, tmp_path):
