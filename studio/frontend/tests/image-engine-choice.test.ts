@@ -114,15 +114,12 @@ test("the LoRA note offers a native reload only where it would turn LoRA on", ()
 
 test("the LoRA slot names why LoRA is off when no reload note applies", () => {
   const reason = "LoRAs are not applied to a whole-pipeline SDXL GGUF. Load the .safetensors checkpoint to use LoRAs.";
-  // A build no reload can help rendered an empty LoRA slot.
   const noNative = { ...ggufOnDiffusers, lora_via_native: false, lora_unavailable_reason: reason };
   assert.equal(loraUnavailableNote(noNative), reason);
   // A server pin suppresses the native reload note, so the reason shows instead.
   assert.equal(loraUnavailableNote({ ...ggufOnDiffusers, engine_forced: "diffusers", lora_unavailable_reason: reason }), reason);
-  // The reload notes keep the slot.
   assert.equal(loraUnavailableNote({ ...ggufOnDiffusers, lora_unavailable_reason: reason }), null);
   assert.equal(loraUnavailableNote({ loaded: true, supports_lora: false, lora_after_reload: true }), null);
-  // Never blank, even without a reason from the server.
   assert.match(loraUnavailableNote({ loaded: true, supports_lora: false }) ?? "", /cannot be applied/);
   assert.equal(loraUnavailableNote({ loaded: true, supports_lora: true }), null);
   assert.equal(loraUnavailableNote({ loaded: false }), null);

@@ -89,7 +89,6 @@ def test_supports_lora_matrix():
     assert not dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "mxfp8"
     )
-    # A GGUF transformer takes adapters unfused on any device; a whole-pipeline GGUF (SDXL) does not.
     assert dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "gguf", transformer_quant = None
     )

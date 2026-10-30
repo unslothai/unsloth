@@ -611,7 +611,6 @@ class _MlxState:
     timings: dict = field(default_factory = dict)
     gguf_path: Optional[str] = None
     hf_token: Optional[str] = None
-    # (path, scale) pairs attached to the transformer, for the no-op check on the next request.
     loras: tuple = ()
 
 

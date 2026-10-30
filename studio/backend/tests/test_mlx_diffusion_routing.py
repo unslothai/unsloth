@@ -650,7 +650,6 @@ def test_a_lora_request_stays_on_mlx_for_a_family_whose_build_applies_loras(rig)
         is None
     )
     assert rig.engine.generate(prompt = "p", loras = [("l", 1.0)])["engine"] == "mlx"
-    # A family without MLX adapters still routes the request to diffusers.
     assert "LoRA" in routing.request_blocker({"prompt": "p", "loras": [("l", 1.0)]}, family = "other")
 
 

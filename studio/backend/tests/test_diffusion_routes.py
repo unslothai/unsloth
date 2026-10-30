@@ -3531,10 +3531,8 @@ def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it(monkeypatch
     )
     assert inference_routes._has_active_loras(off.loras) is False
     assert inference_routes._has_active_loras(on.loras) is True
-    # Z-Image's MLX build applies adapters, so neither request is refused.
     inference_routes._refuse_mlx_loras(off, z_image)
     inference_routes._refuse_mlx_loras(on, z_image)
-    # A family whose MLX build cannot is refused only for an applied adapter.
     monkeypatch.setitem(routing.MLX_CAPABILITIES, "z-image", routing.MlxCapabilities(loras = False))
     inference_routes._refuse_mlx_loras(off, z_image)
     with pytest.raises(HTTPException):

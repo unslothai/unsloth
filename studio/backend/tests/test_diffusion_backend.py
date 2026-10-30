@@ -1155,7 +1155,6 @@ def test_speed_auto_compile_reports_that_a_reload_brings_lora_back(
 
 
 def test_a_gguf_on_diffusers_applies_loras_unfused(fake_runtime, tmp_path, monkeypatch):
-    # A GGUF kept as-is (MPS, ROCm, CUDA Precision Off) takes adapters through peft on its GGUFLinears.
     backend = _loaded_backend(tmp_path)
     status = backend.status()
     assert (status["model_kind"], status["transformer_quant"]) == ("gguf", None)
@@ -1186,7 +1185,6 @@ def test_a_gguf_on_diffusers_applies_loras_unfused(fake_runtime, tmp_path, monke
 
 
 def test_a_load_that_cannot_carry_adapters_reports_why(fake_runtime, tmp_path, monkeypatch):
-    # The small-host / ComfyUI / fp8-storage blocks gate LoRA off in status with the error generate() raises.
     from core.inference import diffusion as dmod
 
     (tmp_path / "model.safetensors").write_bytes(b"weights")

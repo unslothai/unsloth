@@ -38,7 +38,6 @@ class MlxCapabilities:
 
 
 _DEFAULT_CAPABILITIES = MlxCapabilities()
-# Z-Image applies LoRAs through mflux's unbaked adapters on the converted (quantized) transformer.
 MLX_CAPABILITIES: dict[str, MlxCapabilities] = {"z-image": MlxCapabilities(loras = True)}
 
 

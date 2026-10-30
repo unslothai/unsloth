@@ -659,7 +659,6 @@ def diffusers_lora_family_message(family: Optional[str]) -> str:
 
 
 def _whole_pipeline_label(family: str) -> Optional[str]:
-    """The family's label when its single file packs the whole pipeline (SDXL), else None."""
     from .diffusion_families import detect_family
 
     fam = detect_family("", override = family) if family else None
@@ -676,9 +675,7 @@ def lora_unavailable_reason(
     transformer_quant: Optional[str],
     compiled: bool = False,
 ) -> Optional[str]:
-    """Why ``engine`` cannot apply LoRAs to this build, for the Images page; None when it can.
-    Adapters bake before torch.compile for torchao int8/fp8; native sd_cpp is LoRA-capable families only,
-    nvfp4/mxfp8 unsupported, a whole-pipeline GGUF refused, and MLX per its family capabilities."""
+    """Why ``engine`` cannot apply LoRAs to this build, shown on the Images page; None when it can."""
     fam = (family or "").lower()
     name = family or "this model"
     if engine == "mlx":
