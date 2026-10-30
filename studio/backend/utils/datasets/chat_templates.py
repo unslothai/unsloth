@@ -364,32 +364,50 @@ def _thinking_as_reasoning_content(tokenizer, conversation):
 
 
 def _render_with_empty_call_content(tokenizer, messages, tools_kwargs):
-    # Unsloth's qwen3 reads content unguarded; kept only if every call still renders.
+    # Unsloth's qwen3 reads content unguarded; kept only if unique per-call probes render, as names may appear elsewhere.
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
     def is_null_call(message):
         return isinstance(message, dict) and message.get("tool_calls") and message.get("content") is None
 
-    if not any(is_null_call(message) for message in messages):
+    def filled(markers = None):
+        turns = []
+        for message in messages:
+            if not is_null_call(message):
+                turns.append(message)
+                continue
+            calls = message["tool_calls"]
+            if markers is not None:
+                calls = []
+                for call in message["tool_calls"]:
+                    markers.append(f"unslothname{len(markers)}end")
+                    markers.append(f"unslothcall{len(markers)}end")
+                    function = {**call["function"], "name": markers[-2]}
+                    function["arguments"] = json.dumps({"probe": markers[-1]})
+                    calls.append({**call, "function": function})
+            turns.append({**message, "content": "", "tool_calls": calls})
+        return turns
+
+    null_calls = [message for message in messages if is_null_call(message)]
+    if not null_calls or not all(
+        isinstance(message["tool_calls"], list)
+        and all(isinstance(call, dict) and isinstance(call.get("function"), dict) for call in message["tool_calls"])
+        for message in null_calls
+    ):
         return None
-    filled = [{**message, "content": ""} if is_null_call(message) else message for message in messages]
-    names = []
-    for message in filled:
-        for call in (message.get("tool_calls") if isinstance(message, dict) else None) or ():
-            if isinstance(call, dict):
-                function = call.get("function")
-                name = (function if isinstance(function, dict) else call).get("name")
-                if isinstance(name, str):
-                    names.append(name)
-    for attempt in (_normalize_tool_call_arguments(filled), filled):
+    markers = []
+    probe = filled(markers)
+    for normalize in (_normalize_tool_call_arguments, lambda turns: turns):
         try:
-            text = tokenizer.apply_chat_template(
-                attempt, tokenize = False, add_generation_prompt = False, **tools_kwargs
+            shown = tokenizer.apply_chat_template(
+                normalize(probe), tokenize = False, add_generation_prompt = False, **tools_kwargs
             )
+            if all(marker in shown for marker in markers):
+                return tokenizer.apply_chat_template(
+                    normalize(filled()), tokenize = False, add_generation_prompt = False, **tools_kwargs
+                )
         except Exception:
             continue
-        if all(name in text for name in names):
-            return text
     return None
 
 

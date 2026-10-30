@@ -265,7 +265,7 @@ _UNGUARDED_CONTENT_TEMPLATE = """
 {{- '<|im_start|>' + message.role + '\\n' + message.content.split('</think>')[-1] }}
 {%- if render_calls %}
 {%- for tool_call in message.tool_calls or [] %}
-{{- '<tool_call>' + tool_call.function.name + '</tool_call>' }}
+{{- '<tool_call>' + tool_call.function.name + ' ' + tool_call.function.arguments | string + '</tool_call>' }}
 {%- endfor %}
 {%- endif %}
 {{- '<|im_end|>\\n' }}
@@ -278,8 +278,10 @@ _UNGUARDED_CONTENT_TEMPLATE = """
 def test_null_call_content_falls_back_to_empty_only_when_the_call_renders(sharegpt, render_calls):
     messages = _tool_call_row('{"city": "Paris"}')
     messages[1]["content"] = None
+    # The call name elsewhere in the row must not count as the call rendering.
+    messages[0]["content"] = "Use get_weather for Paris."
     if sharegpt:
-        messages[0] = {"from": "human", "value": "Weather in Paris?"}
+        messages[0] = {"from": "human", "value": "Use get_weather for Paris."}
         messages[-1] = {"from": "gpt", "value": "It is 21C in Paris."}
     template = _UNGUARDED_CONTENT_TEMPLATE.replace("render_calls", str(render_calls).lower())
     rows = [{"conversations": _plain_row()} for _ in range(3)] + [{"conversations": messages}]
@@ -294,7 +296,7 @@ def test_null_call_content_falls_back_to_empty_only_when_the_call_renders(shareg
     texts = [row["text"] for row in result["dataset"]]
     if render_calls:
         assert len(texts) == 4
-        assert "<tool_call>get_weather</tool_call>" in texts[-1]
+        assert "<tool_call>get_weather " in texts[-1]
     else:
         # A template that cannot show the call keeps dropping the row instead of training without it.
         assert len(texts) == 3
