@@ -215,6 +215,15 @@ class LoadRequest(BaseModel):
             "reason otherwise."
         ),
     )
+    mlx_ane_prefill: bool = Field(
+        False,
+        description = (
+            "Experimental, MLX only: run part of each MLP on the Apple Neural Engine alongside the "
+            "GPU for faster prompt processing. Lossy: the Neural Engine uses int8 weights, so "
+            "outputs change slightly. Applied only when the model supports it and the split is "
+            "measured faster here; the status reports the reason otherwise."
+        ),
+    )
     mlx_ple_offload: MlxOffload = Field(
         None,
         description = (
@@ -1181,6 +1190,27 @@ class Int8PrefillAvailabilityResponse(BaseModel):
     )
 
 
+class AnePrefillAvailabilityRequest(BaseModel):
+    """A model whose run settings may offer MLX Neural Engine prefill."""
+
+    model_path: str = Field(..., description = "Model identifier or local path")
+    hf_token: Optional[str] = Field(None, description = "Token for gated repositories")
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class AnePrefillAvailabilityResponse(BaseModel):
+    """Whether a load of this model could run MLX Neural Engine prefill, judged from its downloaded files."""
+
+    available: bool
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_downloaded', 'unsupported_model', "
+        "'unsupported_zoo', 'probe_failed', or unsloth_zoo's own reason ('no_neural_engine', "
+        "'no_eligible_mlps').",
+    )
+
+
 class MlxDraftersRequest(BaseModel):
     model_path: str = Field(..., description = "Model identifier or local path of the target")
 
@@ -1831,6 +1861,17 @@ class _InferenceRuntimeFields(BaseModel):
         None,
         description = "Why requested int8 prefill is not active, as unsloth_zoo reports it "
         "(for example nax_unavailable or no_eligible_projections)",
+    )
+    mlx_ane_prefill: Optional[bool] = Field(
+        None, description = "Whether MLX Neural Engine prefill is active for the loaded model"
+    )
+    mlx_ane_prefill_requested: Optional[bool] = Field(
+        None, description = "Whether the load asked for MLX Neural Engine prefill"
+    )
+    mlx_ane_prefill_reason: Optional[str] = Field(
+        None,
+        description = "Why requested Neural Engine prefill is not active, as unsloth_zoo reports it "
+        "(for example no_neural_engine, no_eligible_mlps, no_gain, not_enough_memory or released)",
     )
     mlx_offload: Optional[MlxOffloadStatus] = Field(None, description = "MLX: weights read from disk")
     chat_template: Optional[str] = Field(
