@@ -256,6 +256,8 @@ async def _alongside(
     if not serving or loading._same_id(serving[0], repo):
         return None
     name = f"{repo}:{variant}" if variant else repo
+    for gone in [r for r in _ALONGSIDE_OPTIONS if not any(loading._same_id(s, r) for s in serving[1:])]:
+        _ALONGSIDE_OPTIONS.pop(gone, None)
     if any(loading._same_id(s, repo) for s in serving[1:]):
         kept = await loading._read_json(
             _caller(ctx), f"/api/inference/status?model={quote(repo, safe='')}"
@@ -265,6 +267,12 @@ async def _alongside(
             raise FlowNodeError(
                 f"{repo} is already loaded alongside as {held}. Two quantizations of one model cannot be kept "
                 f"loaded at once: pick {held} on this node, or unload it first."
+            )
+        # Unknown provenance (loaded in Chat) only matches a card that asks for no settings of its own.
+        if _ALONGSIDE_OPTIONS.get(repo.lower()) != options_hash(options):
+            raise FlowNodeError(
+                f"{repo} is already loaded alongside with other load settings. Give this node the same "
+                f"settings, or unload it first."
             )
         ctx.chat_model = name
         return {"repo": repo, "variant": variant}
@@ -290,6 +298,7 @@ async def _alongside(
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo} alongside {serving[0]}: {exc}") from None
     ctx.resident.clear()
+    _ALONGSIDE_OPTIONS[repo.lower()] = options_hash(options)
     ctx.chat_model = name
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
@@ -312,6 +321,8 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
 
 _LOADED_VARIANT: dict[str, tuple[str, str]] = {}
 _LOADED_OPTIONS: dict[str, tuple[str, str, int]] = {}
+# repo -> options_hash it was loaded alongside with; pruned once it stops being served.
+_ALONGSIDE_OPTIONS: dict[str, Optional[str]] = {}
 
 
 def options_hash(options: Optional[dict]) -> Optional[str]:
