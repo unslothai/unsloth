@@ -312,7 +312,6 @@ def test_branch_moving_after_the_metadata_read_still_fetches_the_planned_commit(
     assert proc.returncode == 0, proc.stderr[-2000:]
     _assert_snapshot(tmp_path, _OLD, _FULL)
     assert hub.head == _NEW  # the move really happened mid-job
-    # Nothing was read at the moved branch: every later request names the planned commit.
     later = [p for _, p in hub.requests[1:]]
     assert later and all(_OLD in p for p in later), later
 
@@ -336,7 +335,6 @@ def test_one_listing_per_download_with_no_second_resolution(tmp_path, hub_factor
     proc = _run(hub, tmp_path)
     assert proc.returncode == 0, proc.stderr[-2000:]
     calls = hub.metadata_calls()
-    # Studio's model_info resolves main once; nothing asks the Hub to resolve main again.
     assert sum(1 for p in calls if p.split("?")[0] == f"/api/models/{_REPO}") == 1
     assert not [p for p in calls if "/revision/main" in p or "/tree/main" in p], calls
     if _hub_major() >= 1:

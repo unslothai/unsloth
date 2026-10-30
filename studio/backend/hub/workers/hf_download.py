@@ -283,7 +283,6 @@ def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
     try:
         _write_ref(ref, commit)
     except OSError as e:
-        # Without the ref the pin is dropped, so the download records refs/main itself as before.
         print(
             f"Could not record refs/main for {repo_id} ({e}); downloading unpinned.",
             file = sys.stderr,
