@@ -265,20 +265,6 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     [],
   );
 
-  // React Flow only reports a box's changes when its picked set changes, so a frame dropped while the
-  // box only touched it is never offered again; settle every frame against the final box.
-  const onSelectionEnd = useCallback(() => {
-    const state = store.getState();
-    const ui = useUiStore.getState();
-    const next = new Set(ui.selectedNodes);
-    for (const id of state.nodeLookup.keys()) {
-      if (!id.startsWith(GROUP_PREFIX)) continue;
-      if (boxHoldsGroup(state, id, pressed)) next.add(id);
-      else next.delete(id);
-    }
-    ui.setSelection([...next], ui.selectedEdges);
-  }, [store]);
-
   const onEdgesChange = useCallback((changes: EdgeChange<RfEdge>[]) => {
     let selection: { add: Set<string>; remove: Set<string> } | null = null;
     for (const change of changes) {
@@ -331,6 +317,20 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     },
     [],
   );
+  // React Flow only reports a box's changes when its picked set changes, so a frame dropped while the
+  // box only touched it is never offered again; settle every frame against the final box.
+  const onSelectionEnd = useCallback(() => {
+    const state = store.getState();
+    const ui = useUiStore.getState();
+    const next = new Set(ui.selectedNodes);
+    for (const id of state.nodeLookup.keys()) {
+      if (!id.startsWith(GROUP_PREFIX)) continue;
+      if (boxHoldsGroup(state, id, pressed)) next.add(id);
+      else next.delete(id);
+    }
+    ui.setSelection([...next], ui.selectedEdges);
+  }, [store]);
+
 
   const onNodeDragStop = useCallback(() => {
     const card = dragMembers.current?.groupRfId.startsWith(SUPER_PREFIX);
