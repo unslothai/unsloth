@@ -6,6 +6,7 @@ import { en } from "./en.ts";
 
 export const es = {
   chatBackground: {
+    fade: "Desvanecer hacia el fondo",
     title: "Imagen de fondo",
     description: "Una imagen local para tu espacio de trabajo. JPEG, PNG o WebP, hasta 20 MiB. El texto permanece legible automáticamente.",
     upload: "Subir imagen",

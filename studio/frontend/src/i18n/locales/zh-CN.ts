@@ -6,6 +6,7 @@ import { en } from "./en.ts";
 
 export const zhCN = {
   chatBackground: {
+    fade: "渐隐至背景",
     title: "背景图片",
     description: "用于工作区的本地图片。支持 JPEG、PNG 或 WebP，最大 20 MiB。自动保持文字清晰可读。",
     upload: "上传图片",

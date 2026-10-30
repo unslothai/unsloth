@@ -6,6 +6,7 @@ import { en } from "./en.ts";
 
 export const fr = {
   chatBackground: {
+    fade: "Fondu vers l’arrière-plan",
     title: "Image d’arrière-plan",
     description: "Une image locale pour votre espace de travail. JPEG, PNG ou WebP, jusqu’à 20 Mio. Le texte reste automatiquement lisible.",
     upload: "Importer une image",

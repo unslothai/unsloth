@@ -6,6 +6,7 @@ import { en } from "./en.ts";
 
 export const ko = {
   chatBackground: {
+    fade: "배경으로 페이드",
     title: "배경 이미지",
     description: "작업 공간에 사용할 로컬 이미지입니다. JPEG, PNG 또는 WebP, 최대 20 MiB. 텍스트 가독성은 자동으로 유지됩니다.",
     upload: "이미지 업로드",

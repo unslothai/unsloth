@@ -12,9 +12,7 @@ import { safeArtworkOpacity, type RGB } from "./contrast";
 import type { ChatBackgroundValue } from "./model";
 
 type Frame = { url: string; value: ChatBackgroundValue };
-export function ChatBackground({
-	active = true,
-}: { active?: boolean }) {
+export function ChatBackground({ active = true }: { active?: boolean }) {
 	const { value } = useChatBackground();
 	const enabled = Boolean(value);
 	const blob = value?.blob;
@@ -193,6 +191,7 @@ export function ChatBackground({
 					>
 						<div
 							className="chat-wallpaper-image"
+							data-fade={adjustment.fade}
 							style={{
 								backgroundImage: `url("${frame.url}")`,
 								backgroundPosition: adjustment.position,

@@ -6708,6 +6708,7 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
   background-size: cover; background-repeat: no-repeat;
   mask-image: linear-gradient(#000, transparent);
 }
+.chat-wallpaper-image[data-fade="false"] { height: 100%; mask-image: none; }
 .chat-wallpaper-frame[data-entering] { animation: wallpaper-enter 180ms ease-out both; }
 .chat-wallpaper-frame[data-departing] { animation: wallpaper-leave 180ms ease-out both; }
 @keyframes wallpaper-enter { from { opacity: 0; } to { opacity: var(--wallpaper-visibility); } }

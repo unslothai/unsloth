@@ -3,6 +3,7 @@
 
 export const en = {
   chatBackground: {
+    fade: "Fade to background",
     title: "Background image",
     description: "A local image for your workspace. JPEG, PNG or WebP, up to 20 MiB. Text stays readable automatically.",
     upload: "Upload image",

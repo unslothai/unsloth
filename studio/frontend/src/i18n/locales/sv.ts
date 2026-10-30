@@ -3,6 +3,7 @@
 
 export const sv = {
   chatBackground: {
+    fade: "Tona ut mot bakgrunden",
     title: "Bakgrundsbild",
     description: "En lokal bild för din arbetsyta. JPEG, PNG eller WebP, högst 20 MiB. Texten förblir automatiskt läsbar.",
     upload: "Ladda upp bild",

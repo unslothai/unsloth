@@ -26,6 +26,8 @@ test("background preferences repair malformed persisted data", () => {
 		{ ...DEFAULT_ADJUSTMENTS, visibility: 100, blur: 0 },
 	);
 	assert.equal(sanitizeAdjustments({ visibility: NaN }).visibility, 70);
+	assert.equal(sanitizeAdjustments({ fade: false }).fade, false);
+	assert.equal(sanitizeAdjustments({ fade: "false" as never }).fade, true);
 });
 test("uploads bound processing dimensions", () => {
 	assert.deepEqual(normalizedSize(6000, 4000), [2048, 1365]);

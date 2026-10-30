@@ -8,6 +8,7 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { useT, type TranslationKey } from "@/i18n";
 // Shared settings primitives: avoid importing the settings barrel into this feature.
@@ -212,6 +213,14 @@ export function ChatBackgroundControls() {
 					</div>
 				</SettingsRow>
 			))}
+			<SettingsRow label={t("chatBackground.fade")}>
+				<Switch
+					aria-label={t("chatBackground.fade")}
+					checked={adjustments.fade}
+					disabled={!value || busy}
+					onCheckedChange={(fade) => patchBackground({ fade })}
+				/>
+			</SettingsRow>
 			<SettingsRow label={t("chatBackground.position")}>
 				<div className="flex w-52 justify-end">
 					<div

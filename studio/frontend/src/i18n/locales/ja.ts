@@ -7,6 +7,7 @@ import { en } from "./en.ts";
 
 export const ja = {
   chatBackground: {
+    fade: "背景にフェード",
     title: "背景画像",
     description: "ワークスペース用のローカル画像。JPEG、PNG、WebP、最大20 MiB。文字の読みやすさは自動調整されます。",
     upload: "画像をアップロード",

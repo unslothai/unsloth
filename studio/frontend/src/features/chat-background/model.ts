@@ -27,6 +27,7 @@ export const DEFAULT_ADJUSTMENTS = {
 	effect: "None" as BackgroundEffect,
 	visibility: 70,
 	blur: 0,
+	fade: true,
 	position: "50% 50%",
 };
 export type BackgroundAdjustments = typeof DEFAULT_ADJUSTMENTS;
@@ -53,6 +54,7 @@ export function sanitizeAdjustments(
 			: "None",
 		visibility: bounded(input.visibility, 100, 70),
 		blur: bounded(input.blur, 20, 0),
+		fade: typeof input.fade === "boolean" ? input.fade : true,
 		position: POSITIONS.includes(input.position as (typeof POSITIONS)[number])
 			? input.position!
 			: "50% 50%",
