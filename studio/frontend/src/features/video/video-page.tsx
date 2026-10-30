@@ -281,7 +281,7 @@ function useVideoModels(
 const DEFAULT_GEN = { steps: 8, guidance: 1 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
-  { match: "minimax-h3", steps: 30, guidance: 1 },
+  { match: "minimax-h3", steps: 20, guidance: 1 },
   { match: "cosmos3-nano", steps: 35, guidance: 6 },
   { match: "cosmos3-edge", steps: 20, guidance: 6 },
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
@@ -3925,8 +3925,8 @@ function VideoGenerator({
               </p>
             </div>
 
-            {/* Top edge on the heading's cap top (text-xl, leading-none; Hellix: 0.122em). */}
-            <div className="mt-[calc(var(--text-xl)*0.122)]">
+            {/* Top edge on the icon's drawn top (its stroke starts 1.25/24 into the glyph). */}
+            <div className="mt-[calc((var(--text-xl)-18px*var(--ui-space-scale,1))/2+18px*var(--ui-space-scale,1)*0.052)]">
               <MediaGenerationPresetControl
                 kind="video"
                 presets={videoPresets.presets}
@@ -4482,8 +4482,8 @@ function VideoGenerator({
             ) : (
               <>
                 <Button
-                  variant="dark"
-                  className="relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  variant="primary"
+                  className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerate}
                   disabled={busy !== null || !status?.loaded}
                 >
