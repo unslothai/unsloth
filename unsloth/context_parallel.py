@@ -155,6 +155,21 @@ def _ddp_ignore_indexer(model, attn_name: str, attention) -> None:
         model._ddp_params_and_buffers_to_ignore = sorted(ignored.union(names))
 
 
+def _keep_layer_out_of_block_compile(model, attn_name: str) -> None:
+    # The DeepSeek Ulysses forward runs eager inside the decoder layer's compiled region (a graph
+    # break), so dynamo compiles the rest of the layer as one resume function shared by every layer
+    # of the class. When a later layer fails to compile it (fp32 MoE: torch._grouped_mm on fake
+    # tensors), dynamo skips that code for all layers, and an earlier checkpointed layer that ran it
+    # compiled recomputes it eagerly: CheckpointError (62 vs 61 saved tensors, V3.2 fp32 CP = 2).
+    # A raised failure re-runs the layer after its first half already saved tensors, failing alike.
+    parent = attn_name.rpartition(".")[0]
+    if not parent:
+        return
+    from .models._block_compile import _OFF
+
+    model.get_submodule(parent).__dict__["_unsloth_block_mode"] = _OFF
+
+
 def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     # Ring and Llama's forward ignore mask, window and softcap, so both backends refuse them.
     allowed = {"full_attention", "linear_attention"} if backend == "ulysses" else {"full_attention"}
@@ -441,6 +456,7 @@ class ContextParallelManager:
                 ):
                     wrap_deepseek_attention_forward(module, get_cp_manager)
                     _ddp_ignore_indexer(model, name, module)
+                    _keep_layer_out_of_block_compile(model, name)
                 elif (
                     name.endswith("self_attn")
                     and type(module).__name__ in ULYSSES_ATTENTION_CLASSES

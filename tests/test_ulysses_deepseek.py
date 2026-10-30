@@ -440,3 +440,82 @@ def test_ulysses_deepseek_ddp_steps_with_trainable_indexer(kind):
     LoRA on them (V3.2 indexer.wq_b, V4 compressor.indexer.q_b_proj) and DDP's find_unused_parameters
     off under CP, the second CP=2 SFT step on L4 failed with "Expected to have finished reduction"."""
     _spawn(_ddp_worker, 2, kind)
+
+
+@pytest.mark.parametrize("kind", [k for k in KINDS if k in ("v32", "v4")])
+def test_ulysses_deepseek_layers_stay_out_of_block_compile(kind):
+    """The eager Ulysses forward is a graph break inside each decoder layer's compiled region."""
+    from unsloth.models import _block_compile as bc
+
+    model = _model(kind)
+    _manager(2, 0).attach_attention_hooks(model)
+    layers = model.model.layers
+    assert all(layer.__dict__.get("_unsloth_block_mode") == bc._OFF for layer in layers)
+
+
+_FAILING_FAKE_LIB = []
+
+
+def _failing_fake_op():
+    """An op whose fake (compile-time) kernel raises, called from an autograd Function: what fp32
+    experts hit on CUDA (torch._grouped_mm has no fp32 kernel for fake tensors)."""
+    if not _FAILING_FAKE_LIB:
+        lib = torch.library.Library("unsloth_test_cp_block", "FRAGMENT")
+        lib.define("ident(Tensor x) -> Tensor")
+        lib.impl("ident", lambda x: x.clone(), "CompositeExplicitAutograd")
+
+        def fake(x):
+            raise RuntimeError("no fake kernel")
+
+        torch.library.register_fake("unsloth_test_cp_block::ident", fake, lib = lib)
+        _FAILING_FAKE_LIB.append(lib)
+
+    class Ident(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, x):
+            return torch.ops.unsloth_test_cp_block.ident(x)
+
+        @staticmethod
+        def backward(ctx, grad):
+            return grad
+
+    return Ident.apply
+
+
+def _block_compile_checkpoint_worker(rank, world):
+    from unsloth.models import _block_compile as bc
+
+    ad.HAS_FLASH_ATTENTION = False
+    ad.HAS_XFORMERS = False
+    model = _model("v32")
+    # Layer 0 is dense, layer 1 MoE; only the MoE layer fails to compile after the attention break.
+    ident = _failing_fake_op()
+    moe = model.model.layers[1].mlp
+    moe_forward = moe.forward
+    moe.forward = lambda hidden_states: ident(moe_forward(hidden_states))
+    available = torch.cuda.is_available
+    torch.cuda.is_available = lambda: True  # Unsloth compiles decoder layers on CUDA only
+    try:
+        assert bc.patch_block_compile(model) == ["DeepseekV32DecoderLayer"]
+    finally:
+        torch.cuda.is_available = available
+    manager = _manager(world, rank)
+    manager.attach_attention_hooks(model)
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+    ids = torch.randint(0, VOCAB, (2, 16), generator = torch.Generator().manual_seed(1))
+    count = F.pad(ids, (0, 1), value = -100)[:, 1:].ne(-100).sum()
+    for _ in range(2):
+        inputs = {"input_ids": ids.clone(), "labels": ids.clone()}
+        manager._prepare_inputs(inputs)
+        with manager.apply(inputs):
+            out = model(
+                input_ids = inputs["input_ids"], position_ids = inputs["position_ids"], use_cache = False
+            )
+            _loss(out.logits, inputs["shift_labels"], count).backward()
+
+
+def test_ulysses_deepseek_checkpointing_with_block_compile():
+    """V3.2 fp32 CP=2 SFT failed with CheckpointError (62 vs 61 saved tensors): the eager Ulysses
+    forward split each compiled decoder layer, the MoE layer's post-attention part failed to compile,
+    and the dense layer that ran it compiled recomputed it eagerly in backward."""
+    _spawn(_block_compile_checkpoint_worker, 2)
