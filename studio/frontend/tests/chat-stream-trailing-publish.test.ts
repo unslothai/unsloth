@@ -16,7 +16,6 @@ const TRAILING_PUBLISH = (pacing as Record<string, unknown>).TRAILING_PUBLISH as
   | undefined;
 
 type Clock = {
-  /** Runs every frame callback queued so far, like one painted frame. */
   frame(): void;
   framesQueued(): number;
   cancelledFrames: number[];
@@ -24,7 +23,6 @@ type Clock = {
   timersCleared: number;
 };
 
-/** Deterministic rAF and timers: nothing fires unless the test says so. */
 async function withFakeClock(body: (clock: Clock) => Promise<void>) {
   const globals = globalThis as unknown as Record<string, unknown>;
   const real = {
@@ -71,7 +69,6 @@ async function withFakeClock(body: (clock: Clock) => Promise<void>) {
 
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-/** An async source the test feeds by hand, like a network reader. */
 function channel<T>() {
   const queue: T[] = [];
   let ended = false;
