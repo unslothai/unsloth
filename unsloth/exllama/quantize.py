@@ -19,6 +19,9 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import tempfile
+import threading
+from contextlib import ExitStack
 from typing import Optional
 
 from .config import Exl3Config, normalize_exl3_config
@@ -386,15 +389,62 @@ def _preflight_check(model_dir: str, cfg: Exl3Config) -> None:
 
 
 def _conversion_complete(out_dir: str) -> bool:
-    """Heuristic: a finished EXL3 conversion has a config + safetensors + index."""
-    if not is_exl3_model_dir(out_dir):
+    """Validate the config and every tensor file before reusing a conversion."""
+    import json
+    from safetensors import safe_open
+
+    try:
+        with open(os.path.join(out_dir, "config.json"), encoding = "utf-8") as f:
+            if not isinstance(json.load(f), dict):
+                return False
+        if not is_exl3_model_dir(out_dir):
+            return False
+        index = os.path.join(out_dir, "model.safetensors.index.json")
+        if os.path.isfile(index):
+            with open(index, encoding = "utf-8") as f:
+                weight_map = json.load(f)["weight_map"]
+            if not isinstance(weight_map, dict) or not weight_map:
+                return False
+            shards = set(weight_map.values())
+        else:
+            weight_map = {}
+            shards = {f for f in os.listdir(out_dir) if f.endswith(".safetensors")}
+        if not shards:
+            return False
+        for shard in shards:
+            with safe_open(os.path.join(out_dir, shard), framework = "pt", device = "cpu") as f:
+                keys = set(f.keys())
+                if not keys or any(
+                    key not in keys for key, filename in weight_map.items() if filename == shard
+                ):
+                    return False
+        return True
+    except (OSError, ValueError, KeyError, TypeError):
         return False
-    has_weights = (
-        any(f.endswith(".safetensors") for f in os.listdir(out_dir))
-        if os.path.isdir(out_dir)
-        else False
-    )
-    return has_weights
+    except Exception:
+        # safetensors raises its own exception for truncated or invalid files.
+        return False
+
+
+def _check_conversion_paths(source, output, work):
+    paths = [
+        os.path.normcase(os.path.realpath(os.path.expanduser(p))) for p in (source, output, work)
+    ]
+    for i, first in enumerate(paths):
+        for second in paths[i + 1 :]:
+            try:
+                overlap = os.path.commonpath((first, second)) in (first, second)
+            except ValueError:
+                overlap = False  # Different drives on Windows.
+            if overlap:
+                raise ValueError(
+                    "Unsloth: EXL3 source, output and work directories must not overlap."
+                )
+    return paths
+
+
+# The uncalibrated converter patch changes Model.__init__ process-wide.
+_CONVERSION_THREAD_LOCK = threading.RLock()
 
 
 def quantize_to_exl3(
@@ -438,18 +488,10 @@ def quantize_to_exl3(
     cfg = normalize_exl3_config(config)
 
     if is_exl3_model_dir(model_name):
-        # Already an EXL3 checkpoint - nothing to do.
         return model_name
 
-    # Fail fast on incompatible dimensions rather than deep inside the converter.
     _preflight_check(model_name, cfg)
 
-    # VLM checkpoints that ship a vision_config but no preprocessor_config.json
-    # crash ExLlamaV3's multimodal config reader; synthesize one so the VLM
-    # (e.g. a bigger Qwen3.5) can be quantized.
-    ensure_vlm_preprocessor(model_name)
-
-    # Auto-enable parallel expert quantization for MoEs unless overridden.
     if is_moe_model(model_name) and not cfg.parallel_mode:
         cfg.parallel_mode = True
         print(
@@ -461,58 +503,67 @@ def quantize_to_exl3(
     resolved_out = out_dir or resolve_exl3_cache_dir(model_name, cfg, cache_root)
     resolved_work = work_dir or (resolved_out.rstrip(os.sep) + ".work")
 
-    if _conversion_complete(resolved_out) and not overwrite:
+    paths = _check_conversion_paths(model_name, resolved_out, resolved_work)
+    from filelock import FileLock
+
+    lock_root = os.path.join(tempfile.gettempdir(), "unsloth-exl3-locks")
+    os.makedirs(lock_root, exist_ok = True)
+    with ExitStack() as locks:
+        for path in sorted(paths[1:]):
+            key = hashlib.sha256(path.encode("utf-8")).hexdigest()
+            locks.enter_context(FileLock(os.path.join(lock_root, key + ".lock")))
+        locks.enter_context(_CONVERSION_THREAD_LOCK)
+        if _conversion_complete(resolved_out) and not overwrite:
+            return resolved_out
+
+        if overwrite and os.path.isdir(resolved_out):
+            shutil.rmtree(resolved_out, ignore_errors = True)
+            shutil.rmtree(resolved_work, ignore_errors = True)
+
+        ensure_vlm_preprocessor(model_name)
+
+        os.makedirs(resolved_out, exist_ok = True)
+        os.makedirs(resolved_work, exist_ok = True)
+
+        resume = os.path.isdir(resolved_work) and bool(os.listdir(resolved_work))
+
+        # Self-heal the calibration corpora if the installed wheel omitted them.
+        # Data-free conversion never reads them, so do not touch the network.
+        if cfg.calibrate and not ensure_calibration_data():
+            print(
+                "Unsloth: warning - could not verify ExLlamaV3 calibration data. "
+                "If quantization fails with a missing .utf8 file, reinstall "
+                "exllamav3 from source or download the standard_cal_data files."
+            )
+
+        from exllamav3.conversion.convert_model import prepare, main as convert_main
+
+        args = _build_conversion_args(
+            in_dir = model_name,
+            out_dir = resolved_out,
+            work_dir = resolved_work,
+            cfg = cfg,
+            devices = devices,
+            resume = resume,
+            verbose = verbose,
+        )
+
+        _restore_uncal = _maybe_enable_uncalibrated(cfg)
+        try:
+            in_args, job_state, ok, err = prepare(args)
+            if not ok:
+                raise RuntimeError(f"Unsloth: EXL3 quantization failed to start: {err}")
+            convert_main(in_args, job_state)
+        finally:
+            if _restore_uncal is not None:
+                _restore_uncal()
+
+        if not _conversion_complete(resolved_out):
+            raise RuntimeError(
+                f"Unsloth: EXL3 quantization did not produce a complete checkpoint at "
+                f"{resolved_out}."
+            )
         return resolved_out
-
-    if overwrite and os.path.isdir(resolved_out):
-        shutil.rmtree(resolved_out, ignore_errors = True)
-        shutil.rmtree(resolved_work, ignore_errors = True)
-
-    os.makedirs(resolved_out, exist_ok = True)
-    os.makedirs(resolved_work, exist_ok = True)
-
-    resume = os.path.isdir(resolved_work) and bool(os.listdir(resolved_work))
-
-    # Self-heal the calibration corpora if the installed wheel omitted them.
-    # Data-free conversion never reads them, so do not touch the network.
-    if cfg.calibrate and not ensure_calibration_data():
-        print(
-            "Unsloth: warning - could not verify ExLlamaV3 calibration data. "
-            "If quantization fails with a missing .utf8 file, reinstall "
-            "exllamav3 from source or download the standard_cal_data files."
-        )
-
-    from exllamav3.conversion.convert_model import prepare, main as convert_main
-
-    # Data-free quantization (calibrate=False): skip the converter's
-    # calibration passes. Good for QLoRA, where LoRA absorbs the quant error.
-    _restore_uncal = _maybe_enable_uncalibrated(cfg)
-
-    args = _build_conversion_args(
-        in_dir = model_name,
-        out_dir = resolved_out,
-        work_dir = resolved_work,
-        cfg = cfg,
-        devices = devices,
-        resume = resume,
-        verbose = verbose,
-    )
-
-    try:
-        in_args, job_state, ok, err = prepare(args)
-        if not ok:
-            raise RuntimeError(f"Unsloth: EXL3 quantization failed to start: {err}")
-        convert_main(in_args, job_state)
-    finally:
-        if _restore_uncal is not None:
-            _restore_uncal()
-
-    if not _conversion_complete(resolved_out):
-        raise RuntimeError(
-            f"Unsloth: EXL3 quantization did not produce a complete checkpoint at "
-            f"{resolved_out}."
-        )
-    return resolved_out
 
 
 class _ConversionArgs:

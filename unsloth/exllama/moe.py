@@ -641,6 +641,10 @@ def _device_for_module(module_path, device_map, default):
     return default
 
 
+class UnsupportedExl3ExpertPlacement(ValueError):
+    pass
+
+
 def install_quantized_experts_before_load(
     model,
     checkpoint_dir,
@@ -676,7 +680,23 @@ def install_quantized_experts_before_load(
         return 0
 
     gate_alts, up_alts, down_alts = ("w1", "gate_proj"), ("w3", "up_proj"), ("w2", "down_proj")
-    default_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    concrete_map = device_map
+    if isinstance(device_map, (int, torch.device)) or (
+        isinstance(device_map, str) and device_map.startswith("cuda")
+    ):
+        concrete_map = {"": device_map}
+    placements = {}
+    for module, module_path in experts_modules:
+        if _experts_have_bias(module):
+            continue
+        device = _device_for_module(module_path, concrete_map, None)
+        if device is None:
+            raise UnsupportedExl3ExpertPlacement(
+                "Unsloth: this EXL3 fused-expert integration requires a concrete CUDA device_map "
+                "for every expert module. Automatic placement and CPU/disk offload are unsupported. "
+                "Pass a CUDA map such as {'': 'cuda:0'}, or upgrade exllamav3 to its native expert integration."
+            )
+        placements[module_path] = device
     stc = SafetensorsCollection(checkpoint_dir)
     count = 0
     try:
@@ -689,8 +709,7 @@ def install_quantized_experts_before_load(
             # Skip bias-bearing experts (the quantized path can't represent bias).
             if _experts_have_bias(module):
                 continue
-            # Honor device_map placement instead of pinning every expert to GPU 0.
-            device = _device_for_module(module_path, device_map, default_device)
+            device = placements[module_path]
             new = Exl3QuantizedExperts(num_experts, hidden, inter, act_fn)
             ok_all = True
             for e in range(num_experts):

@@ -62,6 +62,7 @@ def _patch_moe_expert_replacement(quantizer_cls) -> None:
     original = quantizer_cls._process_model_before_weight_loading
 
     def patched(self, model, *args, **kwargs):
+        from .moe import UnsupportedExl3ExpertPlacement
         original(self, model, *args, **kwargs)
         try:
             import os
@@ -73,6 +74,8 @@ def _patch_moe_expert_replacement(quantizer_cls) -> None:
 
             device_map = kwargs.get("device_map", getattr(self, "device_map", None))
             install_quantized_experts_before_load(model, path, device_map = device_map)
+        except UnsupportedExl3ExpertPlacement:
+            raise
         except Exception as e:
             # Non-fatal: fall back to the post-load reconstruction path.
             print(f"Unsloth: pre-load MoE expert replacement skipped ({e}).")

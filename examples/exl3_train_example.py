@@ -8,7 +8,7 @@
 EXL3 (ExLlamaV3) is Unsloth's quantization backend, replacing bitsandbytes. It
 supports 2/3/4/6/8-bit and fractional-bit quantization plus MoE models.
 
-Run (GPU required, CUDA 12.4+ PyTorch, `pip install "unsloth[exllama]"`):
+Run (GPU required, CUDA 12.4+ PyTorch, `pip install "unsloth[huggingface,exllama]"`):
 
     python examples/exl3_train_example.py
 """
