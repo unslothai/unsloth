@@ -2145,25 +2145,49 @@ def _packed_row_varlen_kwargs(query, attention_mask, kwargs):
         or query.shape[0] != 1
     ):
         return None
-    from .utils.packing import get_packed_info_from_kwargs
+    return _packed_row_boundaries(kwargs, query.device, query.shape[1])
 
-    info = get_packed_info_from_kwargs(kwargs, query.device)
+
+def _packed_row_boundaries_eager(kwargs, device, total):
+    """Host-side boundaries for a packed row of `total` tokens. Run outside any compiled graph,
+    so compiled and eager calls take the same decision and the maximum document length reaches
+    a compiled caller as a call result, not as a guarded constant read from the metadata cache
+    (which recompiled once per distinct length)."""
+    from .utils.packing import cover_padded_cu_seqlens, get_packed_info_from_kwargs
+
+    info = get_packed_info_from_kwargs(kwargs, device)
     if info is None:
         return None
-    _, cu_seqlens, max_seqlen = info
-    # One host read per batch, not per layer: rows that do not cover the query keep the original path.
-    if not torch.compiler.is_compiling():
-        checked = _PACKED_ROWS_CHECKED
-        if checked[0] is not cu_seqlens or checked[1] != query.shape[1]:
-            checked[:] = [cu_seqlens, query.shape[1], int(cu_seqlens[-1]) == query.shape[1]]
-        if not checked[2]:
-            return None
+    cu_seqlens = info[1]
+    # One host read per batch, not per layer: lengths past the row cannot be honoured.
+    checked = _PACKED_ROWS_CHECKED
+    if checked[0] is not cu_seqlens or checked[1] != total:
+        checked[:] = [cu_seqlens, total, int(cu_seqlens[-1]) <= total]
+    if not checked[2]:
+        return None
+    # A collator padding the flattened row (pad_to_multiple_of) leaves a tail past the documents:
+    # it gets its own segment, as in Unsloth's own attention dispatch, so no document sees it and
+    # flash varlen writes every row.
+    cu_seqlens, max_seqlen = cover_padded_cu_seqlens(info, total)
     return {
         "cu_seq_lens_q": cu_seqlens,
         "cu_seq_lens_k": cu_seqlens,
         "max_length_q": max_seqlen,
         "max_length_k": max_seqlen,
     }
+
+
+# _packed_row_boundaries_eager under torch.compiler.disable, built when the patch is installed.
+_PACKED_ROW_BOUNDARIES_DISABLED = None
+
+
+def _packed_row_boundaries(kwargs, device, total):
+    import torch
+
+    disabled = _PACKED_ROW_BOUNDARIES_DISABLED
+    if disabled is not None and torch.compiler.is_compiling():
+        return disabled(kwargs, device, total)
+    return _packed_row_boundaries_eager(kwargs, device, total)
 
 
 def fix_transformers_flash_attention_mrope_packed_rows():
@@ -2176,6 +2200,11 @@ def fix_transformers_flash_attention_mrope_packed_rows():
     current = getattr(fa_integration, "_flash_attention_forward", None)
     if current is None or getattr(current, _PACKED_ROWS_PATCH_FLAG, False):
         return
+    global _PACKED_ROW_BOUNDARIES_DISABLED
+    if _PACKED_ROW_BOUNDARIES_DISABLED is None:
+        import torch
+
+        _PACKED_ROW_BOUNDARIES_DISABLED = torch.compiler.disable(_packed_row_boundaries_eager)
 
     @functools.wraps(current)
     def _flash_attention_forward(
