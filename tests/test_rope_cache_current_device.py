@@ -612,3 +612,18 @@ def test_longrope_long_rebuild_keeps_short_marked_for_training(monkeypatch):
     cos, sin = rope.get_cached(4, 1)
     _assert_trainable(cos, sin)
     _assert_trainable(rope.multi_gpu_long_cos_cached[1], rope.multi_gpu_long_sin_cached[1])
+
+
+def test_stock_call_compiles_as_one_graph():
+    # A plain transformers model built after the class patch calls rotary_emb(x, position_ids).
+    rope = _llama(1 << 17)
+    x = torch.zeros(1, 4, DIM)
+    position_ids = torch.tensor([[3, 4, 5, 6]])
+    eager_cos, eager_sin = rope(x, position_ids)
+    torch._dynamo.reset()
+    explained = torch._dynamo.explain(lambda x, p: rope(x, p))(x, position_ids)
+    assert explained.graph_break_count == 0, explained.break_reasons
+    cos, sin = torch.compile(rope, backend = "eager", fullgraph = True)(x, position_ids + 1)
+    ref_cos, ref_sin = _reference(8)
+    assert torch.equal(eager_cos[0], ref_cos[3:7]) and torch.equal(eager_sin[0], ref_sin[3:7])
+    assert torch.equal(cos[0], ref_cos[4:8]) and torch.equal(sin[0], ref_sin[4:8])

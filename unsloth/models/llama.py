@@ -2424,6 +2424,9 @@ class _PerDeviceRopeCache:
     allocate on their peers. A row depends only on its position, so a shorter cache matches the
     full one row for row."""
 
+    # LongRoPE's factors follow the length asked for, so even a traced stock call must read it.
+    _rope_rows_pick_factors = False
+
     def _init_rope_cache_state(self, dtype):
         self._rope_cache_dtype = dtype
         # Bumped whenever the eager code rebuilt every device (growth), so stale devices rebuild.
@@ -2515,7 +2518,12 @@ class _PerDeviceRopeCache:
     ):
         if position_ids is not None and seq_len is None:
             # Stock transformers call (a plain model built after the patch): per-position cos/sin.
-            rows = int(position_ids.max()) + 1
+            if torch.compiler.is_compiling() and not self._rope_rows_pick_factors:
+                # Rows do not depend on how many are built, so a traced call indexes the whole
+                # current cache: reading max(position_ids) on the host breaks the graph.
+                rows = self.current_rope_size
+            else:
+                rows = int(position_ids.max()) + 1
             if rows > self.current_rope_size:
                 self._grow_rope_cache(rows, x.dtype)
             self._need_rope_rows(rows)
@@ -2771,6 +2779,8 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
 
 class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
     # For Phi 3.5 128K; see microsoft/Phi-3.5-mini-instruct modeling_phi3.py
+    _rope_rows_pick_factors = True
+
     def __init__(
         self,
         dim = None,
