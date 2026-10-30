@@ -3,7 +3,7 @@
 
 """Batches CFG branches into one forward for stateless denoisers only; a second call differing from
 the batched inputs reruns that branch plain; not always bit-exact; UNSLOTH_DIFFUSION_CFG_BATCH=0
-keeps one branch per call"""
+keeps one branch per call; UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED=0 keeps a compiled resident Wan plain"""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import weakref
 from typing import Any, Optional
 
 CFG_BATCH_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH"
+COMPILED_RESIDENT_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED"
 
 # Forward keeps no state between calls, both branches share every per-step input but the text conditioning. Z-Image is
 # absent on purpose: its pipeline already batches the branches (a list of latents, one call per step).
@@ -30,6 +31,9 @@ STATELESS_CLASSES = frozenset(
 _PER_SAMPLE_LISTS = ("img_shapes",)
 # (embeddings, mask) pairs a branch pads to its own prompt length: padded to the longer one with masked zeros.
 _PADDED_TEXT = (("encoder_hidden_states", "encoder_hidden_states_mask"),)
+
+# Compiled + resident, batched with no trial: measured 1-2% win on an L4, below the trial's 8% bar.
+COMPILED_RESIDENT_CLASSES = frozenset({"WanTransformer3DModel"})
 
 _MEASURED_FRACTION = 0.92
 _BATCHED_SAMPLES = 2
@@ -51,9 +55,23 @@ def cfg_batch_mode() -> str:
     return "auto"
 
 
+def compiled_resident_batch(denoiser: Any) -> bool:
+    """A compiled denoiser kept on the card that still batches its guidance branches (one doubled call per step)."""
+    raw = (os.environ.get(COMPILED_RESIDENT_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no", "disable", "disabled"):
+        return False
+    return type(denoiser).__name__ in COMPILED_RESIDENT_CLASSES and type(
+        denoiser
+    ).__module__.startswith("diffusers.")
+
+
 def _torch():
     import torch
     return torch
+
+
+def _cuda_latent(latent: Any) -> bool:
+    return getattr(getattr(latent, "device", None), "type", None) == "cuda"
 
 
 def _mg():
@@ -193,7 +211,11 @@ def cfg_batch_decline(
     if getattr(denoiser, "_compiled_call_impl", None) is not None:
         return "denoiser is compiled whole"
     compiled = compiled_denoiser(denoiser)
-    if compiled is not None and not _offloaded(denoiser, offload_policy):
+    if (
+        compiled is not None
+        and not _offloaded(denoiser, offload_policy)
+        and not compiled_resident_batch(denoiser)
+    ):
         return f"{compiled} and resident"
     if getattr(pipe, "_unsloth_cuda_graphs", None):
         return "the denoiser replays CUDA graphs"
@@ -482,6 +504,7 @@ class CfgBatchRouter:
         self.pair_t0: Optional[float] = None
         self.renders = 0  # completed renders: a doubled-batch compile is warm-up only in a shape's trial render
         self.render_compiled: Optional[str] = None
+        self.compiled_resident = False
         self.identity: Optional[str] = (
             None  # the load's verdict-store identity (None: verdicts stay per load)
         )
@@ -507,6 +530,7 @@ class CfgBatchRouter:
             if shape is None or not shape.batched_s
             else round(min(shape.batched_s), 4),
             "displaced": self._displaced(),
+            "compiled_resident": self.compiled_resident,
             "render_off": self.render_off,
             **self.stats,
         }
@@ -577,8 +601,13 @@ class CfgBatchRouter:
             module = self.module_ref()
             self.render_off = _foreign_hook(module) if module is not None else None
             self.render_compiled = compiled_denoiser(module) if module is not None else None
+            self.compiled_resident = (
+                self.render_compiled is not None
+                and not self.offloaded
+                and compiled_resident_batch(module)
+            )
             if self.render_compiled is not None:
-                if not self.offloaded:
+                if not self.offloaded and not self.compiled_resident:
                     self.render_off = f"{self.render_compiled} and resident"
                 for shape in self.shapes.values():
                     if shape.judged and not shape.compiled_at_trial and shape.off is None:
@@ -603,7 +632,7 @@ class CfgBatchRouter:
                 self.template is not None
                 and shape.off is None
                 and shape.judged
-                and shape.render_steps > _PLAIN_STEPS
+                and shape.render_steps > self._plain_steps()
             ):
                 out = self._batched(args, kwargs, latent, shape)
                 if out is not None:
@@ -624,6 +653,10 @@ class CfgBatchRouter:
             self._record_template(args, kwargs, latent)
             out = self._plain(args, kwargs)
             if self.paired is not None:
+                return out
+            if self.compiled_resident:
+                if not shape.judged and self.disabled is None:
+                    self._untimed(shape, latent)
                 return out
             if not shape.judged and self.disabled is None and shape.render_steps == _PLAIN_STEPS:
                 t0, self.pair_t0 = self.pair_t0, None
@@ -657,6 +690,26 @@ class CfgBatchRouter:
             return out
         self.disable("more than two denoiser calls per step")
         return self._plain(args, kwargs)
+
+    def _plain_steps(self) -> int:
+        """Plain steps per render: step 1 records the template; the timed path also prices step 2."""
+        return 1 if self.compiled_resident else _PLAIN_STEPS
+
+    def _untimed(self, shape: _Shape, latent: Any) -> None:
+        """No trial: it would compile the batch 2 graph anyway and the win is inside its noise."""
+        if not _cuda_latent(latent) and cfg_batch_mode() != "force":
+            self._shape_off(
+                shape,
+                f"compiled resident batching is measured on CUDA only ({CFG_BATCH_ENV}=force batches anyway)",
+            )
+            return
+        shape.verdict = _BATCH
+        # reached under compile: a render that had no room re-judges the shape at its end (end_render)
+        shape.compiled_at_trial = True
+        if self._memory_ok(latent, shape):
+            self._judge(shape)
+        else:
+            self._shape_off(shape, "no room for a doubled call", _OFF_TRANSIENT)
 
     def _new_step(self, args: tuple, kwargs: dict, latent: Any) -> None:
         if self.kept is not None:
@@ -1207,6 +1260,12 @@ def _install(
         logger = logger,
     )
     router.offloaded = _offloaded(denoiser, offload_policy)
+    if (
+        cfg_batch_mode() != "force"
+        and not router.offloaded
+        and compiled_denoiser(denoiser) is not None
+    ):
+        router.reason = "compiled resident denoiser: one doubled call per guided step from step 2"
     router.identity = _load_identity(denoiser, offload_policy, speed_mode, transformer_quant)
     return _arm(pipe, denoiser, router, logger)
 

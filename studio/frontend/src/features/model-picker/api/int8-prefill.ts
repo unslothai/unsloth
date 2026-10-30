@@ -3,13 +3,16 @@
 
 import { authFetch } from "@/features/auth";
 
+export type PrefillOption = "int8" | "ane";
+
 /** Failure only hides the setting: a stored choice is kept and the load-time check guards it. */
-export async function fetchInt8PrefillAvailable(
+export async function fetchPrefillOptionAvailable(
+  option: PrefillOption,
   modelPath: string,
   hfToken: string | null,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  const response = await authFetch("/api/inference/int8-prefill-availability", {
+  const response = await authFetch(`/api/inference/${option}-prefill-availability`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     signal,
