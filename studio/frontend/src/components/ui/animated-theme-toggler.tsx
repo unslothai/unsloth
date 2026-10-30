@@ -6,10 +6,9 @@ import { Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { flushSync } from "react-dom"
 
-import { isTauri } from "@/lib/api-base"
 import { cn } from "@/lib/utils"
 import { prefersReducedMotion, setTheme } from "@/features/settings"
-import { isLinuxDesktopWebKit } from "./theme-view-transition"
+import { isWebKitGTK } from "./theme-view-transition"
 
 interface AnimatedThemeTogglerProps extends React.ComponentPropsWithoutRef<"button"> {
   duration?: number
@@ -48,11 +47,11 @@ export function useAnimatedThemeToggle(duration = 400) {
     }
 
     // Reduced motion cannot reach the view transition's Web Animations clip-path, so skip it.
-    // Linux desktop skips it too: WebKitGTK can crash on one without compositing.
+    // WebKitGTK skips it too: the call itself can crash the page.
     if (
       !document.startViewTransition ||
       prefersReducedMotion() ||
-      isLinuxDesktopWebKit(isTauri, navigator.platform, navigator.userAgent)
+      isWebKitGTK(navigator.platform, navigator.userAgent)
     ) {
       applyTheme()
       return
