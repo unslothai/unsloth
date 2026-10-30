@@ -6,6 +6,7 @@
 import functools
 import re
 from pathlib import Path
+from tests.studio._en_catalog import en_string
 from tests.studio._js_source import (
     attribute_expressions,
     binding_joining,
@@ -696,6 +697,24 @@ def _new_chat_button_class_tokens(chat_page: str) -> list[str]:
     return match.group(1).split()
 
 
+def _aria_label_count(source: str, label: str) -> int:
+    """aria-labels reading `label`, written literally or as a t("key") call en.ts maps to it."""
+    count = source.count(f'aria-label="{label}"')
+    for call in re.finditer(r"""aria-label=\{t\(\s*["']([\w.]+)["']\s*\)\}""", source):
+        try:
+            count += en_string(call.group(1)) == label
+        except (KeyError, ValueError):
+            continue
+    return count
+
+
+def test_aria_labels_are_counted_literally_and_through_the_catalog():
+    both = 'aria-label="Go back" aria-label={t("desktopShell.goBack")} aria-label={t("desktopShell.goForward")}'
+    assert _aria_label_count(both, "Go back") == 2
+    assert _aria_label_count(both, "Go forward") == 1
+    assert _aria_label_count('aria-label={t("no.such.key")}', "Go back") == 0
+
+
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
     titlebar = _ui_source(TITLEBAR)
     chat_page = _ui_source(CHAT_PAGE)
@@ -704,8 +723,8 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     )[0]
 
     assert "{expanded && (" not in navigation
-    assert navigation.count('aria-label="Go back"') == 1
-    assert navigation.count('aria-label="Go forward"') == 1
+    assert _aria_label_count(navigation, "Go back") == 1
+    assert _aria_label_count(navigation, "Go forward") == 1
 
     assert "inline-flex size-[30px] shrink-0" in navigation
 
@@ -1023,6 +1042,32 @@ RAIL_WIDTH_SCALED = (
     "@[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))]"
 )
 HEADER_COLUMNS = "grid-cols-[minmax(0,var(--media-rail-width,408px))_minmax(13rem,1fr)]"
+MEDIA_HEADER_ACTIONS = FRONTEND / "components/media-header-actions.tsx"
+# Since #15919 the preview column is pill | links, the links' column never narrower than the links.
+MEDIA_HEADER_ROW = "grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]"
+
+
+def _media_header_actions(header: str) -> str:
+    """The children a page hands MediaHeaderActions, which places them in the row's third column."""
+    opened = header.split("<MediaHeaderActions", 1)
+    assert (
+        len(opened) == 2
+    ), "the media header no longer renders its links through MediaHeaderActions"
+    children = opened[1].split("</MediaHeaderActions>", 1)
+    assert len(children) == 2, "MediaHeaderActions is no longer closed inside the header"
+    return children[0]
+
+
+def _assert_media_header_row(header: str) -> str:
+    """Create / Train centred in column 2, the links in column 3; returns the links."""
+    assert MEDIA_HEADER_ROW in header
+    assert "data-media-header-centre" in header
+    assert "pointer-events-auto col-start-2 justify-self-center pt-" in header
+    actions = _ui_source(MEDIA_HEADER_ACTIONS)
+    # The slot is click-through like the band; only the links' own group takes clicks.
+    assert "pointer-events-none col-start-3 row-start-1" in actions
+    assert '"pointer-events-auto flex shrink-0 items-center' in actions
+    return _media_header_actions(header)
 
 
 def _ui_source(path) -> str:
@@ -2007,11 +2052,8 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert _MEDIA_PICKER_CLASS in header
     # No label override: the trigger reads exactly like Chat's.
     assert "triggerLabelClassName" not in header
-    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
-    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
-    assert "col-start-2 justify-self-end pt-" in header
-    assert "@[50rem]:justify-self-center" in header
-    assert "col-start-3" in header and "<LibraryPageLink" in header
+    links = _assert_media_header_row(header)
+    assert "<LibraryPageLink" in links
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
@@ -2141,6 +2183,11 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 
         band = band.split(band_end, 1)[0]
         groups = re.findall(r'"([^"]*pointer-events-auto[^"]*)"', band)
+        if "<MediaHeaderActions" in band:
+            # The links' clickable group is drawn by the component, inside its click-through slot.
+            groups += re.findall(
+                r'"([^"]*pointer-events-auto[^"]*)"', _ui_source(MEDIA_HEADER_ACTIONS)
+            )
         assert len(groups) >= min_groups, (page.name, groups)
 
 
@@ -2163,14 +2210,11 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     assert _MEDIA_PICKER_CLASS in header
     # No label override: the trigger reads exactly like Chat's.
     assert "triggerLabelClassName" not in header
-    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
-    assert "@[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0" in header
-    assert "col-start-2" in header
-    assert "col-start-3" in header
+    links = _assert_media_header_row(header)
     # Header icon buttons since #15520; the sibling link hides its name on a narrow header
     # itself (checked in test_compact_media_link_keeps_accessible_name_and_truncation).
-    assert '<LibraryPageLink tab="images" iconOnly={true} />' in header
-    assert '<SiblingMediaPageLink to="/video" />' in header
+    assert '<LibraryPageLink tab="images" iconOnly={true} />' in links
+    assert '<SiblingMediaPageLink to="/video" />' in links
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
 

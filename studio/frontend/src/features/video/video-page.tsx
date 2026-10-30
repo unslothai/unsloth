@@ -5,7 +5,6 @@ import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-a
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Alert02Icon,
-  ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   Cancel01Icon,
@@ -177,6 +176,7 @@ import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
+import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
@@ -259,6 +259,7 @@ import {
 import { stopButtonLabel } from "@/features/images/lib/generation-stop";
 import { type Playback, fetchWithFreshLink, playWithMutedFallback, readPlayback } from "./viewer";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 
 const VIDEO_EXAMPLE_PROMPT =
   "A slow cinematic shot down a quiet Kyoto street at sunrise, cherry blossom petals drifting in the air, a shopkeeper opening a wooden storefront, warm natural light.";
@@ -3767,7 +3768,7 @@ function VideoGenerator({
       </Dialog>
       {cpuExperimental ? <VideoCpuExperimentalBanner /> : null}
       {/* Header: selector over the rail, Library link over the preview, as on Images and Audio. */}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(var(--media-header-min-width),1fr)] @max-[50rem]:h-auto @max-[50rem]:grid-cols-1">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(var(--media-header-min-width),1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
@@ -3834,7 +3835,7 @@ function VideoGenerator({
             )}
           </div>
         </div>
-        <div className="media-header-controls grid h-full min-w-[var(--media-header-min-width)] grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)] gap-2 @max-[50rem]:flex @max-[50rem]:min-w-0 @max-[50rem]:flex-wrap @max-[50rem]:justify-center">
+        <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
           {pageMode !== "train" && status?.loaded && (
             <div className="pointer-events-auto col-start-1 mt-[var(--studio-chat-header-padding-top,11px)] flex h-[var(--studio-chat-control-height,34px)] min-w-0 flex-wrap content-start gap-x-3 overflow-hidden pl-4 text-ui-11 leading-[var(--studio-chat-control-height,34px)]">
               {status.family && <StatusChip label="Family" value={status.family} />}
@@ -3846,14 +3847,14 @@ function VideoGenerator({
               {status.speed_mode && <StatusChip label="Speed" value={status.speed_mode} />}
             </div>
           )}
-          <div className="pointer-events-auto col-start-2 row-start-1 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 row-start-1 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
               dataTour="video-mode"
               ariaLabel="Page mode"
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-2.5 @[24em]/media-header:[&>button]:px-3 @[30em]/media-header:[&>button]:px-7 @[48em]/media-header:[&>button]:px-14 @max-[24em]/media-header:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -3861,16 +3862,14 @@ function VideoGenerator({
             />
           </div>
           {/* The chat header's right inset. */}
-          <div className="pointer-events-none col-start-3 row-start-1 flex min-w-0 items-start justify-end pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1))] pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex shrink-0 items-center gap-1 @max-[50rem]:max-w-full @max-[50rem]:flex-wrap">
-              <MediaApiButton
-                kind="video"
-                model={status?.loaded ? (status.repo_id ?? null) : null}
-              />
-              <LibraryPageLink tab="videos" iconOnly={true} />
-              <SiblingMediaPageLink to="/images" />
-            </div>
-          </div>
+          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <MediaApiButton
+              kind="video"
+              model={status?.loaded ? (status.repo_id ?? null) : null}
+            />
+            <LibraryPageLink tab="videos" iconOnly={true} />
+            <SiblingMediaPageLink to="/images" />
+          </MediaHeaderActions>
         </div>
       </div>
 
@@ -3926,8 +3925,8 @@ function VideoGenerator({
               </p>
             </div>
 
-            {/* Top edge on the heading's cap top (text-xl, leading-none; Hellix: 0.122em). */}
-            <div className="mt-[calc(var(--text-xl)*0.122)]">
+            {/* Top edge on the icon's drawn top (its stroke starts 1.25/24 into the glyph). */}
+            <div className="mt-[calc((var(--text-xl)-18px*var(--ui-space-scale,1))/2+18px*var(--ui-space-scale,1)*0.052)]">
               <MediaGenerationPresetControl
                 kind="video"
                 presets={videoPresets.presets}
@@ -4483,8 +4482,8 @@ function VideoGenerator({
             ) : (
               <>
                 <Button
-                  variant="dark"
-                  className="relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  variant="primary"
+                  className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerate}
                   disabled={busy !== null || !status?.loaded}
                 >
@@ -4632,7 +4631,7 @@ function VideoGenerator({
                       openViewer();
                     }}
                   >
-                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                    <HugeiconsIcon icon={ExpandArrowsIcon} strokeWidth={1.5} className="size-4" />
                   </Button>
                   <RecipePopover video={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>

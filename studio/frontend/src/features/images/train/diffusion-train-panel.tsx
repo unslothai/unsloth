@@ -12,11 +12,11 @@ import {
 } from "react";
 
 import {
-  FolderAddIcon,
   PlusSignIcon,
   Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";

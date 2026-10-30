@@ -103,7 +103,7 @@ function NameForm({
         <Button type="button" variant="ghost" onClick={onClose}>
           {t("common.cancel")}
         </Button>
-        <Button type="submit" disabled={!trimmed || busy}>
+        <Button type="submit" variant="dark" disabled={!trimmed || busy}>
           {submitLabel}
         </Button>
       </DialogFooter>

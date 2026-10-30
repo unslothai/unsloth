@@ -36,8 +36,8 @@ import {
   LayersLogoIcon,
   LibrariesIcon,
   LicenseIcon,
-  PackageIcon,
   LinkSquare02Icon,
+  PackageIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
@@ -424,6 +424,7 @@ export type ModelInspectorRuntime = {
   gpuGb?: number;
   gpuCount?: number;
   systemRamGb?: number;
+  unifiedLoadBudgetGb?: number | null;
 };
 
 export type ModelInspectorActions = {
@@ -464,6 +465,7 @@ export const ModelInspector = memo(function ModelInspector({
     gpuGb,
     gpuCount,
     systemRamGb,
+    unifiedLoadBudgetGb,
   } = runtime;
   const {
     onInventoryChange,
@@ -770,6 +772,9 @@ export const ModelInspector = memo(function ModelInspector({
               gpuGb={gpuGb}
               gpuCount={gpuCount}
               systemRamGb={systemRamGb}
+              unifiedLoadBudgetGb={
+                runsOnMediaRuntime ? null : unifiedLoadBudgetGb
+              }
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onRun={runAction}

@@ -17,6 +17,7 @@ type MlxRuntimeResponse = Pick<
   | "chat_template_override_reason"
   | "mlx_kv_quant_note"
   | "mlx_int8_prefill_requested"
+  | "mlx_ane_prefill_requested"
   | "mlx_offload"
 >;
 
@@ -58,7 +59,9 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
   chatTemplateOverrideReason: string | null;
   mlxKvQuantNote: string | null;
   mlxInt8Prefill?: boolean;
+  mlxAnePrefill?: boolean;
   loadedMlxInt8PrefillRequested: boolean;
+  loadedMlxAnePrefillRequested: boolean;
   mlxPleOffload?: MlxOffload;
   mlxExpertOffload?: MlxOffload;
 } & ReturnType<typeof mlxOffloadStateFrom> {
@@ -70,6 +73,7 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
       chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,
       loadedMlxInt8PrefillRequested: false,
+      loadedMlxAnePrefillRequested: false,
       ...offload,
     };
   }
@@ -82,6 +86,8 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
     mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
     mlxInt8Prefill: resp.mlx_int8_prefill_requested === true,
     loadedMlxInt8PrefillRequested: resp.mlx_int8_prefill_requested === true,
+    mlxAnePrefill: resp.mlx_ane_prefill_requested === true,
+    loadedMlxAnePrefillRequested: resp.mlx_ane_prefill_requested === true,
     mlxPleOffload: offload.loadedMlxPleOffloadRequested,
     mlxExpertOffload: offload.loadedMlxExpertOffloadRequested,
     ...offload,

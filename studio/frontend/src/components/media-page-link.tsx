@@ -79,7 +79,7 @@ export function MediaPageLink({
             />
             {iconArrow && (
               <>
-                <span className="hidden min-w-0 truncate text-ui-13 font-medium @[36em]/media-header:inline">
+                <span className="hidden min-w-0 truncate text-ui-13 font-medium @[50rem]:inline [[data-media-header-tight]_&]:hidden">
                   {label}
                 </span>
                 <ArrowRightIcon className="size-3.5 shrink-0 opacity-60" />

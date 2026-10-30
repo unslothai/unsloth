@@ -20,13 +20,11 @@ import {
   useState,
 } from "react";
 import {
-  ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderAddIcon,
   Image03Icon,
   ImageAdd02Icon,
   ImageCropIcon,
@@ -34,7 +32,9 @@ import {
   PlusSignIcon,
   Refresh01Icon,
   SparklesIcon,
+  UndoIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -191,6 +191,7 @@ import {
   matchAspect,
 } from "@/components/media-size-controls";
 import { cn } from "@/lib/utils";
+import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import {
@@ -461,6 +462,7 @@ import {
   TrainBaseSelector,
   type TrainFamilyOption,
 } from "./train/train-base-selector";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 
 function withEngagedFamily(
   { repoId, kind, filename, textEncoderFiles, vaeFile }: RememberedImageModel,
@@ -1438,7 +1440,7 @@ function RecipePopover({
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
-            <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
+            <HugeiconsIcon icon={UndoIcon} className="size-4" />
             Restore these settings
           </Button>
           {/* The caption that actually ran, with Enhance prompt off, so the run reproduces without the upsampler. */}
@@ -5886,7 +5888,7 @@ export function ImagesPage({
       <MediaRailResizeHandle kind="images" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(var(--media-header-min-width),1fr)] @max-[50rem]:h-auto @max-[50rem]:grid-cols-1">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(var(--media-header-min-width),1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden pr-3 @[50rem]:border-r @[50rem]:border-border/60",
@@ -5949,15 +5951,15 @@ export function ImagesPage({
             )}
           </div>
         </div>
-        <div className="media-header-controls grid h-full min-w-[var(--media-header-min-width)] grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)] gap-2 @max-[50rem]:flex @max-[50rem]:min-w-0 @max-[50rem]:flex-wrap @max-[50rem]:justify-center">
-          <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
+        <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
               dataTour="images-mode"
               ariaLabel="Page mode"
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-2.5 @[24em]/media-header:[&>button]:px-3 @[30em]/media-header:[&>button]:px-7 @[48em]/media-header:[&>button]:px-14 @max-[24em]/media-header:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -5965,16 +5967,14 @@ export function ImagesPage({
             />
           </div>
           {/* The chat header's right inset. */}
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1))] pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex shrink-0 items-center gap-1 @max-[50rem]:max-w-full @max-[50rem]:flex-wrap">
-              <MediaApiButton
-                kind="images"
-                model={status?.loaded ? (status.repo_id ?? null) : null}
-              />
-              <LibraryPageLink tab="images" iconOnly={true} />
-              <SiblingMediaPageLink to="/video" />
-            </div>
-          </div>
+          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <MediaApiButton
+              kind="images"
+              model={status?.loaded ? (status.repo_id ?? null) : null}
+            />
+            <LibraryPageLink tab="images" iconOnly={true} />
+            <SiblingMediaPageLink to="/video" />
+          </MediaHeaderActions>
         </div>
       </div>
       {trainMounted && (
@@ -6027,8 +6027,8 @@ export function ImagesPage({
               </div>
 
               {workflow === "create" && (
-                // Top edge on the heading's cap top (text-xl, leading-none; Hellix: 0.122em).
-                <div className="mt-[calc(var(--text-xl)*0.122)]">
+                // Top edge on the icon's drawn top (its stroke starts 1.25/24 into the glyph).
+                <div className="mt-[calc((var(--text-xl)-18px*var(--ui-space-scale,1))/2+18px*var(--ui-space-scale,1)*0.052)]">
                   <MediaGenerationPresetControl
                     kind="image"
                     presets={imagePresets.presets}
@@ -6935,8 +6935,8 @@ export function ImagesPage({
               </Button>
             ) : (
               <>
-                <Button variant="dark"
-                  className="relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                <Button variant="primary"
+                  className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
@@ -7086,7 +7086,7 @@ export function ImagesPage({
                       openViewer();
                     }}
                   >
-                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                    <HugeiconsIcon icon={ExpandArrowsIcon} strokeWidth={1.5} className="size-4" />
                   </Button>
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
@@ -7185,7 +7185,7 @@ export function ImagesPage({
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."
-                    : "Select a diffusion model to load"}
+                    : "Select image model to create an image"}
                 </p>
               </div>
             )}

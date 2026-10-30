@@ -43,7 +43,7 @@ test("every thread write through chat-api drops the thread's in-flight read when
   assert.match(slice(API, "export async function deleteChatThreads", "\n}"), /threadIds,\s*\);/);
   assert.match(slice(API, "export async function syncChatMessages", "\n}"), /\[threadId\],\s*\);/);
   assert.match(slice(API, "export async function clearBackendChats", "\n}"), /null,\s*\);/);
-  assert.match(slice(API, "export async function saveChatMessage", "\n}"), /forgetThreadReads\(\[message\.threadId\]\)/);
+  assert.match(slice(API, "export async function saveChatMessage", "\n}"), /\[message\.threadId\],\s*\);/);
   assert.match(slice(API, "export async function forkChatThread", "\n}"), /forgetThreadReads\(\[threadId, args\.newThreadId\]\)/);
   assert.match(slice(API, "export async function deleteChatProject", "\n}"), /forgetThreadReads\(null\)/);
 });
