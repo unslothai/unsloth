@@ -6,7 +6,7 @@ import { type DocGraph, GROUP_KEY, NOTE_KEY } from "../stores/doc-store";
 import type { FlowReroute, RerouteWire } from "../stores/reroute-graph";
 import type { FlowEdge, FlowGroup, FlowNode, FlowNote } from "../types";
 import { edgeHandles } from "./connection-rules";
-import { wireHandles } from "./reroutes";
+import { rerouteSize, wireHandles } from "./reroutes";
 
 export type FlowNodeData = { nodeId: string };
 export type FlowEdgeData = {
@@ -108,7 +108,14 @@ export class RfDeriver {
   >();
   private rerouteCache = new Map<
     string,
-    { source: FlowReroute; selected: boolean; x: number; y: number; rf: RfNode }
+    {
+      source: FlowReroute;
+      selected: boolean;
+      x: number;
+      y: number;
+      size: { width: number; height: number };
+      rf: RfNode;
+    }
   >();
   private edgeCache = new Map<
     string,
@@ -280,13 +287,16 @@ export class RfDeriver {
       seen.add(id);
       const pos = drag?.[id] ?? { x: reroute.pos[0], y: reroute.pos[1] };
       const isSelected = selected.has(id);
+      // A rebuilt node with no size is hidden until measured again: mid-drag that blinks it and its wires.
+      const size = sizes?.get(id) ?? rerouteSize(reroute.dir);
       const cached = this.rerouteCache.get(id);
       if (
         cached &&
         cached.source === reroute &&
         cached.selected === isSelected &&
         cached.x === pos.x &&
-        cached.y === pos.y
+        cached.y === pos.y &&
+        cached.size === size
       ) {
         next.push(cached.rf);
         continue;
@@ -298,12 +308,14 @@ export class RfDeriver {
         position: pos,
         data: { rerouteId: id },
         selected: isSelected,
+        measured: size,
       };
       this.rerouteCache.set(id, {
         source: reroute,
         selected: isSelected,
         x: pos.x,
         y: pos.y,
+        size,
         rf,
       });
       next.push(rf);

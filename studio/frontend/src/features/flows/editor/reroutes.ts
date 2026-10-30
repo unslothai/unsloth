@@ -29,10 +29,10 @@ export const REROUTE_IN_HANDLE = "ri";
 export const REROUTE_OUT_HANDLE = "ro";
 export const REROUTE_SIZE = { width: 28, height: 16 };
 
+const UPRIGHT_SIZE = { width: REROUTE_SIZE.height, height: REROUTE_SIZE.width };
+
 export function rerouteSize(dir: RerouteDir = "right") {
-  return dir === "right"
-    ? REROUTE_SIZE
-    : { width: REROUTE_SIZE.height, height: REROUTE_SIZE.width };
+  return dir === "right" ? REROUTE_SIZE : UPRIGHT_SIZE;
 }
 
 export function nextRerouteDir(dir: RerouteDir = "right"): RerouteDir {
