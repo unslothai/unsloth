@@ -427,6 +427,10 @@ def fake_ddgs(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(tools, "_resolve_engine_tiers", lambda engines: ["auto"])
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path)
+    # Registrations made here must not leak into other tests' registry.
+    monkeypatch.setattr(search_images, "_registry", {})
+    monkeypatch.setattr(search_images, "_inflight", {})
+    monkeypatch.setattr(search_images, "_cleared_unservable", set())
     registered: list = []
     real_register = search_images.register_images
 
