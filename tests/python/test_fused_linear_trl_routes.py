@@ -355,7 +355,8 @@ def test_patch_leaves_kernels_with_an_unknown_contract(monkeypatch):
 
 
 def test_patch_wraps_the_installed_trl_kernel(monkeypatch):
-    """A released TRL kernel (1.14 - 1.16) gets the adapter, and the fused path serves its call."""
+    """A released TRL kernel (1.14 - 1.16) gets the adapter, and the fused path serves its call.
+    A newer contract (TRL 1.17 adds score_ids and a sixth output) stays with TRL."""
     try:
         from trl.kernels import ChunkedLogProbFunction as kernel
     except Exception:
@@ -366,7 +367,9 @@ def test_patch_wraps_the_installed_trl_kernel(monkeypatch):
     if kernel is None or "bias" not in inspect.signature(kernel.forward).parameters:
         pytest.skip("this TRL has no fused-head kernel the adapter serves")
     params = tuple(inspect.signature(kernel.forward).parameters)[2:]
-    assert params in unsloth_rl._TRL_FUSED_HEAD_CONTRACTS, params
+    if params not in unsloth_rl._TRL_FUSED_HEAD_CONTRACTS:
+        assert _install(kernel, monkeypatch) is kernel, params
+        return
     wrapped = _install(kernel, monkeypatch)
     assert isinstance(wrapped, unsloth_rl._UnslothFusedLinearHead)
     hidden, weight, bias, targets = _inputs(6)
