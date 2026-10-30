@@ -286,6 +286,12 @@ test("the published corner card frame is re-read when the rail insets move the c
   assert.match(hook, /unsubscribe\(\);/);
 });
 
+test("toasts that leave the toaster stop being observed", () => {
+  const toaster = readSrc("components/ui/sonner.tsx");
+  assert.match(toaster, /if \(!scope\.contains\(content\)\) \{\s*sized\.unobserve\(content\);\s*observed\.delete\(content\);/);
+  assert.match(toaster, /if \(!observed\.has\(content\)\) \{\s*sized\.observe\(content\);\s*observed\.add\(content\);/);
+});
+
 test("panel insets are written to their consumers, never to <html>", () => {
   const sheet = readSrc("features/chat/chat-settings-sheet.tsx");
   assert.match(sheet, /return watchChatSettingsInset\(\s*cornerInsets,\s*asideRef\.current,/, "an inherited variable on <html> restyled the whole document on every drag frame");

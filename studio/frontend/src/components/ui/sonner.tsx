@@ -43,9 +43,19 @@ function markMultilineToasts(scope: HTMLElement): () => void {
       );
     }
   });
+  const observed = new Set<Element>();
   const watch = () => {
+    for (const content of observed) {
+      if (!scope.contains(content)) {
+        sized.unobserve(content);
+        observed.delete(content);
+      }
+    }
     for (const content of scope.querySelectorAll("[data-sonner-toast] [data-content]")) {
-      sized.observe(content);
+      if (!observed.has(content)) {
+        sized.observe(content);
+        observed.add(content);
+      }
     }
   };
   watch();
@@ -54,6 +64,7 @@ function markMultilineToasts(scope: HTMLElement): () => void {
   return () => {
     added.disconnect();
     sized.disconnect();
+    observed.clear();
   };
 }
 
