@@ -35,8 +35,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Folder02Icon,
-  FolderExportIcon,
   LayerIcon,
   MoreHorizontalIcon,
   PinIcon,
@@ -46,8 +44,10 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { ForkIcon } from "@/lib/fork-icon";
 import { type ReactNode, useSyncExternalStore } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -321,7 +321,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
               {menu.projects.map((entry) => (
                 <Item
                   key={entry.id}
-                  icon={Folder02Icon}
+                  icon={ProjectIcon}
                   onSelect={() => menu.moveToProject(entry.id)}
                 >
                   {entry.name}

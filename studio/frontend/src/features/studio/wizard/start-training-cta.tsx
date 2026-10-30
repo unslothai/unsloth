@@ -11,8 +11,9 @@ import {
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { DatasetSource } from "@/types/training";
-import { PlayIcon, Refresh01Icon } from "@hugeicons/core-free-icons";
+import { Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { PlayIcon } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { resolveStartTrainingButtonLabelKey } from "./start-training-cta-state";
 
@@ -148,11 +149,7 @@ export function StartTrainingCta() {
         }}
         disabled={disabled}
       >
-        <HugeiconsIcon
-          icon={PlayIcon}
-          strokeWidth={1.75}
-          className="size-4"
-        />
+        <PlayIcon strokeWidth={1.75} className="size-4" />
         {buttonLabel}
       </Button>
       {errorMessage && (

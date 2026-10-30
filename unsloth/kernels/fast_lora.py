@@ -1164,8 +1164,6 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 if W_quant is None and W.ndim == 2 and W.shape[1] == 1:
                     W_quant = _base_quant_state(self.base_layer, W)
                 return _apply(LoRA_W, x, W, W_quant, lora_A, lora_B, scaling)
-            pass
-        pass
 
         result = self.base_layer(x, *args, **kwargs)
         # Per Tim Dettmers: for 4bit, defensively clone, since backprop can fail on a manipulated view.
