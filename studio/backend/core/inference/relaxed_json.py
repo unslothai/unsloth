@@ -144,6 +144,45 @@ def relaxed_object_end(text: str, start: int) -> Optional[int]:
     return None
 
 
+def relaxed_object_starts(text: str) -> frozenset:
+    """Positions of the ``{`` that open an object at brace depth 0, quotes honoured inside braces only.
+    Near-JSON is read only there: an object nested in another's argument, or after one that never closes,
+    is read strictly, as before."""
+    starts = []
+    depth = 0
+    quote = None
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = None
+        elif c == "{":
+            if depth == 0:
+                starts.append(i)
+            depth += 1
+        elif c == "}":
+            depth = max(depth - 1, 0)
+        elif depth and (c == '"' or c == "'"):
+            quote = c
+        i += 1
+    return frozenset(starts)
+
+
+_TOP_LEVEL_CACHE: tuple = (None, frozenset())
+
+
+def relaxed_allowed_at(text: str, pos: int) -> bool:
+    global _TOP_LEVEL_CACHE
+    cached = _TOP_LEVEL_CACHE
+    if cached[0] is not text:
+        cached = (text, relaxed_object_starts(text))
+        _TOP_LEVEL_CACHE = cached
+    return pos in cached[1]
+
+
 def relaxed_json_object(text: Any) -> Optional[dict]:
     """The argument object ``text`` spells, or None. Strict JSON first; a JSON string holding an object
     (arguments encoded once or twice) is unwrapped; then the syntax repair above."""

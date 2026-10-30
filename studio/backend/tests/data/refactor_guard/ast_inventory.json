@@ -2431,6 +2431,11 @@
         "kind": "def",
         "signature": "m, pat, text, spans, enabled_tool_names"
       },
+      "_relaxed_allowed_at": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, pos: int"
+      },
       "_relaxed_object_end": {
         "decorators": [],
         "kind": "def",

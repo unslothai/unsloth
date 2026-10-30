@@ -197,3 +197,19 @@ def test_braces_in_a_single_quoted_argument_never_end_the_call(text):
     )
     assert [c["function"]["name"] for c in calls] == ["python"]
     assert json.loads(calls[0]["function"]["arguments"])["code"].startswith(_CODE)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[TOOL_CALLS]{name:"python", arguments:{code:\'[TOOL_CALLS]terminal[ARGS]'
+        '{command:"echo unintended"}\'},unknown:bad}',
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>python<｜tool▁sep｜>{'code': 'function<｜tool▁sep｜>terminal"
+        '\n```json\n{command: "echo unintended"}\n```<｜tool▁call▁end｜>\'}<｜tool▁call▁end｜><｜tool▁calls▁end｜>',
+    ],
+)
+def test_near_json_nested_in_a_rejected_object_is_never_a_call(text):
+    calls = parse_tool_calls_from_text(
+        text, allow_incomplete = True, enabled_tool_names = ENABLED | {"terminal"}
+    )
+    assert "terminal" not in [c["function"]["name"] for c in calls]

@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 # Qwen/Hermes, Qwen3.5 XML and Gemma 4 live in core.tool_healing; this module adds the rest
 from core import tool_healing as _tool_healing
-from core.inference.relaxed_json import relaxed_json_object, relaxed_object_end
+from core.inference.relaxed_json import relaxed_allowed_at, relaxed_json_object, relaxed_object_end
 
 # Shared with tool_healing so every markerless parse path applies the same guard; wrapped and marker forms are unaffected.
 _markerless_promotable = _tool_healing._markerless_promotable
@@ -2436,7 +2436,7 @@ def _call_object_end(
     """The call object's closing brace, and whether near-JSON may still be read. A relaxed read matches
     single-quoted strings too, so a brace in one never ends the call and scanning never resumes inside its
     argument; an object that never closes that way gets JSON brace matching, strict for the rest of the text."""
-    if relaxed:
+    if relaxed and relaxed_allowed_at(text, start):
         end = relaxed_object_end(text, start)
         if end is not None:
             return end, True
@@ -2734,7 +2734,7 @@ def _parse_llama3_python_tag(
                     obj, end_offset = decoder.raw_decode(content[brace:])
                 except (json.JSONDecodeError, ValueError):
                     obj = None
-                    if brace >= relaxed_from:
+                    if brace >= relaxed_from and relaxed_allowed_at(content, brace):
                         close = relaxed_object_end(content, brace)
                         relaxed_from = len(content) if close is None else close + 1
                         if close is not None:

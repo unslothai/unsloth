@@ -781,6 +781,11 @@ def marker_coverage(content: str) -> list[tuple[int, int]]:
     return _marker_coverage(content, _build_markers(content))
 
 
+def _relaxed_allowed_at(content: str, pos: int) -> bool:
+    from core.inference.relaxed_json import relaxed_allowed_at  # noqa: PLC0415 -- cycle at import time
+    return relaxed_allowed_at(content, pos)
+
+
 def _relaxed_object_end(content: str, start: int):
     from core.inference.relaxed_json import relaxed_object_end  # noqa: PLC0415 -- cycle at import time
     return relaxed_object_end(content, start)
@@ -846,6 +851,8 @@ def parse_tool_calls_from_text(
         if covered_by_earlier_marker:
             continue
         relaxed_end = None
+        if relaxed and kind == "json" and not _relaxed_allowed_at(content, m.end() - 1):
+            relaxed = False
         if relaxed and kind == "json":
             # JSON brace matching ends a single-quoted argument at a brace inside it; markers in that
             # argument are data. An object that never closes this way leaves the rest strict.
