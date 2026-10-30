@@ -326,15 +326,18 @@ def test_ineligible_generation_frees_graphs_and_recovers(monkeypatch):
     enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
     causal = _causal(model)
     eager = _generate(model, tok, enc, False, monkeypatch)
-    _generate(model, tok, enc, True, monkeypatch)
+    # _plain returns no cache, so generate() keeps the captured steps (a returned one releases them).
+    monkeypatch.setattr(G, "ENABLED", True)
+    _plain(model, tok, enc)
     assert G.stats(causal)["graphs"] >= 1
     plain = kernel_utils._has_active_dora_adapter
     monkeypatch.setattr(kernel_utils, "_has_active_dora_adapter", lambda proj: True)
-    _generate(model, tok, enc, True, monkeypatch)
-    stats = G.stats(causal)
-    assert stats["graphs"] == 0 and stats["disabled"] is None, stats
-    monkeypatch.setattr(kernel_utils, "_has_active_dora_adapter", plain)
     replays = G.stats(causal)["replays"]
+    _plain(model, tok, enc)
+    stats = G.stats(causal)
+    assert stats["graphs"] == 0 and stats["replays"] == replays, stats
+    assert stats["disabled"] is None, stats
+    monkeypatch.setattr(kernel_utils, "_has_active_dora_adapter", plain)
     graph = _generate(model, tok, enc, True, monkeypatch)
     assert G.stats(causal)["replays"] > replays
     assert torch.equal(graph[1], eager[1])
