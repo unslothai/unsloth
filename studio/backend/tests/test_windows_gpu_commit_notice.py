@@ -10,7 +10,6 @@ import sys
 import types as _types
 from pathlib import Path
 
-import psutil
 import pytest
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -54,22 +53,8 @@ def test_no_warning_while_there_is_room_or_nothing_to_blame(untouched_mib, headr
     assert LlamaCppBackend._gpu_commit_headroom_message(untouched_mib, headroom_mib) is None
 
 
-class _FakeProcess:
-    # Reporter's DirectIO load: ~16 GiB private commit, almost none of it resident.
-    private_mib, uss_mib, wset_mib = 16_500, 235, 235
-
-    def __init__(self, pid):
-        self.pid = pid
-
-    def memory_full_info(self):
-        return _types.SimpleNamespace(
-            private = self.private_mib * _MIB, uss = self.uss_mib * _MIB, wset = self.wset_mib * _MIB
-        )
-
-
-class _MmapProcess(_FakeProcess):
-    # mmap'd GGUF pages fill the working set but are not private commit.
-    wset_mib = 16_300
+# Reporter's DirectIO load: ~16 GiB private commit, almost none of it resident.
+_REPORT_COUNTERS = (16_500 * _MIB, 235 * _MIB)
 
 
 def _windows_child(
@@ -82,21 +67,12 @@ def _windows_child(
         LlamaCppBackend, "_installed_ggml_backends", staticmethod(lambda binary = None: backends)
     )
     monkeypatch.setattr(diffusion_memory, "_windows_commit_headroom_mib", lambda: headroom_mib)
-    monkeypatch.setattr(psutil, "Process", _FakeProcess)
+    monkeypatch.setattr(llama_cpp_module, "_windows_private_memory", lambda pid: _REPORT_COUNTERS)
 
 
 @pytest.mark.parametrize("gpu", ["hip", "vulkan", "cuda"])
 def test_gpu_child_short_of_commit_gets_the_notice(monkeypatch, gpu):
     _windows_child(monkeypatch, frozenset({"base", "cpu", gpu}))
-    message = LlamaCppBackend._windows_gpu_commit_notice(1234, "llama-server.exe")
-    assert message is not None and "15.9 GiB" in message
-
-
-def test_mmap_pages_in_the_working_set_do_not_hide_the_commit(monkeypatch):
-    _windows_child(monkeypatch, frozenset({"base", "hip"}))
-    import psutil
-
-    monkeypatch.setattr(psutil, "Process", _MmapProcess)
     message = LlamaCppBackend._windows_gpu_commit_notice(1234, "llama-server.exe")
     assert message is not None and "15.9 GiB" in message
 
@@ -113,11 +89,14 @@ def test_off_windows_or_without_a_child_nothing_is_measured(monkeypatch):
     assert LlamaCppBackend._windows_gpu_commit_notice(1234, "llama-server.exe") is None
 
 
-def test_a_failed_probe_never_fails_the_load(monkeypatch):
+@pytest.mark.parametrize("counters", [None, RuntimeError("OpenProcess denied")])
+def test_a_failed_probe_never_fails_the_load(monkeypatch, counters):
     _windows_child(monkeypatch, frozenset({"hip"}))
 
-    def _gone(pid):
-        raise psutil.NoSuchProcess(pid)
+    def _read(pid):
+        if isinstance(counters, Exception):
+            raise counters
+        return counters
 
-    monkeypatch.setattr(psutil, "Process", _gone)
+    monkeypatch.setattr(llama_cpp_module, "_windows_private_memory", _read)
     assert LlamaCppBackend._windows_gpu_commit_notice(1234, "llama-server.exe") is None
