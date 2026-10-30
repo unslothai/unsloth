@@ -112,16 +112,16 @@ def test_l2_probe_only_reports_measured_arches(monkeypatch, capability, l2, expe
 
 
 @pytest.mark.parametrize(
-    "shape, scaled, dtype, dispatch",
+    "shape, scaled, dtype, out_broken",
     [
-        (LARGE, True, torch.bfloat16, False),
-        (SMALL, False, torch.bfloat16, False),
+        (LARGE, True, torch.bfloat16, True),
+        (SMALL, False, torch.bfloat16, True),
         # Rowwise scaled_mm cannot write float32 before torch 2.14: float32 keeps dequant there.
-        (LARGE, False, torch.float32, False),
-        (LARGE, True, torch.float32, True),
+        (LARGE, False, torch.float32, True),
+        (LARGE, True, torch.float32, False),
     ],
 )
-def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled, dtype, dispatch):
+def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled, dtype, out_broken):
     calls = []
 
     def fake_scaled_mm(a, b, **kwargs):
@@ -135,7 +135,7 @@ def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled, dtype,
     monkeypatch.setattr(torch, "_scaled_mm", fake_scaled_mm)
     monkeypatch.setattr(F8, "weight_dequant", fake_dequant)
     monkeypatch.setattr(F8, "_fp8_l2_cache_bytes", lambda device: L2)
-    monkeypatch.setattr(F8, "_SCALED_MM_OUT_DISPATCH", dispatch, raising = False)
+    monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", out_broken)
     N, K = shape
     with FakeTensorMode(), torch.no_grad():
         X = torch.empty(1, 32, K, device = "cuda", dtype = dtype)
@@ -146,19 +146,34 @@ def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled, dtype,
     assert calls == ["scaled_mm" if scaled else "dequant"]
 
 
-@pytest.mark.parametrize("dispatch", [False, True])
-def test_scaled_mm_asks_for_bf16_only_where_fp16_output_is_broken(monkeypatch, dispatch):
-    """torch 2.10 - 2.13's rowwise CUTLASS kernel writes bf16 bits into an fp16 output when there is no
-    bias: there fp16 calls request bf16 and cast back. 2.14 writes fp16, and the bf16 round trip would
-    overflow fp16 near 65504, so fp16 stays fp16. bf16 / fp32 are unchanged."""
-    monkeypatch.setattr(F8, "_SCALED_MM_OUT_DISPATCH", dispatch)
-    assert F8._scaled_mm_out_dtype(torch.float16) is (torch.float16 if dispatch else torch.bfloat16)
+def test_scaled_mm_asks_for_bf16_when_activations_are_fp16(monkeypatch):
+    """torch < 2.14's rowwise CUTLASS kernel writes bf16 bits into an fp16 output when there is no
+    bias: fp16 calls request bf16 and cast back; bf16 / fp32 are unchanged."""
+    monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", True)
+    assert F8._scaled_mm_out_dtype(torch.float16) is torch.bfloat16
     assert F8._scaled_mm_out_dtype(torch.bfloat16) is torch.bfloat16
     assert F8._scaled_mm_out_dtype(torch.float32) is torch.float32
 
 
-def test_out_dtype_dispatch_follows_the_torch_release():
-    assert F8._SCALED_MM_OUT_DISPATCH == (F8.Version(torch.__version__).release[:2] >= (2, 14))
+def test_scaled_mm_keeps_fp16_output_where_torch_writes_fp16(monkeypatch):
+    """torch >= 2.14 honours out.dtype; a bf16 detour would lose precision and overflow 65408..65504."""
+    monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", False)
+    assert F8._scaled_mm_out_dtype(torch.float16) is torch.float16
+    assert F8._scaled_mm_out_dtype(torch.bfloat16) is torch.bfloat16
+    assert F8._scaled_mm_out_dtype(torch.float32) is torch.float32
+
+
+def test_scaled_mm_fp16_workaround_follows_the_installed_torch():
+    from torch.torch_version import TorchVersion
+
+    broken = torch.__version__ < "2.14.0"
+    assert F8._SCALED_MM_FP16_OUT_BROKEN is broken
+    assert F8._scaled_mm_out_dtype(torch.float16) is (torch.bfloat16 if broken else torch.float16)
+    # 2.14 pre-releases keep the workaround.
+    assert TorchVersion("2.13.9+cu130") < "2.14.0"
+    assert TorchVersion("2.14.0a0+git0") < "2.14.0"
+    assert not TorchVersion("2.14.0+cu130") < "2.14.0"
+    assert not TorchVersion("2.15.0") < "2.14.0"
 
 
 def test_every_rowwise_scaled_mm_call_uses_the_out_dtype_helper():

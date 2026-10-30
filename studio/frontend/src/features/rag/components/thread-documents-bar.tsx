@@ -16,12 +16,11 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AttachmentIcon,
-  FileSearchIcon,
-  Folder02Icon,
-  FolderAttachmentIcon,
   PlusSignIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon, FolderAttachmentIcon } from "@/lib/folder-icons";
+import { FileSearchIcon } from "@/lib/hugeicons-derived";
 import {
   AttachmentKindIcon,
   CARD_EDGE,

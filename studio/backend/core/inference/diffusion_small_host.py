@@ -67,6 +67,14 @@ def spill_disabled() -> bool:
     return _env(SPILL_ENV) in ("0", "off", "false", "no")
 
 
+# A first load fetches the weights before the host-RAM decision, which reads their headers.
+DOWNLOAD_FIRST_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_DOWNLOAD_FIRST"
+
+
+def download_first_enabled() -> bool:
+    return _env(DOWNLOAD_FIRST_ENV) not in ("0", "off", "false", "no")
+
+
 def spill_forced() -> bool:
     return _env(SPILL_ENV) in ("1", "on", "true", "yes", "force")
 

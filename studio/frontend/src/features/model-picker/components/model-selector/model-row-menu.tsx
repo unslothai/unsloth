@@ -25,11 +25,11 @@ import { cn } from "@/lib/utils";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import {
   Delete02Icon,
-  Folder01Icon,
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,

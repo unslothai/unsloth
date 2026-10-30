@@ -4,7 +4,6 @@
 import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import {
   CloudIcon,
-  CpuIcon,
   CursorInfo02Icon,
   DragDropVerticalIcon,
   HelpCircleIcon,
@@ -15,7 +14,7 @@ import {
   UserCircleIcon,
   ApiIcon,
 } from "@hugeicons/core-free-icons";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { ChipIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
 import { Switch } from "@/components/ui/switch";
@@ -34,7 +33,7 @@ const ITEM_META: Record<
   guidedTour: { icon: CursorInfo02Icon, labelKey: "shell.navigation.guidedTour" },
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: BrushCleaningIcon, labelKey: "settings.tabs.appearance" },
-  resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
+  resources: { icon: ChipIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };

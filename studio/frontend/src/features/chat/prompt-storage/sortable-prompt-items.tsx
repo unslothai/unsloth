@@ -5,7 +5,6 @@ import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
 import { autoscrollDelta, clipSpan } from "./autoscroll";
 import { flipShifts, insertionIndex, ownsDrag } from "./reorder";
-import { GripVerticalIcon } from "lucide-react";
 import {
   type ReactElement,
   useCallback,
@@ -14,7 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, DragDropVerticalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 export function AutoTextarea({
@@ -338,7 +337,7 @@ export function SortablePromptItems({
                 isDragging ? "cursor-grabbing text-muted-foreground" : "cursor-grab",
               )}
             >
-              <GripVerticalIcon className="size-4" />
+              <HugeiconsIcon icon={DragDropVerticalIcon} strokeWidth={1.75} className="size-4" />
             </button>
             <span className="mt-2.5 w-5 shrink-0 text-right text-xs font-medium tabular-nums text-muted-foreground/60">
               {i + 1}.

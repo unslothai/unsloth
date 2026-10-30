@@ -1003,21 +1003,40 @@ def _load_correct_tokenizer(
         cache_dir = None
     # else: keep a caller-supplied cache_dir so the tokenizer loads from the prefetch-warmed dir instead of risking an in-process Hub/Xet transfer.
 
+    _repair_kwargs = dict(cache_dir = cache_dir, revision = revision)
+    _load_kwargs = dict(
+        model_max_length = model_max_length,
+        padding_side = padding_side,
+        token = token,
+        trust_remote_code = trust_remote_code,
+    )
+    _name_lower = tokenizer_name.lower()
+    # These return the fast tokenizer unread by the slow one, so skip the slow load; the post-load fixes repair the fast backend.
+    if (
+        not fix_tokenizer
+        or _name_lower in IGNORED_TOKENIZER_NAMES
+        or "mistral" in _name_lower
+        or "phi-4" in _name_lower
+    ):
+        fast_tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
+        )
+        return _apply_post_load_tokenizer_fixes(
+            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
+        )
+
     # Try the slow tokenizer first and fall back to fast only, mainly to solve Deepseek models with no tokenizer.model file.
     slow_tokenizer = None
     try:
         slow_tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
-            model_max_length = model_max_length,
-            padding_side = padding_side,
-            token = token,
-            trust_remote_code = trust_remote_code,
             # use_fast = False alone is not enough; see twitter.com/danielhanchen/status/1789659394302718373
             use_fast = False,
             legacy = False,
             from_slow = True,
             cache_dir = cache_dir,
             revision = revision,
+            **_load_kwargs,
         )
     except:
         slow_tokenizer = None
@@ -1025,35 +1044,14 @@ def _load_correct_tokenizer(
         slow_tokenizer = None
 
     fast_tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_name,
-        model_max_length = model_max_length,
-        padding_side = padding_side,
-        token = token,
-        trust_remote_code = trust_remote_code,
-        cache_dir = cache_dir,
-        revision = revision,
+        tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
     )
     # Repair both before comparing them, or a v5 byte-level mismatch detours into the legacy path.
-    _repair_kwargs = dict(cache_dir = cache_dir, revision = revision)
     if slow_tokenizer is not None:
         _repair_tokenizer_backend_from_json(slow_tokenizer, **_repair_kwargs)
     _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
 
-    if not fix_tokenizer or tokenizer_name.lower() in IGNORED_TOKENIZER_NAMES:
-        return _apply_post_load_tokenizer_fixes(
-            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
-        )
-    # Ignore Mistral ones - they're a bit weird to handle!
-    elif "mistral" in tokenizer_name.lower():
-        return _apply_post_load_tokenizer_fixes(
-            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
-        )
-    # Ignore Phi-4 ones as well
-    elif "phi-4" in tokenizer_name.lower():
-        return _apply_post_load_tokenizer_fixes(
-            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
-        )
-    elif slow_tokenizer is not None:
+    if slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
         if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
@@ -1071,7 +1069,6 @@ def _load_correct_tokenizer(
                 config,
                 **_repair_kwargs,
             )
-        pass
     else:
         return _apply_post_load_tokenizer_fixes(
             fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
