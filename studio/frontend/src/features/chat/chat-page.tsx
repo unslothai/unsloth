@@ -118,10 +118,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderAttachmentIcon,
-  Folder01Icon,
-  Folder02Icon,
-  FolderExportIcon,
   LayoutAlignRightIcon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
@@ -130,8 +126,10 @@ import {
   PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon, FolderAttachmentIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { useAui } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   SaveTemporaryChatMenu,
@@ -2195,7 +2193,8 @@ function ProjectLanding({
         </div>
       ) : (
         <div
-          className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"
+          data-wallpaper-reading-surface=""
+          className="relative flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"
           style={
             {
               ["--thread-max-width" as string]: "48rem",
@@ -2431,7 +2430,7 @@ function ProjectLanding({
                                 }
                               >
                                 <HugeiconsIcon
-                                  icon={Folder01Icon}
+                                  icon={ProjectIcon}
                                   strokeWidth={1.75}
                                   className="size-icon"
                                 />
@@ -4575,7 +4574,7 @@ export function ChatPage({
     <ChatComposerFocusableContext.Provider
       value={modelConfigRequest === null && !handoffOwnsPicker}
     >
-    <div className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
+    <div data-chat-page-root="" className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces escape the hidden wrapper, so gate them on `active`. */}
       {active && <GuidedTour {...tour.tourProps} />}
       {/* One app-level mount driven by global state, or Compare's composers each render a copy. */}
@@ -4610,7 +4609,7 @@ export function ChatPage({
               "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
+          <div data-wallpaper-chrome-controls="" className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
             {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
               <Button
                 type="button"
@@ -4745,7 +4744,7 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
+          <div data-wallpaper-chrome-controls="" className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
             {showContextWindowUsage &&
             (view.mode === "single" ||
               (view.mode === "project" && activeThreadId != null)) &&
