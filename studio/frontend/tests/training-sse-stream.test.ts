@@ -274,3 +274,32 @@ test("callback exceptions propagate after the reader is cancelled and released",
   assert.equal(cancellations, 1);
   assert.equal(body.locked, false);
 });
+
+test("a reward that scored nothing keeps its key as null; other bad values drop", async () => {
+  const payload = {
+    ...progressPayload("job-1", 1),
+    rl_metrics: {
+      reward: 0,
+      "rewards/r/mean": null,
+      kl: null,
+      "rewards/r/std": "x",
+    },
+  };
+  const body = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      streamController.enqueue(
+        new TextEncoder().encode(rawEvent(JSON.stringify(payload))),
+      );
+      streamController.close();
+    },
+  });
+  const seen: (Record<string, number | null> | null | undefined)[] = [];
+  await consumeTrainingProgressStream({
+    body,
+    signal: new AbortController().signal,
+    onEvent: ({ payload: p }) => {
+      seen.push(p.rl_metrics);
+    },
+  });
+  assert.deepEqual(seen, [{ reward: 0, "rewards/r/mean": null }]);
+});

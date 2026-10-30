@@ -167,6 +167,19 @@ test("every extra setting the form changes reaches the example, and nothing host
     is_embedding: true,
     is_decision: true,
     model_subfolder: "multilingual",
+    objective: "grpo",
+    rl_beta: 0.04,
+    rl_max_prompt_length: 512,
+    rl_system_prompt: "Think, then answer.",
+    grpo_num_generations: 8,
+    grpo_max_completion_length: 256,
+    grpo_temperature: 0.7,
+    grpo_enable_thinking: true,
+    grpo_variant: "gspo",
+    grpo_mask_truncated_completions: true,
+    grpo_epsilon_high: 0.28,
+    grpo_python_reward_isolation: "auto",
+    grpo_rewards: [{ name: "exact-answer", weight: 2 }],
   };
   const full = payload({
     ...changed,
@@ -186,6 +199,34 @@ test("every extra setting the form changes reaches the example, and nothing host
     }
   }
   for (const key of ALLOWED) assert.ok(key in changed, `${key} has no test value`);
+});
+
+test("a DPO run sends its objective and beta, not the GRPO settings", () => {
+  const { extras } = trainingApiRequestFromPayload(
+    payload({
+      objective: "dpo",
+      rl_beta: 0.1,
+      rl_max_prompt_length: 512,
+      grpo_num_generations: 8,
+      grpo_temperature: 0.7,
+      grpo_rewards: [{ name: "exact-answer", weight: 1 }],
+    }),
+    null,
+  );
+  assert.equal(extras.objective, "dpo");
+  assert.equal(extras.rl_beta, 0.1);
+  assert.equal(extras.rl_max_prompt_length, 512);
+  for (const key of Object.keys(extras)) assert.ok(!key.startsWith("grpo_"), key);
+});
+
+test("an SFT run sends no RL settings", () => {
+  const { extras } = trainingApiRequestFromPayload(
+    payload({ objective: "sft", rl_beta: 0.1, grpo_num_generations: 8 }),
+    null,
+  );
+  for (const key of ["objective", "rl_beta", "grpo_num_generations"]) {
+    assert.ok(!(key in extras), key);
+  }
 });
 
 test("full finetuning names its training type and drops the LoRA settings", () => {
@@ -445,6 +486,28 @@ test("the backend contract fixture is what the examples send", () => {
           vision_image_size: 448,
           trust_remote_code: true,
           use_dora: false,
+        }),
+        null,
+      ),
+    ),
+    grpo: trainingApiJobBody(
+      trainingApiRequestFromPayload(
+        payload({
+          use_dora: false,
+          packing: false,
+          train_on_completions: false,
+          objective: "grpo",
+          rl_beta: 0,
+          rl_max_prompt_length: 512,
+          rl_system_prompt: "Think, then answer.",
+          grpo_num_generations: 4,
+          grpo_max_completion_length: 256,
+          grpo_temperature: 1,
+          grpo_enable_thinking: false,
+          grpo_variant: "dapo",
+          grpo_mask_truncated_completions: true,
+          grpo_epsilon_high: 0.28,
+          grpo_rewards: [{ name: "exact-answer", weight: 1 }],
         }),
         null,
       ),

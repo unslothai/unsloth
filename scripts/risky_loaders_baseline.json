@@ -299,6 +299,30 @@
       "reason": "Job module and target come from Studio's own spawn spec (account_process_spec callers), not a request."
     },
     {
+      "file": "studio/backend/core/training/reward_worker_main.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "9797fb74d8918a19",
+      "count": 1,
+      "reason": "Path is the installed unsloth_zoo's rl_environments.py, found by python_rewards._unsloth_helpers_path via find_spec on the host, never a request value."
+    },
+    {
+      "file": "studio/backend/core/training/rewards.py",
+      "rule": "unsafe-deserialize",
+      "sink": "yaml.load",
+      "digest": "1490e3dccc6a3250",
+      "count": 1,
+      "reason": "Loader is _NoAliasLoader, a yaml.SafeLoader subclass (safe constructors only) that also refuses aliases and merge keys; reads a user REWARD.md."
+    },
+    {
+      "file": "studio/backend/core/training/rewards.py",
+      "rule": "unsafe-deserialize",
+      "sink": "yaml.load",
+      "digest": "aa58eb0c4650da5f",
+      "count": 1,
+      "reason": "Loader is _NoAliasLoader, a yaml.SafeLoader subclass (safe constructors only) that also refuses aliases and merge keys; reads a user REWARD.md."
+    },
+    {
       "file": "studio/backend/core/training/worker.py",
       "rule": "dynamic-import",
       "sink": "__import__",

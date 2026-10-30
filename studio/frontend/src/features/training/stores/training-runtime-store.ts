@@ -7,6 +7,7 @@ import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT } from "../../auth/session-events.ts";
 import { isTrainingProgressForJob } from "../lib/training-stream-scope.ts";
 import type {
+  RlMetricPoint,
   TrainingMetricsResponse,
   TrainingPhase,
   TrainingProgressPayload,
@@ -87,6 +88,7 @@ const initialState: TrainingRuntimeState = {
   lrHistory: [],
   gradNormHistory: [],
   evalLossHistory: [],
+  rlMetricHistory: [],
   resetGeneration: 0,
   stopRequested: false,
   configureRequest: 0,
@@ -202,6 +204,52 @@ function mergeSeries(
   return added ? merged : current;
 }
 
+function rlMetricHistoryFromStatus(
+  payload: TrainingStatusResponse,
+): RlMetricPoint[] | null {
+  const rows = payload.metric_history?.rl;
+  if (!rows?.length) return null;
+  const points: RlMetricPoint[] = [];
+  for (const row of rows) {
+    const { step, ...values } = row;
+    if (Number.isFinite(step) && step > 0) points.push({ step, values });
+  }
+  return points;
+}
+
+/** Status polls can trail SSE: add the steps a poll has, keep the ones already shown. */
+function mergeRlHistory(
+  current: RlMetricPoint[],
+  incoming: RlMetricPoint[] | null,
+): RlMetricPoint[] {
+  if (!incoming?.length) return current;
+  const byStep = new Map(current.map((p) => [p.step, p]));
+  let added = false;
+  for (const point of incoming) {
+    if (!byStep.has(point.step)) {
+      byStep.set(point.step, point);
+      added = true;
+    }
+  }
+  return added ? [...byStep.values()].sort((a, b) => a.step - b.step) : current;
+}
+
+function upsertRlPoint(
+  history: RlMetricPoint[],
+  step: number,
+  values: Record<string, number | null>,
+): RlMetricPoint[] {
+  const last = history[history.length - 1];
+  if (last && last.step === step) {
+    return [
+      ...history.slice(0, -1),
+      { step, values: { ...last.values, ...values } },
+    ];
+  }
+  if (last && last.step > step) return history;
+  return [...history, { step, values }];
+}
+
 function applyMetricHistoryFromStatus(payload: TrainingStatusResponse): {
   lossHistory: TrainingSeriesPoint[] | null;
   lrHistory: TrainingSeriesPoint[] | null;
@@ -291,6 +339,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
         lrHistory: [],
         gradNormHistory: [],
         evalLossHistory: [],
+        rlMetricHistory: [],
         resetGeneration: state.resetGeneration + 1,
       })),
 
@@ -333,6 +382,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           lrHistory: [],
           gradNormHistory: [],
           evalLossHistory: [],
+          rlMetricHistory: [],
           resetGeneration: state.resetGeneration + 1,
         };
       }),
@@ -413,6 +463,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
               lrHistory: [],
               gradNormHistory: [],
               evalLossHistory: [],
+              rlMetricHistory: [],
               resetGeneration: state.resetGeneration + 1,
               stopRequested: false,
             }
@@ -487,6 +538,10 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
                 metricHistory.evalLossHistory,
               )
             : runtimeState.evalLossHistory,
+          rlMetricHistory: mergeRlHistory(
+            runtimeState.rlMetricHistory,
+            rlMetricHistoryFromStatus(payload),
+          ),
         };
       }),
 
@@ -586,7 +641,8 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
               : state.currentEpoch,
           elapsedSeconds: payload.elapsed_seconds,
           etaSeconds: payload.eta_seconds,
-          sessionStartStep: payload.session_start_step ?? state.sessionStartStep,
+          sessionStartStep:
+            payload.session_start_step ?? state.sessionStartStep,
           currentGradNorm,
           currentNumTokens: payload.num_tokens,
           firstStepReceived: state.firstStepReceived || step > 0,
@@ -613,6 +669,10 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
             step > 0 && evalLoss !== null
               ? upsertPoint(state.evalLossHistory, step, evalLoss)
               : state.evalLossHistory,
+          rlMetricHistory:
+            step > 0 && payload.rl_metrics
+              ? upsertRlPoint(state.rlMetricHistory, step, payload.rl_metrics)
+              : state.rlMetricHistory,
         };
       }),
   }),
