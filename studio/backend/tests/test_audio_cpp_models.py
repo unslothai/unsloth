@@ -885,7 +885,6 @@ def test_the_folder_name_never_names_a_variant(hub):
 
 
 VIBEVOICE = f"{AUDIO_CPP_REPO}/VibeVoice-1.5B-GGUF"
-# VibeVoice's q4-ios fails at load with "quantized tensor byte size mismatch".
 VIBEVOICE_Q4 = "VibeVoice-1.5B-GGUF/vibevoice-1.5b-q4-ios"
 
 
@@ -908,7 +907,6 @@ def test_a_published_file_the_runtime_cannot_load_is_never_offered(hub):
     model = acm.resolve(VIBEVOICE, network = False)
     assert [v.key for v in model.variants] == ["Q8_0", "BF16"]
     assert model.unsupported is None
-    # An out-of-memory failure on Q8_0 must not recommend it as the smaller variant.
     assert audio_cpp_failures.smaller_variants(model) == []
     # A saved or requested Q4 is refused, not swapped for another variant.
     assert "not found" in acm.resolve(VIBEVOICE, "Q4", network = False).unsupported
@@ -925,7 +923,6 @@ def test_an_unloadable_file_alone_offers_nothing_but_stays_deletable(hub, monkey
     acm.forget()
     listing = asyncio.run(gv._audio_cpp_variants_answer(VIBEVOICE, None, True)).response
     assert listing.variants == [] and listing.loadable_variants == [] and not listing.loadable
-    # Model Hub still lists the folder so its file can be deleted; nothing loads it.
     [cached] = [m for m in acm.downloaded_models() if m.id == VIBEVOICE]
     assert "cannot be loaded" in cached.unsupported
     assert acm.cached_folder_target(VIBEVOICE, "Q4") == (AUDIO_CPP_REPO, [VIBEVOICE_Q4])

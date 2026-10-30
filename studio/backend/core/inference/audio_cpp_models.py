@@ -1584,9 +1584,8 @@ _PREFERRED_SCOPES = ("turbo", "english", "tiny")
 _SKIP_FILE_RE = re.compile(
     r"(^|/)(readme[^/]*|license[^/]*|\.gitattributes|[^/]*\.(md|mp4|mp3|wav|png|jpe?g|gif))$", re.I
 )
-# Published GGUFs audio.cpp cannot load, by file name. VibeVoice's q4-ios stores its rank-3
-# ConvTranspose weights as Q4_K, whose 256-value blocks cannot hold the 10-value rows the
-# runtime dequantizes ("quantized tensor byte size mismatch"); no runtime spec lists it.
+# Published GGUFs audio.cpp cannot load: q4-ios's Q4_K ConvTranspose rows (10 values) cannot
+# hold a 256-value block ("quantized tensor byte size mismatch"); no runtime spec lists it.
 _UNLOADABLE_FILES = {
     "vibevoice-1.5b-q4-ios.gguf": "This VibeVoice Q4 build cannot be loaded by audio.cpp. "
     "Use the Q8_0 or BF16 variant.",
@@ -1643,7 +1642,6 @@ def _single_file_variants(
     *,
     unloadable: bool = False,
 ) -> list[AudioCppVariant]:
-    """One variant per GGUF; files audio.cpp cannot load only when ``unloadable``."""
     prefix = f"{folder}/" if folder else ""
     ggufs = [
         f
@@ -2135,7 +2133,7 @@ class AudioCppModel:
 
     @property
     def cache_variants(self) -> tuple[AudioCppVariant, ...]:
-        """Every variant whose files cache actions (delete, reveal) work on, loadable or not."""
+        """Variants cache actions (delete, reveal) cover, loadable or not."""
         return self.variants + self.unloadable
 
     @property
