@@ -2279,13 +2279,12 @@ class FlowEngine:
                     produced = child.values.get(b)
                     if isinstance(produced, dict) and isinstance(produced.get("checkpoint"), dict):
                         last[b] = produced["checkpoint"]
-                checkpoint = next(
-                    (
-                        v["checkpoint"]
-                        for v in (child.values.get(b) for b in before)
-                        if isinstance(v, dict) and isinstance(v.get("checkpoint"), dict)
-                    ),
-                    None,
+                # The Fine-tune whose held-out rows were scored, not whichever trainer comes first.
+                trained = child.values.get(held_src[0])
+                checkpoint = (
+                    trained["checkpoint"]
+                    if isinstance(trained, dict) and isinstance(trained.get("checkpoint"), dict)
+                    else None
                 )
                 history.append(entry)
                 if entry["test_score"] is not None and (

@@ -485,3 +485,23 @@ async def test_identical_seed_rows_reuse_one_upload_across_runs(monkeypatch):
     assert seen[0] == seen[2]
     split = lambda rs: rs.nodes["loop"].outputs["history"]["split"]
     assert split(on) and split(on) == split(off)
+
+
+@run_async
+async def test_the_best_checkpoint_is_the_scored_fine_tunes_not_another_in_the_loop():
+    eng, _, _ = _engine(test_pass = [0.25, 0.75])
+    train = eng.handlers["train.finetune"]
+
+    async def either(ctx):
+        found = await train(ctx)
+        if ctx.node_id == "other":
+            found["checkpoint"] = {**found["checkpoint"], "name": "unscored"}
+        return found
+
+    eng.handlers["train.finetune"] = either
+    d = loop_doc(rounds = 2, target = 100)
+    d["nodes"].insert(1, node("other", "train.finetune", group = "L"))
+    d["edges"].append(edge("gen", "dataset", "other", "dataset"))
+    rs = await _run(eng, d)
+    assert rs.status == "completed", rs.error
+    assert rs.nodes["loop"].outputs["checkpoint"]["name"] == "run2"
