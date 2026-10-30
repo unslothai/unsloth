@@ -1981,16 +1981,13 @@ if hasattr(torch._dynamo, "assume_constant_result"):
     _fp8_rowwise_backend = torch._dynamo.assume_constant_result(_fp8_rowwise_backend)
 
 
-# torch < 2.14's rowwise CUTLASS kernel picks its output element type from the bias dtype, so without a bias an
-# fp16 output buffer receives bf16 bits (every value garbage). torch 2.14 dispatches on out.dtype: native fp16 there
-# keeps fp16 rounding (a bf16 detour loses 3 mantissa bits and sends 65408..65504 to inf).
-# TorchVersion ordering: a 2.14 pre-release (2.14.0a0+git...) keeps the bf16 detour (wrong precision, never garbage).
+# torch < 2.14 rowwise CUTLASS takes its output type from the bias dtype: no bias + fp16 out = bf16 bits (garbage).
+# 2.14 dispatches on out.dtype, where a bf16 detour would lose precision and overflow 65408..65504. Pre-releases keep it.
 _SCALED_MM_FP16_OUT_BROKEN = torch.__version__ < "2.14.0"
 
 
 def _scaled_mm_out_dtype(dtype):
-    """Rowwise torch._scaled_mm output dtype for activations of `dtype`: bf16 for fp16 on torch < 2.14 (the caller
-    casts back), else `dtype`."""
+    """Rowwise torch._scaled_mm out dtype: bf16 for fp16 on torch < 2.14 (caller casts back), else `dtype`."""
     return torch.bfloat16 if dtype == torch.float16 and _SCALED_MM_FP16_OUT_BROKEN else dtype
 
 
