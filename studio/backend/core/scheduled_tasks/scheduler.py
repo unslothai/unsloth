@@ -565,7 +565,14 @@ async def generate_answer(
             # Built once admitted: a model kept alongside is chosen as it stands now, not before a load or unload.
             if not task.get("model") and (kept := _sole_kept_model()):
                 model_fields = {"model": kept}
-            instructions = await asyncio.to_thread(_run_instructions, task, db.now_ms())
+            # A project folder on a stalled mount must not keep the scheduler from every other task.
+            try:
+                instructions = await asyncio.wait_for(
+                    asyncio.to_thread(_run_instructions, task, db.now_ms()),
+                    timeout = max(0.0, deadline - loop.time()),
+                )
+            except TimeoutError:
+                raise RunFailed("timeout") from None
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
