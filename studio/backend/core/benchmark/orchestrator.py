@@ -235,6 +235,14 @@ class BenchmarkOrchestrator:
     def is_active(self) -> bool:
         return self._active
 
+    def after_worker(self, callback) -> None:
+        """Call ``callback`` once the current worker, if any, has returned."""
+        worker = self._worker
+        if worker is None:
+            callback()
+        else:
+            worker.add_done_callback(lambda _f: callback())
+
     def is_draining(self) -> bool:
         """A stopped run's worker is still finishing; a new run would queue behind it."""
         worker = self._worker

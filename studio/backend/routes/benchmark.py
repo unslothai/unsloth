@@ -573,7 +573,11 @@ async def run_benchmark(
     finally:
         if lease_holder is not None:
             from routes.benchmarks import release_run_lease
-            release_run_lease(lease_holder)
+
+            # A stopped run's requests reach the server until its worker returns: hold the lease
+            # until then, so no sweep or llama-bench can start under them.
+            holder = lease_holder
+            backend.after_worker(lambda: release_run_lease(holder))
         if run_seq is not None and not started:
             # Refused before lm_eval started (bad request, key minting): free the slot.
             backend.release(run_seq)

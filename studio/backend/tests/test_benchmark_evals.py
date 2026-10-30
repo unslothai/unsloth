@@ -652,10 +652,15 @@ def test_partial_credit_runs_are_not_reported_as_accuracy(
     monkeypatch.setattr(studio_db, "studio_db_path", lambda: tmp_path / "studio.db")
     monkeypatch.setattr(studio_db, "_schema_ready", set())
     samples = extract_samples(results, task)
-    studio_db.insert_benchmark_run("r", task, "m.gguf", [], len(samples), str(tmp_path))
+    metric = [{"name": "acc", "score": 0.48, "stderr": None}]
+    studio_db.insert_benchmark_run("r", task, "m.gguf", metric, len(samples), str(tmp_path))
     studio_db.insert_benchmark_samples("r", samples)
     detail = studio_db.get_benchmark_run_detail("r")
     assert detail["partial_credit"] is partial
+    # The history names the headline metric for partial-credit runs: the response keeps it.
+    from models.benchmark import BenchmarkRunDetail
+
+    assert BenchmarkRunDetail(**detail).default_metric == "acc"
     assert [s["score"] for s in detail["samples"]] == [
         s["acc_norm" if task == "arc_easy" else "acc"] for s in results["samples"][task]
     ]
@@ -764,3 +769,56 @@ def test_a_stopped_eval_stops_its_requests_and_keeps_loads_fenced_until_it_retur
     while backend.is_draining() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert not lease_routes._eval_running()
+
+
+def test_a_stopped_eval_keeps_the_lease_until_its_worker_returns(monkeypatch):
+    import asyncio
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import routes.inference as inference_routes
+    from auth.authentication import get_current_subject
+    from routes import benchmarks as lease_routes
+
+    monkeypatch.setattr(lease_routes, "_lease", None)
+    left = threading.Event()
+    backend = _orchestrator(monkeypatch, lambda params: left.wait(5) and {"results": {}})
+    monkeypatch.setattr(benchmark_routes, "get_benchmark_backend", lambda: backend)
+    monkeypatch.setattr(orch, "_orchestrator", backend)
+    monkeypatch.setattr(benchmark_routes, "_lm_eval_available", True)
+    monkeypatch.setattr(benchmark_routes, "_gguf_backend_supported", lambda: True)
+    monkeypatch.setattr(
+        inference_routes, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = True)
+    )
+    monkeypatch.setattr(
+        benchmark_routes,
+        "resolve_model_details",
+        lambda *a, **k: ([], {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]}),
+    )
+    req = benchmark_routes.BenchmarkRunRequest(
+        checkpoint_path = "m.gguf", model_source = "local", task = "arc_easy"
+    )
+    http = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    route = threading.Thread(
+        target = lambda: asyncio.run(benchmark_routes.run_benchmark(req, http, current_subject = "u"))
+    )
+    route.start()
+    deadline = time.monotonic() + 5
+    while not backend.is_draining() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert backend.cancel()
+    route.join(5)
+    assert not route.is_alive() and backend.is_draining()
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(lease_routes.router, prefix = "/api/benchmarks")
+    client = TestClient(app)
+    sweep = {"holder": "sweep-aaaaaaaa", "kind": "sweep"}
+    assert client.post("/api/benchmarks/lease", json = sweep).status_code == 409
+    left.set()
+    deadline = time.monotonic() + 5
+    while lease_routes._lease is not None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200

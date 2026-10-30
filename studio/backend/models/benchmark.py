@@ -164,6 +164,7 @@ class BenchmarkRunDetail(BaseModel):
     num_fewshot: Optional[int] = Field(None, description = "Few-shot count")
     created_at: str = Field(..., description = "ISO timestamp of the run")
     output_path: str = Field(..., description = "Absolute path to results directory")
+    default_metric: str = Field("", description = "Headline metric name, empty if none is known")
     samples: list[BenchmarkSampleResult] = Field(
         default_factory = list, description = "Per-sample results"
     )
