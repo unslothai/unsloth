@@ -1127,7 +1127,6 @@ class TestNativeAudioPlacementContracts(unittest.TestCase):
         self.assertEqual(placement.native_post_handoff_free_gb, {0: 24.0})
 
     def test_automatic_selection_weighs_a_card_outside_the_pooled_prefix(self):
-        # Pooling would stop at GPUs 1 and 2; the card that fits after the handoff is GPU 0.
         availability = self.route._NativeAudioAvailability({0: 22.0, 1: 6.0, 2: 5.0}, {0: 20.0})
         placement = self._automatic_preflight(
             ((0, 24, 22), (1, 8, 2), (2, 8, 3)), required_gb = 9.0, availability = availability
