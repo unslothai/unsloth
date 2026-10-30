@@ -39,9 +39,11 @@ async (page) => {
   check(await page.locator('[data-slot=sidebar]').evaluate(e=>getComputedStyle(e).backgroundColor!=='rgba(0, 0, 0, 0)'),'sidebar stays solid');
   await page.getByRole('button',{name:'Toggle page',exact:true}).click();
   await page.waitForSelector('[data-wallpaper-route="page"]');
-  check(await canvas.evaluate(e=>getComputedStyle(e).opacity)==='1','page wallpaper stays visible');
+  await canvas.waitFor({state:'detached'});
+  check(await canvas.count()===0,'non-chat page has no wallpaper');
   await page.getByRole('button',{name:'Toggle page',exact:true}).click();
   await page.waitForSelector('[data-wallpaper-route="chat"]');
+  await settled('None');
   await page.getByRole('button',{name:'Toggle sidebar',exact:true}).click();
   for(const effect of ['Dither','ASCII','Halftone','Scanlines','None']){
     await page.getByRole('combobox',{name:'Effect',exact:true}).click();
