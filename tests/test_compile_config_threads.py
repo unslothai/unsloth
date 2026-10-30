@@ -166,8 +166,7 @@ def test_readback_barrier_cache_key_reaches_other_threads():
 
 
 def test_later_assignment_reaches_other_threads(monkeypatch):
-    # After Unsloth publishes the barrier pass, a pass the user assigns later must still reach
-    # compile threads (Unsloth's config mirror replaces the published value too).
+    # A pass assigned after Unsloth publishes its own must still reach compile threads.
     from torch.utils._config_module import ConfigModule
 
     for attr in ("__setattr__", "patch", "load_config"):

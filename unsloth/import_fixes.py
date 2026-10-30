@@ -7375,8 +7375,7 @@ def fix_dynamo_config_thread_visibility():
                 entry = self.__dict__["_config"].get(name, None)
                 if entry is not None and entry.alias is None:
                     entry.default = value
-                    # A process-wide value (unsloth_zoo set_torch_config, TORCHINDUCTOR_* env) shadows the
-                    # default for threads without their own assignment: a later assignment replaces it too.
+                    # A process-wide value (set_torch_config, TORCHINDUCTOR_* env) shadows default: replace it too.
                     if _unset is not None and entry.env_value_default is not _unset:
                         entry.env_value_default = value
             except Exception:
