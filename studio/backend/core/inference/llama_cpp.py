@@ -2237,8 +2237,8 @@ def _archive_and_recall(
                 break
             attempt_k = max(1, attempt_k // 2)
 
-        # One encode per query across the retries and the widenings inside each recall.
-        with query_vector_memo():
+        # Retries re-ask the same queries: encode each once and reuse lexical passes and branch checks.
+        with query_vector_memo(), conversation_archive.recall_session():
             for index, k in enumerate(attempts):
                 recall = build_conversation_recall(
                     conversation,
@@ -7922,6 +7922,19 @@ class CountAborted(Exception):
     """A token count stood down mid-flight because its answer stopped mattering."""
 
     __slots__ = ()
+
+
+# Single-threaded render + tokenize ran ~600K chars/s on the #15800 reporter's CPU; a sixth of that still catches a hang.
+_COUNT_TIMEOUT_FLOOR_S = 10.0
+_COUNT_TIMEOUT_CHARS_PER_S = 100_000
+
+
+def _count_timeout(messages, system_text, tools) -> float:
+    try:
+        chars = len(json.dumps([system_text, messages, tools], ensure_ascii = False, default = str))
+    except Exception:  # noqa: BLE001 -- an unmeasurable prompt keeps the floor
+        chars = 0
+    return _COUNT_TIMEOUT_FLOOR_S + chars / _COUNT_TIMEOUT_CHARS_PER_S
 
 
 # Module level so tests can point the orphan sweep at a fixture tree.
@@ -23178,9 +23191,8 @@ class LlamaCppBackend:
             _pv_diffusion_unpinnable = bool(
                 _paravirtual_cpu_forced and not self.diffusion_split_supported()
             )
-            _preflight_model_path = None
-            self._pending_variant_fallback = None
-            if hf_repo and (_vulkan_ordinal_pin or _cpu_only_pin or _pv_diffusion_unpinnable):
+            if hf_repo:
+                # Resolve repo casing once so the GGUF and companions share one cache entry.
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
                 if _resolved_repo != hf_repo:
                     logger.info(
@@ -23189,6 +23201,9 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     hf_repo = _resolved_repo
+            _preflight_model_path = None
+            self._pending_variant_fallback = None
+            if hf_repo and (_vulkan_ordinal_pin or _cpu_only_pin or _pv_diffusion_unpinnable):
                 with _hf_offline_if_unreachable():
                     _preflight_model_path = self._download_gguf(
                         hf_repo = hf_repo,
@@ -23267,6 +23282,150 @@ class LlamaCppBackend:
                     )
                     raise ValueError(_early_non_chat)
 
+            # Resolve the canonical MTP mode once; it decides which drafter is downloaded and launched.
+            _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
+            # #11308: DFlash2 + --split-mode tensor aborts at startup (ggml-org/llama.cpp#27819) and the
+            # route falls back to layer split, so Auto prefers a loadable MTP sidecar on tensor instead.
+            # _estimate_gguf_required_gb mirrors this.
+            _auto_tensor_split = _spec_canon == "auto" and _effective_tensor_parallel(
+                extra_args, tensor_parallel
+            )
+
+            def _auto_dflash_blocked_by_tensor() -> bool:
+                if (
+                    _auto_tensor_split
+                    and mtp_draft_path
+                    and not _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
+                ):
+                    try:
+                        from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+                        return bool(
+                            _launch_caps(binary).get("mtp_token")
+                            and not (read_gguf_nextn_predict_layers(model_path) or 0) > 0
+                            and _mtp_drafter_loads_standalone(mtp_draft_path)
+                        )
+                    except Exception:
+                        return False
+                return False
+
+            def _dflash_breaks_on_images() -> bool:
+                if not dflash_draft_path or disable_vision or extra_args_disable_mmproj(extra_args):
+                    return False
+                try:
+                    projector = self._resolve_launch_mmproj_path(
+                        model_path = model_path, mmproj_path = mmproj_path, extra_args = extra_args
+                    )
+                except Exception:
+                    return False
+                return _dflash_drafter_breaks_on_images(model_path, dflash_draft_path, projector)
+
+            _unloadable_mtp_draft_path: Optional[str] = None
+            # Downloads run before the teardown so a failed or cancelled fetch keeps the resident model;
+            # sidecar fetches write flags on self, so the resident's come back until the teardown commits.
+            _resident_sidecar_flags = (
+                self._dspark_sidecar_absent,
+                self._dflash_sidecar_absent,
+                self._dflash_retry_needed,
+            )
+            self._dflash_retry_needed = False
+            model_path = _preflight_model_path
+            try:
+                if hf_repo:
+                    # Scope HF_HUB_OFFLINE to the download block only when DNS is dead.
+                    with _hf_offline_if_unreachable():
+                        if model_path is None:
+                            # Revalidate the carried file before skipping download resolution.
+                            model_path = self._verified_cached_gguf(intent, hf_repo, hf_variant)
+                            if model_path:
+                                logger.info("Reusing verified cached GGUF: %s", model_path)
+                        if model_path is None:
+                            model_path = self._download_gguf(
+                                hf_repo = hf_repo,
+                                hf_variant = hf_variant,
+                                hf_token = hf_token,
+                                cancel_event = download_cancel_event,
+                            )
+                        # Vision off does not skip the fetch: an mmproj may be an audio encoder instead.
+                        if (
+                            is_vision
+                            and not mmproj_path
+                            and not extra_args_disable_mmproj(extra_args)
+                        ):
+                            mmproj_path = self._download_mmproj(
+                                hf_repo = hf_repo,
+                                hf_token = hf_token,
+                                cancel_event = download_cancel_event,
+                                near_path = model_path,
+                            )
+                        # Fetch the separate MTP drafter; no size gate (helps even sub-3B).
+                        # The MTP/ fallback is qwen4exp only, whose GGUFs carry no head.
+                        if (
+                            not mtp_draft_path
+                            and _spec_canon in ("auto", "mtp", "mtp+ngram")
+                            and not _extra_args_set_spec_type(extra_args)
+                        ):
+                            mtp_draft_path = self._download_mtp(
+                                hf_repo = hf_repo,
+                                hf_token = hf_token,
+                                cancel_event = download_cancel_event,
+                                near_path = model_path,
+                                allow_nested = self._gguf_path_wants_nested_mtp(model_path),
+                            )
+                        # "auto" is included: DSpark is the default whenever the repo
+                        # ships a sidecar. Repos without one no-op, exactly like the
+                        # MTP fetch above, so this costs one listing and no download.
+                        if (
+                            not dspark_draft_path
+                            and _spec_canon in ("auto", "dspark")
+                            and not _extra_args_set_spec_type(extra_args)
+                        ):
+                            dspark_draft_path = self._download_dspark(
+                                hf_repo = hf_repo,
+                                hf_token = hf_token,
+                                cancel_event = download_cancel_event,
+                                near_path = model_path,
+                                binary = binary,
+                                caps_probe = _launch_caps,
+                            )
+                        # Auto fetch stands down once DSpark resolves (it wins the promotion), using the same
+                        # capability-aware 'resolved'. An explicit 'dflash' still fetches.
+                        if (
+                            not dflash_draft_path
+                            and _spec_canon in ("auto", "dflash")
+                            and not _auto_dflash_blocked_by_tensor()
+                            and not self._dspark_wins_auto(
+                                binary = binary,
+                                dspark_draft_path = dspark_draft_path,
+                                spec_canon = _spec_canon,
+                                extra_args = extra_args,
+                            )
+                            and not _extra_args_set_spec_type(extra_args)
+                        ):
+                            dflash_draft_path = self._download_dflash(
+                                hf_repo = hf_repo,
+                                hf_token = hf_token,
+                                cancel_event = download_cancel_event,
+                                near_path = model_path,
+                                binary = binary,
+                            )
+                elif gguf_path:
+                    if not Path(gguf_path).is_file():
+                        raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
+                    model_path = gguf_path
+                else:
+                    raise ValueError("Either gguf_path or hf_repo must be provided")
+            finally:
+                _load_sidecar_flags = (
+                    self._dspark_sidecar_absent,
+                    self._dflash_sidecar_absent,
+                    self._dflash_retry_needed,
+                )
+                (
+                    self._dspark_sidecar_absent,
+                    self._dflash_sidecar_absent,
+                    self._dflash_retry_needed,
+                ) = _resident_sidecar_flags
+
             # The probe can take a moment on a slow Hub, so re-read the cancel flag rather
             # than tearing down a healthy server for a load that was called off.
             if _load_cancelled():
@@ -23306,142 +23465,15 @@ class LlamaCppBackend:
                 self._variant_fallback_warning = None
             # Reset at the teardown, not where the binary resolves: early bails keep the old server.
             self._launch_binary_revision = self._binary_revision(binary)
-            # Cleared per load: a local-file load never reaches the DFlash fetch.
-            self._dflash_retry_needed = False
-
-            # ── Phase 2: download (NO lock held, so cancel can proceed) ──
-            # Resolve the canonical MTP mode once; it decides which drafter is downloaded and launched.
-            _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
-            # #11308: DFlash2 + --split-mode tensor aborts at startup (ggml-org/llama.cpp#27819) and the
-            # route falls back to layer split, so Auto prefers a loadable MTP sidecar on tensor instead.
-            # _estimate_gguf_required_gb mirrors this.
-            _auto_tensor_split = _spec_canon == "auto" and _effective_tensor_parallel(
-                extra_args, tensor_parallel
-            )
-
-            def _auto_dflash_blocked_by_tensor() -> bool:
-                if (
-                    _auto_tensor_split
-                    and mtp_draft_path
-                    and not _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
-                ):
-                    try:
-                        from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
-                        return bool(
-                            _launch_caps(binary).get("mtp_token")
-                            and not (read_gguf_nextn_predict_layers(model_path) or 0) > 0
-                            and _mtp_drafter_loads_standalone(mtp_draft_path)
-                        )
-                    except Exception:
-                        return False
-                return False
-
-            def _dflash_breaks_on_images() -> bool:
-                if not dflash_draft_path or disable_vision or extra_args_disable_mmproj(extra_args):
-                    return False
-                try:
-                    projector = self._resolve_launch_mmproj_path(
-                        model_path = model_path, mmproj_path = mmproj_path, extra_args = extra_args
-                    )
-                except Exception:
-                    return False
-                return _dflash_drafter_breaks_on_images(model_path, dflash_draft_path, projector)
-
-            _unloadable_mtp_draft_path: Optional[str] = None
-            # Scope HF_HUB_OFFLINE to the download block only when DNS is dead.
-            if hf_repo:
-                # Resolve repo casing once so the GGUF and companions share one cache entry.
-                _resolved_repo = _resolve_repo_id_casing(hf_repo)
-                if _resolved_repo != hf_repo:
-                    logger.info(
-                        "Using cached repo_id casing '%s' for requested '%s'",
-                        _resolved_repo,
-                        hf_repo,
-                    )
-                    hf_repo = _resolved_repo
-                with _hf_offline_if_unreachable():
-                    model_path = _preflight_model_path
-                    if model_path is None:
-                        # Revalidate the carried file before skipping download resolution.
-                        model_path = self._verified_cached_gguf(intent, hf_repo, hf_variant)
-                        if model_path:
-                            logger.info("Reusing verified cached GGUF: %s", model_path)
-                    if model_path is None:
-                        model_path = self._download_gguf(
-                            hf_repo = hf_repo,
-                            hf_variant = hf_variant,
-                            hf_token = hf_token,
-                            cancel_event = download_cancel_event,
-                        )
-                    if self._pending_variant_fallback:
-                        hf_variant, self._variant_fallback_warning = self._pending_variant_fallback
-                        # Replayed by the respawn and a variant-less Apply, which would re-download.
-                        intent = replace(intent, hf_variant = hf_variant)
-                    # Vision off does not skip the fetch: an mmproj may be an audio encoder instead.
-                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
-                        mmproj_path = self._download_mmproj(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                            cancel_event = download_cancel_event,
-                            near_path = model_path,
-                        )
-                    # Fetch the separate MTP drafter; no size gate (helps even sub-3B).
-                    # The MTP/ fallback is qwen4exp only, whose GGUFs carry no head.
-                    if (
-                        not mtp_draft_path
-                        and _spec_canon in ("auto", "mtp", "mtp+ngram")
-                        and not _extra_args_set_spec_type(extra_args)
-                    ):
-                        mtp_draft_path = self._download_mtp(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                            cancel_event = download_cancel_event,
-                            near_path = model_path,
-                            allow_nested = self._gguf_path_wants_nested_mtp(model_path),
-                        )
-                    # "auto" is included: DSpark is the default whenever the repo
-                    # ships a sidecar. Repos without one no-op, exactly like the
-                    # MTP fetch above, so this costs one listing and no download.
-                    if (
-                        not dspark_draft_path
-                        and _spec_canon in ("auto", "dspark")
-                        and not _extra_args_set_spec_type(extra_args)
-                    ):
-                        dspark_draft_path = self._download_dspark(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                            cancel_event = download_cancel_event,
-                            near_path = model_path,
-                            binary = binary,
-                            caps_probe = _launch_caps,
-                        )
-                    # Auto fetch stands down once DSpark resolves (it wins the promotion), using the same
-                    # capability-aware 'resolved'. An explicit 'dflash' still fetches.
-                    if (
-                        not dflash_draft_path
-                        and _spec_canon in ("auto", "dflash")
-                        and not _auto_dflash_blocked_by_tensor()
-                        and not self._dspark_wins_auto(
-                            binary = binary,
-                            dspark_draft_path = dspark_draft_path,
-                            spec_canon = _spec_canon,
-                            extra_args = extra_args,
-                        )
-                        and not _extra_args_set_spec_type(extra_args)
-                    ):
-                        dflash_draft_path = self._download_dflash(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                            cancel_event = download_cancel_event,
-                            near_path = model_path,
-                            binary = binary,
-                        )
-            elif gguf_path:
-                if not Path(gguf_path).is_file():
-                    raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
-                model_path = gguf_path
-            else:
-                raise ValueError("Either gguf_path or hf_repo must be provided")
+            (
+                self._dspark_sidecar_absent,
+                self._dflash_sidecar_absent,
+                self._dflash_retry_needed,
+            ) = _load_sidecar_flags
+            if hf_repo and self._pending_variant_fallback:
+                hf_variant, self._variant_fallback_warning = self._pending_variant_fallback
+                # Replayed by the respawn and a variant-less Apply, which would re-download.
+                intent = replace(intent, hf_variant = hf_variant)
 
             # Set identifier early so _read_gguf_metadata can use it (DeepSeek).
             self._model_identifier = model_identifier
@@ -35006,13 +35038,9 @@ class LlamaCppBackend:
         return True
 
     def _start_mtp_crash_watchdog(self) -> None:
-        """Background poll that recovers on an MTP crash even when no request
-        observes it (direct proxy endpoints, or nothing in flight).
-
-        Armed only for a live MTP launch; the no-MTP reload disarms it, so it
-        can't loop.
-        """
-        if not self._mtp_runtime_fallback_active:
+        """Recover a llama-server that dies with no request watching. Never armed by a non-MTP
+        recovery reload, so a server that keeps dying can't loop."""
+        if not self._mtp_runtime_fallback_active and getattr(_AUTO_RECOVERY_LOAD, "active", False):
             return
         proc = self._process
         if proc is None:
@@ -35028,7 +35056,7 @@ class LlamaCppBackend:
             while not stop.wait(1.0):
                 if proc.poll() is not None:
                     if not stop.is_set():
-                        self._maybe_recover_from_mtp_crash()
+                        self._maybe_recover_from_mtp_crash() or self._respawn_if_dead()
                     return
 
         t = threading.Thread(target = _watch, daemon = True, name = "mtp-crash-watchdog")
@@ -40727,7 +40755,9 @@ class LlamaCppBackend:
 
         try:
             with httpx.Client(
-                timeout = 10,
+                timeout = httpx.Timeout(
+                    _COUNT_TIMEOUT_FLOOR_S, read = _count_timeout(messages, system_text, tools)
+                ),
                 headers = self._auth_headers,
                 trust_env = False,
                 verify = _local_ssl_context(),
@@ -40809,6 +40839,11 @@ class LlamaCppBackend:
                     except CountAborted:
                         # Not a template failure. Must precede the generic except.
                         raise
+                    except httpx.TimeoutException:
+                        if strict:
+                            raise RuntimeError(
+                                "llama-server timed out counting the prompt"
+                            ) from None
                     except Exception:
                         pass
                     return None, False

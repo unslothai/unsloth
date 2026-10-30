@@ -26,12 +26,12 @@ import {
   Delete02Icon,
   Edit03Icon,
   FilterMailIcon,
-  Folder01Icon,
   InternetIcon,
   LinkSquare02Icon,
   MoreHorizontalIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DateRange } from "react-day-picker";

@@ -32,13 +32,13 @@ import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
   Download01Icon,
-  FolderOpenIcon,
   InformationCircleIcon,
   Refresh01Icon,
   Search01Icon,
   Shield01Icon,
   TextWrapIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderOpenIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDownIcon } from "lucide-react";

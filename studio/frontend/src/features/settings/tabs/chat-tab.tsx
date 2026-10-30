@@ -33,7 +33,6 @@ import { cn } from "@/lib/utils";
 import {
   Bookmark02Icon,
   Download01Icon,
-  Folder01Icon,
   LibrariesIcon,
   McpServerIcon,
   Scroll01Icon,
@@ -41,6 +40,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { FileSearchIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
@@ -166,7 +166,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "shell.navigation.projects",
     icon: (
       <HugeiconsIcon
-        icon={Folder01Icon}
+        icon={ProjectIcon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
