@@ -176,6 +176,18 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
         callbacks = [Grabber()],
     )
     manager = getattr(trainer, "_context_parallel_manager", None)
+    seen_lengths, ulysses_calls = set(), []
+    embed = trainer.model.get_input_embeddings()
+    embed.register_forward_pre_hook(lambda m, a: seen_lengths.add(int(a[0].shape[-1])))
+    from unsloth.utils import ulysses_hybrid
+
+    original_ulysses = ulysses_hybrid._ulysses_hf_attention
+
+    def counted(*a, **k):
+        ulysses_calls.append(1)
+        return original_ulysses(*a, **k)
+
+    ulysses_hybrid._ulysses_hf_attention = counted
     trainer.train()
     logs = [h for h in trainer.state.log_history if "loss" in h]
     is_tp = tp_native.is_tensor_parallel(trainer.model)
@@ -193,6 +205,9 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
         "cp_group": None if manager is None else sorted(int(r) for r in manager.mesh.mesh.flatten().tolist()),
         "is_tp": is_tp,
         "stage": None if stage is None else int(stage.stage_index),
+        "seen_lengths": sorted(seen_lengths),
+        "ulysses_calls": len(ulysses_calls),
+        "cp_backend": None if manager is None else manager.backend,
     }
     if dist.is_initialized():
         dist.barrier()
@@ -289,8 +304,10 @@ def _close(got, want, rel = 1e-4, what = ""):
 def test_cp2_alone_matches_one_process():
     """The harness: Ulysses cp 2 through SFTTrainer reproduces one process (losses, grads, adapters)."""
     ref = _ref(2)
+    assert ref["seen_lengths"] == [SEQ] and ref["ulysses_calls"] == 0
     for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2)):
         assert res["cp_group"] == [0, 1]
+        assert res["seen_lengths"] == [SEQ // 2] and res["ulysses_calls"] >= N_LAYERS
         _close(res, ref, what = rank)
 
 
@@ -301,6 +318,43 @@ def test_cp_with_pipeline_parallel_env_is_refused_before_the_split(env):
         assert "pipeline parallel (UNSLOTH_PP_SIZE=2)" in res["error"]
 
 
-def test_cp_with_tensor_parallel_env_is_refused_before_the_split():
+
+def test_cp_from_the_config_beside_a_tp_launch_is_refused_with_the_layout_hint():
+    """SFTConfig(context_parallel_size = 2) under UNSLOTH_TP_SIZE=2: the layout was read without a cp axis."""
     for res in _spawn("train", 4, {"UNSLOTH_TP_SIZE": "2"}, bs = 2, cp = 2):
-        assert "does not compose with" in (res.get("error") or ""), res.get("error") or res["losses"]
+        error = res.get("error") or ""
+        assert "does not compose with" in error and "UNSLOTH_PARALLEL" in error, error or res["losses"]
+
+
+@pytest.mark.parametrize(
+    "world, flag, bs, ref_bs, layout",
+    [
+        (4, "tp=2,cp=2", 2, 2, "cp 2 x tp 2"),
+        (8, "tp=2,cp=2", 2, 4, "dp 2 (DDP) x cp 2 x tp 2"),
+        (8, "dp=2,tp=2,cp=2,fsdp=1", 2, 4, "dp 2 (native FSDP2) x cp 2 x tp 2"),
+    ],
+    ids = ["cp2_tp2", "dp2_cp2_tp2", "fsdp2_cp2_tp2"],
+)
+def test_cp_x_tp_from_unsloth_parallel_matches_one_process(world, flag, bs, ref_bs, layout):
+    ref = _ref(ref_bs)
+    results = _spawn("train", world, {"UNSLOTH_PARALLEL": flag}, bs = bs, cp = 2, sft_cp = False)
+    for rank, res in enumerate(results):
+        assert "error" not in res, (rank, res.get("trace"))
+        assert res["layout"] == layout and res["is_tp"], res["layout"]
+        # cp peers are 2 apart (tp innermost), never tp peers.
+        tp_index = rank % 2
+        base = rank - rank % 4
+        assert res["cp_group"] == [base + tp_index, base + tp_index + 2], (rank, res["cp_group"])
+        # Engaged: 'auto' picked Ulysses, each rank embedded SEQ / cp tokens, every layer's attention exchanged.
+        assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], res["seen_lengths"]
+        assert res["ulysses_calls"] >= N_LAYERS, res["ulysses_calls"]
+        _close(res, ref, what = (flag, rank))
+
+
+@pytest.mark.parametrize("flag", ["pp=2,cp=2", "pp=2,tp=2,cp=2"])
+def test_cp_x_pp_is_refused_by_the_registry_before_the_split(flag):
+    world = 8 if "tp" in flag else 4
+    for res in _spawn("train", world, {"UNSLOTH_PARALLEL": flag}, bs = 2, cp = 2, sft_cp = False):
+        error = res.get("error") or ""
+        assert "cp x pp" in error and "Instead:" in error, error or res["losses"]
+        assert res.get("stage") is None

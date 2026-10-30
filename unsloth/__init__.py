@@ -22,6 +22,13 @@ if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
     _apply_debug_distributed_env()
     del _apply_debug_distributed_env
 
+# UNSLOTH_PARALLEL="dp=..,tp=..,pp=..,cp=.." -> UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE / UNSLOTH_CP_SIZE / UNSLOTH_FSDP2,
+# before anything below reads those. A conflict with a variable set by hand raises here, on every rank.
+from .parallel_env import apply_parallel_env as _apply_parallel_env, parallelize
+
+_apply_parallel_env()
+del _apply_parallel_env
+
 # UNSLOTH_FSDP2=1 under plain torchrun: export accelerate's FSDP2 launch env before transformers or
 # accelerate read it. A conflicting launch (DeepSpeed, FSDP_VERSION=1) raises here, on every rank.
 from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
@@ -1691,9 +1698,10 @@ else:
     _install_native_trainer_init()
     del _install_native_trainer_init
 
-    if os.environ.get("UNSLOTH_TP_SIZE", "").strip() not in ("", "1") or os.environ.get(
-        "UNSLOTH_PP_SIZE", ""
-    ).strip() not in ("", "1"):
+    if any(
+        os.environ.get(_name, "").strip() not in ("", "1")
+        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+    ):
         from .models.tp_env import (
             install_tensor_parallel_env_trainer_init as _install_tp_trainer_init,
         )

@@ -10,8 +10,10 @@
     UNSLOTH_PP_SIZE=2 UNSLOTH_TP_SIZE=2 torchrun --nproc-per-node 4 train.py  # pp 2 x tp 2
     UNSLOTH_PP_SIZE=2 [UNSLOTH_FSDP2=1] torchrun --nproc-per-node 4 train.py  # pp 2 x dp 2 (DDP-style / FSDP2)
 
-The layout is read once. The world splits into pp x dp x tp ranks (pp outermost, tp the inner dimension, as in
-init_device_mesh(..., (pp, dp, tp), ("pp", "dp", "tp")), torchtitan's order). Tensor parallel alone:
+UNSLOTH_PARALLEL="dp=..,tp=..,pp=..,cp=.." (unsloth/parallel_env.py) sets these variables in one flag, and adds
+UNSLOTH_CP_SIZE: context parallel on the same mesh. The layout (parallel_env.ParallelLayout, TPEnvLayout here) is
+read once. The world splits into pp x dp x cp x tp ranks (pp outermost, tp the inner dimension; one root
+DeviceMesh, size-1 axes left out). Tensor parallel alone:
 - FastLanguageModel / FastModel.from_pretrained: 16-bit checkpoints load through sharded_loading (each rank
   reads its slices of the attention / MLP projections); 4-bit loads in full and is sharded at get_peft_model.
 - get_peft_model: apply_tensor_parallel over mesh["tp"] once LoRA is attached (full-size LoRA, 1-GPU init).
@@ -53,165 +55,10 @@ _DEPTH = {"load": 0, "peft": 0}
 _DDP_MESH = "_unsloth_tp_ddp_mesh"
 
 
-def _int_env(name):
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return None
-    try:
-        value = int(raw.strip())
-    except ValueError:
-        raise ValueError(f"Unsloth: {name}={raw!r} must be an integer.") from None
-    if value < 1:
-        raise ValueError(f"Unsloth: {name}={value} must be >= 1.")
-    return value
-
-
-class TPEnvLayout:
-    """world = pp x dp x tp; `mesh()` builds (once) the device mesh, initializing the process group if needed."""
-
-    def __init__(self, tp, dp, world, fsdp2, pp = 1, microbatches = None, schedule = "gpipe"):
-        self.tp, self.dp, self.world, self.fsdp2 = tp, dp, world, fsdp2
-        self.pp, self.microbatches, self.schedule = pp, microbatches, schedule
-        self._mesh = None
-
-    def __repr__(self):
-        parts = [f"pp {self.pp}"] if self.pp > 1 else []
-        if self.dp > 1:
-            parts.append(f"dp {self.dp} ({'native FSDP2' if self.fsdp2 else 'DDP'})")
-        if self.tp > 1:
-            parts.append(f"tp {self.tp}")
-        return " x ".join(parts)
-
-    @property
-    def env_vars(self):
-        """The environment variables that asked for this layout, e.g. "UNSLOTH_PP_SIZE=2 UNSLOTH_TP_SIZE=2"."""
-        out = [f"UNSLOTH_PP_SIZE={self.pp}"] if self.pp > 1 else []
-        if self.tp > 1:
-            out.append(f"UNSLOTH_TP_SIZE={self.tp}")
-        return " ".join(out)
-
-    @property
-    def sharded_loading(self):
-        if self.pp > 1:
-            return False  # the pipeline split comes first, on whole layers (models/pp_env.py)
-        return os.environ.get("UNSLOTH_TP_SHARDED_LOAD", "1").strip().lower() not in (
-            "0",
-            "false",
-            "no",
-            "off",
-        )
-
-    def mesh(self):
-        if self._mesh is not None:
-            return self._mesh
-        import torch.distributed as dist
-        from torch.distributed.device_mesh import init_device_mesh
-
-        cuda = torch.cuda.is_available()
-        if cuda:
-            torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
-        if not dist.is_initialized():
-            # What the Trainer's accelerate state would create; it reuses an existing group.
-            dist.init_process_group("nccl" if cuda else "gloo")
-        if dist.get_world_size() != self.world:
-            raise RuntimeError(
-                f"Unsloth: {self.env_vars} read WORLD_SIZE={self.world}, but the process group has "
-                f"{dist.get_world_size()} ranks."
-            )
-        device = "cuda" if cuda else "cpu"
-        dims = [(name, size) for name, size in (("pp", self.pp), ("dp", self.dp), ("tp", self.tp))]
-        dims = [(name, size) for name, size in dims if size > 1] or [("tp", self.tp)]
-        mesh = init_device_mesh(
-            device, tuple(size for _, size in dims), mesh_dim_names = tuple(name for name, _ in dims)
-        )
-        if len(dims) > 1:
-            from .pp_native import check_mesh_composition
-            check_mesh_composition(
-                {name: mesh[name] for name, _ in dims}, f"{self.env_vars} ({self})"
-            )
-        self._mesh = mesh
-        if dist.get_rank() == 0:
-            what = "pipeline" if self.pp > 1 else "tensor"
-            if self.pp > 1 and self.tp > 1:
-                what = "pipeline x tensor"
-            print(f"Unsloth: {what} parallel from {self.env_vars}: {self} over {self.world} ranks.")
-        return mesh
-
-    @property
-    def tp_mesh(self):
-        return self.mesh()["tp"] if self.tp > 1 else None
-
-    @property
-    def dp_mesh(self):
-        return self.mesh()["dp"] if self.dp > 1 else None
-
-    @property
-    def pp_mesh(self):
-        return self.mesh()["pp"] if self.pp > 1 else None
-
-
-_PP_SCHEDULES = ("gpipe", "1f1b")
-
-
-def _read_layout():
-    pp = _int_env("UNSLOTH_PP_SIZE") or 1
-    tp = _int_env("UNSLOTH_TP_SIZE") or 1
-    if pp == 1 and tp == 1:
-        return None
-    try:
-        world = int(os.environ.get("WORLD_SIZE", "1"))
-    except ValueError:
-        world = 1
-    names = " x ".join(
-        name for name, size in (("UNSLOTH_PP_SIZE", pp), ("UNSLOTH_TP_SIZE", tp)) if size > 1
-    )
-    given = " ".join(
-        f"{name}={size}" for name, size in (("UNSLOTH_PP_SIZE", pp), ("UNSLOTH_TP_SIZE", tp)) if size > 1
-    )
-    if world % (pp * tp):
-        what = (
-            "data parallel x tensor parallel"
-            if pp == 1
-            else "data parallel x pipeline parallel" + (" x tensor parallel" if tp > 1 else "")
-        )
-        raise ValueError(
-            f"Unsloth: {given}: {names} = {pp * tp} must divide the number of ranks (WORLD_SIZE={world}); "
-            f"launch with torchrun --nproc-per-node {pp * tp} (or a multiple of {pp * tp} for {what}), or "
-            f"unset {' / '.join(name for name in names.split(' x '))}."
-        )
-    microbatches, schedule = None, "gpipe"
-    if pp > 1:
-        microbatches = _int_env("UNSLOTH_PP_MICROBATCHES")
-        schedule = (os.environ.get("UNSLOTH_PP_SCHEDULE") or "gpipe").strip().lower().replace("-", "")
-        schedule = schedule.replace("_", "")
-        if schedule not in _PP_SCHEDULES:
-            raise ValueError(
-                f"Unsloth: UNSLOTH_PP_SCHEDULE={os.environ.get('UNSLOTH_PP_SCHEDULE')!r} must be one of "
-                f"{_PP_SCHEDULES}."
-            )
-        if schedule == "1f1b" and microbatches is not None and microbatches < pp:
-            raise ValueError(
-                f"Unsloth: UNSLOTH_PP_SCHEDULE=1f1b needs UNSLOTH_PP_MICROBATCHES >= UNSLOTH_PP_SIZE "
-                f"({microbatches} < {pp})."
-            )
-        from .pp_native import _check_torch_pipelining
-
-        try:
-            _check_torch_pipelining()
-        except RuntimeError as exc:
-            raise RuntimeError(f"{exc} (UNSLOTH_PP_SIZE={pp}: unset it to run without pipeline parallel.)") from None
-    from ..fsdp2_launch import unsloth_fsdp2_requested
-
-    fsdp2 = bool(unsloth_fsdp2_requested())
-    backend = os.environ.get("UNSLOTH_FSDP2_BACKEND", "").strip().lower()
-    if fsdp2 and backend in ("accelerate", "hf", "transformers"):
-        what = "pipeline" if pp > 1 else "tensor"
-        raise ValueError(
-            f"Unsloth: {given} composes with native FSDP2 only (UNSLOTH_FSDP2=1); "
-            f"UNSLOTH_FSDP2_BACKEND={backend} would hand the {what} parallel model to accelerate's FSDP. "
-            "Unset UNSLOTH_FSDP2_BACKEND."
-        )
-    return TPEnvLayout(tp, world // (pp * tp), world, fsdp2, pp, microbatches, schedule)
+from ..parallel_env import PP_SCHEDULES as _PP_SCHEDULES  # noqa: F401  (old import path)
+from ..parallel_env import ParallelLayout as TPEnvLayout
+from ..parallel_env import _int_env  # noqa: F401
+from ..parallel_env import read_layout as _read_layout
 
 
 def env_layout():
@@ -475,7 +322,10 @@ def _levels(model):
 def install_tensor_parallel_env_trainer_init():
     """Install the Trainer.__init__ wrapper at import: loads that all run inside model_init would otherwise
     train in an unwrapped Trainer, without tensor / pipeline parallel."""
-    if all(str(os.environ.get(k, "")).strip() in ("", "1") for k in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE")):
+    if all(
+        str(os.environ.get(k, "")).strip() in ("", "1")
+        for k in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+    ):
         return False
     from transformers import Trainer
 
@@ -498,12 +348,12 @@ def tensor_parallel_env_trainer_pre(model):
         pipeline_parallel_env_apply(model, layout)  # also the DDP-style dp start (broadcast, stage.ddp_mesh)
         if layout.tp > 1:
             _apply(model, layout)
-            if layout.dp > 1 and not layout.fsdp2:
+            if layout.grad_size > 1 and not layout.fsdp2:
                 for level in _levels(model):
                     level.__dict__[_DDP_MESH] = layout.dp_mesh
         return layout
     _apply(model, layout)
-    if layout.dp > 1 and not layout.fsdp2:
+    if layout.grad_size > 1 and not layout.fsdp2:
         levels = _levels(model)
         if not any(level.__dict__.get(_DDP_MESH) is not None for level in levels):
             dp_mesh = layout.dp_mesh
@@ -536,7 +386,7 @@ def fsdp2_dp_mesh(model):
     layout = _LAYOUT if _LAYOUT is not _UNSET else None
     if (
         layout is None
-        or layout.dp == 1
+        or layout.grad_size == 1
         or not layout.fsdp2
         or not isinstance(model, torch.nn.Module)
     ):
@@ -550,4 +400,4 @@ def fsdp2_dp_mesh(model):
 def fsdp2_has_no_dp_dimension():
     """UNSLOTH_FSDP2=1 with UNSLOTH_TP_SIZE = world size: nothing for FSDP2 to shard over."""
     layout = _LAYOUT if _LAYOUT is not _UNSET else None
-    return layout is not None and layout.dp == 1
+    return layout is not None and layout.grad_size == 1

@@ -34,7 +34,7 @@ except ImportError:
     SDPBackend = None
     sdpa_kernel = None
 
-_CP_BACKENDS = ("ring", "ulysses")
+_CP_BACKENDS = ("auto", "ring", "ulysses")
 _ROTATE_METHODS = ("allgather", "alltoall")
 
 
@@ -96,7 +96,7 @@ def context_parallel_options(config) -> tuple:
         raise ValueError(
             f"Unsloth: context_parallel_size must be a positive integer, got {size!r}."
         )
-    backend = getattr(config, "context_parallel_backend", None) or "ring"
+    backend = getattr(config, "context_parallel_backend", None) or "auto"
     if backend not in _CP_BACKENDS:
         raise ValueError(
             f"Unsloth: context_parallel_backend must be one of {_CP_BACKENDS}, got {backend!r}."
@@ -108,6 +108,35 @@ def context_parallel_options(config) -> tuple:
             f"{_ROTATE_METHODS}, got {rotate_method!r}."
         )
     return size, backend, rotate_method
+
+
+def _model_heads(model):
+    config = getattr(model, "config", None)
+    text = getattr(config, "text_config", None) or config
+    heads = getattr(text, "num_attention_heads", None)
+    if not isinstance(heads, int):
+        return None, None
+    kv = getattr(text, "num_key_value_heads", None)
+    return heads, kv if isinstance(kv, int) and kv > 0 else heads
+
+
+def resolve_cp_backend(backend, size: int, model = None, tp: int = 1, rl: bool = False) -> str:
+    """context_parallel_backend = 'auto' (the default): Ulysses, which keeps packing, hybrids, RL, T4 / V100
+    and needs no flash kernels; ring only when the attention heads (per tensor parallel rank) cannot be split
+    over cp. An explicit backend is returned as given (the checks then honour or refuse it)."""
+    backend = backend or "auto"
+    if backend != "auto" or size <= 1:
+        return backend
+    if rl:
+        return "ulysses"
+    heads, kv = _model_heads(model)
+    if heads is None:
+        return "ulysses"
+    try:
+        ulysses_head_plan(heads // tp, kv // tp if kv % tp == 0 else kv, size)
+    except ValueError:
+        return "ring"
+    return "ulysses"
 
 
 def _unsupported_attention(config, backend = "ring") -> Optional[str]:
@@ -261,11 +290,26 @@ class ContextParallelManager:
         backend: str = "ring",
         rotate_method: str = "allgather",
         fsdp2: bool = False,
+        layout = None,
     ):
         self.size = size
         self.backend = backend
         self.rotate_method = rotate_method
         self.fsdp2 = fsdp2
+        if layout is not None:
+            # UNSLOTH_PARALLEL / UNSLOTH_TP_SIZE with UNSLOTH_CP_SIZE: the cp axis of the one root mesh
+            # (parallel_env.ParallelLayout). Tensor parallel splits the rows over dp only and averages the
+            # gradients over the flattened (dp, cp) mesh, so nothing is installed on the accelerator here.
+            if layout.cp != size:
+                raise RuntimeError(
+                    f"Unsloth: context_parallel_size = {size} but the parallel layout has cp {layout.cp}."
+                )
+            self.layout = layout
+            self.fsdp2 = False
+            self.device_mesh = None
+            self.mesh = layout.cp_mesh
+            return
+        self.layout = None
         world_size = dist.get_world_size()
         # FSDP2 shards parameters over dp_shard x cp flattened (torchtitan, accelerate's dp_shard_cp):
         # CP peers hold different tokens, so their gradients must be reduced like data parallel ones.
@@ -608,6 +652,10 @@ def _install_accelerator_state(self):
         return
     if accelerator is None:
         return
+    if manager.device_mesh is None:
+        # A root-mesh manager (parallel_env): the tensor parallel hooks split the data and reduce gradients.
+        _restore_parallelism_config(accelerator.state)
+        return
     current = getattr(accelerator.state, "device_mesh", None)
     if _INSTALLED_MESH and current is _INSTALLED_MESH[0]:
         current = _INSTALLED_MESH[1] if len(_INSTALLED_MESH) > 1 else None
@@ -648,18 +696,51 @@ def _model_parallel_axes(model) -> list:
     return axes
 
 
-def _refuse_model_parallel_cp(size: int, model) -> None:
-    """Before the trainer's __init__ touches the model: context parallelism builds its own (dp, cp) mesh, whose cp
-    groups are the tensor parallel / pipeline data parallel groups of a tp / pp launch, so the step would run and
-    train on mixed-up shards."""
+def _composed_layout(size: int):
+    """The UNSLOTH_PARALLEL / UNSLOTH_TP_SIZE layout whose root mesh has this cp axis, or None."""
+    import os
+
+    if not any(str(os.environ.get(k, "")).strip() not in ("", "1") for k in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE")):
+        return None
+    from .parallel_env import env_cp_size
+
+    if env_cp_size() != size:
+        return None  # cp from the trainer config only: the layout was read without a cp axis
+    from .models.tp_env import env_layout
+
+    layout = env_layout()
+    return layout if layout is not None and layout.cp == size else None
+
+
+def _refuse_model_parallel_cp(size: int, model, trainer_cls = None, config = None) -> None:
+    """Before the trainer's __init__ touches the model: a CP manager building its own (dp, cp) mesh would make
+    its cp groups the tensor parallel / pipeline data parallel groups of a tp / pp launch, so the step would run
+    and train on mixed-up shards. Context parallel composes through the root mesh only (cp in UNSLOTH_PARALLEL
+    or UNSLOTH_CP_SIZE, read with the layout); the capability registry decides which compositions run."""
     axes = _model_parallel_axes(model)
     if not axes:
         return
+    import os
+
+    layout = _composed_layout(size) if all("UNSLOTH_" in a for a in axes) else None
+    if layout is not None:
+        from .parallel_capabilities import check_layout
+
+        backend = getattr(config, "context_parallel_backend", None) or layout.cp_backend
+        check_layout(layout, trainer_cls, model, config, cp_backend = backend)
+        return
+    env_cp = str(os.environ.get("UNSLOTH_CP_SIZE", "")).strip()
+    hint = ""
+    if not env_cp and all("UNSLOTH_" in a for a in axes):
+        hint = (
+            f" To compose them, put cp in the launch layout instead: UNSLOTH_PARALLEL=\"...,cp={size}\" or "
+            f"UNSLOTH_CP_SIZE={size} beside the other variables, so the mesh is built with a cp axis."
+        )
     raise NotImplementedError(
         f"Unsloth: context parallelism (context_parallel_size = {size}) does not compose with "
         f"{' and '.join(axes)} yet: its context parallel groups would be the other axis' groups, and training "
         "would run with wrong gradients. Use context parallelism alone (with DDP or UNSLOTH_FSDP2=1), or "
-        "tensor / pipeline parallelism with context_parallel_size = 1."
+        "tensor / pipeline parallelism with context_parallel_size = 1." + hint
     )
 
 
@@ -668,6 +749,55 @@ def _trainer_model_argument(args, kwargs):
         return kwargs["model"]
     # (self, model, args, ...) for every Trainer / TRL trainer __init__.
     return args[1] if len(args) > 1 else None
+
+
+def _inject_env_cp(config, kwargs, requested: int, trainer_name: str) -> int:
+    """UNSLOTH_CP_SIZE / UNSLOTH_CP_BACKEND (also from UNSLOTH_PARALLEL) into the trainer arguments, the way
+    SFTTrainer(context_parallel_size = N) is handled. Returns the context parallel size the trainer will get."""
+    from .parallel_env import env_cp_backend, env_cp_size
+
+    size = env_cp_size()
+    backend = env_cp_backend()
+    if size == 1:
+        if backend is not None and requested > 1:
+            if config is not None and "context_parallel_backend" not in kwargs:
+                config.context_parallel_backend = backend
+            else:
+                kwargs["context_parallel_backend"] = backend
+        return requested
+    if requested > 1 and requested != size:
+        raise ValueError(
+            f"Unsloth: {trainer_name} asks for context_parallel_size = {requested}, but UNSLOTH_CP_SIZE={size} "
+            "(or cp in UNSLOTH_PARALLEL) asks for another; use one of the two."
+        )
+    if "context_parallel_size" in kwargs or config is None:
+        kwargs["context_parallel_size"] = size
+        if backend is not None:
+            kwargs["context_parallel_backend"] = backend
+    else:
+        config.context_parallel_size = size
+        if backend is not None:
+            config.context_parallel_backend = backend
+    return size
+
+
+def _resolve_auto_backend(config, kwargs, size: int, model, rl: bool = False) -> None:
+    """Write the backend 'auto' resolves to into the trainer arguments before the trainer's __init__, so auto
+    packing and every later check read the same backend. `_unsloth_cp_backend_auto` records that it was auto."""
+    in_kwargs = "context_parallel_backend" in kwargs
+    current = kwargs["context_parallel_backend"] if in_kwargs else getattr(config, "context_parallel_backend", None)
+    if (current or "auto") != "auto":
+        return
+    layout = _composed_layout(size)
+    resolved = resolve_cp_backend("auto", size, model, tp = layout.tp if layout is not None else 1, rl = rl)
+    if in_kwargs or config is None:
+        kwargs["context_parallel_backend"] = resolved
+    else:
+        config.context_parallel_backend = resolved
+        try:
+            config._unsloth_cp_backend_auto = True
+        except Exception:
+            pass
 
 
 def _check_cp_runtime(self, size: int, backend: str) -> None:
@@ -704,6 +834,7 @@ def _check_cp_model(
     size: int,
     backend: str,
     allow_hybrids: bool = True,
+    tp: int = 1,
 ) -> None:
     model_config = getattr(model, "config", None)
     unsupported = _unsupported_attention(model_config, backend)
@@ -713,12 +844,10 @@ def _check_cp_model(
         )
     if backend == "ulysses":
         # Every rank raises here, before any collective.
-        text_config = getattr(model_config, "text_config", None) or model_config
-        ulysses_head_plan(
-            text_config.num_attention_heads,
-            getattr(text_config, "num_key_value_heads", None) or text_config.num_attention_heads,
-            size,
-        )
+        heads, kv_heads = _model_heads(model)
+        if heads is not None:
+            # Under tensor parallel each rank holds heads / tp of them (and kv heads / tp, or all when fewer).
+            ulysses_head_plan(heads // tp, kv_heads // tp if kv_heads % tp == 0 else kv_heads, size)
     if _stateful_mixers(model) and not allow_hybrids:
         raise NotImplementedError(
             "Unsloth: DPO / GRPO context parallelism does not support Gated DeltaNet hybrids yet."
@@ -742,6 +871,7 @@ def _check_cp_trainer(
     backend: str,
     models,
     allow_fsdp2: bool = False,
+    tp: int = 1,
 ) -> bool:
     """Shared trainer checks; returns whether the trainer runs under FSDP2."""
     import accelerate
@@ -752,7 +882,7 @@ def _check_cp_trainer(
     for model in models:
         if model is not None:
             # SFT shards the inputs of the whole model; the RL hooks only shard Llama-style decoders.
-            _check_cp_model(model, size, backend, allow_hybrids = allow_fsdp2)
+            _check_cp_model(model, size, backend, allow_hybrids = allow_fsdp2, tp = tp)
     accelerator = getattr(self, "accelerator", None)
     distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
     fsdp2 = allow_fsdp2 and _is_fsdp2(accelerator, distributed_type)
@@ -819,8 +949,12 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             forwarded = kwargs["context_parallel_size"]
             valid = isinstance(forwarded, int) and not isinstance(forwarded, bool)
             requested = forwarded if valid else 1
+        requested = _inject_env_cp(config, kwargs, requested, "SFTTrainer")
         if requested > 1:
-            _refuse_model_parallel_cp(requested, _trainer_model_argument((self,) + args, kwargs))
+            _resolve_auto_backend(config, kwargs, requested, _trainer_model_argument((self,) + args, kwargs))
+            _refuse_model_parallel_cp(
+                requested, _trainer_model_argument((self,) + args, kwargs), type(self), config
+            )
             # Before the original __init__: Unsloth wraps instance methods there (auto packing's
             # train reset, the token budget's training_step), and they must capture the CP ones.
             install_methods()
@@ -846,6 +980,12 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                     f"{source} with cp_size > 1."
                 )
         size, backend, rotate_method = context_parallel_options(getattr(self, "args", None))
+        if size > 1 and backend == "auto":
+            layout = _composed_layout(size)
+            backend = resolve_cp_backend(
+                backend, size, getattr(self, "model", None), tp = layout.tp if layout is not None else 1
+            )
+            self.args.context_parallel_backend = backend
         if size <= 1:
             _install_accelerator_state(self)
             if not trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
@@ -877,10 +1017,18 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             raise NotImplementedError(
                 "Unsloth: context parallelism needs average_tokens_across_devices = True."
             )
+        layout = _composed_layout(size)
         fsdp2 = _check_cp_trainer(
-            self, size, backend, [getattr(self, "model", None)], allow_fsdp2 = True
+            self,
+            size,
+            backend,
+            [getattr(self, "model", None)],
+            allow_fsdp2 = True,
+            tp = layout.tp if layout is not None else 1,
         )
-        manager = ContextParallelManager(size, backend, rotate_method, fsdp2 = fsdp2)
+        manager = ContextParallelManager(
+            size, backend, rotate_method, fsdp2 = fsdp2, **({"layout": layout} if layout is not None else {})
+        )
         self._context_parallel_manager = manager
         install_methods()
         manager.attach_attention_hooks(self.model)
@@ -889,6 +1037,9 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         from .utils.packing import _scope_flash_attention_impl
 
         _scope_flash_attention_impl(self.model, self)
+        from .parallel_env import announce
+
+        announce(self, layout, manager)
         print(
             f"Unsloth: Context parallelism enabled with size = {size} ({backend}"
             + (f", rotate_method = {rotate_method})" if backend == "ring" else ")")
@@ -1437,8 +1588,12 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
             requested = context_parallel_options(config)[0]
         except ValueError:
             requested = 1  # Raised again after the original __init__.
+        requested = _inject_env_cp(config, kwargs, requested, trainer_cls.__name__)
         if requested > 1:
-            _refuse_model_parallel_cp(requested, _trainer_model_argument((self,) + args, kwargs))
+            _resolve_auto_backend(config, kwargs, requested, None, rl = True)
+            _refuse_model_parallel_cp(
+                requested, _trainer_model_argument((self,) + args, kwargs), type(self), config
+            )
             # Before the original __init__, so instance wrappers made there capture the CP methods.
             install_methods()
         original_init(self, *args, **kwargs)
@@ -1449,6 +1604,7 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
             ", context_parallel_backend = 'ulysses'",
         )
         size, backend, _ = context_parallel_options(getattr(self, "args", None))
+        backend = resolve_cp_backend(backend, size, rl = True)
         if size <= 1:
             _install_accelerator_state(self)
             if not trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):

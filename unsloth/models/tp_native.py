@@ -2354,6 +2354,19 @@ def _tp_meshes(model):
     return tp, dp
 
 
+def _env_data_layout():
+    """(data parallel size, rank) of an UNSLOTH_PARALLEL / UNSLOTH_TP_SIZE layout with context parallel, else
+    None (the dp mesh is then the data mesh)."""
+    import sys
+
+    tp_env = sys.modules.get(__name__.rsplit(".", 1)[0] + ".tp_env")
+    layout = getattr(tp_env, "_LAYOUT", None) if tp_env is not None else None
+    if layout is None or layout is getattr(tp_env, "_UNSET", None) or getattr(layout, "cp", 1) == 1:
+        return None
+    data = layout.data_mesh
+    return (layout.dp, data.get_local_rank() if data is not None else 0)
+
+
 def _ddp_mesh(model):
     return next(
         (m.__dict__[_DDP_MESH] for m in _tp_chain(model) if m.__dict__.get(_DDP_MESH) is not None),
@@ -2480,7 +2493,8 @@ def tp_trainer_setup(
     _refuse_tp_trainer_args(trainer.args, cpu_shards, pipeline)
     ddp_mesh = _ddp_mesh(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
-    trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
+    # The gradient mesh flattens (dp, cp) under context parallel, whose peers read the same rows.
+    trainer.accelerator.__dict__[_TP_DATA] = _env_data_layout() or (dp_size, dp_rank)
     trainer.__dict__["_unsloth_tensor_parallel"] = (
         True  # the generated TRL trainers skip for_inference()
     )

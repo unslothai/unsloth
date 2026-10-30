@@ -974,7 +974,7 @@ class UnslothTrainingArguments(TrainingArguments):
         # Not fields of the pristine SFTConfig captured at import.
         context_parallel = {
             "context_parallel_size": kwargs.pop("context_parallel_size", 1),
-            "context_parallel_backend": kwargs.pop("context_parallel_backend", "ring"),
+            "context_parallel_backend": kwargs.pop("context_parallel_backend", "auto"),
             "context_parallel_rotate_method": kwargs.pop(
                 "context_parallel_rotate_method", "allgather"
             ),
@@ -1909,9 +1909,32 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # several classes, so a "yes" from the resolved one is not proof about the
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
-        is_ring_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1 and (
-            getattr(config_arg, "context_parallel_backend", None) or "ring"
-        ) == "ring"
+        cp_size = getattr(config_arg, "context_parallel_size", 1) or 1
+        is_ring_context_parallel = False
+        if isinstance(cp_size, int) and cp_size > 1:
+            from .context_parallel import resolve_cp_backend
+
+            # 'auto' (the default) is Ulysses unless the heads cannot be split, so packing stays on.
+            cp_backend = resolve_cp_backend(
+                getattr(config_arg, "context_parallel_backend", None),
+                cp_size,
+                model if not isinstance(model, str) else None,
+            )
+            is_ring_context_parallel = cp_backend == "ring"
+            if is_ring_context_parallel and (
+                getattr(config_arg, "packing", False) or getattr(config_arg, "padding_free", None) is True
+            ):
+                chose = (
+                    "context_parallel_backend = 'auto' chose ring because the attention heads cannot be split "
+                    f"over {cp_size} ranks"
+                    if getattr(config_arg, "_unsloth_cp_backend_auto", False)
+                    else "context_parallel_backend = 'ring'"
+                )
+                raise NotImplementedError(
+                    f"Unsloth: cp backend: {chose}, and ring attention cannot keep packed rows apart. Instead: "
+                    "context_parallel_backend = 'ulysses' (or 'auto' with a head count cp divides), or "
+                    "packing = False / padding_free = False."
+                )
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
             "UNSLOTH_RETURN_LOGITS", "0"

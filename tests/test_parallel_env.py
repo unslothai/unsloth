@@ -25,9 +25,18 @@ _ENV = (
 
 @pytest.fixture
 def clean_env(monkeypatch):
+    import os
+
+    from unsloth import parallel_env
+    from unsloth.models import tp_env
+
     for key in _ENV:
         monkeypatch.delenv(key, raising = False)
-    return monkeypatch
+    yield monkeypatch
+    for key in _ENV:  # what apply_parallel_env / parallelize wrote around monkeypatch
+        os.environ.pop(key, None)
+    parallel_env._SET_BY_PARALLELIZE[0] = None
+    tp_env._reset_env_layout()
 
 
 def _fake_sft(monkeypatch, inits):
@@ -79,3 +88,365 @@ def test_cp_alone_and_tp_without_cp_are_not_refused(clean_env):
     clean_env.setenv("UNSLOTH_TP_SIZE", "2")
     Trainer(model = torch.nn.Linear(2, 2), args = types.SimpleNamespace(context_parallel_size = 1))
     assert len(inits) == 1
+
+
+# UNSLOTH_PARALLEL parsing and translation (parallel_env).
+
+
+def test_flag_parses_every_key_and_fills_dp(clean_env):
+    from unsloth import parallel_env as pe
+
+    spec = pe.parse_parallel_spec("dp=2, tp=2 ,pp=2,cp=2,cp_backend=Ulysses,fsdp=1,pp_schedule=1F1B,mb=4")
+    assert spec == {
+        "dp": 2, "tp": 2, "pp": 2, "cp": 2, "cp_backend": "ulysses", "fsdp": True,
+        "pp_schedule": "1f1b", "pp_microbatches": 4,
+    }
+    clean_env.setenv("WORLD_SIZE", "16")
+    assert pe.translate(spec) == {
+        "UNSLOTH_TP_SIZE": "2",
+        "UNSLOTH_PP_SIZE": "2",
+        "UNSLOTH_CP_SIZE": "2",
+        "UNSLOTH_CP_BACKEND": "ulysses",
+        "UNSLOTH_FSDP2": "1",
+        "UNSLOTH_PP_SCHEDULE": "1f1b",
+        "UNSLOTH_PP_MICROBATCHES": "4",
+    }
+    # dp omitted fills the world; size-1 axes write nothing.
+    clean_env.setenv("WORLD_SIZE", "8")
+    assert pe.translate(pe.parse_parallel_spec("tp=2")) == {"UNSLOTH_TP_SIZE": "2"}
+
+
+@pytest.mark.parametrize(
+    "raw, match",
+    [
+        ("tp=0", "must be >= 1"),
+        ("tp=two", "positive integer"),
+        ("tp", "not key=value"),
+        ("xp=2", "unknown key"),
+        ("tp=2,tp=2", "twice"),
+        ("cp_backend=ring", "needs cp > 1"),
+        ("pp_schedule=1f1b", "needs pp > 1"),
+        ("pp=2,pp_schedule=interleaved", "interleaved virtual stages are not supported yet"),
+        ("cp=2,cp_backend=tree", "must be one of"),
+        ("fsdp=maybe", "must be 0 or 1"),
+    ],
+)
+def test_bad_flags_name_the_bad_part(raw, match):
+    from unsloth import parallel_env as pe
+
+    with pytest.raises(ValueError, match = match):
+        pe.parse_parallel_spec(raw)
+
+
+def test_world_size_and_legacy_conflicts_are_refused(clean_env):
+    from unsloth import parallel_env as pe
+
+    clean_env.setenv("WORLD_SIZE", "6")
+    with pytest.raises(ValueError, match = "must divide the number of ranks"):
+        pe.translate(pe.parse_parallel_spec("tp=4"))
+    with pytest.raises(ValueError, match = "needs dp x pp x cp x tp = 8 ranks, but WORLD_SIZE=6"):
+        pe.translate(pe.parse_parallel_spec("dp=2,tp=2,cp=2"))
+    clean_env.setenv("WORLD_SIZE", "8")
+    clean_env.setenv("UNSLOTH_TP_SIZE", "4")
+    with pytest.raises(ValueError, match = "UNSLOTH_TP_SIZE=4 asks for something else"):
+        pe.translate(pe.parse_parallel_spec("tp=2"))
+    with pytest.raises(ValueError, match = "UNSLOTH_TP_SIZE=4"):
+        pe.translate(pe.parse_parallel_spec("cp=2"))  # tp absent means 1
+    clean_env.setenv("UNSLOTH_TP_SIZE", "2")
+    assert pe.translate(pe.parse_parallel_spec("tp=2"))["UNSLOTH_TP_SIZE"] == "2"  # agreeing: fine
+    clean_env.setenv("UNSLOTH_FSDP2", "1")
+    with pytest.raises(ValueError, match = "UNSLOTH_FSDP2=1"):
+        pe.translate(pe.parse_parallel_spec("tp=2,fsdp=0"))
+    assert "UNSLOTH_FSDP2" not in pe.translate(pe.parse_parallel_spec("tp=2"))  # fsdp not given: left alone
+
+
+def test_apply_is_idempotent(clean_env):
+    import os
+
+    from unsloth import parallel_env as pe
+
+    clean_env.setenv("WORLD_SIZE", "4")
+    clean_env.setenv("UNSLOTH_PARALLEL", "tp=2,cp=2,cp_backend=ulysses")
+    assert pe.apply_parallel_env() == {"tp": 2, "cp": 2, "cp_backend": "ulysses"}
+    assert os.environ["UNSLOTH_TP_SIZE"] == "2" and os.environ["UNSLOTH_CP_SIZE"] == "2"
+    assert pe.apply_parallel_env() is not None  # sees its own values: no conflict
+    assert pe.env_cp_size() == 2 and pe.env_cp_backend() == "ulysses"
+
+
+def test_import_unsloth_translates_the_flag_and_refuses_a_conflict(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = (
+        "import importlib.util, os, sys\n"
+        f"sys.path.insert(0, {repo!r})\n"
+        f"spec = importlib.util.spec_from_file_location('c', {os.path.join(repo, 'tests', 'conftest.py')!r})\n"
+        "spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+        "import unsloth\n"
+        "print(os.environ.get('UNSLOTH_TP_SIZE'), os.environ.get('UNSLOTH_CP_SIZE'), callable(unsloth.parallelize))\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k not in _ENV}
+    env.update(UNSLOTH_PARALLEL = "tp=2,cp=2", WORLD_SIZE = "4", CUDA_VISIBLE_DEVICES = "")
+    out = subprocess.run([sys.executable, "-c", code], env = env, capture_output = True, text = True, timeout = 600)
+    assert out.stdout.strip().splitlines()[-1] == "2 2 True", out.stderr[-2000:]
+    env["UNSLOTH_TP_SIZE"] = "4"
+    out = subprocess.run([sys.executable, "-c", code], env = env, capture_output = True, text = True, timeout = 600)
+    assert out.returncode != 0 and "UNSLOTH_TP_SIZE=4 asks for something else" in out.stderr, out.stderr[-2000:]
+
+
+def test_parallelize_sets_the_flag_and_refuses_after_a_load(clean_env):
+    import os
+
+    import unsloth as u
+    from unsloth.models import tp_env
+
+    clean_env.setenv("WORLD_SIZE", "4")
+    tp_env._reset_env_layout()
+    try:
+        resolved = u.parallelize(tp = 2, cp = 2)
+        assert resolved == {"UNSLOTH_TP_SIZE": "2", "UNSLOTH_CP_SIZE": "2"}
+        assert os.environ["UNSLOTH_PARALLEL"] == "tp=2,cp=2"
+        layout = tp_env.env_layout()
+        assert (layout.dp, layout.cp, layout.tp, repr(layout)) == (1, 2, 2, "cp 2 x tp 2")
+        with pytest.raises(RuntimeError, match = "must run before from_pretrained"):
+            u.parallelize(tp = 4)
+        with pytest.raises(ValueError, match = "positive integer"):
+            u.parallelize(tp = 0)
+    finally:
+        for key in _ENV:
+            os.environ.pop(key, None)
+        tp_env._reset_env_layout()
+
+
+def test_layout_rules_run_when_the_layout_is_read(clean_env):
+    from unsloth.models import tp_env
+
+    clean_env.setenv("WORLD_SIZE", "8")
+    clean_env.setenv("UNSLOTH_PP_SIZE", "2")
+    clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+    tp_env._reset_env_layout()
+    try:
+        with pytest.raises(NotImplementedError, match = r"cp x pp: .* Instead: drop cp, or drop pp"):
+            tp_env.env_layout()
+    finally:
+        tp_env._reset_env_layout()
+
+
+# UNSLOTH_CP_SIZE into the trainer arguments.
+
+
+def test_env_cp_is_injected_into_the_trainer_args(clean_env):
+    import types
+
+    inits = []
+    Trainer = _fake_sft(clean_env, inits)
+    clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+    clean_env.setenv("UNSLOTH_CP_BACKEND", "ulysses")
+    args = types.SimpleNamespace(context_parallel_size = 1)
+    seen = {}
+
+    def stop(self, *a, **k):
+        raise RuntimeError("stop")  # past the injection; the CP runtime checks need a process group
+
+    clean_env.setattr(cp, "_check_cp_runtime", stop)
+    with pytest.raises(RuntimeError, match = "stop"):
+        Trainer(model = torch.nn.Linear(2, 2), args = args)
+    assert args.context_parallel_size == 2 and args.context_parallel_backend == "ulysses"
+    with pytest.raises(ValueError, match = "UNSLOTH_CP_SIZE=2"):
+        Trainer(model = torch.nn.Linear(2, 2), args = types.SimpleNamespace(context_parallel_size = 4))
+    del seen
+
+
+# context_parallel_backend = 'auto'.
+
+
+@pytest.mark.parametrize(
+    "heads, kv, size, tp, rl, want",
+    [
+        (4, 4, 2, 1, False, "ulysses"),
+        (4, 2, 4, 1, False, "ulysses"),  # kv heads replicated
+        (6, 6, 4, 1, False, "ring"),  # heads do not divide cp
+        (4, 4, 4, 2, False, "ring"),  # 2 heads per tp rank, cp 4
+        (4, 4, 2, 2, False, "ulysses"),
+        (6, 6, 4, 1, True, "ulysses"),  # RL: Ulysses only (then refused on the heads)
+        (None, None, 2, 1, False, "ulysses"),  # unknown model
+    ],
+)
+def test_auto_backend(heads, kv, size, tp, rl, want):
+    import types
+
+    config = types.SimpleNamespace(num_attention_heads = heads, num_key_value_heads = kv)
+    model = types.SimpleNamespace(config = config) if heads else None
+    assert cp.resolve_cp_backend("auto", size, model, tp = tp, rl = rl) == want
+    assert cp.resolve_cp_backend(None, size, model, tp = tp, rl = rl) == want
+    assert cp.resolve_cp_backend("ring", size, model) == "ring"  # explicit: as given
+    assert cp.resolve_cp_backend("ulysses", size, model) == "ulysses"
+
+
+def _auto_packing(monkeypatch, config, model):
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    class _Stub:
+        def __init__(self, model = None, args = None, **kwargs):
+            self.model, self.args = model, args
+
+    for name in ("enable_padding_free_metadata", "enable_sample_packing"):
+        monkeypatch.setattr(trainer_module, name, lambda model, trainer: None)
+    module = SimpleNamespace(SFTTrainer = _Stub)
+    trainer_module._patch_sft_trainer_auto_packing(module)
+    return module.SFTTrainer(model = model, args = config)
+
+
+class _Packable(torch.nn.Module):
+    def __init__(self, heads):
+        super().__init__()
+        import types
+
+        self.config = types.SimpleNamespace(num_attention_heads = heads, num_key_value_heads = heads, model_type = "llama")
+        self.lin = torch.nn.Linear(2, 2)
+
+    def forward(self, input_ids = None, packed_seq_lengths = None, **kwargs):
+        return input_ids
+
+
+def test_auto_keeps_packing_and_explicit_ring_refuses_it(monkeypatch):
+    from types import SimpleNamespace
+
+    packed = lambda backend: SimpleNamespace(
+        packing = True, padding_free = None, max_length = 64, context_parallel_size = 2,
+        context_parallel_backend = backend,
+    )
+    config = packed("auto")
+    _auto_packing(monkeypatch, config, _Packable(4))
+    assert config.packing is True, "auto (Ulysses) must keep packing on"
+    with pytest.raises(NotImplementedError, match = r"context_parallel_backend = 'ring'.*Instead"):
+        _auto_packing(monkeypatch, packed("ring"), _Packable(4))
+    config = packed("auto")
+    config._unsloth_cp_backend_auto = True
+    with pytest.raises(NotImplementedError, match = "'auto' chose ring because the attention heads"):
+        _auto_packing(monkeypatch, config, _Packable(3))
+
+
+def test_parallelize_refuses_a_legacy_variable_that_disagrees(clean_env):
+    import unsloth as u
+
+    clean_env.setenv("UNSLOTH_TP_SIZE", "4")
+    with pytest.raises(ValueError, match = "UNSLOTH_TP_SIZE=4"):
+        u.parallelize(tp = 2)
+
+
+# The capability registry (parallel_capabilities).
+
+
+def _q(**kw):
+    from unsloth.parallel_capabilities import Query
+
+    base = dict(trainer = "sft", family = "llama", torch = (2, 13), dp = 1)
+    base.update(kw)
+    return Query(**base)
+
+
+@pytest.mark.parametrize(
+    "query, axis, instead",
+    [
+        (dict(pp = 2, cp = 2), "cp x pp", "drop cp, or drop pp"),
+        (dict(pp = 2, tp = 2, cp = 2), "cp x pp", "drop cp, or drop pp"),
+        (dict(tp = 2, cp = 2, cp_backend = "ring"), "cp x tp", "cp_backend=ulysses"),
+        (dict(tp = 2, cp = 2, cp_backend = "ulysses", trainer = "grpo"), "cp x tp", "run DPO / GRPO with cp alone"),
+        (dict(tp = 2, cp = 2, cp_backend = "ulysses", hybrid = True), "cp x tp", "drop tp"),
+        (dict(tp = 2, cp = 2, cp_backend = "ulysses", packing = True), "cp x tp", "packing = False"),
+        (dict(tp = 2, cp = 2, cp_backend = "ulysses", mode = "full"), "cp x tp", "use LoRA"),
+        (dict(cp = 2, cp_backend = "ring", packing = True), "cp backend", "cp_backend=ulysses"),
+        (dict(cp = 2, cp_backend = "ring", hybrid = True), "cp backend", "cp_backend=ulysses"),
+        (dict(cp = 2, cp_backend = "ring", trainer = "dpo"), "cp backend", "cp_backend=ulysses"),
+        (dict(cp = 2, cp_backend = "ring", sm = 7), "cp backend", "cp_backend=ulysses"),
+        (dict(cp = 2, cp_backend = "ulysses", windowed = True), "cp x attention", "drop cp"),
+        (dict(cp = 2, torch = (2, 6)), "cp x torch", "upgrade torch"),
+        (dict(pp = 2, trainer = "grpo"), "pp x trainer", "drop pp"),
+        (dict(pp = 2, packing = True), "pp x packing", "packing = False"),
+        (dict(tp = 2, mode = "full"), "pp / tp x mode", "use LoRA, or UNSLOTH_FSDP2=1"),
+        (dict(tp = 2, vllm = True), "pp / tp x vLLM", "fast_inference = False"),
+    ],
+)
+def test_every_refusal_names_its_axis_and_the_alternative(query, axis, instead):
+    from unsloth import parallel_capabilities as caps
+
+    with pytest.raises(NotImplementedError) as info:
+        caps.check(_q(**query))
+    message = str(info.value)
+    assert message.startswith(f"Unsloth: {axis}: ") and f"Instead: {instead}" in message, message
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        dict(tp = 2, cp = 2, cp_backend = "ulysses"),
+        dict(dp = 2, tp = 2, cp = 2, cp_backend = "ulysses", fsdp2 = True),
+        dict(cp = 2, cp_backend = "ulysses", packing = True, hybrid = True),
+        dict(cp = 2, cp_backend = "ulysses", trainer = "grpo"),
+        dict(cp = 2, cp_backend = "ring", sm = 9),
+        dict(pp = 2, tp = 2, dp = 2, fsdp2 = True),
+        dict(tp = 2, mode = "qlora"),
+        dict(dp = 4, mode = "full", fsdp2 = True),
+    ],
+)
+def test_supported_cells_pass(query):
+    from unsloth import parallel_capabilities as caps
+
+    caps.check(_q(**query))
+
+
+def test_registry_table_and_query_from_a_model():
+    import types
+
+    from unsloth import parallel_capabilities as caps
+
+    table = caps.markdown_table()
+    assert table.count("\n") == len(caps.RULES) + 1 and "| cp x pp |" in table
+    config = types.SimpleNamespace(
+        model_type = "qwen3_next", layer_types = ["linear_attention", "full_attention"], sliding_window = None
+    )
+    model = types.SimpleNamespace(config = config, peft_config = {"default": 1})
+    layout = types.SimpleNamespace(dp = 1, tp = 2, pp = 1, cp = 2, fsdp2 = False, cp_backend = None)
+    q = caps.query_from(layout, None, model, types.SimpleNamespace(packing = False), cp_backend = "ulysses")
+    assert (q.family, q.hybrid, q.windowed, q.mode, q.cp, q.tp) == ("qwen3_next", True, False, "lora", 2, 2)
+    with pytest.raises(NotImplementedError, match = "hybrid"):
+        caps.check(q)
+
+
+def test_cp_env_with_a_plain_trainer_is_refused(clean_env):
+    import transformers
+
+    from unsloth.models import _utils
+
+    clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+
+    class Plain(transformers.Trainer):
+        def __init__(self):
+            pass
+
+    with pytest.raises(NotImplementedError, match = r"cp x trainer: .*Plain would train every rank"):
+        _utils._parallel_capabilities_pre(Plain(), Plain.__init__, (), {}, None)
+
+
+def test_banner_names_the_mesh_backend_and_batch():
+    import types
+
+    from unsloth import parallel_env as pe
+
+    trainer = types.SimpleNamespace(
+        args = types.SimpleNamespace(per_device_train_batch_size = 2, gradient_accumulation_steps = 4,
+                                     gradient_checkpointing = False),
+        model = types.SimpleNamespace(config = types.SimpleNamespace(_attn_implementation = "sdpa")),
+    )
+    layout = pe.ParallelLayout(2, 2, 8, True, cp = 2)
+    manager = types.SimpleNamespace(size = 2, backend = "ulysses")
+    line = pe.announce(trainer, layout, manager)
+    assert "mesh (pp 1, dp_replicate 1, dp_shard 2, cp 2, tp 2)" in line, line
+    assert "effective batch 2 x 4 accumulation x 2 data parallel = 16 rows" in line
+    assert "cp backend ulysses" in line and "attention sdpa" in line and "gradient checkpointing off" in line
+    assert pe.announce(trainer, layout, manager) is None  # once per trainer
