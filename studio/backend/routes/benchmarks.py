@@ -265,10 +265,30 @@ class BenchmarkTrafficMiddleware:
                         status_code = 409,
                     )(scope, receive, send)
                     return
+                # A load still running after its client left (inference's padded answer) keeps
+                # counting until it ends, not until the response does.
+                from core.inference.llama_keepwarm import detached_work_hold
+
+                refs = [1]
+
+                def release() -> None:
+                    with _lease_lock:
+                        refs[0] -= 1
+                        last = refs[0] == 0
+                    if last:
+                        _load_done(holder)
+
+                def hold():
+                    with _lease_lock:
+                        refs[0] += 1
+                    return release
+
+                token = detached_work_hold.set(hold)
                 try:
                     await self.app(scope, receive, send)
                 finally:
-                    _load_done(holder)
+                    detached_work_hold.reset(token)
+                    release()
                 return
             if (
                 _lease is not None
