@@ -6597,10 +6597,10 @@ def _strip_tool_xml_for_display(
             return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
-    # Mask blocked-call bodies (prose) so these passes do not edit them.
+    # Mask blocked-call bodies and lone backticked tags (prose) so these passes do not edit them.
     from core.inference.tool_call_parser import _mask_blocked_bodies, _unmask_blocked_bodies
 
-    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names, mentions = True)
     result = strip_outside_think(masked, _strip_segment)
     if not bodies:
         return result
@@ -6627,6 +6627,41 @@ _DISPLAY_SENTINEL_OVERLAP = max(len(sentinel) for sentinel in _DISPLAY_STRIP_SEN
 _DISPLAY_GEMMA_CALL_RE = _re.compile(r"(?<!\w)call\s*:")
 # A trailing ``call`` (or a prefix of one) that later text could still turn into ``call:``.
 _DISPLAY_GEMMA_TAIL_RE = _re.compile(r"(?<!\w)c(?:a(?:l(?:l\s*)?)?)?\Z")
+
+
+# A backticked tool tag whose closing backticks have not arrived: it may still become a lone-tag mention (prose,
+# see ``tool_healing.tag_mention_spans``), so a stream must not show it and then take it back.
+_PENDING_MENTION_RE = _re.compile(
+    r"(?<!`)(``?)[ \t]*("
+    r"(?:<(?!/?think(?:ing)?>)[^<>`\n]*(?:>[\w.\-]*)?|\[/?[A-Z_]*(?:\][\w.\-]*)?)"
+    r"[ \t]*)(`*)\Z"
+)
+# Tags are short; a longer tail is not held (it shows as it did before).
+_PENDING_MENTION_MAX_CHARS = 256
+
+
+def _pending_mention_cut(text: str) -> int:
+    """Where to cut a cumulative stream so a still-open backticked tool tag is held back, else -1. The cut keeps
+    the backticks, so for a tag the strip would remove anyway the held display equals the full strip."""
+    lo = max(0, len(text) - _PENDING_MENTION_MAX_CHARS)
+    if text.find("`", lo) < 0:
+        return -1
+    m = _PENDING_MENTION_RE.search(text, lo)
+    if m is None or len(m.group(3)) >= len(m.group(1)):
+        return -1
+    tag = m.group(2).rstrip(" \t")
+    if not any(tag.startswith(s) or s.startswith(tag) for s in _DISPLAY_STRIP_SENTINELS):
+        return -1
+    return m.start(2)
+
+
+def _hold_pending_mention(text: str, auto_heal_tool_calls: bool) -> str:
+    """A cumulative stream event with a still-open backticked tool tag held back; the strips only remove text
+    with Auto-Heal on, so only then can a shown tag be taken back."""
+    if not auto_heal_tool_calls:
+        return text
+    cut = _pending_mention_cut(text)
+    return text[:cut] if cut >= 0 else text
 
 
 class _StreamingDisplayStrip:
@@ -6753,13 +6788,15 @@ class _ReasoningSpanGuard:
     ) -> str:
         wrap = self._wrap_for(text, wrapped_so_far)
         if wrap is None:
+            # Each event carries the turn so far, consumed as deltas: hold a still-open backticked tag.
             return _strip_tool_xml_for_display(
-                text,
+                _hold_pending_mention(text, auto_heal_tool_calls),
                 auto_heal_tool_calls = auto_heal_tool_calls,
                 enabled_tool_names = enabled_tool_names,
             )
         # Clamp: mid-stream the close tag has not arrived yet, so the whole text is trace.
         end = min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
+        text = text[:end] + _hold_pending_mention(text[end:], auto_heal_tool_calls)
         return text[:end] + _strip_tool_xml_for_display(
             text[end:],
             auto_heal_tool_calls = auto_heal_tool_calls,
@@ -32141,7 +32178,9 @@ async def produce_openai_chat_completions(
 
                         # Sanitize the full cumulative text then diff, so cross-chunk XML tags are handled.
                         raw_cumulative = event.get("text", "")
-                        clean_cumulative = _gguf_display_strip.strip(raw_cumulative)
+                        clean_cumulative = _gguf_display_strip.strip(
+                            _hold_pending_mention(raw_cumulative, _gguf_auto_heal_tool_calls)
+                        )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
                         if not new_text:
@@ -33962,7 +34001,9 @@ async def produce_openai_chat_completions(
 
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
-                    clean_cumulative = _sf_display_strip.strip(raw_cumulative)
+                    clean_cumulative = _sf_display_strip.strip(
+                        _hold_pending_mention(raw_cumulative, _sf_auto_heal_tool_calls)
+                    )
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
                     if not new_text:
