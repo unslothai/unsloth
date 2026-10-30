@@ -173,5 +173,5 @@ def test_a_megabyte_of_adversarial_markup_parses_in_linear_time(text):
     parse_tool_calls_from_text(text, enabled_tool_names = ENABLED)
     strip_tool_markup(text, final = True, enabled_tool_names = ENABLED)
     tool_healing.parse_tool_calls_from_text(text, enabled_tool_names = ENABLED)
-    # Each took 20 s or more with a per-tag scan of the text.
-    assert time.perf_counter() - start < 5.0
+    # Each took 20 s or more with a per-tag scan of the text and runs in 0.2 to 2 s here; 15 s leaves room for slow CI runners.
+    assert time.perf_counter() - start < 15.0
