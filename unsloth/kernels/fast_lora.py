@@ -22,8 +22,7 @@ from .utils import (
     _base_quant_state,
     get_lora_parameters,
     get_lora_parameters_bias,
-    LORA_FUSED_PASSES,
-    _lora_fused_base_ok,
+    _lora_fused_ok,
     matmul_lora,
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,
@@ -307,7 +306,8 @@ def _matmul_lora_ext(X, X_lora, W, W_quant, A, B, S, bias):
     # matmul_lora with the LoRA branch reading X_lora (X after dropout, or X itself) plus lora_B's bias.
     # No global dequantization scratch: these configurations ran PEFT, which keeps no dense weight resident.
     if A is None or (X_lora is X and bias is None):
-        return matmul_lora(X, W, W_quant, A, B, S, use_global_buffer = False)
+        # fused = False: dropout or a lora_bias elsewhere in the module keeps the whole module on one order.
+        return matmul_lora(X, W, W_quant, A, B, S, use_global_buffer = False, fused = False)
     out = matmul_lora(X, W, W_quant, None, None, None, use_global_buffer = False)
     dtype = X.dtype
     XA = torch.matmul(X_lora.reshape(-1, X_lora.shape[-1]), A.to(dtype).t())
@@ -363,6 +363,20 @@ def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
         dX = dX_out
         addmm_(dX, dB, A_rows, alpha = S, beta = 0)
     return d_As, d_Bs, dX
+
+
+def _mlp_fused_ok(gateW, gateW_quant, upW, upW_quant, downW, downW_quant, dtype):
+    # All or none: the forward and backward of one module use one order.
+    return all(
+        _lora_fused_ok(W, Q, dtype)
+        for W, Q in ((gateW, gateW_quant), (upW, upW_quant), (downW, downW_quant))
+    )
+
+
+def _qkv_fused_ok(QW, QW_quant, KW, KW_quant, VW, VW_quant, dtype):
+    return all(
+        _lora_fused_ok(W, Q, dtype) for W, Q in ((QW, QW_quant), (KW, KW_quant), (VW, VW_quant))
+    )
 
 
 def _lora_bias_grad(dY, S):
@@ -453,15 +467,16 @@ class LoRA_MLP(torch.autograd.Function):
 
         plain = dropout_p is None and gateBias is None and upBias is None and downBias is None
         if plain:
+            fused = _mlp_fused_ok(gateW, gateW_quant, upW, upW_quant, downW, downW_quant, dtype)
             gateXA = upXA = None
             # Eager only: traced, the shared intermediate fails the block compile (saved output aliasing).
-            if LORA_FUSED_PASSES and not _is_compiling() and gateA is not None and upA is not None:
+            if fused and not _is_compiling() and gateA is not None and upA is not None:
                 gateXA, upXA = _shared_XA(X.view(-1, X.shape[-1]), (gateA, upA), dtype)
-            e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS, XA = gateXA)
-            g = matmul_lora(X, upW, upW_quant, upA, upB, upS, XA = upXA)
+            e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS, XA = gateXA, fused = fused)
+            g = matmul_lora(X, upW, upW_quant, upA, upB, upS, XA = upXA, fused = fused)
             del gateXA, upXA
             h = _forward_function(e, g)
-            i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
+            i = matmul_lora(h, downW, downW_quant, downA, downB, downS, fused = fused)
             masks = (None, None, None)
         else:
             # Masks are drawn gate, up, down: the order PEFT's down(act(gate(X)) * up(X)) draws them in.
@@ -494,6 +509,7 @@ class LoRA_MLP(torch.autograd.Function):
         ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
         ctx.dropout_p = dropout_p or (0.0, 0.0, 0.0)
         ctx.biases = (gateBias is not None, upBias is not None, downBias is not None)
+        ctx.plain = plain
         ctx.global_buffer = plain
         return i
 
@@ -542,6 +558,10 @@ class LoRA_MLP(torch.autograd.Function):
             downB.t(),
         )
 
+        # Decided on the stored weights, before the FP8 down weight below is converted to a dense one.
+        fused = ctx.plain and _mlp_fused_ok(
+            gateW, gateW_quant, upW, upW_quant, downW, downW_quant, dY.dtype
+        )
         if downW.dtype == torch.float8_e4m3fn:
             # Dequantize like gate / up: matmul_lora would send the FP8 weight to fp8_linear, quantizing dY to FP8.
             downW, downW_quant = fast_dequantize(downW.t(), downW_quant, dtype = dY.dtype), None
@@ -556,6 +576,7 @@ class LoRA_MLP(torch.autograd.Function):
                 downA,
                 downS,
                 use_global_buffer = getattr(ctx, "global_buffer", True),
+                fused = fused,
             )
         else:
             # Only the LoRA branch saw the dropped out h, so only its gradient goes through the mask.
@@ -579,16 +600,7 @@ class LoRA_MLP(torch.autograd.Function):
         d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
         d_downB.addmm_(downA.t() @ h.t(), dY, alpha = downS, beta = 0)
 
-        if (
-            LORA_FUSED_PASSES
-            and up_mask is None
-            and gate_mask is None
-            and gateS == upS
-            and not ctx.biases[0]
-            and not ctx.biases[1]
-            and _lora_fused_base_ok(upW, upW_quant, df.dtype)
-            and _lora_fused_base_ok(gateW, gateW_quant, de.dtype)
-        ):
+        if fused and gateS == upS and df.dtype == de.dtype == dY.dtype:
             (d_gateA, d_upA), (d_gateB, d_upB), dX = _shared_lora_backward(
                 X,
                 (de, df),
@@ -906,19 +918,20 @@ class LoRA_QKV(torch.autograd.Function):
         if X.dim() == 3:
             X_for_matmul = X.view(-1, X.shape[-1])
         if dropout_p is None and QBias is None and KBias is None and VBias is None:
+            fused = _qkv_fused_ok(QW, QW_quant, KW, KW_quant, VW, VW_quant, dtype)
             QXA = KXA = VXA = None
             # Eager only, as in LoRA_MLP.
             if (
-                LORA_FUSED_PASSES
+                fused
                 and not _is_compiling()
                 and QA is not None
                 and KA is not None
                 and VA is not None
             ):
                 QXA, KXA, VXA = _shared_XA(X_for_matmul, (QA, KA, VA), dtype)
-            Q = matmul_lora(X_for_matmul, QW, QW_quant, QA, QB, QS, XA = QXA)
-            K = matmul_lora(X_for_matmul, KW, KW_quant, KA, KB, KS, XA = KXA)
-            V = matmul_lora(X_for_matmul, VW, VW_quant, VA, VB, VS, XA = VXA)
+            Q = matmul_lora(X_for_matmul, QW, QW_quant, QA, QB, QS, XA = QXA, fused = fused)
+            K = matmul_lora(X_for_matmul, KW, KW_quant, KA, KB, KS, XA = KXA, fused = fused)
+            V = matmul_lora(X_for_matmul, VW, VW_quant, VA, VB, VS, XA = VXA, fused = fused)
             del QXA, KXA, VXA
             masks = (None, None, None)
         else:
@@ -963,6 +976,7 @@ class LoRA_QKV(torch.autograd.Function):
         ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
         ctx.dropout_p = dropout_p or (0.0, 0.0, 0.0)
         ctx.biases = (QBias is not None, KBias is not None, VBias is not None)
+        ctx.plain = dropout_p is None and not any(ctx.biases)
         return Q, K, V
 
     @staticmethod
@@ -1010,15 +1024,10 @@ class LoRA_QKV(torch.autograd.Function):
         d_VB = torch.empty_like(VB)
 
         if (
-            LORA_FUSED_PASSES
-            and Q_mask is None
-            and K_mask is None
-            and V_mask is None
+            ctx.plain
             and QS == KS == VS
-            and not any(ctx.biases)
-            and _lora_fused_base_ok(QW, QW_quant, dQ.dtype)
-            and _lora_fused_base_ok(KW, KW_quant, dK.dtype)
-            and _lora_fused_base_ok(VW, VW_quant, dV.dtype)
+            and _qkv_fused_ok(QW, QW_quant, KW, KW_quant, VW, VW_quant, dQ.dtype)
+            and dQ.dtype == dK.dtype == dV.dtype
         ):
             (d_QA, d_KA, d_VA), (d_QB, d_KB, d_VB), dX = _shared_lora_backward(
                 X,
@@ -1227,6 +1236,7 @@ class LoRA_W(torch.autograd.Function):
         ctx.save_for_backward(A, B, X, mask)
         ctx.dropout_p = dropout_p
         ctx.has_bias = bias is not None
+        ctx.plain = dropout_p is None and bias is None
         return XW
 
     @staticmethod
@@ -1258,7 +1268,7 @@ class LoRA_W(torch.autograd.Function):
         del Xd
         d_bias = _lora_bias_grad(dY, S) if ctx.has_bias else None
 
-        if LORA_FUSED_PASSES and mask is None and _lora_fused_base_ok(W, W_quant, dY.dtype):
+        if ctx.plain and _lora_fused_ok(W, W_quant, dY.dtype):
             # dX starts as the rank-r term; the base GEMM accumulates onto it in its epilogue.
             dX = torch.addmm(y_dB.new_zeros(1), y_dB, A.t(), beta = 0, alpha = S)
             W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)

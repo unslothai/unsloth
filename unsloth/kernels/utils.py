@@ -1880,14 +1880,20 @@ def addmm_(
 LORA_FUSED_PASSES = os.environ.get("UNSLOTH_LORA_FUSED_PASSES", "1") != "0"
 
 
-def _lora_fused_base_ok(W, W_quant, dtype):
-    # The base GEMM accumulates in place, which autocast does not cast: a base weight that dequantizes to
-    # another dtype keeps the base-then-LoRA order (fp32 weights under fp16 / bf16 autocast, or a 4-bit
-    # state stored as bf16 under fp16 autocast: fast_dequantize returns the state's dtype, not `dtype`).
+def _lora_fused_ok(W, W_quant, dtype):
+    # One rule for every forward and backward call site. fp16 keeps the old order: a rank-r term or a
+    # summed LoRA dX rounded on its own can overflow before the base term cancels it. FP8, INT4 (either
+    # orientation) and packed weights have their own GEMMs. The base GEMM accumulates in place, which
+    # autocast does not cast, so the weight must dequantize to `dtype` (fast_dequantize returns a 4-bit
+    # state's own dtype, not the one asked for).
+    if not LORA_FUSED_PASSES or dtype not in (torch.bfloat16, torch.float32):
+        return False
+    if isinstance(W, Float8Tensor) or W.dtype == torch.float8_e4m3fn:
+        return False
+    if type(W_quant) is Int4QuantState or _is_packed_state(W_quant):
+        return False
     if W_quant is None:
         return W.dtype == dtype
-    if W.dtype == torch.float8_e4m3fn:
-        return True
     return _quant_state_dtype(W_quant) == dtype
 
 
@@ -1901,8 +1907,11 @@ def matmul_lora(
     out = None,
     use_global_buffer = True,
     XA = None,
+    fused = True,
 ):
     # XA: X @ A.t() already computed by the caller (shared across projections reading the same X).
+    # fused = False: the caller's module needs the base-then-LoRA order (dropout, lora_bias, a weight
+    # converted before this call); _lora_fused_ok decides the rest.
     dtype = X.dtype
 
     if X.dim() == 3:
@@ -1927,7 +1936,13 @@ def matmul_lora(
         out = _int4_matmul(X, W, W_quant, out = out)
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
-    elif A is not None and LORA_FUSED_PASSES and _lora_fused_base_ok(W, W_quant, dtype):
+    elif (
+        A is not None
+        and fused
+        and _lora_fused_ok(W, W_quant, dtype)
+        # A caller's buffer is written before the base GEMM, so it must already be the output.
+        and (out is None or (out.shape == (X.shape[0], B.shape[0]) and out.dtype == dtype))
+    ):
         if XA is None:
             XA = torch_matmul(X, A.t().to(dtype))
         B = B.t().to(dtype)
