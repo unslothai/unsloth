@@ -86,14 +86,36 @@ def test_rejected_reply_is_asked_again_without_the_server_parser(monkeypatch, me
     assert not any('"function"' in text for text in shown)
 
 
-def test_rejection_after_streamed_output_still_fails(monkeypatch):
-    """A second request cannot be joined to output the caller already has, so nothing is retried."""
+def test_complete_calls_before_a_rejected_later_call_still_run(monkeypatch):
+    """Llama-3.2-1B ``;``-joins two calls: the first streams whole, then the second is rejected."""
     payloads: list[dict] = []
     streams = [
         [_progress(), _tool_call_sse("web_search", {"query": "a"}, "c1"), _error(_PEG)],
+        _content_stream("Done."),
     ]
     backend = _make_backend(monkeypatch, streams, payloads)
-    _record_tool_calls(monkeypatch, "RESULT_OK")
+    calls = _record_tool_calls(monkeypatch, "RESULT_OK")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Search."}],
+        [_web_search_tool()],
+        max_tool_iterations = 2,
+    )
+
+    assert calls == [("web_search", {"query": "a"})]
+    assert [p.get("tool_choice") for p in payloads] == ["auto", "auto"]
+    assert [e["text"] for e in events if e.get("type") == "content"][-1] == "Done."
+
+
+def test_rejection_after_an_incomplete_streamed_call_still_fails(monkeypatch):
+    """A second request cannot be joined to output the caller already has, so nothing is retried."""
+    payloads: list[dict] = []
+    partial = {"index": 0, "id": "c1", "type": "function"}
+    partial["function"] = {"name": "web_search", "arguments": '{"query": "a'}
+    streams = [[_progress(), _sse({"tool_calls": [partial]}), _error(_PEG)]]
+    backend = _make_backend(monkeypatch, streams, payloads)
+    calls = _record_tool_calls(monkeypatch, "RESULT_OK")
 
     with pytest.raises(LlamaStreamError):
         _run_tool_loop(
@@ -102,6 +124,7 @@ def test_rejection_after_streamed_output_still_fails(monkeypatch):
             [_web_search_tool()],
         )
     assert len(payloads) == 1
+    assert calls == []
 
 
 def test_other_stream_errors_are_not_retried(monkeypatch):
