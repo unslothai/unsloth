@@ -41,3 +41,18 @@ def test_literal_marker_inside_a_json_quoted_value_keeps_its_arguments():
     assert _calls('call:web_search{query:"a, b:<|"|>c"}') == [
         ("web_search", {"query": 'a, b:<|"|>c'})
     ]
+
+
+@pytest.mark.parametrize(
+    "body, want",
+    [
+        ("query:<|\"|>mars<|\"|>,unit:'celsius'", {"query": "mars", "unit": "celsius"}),
+        (
+            "query:<|\"|>a, b:c<|\"|>,opts:{unit:'c'},tags:['x','y']",
+            {"query": "a, b:c", "opts": {"unit": "c"}, "tags": ["x", "y"]},
+        ),
+        ('code:<|"|>print("hi")\nx = \'y\'<|"|>', {"code": "print(\"hi\")\nx = 'y'"}),
+    ],
+)
+def test_other_values_keep_their_quote_less_reading(body, want):
+    assert _calls("call:web_search{" + body + "}") == [("web_search", want)]

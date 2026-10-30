@@ -3019,20 +3019,10 @@ def _parse_gemma_tool_calls(
         if _tool_healing._in_code(code_spans, cursor):
             code_spans, code_from = None, cursor
         body = content[body_start + 1 : end]
-        # <|"|>-quoted values need the wrapped path's decoder; the quote-less parser keeps the delimiters.
-        # The marker test cannot see quoting, so a body that decoder rejects (a literal <|"|> inside a
-        # JSON-quoted value) keeps the quote-less reading instead of running the tool with no arguments.
-        args = None
-        if _GEMMA_QUOTED_VALUE_RE.search(body):
-            try:
-                args = _tool_healing._gemma_arguments_to_json(body)
-            except Exception:
-                args = None
-        if not isinstance(args, dict):
-            try:
-                args = _gemma_parse_stripped_body(body)
-            except Exception:
-                args = {}
+        try:
+            args = _gemma_bare_body_arguments(body)
+        except Exception:
+            args = {}
         out.append(
             {
                 "id": f"call_{id_offset + len(out)}",
@@ -3560,6 +3550,47 @@ def _gemma_strip_quoted_leaves(value: Any) -> Any:
     if isinstance(value, list):
         return [_gemma_strip_quoted_leaves(v) for v in value]
     return value
+
+
+_GEMMA_SLOT = "\ue000"
+_GEMMA_QUOTED_STR_RE = re.compile(r'<\|"\|>(.*?)<\|"\|>', re.DOTALL)
+_GEMMA_SLOT_RE = re.compile(_GEMMA_SLOT + r"(\d+)" + _GEMMA_SLOT)
+
+
+def _gemma_bare_body_arguments(body: str) -> dict[str, Any]:
+    """Each ``<|"|>``-quoted value is read raw, every other value as the quote-less parser reads it (single
+    quotes, nesting). A delimiter that does not end up a whole value (a literal one inside another quoted
+    value) keeps the quote-less reading of the whole body."""
+    if _GEMMA_QUOTED_VALUE_RE.search(body) is None or _GEMMA_SLOT in body:
+        return _gemma_parse_stripped_body(body)
+    raw: list[str] = []
+
+    def slot(m: "re.Match") -> str:
+        raw.append(m.group(1))
+        return f'"{_GEMMA_SLOT}{len(raw) - 1}{_GEMMA_SLOT}"'
+
+    used: list[int] = []
+
+    def fill(v: Any) -> Any:
+        if isinstance(v, dict):
+            return {k: fill(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [fill(x) for x in v]
+        if isinstance(v, str) and _GEMMA_SLOT in v:
+            m = _GEMMA_SLOT_RE.fullmatch(v)
+            if m is None:
+                raise ValueError("delimiter inside a value")
+            used.append(int(m.group(1)))
+            return raw[used[-1]]
+        return v
+
+    try:
+        args = fill(_gemma_parse_stripped_body(_GEMMA_QUOTED_STR_RE.sub(slot, body)))
+    except ValueError:
+        args = None
+    if args is None or sorted(used) != list(range(len(raw))):
+        return _gemma_parse_stripped_body(body)
+    return args
 
 
 def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:

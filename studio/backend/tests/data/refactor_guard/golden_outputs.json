@@ -11,6 +11,7 @@
     "_first_foreign_tool_signal": "253f37233f0cd47bb9a1f4e2cb04072d1575b1245d5f0a2c0fc7190dfa138354",
     "_first_sentinel": "a5aebe5d9a8bdd81671d6c572517e0e8526d269db1a0fdf92e86c618ce8155e0",
     "_gemma_balanced_brace_end": "a5fbd98554937c109db0e3b848ba997193994c85025b383c4958452b913d7e5d",
+    "_gemma_bare_body_arguments": "b9ae7baf34cbff7fdbf0bb883417d77785d8246a703b160029e7297c0ecc0631",
     "_gemma_body_brace_end": "ad13a08b3a789c52bec6e851b53cf4b90c7b794904f3ee54bf12d4042e4b0820",
     "_gemma_call_is_anchored": "c52e950286578ec37883135946183a85ab3f74b03690722408e40ab65e7f7c6a",
     "_gemma_coerce_scalar": "4649c55ae145ed01354b7bc6dc730fe150235e6f197d1d0b50978eed0b23c811",
