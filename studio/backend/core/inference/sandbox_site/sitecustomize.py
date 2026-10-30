@@ -331,9 +331,8 @@ class _HostPackagesFinder:
         )
 
 
-# pip --prefix with --ignore-installed never uninstalls, so an upgrade leaves the old dist-info beside
-# the new one and importlib.metadata can report the old version. RECORD is written last, so the
-# newest RECORD per project is the finished install.
+# --ignore-installed never uninstalls, so a reinstall leaves stale dist-info importlib.metadata may pick;
+# RECORD is written last, so the newest RECORD per project is the finished install.
 def _prune_stale_dist_info():
     try:
         prefix = os.environ.get("PIP_PREFIX")
