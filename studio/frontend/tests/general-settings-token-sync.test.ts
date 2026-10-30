@@ -159,6 +159,7 @@ function generalTab(initialToken: string) {
     "@/lib/tick-icon": { Tick02Icon: {} },
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
+    "@/lib/folder-icons": new Proxy({}, { get: () => ({}) }),
     "../api/helper-precache": {
       loadHelperPrecacheSettings: never,
       updateHelperPrecacheSettings: never,

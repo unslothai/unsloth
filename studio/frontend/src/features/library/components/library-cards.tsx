@@ -4,7 +4,7 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Folder01Icon } from "@hugeicons/core-free-icons";
+import { FolderClosedIcon } from "@/lib/folder-icons";
 import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
@@ -304,7 +304,8 @@ function FolderCard({
           className="flex aspect-square items-center justify-center"
           style={{ minHeight: CARD_MIN_HEIGHT }}
         >
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className={CARD_ICON_CLASS} />
+          {/* 4.4's folder draws smaller: 30px matches 4.1's at 28px. */}
+          <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.5} className="size-7.5" />
         </div>
       </CardFrame>
       <button
@@ -365,22 +366,18 @@ export function CardGrid({
 }) {
   const container = useRef<HTMLDivElement>(null);
   const columns = useCardColumns(container);
-  const grid = (
+  return (
     <div
       ref={container}
       className={cn("grid gap-x-5", CARD_ROW_GAP)}
       style={{
         gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-        gridAutoRows: minRowHeight
-          ? `max(${minRowHeight}, calc((100cqw - ${columns - 1} * var(--spacing) * 5) / ${columns}))`
-          : undefined,
+        gridAutoRows: minRowHeight ? `minmax(${minRowHeight}, auto)` : undefined,
       }}
     >
       {children}
     </div>
   );
-  // cqw resolves against an ancestor container, never the grid itself.
-  return minRowHeight ? <div className="@container">{grid}</div> : grid;
 }
 
 export function FolderGrid({

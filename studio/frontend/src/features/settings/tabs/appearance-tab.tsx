@@ -2,10 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef } from "react";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { TrickOrTreatSettingsRow } from "@/features/halloween/trick-or-treat-settings-row";
 import { useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import {
   ActiveColorControl,
   ChatFontRow,
@@ -24,15 +26,124 @@ import {
   UiFontSizeRow,
 } from "../components/appearance-custom-controls";
 import { ColorThemeSelect } from "../components/color-theme-select";
+import { GpuRenderingSegmented } from "../components/gpu-rendering-segmented";
 import { SettingsRow } from "../components/settings-row";
 import { SidebarMenuCustomizer } from "../components/sidebar-menu-customizer";
 import { SidebarNavCustomizer } from "../components/sidebar-nav-customizer";
 import { SettingsSection } from "../components/settings-section";
 import { ThemeSegmented } from "../components/theme-segmented";
+import { gpuRenderingNotes } from "../gpu-rendering-notes";
+import { useGpuRenderingSetting } from "../hooks/use-gpu-rendering-setting";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 const FONT_CONTROL_CLASS = "flex w-76 max-w-full items-center gap-2";
 const FONT_SELECT_CLASS = "w-auto min-w-0 flex-1";
+const NOTE_CLASS =
+  "max-w-[calc(280px*var(--ui-space-scale,1))] text-right text-xs";
+
+function GpuRenderingRow() {
+  const t = useT();
+  const gpu = useGpuRenderingSetting({
+    enabled: isTauri,
+    loadError: t("settings.appearance.gpuRendering.loadError"),
+    saveError: t("settings.appearance.gpuRendering.saveError"),
+    restartError: t("settings.appearance.gpuRendering.restartError"),
+  });
+  const status = gpu.status;
+  const notes = status ? gpuRenderingNotes(status, status.setting) : [];
+  const busy = gpu.saving || gpu.restarting;
+  const below =
+    notes.length > 0 || gpu.error ? (
+      <div className="flex flex-col items-end gap-1.5">
+        {notes.map((note) => {
+          switch (note.kind) {
+            case "macNote":
+              return (
+                <span key={note.kind} className={`${NOTE_CLASS} text-muted-foreground`}>
+                  {t("settings.appearance.gpuRendering.macNote")}
+                </span>
+              );
+            case "envOverride":
+              return (
+                <span key={note.kind} className={`${NOTE_CLASS} text-muted-foreground`}>
+                  {t("settings.appearance.gpuRendering.envOverride", {
+                    name: note.name,
+                  })}
+                </span>
+              );
+            case "fallbackNote":
+              return (
+                <div key={note.kind} className="flex flex-col items-end gap-1.5">
+                  <span className={`${NOTE_CLASS} text-muted-foreground`}>
+                    {t("settings.appearance.gpuRendering.fallbackNote")}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={busy || !status}
+                    onClick={() => {
+                      if (status) void gpu.update(status.setting);
+                    }}
+                  >
+                    {t("settings.appearance.gpuRendering.tryAgain")}
+                  </Button>
+                </div>
+              );
+            case "oldWebkitWarning":
+              return (
+                <span key={note.kind} className={`${NOTE_CLASS} text-muted-foreground`}>
+                  {t("settings.appearance.gpuRendering.oldWebkitWarning", {
+                    version: note.version,
+                  })}
+                </span>
+              );
+            case "oldDriverWarning":
+              return (
+                <span key={note.kind} className={`${NOTE_CLASS} text-muted-foreground`}>
+                  {t("settings.appearance.gpuRendering.oldDriverWarning", {
+                    version: note.version,
+                  })}
+                </span>
+              );
+            case "restartPending":
+              return (
+                <div key={note.kind} className="flex items-center gap-2">
+                  <span className={`${NOTE_CLASS} text-muted-foreground`}>
+                    {t("settings.appearance.gpuRendering.restartPending")}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void gpu.relaunch()}
+                  >
+                    {t("settings.appearance.gpuRendering.restartNow")}
+                  </Button>
+                </div>
+              );
+          }
+        })}
+        {gpu.error ? (
+          <span className={`${NOTE_CLASS} text-destructive`}>{gpu.error}</span>
+        ) : null}
+      </div>
+    ) : null;
+  return (
+    <SettingsRow
+      label={t("settings.appearance.gpuRendering.label")}
+      description={t("settings.appearance.gpuRendering.description")}
+      below={below}
+    >
+      <GpuRenderingSegmented
+        value={status?.setting ?? null}
+        onChange={(next) => void gpu.update(next)}
+        disabled={!status || !status.configurable || busy}
+      />
+    </SettingsRow>
+  );
+}
 
 export function AppearanceTab() {
   const t = useT();
@@ -163,6 +274,12 @@ export function AppearanceTab() {
           <FontSmoothingSwitch />
         </SettingsRow>
       </SettingsSection>
+
+      {isTauri ? (
+        <SettingsSection title={t("settings.appearance.gpuRendering.sectionTitle")}>
+          <GpuRenderingRow />
+        </SettingsSection>
+      ) : null}
 
       <div ref={sidebarNavSectionRef} className="scroll-mt-4">
         <SettingsSection
