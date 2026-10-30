@@ -161,13 +161,14 @@ def test_superseded_generations_are_deleted(rag_conn):
     rows = _vectors(300)
     _add(rag_conn, "kb", "d", rows)
     _add(rag_conn, "kb", "x", _vectors(60, seed = 3))
-    first = _warm(rag_conn, rows[0])
+    # Only the path: a held entry keeps its index mapped, and Windows cannot delete a mapped file.
+    first = _warm(rag_conn, rows[0]).base
     store.delete_document(rag_conn, "x")
     _dense(rag_conn, rows[0])
     assert vec_cache.drain(60)
     (second,) = vec_cache._ann.values()
-    assert second.base != first.base
-    assert not os.path.exists(first.base + ".usearch")
+    assert second.base != first
+    assert not os.path.exists(first + ".usearch")
 
 
 @pytest.mark.parametrize("mode", ["off", "no_wheel"])
@@ -202,14 +203,14 @@ def test_the_disk_cap_evicts_the_least_recently_used_scope(rag_conn, monkeypatch
     monkeypatch.setenv("RAG_VEC_ANN_DISK_MB", "0.001")
     rows = _vectors(300)
     _add(rag_conn, "kb", "d", rows)
-    first = _warm(rag_conn, rows[0])
+    first = _warm(rag_conn, rows[0]).base
     store.create_document(rag_conn, scope = "kb2", filename = "f", sha256 = "e", document_id = "e")
     store.add_chunks(rag_conn, "kb2", "e", [_chunk(i) for i in range(300)], _vectors(300, seed = 4))
     store.search_dense(rag_conn, "kb2", rows[0], 5)
     assert vec_cache.drain(60)
     (only,) = vec_cache._ann.values()
-    assert only.base != first.base and os.path.exists(only.base + ".usearch")
-    assert not os.path.exists(first.base + ".usearch")
+    assert only.base != first and os.path.exists(only.base + ".usearch")
+    assert not os.path.exists(first + ".usearch")
     hits, scanned = _dense(rag_conn, rows[0], 3)
     assert scanned and hits[0][0] == "d:0"
 
@@ -231,7 +232,7 @@ def test_an_exact_entry_that_outgrows_the_budget_moves_to_hnsw(rag_conn, monkeyp
 def test_a_large_catch_up_rebuilds_without_loading_the_delta(rag_conn, monkeypatch):
     rows = _vectors(300)
     _add(rag_conn, "kb", "d", rows)
-    first = _warm(rag_conn, rows[0])
+    first = _warm(rag_conn, rows[0]).base
     vec_cache.clear()
     monkeypatch.setenv("RAG_VEC_CACHE", "0")
     _add(rag_conn, "kb", "e", _vectors(4, seed = 13))
@@ -241,4 +242,4 @@ def test_a_large_catch_up_rebuilds_without_loading_the_delta(rag_conn, monkeypat
         vec_cache, "_delta_since", lambda *a: pytest.fail("loaded the delta before rebuilding")
     )
     entry = _warm(rag_conn, rows[0])
-    assert entry.base != first.base and entry.ann.n == 304 and not len(entry.ann.delta_keys)
+    assert entry.base != first and entry.ann.n == 304 and not len(entry.ann.delta_keys)
