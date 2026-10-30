@@ -1034,8 +1034,7 @@ def _flex_call_needs_backward(query, key, value):
 
 
 def _flex_decoding_unavailable():
-    """unsloth_zoo's import-time answer: torch's flex_decoding cannot compile against the installed Triton (Triton 3.9
-    removed the block pointers torch 2.9 - 2.12's decode template builds). False on an unsloth_zoo without the check."""
+    """True when unsloth_zoo found flex_decoding cannot compile against the installed Triton."""
     try:
         from unsloth_zoo.flex_attention.utils import FLEX_DECODING_UNAVAILABLE
     except Exception:
@@ -1191,7 +1190,6 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             _count_flex_reroute("flex")
         requested = kwargs.get("kernel_options") or {}
         if not isinstance(requested, dict):
-            # torch reads any mapping through dict(kernel_options); so does every check below.
             requested = dict(requested)
             kwargs["kernel_options"] = requested
         requested_backend = requested.get("BACKEND")
@@ -1243,11 +1241,8 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             kernel_options = _flex_tuned_bwd_kernel_options(query.shape[-1], tuned_bwd_device_ok)
         # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
         # padded batch stride (comprehensive_padding) that the backward template ignores, so every
-        # batch row after the first reads a shifted LSE and the gradients blow up. Where flex_decoding cannot compile
-        # here, short no-grad queries take the main kernel too.
-        # An explicit BACKEND="AUTO" can still pick flex_decoding. It is dropped for FORCE_USE_FLEX_ATTENTION: torch 2.9
-        # has no BACKEND (BACKEND="TRITON" would not stop flex_decoding there) and 2.10+ refuses BACKEND together with
-        # the legacy knob. A caller's FORCE_USE_FLEX_ATTENTION=False keeps its options as they are.
+        # batch row after the first reads a shifted LSE and the gradients blow up. Where flex_decoding cannot compile,
+        # no-grad queries take the main kernel too. BACKEND="AUTO" is dropped: torch 2.10+ rejects it with the legacy knob.
         if requested_backend in (None, "AUTO") and (
             decoding_unavailable or _flex_call_needs_backward(query, key, value)
         ):
