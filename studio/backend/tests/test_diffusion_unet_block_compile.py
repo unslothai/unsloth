@@ -28,7 +28,15 @@ LOG = logging.getLogger("test_unet_block_compile")
 
 @pytest.mark.parametrize(
     "raw, on",
-    [(None, True), ("", True), ("1", True), ("0", False), ("off", False), ("False", False), ("no", False)],
+    [
+        (None, True),
+        ("", True),
+        ("1", True),
+        ("0", False),
+        ("off", False),
+        ("False", False),
+        ("no", False),
+    ],
 )
 def test_unet_regional_switch(monkeypatch, raw, on):
     if raw is None:
@@ -86,7 +94,11 @@ def _tiny_unet():
 
 
 def _compiled_blocks(unet):
-    return [m for m in unet.modules() if m is not unet and getattr(m, "_compiled_call_impl", None) is not None]
+    return [
+        m
+        for m in unet.modules()
+        if m is not unet and getattr(m, "_compiled_call_impl", None) is not None
+    ]
 
 
 @pytest.fixture
@@ -100,7 +112,9 @@ def _restore_dynamo_limits():
         setattr(cfg, a, v)
 
 
-def test_unet_compiles_its_repeated_blocks_not_the_whole_module(monkeypatch, _restore_dynamo_limits):
+def test_unet_compiles_its_repeated_blocks_not_the_whole_module(
+    monkeypatch, _restore_dynamo_limits
+):
     monkeypatch.delenv(targets.UNET_REGIONAL_ENV, raising = False)
     unet = _tiny_unet()
     pipe = SimpleNamespace(unet = unet)
@@ -109,7 +123,10 @@ def test_unet_compiles_its_repeated_blocks_not_the_whole_module(monkeypatch, _re
     names = {type(m).__name__ for m in _compiled_blocks(unet)}
     assert names == set(targets.UNET_REGIONAL_BLOCKS)
     # every compiled block sits behind the compile guard (fallback to eager, background-compile gating)
-    assert all(getattr(m._compiled_call_impl, "_unsloth_compile_guard", None) for m in _compiled_blocks(unet))
+    assert all(
+        getattr(m._compiled_call_impl, "_unsloth_compile_guard", None)
+        for m in _compiled_blocks(unet)
+    )
     assert unet._unsloth_bg_yield is True
     assert unet._unsloth_regional_compile_kwargs == {"fullgraph": True, "dynamic": False}
     # the guard is found like a DiT's, so a compile failure is reported
@@ -156,7 +173,12 @@ def test_compile_cache_key_names_the_block_graphs(monkeypatch):
 class _Blocks(torch.nn.Module):
     """A denoiser of N guarded blocks whose first compiled call takes ``compile_s`` (a block graph compile)."""
 
-    def __init__(self, n: int = 6, compile_s: float = 0.15, yields: bool = True) -> None:
+    def __init__(
+        self,
+        n: int = 6,
+        compile_s: float = 0.15,
+        yields: bool = True,
+    ) -> None:
         super().__init__()
         self.blocks = torch.nn.ModuleList(torch.nn.Linear(4, 4) for _ in range(n))
         self.compiled_calls = 0
@@ -326,7 +348,11 @@ def test_yield_point_is_a_no_op_off_the_compile_thread():
 
 
 class _FakeBg:
-    def __init__(self, yields: bool, compiling: bool = True) -> None:
+    def __init__(
+        self,
+        yields: bool,
+        compiling: bool = True,
+    ) -> None:
         self._yields, self._compiling = yields, compiling
         self.calls: list = []
 
@@ -336,7 +362,11 @@ class _FakeBg:
     def yields(self):
         return self._yields
 
-    def pause(self, cancel = None, budget_s = 0.0):
+    def pause(
+        self,
+        cancel = None,
+        budget_s = 0.0,
+    ):
         self.calls.append(("pause", budget_s))
         return 0.1, True
 
@@ -403,8 +433,12 @@ def _fake_pool(monkeypatch):
     from torch._inductor import async_compile
 
     calls: list = []
-    monkeypatch.setattr(async_compile.AsyncCompile, "warm_pool", classmethod(lambda cls: calls.append("warm")))
-    monkeypatch.setattr(async_compile.AsyncCompile, "wakeup", classmethod(lambda cls: calls.append("wakeup")))
+    monkeypatch.setattr(
+        async_compile.AsyncCompile, "warm_pool", classmethod(lambda cls: calls.append("warm"))
+    )
+    monkeypatch.setattr(
+        async_compile.AsyncCompile, "wakeup", classmethod(lambda cls: calls.append("wakeup"))
+    )
     monkeypatch.setattr(bg, "_POOL_WARMED", False)
     monkeypatch.delenv(bg.WARM_POOL_ENV, raising = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
@@ -417,7 +451,9 @@ def test_warm_compile_pool_starts_the_workers_once(_fake_pool):
     assert _fake_pool == ["warm", "wakeup"]
 
 
-@pytest.mark.parametrize("env", ["UNSLOTH_DIFFUSION_BG_COMPILE_WARM_POOL", "UNSLOTH_DIFFUSION_BG_COMPILE"])
+@pytest.mark.parametrize(
+    "env", ["UNSLOTH_DIFFUSION_BG_COMPILE_WARM_POOL", "UNSLOTH_DIFFUSION_BG_COMPILE"]
+)
 def test_warm_compile_pool_switches(monkeypatch, _fake_pool, env):
     monkeypatch.setenv(env, "0")
     assert bg.warm_compile_pool(LOG) is False

@@ -33,9 +33,9 @@ UNET_REGIONAL_ENV = "UNSLOTH_DIFFUSION_UNET_REGIONAL"
 
 def unet_regional_enabled() -> bool:
     import os
-
     raw = (os.environ.get(UNET_REGIONAL_ENV) or "").strip().lower()
     return raw not in ("0", "false", "no", "off")
+
 
 # Component names that are never a denoiser even when they are a ModelMixin with repeated blocks.
 _NOT_DENOISERS = (

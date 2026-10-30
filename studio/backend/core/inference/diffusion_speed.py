@@ -1307,12 +1307,13 @@ def _compile_unet_blocks(unet: Any, unet_kwargs: dict[str, Any], logger: Any) ->
     try:
         # One ResnetBlock2D forward serves ~14 graphs per (height, width, batch): 64 would stop at the 5th size.
         import torch
-
         dynamo_cfg = getattr(getattr(torch, "_dynamo", None), "config", None)
         for _limit_attr in ("recompile_limit", "cache_size_limit"):
             if dynamo_cfg is not None and hasattr(dynamo_cfg, _limit_attr):
                 current = compile_config.get_knob(_DYNAMO_MODULE, _limit_attr) or 0
-                compile_config.set_knob(_DYNAMO_MODULE, _limit_attr, max(current, _UNET_RECOMPILE_LIMIT))
+                compile_config.set_knob(
+                    _DYNAMO_MODULE, _limit_attr, max(current, _UNET_RECOMPILE_LIMIT)
+                )
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "unet recompile limit", exc)
     try:
@@ -1562,7 +1563,11 @@ def _guarded_dits(pipe: Any) -> list:
             dits.append(extra)
     # A per-block compiled U-Net carries the same guard.
     unet = _denoiser_unet(pipe)
-    if unet is not None and unet not in dits and getattr(unet, "_unsloth_compile_guard", None) is not None:
+    if (
+        unet is not None
+        and unet not in dits
+        and getattr(unet, "_unsloth_compile_guard", None) is not None
+    ):
         dits.append(unet)
     return dits
 

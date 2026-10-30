@@ -96,7 +96,9 @@ def warm_compile_pool(logger: Any = None) -> bool:
             logger.debug("diffusion.bg_compile: compile pool warm-up skipped: %s", exc)
         return False
     if logger is not None:
-        logger.info("diffusion.bg_compile: inductor compile workers starting ahead of the deferred compile")
+        logger.info(
+            "diffusion.bg_compile: inductor compile workers starting ahead of the deferred compile"
+        )
     return True
 
 
