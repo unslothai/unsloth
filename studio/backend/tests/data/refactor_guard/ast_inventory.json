@@ -1611,6 +1611,11 @@
         "kind": "def",
         "signature": "text: str, enabled_tool_names"
       },
+      "_call_object_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, relaxed: bool"
+      },
       "_consume_mistral_call": {
         "decorators": [],
         "kind": "def",
