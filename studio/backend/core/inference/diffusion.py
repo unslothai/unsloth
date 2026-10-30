@@ -12036,9 +12036,7 @@ class DiffusionBackend:
                 snapshot is None
                 or not stored_components(snapshot)
                 # an interrupted download: sizing only the cached part would hide the missing components
-                or not snapshot_weights_complete(
-                    snapshot, skip = tuple(pipe_kwargs), variant = variant
-                )
+                or not snapshot_weights_complete(snapshot, skip = tuple(pipe_kwargs), variant = variant)
             )
         ):
             fetched = fetch()

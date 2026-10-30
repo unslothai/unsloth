@@ -263,7 +263,11 @@ def _weight_files(sub: Path) -> list[Path]:
     return plain or files
 
 
-def snapshot_weights_complete(snapshot: Any, skip: Any = (), variant: Optional[str] = None) -> bool:
+def snapshot_weights_complete(
+    snapshot: Any,
+    skip: Any = (),
+    variant: Optional[str] = None,
+) -> bool:
     """False when a ``model_index.json`` component is missing or a model folder lacks weights or index-listed shards
     (an interrupted download); ``skip`` names components the caller supplies. No index: no claim (True).
     ``variant`` (the ``variant=`` the load passes) checks only that layout's files and indexes."""
