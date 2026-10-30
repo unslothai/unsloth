@@ -1054,12 +1054,22 @@ function findHops(
   paths: WirePoint[][],
   owners: Owner[],
   radius: number,
+  junctions: WirePoint[] = [],
 ): WirePoint[][] {
   const hops: WirePoint[][] = paths.map(() => []);
   const segments = collectSegments(paths, owners);
   const vertical = segments
     .filter((segment) => segment.vertical)
     .sort((a, b) => a.coord - b.coord);
+  // A wire of h's own net or sink on v's line at the crossing means they join there: no hop.
+  const joins = (h: Segment, v: Segment): boolean =>
+    vertical.some(
+      (o) =>
+        Math.abs(o.coord - v.coord) < EPS &&
+        (o.net === h.net || o.sink === h.sink) &&
+        h.coord >= o.lo - EPS &&
+        h.coord <= o.hi + EPS,
+    );
   for (const h of segments) {
     if (h.vertical) {
       continue;
@@ -1074,12 +1084,31 @@ function findHops(
       if (v.coord <= from || h.net === v.net || h.sink === v.sink) {
         continue;
       }
-      if (h.coord > v.lo + EPS && h.coord < v.hi - EPS) {
+      // Only a run that clears the arc on both sides is a crossing; a short lane jog is not.
+      if (
+        h.coord > v.lo + radius &&
+        h.coord < v.hi - radius &&
+        !joins(h, v) &&
+        // A fan-out or fan-in dot inside the arc would read as sitting on the hop.
+        !junctions.some(
+          (j) => Math.abs(j.y - h.coord) < EPS && Math.abs(j.x - v.coord) <= radius * 2,
+        )
+      ) {
         hops[h.edgeIndex].push({ x: v.coord, y: h.coord });
       }
     }
   }
-  return hops;
+  // Wires bundled on one line cross at one point: one arc, and none crowding the last.
+  return hops.map((list) => {
+    const kept: WirePoint[] = [];
+    for (const hop of list.sort((a, b) => a.y - b.y || a.x - b.x)) {
+      const last = kept[kept.length - 1];
+      if (!last || Math.abs(last.y - hop.y) > EPS || hop.x - last.x > radius * 2 + 1) {
+        kept.push(hop);
+      }
+    }
+    return kept;
+  });
 }
 
 function lowerSegment(sorted: Segment[], coord: number): number {
@@ -1507,6 +1536,22 @@ function bucketIndex(rects: WireRect[]): (box: { x0: number; y0: number; x1: num
   };
 }
 
+/** The strip of `band` beside `rect` on the side `point` (outside the card) lies. */
+function clearanceSide(rect: WireRect, band: WireRect, point: WirePoint): WireRect {
+  const right = rect.x + rect.width;
+  const bottom = rect.y + rect.height;
+  if (point.x >= right) {
+    return { ...band, x: right, width: band.x + band.width - right };
+  }
+  if (point.x <= rect.x) {
+    return { ...band, width: rect.x - band.x };
+  }
+  if (point.y <= rect.y) {
+    return { ...band, height: rect.y - band.y };
+  }
+  return { ...band, y: bottom, height: band.y + band.height - bottom };
+}
+
 function contains(rect: WireRect, point: WirePoint): boolean {
   return (
     point.x > rect.x &&
@@ -1627,14 +1672,21 @@ export function routeWires(
         y0: Math.min(...ends.map((p) => p.y)),
         x1: Math.max(...ends.map((p) => p.x)),
         y1: Math.max(...ends.map((p) => p.y)),
-      })
-        .map((k) => inflate(rects[k], hard))
-        .filter(
-          (rect) =>
-            rect.id !== edge.source &&
-            rect.id !== edge.target &&
-            ends.some((point) => contains(rect, point)),
-        ),
+      }).flatMap((k) => {
+        const rect = rects[k];
+        if (rect.id === edge.source || rect.id === edge.target) {
+          return [];
+        }
+        const band = inflate(rect, hard);
+        const inside = ends.filter((point) => contains(band, point));
+        if (inside.length === 0) {
+          return [];
+        }
+        // A card over the port frees the whole card; one merely near it frees only its band.
+        return inside.some((point) => contains(rect, point))
+          ? [band]
+          : inside.map((point) => clearanceSide(rect, band, point));
+      }),
       zones: zones.flatMap((zone, index) =>
         ends.some((point) => contains(zone, point)) ? [index] : [],
       ),
@@ -1917,8 +1969,8 @@ export function routeWires(
   }
   laned = gatherChannels(laned, owners, walls, costs.laneGap, hard, clearance).map(simplify);
   laned = mergeFanIn(laned, fanIn, owners, clearance, fanInBlocked);
-  const hops = findHops(laned, owners, costs.hopRadius);
   const junctions = findJunctions(laned, owners);
+  const hops = findHops(laned, owners, costs.hopRadius, junctions.flat());
 
   const routes = new Map<string, WireRoute>();
   const cache: WireRouterCache = { rects: tracked, raw: new Map() };
