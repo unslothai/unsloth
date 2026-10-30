@@ -297,7 +297,7 @@ def build_dataset_download(
         processor_dirs = _processor_parquet_dirs(dataset_path)
         if not image_files and not processor_dirs:
             return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
-        # Rows reference these by relative path, so a bare JSONL loses every image.
+        # Rows reference images by relative path, so a bare JSONL loses every image.
         zip_tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".zip")
         zip_tmp.close()
         zip_path = Path(zip_tmp.name)
