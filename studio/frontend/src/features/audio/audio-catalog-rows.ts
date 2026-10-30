@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Rows from GET /api/inference/audio/catalog. Relative imports only, so node --test and the
-// catalog check load it directly.
+// Rows from GET /api/inference/audio/catalog; relative imports only, so node --test loads it.
 
 import type { ModelOption } from "../model-picker/components/model-selector/types.ts";
 import {
@@ -65,8 +64,7 @@ export function catalogById(
   return map;
 }
 
-/** A More row has no Hub pipeline tag, so a catalog ASR pick names its own: the page then loads
- *  it as speech-to-text instead of speech. */
+/** A More row has no Hub pipeline tag, so an ASR pick names its own; else it loads as speech. */
 export function withCatalogPipelineTag<
   M extends { pipelineTag?: string | null },
 >(byId: ReadonlyMap<string, { task?: string | null }>, id: string, meta: M): M {
@@ -122,8 +120,7 @@ export function catalogMoreRows(
 export function catalogModelOption(
   row: AudioCatalogRow,
 ): ModelOption & { sizeBytes: number | null } {
-  // Named by folder like the seed rows, and a Community repo by its full id: two repos can
-  // share one spec display name, or one repo name.
+  // Named by folder like seed rows; Community repos use their full id to stay unique.
   const name = row.folder || row.id;
   const about = audioRowDescription(row);
   return {

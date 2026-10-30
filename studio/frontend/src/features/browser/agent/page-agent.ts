@@ -585,9 +585,8 @@ export function installPageAgent(): PageAgent {
         position: "absolute", left: "-14px", top: "-14px", width: "28px", height: "28px", "box-sizing": "border-box",
         "border-radius": "50%", border: "2px solid", opacity: "0",
       });
-      // Hugeicons cursor-02, its corners rounded further by a round-joined stroke of the fill (white
-      // outline drawn wider underneath), then scaled back to size about its tip at (3, 3). The rounded
-      // tip ends up 1.25px short of (0, 0), hence the offset.
+      // Hugeicons cursor-02 with corners rounded by a round-joined fill stroke, scaled back about
+      // its tip at (3, 3); the rounded tip lands 1.25px short of (0, 0), hence the offset.
       const arrow = styled(document.createElementNS(SVG, "svg"), {
         position: "absolute", left: "-1.25px", top: "-1.25px", width: "24px", height: "24px", overflow: "visible",
       });
@@ -726,9 +725,8 @@ export function installPageAgent(): PageAgent {
 
   const describe = (ref: string, value?: unknown, point?: Point | null): Record<string, unknown> => {
     const found = point ? elementAt(point) : ref ? lookup(ref) : (document.activeElement ?? document.body);
-    // A click on text inside a button or label reaches that control (a label's being its field or
-    // button), which may submit.
-    // A point lands on whatever is drawn, often an icon inside a control: gate the control.
+    // A click on text inside a button or label reaches that control (a label being its field or
+    // button), which may submit; a point lands on whatever is drawn, so gate the control.
     const control = point ? (lineage(found).find((node) => roleOf(node) !== null) ?? found) : found;
     const holder = control.closest("button, label") ?? control;
     const el = holder instanceof HTMLLabelElement && holder.control ? holder.control : holder;
@@ -1079,10 +1077,9 @@ export function installPageAgent(): PageAgent {
     return down;
   };
 
-  // The agent works only in its own tab: a form or link aimed at a new tab (target, formtarget)
-  // would be dropped by the panel, which opens tabs only on a real user click, while the model hears
-  // it went. The target is read after the event, by the browser or by the proxy shell's deferred
-  // setTimeout, so it points here for the action and is put back on a later timer.
+  // The agent works only in its own tab: a target or formtarget aimed at a new tab would be dropped
+  // by the panel (tabs open only on a real click); the target is read after the event, so it is
+  // repointed for the action and restored on a later timer.
   const inOwnTab = <T>(act: () => T): T => {
     const restore: Array<() => void> = [];
     const point = (el: unknown, name: string) => {

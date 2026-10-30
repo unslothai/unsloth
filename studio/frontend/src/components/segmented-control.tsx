@@ -18,8 +18,7 @@ interface SegmentedControlOption<T extends string> {
 
 const HIDDEN = { display: "none" } as const;
 
-/** The pill's shadow, then the pill as a start cap, a middle strip and an
- *  end cap, in the order segmented-pill-slide reads them. */
+/** Pieces in the order segmented-pill-slide reads them: shadow, start cap, strip, end cap. */
 const SLIDE_PIECES = [
   "left-0 origin-left rounded-full",
   "left-0 rounded-l-full",
@@ -27,13 +26,10 @@ const SLIDE_PIECES = [
   "right-0 rounded-r-full",
 ];
 
-/** The selected segment's pill. Render it inside the active (`relative`)
- *  segment only, with a `group` id unique to the control: when the selection
- *  moves, the new pill slides in from the old one's place on the compositor
- *  (see segmented-pill-slide), or appears in place under reduced motion. It
- *  sits at -z-10 in the track, so the track must isolate (`.hub-tab-toggle`
- *  does) and the segments must not: a segment with its own stacking context
- *  lets the sliding pill cover its neighbours' labels. */
+/**
+ * Render the pill only inside the active (relative) segment with a control-unique group id; the
+ * track must isolate (.hub-tab-toggle does) and segments must not, or the pill covers labels
+ */
 export function SegmentedPill({
   group,
   className,

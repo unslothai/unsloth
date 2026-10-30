@@ -87,8 +87,7 @@ export const TOKENIZE_LIMITS = {
   tokenizeTimeLimit: 0,
   tokenizeMaxLineLength: 20_000,
 } as const;
-// An unvirtualized thread mounts every fence. Bound both their count and source
-// size; token data measured roughly 30 bytes per source character.
+// Unvirtualized threads mount every fence: cap count and source size (~30 bytes per char).
 export const MAX_FENCES = 512;
 export const MAX_CACHED_CHARACTERS = 512_000;
 

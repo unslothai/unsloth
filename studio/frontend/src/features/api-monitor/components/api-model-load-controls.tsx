@@ -43,8 +43,7 @@ function loadErrorMessage(err: unknown, fallback: string): string | null {
   return err instanceof Error ? err.message : fallback;
 }
 
-// An uncached Hub pick downloads through the manager first, so the resident model keeps serving
-// the API until the download completes and the pick loads.
+// An uncached Hub pick downloads first, so the resident model keeps serving the API meanwhile.
 async function startStagedDownload(
   id: string,
   meta: ModelSelectorChangeMeta | undefined,

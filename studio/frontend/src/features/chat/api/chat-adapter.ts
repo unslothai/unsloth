@@ -2068,12 +2068,11 @@ export function findLatestUserVideoBase64(
   return undefined;
 }
 
-/** The MCP image bound applied to the run's own tool results, BEFORE they are
- *  serialized. Bounding the OpenAI history afterwards meant every result's image
- *  array was stringified into an envelope on the main thread and then parsed again
- *  to be cut or dropped -- on every send, for pictures the request would not carry.
- *  A result that keeps no picture becomes its plain text, which is what the
- *  serializer emits for a stripped envelope. */
+/**
+ * MCP image bound applied to the run's tool results before serialization; bounding afterwards
+ * stringified and re-parsed every image array on each send, for pictures the request would not
+ * carry; a result with no picture becomes plain text.
+ */
 function boundMcpImageResults(
   messages: RunMessages,
   { readsImages, localMarkers }: { readsImages: boolean; localMarkers: boolean },
@@ -5820,11 +5819,9 @@ export function createOpenAIStreamAdapter(
         providerCompactionModelId,
         providerCompactionConnectionKey: providerCompactionOriginConnectionKey,
         geminiContinuationReplay: geminiContinuationReplay(false),
-        // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
-        // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
-        // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
-        // their reconnect path marks state via recovery, and an explicit Stop still reads as cancelled below.
-        // A window the provider reported as full outranks either guess (utils/continuation.ts).
+        // Legacy (browser-tool, attachment, incognito) runs closed by the tab persist their last
+        // yield as an interruption (partial kept, Resume); durable runs and an explicit Stop stay
+        // cancelled; a provider-reported full window beats either guess (utils/continuation.ts)
         incomplete: {
           reason: resolveIncompleteReason(
             // After an explicit Stop, yields carry it so the turn persists as cancelled.

@@ -148,10 +148,8 @@ function sttModelSource(model: SttModel): string {
 }
 
 /**
- * Model picker for local transcription. Lists the curated models and every
- * other ASR model the Transcribe page offers, and searches Hugging Face for
- * other Whisper repos (safetensors via Transformers). The trigger is a plain
- * button so the selection never renders inside a text input.
+ * Lists curated and other ASR models and searches Hugging Face for Whisper repos (safetensors via
+ * Transformers); a plain button trigger keeps the value out of text inputs.
  */
 function SttModelPicker({
   value,
@@ -787,10 +785,9 @@ export function VoiceTab() {
             ].flatMap((engine) => engine?.downloaded_models ?? []),
           ),
         );
-        // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
-        // backend serves it through Transformers instead of failing. Fall back to the Transformers
-        // status here too, or the model shows as unavailable and download is blocked even though it
-        // works. mtmd and audio.cpp models run nowhere else, so they never fall back.
+        // Curated models prefer GGUF (whisper.cpp); without whisper-server they are served through
+        // Transformers, so the Transformers status must be a fallback or download is blocked; mtmd
+        // and audio.cpp models never fall back.
         const engineStatus = sttEngineStatusFor(status, sttModel);
         if (!engineStatus?.available) {
           setSttPhase("unavailable");
@@ -977,9 +974,8 @@ export function VoiceTab() {
         downloadId: download.download_id,
       });
       startedDownloadRef.current = { model: sttModel, variant: sttVariant };
-      // The status effect only re-polls while it can see a download. Its last read was before this
-      // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows
-      // Download for the whole transfer.
+      // The status effect only re-polls while it sees a download and the on-demand branch schedules
+      // nothing, so without this nudge Download shows for the whole transfer.
       setStatusNonce((nonce) => nonce + 1);
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {

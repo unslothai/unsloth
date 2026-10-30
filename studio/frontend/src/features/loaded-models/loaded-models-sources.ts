@@ -77,13 +77,9 @@ const STT_ENGINE_LABELS: Record<SttEngine, string> = {
 };
 
 /**
- * Where a row's model is actually used, so clicking it goes there. Keyed on the
- * runtime holding the weights rather than the kind: a Whisper checkpoint in the
- * chat slot belongs to Chat, while the dictation sidecars belong to Voice.
- *
- * An audio model in the chat slot opens the Audio page on its workflow, since
- * Chat refuses it. The dictation sidecars are shared with chat dictation, so
- * they open the settings tab that drives them.
+ * Where a row's model is used, keyed on the runtime holding the weights, not the kind: a Whisper
+ * checkpoint in the chat slot goes to Chat, dictation sidecars to Voice; audio models in the chat
+ * slot open the Audio page, which Chat refuses; shared sidecars open their settings tab.
  */
 export type LoadedModelTarget =
   | {
@@ -152,9 +148,8 @@ export function loadedModelKindLabel(
 }
 
 /**
- * Join the known parts, so no row shows a stray separator, and drop repeats:
- * the llama.cpp and whisper.cpp dictation sidecars report their engine name as
- * the device, which would otherwise print twice.
+ * Joins the known parts so no row shows a stray separator and drops repeats; llama.cpp and
+ * whisper.cpp dictation sidecars report their engine name as the device, printed twice otherwise.
  */
 function joinDetail(...parts: (string | null | undefined)[]): string {
   const seen = new Set<string>();

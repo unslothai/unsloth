@@ -3024,13 +3024,10 @@ export function ModelConfigPage({
                 ),
               );
 
-        // The shared row outranks the local seed for every field it carries, so LAN and Desktop cannot
-        // show different remembered values; fromApiOverride keeps the rest of this browser's config,
-        // since an absent field is as much a gap in the mirror as a chosen default. Never over an
-        // edit made while the request was in flight.
-        // The edited check is load-bearing: an edit the OTHER editor made before this read
-        // started is already in configAtStart, so the comparison below reads as untouched.
-        // By value: the primed draft is a new object, so identity refused every row on a fresh editor.
+        // Shared row outranks the local seed so LAN and Desktop agree; fromApiOverride keeps the
+        // other fields; never overwrite an in-flight edit; the edited check is load-bearing
+        // (another editor's earlier edit is already in configAtStart) and compares by value, as the
+        // primed draft is a new object.
         if (
           resolvedRow &&
           serverConfig &&
@@ -3296,10 +3293,9 @@ export function ModelConfigPage({
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
-          // The same substitution applyPerModelConfigToRuntime makes at load: a model with no per-model
-          // override sends null, which the backend reads as Auto, while the selector has been showing
-          // the global fallback. With the global Off and an 11 GB DSpark sidecar in the repo, the row
-          // charged the sidecar for a load that disables it.
+          // Same substitution as applyPerModelConfigToRuntime: no per-model override sends null
+          // (read as Auto) while the selector shows the global fallback, so a global Off row
+          // charged an 11 GB DSpark sidecar.
           speculativeType: resolveSpeculativeType(
             runtimeConfig.speculativeType,
             speculativeFallback,
@@ -3712,11 +3708,10 @@ export function ModelConfigPage({
       : forgets
         ? deletePerModelConfig(configId, target.ggufVariant)
         : true;
-    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
-    // skipped when the localStorage write failed or the two would permanently disagree. Gated on
-    // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
-    // native-path lease is the same.
-    // A forget also drops the local records for every other spelling the server reports clearing.
+    // Best-effort mirror for API loads, skipped if the localStorage write failed (they would
+    // disagree); gated on auto-switch reach, not GGUF-ness, since the resolver skips materialized
+    // Ollama links and native-path leases; a forget also clears local records for every other
+    // spelling the server reports.
     if (
       saved &&
       (keep || forgets) &&

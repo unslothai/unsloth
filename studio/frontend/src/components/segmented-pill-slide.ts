@@ -3,21 +3,9 @@
 
 import { prefersReducedMotion } from "@/features/settings";
 
-// Slides a segmented control's selected pill from the old segment to the new one
-// without running script per frame or forcing layout during the click:
-// - geometry is read once per switch, in the first ResizeObserver callback for
-//   the new pill's segment, after the browser has laid out the frame anyway.
-//   Both the old and the new segment are measured then, so nothing is cached
-//   that could go stale;
-// - the slide is transform-only Web Animations on both axes (tracks can wrap),
-//   which every engine's compositor runs off the main thread. When the two
-//   segments differ in width, the pill is drawn as two round caps and a middle
-//   strip: the end cap moves and the strip stretches with scaleX, so the ends
-//   stay round (a scaleX of the whole pill would squash them). The move and
-//   the resize are then both transforms on one clock, so a busy main thread
-//   (a list re-rendering after the click) cannot hold the width back while the
-//   pill moves. A clip-path resize could: Chromium repaints it on the main thread.
-// At rest the pill paints itself and the caps, strip and shadow are hidden.
+// Transform-only Web Animations so the compositor runs the slide off the main thread (clip-path
+// resize would repaint there); geometry read once in the first ResizeObserver callback, with no
+// per-frame script or forced layout during the click
 
 /** Spring the design system gives segmented controls (design.md, 2.5 Motion). */
 const SPRING = { stiffness: 500, damping: 35, mass: 0.5 };
@@ -83,8 +71,7 @@ const EASING = HAS_LINEAR
     ).join(", ")}, 1)`
   : `cubic-bezier(${FALLBACK.join(", ")})`;
 
-/** Progress of the curve the slide actually runs, so an interrupted slide
- *  restarts from where its pill is drawn. */
+/** Progress of the curve the slide runs, so an interrupted slide restarts from its drawn pill. */
 const CURVE = HAS_LINEAR ? SPRING_CURVE : bezierCurve();
 
 function progressAt(ms: number): number {
@@ -151,15 +138,13 @@ function slide(
   const [shadow, startCap, strip, endCap] = Array.from(
     root.children,
   ) as HTMLElement[];
-  // The caps are half circles. The strip runs between their flat sides and
-  // tucks 1px under each, so no seam shows; any deeper and its square corners
-  // would poke out past the curve. Every width involved must leave it room.
+  // The strip tucks 1px under each half-circle cap to hide the seam; any deeper and its square
+  // corners poke out, so every width involved must leave it room
   const r = h / 2;
   const inner = w - 2 * r + 2;
   const resize =
     endCap && Math.abs(dw) >= 0.5 && Math.min(w, w + dw) > 2 * r + 1;
-  // Held until the cleanup below, so the pieces never show their rest state
-  // between the end of the slide and the cleanup.
+  // Held until cleanup, so the pieces never show their rest state after the slide ends.
   const timing = {
     duration: SLIDE_MS,
     easing: EASING,
@@ -172,11 +157,8 @@ function slide(
     ),
   ];
   if (resize) {
-    // The pill keeps its left end on the root's; the end cap moves by the
-    // width change and the strip stretches to meet it. Only the strip scales,
-    // and it has no round ends to squash. A shadow-only copy of the whole pill
-    // stretches underneath, so the pieces need no shadow of their own; its
-    // scale bends the shadow's ends a little, which the blur hides.
+    // Only the strip scales, the end cap moves, and a shadow-only copy underneath carries the
+    // shadow.
     root.style.setProperty("background-color", "transparent", "important");
     root.style.setProperty("box-shadow", "none", "important");
     shadow.style.width = `${w}px`;
@@ -255,8 +237,7 @@ function place(group: string, root: HTMLElement, segment: HTMLElement) {
   slide(root, to.w, to.h, dx, dy, dw);
 }
 
-/** Track a mounted pill: once its segment has been laid out, slide it in from
- *  the control's previous pill. Returns the cleanup. */
+/** Slide a mounted pill in from the previous one once laid out; returns the cleanup. */
 export function watchSegmentedPill(group: string, root: HTMLElement) {
   const segment = root.parentElement ?? root;
   const observer = new ResizeObserver(() => {

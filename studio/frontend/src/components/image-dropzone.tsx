@@ -125,8 +125,7 @@ export function ImageDropzone({
     [readFile],
   );
 
-  // Tauri suppresses the webview drop event, so desktop drops arrive as paths
-  // that the native side registers and reads for this picker.
+  // Tauri suppresses the webview drop event, so desktop drops arrive as native paths.
   const readNativePath = useCallback(
     async (path: string | undefined) => {
       if (!path) return;

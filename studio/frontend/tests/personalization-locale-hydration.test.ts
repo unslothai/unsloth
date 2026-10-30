@@ -257,9 +257,8 @@ function setup(
       isLocalePreference: (value: unknown) => typeof value === "string",
       setLocale: async (value: unknown, options?: { timeoutMs?: number }) => {
         localeCalls.push(value);
-        // A catalog request the network accepted and never completed. It
-        // rejects nothing, so the only thing that can end this wait is the
-        // caller asking the store to bound it.
+        // A catalog request the network accepted but never completed; it rejects nothing, so only
+        // the caller asking the store to bound it can end the wait.
         if (localeResult === "stalled") {
           if (typeof options?.timeoutMs !== "number") {
             return new Promise<string>(() => {});

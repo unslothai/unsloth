@@ -75,8 +75,7 @@ export const MessageTiming: FC<{
     draftN > 0 && typeof draftAccepted === "number" && Number.isFinite(draftAccepted)
       ? `${formatNumber(draftAccepted)} / ${formatNumber(draftN)} (${Math.round((draftAccepted / draftN) * 100)}%)`
       : null;
-  // `??` (not `||`) so an explicit cache_n=0 isn't replaced by a stale
-  // contextUsage.cachedTokens from a prior turn.
+  // `??` not `||`: explicit cache_n=0 must not be replaced by stale contextUsage.cachedTokens.
   const cacheHits =
     st?.cache_n ?? custom?.contextUsage?.cachedTokens ?? 0;
   const cacheWrites = custom?.contextUsage?.cacheWriteTokens ?? 0;

@@ -205,8 +205,7 @@ function FloatingMonitorPanel({
   const hasSharedPool = memoryTotals.shared > 0;
   // No dedicated pool (Apple unified memory): the shared total alone is the capacity.
   const unifiedPool = hasSharedPool && memoryTotals.dedicated === 0;
-  // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
-  // readout. The host figure can still be known when no device's is (#7452).
+  // null usage is unknown, not 0; the host figure is known when no device's is (issue 7452).
   const resolvedVramUsed = resolveGpuVramUsedGb(memoryDisplay.usageGpu);
   const vramUsageKnown = resolvedVramUsed !== null;
   const vramUsed = resolvedVramUsed ?? 0;
@@ -233,12 +232,9 @@ function FloatingMonitorPanel({
     (displayedGpu?.available ?? false) &&
     (displayedGpu?.devices.length ?? 0) > 0;
 
-  // The container sits on the floating panel layer, above the bottom-right overlay stack. The stack
-  // is anchored to that same corner and does not move for this monitor; at its default corner the
-  // monitor rests above the Loaded models card instead (useCornerCardFrameStore), and anywhere it
-  // overlaps it wins, since this is a window being dragged, resized and closed. Still below the
-  // startup screen and tooltips. See lib/z-layers. The API monitor panel shares this layer rather
-  // than sitting under it, and whichever of the two the user touched last is the one in front.
+  // Floating panel layer above the overlay stack and Loaded models card, below startup and
+  // tooltips; the API monitor shares this layer, and whichever of the two was touched last is in
+  // front
   return (
     <div
       ref={setConstraintsElement}

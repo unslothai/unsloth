@@ -29,9 +29,8 @@ export const inputQuietIn = (): number => {
 };
 
 /**
- * Run `callback` once the main thread is idle, or after `timeout` at the latest; returns a
- * canceller. Falls back to setTimeout without requestIdleCallback (Safari, the WebKitGTK webview
- * the desktop app embeds on Linux), and runs synchronously with no window.
+ * Runs callback when the main thread is idle or after timeout, returning a canceller; falls back to
+ * setTimeout without requestIdleCallback (Safari, WebKitGTK) and runs synchronously with no window.
  */
 export function scheduleIdleTask(
   callback: () => void,

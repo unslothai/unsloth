@@ -154,9 +154,8 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     await frame();
     assert.equal(section.vars.get("--native-hole-bg"), "oklch(0.2 0 0)");
 
-    // a split drag pins the page at its old width while the panel shrinks past it: the app covers
-    // the overflow by cutting the hole no wider than the panel, and the page view isn't resized,
-    // which would relayout the page every frame
+    // A split drag pins the page at its old width while the panel shrinks past it; the hole is cut
+    // no wider than the panel and the page view is not resized, which would relayout every frame.
     let panelLeft = 650;
     const panelBody = { getBoundingClientRect: () => rect(panelLeft, 0, 1000 - panelLeft, 800), closest: () => null };
     // the pinned outer page box keeps its old rect, the page's own

@@ -1913,12 +1913,10 @@ function scheduleGenerationRecovery(
       }
     } finally {
       useChatRuntimeStore.getState().clearLiveGenerationForThread(threadId);
-      // EVERY exit, not just the terminal one: a permanent follower error (another tab deletes the
-      // thread, the run row cascades, the request 404s) throws past the terminal branch into the
-      // outer catch, leaving a seeded card in the global store for the session. `soleRequest` counts
-      // entries, so a later real approval reads as non-sole and loses its Enter/Escape chords.
-      // Joined first because the arming is no longer awaited at its call site, so without this a
-      // late arm lands after the disarm and leaves the card up on a finished run.
+      // Joins seeded approvals on every exit: a permanent follower error would leave a seeded card
+      // in the store, and soleRequest counts it so a later real approval loses its Enter and Escape
+      // chords; the arming is not awaited at its call site, so a late arm would land after the
+      // disarm.
       unregisterStop();
       if (seededApprovals) await seededApprovals.catch(() => {});
       toolRecovery.disarmAll();

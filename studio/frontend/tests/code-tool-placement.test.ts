@@ -156,11 +156,8 @@ test("response details record Code from the placement, local or hosted", () => {
 
 // ── Whether the pill is offered at all ─────────────────────────────
 
-// Until Unsloth's loop reached the general external providers, the composer
-// keyed the Tools pill on the hosted flag alone, so a model without the hosted
-// sandbox simply did not offer it. Keying it on the Unsloth-tools flag instead
-// offered it everywhere, including where the rule above deliberately runs
-// nothing, and the user got a lit toggle that sent enable_tools: false.
+// Keying the Tools pill on the Unsloth-tools flag offered it everywhere, even where nothing runs,
+// so the user got a lit toggle that sent enable_tools: false.
 
 test("a model with its provider's sandbox can run code", () => {
   assert.equal(

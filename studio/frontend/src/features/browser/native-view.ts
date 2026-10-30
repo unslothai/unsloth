@@ -557,10 +557,9 @@ let holed: HTMLElement[] = [];
 let holeSignature = "";
 let holeTab: string | null = null;
 let holeBounds: Bounds | null = null;
-// The panel around the page. A split drag pins the page at its old width, so while the panel
-// shrinks the page view overflows the handle. Resizing the view every frame would relayout the page
-// every frame, which the pin is there to avoid; on a layered page the app draws over it instead,
-// by cutting the hole no wider than the panel.
+// A split drag pins the page at its old width, so as the panel shrinks the view overflows the
+// handle; resizing it every frame would relayout the page, so on a layered page the app draws over
+// it, cutting the hole no wider than the panel.
 let holeClip: DOMRect | null = null;
 
 function opaque(color: string): boolean {
@@ -576,10 +575,9 @@ function openHole(tabId: string, bounds: Bounds): void {
   if (!markHole() && moved) placeHole();
 }
 
-// Per holed node, not the root: the vars don't inherit, so a move restyles only those nodes.
-// Under the desktop app's interface zoom (the webview's page zoom), WebKit scales a fixed
-// background's lengths by the zoom once more than the layout they were read from: undone here, or
-// a zoomed-out app covers the right and bottom of the page.
+// Set per holed node, not the root, since the vars do not inherit; under the app's interface zoom
+// WebKit scales fixed-background lengths by that zoom again, so it is undone here or a zoomed-out
+// app covers the right and bottom of the page.
 function placeHole(): void {
   if (!holeBounds) return;
   const zoom = getAppliedInterfaceZoom() || 1;

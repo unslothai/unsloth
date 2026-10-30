@@ -10,8 +10,7 @@ import { useLocale } from "@/i18n";
 import { useAuiState } from "@assistant-ui/react";
 import type { FC } from "react";
 
-/** Gated on the preference first so a reply mounts no assistant-ui selector while it is off
- *  (composer-keystroke-subscription-budget), like AssistantMessageTime. */
+/** Gated first so no selector mounts while off (composer-keystroke-subscription-budget). */
 export const LiveGenerationLine: FC = () => {
   const enabled = useChatPreferencesStore((state) => state.showGenerationDetails);
   return enabled ? <RunningGate /> : null;

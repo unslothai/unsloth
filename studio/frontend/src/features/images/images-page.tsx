@@ -2834,9 +2834,8 @@ export function ImagesPage({
     if (maskOptions.maskBlur !== undefined) setMaskBlur(maskOptions.maskBlur);
     if (maskOptions.onlyMasked !== undefined) setInpaintOnlyMasked(maskOptions.onlyMasked);
     if (maskOptions.padding !== undefined) setInpaintPadding(maskOptions.padding);
-    // Conditioning images are not persisted, so every upload is cleared. Edit and Reference reopen
-    // their own workflow, so Generate stays blocked until the inputs are supplied again instead of
-    // replaying as text-to-image; the others return to Create.
+    // Conditioning images are not persisted, so uploads are cleared; Edit and Reference reopen
+    // their own workflow and stay blocked until inputs are supplied, while others return to Create.
     const reopened: WorkflowId =
       image.workflow === "edit" ? "edit" : image.workflow === "reference" ? "reference" : "create";
     setWorkflow(reopened);
@@ -4104,11 +4103,10 @@ export function ImagesPage({
         downloadSnapshot !== undefined || (!forceLoad && modelSelectionAction === "download");
       // Read before the first await: a confirmed Load anyway retry sets it only around this call.
       const oversizedRetry = oversizedLoadOnce.current && !downloadOnly;
-      // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight, and
-      // plans resolve in response order rather than pick order. Bumped before the non-hub return too, so
-      // a local pick invalidates an in-flight hub plan. Never for a download-only pick: it supersedes
-      // nothing, and retiring the sequence made the load it interrupted fail its own stale check below
-      // and return silently, leaving the selected model neither staged nor loaded.
+      // Staging never sets busy, so a second pick can pass the guard while a plan is in flight, and
+      // plans resolve in response order; bumped even for a local pick, but never for a
+      // download-only pick, since retiring it made the interrupted load return silently, neither
+      // staged nor loaded.
       const pick = downloadOnly ? pickSeq.current : ++pickSeq.current;
       if (!downloadOnly) dismissLoadAnyway();
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls

@@ -102,15 +102,9 @@ function pickAnchorRow(viewport: HTMLElement): Element | null {
   ) {
     return anchor;
   }
-  // Then descend to the fold. A row can be taller than the viewport (a long answer with images and code usually
-  // is), so a reader partway through one has the row's top ABOVE them: a block earlier in that message growing
-  // moves everything they see while the row's top stays put, and a whole-row anchor reports zero. The first
-  // descendant reaching the fold does not. Bounded because that block is a few levels down, and this runs once
-  // per re-pick, not per frame.
-  // Known residual: if the fold lands inside a tall LEAF block (a paragraph with no element children) the descent
-  // stops with its top above the reader, so lines reflowing inside it move what they see without moving the
-  // block. Closing that needs a caret point at the fold, spelled differently on all three engines, costing a
-  // Range and a rect every frame, and not itself stable across the reflow it would measure.
+  // Descends to the first descendant reaching the fold, since a whole-row anchor reports zero for a
+  // row taller than the viewport; capped at 8 levels, run once per re-pick. Residual: a tall leaf
+  // block can still reflow above the reader; a caret fix would cost a Range per frame.
   for (let depth = 0; depth < 8; depth += 1) {
     if (anchor.getBoundingClientRect().top >= fold) break;
     let next: Element | null = null;

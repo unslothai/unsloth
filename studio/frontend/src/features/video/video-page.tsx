@@ -308,12 +308,9 @@ function defaultsFor(repoId: string, family?: string): { steps: number; guidance
   const id = fold(repoId);
   // The Wan and FusionX rows count only in the model / file name, as on the backend.
   const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
-  // LTX-2.5 (diffusers' pre-release "2.4" too) is decided on the two names the backend gets: the selected file and
-  // the repo, read by their last segment. A local file's repo is the folder it sits in (the picker loads it from that
-  // directory), a Hub file's is the repo segment after the owner. The version is ltx_name_version's ("ltx-2.5",
-  // "LTX25", "ltx2.5", "LTX-Video-2.5"), or the explicit ltx-2.5 family. The variant is ltx25_is_dev's: the first
-  // name naming one decides, "distill" before a dev / full / sft token (or transformer_full); a dev pick runs 30
-  // steps at guidance 3, anything else the distilled 8 at guidance 1.
+  // LTX-2.5 (and pre-release 2.4) is read from the file and repo last path segments as the backend
+  // does; the first name naming a variant decides, distill before a dev, full or sft token (or
+  // transformer_full); dev runs 30 steps at guidance 3, else distilled 8 at guidance 1.
   const segments = repoId.replace(/[\\/]+$/, "").split(/[\\/]/);
   const local = /^([\\/~.]|[a-z]:)/i.test(repoId);
   const fileLeaf = segments[segments.length - 1] ?? "";

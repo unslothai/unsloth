@@ -357,13 +357,10 @@
 	--slider-thumb-shadow: inset 0 0 0 1px #dbdbdb, 0 1.5px 2.5px -0.5px rgb(0 0 0 / 0.08);
 	--slider-track-height: calc(0.15625rem * var(--ui-space-scale, 1));
 	--slider-thumb-size: calc(1.125rem * var(--ui-space-scale, 1));
-	/* Chat-message action icons (assistant action bar, branch picker
-	   chevrons + numbers, message-timing token counter, code-block
-	   copy/download, user action bar, delete button). One token drives
-	   all of them so the row reads as a single coherent control strip.
-	   Mid-dark gray on the light surface — visible enough to read as
-	   active controls, not so dark that they compete with message
-	   text. */
+	/*
+	 * Chat-message action icons (action bars, branch picker, timing counter, code-block copy and
+	 * download, delete) share one token: mid-dark grey on light, visible but not competing with text.
+	 */
 	--chat-icon-fg-base: #555555;
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover-base: #ededec;
@@ -3110,13 +3107,10 @@ html[data-chat-font] .aui-root {
 		--slider-fill: var(--panel-slider-fg);
 	}
 
-	/* Inline numeric input — used for slider values and Context Length.
-	   Designed to read as *editable text* rather than a pill button so
-	   it doesn't mirror the Select/dropdown components on the panel.
-	   Default: transparent box, no border, no ring; the component sets
-	   an inline width that hugs the value. Hover/focus: very light bg
-	   fade-in, just enough to read as interactive without competing
-	   with the slider row's quiet aesthetic. */
+	/*
+	 * Inline numeric input for slider values and Context Length, styled as editable text rather than a
+	 * pill so it does not mirror the Select dropdowns; hover and focus add a faint wash.
+	 */
 	/* Wider right gutter: the value is right-aligned on the panel's own edge. */
 	/* Editing only deepens the fill: a focus ring outside the pill reads as the box growing. */
 	.panel-number-input {
@@ -3160,13 +3154,10 @@ html[data-chat-font] .aui-root {
 		@apply border-0 ring-0 bg-background/98 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none;
 	}
 
-	/* Rich tooltip — used for the context-usage and token-counter
-	   popups (multi-row metric breakdowns). Same surface as the
-	   compact tooltips so chat-area popovers feel like one family.
-	   Corner radius matches the user-profile dropdown in the left
-	   sidebar (14px) so panel-level menu surfaces share a single
-	   roundness. Uses the heading font with tracking for the structured
-	   content. */
+	/*
+	 * Rich tooltip for the context-usage and token-counter popups (multi-row metric breakdowns):
+	 * compact-tooltip surface, sidebar-dropdown corner radius, heading font with tracking.
+	 */
 	.tooltip-rich {
 		@apply rounded-[16px] border-transparent bg-(--tooltip-bg) px-4 py-3 font-heading tracking-wide text-(--tooltip-fg) shadow-(--tooltip-shadow-rich);
 	}
@@ -4900,13 +4891,12 @@ html[data-chat-font] .aui-root {
 		margin-bottom: 0 !important;
 	}
 
-	/* One vertical rhythm for everything stacked inside an assistant reply: text, thinking
-	   headers, tool-call groups and single tool rows all sit 1rem apart, the same gap
-	   streamdown puts between two paragraphs. The parts themselves own no outer margin or
-	   padding, so a header next to a paragraph reads the same as a paragraph next to a
-	   paragraph. `:where()` keeps this at zero specificity so a part that does set its own
-	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none.
-	   Not `* + *`: that restyles the whole page when Radix inserts its focus guard. */
+	/*
+	 * Assistant parts sit 1rem apart like streamdown paragraphs; parts own no outer margin or padding;
+	 * :where() keeps zero specificity so a part's own mt-* wins; first real child after a zero-height
+	 * badge gets none; not the universal sibling selector, which restyles the page on Radix focus
+	 * guards.
+	 */
 	:where(.aui-assistant-message-content > *):where(:not(:first-child)) {
 		margin-top: calc(1rem * var(--ui-space-scale, 1));
 	}

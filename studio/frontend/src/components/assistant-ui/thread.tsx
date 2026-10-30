@@ -738,14 +738,10 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
         return true;
       }
     }
-    // Project sources are retrieved whatever the Docs pill says (chat-adapter's
-    // rag_scope), and isIndexing() above only answers while the bar that watches
-    // them is mounted, which a background queue has not. So ask directly, and
-    // for a chat with no row yet use the project the queue was started in.
-    // Rethrowing: a row this probe could not read is not a chat with no project,
-    // and the catch below is what holds the prompt and asks again. The queue's
-    // own project is the fallback wherever the row is still missing, so a poll
-    // landing mid-navigation cannot probe the project the user moved to.
+    // Sources ignore the Docs pill (rag_scope); isIndexing() answers only while its bar is mounted,
+    // so ask directly. Rethrow read failures: an unreadable row is not no project; the catch holds
+    // the prompt. Queue project only fills a missing row, so a mid-navigation poll cannot probe the
+    // moved-to project.
     const queueProjectId = item.target.getQueueProjectId();
     const projectId = threadId
       ? await resolveProjectId(threadId, undefined, {
@@ -1875,8 +1871,7 @@ const PendingCompactionRule: FC = () => {
   return <CompactionDivider pending={true} className="mt-6" />;
 };
 
-// The selector returns the persisted record, which keeps its identity between renders, so a
-// row re-renders only when a divider arrives or leaves above it.
+// Persisted record keeps identity, so a row re-renders only if a divider above comes or goes.
 const CompactionRowDivider: FC = () => {
   const truncation = useAuiState(
     ({ thread, message }) =>
@@ -1887,14 +1882,9 @@ const CompactionRowDivider: FC = () => {
 };
 
 /**
- * Resolves the divider against the branch on screen, once for the thread.
- *
- * Which inherited message closes the history depends on the branch: editing an inherited turn
- * starts a sibling and leaves the fork's anchor off screen with earlier inherited messages
- * still above it. Selecting the message array in each ROW is what the delete render budget
- * forbids, so it is selected here, in one component, and the rows read the id it publishes.
- * The walk stops at the first message the fork did not inherit, so it costs the inherited
- * count rather than the thread length.
+ * Resolves the divider against the branch on screen: editing an inherited turn leaves the fork's
+ * anchor off screen, so the message array is selected once here, not per row, as the delete render
+ * budget forbids; the walk stops at the first message the fork did not inherit.
  */
 const FORK_BOUNDARY_NONE: readonly string[] = [];
 
@@ -1929,8 +1919,7 @@ function forkSourceTitle(sourceThreadId: string): Promise<string | null> {
   return title;
 }
 
-// Closes the history a fork inherited. Rendered by the message it follows, since the row slot
-// is propless and the boundary arrives through the store.
+// Closes a fork's inherited history; rendered by its message, as the row slot is propless.
 const ForkContinuationRule: FC = () => {
   const threadId = useChatRuntimeStore((s) => s.activeThreadId);
   const messageId = useAuiState(({ message }) => message.id);
@@ -2049,9 +2038,8 @@ const startGrammarPrewarm = (): void => {
   grammarPrewarm.start();
 };
 
-// Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
-// inline arrow changes identity each time, invalidating the memo that keeps the message array from
-// being rebuilt, and the bail-out below it would never get to run.
+// Hoisted so ThreadPrimitive.Messages gets the same children function each render; an inline arrow
+// would invalidate the memo that keeps the message array from rebuilding.
 const renderThreadMessage = proplessSlot(ThreadMessage);
 
 // Memoized: chat-page renders this inside a store-subscribing component.
@@ -2066,9 +2054,8 @@ export const Thread: FC<{
   const composerAtBottom = useChatPreferencesStore(
     (s) => s.newChatComposerAtBottom,
   );
-  // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
-  // prevent the streaming-mutation race that snaps the viewport back to the
-  // bottom while the user scrolls up (see the hook for the full explanation).
+  // Intent-aware autoscroll replaces assistant-ui's built-in one to avoid a streaming race that
+  // snaps the viewport to the bottom while the user scrolls up.
   const {
     ref: viewportRef,
     markerRef,
@@ -2093,9 +2080,8 @@ export const Thread: FC<{
       ? null
       : composerHeight + COMPOSER_SCROLL_GAP_PX - FOOTER_GAP_BELOW_SPACER_PX;
 
-  // Viewport element is owned by the autoscroll hook; mirror it locally for
-  // the spacer clamp math. State, not a ref: the keyed provider remounts the
-  // viewport on thread switches and the scroll listener must re-attach.
+  // The autoscroll hook owns the viewport element; mirror it for the spacer clamp. State, not a
+  // ref: the keyed provider remounts it on thread switches, so listeners re-attach.
   const [viewportSlot, setViewportSlot] = useState<{
     el: HTMLElement;
     threadId: string;
@@ -2104,9 +2090,8 @@ export const Thread: FC<{
     viewportSlot !== null && viewportSlot.threadId === runtimeThreadId
       ? viewportSlot.el
       : null;
-  // Same element in an identity-stable ref, so ProgressiveMessages can read the viewport without a
-  // prop that would rebuild its row array on thread switch. A ref rather than a document-wide query
-  // because the Compare panes each mount their own Thread.
+  // Kept in an identity-stable ref so ProgressiveMessages reads the viewport without a prop that
+  // rebuilds rows; not a document query, as Compare panes each mount a Thread.
   const viewportElRef = useRef<HTMLElement | null>(null);
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
@@ -2134,9 +2119,8 @@ export const Thread: FC<{
     return watchThreadGutter(viewportEl);
   }, [viewportEl]);
 
-  // composer growth applies immediately because content below the scroll position is invisible.
-  // composer shrink waits until clamping scrollTop is safe or a bottom pin owns the motion.
-  // imperative sizing restores remounted spacers even when composerHeight is unchanged.
+  // Growth applies at once (content below is invisible); shrink waits for a safe scrollTop clamp or
+  // bottom pin; sizing restores remounted spacers even if composerHeight is unchanged.
   const spacerElRef = useRef<HTMLDivElement | null>(null);
   const desiredSpacerPxRef = useRef<number | null>(null);
   const appliedSpacerPxRef = useRef<number | null>(null);
@@ -2689,10 +2673,8 @@ const ThreadScrollToBottom: FC = () => {
 const pickRandom = <T,>(arr: T[]): T =>
   arr[Math.floor(Math.random() * arr.length)];
 
-// Each greeting carries its matching sloth picture so a line always shows the
-// same mascot. Greeting varies by local time; name-bearing lines drop the
-// name when none is set. Text is a message key, translated at render so a
-// language switch updates the open greeting.
+// Each greeting carries its own sloth picture; name-bearing lines drop the name when none is set.
+// Text is a message key translated at render, so a language switch updates the open greeting.
 type Welcome = {
   key: TranslationKey;
   name?: string;
@@ -2711,8 +2693,7 @@ function buildWelcome(hour: number, name: string): Welcome {
     namedKey: TranslationKey,
     sloth: string,
   ): Welcome => (name ? { key: namedKey, name, sloth } : { key, sloth });
-  // Use the name on ~a third of lines (only direct salutations where it reads
-  // naturally); the rest stay name-free so greetings don't feel repetitive.
+  // Name on about a third of lines (direct salutations only) so greetings do not repeat.
   const base: Welcome[] = [
     named("welcome.goodToSeeYou", "welcome.goodToSeeYouName", "large sloth wave.png"),
     g("welcome.readyWhenYouAre", "large sloth thumbs.png"),
@@ -2952,9 +2933,8 @@ const Composer: FC<{
       useChatRuntimeStore.getState().setDeepResearchEnabled(false);
     }
   }, [deepResearchEnabled, hasResearchMessage, researchThreadId, researchUsed]);
-  // More than 4 pills: collapse to icons only. Search, Tools, and permissions
-  // always show; Images, RAG, MCP and Deep Research are conditional.
-  // Narrow viewports collapse too: the labelled row is wider than a phone composer.
+  // More than 4 pills collapse to icons; Search, Tools and permissions always show, while Images,
+  // RAG, MCP and Deep Research are conditional; narrow viewports collapse too.
   const isMobile = useIsMobile();
   const pillCount =
     3 +
@@ -3632,8 +3612,7 @@ const Composer: FC<{
                 await nativeAttachmentIntentToFile(intent),
               );
             } catch (error) {
-              // Report once below rather than one toast per file: a whole batch
-              // can go unreadable at once (volume ejected, tokens expired).
+              // Report once, not per file: a whole batch can go unreadable at once.
               readFailures += 1;
               lastReadError = error;
               continue;
@@ -3834,18 +3813,16 @@ const Composer: FC<{
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
-  // assistant-ui's Escape cancels the run and prevents the key, which would block declining a tool request.
-  // Only when decline would take that Escape: its card is keyboard-ready on this screen (not parked in a
-  // background chat, where Escape would then stop nothing), and not once rebound.
+  // assistant-ui's Escape cancels runs and would block declining a tool; prevent it only when
+  // decline takes Escape here, not in background chats or once rebound.
   const declineMounted = useShortcutAvailable("declineToolRequest", true);
   const declineOwnsEscape = useKeyboardShortcutsStore((s) => {
     const bindings = resolveBindings(s.overrides, "declineToolRequest");
     return bindings.primary === "Escape" || bindings.alternate === "Escape";
   });
   const composerFocusable = useContext(ChatComposerFocusableContext);
-  // While a Run handoff owns the model picker the input ignores focus(), so its autofocus cannot
-  // dismiss the picker. Gating autoFocus would focus it when the gate lifts; inert would also block
-  // a press and read as Chat being covered.
+  // While a Run handoff owns the model picker, the input ignores focus() so its autofocus cannot
+  // dismiss it; gating autoFocus would focus on lift, and inert would block presses too.
   useLayoutEffect(() => {
     const input = inputRef.current;
     if (composerFocusable || !input) return;
@@ -3952,9 +3929,8 @@ const Composer: FC<{
     const draft = adoptLegacyDraft(draftScope)
       ? (readComposerDraft(draftKey) ?? "")
       : latestDraft();
-    // A save that raced the send still holds the sent text, so restoring it
-    // would undo the clear. Clear rather than return early, which would leave
-    // the previous thread's text on screen under this one.
+    // A save that raced the send still holds the sent text, so restoring it would undo the clear;
+    // clear rather than return early, or the previous thread's text stays on screen.
     if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey)) {
       // Inline because clearStoredDraft is declared below; cancel the pending save too.
       if (draftSaveTimerRef.current !== null) {
@@ -3977,11 +3953,9 @@ const Composer: FC<{
       composer.setText(text);
     });
   }, [draftScope, draftSource, aui]);
-  // The saved-prompt menu and the prompt storage dialog fill the composer
-  // directly, bypassing the guard. Text appearing after the send was put there
-  // deliberately, so retire. Read live, or a
-  // pending render retires it on stale text. Must stay after the restore
-  // above, which clears the raced draft this would otherwise retire on.
+  // The saved-prompt menu and prompt dialog fill the composer directly, bypassing the guard, so
+  // text appearing after the send is deliberate and retires the guard; read it live, or a pending
+  // render retires on stale text; keep this after the restore above, which clears the raced draft.
   useEffect(() => {
     const guard = justSentRef.current;
     if (guard === null || guard.draftKey !== draftKey) return;
@@ -4037,8 +4011,7 @@ const Composer: FC<{
     // Its own additions re-run this; one pass per scope, or they double up.
     if (restoringPasteScopeRef.current === draftScope) return;
     restoringPasteScopeRef.current = draftScope;
-    // Claim the chat only once the attachments are in, so the save effect
-    // cannot write an empty composer over the draft still being restored.
+    // Claim after attachments land so the save effect cannot blank a draft mid-restore.
     void Promise.all(
       missing.map((text) => composer.addAttachment(createPastedTextFile(text))),
     ).finally(() => {
@@ -4049,8 +4022,7 @@ const Composer: FC<{
       }
     });
   }, [draftScope, pasteDraftKey, composerAttachmentSignature, aui]);
-  // Keyed on the paste identities, never their bodies, so typing beside a
-  // megabyte paste does not rewrite it to localStorage every 300ms.
+  // Keyed on paste identities, not bodies, so typing never rewrites a megabyte paste.
   useEffect(() => {
     if (
       draftScope === INCOGNITO_DRAFT_SCOPE ||
@@ -4068,8 +4040,7 @@ const Composer: FC<{
     writePasteDraft(pasteDraftKey, pastes);
   }, [composerAttachmentSignature, draftScope, pasteDraftKey, aui]);
   useEffect(() => {
-    // After a thread switch composerText can still hold what was on screen
-    // before the restore; skip that cycle so it can't overwrite the draft.
+    // After a switch, composerText can hold stale text; skip that cycle to keep the draft.
     if (lastDraftScopeRef.current !== draftScope) {
       lastDraftScopeRef.current = draftScope;
       return;
@@ -4094,8 +4065,7 @@ const Composer: FC<{
       draftKeyRef.current,
       imeSessionOpenRef.current,
     );
-    // Here, not beside send(): handleSubmit returns early on the three queueing
-    // paths, which empty the composer too.
+    // Clear here, not in send(): queueing submits return early but also empty the composer.
     setIsWritingExpanded(false);
   }, [imeSessionOpenRef]);
   const clearStoredDraft = useCallback(() => {
@@ -4109,9 +4079,8 @@ const Composer: FC<{
     writeComposerDraft(composerDraftKey(), "");
     writePasteDraft(composerPasteDraftKey(), []);
   }, [draftSource]);
-  // react-textarea-autosize re-measures only on value change or window resize,
-  // not on the width swap from expanding, so it keeps the taller height and
-  // leaves a stray blank row. Nudge a resize whenever input width changes.
+  // react-textarea-autosize re-measures only on value or window change, not on the width swap,
+  // leaving a stray blank row; nudge a resize when input width changes.
   useEffect(() => {
     const el = inputRef.current;
     if (!el || typeof ResizeObserver === "undefined") {
@@ -6800,9 +6769,8 @@ const ComposerToolsMenu: FC<{
     ({ composer }) => composer.isEditing,
   );
   const pickAttachment = usePickComposerAttachment();
-  // Straight to the picker, skipping the "+" menu the item lives in. Off-route
-  // the chat pane is hidden rather than unmounted, so the chords gate on it
-  // being the visible tab; a window listener does not care about `inert`.
+  // Goes straight to the picker, skipping the + menu; off-route the chat pane is hidden, not
+  // unmounted, so the chords gate on it being the visible tab, as window listeners ignore inert.
   const chatActive = useChatActive();
   useShortcut(
     "attachFiles",
@@ -7721,8 +7689,7 @@ function useContinuation() {
       ? ""
       : readContinuationSource(message.content).reasoning,
   );
-  // Gemini signs answer and thought parts. A continuation runs from a sibling branch,
-  // so both kinds of replay metadata travel with the partial.
+  // Gemini signs answer and thought parts; a sibling-branch continuation must carry both.
   const thoughtSignature = useAuiState(({ message }) =>
     readTextThoughtSignature(message.content),
   );
@@ -7749,9 +7716,8 @@ function useContinuation() {
       }),
     [metadata, partial, thoughtSignature, thoughtParts, answerParts],
   );
-  // A tool-calling turn cannot be resumed: the continuation runs as a sibling, so the
-  // call and its result would be missing from the outbound history. A Gemini ledger is
-  // independently replayable even when its signed thought produced no visible text.
+  // Tool-calling turns cannot resume as a sibling: the call and its result would be missing from
+  // the outbound history; a Gemini ledger replays even with no visible text.
   const continuable = useMemo(
     () =>
       isContinuableContent(messageContent, {
@@ -7760,8 +7726,7 @@ function useContinuation() {
       }),
     [messageContent, thoughtResumable, geminiReplayTurns],
   );
-  // Audio input re-listens to the recording and answers afresh rather than resuming,
-  // so continuing there would append a second answer.
+  // Audio input re-listens and answers afresh, so a continuation would add a second answer.
   const fromAudioInput = useAuiState(({ thread }) =>
     Boolean(findLatestUserAudioBase64(thread.messages, false)),
   );

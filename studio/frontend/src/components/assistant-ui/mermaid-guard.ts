@@ -4,11 +4,9 @@
 import { JSON_SCHEMA, load } from "js-yaml";
 
 /*
- * Chat and document markdown never loads a remote image (`safeMarkdownUrl`), but mermaid draws
- * into the live page and fetches what a diagram names while it measures it, before any SVG comes
- * back. So the diagram source is vetted before mermaid sees it, the same way: an image a diagram
- * names must be a `data:` URI. A source naming none comes back unchanged, so ordinary diagrams
- * render exactly as before; running this twice gives the same text.
+ * Markdown never loads remote images (safeMarkdownUrl), but mermaid fetches what a diagram names
+ * while measuring, so the source is vetted first: an image must be a data: URI; a source naming
+ * none is unchanged, and a second pass gives the same text.
  */
 
 const INLINE_IMAGE = /^\s*data:/i;
@@ -36,8 +34,7 @@ const CSS_FETCH = /url|image|cross-fade|element\s*\(|@import|\\|&/i;
 // Mermaid drops a whole line starting with `%%` before parsing (an `%%{init}%%` directive stays).
 const COMMENT_LINE = /^[^\S\n]*%%(?!\{).*$/gm;
 
-// `details Actor: id` in a sequence diagram merges the page element `id`'s JSON (an `icon` too),
-// which this cannot see; the line is dropped.
+// Sequence `details Actor: id` lines merge page element JSON (icon too), unseen here: dropped.
 const DETAILS_LINE = /^[^\S\n]*details\b[^:\n[({]*:.*$/gim;
 const SEQUENCE = /^[^\S\n]*sequenceDiagram\b/m;
 

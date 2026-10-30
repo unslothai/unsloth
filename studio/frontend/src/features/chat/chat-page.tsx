@@ -3191,10 +3191,9 @@ export function ChatPage({
       for (const unsubscribe of unsubscribers) unsubscribe();
     };
   }, []);
-  // Another tab can change the active model's pin (the pin store listens for the storage event),
-  // and the normalization above reads the pin through a getState helper without subscribing, so
-  // the composer kept the old level until a switch. Only the effort here: the pills and the rest
-  // of that block are not this one's to rerun.
+  // Another tab can change the active model's pin via the storage event, but the normalization
+  // above reads it without subscribing, so the level went stale until a switch; only the effort is
+  // subscribed here.
   const activePinnedEffort = useModelReasoningEffortStore(
     (state) => state.effortByModel[inferenceCheckpoint],
   );

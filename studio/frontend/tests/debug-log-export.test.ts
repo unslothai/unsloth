@@ -311,9 +311,8 @@ test("openLogsFolder preserves the selected path with an older backend", async (
 });
 
 test("an export that works does not touch the session", async () => {
-  // refreshSession rotates the stored pair, so refreshing before every export
-  // would spend a refresh token, and risk a sign-out, just for clicking
-  // Download all logs.
+  // refreshSession rotates the stored pair, so refreshing before every export would spend a refresh
+  // token and risk a sign-out just to click Download all logs.
   const world = makeWorld({
     isTauri: true,
     invoke: async () => SAVED_PATH,

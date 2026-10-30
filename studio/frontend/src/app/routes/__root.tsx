@@ -243,10 +243,8 @@ function PersonalizationSyncMount() {
   return null;
 }
 
-// A full disk is not a training problem, so the warning cannot live on the
-// training route: it belongs to whichever route the user happens to be on when
-// space runs out. Mounted here it subscribes once for the session, and stays
-// subscribed across navigation, instead of coming and going with /studio.
+// A full disk is not a training problem, so the warning is mounted here, not on the training route;
+// it subscribes once and stays across navigation, not tied to /studio.
 function LowDiskNoticeMount() {
   useLowDiskNotice();
   return null;
@@ -344,11 +342,9 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/api-monitor",
 ]);
 
-// Paths that render their own "still checking" state and self-gate once the verdict lands.
-// The redirect below is one-way, so acting on the pre-measurement guess strands a healthy host
-// on /chat; these two wait it out instead. Everything else keeps the old behaviour.
-// /video is allowed outright below, so this is in practice what keeps /studio off the guess. It
-// stays listed so that admission is the only thing /video depends on, not both.
+// Routes that self-gate once the verdict lands, so the one-way redirect never acts on the
+// pre-measurement guess and strands a healthy host on /chat; /studio is kept off it by this list;
+// /video stays listed so admission alone, not both, is what it depends on.
 const SELF_GATED_WHILE_UNKNOWN = ["/studio", "/video"];
 
 function waitsOutUnknownVerdict(pathname: string): boolean {
@@ -544,12 +540,9 @@ function RootLayout() {
     standalone?: boolean;
   }) => {
     const chatRuntime = useChatRuntimeStore.getState();
-    // The project on screen, which on Chat is the runtime's. The page keeps that in step with the
-    // route, the inferred ones included: a thread or a compare pair opened without ?project= still
-    // belongs to its project, and the page's own New chat button starts the next chat there.
-    // Reading the search param instead would leave that project without being asked to. Off Chat
-    // the page is hidden rather than unmounted, so its project is one the user cannot see and a new
-    // chat belongs to none.
+    // The project on screen: on Chat the runtime's, tracking the route incl. inferred ids; reading
+    // the search param instead would leave that project without being asked to; off Chat the page
+    // is hidden, not unmounted, so new chats belong to none.
     const openProjectId = isChatRoute ? chatRuntime.activeProjectId : null;
     const projectId = options?.standalone ? null : openProjectId;
     chatRuntime.setActiveThreadId(null);
@@ -561,8 +554,7 @@ function RootLayout() {
     });
   };
 
-  // Gated like the workspace chords below: /login has no shell, and /chat
-  // bounces straight back off requireAuth.
+  // Gated like the chords below: /login has no shell and /chat bounces off requireAuth.
   const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;
   useShortcut("newChat", () => startNewChat(), {
     enabled: routeShortcutEnabled,

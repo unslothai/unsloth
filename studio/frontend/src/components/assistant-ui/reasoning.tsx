@@ -736,8 +736,7 @@ const ReasoningGroupBlock = ({
     if (!groupHasReasoning) {
       return false;
     }
-    // The lead of a folded span keeps working through later thinking and blank text too,
-    // until the answer.
+    // The lead of a folded span also takes later thinking and blank text until the answer.
     for (let i = endIndex + 1; i < len; i += 1) {
       const part = parts[i];
       if (part?.type === "tool-call") continue;
