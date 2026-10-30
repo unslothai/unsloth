@@ -13,6 +13,7 @@ import {
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { restore } from "../api/bench-runner";
+import { releaseBenchLease } from "../api/bench-runs-api";
 import { chatBaseLoad } from "../api/chat-base";
 import {
   type LlamaBenchConfig,
@@ -66,15 +67,22 @@ async function putChatBack(
   get: () => LlamaBenchState,
 ): Promise<void> {
   const pending = get().pendingRestore;
-  if (!pending) return;
+  // The server keeps the run's lease (the job id) until this load, so no other run gets in first.
+  const holder = get().job?.id;
+  if (!pending) {
+    if (holder) await releaseBenchLease(holder);
+    return;
+  }
   set({ phase: "restoring", pendingRestore: null });
-  await restore(pending.original, pending.originalLoad).catch((err) =>
-    set({
-      error: `The run finished, but chat's model didn't load back: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    }),
-  );
+  await restore(pending.original, pending.originalLoad, holder)
+    .catch((err) =>
+      set({
+        error: `The run finished, but chat's model didn't load back: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      }),
+    )
+    .finally(() => (holder ? releaseBenchLease(holder) : undefined));
 }
 
 async function pollUntilDone(
@@ -184,6 +192,9 @@ export const useLlamaBenchStore = create<LlamaBenchState>()(
           if (touched && original.active_model) {
             set({ pendingRestore: { original, originalLoad } });
             await putChatBack(set, get);
+          } else {
+            const held = get().job?.id;
+            if (held) await releaseBenchLease(held);
           }
           set({
             phase: "idle",

@@ -170,6 +170,15 @@ def _claim_lease(holder: str) -> None:
         benchmarks._lease = {"holder": holder, "kind": KIND, "expires": float("inf"), "outside": 0}
 
 
+def _lease_until_restored(holder: str) -> None:
+    """The tab puts chat's model back under this lease (the job id as its header), then releases
+    it; a closed tab's lease lapses like any other."""
+    from routes import benchmarks
+    with benchmarks._lease_lock:
+        if benchmarks._lease and benchmarks._lease["holder"] == holder:
+            benchmarks._lease["expires"] = time.monotonic() + benchmarks.LEASE_TTL_SECONDS
+
+
 def _release_lease(holder: str) -> None:
     from routes import benchmarks
     with benchmarks._lease_lock:
@@ -278,7 +287,7 @@ def _run(job: _Job, binary: Path, gguf: str) -> None:
         code = job.proc.wait()
         reader.join(timeout = 2)
         # Before the status turns terminal: the tab puts chat's model back as soon as it sees it.
-        _release_lease(job.id)
+        _lease_until_restored(job.id)
         if job.cancelled:
             job.status = "cancelled"
         elif code != 0:
@@ -288,11 +297,11 @@ def _run(job: _Job, binary: Path, gguf: str) -> None:
         else:
             job.status = "done"
     except Exception as exc:  # the job must end in a terminal state whatever went wrong
-        _release_lease(job.id)
+        _lease_until_restored(job.id)
         job.status = "error"
         job.error = str(exc)[:500]
     finally:
-        _release_lease(job.id)
+        _lease_until_restored(job.id)
         job.finished_at = int(time.time() * 1000)
         job.stage = ""
         if job.rows:

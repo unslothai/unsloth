@@ -134,7 +134,11 @@ def test_a_run_and_a_config_sweep_lock_each_other_out(bench):
     assert held.status_code == 409
     assert held.json()["detail"]["kind"] == "llama-bench"
     client.delete("/api/benchmarks/llama-bench/run")
-    assert _wait(client)["status"] == "cancelled"
+    job = _wait(client)
+    assert job["status"] == "cancelled"
+    # Held until the tab has put chat's model back and lets go.
+    assert client.post("/api/benchmarks/lease", json = sweep).status_code == 409
+    client.delete("/api/benchmarks/lease", params = {"holder": job["id"]})
     assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200
 
     # A sweep holding the lease refuses the run before anything is unloaded.
@@ -218,22 +222,30 @@ def test_a_non_executable_llama_bench_is_not_offered(tmp_path, monkeypatch):
     assert llama_bench.find_llama_bench() == bench_bin
 
 
-def test_the_lease_is_free_before_the_tab_sees_the_run_end(bench, monkeypatch):
-    # Loads are refused under a llama-bench lease, and the tab puts chat's model back as soon
-    # as the status turns terminal.
+def test_the_tab_restores_chat_under_the_runs_lease_then_frees_it(bench, monkeypatch):
+    # Loads are refused under a llama-bench lease, and between the run ending and the tab's
+    # restore another tab could take a fresh lease: the run's lease outlives it until then.
     client, _, _ = bench
     seen = []
-    release = llama_bench._release_lease
+    hand_off = llama_bench._lease_until_restored
 
     def record(holder):
-        if llama_bench._job is not None:
-            seen.append(llama_bench._job.status)
-        release(holder)
+        seen.append(llama_bench._job.status)
+        hand_off(holder)
 
-    monkeypatch.setattr(llama_bench, "_release_lease", record)
+    monkeypatch.setattr(llama_bench, "_lease_until_restored", record)
     assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
-    assert _wait(client)["status"] == "done"
-    assert seen[0] == "running"
+    job = _wait(client)
+    assert job["status"] == "done" and seen[0] == "running"
+    lease = benchmarks_routes._lease
+    assert lease["holder"] == job["id"] and lease["expires"] < float("inf")
+    sweep = {"holder": "sweep-test-1234", "kind": "sweep"}
+    assert client.post("/api/benchmarks/lease", json = sweep).status_code == 409
+    assert benchmarks_routes._admit_load(job["id"])  # the restore, with the run's header
+    benchmarks_routes._load_done(job["id"])
+    assert not benchmarks_routes._admit_load(None)
+    client.delete("/api/benchmarks/lease", params = {"holder": job["id"]})
+    assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200
 
 
 def test_a_run_waits_out_a_load_that_passed_the_fence_first(bench, monkeypatch):
