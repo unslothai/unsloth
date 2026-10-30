@@ -2355,13 +2355,23 @@ class UnslothTrainer:
             detect_multimodal_dataset,
         )
 
-        # The detector also takes a column by its name (file_name), which may hold audio paths.
+        from datasets import Image
+
+        def image_typed(col):
+            feature = (getattr(dataset, "features", None) or {}).get(col)
+            inner = feature[0] if isinstance(feature, list) and feature else feature
+            return isinstance(getattr(inner, "feature", inner), Image)
+
+        # The detector also takes a column by its name (file_name), which may hold audio paths;
+        # the schema settles it even when row 0 has no image.
         sample = _first_row(dataset) or {}
         candidates = [
             c
             for c in detect_multimodal_dataset(dataset)["multimodal_columns"]
-            if c != audio_col and (_is_image_value(sample.get(c)) or _holds_images(sample.get(c)))
+            if c != audio_col
+            and (image_typed(c) or _is_image_value(sample.get(c)) or _holds_images(sample.get(c)))
         ]
+        candidates += [c for c in cols if c != audio_col and c not in candidates and image_typed(c)]
         return candidates[0] if candidates else None
 
     def _format_audio_vlm_dataset(

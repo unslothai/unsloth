@@ -156,6 +156,25 @@ def test_a_file_name_column_of_audio_paths_is_not_taken_for_images(audio_vlm_tra
     assert _user_part_types(formatted) == ["audio", "text"]
 
 
+@pytest.mark.parametrize("feature", ["image", "images"])
+def test_an_image_typed_column_counts_even_when_row_zero_is_empty(audio_vlm_trainer, feature):
+    image = PIL_Image.new("RGB", (8, 8), "red")
+    many = feature == "images"
+    rows = {
+        "audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * 2,
+        "text": ["one", "two"],
+        feature: [[] if many else None, [image] if many else image],
+    }
+    schema = datasets.Features({
+        "audio": {"array": datasets.Sequence(datasets.Value("float32")), "sampling_rate": datasets.Value("int64")},
+        "text": datasets.Value("string"),
+        feature: datasets.Sequence(datasets.Image()) if many else datasets.Image(),
+    })
+    ds = _NoAudioCast(datasets.Dataset.from_dict(rows, features = schema))
+
+    assert audio_vlm_trainer._resolve_audio_vlm_image_column(ds, None, "audio") == feature
+
+
 def _collator_block():
     lines = (_BACKEND / "core" / "training" / "trainer.py").read_text(encoding = "utf-8").splitlines()
     start = next(
