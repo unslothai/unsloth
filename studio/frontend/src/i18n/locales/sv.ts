@@ -2512,6 +2512,14 @@ export const sv = {
           on: "På",
           off: "Av",
         },
+        mascots: {
+          label: "Dekorativa maskotar",
+          description:
+            "Visa dekorativa sengångarillustrationer i hela appen. Profilbilder och varumärkeslogotyper visas fortfarande.",
+          keywords: "maskot sengångare dekoration illustration dölj visa",
+          greetingDisabled:
+            "Aktivera dekorativa maskotar under Utseende för att visa sengångaren i chattens hälsning.",
+        },
         pointerCursors: {
           label: "Använd pekarkursörer",
           description:

@@ -30,6 +30,7 @@ export type Personalization = {
   customizationSaved: boolean;
   chatWidthSaved?: boolean;
   sentAttachmentsSaved?: boolean;
+  mascotsSaved?: boolean;
   paletteSaved: boolean;
   greetingSlothSaved: boolean;
 };
@@ -51,6 +52,7 @@ export async function savePersonalization(
     | "customizationSaved"
     | "chatWidthSaved"
     | "sentAttachmentsSaved"
+    | "mascotsSaved"
     | "paletteSaved"
     | "greetingSlothSaved"
   >,

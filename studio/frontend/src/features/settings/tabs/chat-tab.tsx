@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useAppearanceCustomStore } from "../stores/appearance-custom-store";
 import {
   DEFAULT_THINKING_VISIBILITY,
   DEFAULT_TOOL_VISIBILITY,
@@ -311,6 +312,7 @@ export function ChatTab() {
   const setAutoCompactEnabled = useChatRuntimeStore(
     (state) => state.setAutoCompactEnabled,
   );
+  const showMascots = useAppearanceCustomStore((s) => s.customization.showMascots);
   const keepRunningWhenTabClosed = useChatRuntimeStore(
     (state) => state.keepRunningWhenTabClosed,
   );
@@ -804,11 +806,16 @@ export function ChatTab() {
         </SettingsRow>
         <SettingsRow
           label={t("settings.profile.greetingSloth")}
-          description={t("settings.profile.greetingSlothDescription")}
+          description={t(
+            showMascots
+              ? "settings.profile.greetingSlothDescription"
+              : "settings.appearance.custom.mascots.greetingDisabled",
+          )}
         >
           <Switch
             aria-label={t("settings.profile.greetingSloth")}
             id="profile-greeting-sloth"
+            disabled={!showMascots}
             checked={showGreetingSloth}
             onCheckedChange={setShowGreetingSloth}
           />

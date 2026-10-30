@@ -58,6 +58,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.stats.longestStreak",
   ],
   appearance: [
+    "settings.appearance.custom.mascots.label",
     "settings.appearance.theme.label",
     "settings.appearance.palette.label",
     "settings.appearance.trickOrTreat.label",
@@ -436,6 +437,8 @@ export function renderedSearchEntries(
 export const SETTINGS_SEARCH_KEYWORDS: Partial<
   Record<TranslationKey, TranslationKey>
 > = {
+  "settings.appearance.custom.mascots.label":
+    "settings.appearance.custom.mascots.keywords",
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
   "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",

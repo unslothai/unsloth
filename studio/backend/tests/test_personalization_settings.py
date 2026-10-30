@@ -85,6 +85,7 @@ def test_customization_defaults():
     assert c.reduceMotion == "system"
     assert c.fontSmoothing is True
     assert c.pointerCursors is False
+    assert c.showMascots is True
     assert c.colors.light.accent is None
     assert c.headingFont is None
     assert c.chatFont is None
@@ -492,6 +493,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "uiFontSize": 14,
                 "codeFontSize": 13,
                 "contrast": 60,
+                "showMascots": False,
                 "pointerCursors": True,
                 "reduceMotion": "off",
                 "fontSmoothing": True,

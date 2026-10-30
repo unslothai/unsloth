@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type ComponentProps, useState } from "react";
+import { useAppearanceCustomStore } from "@/features/settings/stores/appearance-custom-store";
 
 // Inline data URI so the fallback can never 404, unlike public-folder originals.
 import fallbackMascot from "@/assets/mascot-fallback.webp?inline";
@@ -20,6 +21,8 @@ type MascotImgProps = { src: string } & Omit<
 
 // Keying on src remounts the inner component, resetting retry state per source.
 export function MascotImg(props: MascotImgProps) {
+  const showMascots = useAppearanceCustomStore((s) => s.customization.showMascots);
+  if (!showMascots) return null;
   return <MascotImgInner key={props.src} {...props} />;
 }
 
