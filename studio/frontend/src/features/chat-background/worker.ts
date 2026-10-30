@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { renderEffect } from "./effects";
 import type { BackgroundEffect } from "./model";
-// The main thread decodes once; only the pixel transform runs here. This also
-// works in WebViews without OffscreenCanvas support.
+// Main thread decodes; only the pixel transform runs here (no OffscreenCanvas needed).
 self.onmessage = ({
 	data,
 }: MessageEvent<{

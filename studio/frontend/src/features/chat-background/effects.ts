@@ -3,8 +3,7 @@
 
 import type { BackgroundEffect } from "./model.ts";
 
-// Recursive ordered dithering: each coordinate bit selects a quadrant of a
-// 2×2 matrix. Low coordinate bits contribute the most significant rank bits.
+// Recursive ordered dither: low coordinate bits give the most significant rank bits.
 function orderedRank(column: number, row: number): number {
 	let rank = 0;
 	for (let bit = 0; bit < 2; bit++) {
@@ -15,8 +14,7 @@ function orderedRank(column: number, row: number): number {
 	return rank;
 }
 
-// Five-column, seven-row punctuation built from strokes, with one pixel of
-// spacing on the right and bottom. This avoids platform-dependent font rasterization.
+// 5x7 stroked glyphs with 1px right/bottom spacing: no platform font rasterization.
 function punctuationInk(level: number, x: number, y: number): boolean {
 	if (x === 5 || y === 7) return false;
 	switch (level) {
@@ -53,7 +51,6 @@ function punctuationInk(level: number, x: number, y: number): boolean {
 	}
 }
 
-/** Apply a texture to straight RGBA without modifying input or its alpha channel. */
 export function renderEffect(
 	source: Uint8ClampedArray,
 	width: number,
@@ -96,8 +93,7 @@ export function renderEffect(
 			0.0722 * source[offset + 2]) /
 		255;
 
-	// Work in cells: color, density and threshold are calculated once per cell.
-	// Clipping the last cell preserves the pattern on odd-sized uploads.
+	// Clip the last cell so odd-sized uploads keep the pattern.
 	for (let top = 0; top < height; top += tileHeight) {
 		for (let left = 0; left < width; left += tileWidth) {
 			const center = index(left + tileWidth / 2, top + tileHeight / 2);

@@ -119,8 +119,7 @@ test("contrast protection holds for arbitrary imagery and custom palettes", () =
 });
 
 test("dither preserves hue across the ordered threshold pattern", () => {
-	// RGB(128,64,32) lights thresholds 0–7;
-	// the remaining dots use an 8% gain. Each dot occupies 2×2 pixels.
+	// RGB(128,64,32) lights thresholds 0-7; other dots use an 8% gain; each dot is 2x2 px.
 	const source = Uint8ClampedArray.from(
 		{ length: 8 * 8 * 4 },
 		(_, i) => [128, 64, 32, 255][i % 4],
@@ -139,8 +138,7 @@ test("dither preserves hue across the ordered threshold pattern", () => {
 	assert.deepEqual(renderEffect(source, 8, 8, "Dither", true), result);
 });
 
-// Captured before replacing the renderer: checks every output byte across odd
-// dimensions, transparent pixels, color variation and grayscale density levels.
+// Digests captured before the renderer rewrite; cover odd sizes, alpha, color and density.
 const appearanceDigests: Record<string, string> = {
 	"None:false":
 		"7ee58829538bc7f04cd4e5ba7cc284309f7a8c9322b353ffcd728cdac36bd691",

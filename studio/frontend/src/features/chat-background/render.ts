@@ -1,5 +1,5 @@
-import { canvasBlob, decodeImage } from "./image";
 // SPDX-License-Identifier: AGPL-3.0-only
+import { canvasBlob, decodeImage } from "./image";
 import type { BackgroundEffect } from "./model";
 
 type Job = { promise: Promise<Blob>; release: () => void };
@@ -8,8 +8,7 @@ const jobs = new WeakMap<
 	Blob,
 	Map<string, { promise: Promise<Blob>; users: number; cancel: () => void }>
 >();
-/** Shared work between chat and the previews. Cancelling the last consumer
- * terminates unfinished pixel work; completed blobs are cached, never URLs. */
+/** Shared by chat and previews: the last release cancels pixel work; blobs are cached, never URLs. */
 export function acquireRender(
 	blob: Blob,
 	effect: BackgroundEffect,

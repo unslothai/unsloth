@@ -1,6 +1,5 @@
-// Run against the Vite server with:
+// After opening /smoke-chat-background.html on the Vite server:
 // playwright-cli -s=wallpaper run-code --filename=tests/studio/playwright_chat_background.js
-// The session must have opened /smoke-chat-background.html first.
 async (page) => {
   const check=(ok,message)=>{if(!ok)throw new Error(message);};
   await page.emulateMedia({reducedMotion:'no-preference'});
@@ -91,11 +90,9 @@ async (page) => {
   check(await page.getByRole('slider',{name:'Image blur',exact:true}).getAttribute('aria-valuenow')==='1','blur persisted');
   check(await page.getByRole('button',{name:'Horizontal 100%, vertical 0%',exact:true}).getAttribute('aria-pressed')==='true','position persisted');
   await upload(true);await page.getByRole('alert').waitFor();await settled('ASCII');
-  // Latest-wins changes: only final preferences may survive a reload.
   await page.evaluate(async()=>{const s=window.__wallpaperSmoke;for(let i=0;i<30;i++)s.patch({visibility:i,effect:i===29?'Halftone':'Scanlines'});});
   await settled('Halftone');
   await page.waitForFunction(async()=>{const s=window.__wallpaperSmoke;return s.state().value.visibility===29;});
-  // Simulated quota error must preserve the previous committed background.
   await page.evaluate(()=>{window.__put=IDBObjectStore.prototype.put;IDBObjectStore.prototype.put=function(...args){if(this.name==='backgrounds')throw new DOMException('quota','QuotaExceededError');return window.__put.apply(this,args);};});
   await upload();await page.getByRole('alert').waitFor();await settled('Halftone');
   await page.evaluate(()=>{IDBObjectStore.prototype.put=window.__put;delete window.__put;});
@@ -118,7 +115,6 @@ async (page) => {
   await page.screenshot({path:'.playwright-cli/wallpaper-mobile.png',fullPage:true});
   await page.setViewportSize({width:1440,height:1000});
   await page.screenshot({path:'.playwright-cli/wallpaper-conversation.png',fullPage:true});
-  // Different signed-in account, same origin: artwork must not leak across accounts.
   await page.evaluate(()=>localStorage.setItem('unsloth.browser-account.v1','account:wallpaper-test:other'));
   await page.reload();await page.waitForFunction(()=>document.querySelector('input[type=file]')?.disabled===false);
   check(await page.locator('.chat-wallpaper').count()===0,'account isolation');

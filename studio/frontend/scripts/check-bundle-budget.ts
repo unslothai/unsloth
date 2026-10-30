@@ -443,11 +443,8 @@ export const BUDGET = {
   // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
   // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
   // the eager English catalog and its search rows. Raised by that.
-  // Chat wallpaper: account-local preferences, reset integration and English settings strings
-  // add 6,365 B raw / 3,589 B transfer (5,978,111 -> 5,984,476 B raw,
-  // 1,849,582 -> 1,853,171 B transfer, same checkout baseline and Node 24 build,
-  // 85 -> 89 eager chunks). Renderer/contrast logic and pixel worker remain lazy.
-  // Preserve the existing headroom; no effect/image code is added to startup.
+  // Chat wallpaper prefs, reset and English strings: +6,365 B raw / +3,589 B transfer (Node 24,
+  // 85 -> 89 eager chunks). Renderer, contrast and pixel worker stay lazy.
   transferBytes: 1_853_999,
   rawBytes: 5_997_755,
 };

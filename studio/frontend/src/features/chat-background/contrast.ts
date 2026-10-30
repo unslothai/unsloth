@@ -12,8 +12,7 @@ export function contrast(a: RGB, b: RGB): number {
 		y = luminance(b);
 	return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
 }
-/** Largest safe artwork alpha for ANY image, including pixels matching the text.
- * Preserve the base theme's contrast where a user has deliberately chosen <4.5. */
+/** Largest artwork alpha safe for any image; keeps a deliberately chosen theme contrast below 4.5. */
 export function safeArtworkOpacity(
 	background: RGB,
 	foregrounds: RGB[],

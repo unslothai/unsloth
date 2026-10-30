@@ -6706,7 +6706,6 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
 }
 
 
-/* Wallpaper is a non-interactive canvas shared by the main workspace routes. */
 .chat-wallpaper { position: absolute; inset: 0; overflow: hidden; pointer-events: none; --wallpaper-safe: 0; }
 .chat-wallpaper-frame { position: absolute; inset: 0; opacity: var(--wallpaper-visibility); }
 .chat-wallpaper-image {
@@ -6722,17 +6721,14 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
 @keyframes wallpaper-leave { from { opacity: var(--wallpaper-visibility); } to { opacity: 0; } }
 .chat-wallpaper[data-reduced] .chat-wallpaper-frame { animation: none; }
 .chat-wallpaper[data-reduced] .chat-wallpaper-frame[data-departing] { display: none; }
-/* A conversation keeps a quieter version of the same crop. On compare, even
-   an empty pane uses this treatment so both panes share one coherent canvas. */
+/* Conversations dim the crop; compare dims even an empty pane so both match. */
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper,
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):has([data-tour="chat-compare-view"]) > .chat-wallpaper,
 .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper { opacity: .4; }
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.aui-thread-viewport, [data-wallpaper-reading-surface]) {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * 100%), transparent);
 }
-/* The artwork already fades to the page color. A second full-width wash
-   crushes its middle tones and makes a dark horizon across the welcome view.
-   Keep that canvas clear; soften only the greeting and composer surfaces. */
+/* No second wash on the welcome view: it crushes mid-tones into a dark horizon. */
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .aui-thread-viewport:has(.aui-thread-welcome-center) {
   background: transparent;
 }
@@ -6756,7 +6752,6 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
 }
 .wallpaper-preview-prose { background: var(--background); }
 
-/* One soft top fade grounds the controls without separate dark capsules. */
 .chat-wallpaper::after {
   content: "";
   position: absolute;
@@ -6783,8 +6778,7 @@ html:has(:is([data-wallpaper-workspace], [data-chat-content-root]) > .chat-wallp
 html:has([data-wallpaper-workspace] > .chat-wallpaper[data-ready]) [data-slot="window-titlebar"][data-wallpaper-sidebar-pinned] > [data-wallpaper-chrome-controls]:first-child {
   background: var(--sidebar);
 }
-/* One viewport-sized crop sits behind every main route, so opening the sidebar
-   reveals a different portion of the same image instead of reframing it. */
+/* One viewport-sized crop, so opening the sidebar does not reframe the image. */
 [data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"],
 [data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) [data-chat-page-root] {
   background: transparent;
