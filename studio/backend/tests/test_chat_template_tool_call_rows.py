@@ -298,7 +298,6 @@ def test_null_call_content_falls_back_to_empty_only_when_the_call_renders(shareg
         assert len(texts) == 4
         assert "<tool_call>get_weather " in texts[-1]
     else:
-        # A template that cannot show the call keeps dropping the row instead of training without it.
         assert len(texts) == 3
 
 
