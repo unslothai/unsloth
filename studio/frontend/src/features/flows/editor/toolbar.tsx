@@ -70,6 +70,7 @@ function ToolbarImpl({ onBack }: { onBack: () => void }) {
   const canRedo = useDocStore((s) => s.future.length > 0);
   const saveState = useUiStore((s) => s.saveState);
   const snap = useUiStore((s) => s.snapToGrid);
+  const wireStyle = useUiStore((s) => s.wireStyle);
   const { getInternalNode, getViewport, fitView } = useReactFlow();
 
   return (
@@ -134,6 +135,26 @@ function ToolbarImpl({ onBack }: { onBack: () => void }) {
           onClick={() => useUiStore.getState().toggleSnap()}
           active={snap}
         />
+        <fieldset
+          className="flex items-center"
+          title="Wire style: Bus routes wires around nodes in lanes; Curved draws direct curves"
+          data-testid="flows-wire-style"
+        >
+          <legend className="sr-only">Wire style</legend>
+          {(["bus", "curved"] as const).map((style) => (
+            <button
+              key={style}
+              type="button"
+              aria-pressed={wireStyle === style}
+              onClick={() => useUiStore.getState().setWireStyle(style)}
+              className={`h-8 rounded-full px-2.5 text-xs capitalize transition ${wireStyle === style ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              data-testid={`flows-wire-style-${style}`}
+            >
+              {style}
+            </button>
+          ))}
+        </fieldset>
+        <span className="mx-1 h-4 w-px bg-border" />
         <IconButton
           icon={HierarchySquare02Icon}
           label="Tidy up layout"

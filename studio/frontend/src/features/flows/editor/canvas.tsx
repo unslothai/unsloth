@@ -28,7 +28,12 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { findPort, getSpec } from "../stores/catalog-store";
-import { useDocStore } from "../stores/doc-store";
+import { type DocGraph, useDocStore } from "../stores/doc-store";
+import {
+  type RerouteWire,
+  rerouteDownstream,
+  rerouteUpstream,
+} from "../stores/reroute-graph";
 import { useUiStore } from "../stores/ui-store";
 import type { FlowEdge } from "../types";
 import { CanvasControls } from "./canvas-controls";
@@ -45,6 +50,7 @@ import {
   RfDeriver,
   type RfEdge,
   type RfNode,
+  type WireInfo,
 } from "./derive-rf";
 import { watchRewiredOutputs } from "./stale-outputs";
 import { useWireReconnect } from "./use-wire-reconnect";
@@ -55,11 +61,22 @@ import { GroupFrame, NoteFrame } from "./frame-nodes";
 import { NODE_DRAG_MIME, addNodeConnected, tryConnect } from "./node-factory";
 import { GRID, placementPosition } from "./placement";
 import { SelectedNodeToolbar } from "./node-toolbar";
+import { RerouteNode } from "./reroute-node";
+import {
+  REROUTE_OUT_HANDLE,
+  REROUTE_SIZE,
+  addReroute,
+  checkRerouteConnection,
+  reroutePort,
+  touchesReroute,
+} from "./reroutes";
+import { WireRouterController, setWireHover } from "./wire-routing";
 
 const NODE_TYPES = {
   flowNode: FlowNodeView,
   flowGroup: GroupFrame,
   flowNote: NoteFrame,
+  flowReroute: RerouteNode,
 };
 const EDGE_TYPES = { flowEdge: FlowEdgeView };
 const SNAP_GRID: [number, number] = [GRID, GRID];
@@ -79,6 +96,40 @@ function portTypeOf(edge: FlowEdge): string {
   const node = useDocStore.getState().graph.nodes[edge.source];
   const spec = node ? getSpec(node.type) : undefined;
   return findPort(spec, "out", edge.source_port)?.type ?? "any";
+}
+
+function wireInfo(wire: RerouteWire): WireInfo {
+  const graph = useDocStore.getState().graph;
+  const reroute = graph.reroutes[wire.source] ? wire.source : wire.target;
+  const portType = graph.reroutes[wire.source]
+    ? reroutePort(graph, wire.source).type
+    : (findPort(
+        getSpec(graph.nodes[wire.source]?.type ?? ""),
+        "out",
+        wire.source_port,
+      )?.type ?? "any");
+  const ends = new Set([wire.source, wire.target]);
+  const upstream = rerouteUpstream(graph, reroute);
+  if (upstream) ends.add(upstream.node);
+  for (const ref of rerouteDownstream(graph, reroute)) ends.add(ref.node);
+  return { portType, ends: [...ends] };
+}
+
+function wireUnder(x: number, y: number, ignore: string): string | null {
+  for (const element of document.elementsFromPoint(x, y)) {
+    const edge = element.closest(".react-flow__edge");
+    const id = edge?.getAttribute("data-id");
+    if (id && id !== ignore) return id;
+  }
+  return null;
+}
+
+function hasWires(graph: DocGraph, rerouteId: string): boolean {
+  return graph.wireOrder.some(
+    (id) =>
+      graph.wires[id].source === rerouteId ||
+      graph.wires[id].target === rerouteId,
+  );
 }
 
 function insideRect(
@@ -125,7 +176,9 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const selectedNodes = useUiStore((s) => s.selectedNodes);
   const selectedEdges = useUiStore((s) => s.selectedEdges);
   const snapToGrid = useUiStore((s) => s.snapToGrid);
-  const { screenToFlowPosition } = useReactFlow();
+  const bus = useUiStore((s) => s.wireStyle === "bus");
+  const flowId = useDocStore((s) => s.flowId);
+  const { screenToFlowPosition, flowToScreenPosition } = useReactFlow();
   const { props: wireReconnect, reconnecting } =
     useWireReconnect(!readOnly);
   const updateNodeInternals = useRef(useUpdateNodeInternals());
@@ -149,6 +202,11 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const [boxes, setBoxes] = useState<Boxes | null>(null);
   const boxesRef = useRef(boxes);
   boxesRef.current = boxes;
+  const moving = useMemo(
+    () =>
+      drag ? new Set([...Object.keys(drag), ...Object.keys(boxes ?? {})]) : null,
+    [drag, boxes],
+  );
 
   const selectedSet = useMemo(
     () => new Set([...selectedNodes, ...selectedEdges]),
@@ -166,7 +224,13 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     [graph, selectedSet, drag, sizes, boxes],
   );
   const edges = useMemo(
-    () => (deriver.current as RfDeriver).edges(graph, selectedSet, portTypeOf),
+    () =>
+      (deriver.current as RfDeriver).edges(
+        graph,
+        selectedSet,
+        portTypeOf,
+        wireInfo,
+      ),
     [graph, selectedSet],
   );
 
@@ -298,6 +362,10 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           members.set(id, { x: n.pos[0], y: n.pos[1] });
         }
       }
+      for (const id of doc.rerouteOrder) {
+        const [x, y] = doc.reroutes[id].pos;
+        if (insideRect(x, y, group.rect)) members.set(id, { x, y });
+      }
       dragMembers.current = {
         groupRfId: node.id,
         origin: { x: group.rect[0], y: group.rect[1] },
@@ -307,19 +375,33 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     [],
   );
 
-  const onNodeDragStop = useCallback(() => {
-    dragMembers.current = null;
-    const current = dragRef.current;
-    if (current) {
-      const positions: Record<string, [number, number]> = {};
-      for (const [id, p] of Object.entries(current))
-        positions[id] = [Math.round(p.x), Math.round(p.y)];
-      useDocStore
-        .getState()
-        .moveNodes(positions, groupMembership(positions, sizesRef.current));
-    }
-    setDrag(null);
-  }, []);
+  const onNodeDragStop = useCallback(
+    (_: unknown, node: RfNode) => {
+      dragMembers.current = null;
+      const current = dragRef.current;
+      if (current) {
+        const positions: Record<string, [number, number]> = {};
+        for (const [id, p] of Object.entries(current))
+          positions[id] = [Math.round(p.x), Math.round(p.y)];
+        useDocStore
+          .getState()
+          .moveNodes(positions, groupMembership(positions, sizesRef.current));
+      }
+      setDrag(null);
+      const doc = useDocStore.getState().graph;
+      const reroute = doc.reroutes[node.id];
+      if (!reroute || hasWires(doc, node.id)) return;
+      // A free reroute dropped on a wire threads itself into it.
+      const centre = flowToScreenPosition({
+        x: reroute.pos[0] + REROUTE_SIZE.width / 2,
+        y: reroute.pos[1] + REROUTE_SIZE.height / 2,
+      });
+      const wire = wireUnder(centre.x, centre.y, node.id);
+      if (wire && (doc.wires[wire] || doc.edges[wire]?.kind === "data"))
+        useDocStore.getState().addReroute(reroute, wire);
+    },
+    [flowToScreenPosition],
+  );
 
   const onConnect = useCallback((connection: Connection) => {
     const error = tryConnect({
@@ -333,6 +415,14 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
 
   const isValidConnection = useCallback((connection: Connection | RfEdge) => {
     const doc = useDocStore.getState().graph;
+    if (touchesReroute(doc, connection)) {
+      return checkRerouteConnection(doc, {
+        source: connection.source,
+        sourceHandle: connection.sourceHandle ?? "",
+        target: connection.target,
+        targetHandle: connection.targetHandle ?? "",
+      }).ok;
+    }
     const source = doc.nodes[connection.source];
     const target = doc.nodes[connection.target];
     if (!source || !target) return false;
@@ -383,12 +473,24 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       const target = event.target as Element | null;
       if (!target?.classList.contains("react-flow__pane")) return;
       const point = "changedTouches" in event ? event.changedTouches[0] : event;
-      const handle = parseHandle(start.handleId);
+      const graph = useDocStore.getState().graph;
+      const fromReroute = !!graph.reroutes[start.nodeId];
+      const handle = fromReroute
+        ? {
+            kind: "data" as const,
+            side:
+              start.handleId === REROUTE_OUT_HANDLE
+                ? ("out" as const)
+                : ("in" as const),
+            port: "",
+          }
+        : parseHandle(start.handleId);
       if (!handle) return;
-      const node = useDocStore.getState().graph.nodes[start.nodeId];
+      const node = graph.nodes[start.nodeId];
       const spec = node ? getSpec(node.type) : undefined;
-      const port =
-        handle.kind === "data"
+      const port = fromReroute
+        ? reroutePort(graph, start.nodeId)
+        : handle.kind === "data"
           ? (findPort(spec, handle.side, handle.port) ?? null)
           : null;
       const flow = screenToFlowPosition({ x: point.clientX, y: point.clientY });
@@ -415,12 +517,15 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       if (readOnly) return;
       const ids = {
         nodes: [] as string[],
+        // removeElements keeps a deleted reroute's own wires out of this, so it can heal.
         edges: rfEdges.map((e) => e.id),
         groups: [] as string[],
         notes: [] as string[],
+        reroutes: [] as string[],
       };
       for (const node of rfNodes) {
-        if (node.id.startsWith(GROUP_PREFIX))
+        if (node.type === "flowReroute") ids.reroutes.push(node.id);
+        else if (node.id.startsWith(GROUP_PREFIX))
           ids.groups.push(node.id.slice(GROUP_PREFIX.length));
         else if (node.id.startsWith(NOTE_PREFIX))
           ids.notes.push(node.id.slice(NOTE_PREFIX.length));
@@ -497,6 +602,28 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     if (node.type === "flowNode") useUiStore.getState().openInspector(node.id);
   }, []);
 
+  const onEdgeDoubleClick = useCallback(
+    (event: ReactMouseEvent, edge: RfEdge) => {
+      if (readOnly || edge.data?.kind !== "data") return;
+      const flow = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      const id = addReroute(
+        [
+          Math.round(flow.x - REROUTE_SIZE.width / 2),
+          Math.round(flow.y - REROUTE_SIZE.height / 2),
+        ],
+        edge.id,
+      );
+      useUiStore.getState().setSelection([id], []);
+    },
+    [readOnly, screenToFlowPosition],
+  );
+
+  const onNodeMouseEnter = useCallback((_: ReactMouseEvent, node: RfNode) => {
+    if (node.type === "flowNode" || node.type === "flowReroute")
+      setWireHover(node.id);
+  }, []);
+  const onNodeMouseLeave = useCallback(() => setWireHover(null), []);
+
   return (
     <div
       ref={setWrapper}
@@ -528,6 +655,9 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         onDelete={onDelete}
         {...wireReconnect}
         onNodeDoubleClick={onNodeDoubleClick}
+        onEdgeDoubleClick={onEdgeDoubleClick}
+        onNodeMouseEnter={bus ? onNodeMouseEnter : undefined}
+        onNodeMouseLeave={bus ? onNodeMouseLeave : undefined}
         onDragOver={onDragOver}
         onDrop={onDrop}
         connectionMode={ConnectionMode.Strict}
@@ -560,6 +690,9 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         />
         <CanvasControls readOnly={readOnly} />
         <SelectedNodeToolbar readOnly={readOnly} />
+        {bus && (
+          <WireRouterController scope={flowId ?? ""} moving={moving} />
+        )}
       </ReactFlow>
     </div>
   );

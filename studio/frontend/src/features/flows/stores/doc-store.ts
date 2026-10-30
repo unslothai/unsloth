@@ -11,6 +11,16 @@ import {
   type FlowNode,
   type FlowNote,
 } from "../types";
+import {
+  type FlowReroute,
+  REROUTE_IN,
+  REROUTE_OUT,
+  type RerouteWire,
+  rerouteUpstream,
+  reroutesFromEditor,
+  reroutesToEditor,
+  syncRerouteEdges,
+} from "./reroute-graph";
 
 /** Graph state normalized by id. Every record is immutable: an edit replaces only what it touches,
  *  so a node component selecting `nodes[id]` re-renders only when that node changed. */
@@ -23,6 +33,10 @@ export interface DocGraph {
   groupOrder: string[];
   notes: Record<string, FlowNote>;
   noteOrder: string[];
+  reroutes: Record<string, FlowReroute>;
+  rerouteOrder: string[];
+  wires: Record<string, RerouteWire>;
+  wireOrder: string[];
 }
 
 export type DocMeta = Omit<
@@ -72,8 +86,13 @@ export interface DocState {
     edges?: string[];
     groups?: string[];
     notes?: string[];
+    reroutes?: string[];
   }) => void;
   connect: (edge: FlowEdge, replaceSingleInput: boolean) => void;
+  /** Adds (or moves) a reroute and threads it into `splitId`, a plain edge or a wire segment. */
+  addReroute: (reroute: FlowReroute, splitId?: string) => void;
+  /** Connects a wire with a reroute on at least one end. */
+  connectWire: (wire: RerouteWire, replaceSingleInput: boolean) => void;
   insertFragment: (fragment: GraphFragment) => void;
   upsertGroup: (group: FlowGroup) => void;
   resizeGroup: (group: FlowGroup) => void;
@@ -98,6 +117,10 @@ export function emptyGraph(): DocGraph {
     groupOrder: [],
     notes: {},
     noteOrder: [],
+    reroutes: {},
+    rerouteOrder: [],
+    wires: {},
+    wireOrder: [],
   };
 }
 
@@ -139,7 +162,7 @@ export function graphFromDocument(doc: FlowDocument): DocGraph {
   );
   const [groups, groupOrder] = byId(doc.groups ?? []);
   const [notes, noteOrder] = byId(doc.notes ?? []);
-  return {
+  const graph: DocGraph = {
     nodes,
     nodeOrder,
     edges,
@@ -148,14 +171,34 @@ export function graphFromDocument(doc: FlowDocument): DocGraph {
     groupOrder,
     notes,
     noteOrder,
+    ...reroutesFromEditor(doc.editor, nodes),
   };
+  if (!graph.wireOrder.length) return graph;
+  // A wire whose plain edge was deleted outside the editor goes with it.
+  const wires = { ...graph.wires };
+  for (const id of graph.wireOrder) {
+    const wire = wires[id];
+    if (graph.reroutes[wire.target] || edges[id]) continue;
+    if (rerouteUpstream(graph, wire.source)) delete wires[id];
+  }
+  return syncRerouteEdges({
+    ...graph,
+    wires,
+    wireOrder: graph.wireOrder.filter((id) => wires[id]),
+  });
 }
 
 export function metaFromDocument(doc: FlowDocument): DocMeta {
   const { nodes: _n, edges: _e, groups: _g, notes: _no, ...meta } = doc;
+  const {
+    reroutes: _r,
+    reroute_wires: _w,
+    ...editor
+  } = (meta.editor ?? {}) as Record<string, unknown>;
   return {
     ...emptyMeta(doc.id),
     ...meta,
+    editor,
     format: FLOW_FORMAT,
     requirements: meta.requirements ?? { models: [] },
   };
@@ -165,8 +208,12 @@ export function documentFromState(
   state: Pick<DocState, "meta" | "graph">,
 ): FlowDocument {
   const { meta, graph } = state;
+  const reroutes = reroutesToEditor(graph);
   return {
     ...meta,
+    ...(reroutes.reroutes || reroutes.reroute_wires
+      ? { editor: { ...meta.editor, ...reroutes } }
+      : {}),
     nodes: graph.nodeOrder.map((id) => graph.nodes[id]),
     edges: graph.edgeOrder.map((id) => graph.edges[id]),
     groups: graph.groupOrder.map((id) => graph.groups[id]),
@@ -179,8 +226,13 @@ export function documentSignature(doc: FlowDocument): string {
     meta: metaFromDocument(doc),
     graph: graphFromDocument(doc),
   });
-  const { editor: _editor, ...rest } = canonical;
-  return JSON.stringify(rest);
+  const { editor, ...rest } = canonical;
+  // The viewport is not an edit; reroutes are.
+  return JSON.stringify({
+    ...rest,
+    reroutes: editor.reroutes,
+    reroute_wires: editor.reroute_wires,
+  });
 }
 
 let idCounter = 0;
@@ -303,7 +355,16 @@ export const useDocStore = create<DocState>((set, get) => {
         let nodes: Record<string, FlowNode> | null = null;
         let groups: Record<string, FlowGroup> | null = null;
         let notes: Record<string, FlowNote> | null = null;
+        let reroutes: Record<string, FlowReroute> | null = null;
         for (const [key, pos] of Object.entries(positions)) {
+          const reroute = s.graph.reroutes[key];
+          if (reroute) {
+            if (reroute.pos[0] === pos[0] && reroute.pos[1] === pos[1])
+              continue;
+            reroutes ??= { ...s.graph.reroutes };
+            reroutes[key] = { ...reroute, pos };
+            continue;
+          }
           if (key.startsWith(GROUP_KEY)) {
             const group = s.graph.groups[key.slice(GROUP_KEY.length)];
             if (
@@ -341,11 +402,12 @@ export const useDocStore = create<DocState>((set, get) => {
           nodes ??= { ...s.graph.nodes };
           nodes[id] = { ...node, group };
         }
-        if (!nodes && !groups && !notes) return null;
+        if (!nodes && !groups && !notes && !reroutes) return null;
         return withGraph(s, {
           ...(nodes ? { nodes } : {}),
           ...(groups ? { groups } : {}),
           ...(notes ? { notes } : {}),
+          ...(reroutes ? { reroutes } : {}),
         });
       }),
 
@@ -355,6 +417,18 @@ export const useDocStore = create<DocState>((set, get) => {
         const dropEdges = new Set(ids.edges ?? []);
         const dropGroups = new Set(ids.groups ?? []);
         const dropNotes = new Set(ids.notes ?? []);
+        const dropReroutes = new Set(
+          (ids.reroutes ?? []).filter((id) => s.graph.reroutes[id]),
+        );
+        // React Flow sends a deleted node's wires along with it; a reroute's own wires heal instead.
+        for (const id of dropEdges) {
+          const wire = s.graph.wires[id];
+          if (
+            wire &&
+            (dropReroutes.has(wire.source) || dropReroutes.has(wire.target))
+          )
+            dropEdges.delete(id);
+        }
         for (const edgeId of s.graph.edgeOrder) {
           const edge = s.graph.edges[edgeId];
           if (dropNodes.has(edge.source) || dropNodes.has(edge.target))
@@ -364,9 +438,16 @@ export const useDocStore = create<DocState>((set, get) => {
           !dropNodes.size &&
           !dropEdges.size &&
           !dropGroups.size &&
-          !dropNotes.size
+          !dropNotes.size &&
+          !dropReroutes.size
         )
           return null;
+        const rewired = removeReroutes(
+          s.graph,
+          dropReroutes,
+          (id) => dropEdges.has(id),
+          (id) => dropNodes.has(id),
+        );
         const omit = <T>(record: Record<string, T>, drop: Set<string>) => {
           if (!drop.size) return record;
           const next = { ...record };
@@ -382,7 +463,7 @@ export const useDocStore = create<DocState>((set, get) => {
             }
           }
         }
-        return withGraph(s, {
+        const graph = withGraph(s, {
           nodes,
           nodeOrder: dropNodes.size
             ? s.graph.nodeOrder.filter((id) => !dropNodes.has(id))
@@ -399,7 +480,14 @@ export const useDocStore = create<DocState>((set, get) => {
           noteOrder: dropNotes.size
             ? s.graph.noteOrder.filter((id) => !dropNotes.has(id))
             : s.graph.noteOrder,
-        });
+          ...rewired.patch,
+        }).graph;
+        return {
+          graph: syncRerouteEdges(
+            graph,
+            s.graph.wireOrder.filter((id) => !rewired.healed.has(id)),
+          ),
+        };
       }),
 
     connect: (edge, replaceSingleInput) =>
@@ -431,7 +519,128 @@ export const useDocStore = create<DocState>((set, get) => {
           }
         }
         edges[edge.id] = edge;
-        return withGraph(s, { edges, edgeOrder: [...order, edge.id] });
+        const graph = withGraph(s, {
+          edges,
+          edgeOrder: [...order, edge.id],
+        }).graph;
+        const dropped = s.graph.wireOrder.filter(
+          (id) => s.graph.edges[id] && !edges[id],
+        );
+        if (!dropped.length) return { graph };
+        const wires = { ...graph.wires };
+        for (const id of dropped) delete wires[id];
+        return {
+          graph: syncRerouteEdges(
+            {
+              ...graph,
+              wires,
+              wireOrder: graph.wireOrder.filter((id) => wires[id]),
+            },
+            s.graph.wireOrder,
+          ),
+        };
+      }),
+
+    addReroute: (reroute, splitId) =>
+      commit((s) => {
+        if (s.graph.nodes[reroute.id]) return null;
+        const exists = !!s.graph.reroutes[reroute.id];
+        let graph: DocGraph = {
+          ...s.graph,
+          reroutes: { ...s.graph.reroutes, [reroute.id]: reroute },
+          rerouteOrder: exists
+            ? s.graph.rerouteOrder
+            : [...s.graph.rerouteOrder, reroute.id],
+        };
+        const wire = splitId ? s.graph.wires[splitId] : undefined;
+        const plain = splitId && !wire ? s.graph.edges[splitId] : undefined;
+        const cut = wire ?? (plain?.kind === "data" ? plain : undefined);
+        if (cut) {
+          // The far half keeps the id, so the plain edge the compiler sees keeps its id too.
+          const near: RerouteWire = {
+            id: newId("w"),
+            source: cut.source,
+            source_port: cut.source_port,
+            target: reroute.id,
+            target_port: REROUTE_IN,
+          };
+          const far: RerouteWire = {
+            id: cut.id,
+            source: reroute.id,
+            source_port: REROUTE_OUT,
+            target: cut.target,
+            target_port: cut.target_port,
+          };
+          const wires = { ...graph.wires, [near.id]: near, [far.id]: far };
+          const wireOrder = wire
+            ? graph.wireOrder.flatMap((id) =>
+                id === wire.id ? [near.id, id] : [id],
+              )
+            : [...graph.wireOrder, near.id, far.id];
+          graph = { ...graph, wires, wireOrder };
+          graph = syncRerouteEdges(graph, s.graph.wireOrder);
+        }
+        return { graph };
+      }),
+
+    connectWire: (wire, replaceSingleInput) =>
+      commit((s) => {
+        const g = s.graph;
+        for (const id of g.wireOrder) {
+          const w = g.wires[id];
+          if (
+            w.source === wire.source &&
+            w.source_port === wire.source_port &&
+            w.target === wire.target &&
+            w.target_port === wire.target_port
+          )
+            return null;
+        }
+        const intoReroute = !!g.reroutes[wire.target];
+        const occupies = (target: string, port: string) =>
+          target === wire.target &&
+          port === wire.target_port &&
+          (intoReroute || replaceSingleInput);
+        const wires: Record<string, RerouteWire> = {};
+        const wireOrder: string[] = [];
+        for (const id of g.wireOrder) {
+          const w = g.wires[id];
+          if (occupies(w.target, w.target_port)) continue;
+          wires[id] = w;
+          wireOrder.push(id);
+        }
+        wires[wire.id] = wire;
+        wireOrder.push(wire.id);
+        const edges = { ...g.edges };
+        let edgeOrder = g.edgeOrder;
+        if (!intoReroute) {
+          for (const id of g.edgeOrder) {
+            const e = g.edges[id];
+            if (
+              e.kind === "data" &&
+              !g.wires[id] &&
+              occupies(e.target, e.target_port)
+            ) {
+              delete edges[id];
+              edgeOrder = edgeOrder.filter((other) => other !== id);
+            }
+          }
+        }
+        const graph = syncRerouteEdges(
+          { ...g, wires, wireOrder, edges, edgeOrder },
+          g.wireOrder,
+        );
+        // A multi input keeps every edge, so a rerouted wire must not repeat one already there.
+        const seen = new Map<string, string>();
+        for (const id of graph.edgeOrder) {
+          const e = graph.edges[id];
+          if (e.kind !== "data") continue;
+          const key = `${e.source}\u0000${e.source_port}\u0000${e.target}\u0000${e.target_port}`;
+          const other = seen.get(key);
+          if (other && (graph.wires[id] || graph.wires[other])) return null;
+          seen.set(key, id);
+        }
+        return { graph };
       }),
 
     insertFragment: (fragment) =>
@@ -540,6 +749,82 @@ export const useDocStore = create<DocState>((set, get) => {
     },
   };
 });
+
+/**
+ * Drops reroutes and the wires touching removed nodes or removed segments. A removed reroute heals:
+ * what fed it is wired straight to what it fed.
+ */
+function removeReroutes(
+  graph: DocGraph,
+  dropReroutes: Set<string>,
+  dropsEdge: (id: string) => boolean,
+  dropsNode: (id: string) => boolean,
+): { patch: Partial<DocGraph>; healed: Set<string> } {
+  if (!dropReroutes.size && !graph.wireOrder.length)
+    return { patch: {}, healed: new Set() };
+  let wires: Record<string, RerouteWire> = {};
+  let wireOrder: string[] = [];
+  for (const id of graph.wireOrder) {
+    const w = graph.wires[id];
+    if (dropsEdge(id) || dropsNode(w.source) || dropsNode(w.target)) continue;
+    wires[id] = w;
+    wireOrder.push(id);
+  }
+  const plain: FlowEdge[] = [];
+  for (const rid of dropReroutes) {
+    const into = wireOrder.map((id) => wires[id]).find((w) => w.target === rid);
+    const next: Record<string, RerouteWire> = {};
+    const nextOrder: string[] = [];
+    for (const id of wireOrder) {
+      const w = wires[id];
+      if (w.target === rid) continue;
+      if (w.source !== rid) {
+        next[id] = w;
+        nextOrder.push(id);
+        continue;
+      }
+      if (!into) continue;
+      const healed = {
+        ...w,
+        source: into.source,
+        source_port: into.source_port,
+      };
+      if (graph.reroutes[healed.source] && !dropReroutes.has(healed.source)) {
+        next[id] = healed;
+        nextOrder.push(id);
+      } else if (
+        !graph.reroutes[healed.target] &&
+        !graph.reroutes[healed.source]
+      ) {
+        plain.push({ ...healed, kind: "data" });
+      } else {
+        next[id] = healed;
+        nextOrder.push(id);
+      }
+    }
+    wires = next;
+    wireOrder = nextOrder;
+  }
+  const reroutes = { ...graph.reroutes };
+  for (const id of dropReroutes) delete reroutes[id];
+  const edges = { ...graph.edges };
+  const edgeOrder = graph.edgeOrder.filter((id) => !dropsEdge(id));
+  for (const id of graph.edgeOrder) if (dropsEdge(id)) delete edges[id];
+  for (const edge of plain) {
+    edges[edge.id] = edge;
+    if (!edgeOrder.includes(edge.id)) edgeOrder.push(edge.id);
+  }
+  return {
+    healed: new Set(plain.map((edge) => edge.id)),
+    patch: {
+      reroutes,
+      rerouteOrder: graph.rerouteOrder.filter((id) => !dropReroutes.has(id)),
+      wires,
+      wireOrder,
+      ...(plain.length || graph.wireOrder.length ? { edges, edgeOrder } : {}),
+    },
+  };
+}
 
 function frameAt(graph: DocGraph, pos: [number, number]): string | null {
   const [x, y] = [pos[0] + 130, pos[1] + 16];

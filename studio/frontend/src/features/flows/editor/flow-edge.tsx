@@ -9,11 +9,13 @@ import {
 } from "@xyflow/react";
 import { memo } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
+import { useUiStore } from "../stores/ui-store";
 import type { RfEdge } from "./derive-rf";
 import { portInk } from "./theme-colors";
 import { WireDelete, WireHalo, useWireHover } from "./wire-delete";
+import { BusEdge } from "./wire-routing";
 
-function FlowEdgeViewImpl({
+function CurvedEdgeImpl({
   id,
   sourceX,
   sourceY,
@@ -75,6 +77,13 @@ function FlowEdgeViewImpl({
       />
     </g>
   );
+}
+
+const CurvedEdge = memo(CurvedEdgeImpl);
+
+function FlowEdgeViewImpl(props: EdgeProps<RfEdge>) {
+  const bus = useUiStore((s) => s.wireStyle === "bus");
+  return bus ? <BusEdge {...props} /> : <CurvedEdge {...props} />;
 }
 
 export const FlowEdgeView = memo(FlowEdgeViewImpl);
