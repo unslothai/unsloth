@@ -175,7 +175,9 @@ def test_trainer_init_revalidates():
 
 
 def test_sentence_transformer_passes_the_kwarg_through():
-    tree = ast.parse((ROOT / "unsloth" / "models" / "sentence_transformer.py").read_text(encoding = "utf-8"))
+    tree = ast.parse(
+        (ROOT / "unsloth" / "models" / "sentence_transformer.py").read_text(encoding = "utf-8")
+    )
     passed = [
         kw
         for n in ast.walk(tree)
