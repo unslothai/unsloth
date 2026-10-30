@@ -323,7 +323,11 @@ def test_hub_holdout_of_unknown_size_streams_at_most_the_cap(monkeypatch):
 
     import datasets
 
-    def no_download(*a, streaming = False, **k):
+    def no_download(
+        *a,
+        streaming = False,
+        **k,
+    ):
         assert streaming, "a full split download"
         return SimpleNamespace(take = lambda n: [{"q": i} for i in range(min(n, 20))])
 
