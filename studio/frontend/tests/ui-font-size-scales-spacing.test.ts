@@ -358,6 +358,11 @@ test("a scaled media rail leaves the preview its minimum", () => {
       `${file} header column drifts from its rail`,
     );
   }
+  assert.match(
+    CSS,
+    /@container \(width < 50rem\) \{\s*\.media-header-layout > \* \{\s*--media-header-min-width: min\([^;]*, 50%\);/,
+    "the stacked header must leave the model selector half the row",
+  );
 });
 
 test("the settings rail never takes more than half the dialog", () => {

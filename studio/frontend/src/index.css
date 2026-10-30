@@ -60,6 +60,13 @@
 		--media-header-min-width: calc(14rem * var(--ui-space-scale, 1) + var(--studio-chat-header-right-inset, var(--studio-window-control-inset, 0px)));
 	}
 
+	/* Stacked layout: the model selector keeps at least half the header row. */
+	@container (width < 50rem) {
+		.media-header-layout > * {
+			--media-header-min-width: min(calc(14rem * var(--ui-space-scale, 1) + var(--studio-chat-header-right-inset, var(--studio-window-control-inset, 0px))), 50%);
+		}
+	}
+
 	/* The custom Windows/Linux titlebar stays above modal backdrops so native
 	   window actions remain usable. Repeat the standard backdrop over the surface
 	   and page navigation. Window controls paint above it, keeping their glyphs
