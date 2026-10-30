@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ..jsonable import to_jsonable, to_preview_jsonable_row
+from ..local_callable_validators import oxc_validator_session
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from ..service import (
     build_config_builder,
@@ -159,7 +160,8 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
             designer.set_run_config(RunConfig.model_validate(run_config_raw))
 
         if execution_type == "preview":
-            results = designer.preview(builder, num_records = rows)
+            with oxc_validator_session():
+                results = designer.preview(builder, num_records = rows)
             analysis = (
                 None
                 if results.analysis is None
@@ -187,7 +189,8 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
                 }
             )
         else:
-            results = designer.create(builder, num_records = rows, dataset_name = dataset_name)
+            with oxc_validator_session():
+                results = designer.create(builder, num_records = rows, dataset_name = dataset_name)
             analysis = to_jsonable(results.load_analysis().model_dump(mode = "json"))
             _unify_batch_schemas(results.artifact_storage.base_dataset_path)
             if merge_batches:

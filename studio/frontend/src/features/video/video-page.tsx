@@ -5,7 +5,6 @@ import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-a
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Alert02Icon,
-  ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   Cancel01Icon,
@@ -260,6 +259,7 @@ import {
 import { stopButtonLabel } from "@/features/images/lib/generation-stop";
 import { type Playback, fetchWithFreshLink, playWithMutedFallback, readPlayback } from "./viewer";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 
 const VIDEO_EXAMPLE_PROMPT =
   "A slow cinematic shot down a quiet Kyoto street at sunrise, cherry blossom petals drifting in the air, a shopkeeper opening a wooden storefront, warm natural light.";
@@ -3925,8 +3925,8 @@ function VideoGenerator({
               </p>
             </div>
 
-            {/* Top edge on the heading's cap top (text-xl, leading-none; Hellix: 0.122em). */}
-            <div className="mt-[calc(var(--text-xl)*0.122)]">
+            {/* Top edge on the icon's drawn top (its stroke starts 1.25/24 into the glyph). */}
+            <div className="mt-[calc((var(--text-xl)-18px*var(--ui-space-scale,1))/2+18px*var(--ui-space-scale,1)*0.052)]">
               <MediaGenerationPresetControl
                 kind="video"
                 presets={videoPresets.presets}
@@ -4482,8 +4482,8 @@ function VideoGenerator({
             ) : (
               <>
                 <Button
-                  variant="dark"
-                  className="relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  variant="primary"
+                  className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerate}
                   disabled={busy !== null || !status?.loaded}
                 >
@@ -4631,7 +4631,7 @@ function VideoGenerator({
                       openViewer();
                     }}
                   >
-                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                    <HugeiconsIcon icon={ExpandArrowsIcon} strokeWidth={1.5} className="size-4" />
                   </Button>
                   <RecipePopover video={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>

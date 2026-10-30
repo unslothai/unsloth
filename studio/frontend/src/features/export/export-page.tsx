@@ -57,13 +57,12 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
-  ChipIcon,
-  FolderSearchIcon,
   InformationCircleIcon,
   Key01Icon,
   PackageIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -125,6 +124,7 @@ import {
   useExportRuntimeStore,
 } from "./stores/export-runtime-store";
 import { exportTourSteps } from "./tour";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 
 const SEARCH_INPUT_REASONS = new Set([
   "input-change",

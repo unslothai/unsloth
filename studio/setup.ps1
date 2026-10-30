@@ -3222,6 +3222,21 @@ function Invoke-NpmMirrorRetry {
     return $true
 }
 
+# install-stamp.mjs check/write; any doubt returns $false so setup runs `npm ci`.
+function Invoke-OxcInstallStamp {
+    param([Parameter(Mandatory = $true)][ValidateSet("check", "write")][string]$Mode)
+    $helper = Join-Path $OxcValidatorDir "install-stamp.mjs"
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { return $false }
+    # Resolved first: a lookup failure must never read an earlier command's exit code as a pass.
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $node) { return $false }
+    try {
+        $global:LASTEXITCODE = 1
+        & $node.Source $helper $Mode *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+
 function Show-NpmRegistryHint {
     param([string]$FailureOutput = "")
     if ($FailureOutput) {
@@ -5625,18 +5640,27 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
     $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
-    $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
-    if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
-    if ($oxcInstallExit -ne 0) {
+    if ($NpmInstallVerb -eq "ci" -and (Invoke-OxcInstallStamp -Mode check)) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
-        Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
-        Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
-        Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
+        step "oxc runtime" "up to date"
+    } else {
+        # Gone before npm touches the tree, so an interrupted install is never trusted.
+        Remove-Item -LiteralPath (Join-Path $OxcValidatorDir "node_modules\.unsloth-install-stamp.json") -Force -ErrorAction SilentlyContinue
+        $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
+        if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
+        if ($oxcInstallExit -ne 0) {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP_oxc
+            Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
+            Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
+            Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
+        }
+        if ($NpmInstallVerb -eq "ci") { $null = Invoke-OxcInstallStamp -Mode write }
+        Pop-Location
+        $ErrorActionPreference = $prevEAP_oxc
+        step "oxc runtime" "installed"
     }
-    Pop-Location
-    $ErrorActionPreference = $prevEAP_oxc
-    step "oxc runtime" "installed"
 } elseif ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }

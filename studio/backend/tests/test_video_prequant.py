@@ -106,7 +106,7 @@ def test_both_h3_schemes_resolve_to_one_repo():
 
 @pytest.mark.parametrize(
     "scheme, expected",
-    [("int8", "MiniMax-H3-INT8-ConvRot.pt"), ("fp8", "MiniMax-H3-FP8.safetensors")],
+    [("int8", "MiniMax-H3-INT8-ConvRot.safetensors"), ("fp8", "MiniMax-H3-FP8.safetensors")],
 )
 def test_h3_resolves_the_primary_name_at_the_repo_root(scheme, expected):
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
@@ -120,6 +120,7 @@ def test_h3_int8_keeps_the_plain_denoiser_as_its_fallback():
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = resolve_prequant_source(fam, "int8")
     assert src.fallback_filenames == (
+        "MiniMax-H3-INT8-ConvRot.pt",
         "MiniMax-H3-INT8.safetensors",
         "MiniMax-H3-INT8.pt",
         "transformer_int8.pt",
@@ -175,15 +176,16 @@ def test_a_task_specific_row_beats_the_task_agnostic_one():
         prequant_partition_tasks = ("ref2va",),
     )
     assert resolve_prequant_source(fam, "int8", task = "ref2va").filename == (
-        "Test-Ref2VA-INT8-ConvRot.pt"
+        "Test-Ref2VA-INT8-ConvRot.safetensors"
     )
-    assert resolve_prequant_source(fam, "int8", task = " Ref2VA ").filename == (
-        "Test-Ref2VA-INT8-ConvRot.pt"
+    assert resolve_prequant_source(fam, "int8", task = " Ref2VA ").candidate_filenames == (
+        "Test-Ref2VA-INT8-ConvRot.safetensors",
+        "Test-Ref2VA-INT8-ConvRot.pt",
     )
 
 
 def test_a_task_specific_artifact_gets_no_filename_fallback():
-    # A fallback here would install another partition's denoiser, so no artifact is correct.
+    # Another partition's denoiser would be wrong; only this artifact's two containers are tried.
     fam = _fam(
         prequant_repos = (("int8", "unsloth/Test-FP8"),),
         prequant_filenames = (
@@ -192,8 +194,12 @@ def test_a_task_specific_artifact_gets_no_filename_fallback():
         ),
         prequant_partition_tasks = ("ref2va",),
     )
-    assert resolve_prequant_source(fam, "int8", task = "ref2va").fallback_filename is None
+    assert resolve_prequant_source(fam, "int8", task = "ref2va").candidate_filenames == (
+        "Test-Ref2VA-INT8-ConvRot.safetensors",
+        "Test-Ref2VA-INT8-ConvRot.pt",
+    )
     assert resolve_prequant_source(fam, "int8").candidate_filenames == (
+        "Test-INT8-ConvRot.safetensors",
         "Test-INT8-ConvRot.pt",
         "Test-INT8.safetensors",
         "Test-INT8.pt",
@@ -237,13 +243,12 @@ def test_a_partition_task_with_no_artifact_of_its_own_is_unavailable():
 
 @pytest.mark.parametrize(
     "scheme, expected",
-    [("int8", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"), ("fp8", "MiniMax-H3-Ref2VA-FP8.pt")],
+    [("int8", "MiniMax-H3-Ref2VA-INT8-ConvRot"), ("fp8", "MiniMax-H3-Ref2VA-FP8")],
 )
 def test_h3_reference_video_resolves_its_own_hosted_denoiser(scheme, expected):
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = resolve_prequant_source(fam, scheme, task = "ref2va")
-    assert src.filename == expected
-    assert src.fallback_filename is None
+    assert src.candidate_filenames == (expected + ".safetensors", expected + ".pt")
     assert "/" not in src.filename and "\\" not in src.filename
 
 
@@ -251,7 +256,8 @@ def test_h3_reference_video_resolves_its_own_hosted_denoiser(scheme, expected):
 def test_h3_keyframe_and_text_only_resolve_exactly_what_they_resolved_before(task):
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     int8 = resolve_prequant_source(fam, "int8", task = task)
-    assert int8.filename == "MiniMax-H3-INT8-ConvRot.pt"
+    assert int8.filename == "MiniMax-H3-INT8-ConvRot.safetensors"
+    assert int8.fallback_filenames[0] == "MiniMax-H3-INT8-ConvRot.pt"
     assert "MiniMax-H3-INT8.pt" in int8.fallback_filenames
     fp8 = resolve_prequant_source(fam, "fp8", task = task)
     assert fp8.filename == "MiniMax-H3-FP8.safetensors"
@@ -1043,7 +1049,7 @@ def test_the_components_a_family_seeds_are_its_denoisers():
 
 
 def test_the_second_expert_is_addressed_through_the_task_slot():
-    """The second expert is addressed through the task slot, with no filename fallback."""
+    """The second expert is addressed through the task slot; its only fallback is its own .pt container."""
     from core.inference.video_denoiser_prequant import denoiser_prequant_sources
 
     sources = denoiser_prequant_sources(_moe_fam(), "nvfp4", "org/test-video")
@@ -1055,7 +1061,10 @@ def test_the_second_expert_is_addressed_through_the_task_slot():
         "test-NVFP4.pt",
         "transformer_nvfp4.pt",
     )
-    assert candidate_filenames_of(sources["transformer_2"]) == ("test-transformer_2-NVFP4.pt",)
+    assert candidate_filenames_of(sources["transformer_2"]) == (
+        "test-transformer_2-NVFP4.safetensors",
+        "test-transformer_2-NVFP4.pt",
+    )
 
 
 def test_every_component_or_none():
@@ -1121,7 +1130,7 @@ def test_seeding_loads_every_expert_into_its_own_component(monkeypatch):
     assert [c["component"] for c in calls] == ["transformer", "transformer_2"]
     assert [c["source"].filename for c in calls] == [
         "test-NVFP4.safetensors",
-        "test-transformer_2-NVFP4.pt",
+        "test-transformer_2-NVFP4.safetensors",
     ]
     from core.inference.diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
 
@@ -1535,7 +1544,7 @@ def test_the_seeded_denoiser_artifact_is_fetched_under_the_load_cancel_event(mon
     )
 
     assert [(r, f) for r, f, _ in fetched] == [
-        ("unsloth/Wan2.2-TI2V-5B-NVFP4", "Wan2.2-TI2V-5B-NVFP4.pt")
+        ("unsloth/Wan2.2-TI2V-5B-NVFP4", "Wan2.2-TI2V-5B-NVFP4.safetensors")
     ]
     assert fetched[0][2] is cancel
 
