@@ -4,10 +4,6 @@
 import { toast } from "sonner";
 import { AUTH_SESSION_MARK_KEY, hasAuthToken } from "@/features/auth";
 import { getApiBase, isTauri } from "@/lib/api-base";
-import {
-  isBackendDownForDesktopUpdate,
-  isSilencedDesktopUpdateFailure,
-} from "@/lib/desktop-update-activity";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { createChatPinsApi } from "./api/chat-pins-api";
 import {
@@ -22,6 +18,7 @@ import {
 import { createPinnedChatsJournal } from "./utils/pinned-chats-journal";
 import { createPinnedChatsSync } from "./utils/pinned-chats-sync";
 import { createPinnedChatsTransport } from "./utils/pinned-chats-transport";
+import { isPinFailureUnderDesktopUpdate } from "./utils/pinned-chats-update-failure";
 import { isRetryablePinError } from "./utils/settings-retry";
 import { onChatThreadsDeleted } from "./utils/chat-thread-tombstones";
 
@@ -37,17 +34,6 @@ function scope(): string {
     localStorage.setItem(AUTH_SESSION_MARK_KEY, mark);
   }
   return `${server}|${mark}`;
-}
-
-/** A request in flight when the update stopped the backend; the API's 10s abort is that same silence. */
-function failedUnderDesktopUpdate(error: unknown): boolean {
-  const down = isBackendDownForDesktopUpdate();
-  return (
-    isSilencedDesktopUpdateFailure(error, down) ||
-    (down &&
-      error instanceof Error &&
-      (error.name === "AbortError" || error.name === "TimeoutError"))
-  );
 }
 
 function createRuntime(sessionScope: string) {
@@ -78,7 +64,7 @@ function createRuntime(sessionScope: string) {
     isRetryable: isRetryablePinError,
     publish: (pinnedIds) => usePinnedChatsStore.setState({ pinnedIds }),
     onError: (error) => {
-      if (failedUnderDesktopUpdate(error)) return;
+      if (isPinFailureUnderDesktopUpdate(error)) return;
       toast.error("Could not sync pinned chats. Try again when connected.", {
         id: "pinned-chats-sync-error",
       });

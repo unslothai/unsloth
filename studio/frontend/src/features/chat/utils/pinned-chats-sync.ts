@@ -32,6 +32,9 @@ export interface PinnedChatsSyncOptions {
 
 export class PinnedChatsValidationError extends Error {}
 
+/** A queued intent behind one that has not saved yet; that earlier failure is the real one. */
+export class PinnedChatsBlockedError extends Error {}
+
 export function isValidPinId(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > 512) {
     return false;
@@ -316,7 +319,9 @@ export function createPinnedChatsSync(options: PinnedChatsSyncOptions) {
       return;
     }
     if (pending[0]?.operationId !== operation.operationId) {
-      throw new Error("An earlier pin change is still waiting to save.");
+      throw new PinnedChatsBlockedError(
+        "An earlier pin change is still waiting to save.",
+      );
     }
     try {
       if (acknowledged.has(operation.operationId)) {
