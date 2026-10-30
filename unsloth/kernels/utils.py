@@ -437,6 +437,21 @@ def _has_active_lora_bias(proj):
     return any(adapter in lora_B and lora_B[adapter].bias is not None for adapter in adapters)
 
 
+def _has_lora_dropout_module(proj):
+    dropout = getattr(proj, "lora_dropout", None)
+    if not dropout:
+        return False
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    if isinstance(adapters, str):
+        adapters = (adapters,)
+    return any(
+        adapter in dropout and type(dropout[adapter]) is not torch.nn.Identity
+        for adapter in adapters
+    )
+
+
 def has_mxfp4_base(*projs):
     """A packed MXFP4 base that cannot hand its bytes to the fused LoRA kernels (they would then hold a 16-bit
     weight until backward): use PEFT. Bases with ``mxfp4_quant_state`` pass ``weight_packed`` + that state instead."""
@@ -1767,7 +1782,10 @@ def fast_linear_forward(
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
     bsz, q_len, in_dim = X.shape
     if q_len != 1:
-        return matmul_lora(X, W, W_quant, lora_A, lora_B, lora_S)
+        # A configured lora_dropout keeps the base-then-LoRA order, as the fused training kernels do.
+        return matmul_lora(
+            X, W, W_quant, lora_A, lora_B, lora_S, fused = not _has_lora_dropout_module(proj)
+        )
 
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
@@ -1890,6 +1908,10 @@ def _lora_fused_ok(W, W_quant, dtype):
         return False
     if isinstance(W, Float8Tensor) or W.dtype == torch.float8_e4m3fn:
         return False
+    # A sparse base cannot be the dense operand of the in-place accumulate (eager: a traced backward
+    # bans reading `layout`).
+    if not _is_compiling() and W.layout != torch.strided:
+        return False
     if type(W_quant) is Int4QuantState or _is_packed_state(W_quant):
         return False
     if W_quant is None:
@@ -1898,13 +1920,18 @@ def _lora_fused_ok(W, W_quant, dtype):
 
 
 def _shares_storage(out, *tensors):
+    # True when `out` may alias an operand. Traced (Dynamo, make_fx fake tensors) storage cannot be
+    # inspected, so a caller's buffer is then treated as shared and keeps the base-then-LoRA order.
     if _is_compiling():
-        return False
-    ptr = out.untyped_storage().data_ptr()
-    return any(
-        t is not None and isinstance(t, torch_Tensor) and t.untyped_storage().data_ptr() == ptr
-        for t in tensors
-    )
+        return True
+    try:
+        ptr = out.untyped_storage().data_ptr()
+        return any(
+            t is not None and isinstance(t, torch_Tensor) and t.untyped_storage().data_ptr() == ptr
+            for t in tensors
+        )
+    except RuntimeError:
+        return True
 
 
 def matmul_lora(
@@ -1979,6 +2006,9 @@ def matmul_lora(
             out.addmm_(X, W.t())
         A = None
     else:
+        if XA is not None and out is not None and _shares_storage(out, XA):
+            # The base GEMM below overwrites a caller's XA that shares `out`: recompute it afterwards.
+            XA = None
         W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:

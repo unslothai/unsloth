@@ -342,28 +342,51 @@ def _shared_XA(X, As, dtype):
 def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
     # LoRA grads of projections reading the same X with the same scale S (As [K, r], Bs [r, N] after .t()):
     # X is read once for every d_A and once for every A @ X.t(), and dX starts as S * dB @ A.t() so the
-    # base GEMMs accumulate onto it in their epilogue. Returns (d_As, d_Bs, dX).
-    dB = torch.cat([dY @ B.t() for dY, B in zip(dYs, Bs)], 1)
+    # base GEMMs accumulate onto it in their epilogue. Returns (d_As, d_Bs, dX); each d_A.t() is a
+    # contiguous [r, K] row block of one buffer. Intermediates are freed as soon as they are consumed.
     A_rows = torch.cat([A.t() for A in As], 0)
-    dA = torch.empty((X.shape[1], dB.shape[1]), dtype = dB.dtype, device = dB.device)
-    dA.addmm_(X.t(), dB, alpha = S, beta = 0)
     AX = A_rows @ X.t()
-    d_As, d_Bs, start = [], [], 0
-    for dY, A, B in zip(dYs, As, Bs):
-        r = A.shape[1]
-        # Transposed-contiguous, so the caller's .t() is the parameter's contiguous [r, K] layout.
-        d_As.append(dA[:, start : start + r].t().contiguous().t())
+    d_Bs, start = [], 0
+    for dY, B in zip(dYs, Bs):
+        r = B.shape[0]
         d_B = torch.empty_like(B)
         d_B.addmm_(AX[start : start + r], dY, alpha = S, beta = 0)
         d_Bs.append(d_B)
         start += r
-    del AX, dA
+    del AX
+    if _is_compiling():
+        # Traced, Inductor plans the buffers; slice writes would only add scatter copies.
+        dB = torch.cat([dY @ B.t() for dY, B in zip(dYs, Bs)], 1)
+    else:
+        dB = dYs[0].new_empty((X.shape[0], A_rows.shape[0]))
+        start = 0
+        for dY, B in zip(dYs, Bs):
+            r = B.shape[0]
+            dB[:, start : start + r].addmm_(dY, B.t(), beta = 0)
+            start += r
+    dA = dB.new_empty((A_rows.shape[0], X.shape[1]))
+    dA.addmm_(dB.t(), X, alpha = S, beta = 0)
+    d_As, start = [], 0
+    for B in Bs:
+        r = B.shape[0]
+        d_As.append(dA[start : start + r].t())
+        start += r
+    del dA
     if dX_out is None:
         dX = torch.addmm(dB.new_zeros(1), dB, A_rows, beta = 0, alpha = S)
     else:
         dX = dX_out
         addmm_(dX, dB, A_rows, alpha = S, beta = 0)
     return d_As, d_Bs, dX
+
+
+def _lora_traced_ok(*lora_weights):
+    # Traced, the fused order needs nn.Parameter LoRA weights (static shapes under Dynamo). With plain
+    # tensors of dynamic shape, torch 2.14 can bind the output width from the expanded tangent's zero
+    # stride on a recompile (backward: shape '[-1, 0]' is invalid); the base-then-LoRA order traces fine.
+    return not _is_compiling() or all(
+        t is None or isinstance(t, torch.nn.Parameter) for t in lora_weights
+    )
 
 
 def _mlp_fused_ok(gateW, gateW_quant, upW, upW_quant, downW, downW_quant, dtype):
@@ -468,7 +491,9 @@ class LoRA_MLP(torch.autograd.Function):
 
         plain = dropout_p is None and gateBias is None and upBias is None and downBias is None
         if plain:
-            fused = _mlp_fused_ok(gateW, gateW_quant, upW, upW_quant, downW, downW_quant, dtype)
+            fused = _mlp_fused_ok(
+                gateW, gateW_quant, upW, upW_quant, downW, downW_quant, dtype
+            ) and _lora_traced_ok(gateA, gateB, upA, upB, downA, downB)
             gateXA = upXA = None
             # Eager only: traced, the shared intermediate fails the block compile (saved output aliasing).
             if fused and not _is_compiling() and gateA is not None and upA is not None:
@@ -480,6 +505,7 @@ class LoRA_MLP(torch.autograd.Function):
             i = matmul_lora(h, downW, downW_quant, downA, downB, downS, fused = fused)
             masks = (None, None, None)
         else:
+            fused = False
             # Masks are drawn gate, up, down: the order PEFT's down(act(gate(X)) * up(X)) draws them in.
             gate_p, up_p, down_p = dropout_p or (0.0, 0.0, 0.0)
             Xd, gate_mask = _dropout_forward(X, gate_p)
@@ -510,7 +536,7 @@ class LoRA_MLP(torch.autograd.Function):
         ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
         ctx.dropout_p = dropout_p or (0.0, 0.0, 0.0)
         ctx.biases = (gateBias is not None, upBias is not None, downBias is not None)
-        ctx.plain = plain
+        ctx.fused = fused
         ctx.global_buffer = plain
         return i
 
@@ -560,8 +586,8 @@ class LoRA_MLP(torch.autograd.Function):
         )
 
         # Decided on the stored weights, before the FP8 down weight below is converted to a dense one.
-        # A handcrafted or older ctx without `plain` keeps the base-then-LoRA order.
-        fused = getattr(ctx, "plain", False) and _mlp_fused_ok(
+        # The forward's order; a handcrafted or older ctx without `fused` keeps the base-then-LoRA order.
+        fused = getattr(ctx, "fused", False) and _mlp_fused_ok(
             gateW, gateW_quant, upW, upW_quant, downW, downW_quant, dY.dtype
         )
         if downW.dtype == torch.float8_e4m3fn:
@@ -920,7 +946,9 @@ class LoRA_QKV(torch.autograd.Function):
         if X.dim() == 3:
             X_for_matmul = X.view(-1, X.shape[-1])
         if dropout_p is None and QBias is None and KBias is None and VBias is None:
-            fused = _qkv_fused_ok(QW, QW_quant, KW, KW_quant, VW, VW_quant, dtype)
+            fused = _qkv_fused_ok(
+                QW, QW_quant, KW, KW_quant, VW, VW_quant, dtype
+            ) and _lora_traced_ok(QA, QB, KA, KB, VA, VB)
             QXA = KXA = VXA = None
             # Eager only, as in LoRA_MLP.
             if (
@@ -937,6 +965,7 @@ class LoRA_QKV(torch.autograd.Function):
             del QXA, KXA, VXA
             masks = (None, None, None)
         else:
+            fused = False
             Q_p, K_p, V_p = dropout_p or (0.0, 0.0, 0.0)
             Xd, Q_mask = _dropout_forward(X_for_matmul, Q_p)
             Q = _matmul_lora_ext(X_for_matmul, Xd, QW, QW_quant, QA, QB, QS, QBias)
@@ -978,7 +1007,7 @@ class LoRA_QKV(torch.autograd.Function):
         ctx.inplace = inplace and (not _rms_layernorm._SAVE_OUTPUT or _may_overwrite_input(X))
         ctx.dropout_p = dropout_p or (0.0, 0.0, 0.0)
         ctx.biases = (QBias is not None, KBias is not None, VBias is not None)
-        ctx.plain = dropout_p is None and not any(ctx.biases)
+        ctx.fused = fused
         return Q, K, V
 
     @staticmethod
@@ -1019,7 +1048,7 @@ class LoRA_QKV(torch.autograd.Function):
 
         # Weight projection LoRA derivatives; see the Unsloth blogpost.
         if (
-            getattr(ctx, "plain", False)
+            getattr(ctx, "fused", False)
             and QS == KS == VS
             and _qkv_fused_ok(QW, QW_quant, KW, KW_quant, VW, VW_quant, dQ.dtype)
             and dQ.dtype == dK.dtype == dV.dtype
@@ -1222,8 +1251,10 @@ class LoRA_W(torch.autograd.Function):
         bias = None,
     ):
         dtype = X.dtype
+        fused = False
         if dropout_p is None and bias is None:
-            XW = matmul_lora(X, W, W_quant, A, B, S)
+            fused = _lora_traced_ok(A, B)
+            XW = matmul_lora(X, W, W_quant, A, B, S, fused = fused)
             mask = None
         else:
             Xd, mask = _dropout_forward(X, dropout_p or 0.0)
@@ -1237,7 +1268,7 @@ class LoRA_W(torch.autograd.Function):
         ctx.save_for_backward(A, B, X, mask)
         ctx.dropout_p = dropout_p
         ctx.has_bias = bias is not None
-        ctx.plain = dropout_p is None and bias is None
+        ctx.fused = fused
         return XW
 
     @staticmethod
@@ -1269,7 +1300,7 @@ class LoRA_W(torch.autograd.Function):
         del Xd
         d_bias = _lora_bias_grad(dY, S) if ctx.has_bias else None
 
-        if getattr(ctx, "plain", False) and _lora_fused_ok(W, W_quant, dY.dtype):
+        if getattr(ctx, "fused", False) and _lora_fused_ok(W, W_quant, dY.dtype):
             # dX starts as the rank-r term; the base GEMM accumulates onto it in its epilogue.
             dX = torch.addmm(y_dB.new_zeros(1), y_dB, A.t(), beta = 0, alpha = S)
             W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)

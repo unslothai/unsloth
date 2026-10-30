@@ -400,3 +400,205 @@ def test_shared_lora_a_grads_have_the_parameter_layout(monkeypatch):
     d_As, _, _ = fast_lora._shared_lora_backward(X, dYs, As, Bs, 2.0, None)
     for dA in d_As:
         assert dA.t().is_contiguous(), dA.stride()
+
+
+def test_shared_lora_a_grads_are_views_of_one_buffer(monkeypatch):
+    # Each d_A is a row block of one [sum r, K] buffer: no per-projection copy into the parameter layout.
+    _set(monkeypatch, True)
+    X = torch.randn(10, H)
+    As = (torch.randn(4, H).t(), torch.randn(3, H).t())
+    Bs = (torch.randn(H, 4).t(), torch.randn(I, 3).t())
+    dYs = (torch.randn(10, H), torch.randn(10, I))
+    d_As, d_Bs, dX = fast_lora._shared_lora_backward(X, dYs, As, Bs, 2.0, None)
+    ptrs = {dA.untyped_storage().data_ptr() for dA in d_As}
+    assert len(ptrs) == 1, "d_A blocks were copied out of the shared buffer"
+    X64 = X.double()
+    for dA, dB_, A, B, dY in zip(d_As, d_Bs, As, Bs, dYs):
+        y_dB = dY.double() @ B.double().t()
+        torch.testing.assert_close(dA.double(), 2.0 * X64.t() @ y_dB, rtol = 1e-4, atol = 1e-4)
+        torch.testing.assert_close(
+            dB_.double(), 2.0 * (A.double().t() @ X64.t()) @ dY.double(), rtol = 1e-4, atol = 1e-4
+        )
+
+
+def _small_update(dtype = torch.bfloat16):
+    # Base output 1 + 1/256 plus a rank-r term 1/512: the fused order rounds once to 1.0078125, the
+    # base-then-LoRA order rounds the base to 1.0 first and then loses the update.
+    x = torch.tensor([[1.0, 1.0]], dtype = dtype)
+    w = torch.tensor([[1.0, 1 / 256]], dtype = dtype)
+    a = torch.tensor([[1.0, 0.0]], dtype = dtype)
+    b = torch.tensor([[1 / 512]], dtype = dtype)
+    return x, w, a, b
+
+
+def test_compiled_caller_buffer_keeps_main_behavior(monkeypatch):
+    # Traced, a caller's buffer cannot be checked for aliasing, so it keeps the base-then-LoRA order.
+    _set(monkeypatch, True)
+    torch._dynamo.reset()
+    x, w, a, b = _small_update()
+
+    def f(x, w, a, b):
+        out = torch.empty(1, 1, dtype = x.dtype)
+        return kernel_utils.matmul_lora(x, w, None, a, b, 1.0, out = out)
+
+    got = torch.compile(f, backend = "aot_eager", fullgraph = True)(x, w, a, b)
+    assert got.item() == 1.0
+    # A buffer that aliases W: the old order reads W before the output is written.
+    g = torch.Generator(device = "cpu").manual_seed(1)
+    X, W = torch.randn(4, 4, generator = g), torch.randn(4, 4, generator = g)
+    A, B = torch.randn(4, 4, generator = g), torch.randn(4, 4, generator = g)
+    ref = X @ W.t() + 2.0 * (X @ A.t()) @ B.t()
+
+    def g_(X, W, A, B):
+        out = W.clone()
+        return kernel_utils.matmul_lora(X, out, None, A, B, 2.0, out = out)
+
+    torch._dynamo.reset()
+    got = torch.compile(g_, backend = "aot_eager", fullgraph = True)(X, W, A, B)
+    torch.testing.assert_close(got, ref, rtol = 1e-5, atol = 1e-5)
+
+
+def test_fake_tracing_with_a_caller_buffer(monkeypatch):
+    # make_fx fake tensors have no data pointer: the buffer is treated as shared, not inspected.
+    from torch.fx.experimental.proxy_tensor import make_fx
+
+    _set(monkeypatch, True)
+    X, W, A, B = torch.randn(3, H), torch.randn(H, H), torch.randn(4, H), torch.randn(H, 4)
+
+    def f(X, W, A, B, out):
+        return kernel_utils.matmul_lora(X, W, None, A, B, 2.0, out = out)
+
+    gm = make_fx(f, tracing_mode = "fake")(X, W, A, B, torch.empty(3, H))
+    out = torch.empty(3, H)
+    torch.testing.assert_close(
+        gm(X, W, A, B, out), X @ W.t() + 2.0 * (X @ A.t()) @ B.t(), rtol = 1e-5, atol = 1e-5
+    )
+
+
+@pytest.mark.parametrize("fused", [True, False])
+def test_a_precomputed_xa_sharing_the_caller_buffer_is_not_reused(fused, monkeypatch):
+    # The base GEMM writes the buffer before the rank-r term reads XA: XA is recomputed instead.
+    _set(monkeypatch, True)
+    g = torch.Generator(device = "cpu").manual_seed(3)
+    X, W = torch.randn(3, 4, generator = g), torch.randn(2, 4, generator = g)
+    A, B = torch.randn(2, 4, generator = g), torch.randn(2, 2, generator = g)
+    ref = X @ W.t() + 2.0 * (X @ A.t()) @ B.t()
+    XA = X @ A.t()
+    got = kernel_utils.matmul_lora(X, W, None, A, B, 2.0, XA = XA, out = XA, fused = fused)
+    torch.testing.assert_close(got, ref, rtol = 1e-5, atol = 1e-5)
+
+
+def test_sparse_base_weight_keeps_the_base_then_lora_order(monkeypatch):
+    # addmm_ cannot accumulate a dense X @ sparse W.t() in place; main's matmul handles it.
+    _set(monkeypatch, True)
+    X, A, B = torch.ones(1, 2), torch.ones(1, 2), torch.ones(2, 1)
+    W = torch.eye(2).to_sparse_coo()
+    assert not kernel_utils._lora_fused_ok(W, None, torch.float32)
+    torch.testing.assert_close(
+        kernel_utils.matmul_lora(X, W, None, A, B, 1.0), torch.full((1, 2), 3.0)
+    )
+
+
+@pytest.mark.parametrize("dropout", [0.0, 0.1])
+def test_multi_token_inference_follows_the_training_order(dropout, monkeypatch):
+    # fast_linear_forward with q_len > 1 takes the order the fused training kernels use: a configured
+    # lora_dropout (even in eval) keeps base-then-LoRA, a plain adapter takes the fused order.
+    _skip_without_native_bf16("cpu")
+    from peft import LoraConfig, get_peft_model
+
+    _set(monkeypatch, True)
+    lin = torch.nn.Sequential(torch.nn.Linear(2, 1, bias = False))
+    model = get_peft_model(
+        lin, LoraConfig(r = 1, lora_alpha = 1, lora_dropout = dropout, target_modules = ["0"])
+    )
+    model = model.to(torch.bfloat16).eval()
+    proj = model.base_model.model[0]
+    x, w, a, b = _small_update()
+    with torch.no_grad():
+        proj.base_layer.weight.copy_(w)
+        proj.lora_A["default"].weight.copy_(a)
+        proj.lora_B["default"].weight.copy_(b)
+    X = x.view(1, 1, 2).expand(1, 3, 2).contiguous()
+    got = kernel_utils.fast_linear_forward(proj, X)
+    assert got[0, 0, 0].item() == (1.0 if dropout else 1.0078125)
+
+
+_DYNAMIC_RANK_CASE = """
+import sys
+import torch
+import unsloth  # noqa: F401
+from unsloth.kernels import fast_lora
+
+torch.manual_seed(0)
+weights = []
+for n, r in zip((16, 12, 12), (2, 3, 4)):
+    W = torch.randn(n, 16) * 0.1
+    A, B = torch.randn(r, 16) * 0.1, torch.randn(n, r) * 0.1
+    if sys.argv[1] == "param":
+        A, B = torch.nn.Parameter(A), torch.nn.Parameter(B)
+    else:
+        A, B = A.requires_grad_(), B.requires_grad_()
+    weights.append((W, A, B))
+(QW, QA, QB), (KW, KA, KB), (VW, VA, VB) = weights
+
+
+def f(X, QA, QB, KA, KB, VA, VB):
+    q, k, v = fast_lora.LoRA_QKV.apply(
+        X, QW, None, QA, QB, 2.0, KW, None, KA, KB, 2.0, VW, None, VA, VB, 2.0, False
+    )
+    return q.sum() + k.sum() + v.sum()
+
+
+g = torch.compile(f, backend = "aot_eager", fullgraph = True, dynamic = True)
+for seq in (3, 5, 7):
+    X = torch.randn(2, seq, 16, requires_grad = True)
+    g(X, QA, QB, KA, KB, VA, VB).backward()
+    assert X.grad.shape == X.shape
+print("OK")
+"""
+
+
+@pytest.mark.parametrize("param", [False, True])
+def test_dynamic_compile_with_a_rank_equal_to_the_first_length(param):
+    # torch 2.14: plain-tensor LoRA weights of dynamic shape, a rank equal to the first traced sequence
+    # length (3), then a recompile made the fused forward's backward reshape dQ to width 0. Plain tensors
+    # keep the base-then-LoRA order when traced; nn.Parameter weights (static) keep the fused order.
+    # A fresh interpreter: the failure depends on Dynamo state a pytest session does not reproduce.
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    env = dict(
+        os.environ,
+        PYTHONPATH = os.pathsep.join([str(root), os.environ.get("PYTHONPATH", "")]),
+        UNSLOTH_DISABLE_CPU_FALLBACK = "0",
+    )
+    p = subprocess.run(
+        [sys.executable, "-c", _DYNAMIC_RANK_CASE, "param" if param else "plain"],
+        cwd = root,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
+    assert p.returncode == 0 and "OK" in p.stdout, (p.stdout + p.stderr)[-3000:]
+
+
+@pytest.mark.parametrize("param", [False, True])
+def test_traced_order_depends_on_parameter_lora_weights(param, monkeypatch):
+    _skip_without_native_bf16("cpu")
+    _set(monkeypatch, True)
+    torch._dynamo.reset()
+    x, w, a, b = _small_update()
+    if param:
+        a, b = torch.nn.Parameter(a), torch.nn.Parameter(b)
+    else:
+        a, b = a.requires_grad_(), b.requires_grad_()
+
+    def f(x, a, b):
+        return fast_lora.LoRA_W.apply(x.view(1, 1, 2), w, None, a, b, 1.0)
+
+    got = torch.compile(f, backend = "aot_eager", fullgraph = True)(x, a, b)
+    assert got.item() == (1.0078125 if param else 1.0)
