@@ -14,15 +14,15 @@ import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import {
-  ArrowUpDownIcon,
   Cancel01Icon,
   Delete02Icon,
-  FolderSearchIcon,
   Search01Icon,
   SlidersHorizontalIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { SortIcon } from "@/lib/sort-icon";
 import { memo, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import type {
@@ -532,7 +532,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             triggerContent={
               <span className="flex items-center gap-1">
                 <HugeiconsIcon
-                  icon={ArrowUpDownIcon}
+                  icon={SortIcon}
                   strokeWidth={1.75}
                   className="size-3.5 shrink-0"
                 />
@@ -559,7 +559,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             triggerContent={
               <span className="flex items-center gap-1">
                 <HugeiconsIcon
-                  icon={ArrowUpDownIcon}
+                  icon={SortIcon}
                   strokeWidth={1.75}
                   className="size-3.5 shrink-0"
                 />

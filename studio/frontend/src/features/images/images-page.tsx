@@ -25,7 +25,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderAddIcon,
   Image03Icon,
   ImageAdd02Icon,
   ImageCropIcon,
@@ -35,6 +34,7 @@ import {
   SparklesIcon,
   UndoIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -6027,8 +6027,8 @@ export function ImagesPage({
               </div>
 
               {workflow === "create" && (
-                // Top edge on the heading's cap top (text-xl, leading-none; Hellix: 0.122em).
-                <div className="mt-[calc(var(--text-xl)*0.122)]">
+                // Top edge on the icon's drawn top (its stroke starts 1.25/24 into the glyph).
+                <div className="mt-[calc((var(--text-xl)-18px*var(--ui-space-scale,1))/2+18px*var(--ui-space-scale,1)*0.052)]">
                   <MediaGenerationPresetControl
                     kind="image"
                     presets={imagePresets.presets}
@@ -6935,8 +6935,8 @@ export function ImagesPage({
               </Button>
             ) : (
               <>
-                <Button variant="dark"
-                  className="relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                <Button variant="primary"
+                  className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
