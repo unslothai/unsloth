@@ -1117,7 +1117,9 @@ def _remote_code_min_version(cfg: dict | None) -> tuple[int, int, int] | None:
     auto_map = cfg.get("auto_map")
     if not isinstance(auto_map, dict) or "AutoConfig" not in auto_map:
         return None
-    return _release_tuple(cfg.get("transformers_version"))
+    v = _release_tuple(cfg.get("transformers_version"))
+    # Patch releases keep remote-code APIs: 5.5.4 still fits the 5.5.0 default.
+    return (v[0], v[1], 0) if v else None
 
 
 def _remote_code_tier(cfg: dict | None) -> str | None:

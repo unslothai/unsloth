@@ -1653,6 +1653,9 @@ class TestCustomCodeRouting:
     def test_default_kept_when_new_enough(self, tmp_path: Path):
         assert get_transformers_tier(_custom_code_model(tmp_path, "5.3.0")) == "default"
 
+    def test_patch_release_fits_its_minor(self, tmp_path: Path):
+        assert get_transformers_tier(_custom_code_model(tmp_path, "5.5.4")) == "default"
+
     def test_v5_tokenizer_saved_at_530_keeps_530(self, tmp_path: Path):
         d = Path(_custom_code_model(tmp_path, "5.3.0"))
         (d / "tokenizer_config.json").write_text(
