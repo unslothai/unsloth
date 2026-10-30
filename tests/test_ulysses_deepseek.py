@@ -324,7 +324,11 @@ class _KwargsModel(torch.nn.Module):
         super().__init__()
         self.self_attn = attention
 
-    def forward(self, input_ids = None, **kwargs):
+    def forward(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
         return None
 
 
@@ -384,9 +388,17 @@ def test_ulysses_deepseek_forward_runs_eager_inside_compiled_layers(name, monkey
         seen.append(torch.compiler.is_compiling())
         return hidden_states * 2, None
 
-    target = "ulysses_deepseek_v4_forward" if name == "DeepseekV4Attention" else "ulysses_deepseek_v32_forward"
+    target = (
+        "ulysses_deepseek_v4_forward"
+        if name == "DeepseekV4Attention"
+        else "ulysses_deepseek_v32_forward"
+    )
     monkeypatch.setattr(ud, target, fake_forward)
-    attention = type(name, (torch.nn.Module,), {"forward": lambda self, hidden_states, **kw: (hidden_states, None)})()
+    attention = type(
+        name,
+        (torch.nn.Module,),
+        {"forward": lambda self, hidden_states, **kw: (hidden_states, None)},
+    )()
     manager = types.SimpleNamespace(backend = "ulysses", group = None, packed_seq_lengths = None)
     ud.wrap_deepseek_attention_forward(attention, lambda: manager)
 
@@ -414,7 +426,9 @@ def _ddp_worker(rank, world, kind):
         inputs = {"input_ids": ids.clone(), "labels": ids.clone()}
         manager._prepare_inputs(inputs)
         with manager.apply(inputs):
-            out = ddp(input_ids = inputs["input_ids"], position_ids = inputs["position_ids"], use_cache = False)
+            out = ddp(
+                input_ids = inputs["input_ids"], position_ids = inputs["position_ids"], use_cache = False
+            )
             _loss(out.logits, inputs["shift_labels"], count).backward()
     indexer = [n for n, p in model.named_parameters() if ".indexer." in n]
     assert indexer and all(model.get_parameter(n).grad is None for n in indexer), indexer

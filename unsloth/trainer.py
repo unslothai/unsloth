@@ -1914,7 +1914,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
             and not _packing_gate_deferred
         ):
             from .context_parallel import ulysses_packing_blocker as _ulysses_packing_blocker
-
             ulysses_packing_blocker = _ulysses_packing_blocker(model)
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
@@ -1962,7 +1961,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif is_ring_context_parallel:
                 reason = "ring context parallelism"
             elif ulysses_packing_blocker is not None:
-                reason = f"Ulysses context parallelism: {ulysses_packing_blocker} refuses packed batches"
+                reason = (
+                    f"Ulysses context parallelism: {ulysses_packing_blocker} refuses packed batches"
+                )
             elif forward_rejects_packing:
                 # Name the real blocker (for a string `model=`, the resolved class).
                 blocker = (
