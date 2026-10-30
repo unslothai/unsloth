@@ -34,6 +34,24 @@ test("Traditional Chinese tags pick zh-TW, Simplified ones zh-CN", () => {
   assert.equal(detect("zh-TW", "zh"), "zh-TW");
 });
 
+test("Latin American Spanish picks es-419, other Spanish es", () => {
+  for (const tag of [
+    "es-419",
+    "es-MX",
+    "es-AR",
+    "es-CO",
+    "es-CL",
+    "es-PE",
+    "es-US",
+    "es-PR",
+    "es-Latn-UY",
+  ]) {
+    assert.equal(detect(tag), "es-419", tag);
+  }
+  for (const tag of ["es", "es-ES", "es-GQ"])
+    assert.equal(detect(tag), "es", tag);
+});
+
 test("other new languages match by their base subtag", () => {
   const cases: Record<string, string> = {
     "id-ID": "id",
