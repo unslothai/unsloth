@@ -345,6 +345,37 @@ def test_inference_mode_metadata_is_not_served_to_a_training_step(dtype):
     )
 
 
+@pytest.mark.parametrize("grad_mode", ["inference_mode", "no_grad"])
+def test_compiled_inference_mode_metadata_is_not_served_to_a_training_step(grad_mode):
+    """A compiled build cannot read inference_mode, so a training read must check its tensors."""
+    from unsloth.utils import attention_dispatch
+    from unsloth.utils.attention_dispatch import _windowed_causal_mask
+
+    packing._PACKED_INFO_CACHE.clear()
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+    cpu = torch.device("cpu")
+    seq = torch.tensor([3, 5], dtype = torch.int32)
+
+    def build(seq):
+        info = packing.get_packed_info_from_kwargs({"packed_seq_lengths": seq}, cpu)
+        return info, _windowed_causal_mask(8, 8, 2, cpu)
+
+    torch._dynamo.reset()
+    compiled = torch.compile(build, backend = "eager", fullgraph = True, dynamic = True)
+    context = torch.inference_mode() if grad_mode == "inference_mode" else torch.no_grad()
+    with torch._dynamo.config.patch(capture_scalar_outputs = True), context:
+        built, built_mask = compiled(seq)
+    assert torch.is_inference(built[1]) == (grad_mode == "inference_mode")
+    train, train_mask = build(seq)
+    assert not torch.is_inference(train[1]) and not torch.is_inference(train_mask)
+    assert train[1].tolist() == [0, 3, 8] and train[2] == 5
+    _survives_backward(train[1])
+    _survives_backward(train_mask.float())
+    # A compiled build outside inference_mode holds normal tensors and is still reused.
+    assert (train is built) == (grad_mode == "no_grad")
+    assert (train_mask is built_mask) == (grad_mode == "no_grad")
+
+
 def test_xformers_mask_lru_keeps_inference_masks_out_of_training(monkeypatch):
     class _Mask:
         @classmethod
