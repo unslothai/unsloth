@@ -67,9 +67,11 @@ _CARD_BASES: dict[str, str] = {
     "unsloth/FLUX.2-klein-base-9B-GGUF": "black-forest-labs/FLUX.2-klein-base-9B",
     "unsloth/flux-3-image-klein-GGUF": "black-forest-labs/flux-3-image-klein",
     "unsloth/flux-3-image-klein-base-GGUF": "black-forest-labs/flux-3-image-klein-base",
+    "unsloth/MOSS-Image-SFT-GGUF": "OpenMOSS-Team/MOSS-Image-SFT",
+    "unsloth/MOSS-Image-Base-GGUF": "OpenMOSS-Team/MOSS-Image-Base",
 }
 
-# These five have no separate mirror repo: the official diffusers folders live inside the model's existing unsloth
+# These have no separate mirror repo: the official diffusers folders live inside the model's existing unsloth
 # repo (-FP8 where one exists, else -GGUF).
 _NEW_PAIRS = (
     ("Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
@@ -77,6 +79,8 @@ _NEW_PAIRS = (
     ("Qwen/Qwen-Image-Edit-2509", "unsloth/Qwen-Image-Edit-2509-GGUF"),
     ("Qwen/Qwen-Image-Layered", "unsloth/Qwen-Image-Layered-GGUF"),
     ("Tongyi-MAI/Z-Image", "unsloth/Z-Image-GGUF"),
+    ("OpenMOSS-Team/MOSS-Image-SFT", "unsloth/MOSS-Image-SFT-FP8"),
+    ("OpenMOSS-Team/MOSS-Image-Base", "unsloth/MOSS-Image-Base-FP8"),
 )
 
 # Repacks built by ComfyUI (or its unsloth/* copies). No image load may fetch from one, not even through the
@@ -186,6 +190,22 @@ def test_every_sd_cpp_asset_fetch_id_is_unsloth():
     assert rows
     bad = [row for row in rows if not _allowed(row[3])]
     assert not bad, "sd-cli asset fetch ids outside unsloth/*:\n" + "\n".join(map(str, bad))
+
+
+def test_moss_image_components_come_from_its_fp8_repos():
+    fam = detect_family("OpenMOSS-Team/MOSS-Image-SFT")
+    assert fam is not None and fam.name == "moss-image"
+    assert fam.base_repo == "OpenMOSS-Team/MOSS-Image-SFT"
+    for variant in ("SFT", "Base"):
+        upstream, mirror = (
+            f"OpenMOSS-Team/MOSS-Image-{variant}",
+            f"unsloth/MOSS-Image-{variant}-FP8",
+        )
+        assert _fetch_id(upstream) == mirror
+        assert df.mirror_hosts_artifacts(mirror)
+    sd_cpp = {r[1]: r[3] for r in _sd_cpp_fetch_ids() if r[0] == "moss-image"}
+    assert sd_cpp["sd_cpp:vae"] == "unsloth/MOSS-Image-SFT-FP8"
+    assert fam.sd_cpp_tokenizer == ("unsloth/MOSS-Image-SFT-FP8", "tokenizer/tokenizer.json")
 
 
 def test_layered_sd_cpp_vae_comes_from_the_mirror():

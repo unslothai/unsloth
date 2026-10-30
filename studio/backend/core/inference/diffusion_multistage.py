@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Family-agnostic helpers for a render that calls its pipeline more than once per request (a multi-stage recipe:
-LTX-2.5's half-size stage, latent upsample, full-size stage). Each helper keys on what the pipeline object carries
-(its offload hook list, its denoiser, its ``encode_prompt``), never on a family name, so any multi-stage render can wrap
-its calls in them.
-
-``encode_once``: every stage encodes the same prompt; the later stages take the first one's device tensors.
-``hold_denoiser_between_calls``: under model CPU offload a pipeline call ends by offloading every component, so the
-next stage would upload the whole denoiser again; hold it when the work in between still fits beside it.
-"""
+"""Multi-stage render helpers keyed on pipeline attributes: encode once, hold denoiser under offload."""
 
 from __future__ import annotations
 
@@ -37,7 +29,8 @@ def _denoisers(pipe: Any) -> list:
 
 def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool:
     """Whether the denoiser a call onloaded can stay while ``companions`` (the modules that run before it is needed
-    again) are onloaded beside it: free memory plus the allocator's idle cache covers them with a margin."""
+    again) are onloaded beside it: free memory plus the allocator's idle cache (minus CUDA graph pools) covers them
+    with a margin."""
     try:
         import torch
 
@@ -45,12 +38,16 @@ def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool
         param = next(dits[0].parameters()) if dits else None
         if param is None or param.device.type != "cuda":
             return False
-        free, _total = torch.cuda.mem_get_info(param.device)
-        idle = torch.cuda.memory_reserved(param.device) - torch.cuda.memory_allocated(param.device)
+        free, total = torch.cuda.mem_get_info(param.device)
+        from .diffusion_memory import _user_budget_reserve_mib, cuda_reusable_cache_bytes
+
+        idle = cuda_reusable_cache_bytes(param.device)
+
+        reserve = _user_budget_reserve_mib(int(total) >> 20) << 20
     except Exception:  # noqa: BLE001 -- no CUDA / no denoiser: keep the stock offload
         return False
     need = sum(module_bytes(m) for m in companions if m is not None) + HOLD_MARGIN_BYTES
-    return free + max(0, idle) >= need
+    return free + max(0, idle) - reserve >= need
 
 
 @contextlib.contextmanager

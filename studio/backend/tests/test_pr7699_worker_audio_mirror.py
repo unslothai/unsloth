@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The MLX post-load audio mirror must not strip a classification the pre-load
-config already earned.
-
-`_handle_load` mirrors the backend entry's is_audio/audio_type/has_audio_input
-over the pre-load ModelConfig values. The MLX probe only ever speaks for
-"audio_vlm", so for every other audio family (snac/csm/bicodec/dac TTS, whisper
-ASR) the mirror has to be a no-op. Otherwise the chat route's TTS redirect
-(`model_info.get("is_audio") and audio_type != "whisper"`) and the whisper guard
-stop firing on Apple Silicon, and the checkpoint is served as a plain text model
-that streams raw codec tokens into chat.
-"""
+"""The MLX audio mirror must not change TTS or whisper classification, only audio_vlm."""
 
 import sys
 from types import SimpleNamespace
@@ -138,7 +128,6 @@ def test_audio_cpp_workflow_fields_cross_the_worker_and_the_parent(monkeypatch):
         "audio_convert_rules": {"source_rate": 16000, "target_rate": 24000},
         "audio_edit": {"style": "instructions", "delivery": True, "max_changes": 5},
         "audio_music": {"modes": [{"id": "song", "variations": None}]},
-        # The /audio/run route sizes CPU waits from it.
         "audio_cpp_backend": "cpu",
         "audio_device_fallback": "cpu",
         "audio_request_inputs": ["language"],
@@ -164,17 +153,24 @@ def test_a_classified_load_failure_crosses_the_worker_and_the_parent(monkeypatch
 
 
 @pytest.mark.parametrize(
-    "device, served_as_vision, published",
-    [("mlx", False, False), ("mlx", True, True), ("cuda", False, True)],
+    "device, config_vision, served_as_vision, published",
+    [
+        ("mlx", True, False, False),
+        ("mlx", True, True, True),
+        ("cuda", True, False, True),
+        ("mlx", False, True, True),
+        ("cuda", False, True, False),
+    ],
 )
 def test_an_mlx_vision_config_served_as_text_stops_accepting_images(
-    monkeypatch, device, served_as_vision, published
+    monkeypatch, device, config_vision, served_as_vision, published
 ):
-    """MLX serves a vision config mlx-lm built (Muse Spark) as text: the parent must not offer images."""
+    """MLX serves a vision config mlx-lm built (Muse Spark) as text: the parent must not offer images.
+    And a tower only mlx-vlm knows (OXR's vit_config) reads them although the config detector said no."""
     from core.inference.orchestrator import _mirrored_model_entry
 
     mc = _mc(None, is_audio = False, has_audio_input = False)
-    mc.is_vision = True
+    mc.is_vision = config_vision
     entry = {"is_audio": False, "audio_type": None, "has_audio_input": False}
     entry["is_vision"] = served_as_vision
     info = _drive_handle_load(monkeypatch, mc, entry, device = device)

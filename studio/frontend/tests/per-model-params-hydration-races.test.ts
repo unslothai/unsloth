@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Startup races where the settings GET is still in flight. Own file: the other
-// hydration suite shares store state across its tests, so an appended case picks
-// up an earlier one's params.
+// Own file: the other hydration suite shares store state across tests.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -32,9 +30,7 @@ const STATUS = {
   context_length: STATUS_CONTEXT_LENGTH,
 } as never;
 
-/** Every field this file varies is set explicitly: the store is a module
- * singleton, so a value left behind by an earlier test silently changes the
- * next one's meaning. */
+/** The store is a module singleton, so set every varied field explicitly. */
 function reset(
   params: Record<string, unknown>,
   rest: Record<string, unknown> = {},
@@ -49,10 +45,7 @@ function reset(
 }
 
 test("with the memory off, the saved shared settings still reach a new model", async () => {
-  // keepModelDefaults exists so a model that loaded mid-flight is not handed the
-  // previous model's globals. With the memory OFF there is no previous model:
-  // the global set is the one set the user keeps for everything, and suppressing
-  // it strands the model on whatever the load happened to recommend.
+  // With memory off there is no previous model, so the global set must not be suppressed.
   settingsHttp.settings = {
     rememberParamsPerModel: false,
     inferenceParams: { temperature: 0.22, systemPrompt: "shared" },
@@ -80,9 +73,6 @@ test("with the memory off, the saved shared settings still reach a new model", a
 });
 
 test("a model that loaded mid-flight keeps its own context", async () => {
-  // The global maxSeqLength belongs to whichever model was used last. No entry
-  // ever carries one, so the replay cannot put the right value back after the
-  // global loop has overwritten it.
   settingsHttp.settings = {
     inferenceParams: { maxSeqLength: 131072, temperature: 0.9 },
     inferenceParamsByModel: { [B]: { temperature: 0.2 } },
@@ -108,10 +98,7 @@ test("a model that loaded mid-flight keeps its own context", async () => {
 });
 
 test("a pre-hydration edit survives on an install that has no model map", async () => {
-  // The upgrade path: settings written before this feature carry only
-  // inferenceParams. The edit is fenced out of the global set either way, but
-  // without an entry the next defaults update has nothing to replay and puts the
-  // backend recommendation back over it.
+  // Legacy settings carry only inferenceParams, with no entry to replay.
   settingsHttp.settings = { inferenceParams: { temperature: 0.55 } };
   reset({ checkpoint: A });
   settingsHttp.hold();
@@ -141,8 +128,6 @@ test("a pre-hydration edit survives on an install that has no model map", async 
 });
 
 test("setCheckpoint clamps a replayed budget to the context it is given", () => {
-  // Compare's ensureModelLoaded reaches the replay through setCheckpoint, which
-  // is the one switch path that had no way to pass the context it just loaded.
   reset(
     { checkpoint: "small", maxTokens: 2048 },
     {
@@ -158,9 +143,7 @@ test("setCheckpoint clamps a replayed budget to the context it is given", () => 
 });
 
 test("the loaded context caps the budget even with nothing remembered", () => {
-  // The cap describes the load, so it cannot be conditional on a replay: compare
-  // loading a fresh 8K model after a 32K one has no entry to replay and would
-  // otherwise send the 32K budget.
+  // The cap describes the load, so it cannot depend on a replay happening.
   reset(
     { checkpoint: "small", maxTokens: 32768 },
     { settingsHydrated: true, paramsByModel: {} },
@@ -187,10 +170,6 @@ test("the memory being off does not disable the loaded-context cap", () => {
 });
 
 test("a model left before hydration keeps the globals it was running with", async () => {
-  // The upgrade path again, from the other side: A is resident with only the
-  // legacy global set to its name, and B replaces it before the GET returns.
-  // Nothing could be filed for A at the time, so without this A ends up with no
-  // entry and switching back inherits B's settings.
   settingsHttp.settings = {
     inferenceParams: { temperature: 0.33, systemPrompt: "A's prompt" },
   };

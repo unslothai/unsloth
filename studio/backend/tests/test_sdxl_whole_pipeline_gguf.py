@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SDXL single-file GGUFs (#11391): a stable-diffusion.cpp ``convert`` of a community SDXL checkpoint holds the UNet,
-both text encoders and the VAE, with no ``general.architecture``. It lists on the Images page, validates for the
-diffusers load, and a denoiser-only SDXL GGUF still gets a precise refusal. The fixture is the real header of
-RealVisXL_V4.0 converted to q8_0 (names and shapes, trimmed to index 0 of every stack)."""
+"""SDXL single-file GGUFs are listed and validated; denoiser-only gets a precise refusal."""
 
 from __future__ import annotations
 

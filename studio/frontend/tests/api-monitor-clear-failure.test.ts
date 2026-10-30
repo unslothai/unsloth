@@ -4,8 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// use-api-monitor.ts imports React, so it cannot be imported here. The Clear log sequence
-// lives in a plain module, which this drives directly.
+// use-api-monitor.ts imports React, so the Clear log sequence is tested via its plain module.
 import {
   CLEAR_MONITOR_FAILED,
   type ClearMonitorDeps,
@@ -19,7 +18,6 @@ type Trace = {
   reloads: number;
 };
 
-/** A monitor whose DELETE settles as `remote` says. */
 function trace(remote: () => Promise<void>): Trace {
   const state: Trace = {
     errors: [],
@@ -30,7 +28,6 @@ function trace(remote: () => Promise<void>): Trace {
       resetDetails: () => {
         state.detailsReset += 1;
       },
-      // The hook's load() owns its own try/catch, so this never rejects.
       reload: () => {
         state.reloads += 1;
         return Promise.resolve();
@@ -44,15 +41,12 @@ function trace(remote: () => Promise<void>): Trace {
 }
 
 test("a refused clear reports through the monitor's error state", async () => {
-  // The backend is up enough to answer but refuses the delete, so the poll keeps
-  // succeeding and nothing else would ever mention this.
   const state = trace(() => Promise.reject(new Error("Monitor is read-only")));
 
-  // The click handler discards the promise, so a rejection here is unhandled and silent.
+  // The click handler discards the promise, so a rejection would be unhandled and silent.
   await assert.doesNotReject(() => clearMonitor(state.deps));
 
   assert.deepEqual(state.errors, ["Monitor is read-only"]);
-  // Nothing was deleted, so the cached payloads and the on-screen snapshot both stand.
   assert.equal(state.detailsReset, 0);
   assert.equal(state.reloads, 0);
 });
@@ -72,6 +66,5 @@ test("a clear that lands drops the details and refetches", async () => {
 
   assert.deepEqual(state.errors, []);
   assert.equal(state.detailsReset, 1);
-  // The refetch is what empties the rendered log, and it clears the error on success.
   assert.equal(state.reloads, 1);
 });

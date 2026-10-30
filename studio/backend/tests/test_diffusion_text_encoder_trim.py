@@ -99,7 +99,6 @@ def test_trim_keeps_every_hidden_state_bit_identical_and_drops_the_head():
     assert len(before.hidden_states) == len(after.hidden_states)
     for a, b in zip(before.hidden_states, after.hidden_states):
         assert torch.equal(a, b)
-    # No logits are computed: an empty view, not a [batch, seq, vocab] projection.
     assert after.logits.shape == (2, 11, 0)
     # The vision tower stays: the same pipeline serves image-conditioned requests.
     assert sum(p.numel() for p in encoder.model.visual.parameters()) > 0

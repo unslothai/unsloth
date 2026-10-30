@@ -15,10 +15,7 @@ import type {
   ResearchMcpSource,
   ResearchWebsitePolicy,
 } from "../types/research";
-import type {
-  InferenceParams,
-  PersistedInferenceParams,
-} from "../types/runtime";
+import type { PersistedInferenceParams } from "../types/runtime";
 import {
   ChatSettingsRequestError,
   isUnderKeepaliveBudget,
@@ -33,8 +30,9 @@ export interface PersistedChatPreset {
 }
 
 export interface PersistedChatSettings {
+  /** Ordered sidebar chat/pair IDs, shared by clients of this installation. */
+  pinnedChatIds?: string[];
   inferenceParams?: PersistedInferenceParams;
-  /** Last-used params per checkpoint id, replayed on model switch. */
   inferenceParamsByModel?: Record<string, PersistedInferenceParams>;
   /** Outgoing only: per model id, keys of the entry above the server drops before merging the rest. */
   forgetInferenceParamsByModel?: Record<string, string[]>;
@@ -127,9 +125,7 @@ function parseErrorText(status: number, body: unknown): string {
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    // Typed, not a bare Error: the settings queue has to tell a server that is down (keep the patch)
-    // from a server that refuses this body (drop the offending fields), and that decision needs the
-    // status and the detail.
+    // Typed so the settings queue can tell server-down (keep patch) from rejection (drop fields).
     throw new ChatSettingsRequestError(
       parseErrorText(response.status, body),
       response.status,
@@ -141,8 +137,10 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-export async function getChatSettings(): Promise<PersistedChatSettings> {
-  const response = await authFetch("/api/chat/settings");
+export async function getChatSettings(
+  options: { signal?: AbortSignal } = {},
+): Promise<PersistedChatSettings> {
+  const response = await authFetch("/api/chat/settings", options);
   const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
   return data.settings;
 }
@@ -156,11 +154,7 @@ export async function saveChatSettingsPatch(
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body,
-    // keepalive lets the PUT survive a tab close from the page-hidden flush, but only under the Fetch
-    // standard's 64 KiB budget for in-flight keepalive bodies. Over it the request fails immediately
-    // in every engine, and researchWebsitePolicy alone can carry 2000 domains of 253 characters.
-    // Sending without keepalive is a chance rather than a certain failure, and on the
-    // visibilitychange flush, where the page is only hidden, it simply succeeds.
+    // keepalive only under the Fetch standard's 64 KiB in-flight budget; over it every engine fails.
     keepalive: options.keepalive ? isUnderKeepaliveBudget(body) : undefined,
   });
   const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
@@ -172,8 +166,16 @@ export async function saveChatSettingsPatchIfCurrent(
   patch: PersistedChatSettings,
   expectedAbsent: Array<keyof PersistedChatSettings> = [],
   expectedAbsentPaths: ChatSettingsPath[] = [],
+  options: {
+    signal?: AbortSignal;
+    requireSupport?: boolean;
+    operationId?: string;
+    unpinnedChatIds?: string[];
+    cancelledOperationIds?: string[];
+  } = {},
 ): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
   const response = await authFetch("/api/chat/settings/compare-and-set", {
+    signal: options.signal,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -181,12 +183,20 @@ export async function saveChatSettingsPatchIfCurrent(
       expectedAbsent,
       expectedAbsentPaths,
       patch,
+      ...(options.operationId ? { operationId: options.operationId } : {}),
+      ...(options.unpinnedChatIds
+        ? { unpinnedChatIds: options.unpinnedChatIds }
+        : {}),
+      ...(options.cancelledOperationIds?.length
+        ? { cancelledOperationIds: options.cancelledOperationIds }
+        : {}),
     }),
   });
-  // A backend without this route answers 404 (--api-only) or 405 (the browser build's GET-only SPA
-  // catch-all). The desktop app adopts any backend above a version floor, so that pairing is
-  // supported, not a bug. Report "not applied" so the caller leaves the server alone.
-  if (response.status === 404 || response.status === 405) {
+  // 404 (--api-only) or 405 (browser SPA catch-all) means an older backend: report not applied.
+  if (
+    !options.requireSupport &&
+    (response.status === 404 || response.status === 405)
+  ) {
     return { settings: expected, applied: false };
   }
   return parseJsonOrThrow<ConditionalChatSettingsResponse>(response);

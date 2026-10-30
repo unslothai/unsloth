@@ -346,7 +346,8 @@ def test_unbacked_list_is_restored_after_forward():
         m = MiniMaxH3Transformer3DModel()
         dt.install(m)
         m(12, 1)
-        assert m.seen_unbacked.split(",") == ["L['user_thing']", "L['temb']"]
+        assert m.seen_unbacked.split(",") == ["L['user_thing']", *dt.unbacked_sources_for(m)]
+        assert dt.unbacked_sources_for(m)[0] == "L['temb']"
         assert cfg.unbacked_sources == "L['user_thing']"
         dt.uninstall(m)
     finally:
@@ -371,7 +372,7 @@ def test_dense_h3_dynamic_true_arms_only_the_unbacked_temb():
     assert installed is dt.unbacked_supported()
     try:
         m(12, 2)
-        assert m.seen == before  # the prompt-length list is left alone under dynamic=True
+        assert m.seen == before
         if dt.unbacked_supported():
             assert "L['temb']" in m.seen_unbacked.split(",")
             assert "L['temb']" not in (_cfg().unbacked_sources or "").split(",")
@@ -390,7 +391,11 @@ def test_static_compile_and_unarmed_families_are_not_hooked():
 
 def test_fingerprint_for_dynamic_true_keys_only_on_unbacked():
     h3 = MiniMaxH3Transformer3DModel()
-    want = "unbacked:L['temb']" if dt.unbacked_supported() else None
+    want = (
+        "unbacked:" + ",".join(dt._FAMILY_UNBACKED[type(h3).__name__])
+        if dt.unbacked_supported()
+        else None
+    )
     assert dt.fingerprint(h3, True) == want
     assert dt.fingerprint(h3, False) is None
     assert dt.fingerprint(QwenImage21Transformer2DModel(), True) is None
@@ -541,3 +546,473 @@ def test_slice_identity_fix_is_probe_gated_and_reversible(monkeypatch):
     finally:
         dt.uninstall_slice_identity_fix()
     assert SliceVariable.__dict__.get("get_real_python_backed_value") is stock
+
+
+class Float8Tensor(torch.Tensor):
+    """Stands in for torchao's float8 weight subclass (its module and class name are read)."""
+
+
+Float8Tensor.__module__ = "torchao.quantization.quantize_.workflows.float8.float8_tensor"
+
+
+def _h3_with_float8_weight():
+    m = MiniMaxH3Transformer3DModel()
+    m.proj = torch.nn.Linear(8, 8)
+    m.proj.weight = torch.nn.Parameter(
+        torch.Tensor._make_subclass(Float8Tensor, torch.zeros(8, 8)), requires_grad = False
+    )
+    assert type(m.proj.weight).__name__ == "Float8Tensor"
+    return m
+
+
+def test_minimax_h3_float8_weights_keep_temb_backed_dynamic():
+    """torchao float8 activation quantisation guards on the row count, so an unbacked temb failed the compile."""
+    if not dt.unbacked_supported():
+        pytest.skip("torch lacks compiler.config.unbacked_sources")
+    m = _h3_with_float8_weight()
+    assert dt.unbacked_sources_for(m) == ()
+    assert "L['temb']" in dt.sources_for(m)
+    assert dt.install(m) is True
+    m(12, 2)
+    assert "L['temb']" in m.seen.split(",")
+    assert "L['temb']" not in (m.seen_unbacked or "").split(",")
+    dt.uninstall(m)
+    # a plain (bf16 / int8) H3 keeps the unbacked temb
+    assert dt.unbacked_sources_for(MiniMaxH3Transformer3DModel())[0] == "L['temb']"
+    assert not set(dt.unbacked_sources_for(MiniMaxH3Transformer3DModel())) & set(
+        dt.sources_for(MiniMaxH3Transformer3DModel())
+    )
+
+
+def test_minimax_h3_float8_inside_a_plain_parameter_keeps_temb_backed_dynamic():
+    """Some torchao builds keep ``Linear.weight`` a plain Parameter whose ``.data`` is the float8 subclass."""
+    if not dt.unbacked_supported():
+        pytest.skip("torch lacks compiler.config.unbacked_sources")
+    m = MiniMaxH3Transformer3DModel()
+    plain = types.SimpleNamespace(data = torch.Tensor._make_subclass(Float8Tensor, torch.zeros(8, 8)))
+    m.parameters = lambda recurse = True: iter([plain])
+    assert dt.unbacked_sources_for(m) == ()
+    assert "L['temb']" in dt.sources_for(m)
+
+
+class ZImageTransformer2DModel(torch.nn.Module):
+    """Z-Image's one block class runs the caption refiner (caption tokens), the noise refiner (image tokens) and the
+    main layers (caption + image), positionally as (x, attn_mask, freqs_cis); the caption is padded to 32-token buckets."""
+
+    def __init__(self):
+        super().__init__()
+        self.block = torch.compile(self._block, backend = "eager", dynamic = None)
+
+    @staticmethod
+    def _block(x, attn_mask, freqs_cis):
+        return (x * freqs_cis).masked_fill(~attn_mask[..., None], 0.0) + x
+
+    def forward(self, caption_len, image_len):
+        def run(n):
+            x = torch.randn(1, n, 8)
+            return self.block(x, torch.ones(1, n, dtype = torch.bool), torch.randn(1, n, 8))
+
+        run(caption_len)
+        run(image_len)
+        return run(caption_len + image_len)
+
+
+def test_zimage_new_caption_bucket_reuses_the_first_graphs():
+    """An automatic-dynamic Z-Image recompiled its block for each new length (caption, image, unified) inside the
+    first render, then again on the first longer prompt; armed, the first compile covers every length."""
+    from torch._dynamo.utils import counters
+
+    def graphs_per_render(install):
+        torch._dynamo.reset()
+        counters.clear()
+        m = ZImageTransformer2DModel()
+        if install:
+            assert dt.install(m)
+        seen = []
+        for caption_len, image_len in ((32, 64), (32, 64), (96, 64), (32, 48)):
+            before = counters["stats"]["unique_graphs"]
+            m(caption_len, image_len)
+            seen.append(counters["stats"]["unique_graphs"] - before)
+        dt.uninstall(m)
+        torch._dynamo.reset()
+        return seen
+
+    assert graphs_per_render(False)[0] > 1
+    assert graphs_per_render(True) == [1, 0, 0, 0]
+
+
+class FluxTransformer2DModel(torch.nn.Module):
+    """FLUX.1's two compiled blocks: the double block sees the text stream beside the image tokens, the single block
+    concatenates them, and the rotary tables span text + image."""
+
+    def __init__(self):
+        super().__init__()
+        self.seen = None
+        self.double = torch.compile(self._double, backend = "eager", dynamic = None)
+        self.single = torch.compile(self._single, backend = "eager", dynamic = None)
+
+    @staticmethod
+    def _double(hidden_states, encoder_hidden_states, temb, image_rotary_emb):
+        joint = (
+            torch.cat([encoder_hidden_states, hidden_states], dim = 1) * image_rotary_emb[0]
+            + image_rotary_emb[1]
+        )
+        text = encoder_hidden_states.shape[1]
+        return joint[:, text:] + temb[:, None], joint[:, :text]
+
+    @staticmethod
+    def _single(hidden_states, encoder_hidden_states, temb, image_rotary_emb):
+        joint = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
+        out = joint * image_rotary_emb[0] + image_rotary_emb[1] + temb[:, None]
+        return out[:, encoder_hidden_states.shape[1] :]
+
+    def forward(self, text_len, image_len):
+        self.seen = _cfg().dynamic_sources
+        hidden_states = torch.randn(1, image_len, 8)
+        encoder_hidden_states = torch.randn(1, text_len, 8)
+        temb = torch.randn(1, 8)
+        rotary = (torch.randn(text_len + image_len, 8), torch.randn(text_len + image_len, 8))
+        hidden_states, encoder_hidden_states = self.double(
+            hidden_states, encoder_hidden_states, temb, rotary
+        )
+        return self.single(hidden_states, encoder_hidden_states, temb, rotary)
+
+
+def test_flux1_new_prompt_length_and_resolution_reuse_the_first_graphs():
+    """T5 pads to 256 or 512 tokens; a torchao FLUX.1 compiles with automatic dynamic, which recompiled both blocks on
+    the first 512-token prompt and again on the first new resolution."""
+    from torch._dynamo.utils import counters
+
+    def graphs_per_render(install):
+        torch._dynamo.reset()
+        counters.clear()
+        m = FluxTransformer2DModel()
+        if install:
+            assert dt.install(m)
+        seen = []
+        for text_len, image_len in ((16, 64), (16, 64), (32, 64), (16, 48), (32, 80)):
+            before = counters["stats"]["unique_graphs"]
+            m(text_len, image_len)
+            seen.append(counters["stats"]["unique_graphs"] - before)
+        dt.uninstall(m)
+        torch._dynamo.reset()
+        return seen
+
+    assert graphs_per_render(False)[2:] != [0, 0, 0]
+    assert graphs_per_render(True) == [2, 0, 0, 0, 0]
+
+
+def test_qwen_image_21_hook_paths_match_and_first_segment_start_stays_static():
+    from torch._dynamo.variables.builder import is_dynamic_source as is_dynamic
+
+    cfg = _cfg()
+    before = cfg.dynamic_sources
+    try:
+        cfg.dynamic_sources = ",".join(dt.sources_for(QwenImage21Transformer2DModel()))
+        for root in ("L['kwargs']", "___stack0[1]"):
+            for leaf in (
+                "['hidden_states']",
+                "['rotary_emb']",
+                "['target_token_mask']",
+                "['key_valid']",
+                "['attention_mask']",
+                "['layer_cache'].k",
+                "['layer_cache'].v",
+                "['cache_write_slice'].stop",
+                "['segments'][0][1]",
+                "['segments'][2][0]",
+            ):
+                assert is_dynamic(root + leaf), root + leaf
+            for leaf in (
+                "['segments'][0][0]",
+                "['modulation']",
+                "['cache_write_slice'].start",
+                "['hidden_states_2']",
+            ):
+                assert not is_dynamic(root + leaf), root + leaf
+    finally:
+        cfg.dynamic_sources = before
+
+
+class _Q21HookedBlock(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(8, 8)
+
+    def forward(
+        self,
+        hidden_states,
+        rotary_emb = None,
+        attention_mask = None,
+        kv_cache_mode = None,
+    ):
+        return self.proj(hidden_states) * rotary_emb[..., :1] + attention_mask.float().mean()
+
+
+class _Q21HookedTransformer(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.transformer_blocks = torch.nn.ModuleList([_Q21HookedBlock() for _ in range(2)])
+
+    def forward(self, x, rope, mask):
+        for block in self.transformer_blocks:
+            x = block(hidden_states = x, rotary_emb = rope, attention_mask = mask, kv_cache_mode = "cached")
+        return x
+
+
+def test_qwen_image_21_under_group_offload_hooks_keeps_one_graph_per_block():
+    """An edit request at 16 GB hooks the resident transformer; a new prompt length then recompiled every block."""
+    hooks = pytest.importorskip("diffusers.hooks")
+    from torch._dynamo.utils import counters
+
+    from core.inference.diffusion_memory import install_group_offload_hooks_eager
+
+    Transformer = type("QwenImage21Transformer2DModel", (_Q21HookedTransformer,), {})
+    torch._dynamo.reset()
+    counters.clear()
+    m = Transformer()
+    for block in m.transformer_blocks:
+        block.compile(backend = "eager", dynamic = None)
+    assert dt.install(m) is True
+    install_group_offload_hooks_eager()
+    cpu = torch.device("cpu")
+    hooks.apply_group_offloading(
+        m, onload_device = cpu, offload_device = cpu, offload_type = "block_level", num_blocks_per_group = 1
+    )
+    try:
+        with torch.no_grad():
+            m(torch.randn(1, 90, 8), torch.randn(90, 2), torch.ones(1, 1, 1, 90, dtype = torch.bool))
+            first = counters["stats"]["unique_graphs"]
+            for n in (95, 93, 89):
+                m(torch.randn(1, n, 8), torch.randn(n, 2), torch.ones(1, 1, 1, n, dtype = torch.bool))
+        assert first > 0
+        assert counters["stats"]["unique_graphs"] == first
+    finally:
+        dt.uninstall(m)
+        torch._dynamo.reset()
+
+
+class _Lin(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(8, 8)
+
+
+class _Flux3ModeBlock(_Lin):
+    def forward(self, hidden_states, temb_mod, image_rotary_emb):
+        return self.proj(hidden_states) * image_rotary_emb[0] + image_rotary_emb[1] + temb_mod
+
+
+class _Flux3SingleBlock(_Lin):
+    def forward(
+        self, hidden_states, encoder_hidden_states, temb_mod, temb_mod_context, image_rotary_emb
+    ):
+        joint = (
+            torch.cat([encoder_hidden_states, hidden_states], 1) * image_rotary_emb[0]
+            + image_rotary_emb[1]
+        )
+        text = encoder_hidden_states.shape[1]
+        return self.proj(joint[:, :text]) + temb_mod_context, joint[:, text:] + temb_mod
+
+
+class _Flux3Hooked(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.transformer_blocks = torch.nn.ModuleList([_Flux3ModeBlock() for _ in range(2)])
+        self.single_transformer_blocks = torch.nn.ModuleList(
+            [_Flux3SingleBlock() for _ in range(2)]
+        )
+
+    def forward(
+        self,
+        text_len,
+        image_len = 64,
+    ):
+        txt, img, mod = (
+            torch.randn(1, text_len, 8),
+            torch.randn(1, image_len, 8),
+            torch.randn(1, 1, 8),
+        )
+        txt_rope = (torch.randn(text_len, 8), torch.randn(text_len, 8))
+        img_rope = (torch.randn(image_len, 8), torch.randn(image_len, 8))
+        for block in self.transformer_blocks:
+            txt = block(txt, mod, txt_rope)
+        for block in self.transformer_blocks:
+            img = block(img, mod, img_rope)
+        rope = (torch.cat([txt_rope[0], img_rope[0]]), torch.cat([txt_rope[1], img_rope[1]]))
+        for block in self.single_transformer_blocks:
+            txt, img = block(
+                hidden_states = img,
+                encoder_hidden_states = txt,
+                temb_mod = mod,
+                temb_mod_context = mod,
+                image_rotary_emb = rope,
+            )
+        return img
+
+
+class _ZImageBlock(_Lin):
+    def forward(self, x, attn_mask, freqs_cis):
+        return self.proj(x * freqs_cis).masked_fill(~attn_mask[..., None], 0.0) + x
+
+
+class _ZImageHooked(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.context_refiner = torch.nn.ModuleList([_ZImageBlock()])
+        self.noise_refiner = torch.nn.ModuleList([_ZImageBlock()])
+        self.layers = torch.nn.ModuleList([_ZImageBlock() for _ in range(2)])
+
+    def forward(
+        self,
+        text_len,
+        image_len = 64,
+    ):
+        def args(n):
+            return torch.randn(1, n, 8), torch.ones(1, n, dtype = torch.bool), torch.randn(1, n, 8)
+
+        cap, img = args(text_len), args(image_len)
+        for block in self.context_refiner:
+            cap = (block(*cap), *cap[1:])
+        for block in self.noise_refiner:
+            img = (block(*img), *img[1:])
+        x = tuple(torch.cat([a, b], 1) for a, b in zip(img, cap))
+        for block in self.layers:
+            x = (block(*x), *x[1:])
+        return x[0]
+
+
+class _MossBlock(_Lin):
+    def forward(self, x, rope, modulation):
+        return self.proj(x) * rope[0] + rope[1] + modulation
+
+
+class _MossHooked(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = torch.nn.ModuleList([_MossBlock() for _ in range(2)])
+
+    def forward(
+        self,
+        text_len,
+        image_len = 64,
+    ):
+        n = text_len + image_len
+        x, rope, mod = (
+            torch.randn(1, n, 8),
+            (torch.randn(n, 8), torch.randn(n, 8)),
+            torch.randn(1, 1, 8),
+        )
+        for layer in self.layers:
+            x = layer(x, rope, mod)
+        return x
+
+
+class _H3Block(_Lin):
+    def forward(self, hidden_states, temb, adaln_indices, rotary_emb):
+        mod = temb.index_select(0, adaln_indices)
+        return (self.proj(hidden_states) * rotary_emb[0] + rotary_emb[1]) * (1 + mod)
+
+
+class _H3Hooked(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.transformer_blocks = torch.nn.ModuleList([_H3Block() for _ in range(2)])
+
+    def forward(
+        self,
+        text_len,
+        image_len = 64,
+    ):
+        n = text_len + image_len
+        x, rope = torch.randn(1, n, 8), (torch.randn(n, 8), torch.randn(n, 8))
+        for n_timesteps in (1, 2):
+            temb, idx = torch.randn(n_timesteps, 8), torch.arange(n) % n_timesteps
+            for block in self.transformer_blocks:
+                x = block(x, temb, idx, rope)
+        return x
+
+
+class _FluxHookedBlock(_Lin):
+    def forward(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb):
+        joint = (
+            torch.cat([encoder_hidden_states, hidden_states], 1) * image_rotary_emb[0]
+            + image_rotary_emb[1]
+        )
+        text = encoder_hidden_states.shape[1]
+        return joint[:, :text], self.proj(joint[:, text:]) + temb[:, None]
+
+
+class _FluxHooked(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.transformer_blocks = torch.nn.ModuleList([_FluxHookedBlock() for _ in range(2)])
+
+    def forward(
+        self,
+        text_len,
+        image_len = 64,
+    ):
+        txt, img, temb = (
+            torch.randn(1, text_len, 8),
+            torch.randn(1, image_len, 8),
+            torch.randn(1, 8),
+        )
+        n = text_len + image_len
+        rope = (torch.randn(n, 8), torch.randn(n, 8))
+        for block in self.transformer_blocks:
+            txt, img = block(
+                hidden_states = img, encoder_hidden_states = txt, temb = temb, image_rotary_emb = rope
+            )
+        return img
+
+
+_HOOKED_FAMILIES = {
+    "FluxTransformer2DModel": _FluxHooked,
+    "Flux3Transformer2DModel": _Flux3Hooked,
+    "ZImageTransformer2DModel": _ZImageHooked,
+    "MOSSImageTransformer": _MossHooked,
+    "MiniMaxH3Transformer3DModel": _H3Hooked,
+}
+
+
+def _hooked_graphs_per_render(name):
+    hooks = pytest.importorskip("diffusers.hooks")
+    from torch._dynamo.utils import counters
+
+    from core.inference.diffusion_memory import install_group_offload_hooks_eager
+
+    torch._dynamo.reset()
+    counters.clear()
+    m = type(name, (_HOOKED_FAMILIES[name],), {})()
+    for block in m.modules():
+        if isinstance(block, _Lin):
+            block.compile(backend = "eager", dynamic = None)
+    assert dt.install(m) is True
+    install_group_offload_hooks_eager()
+    cpu = torch.device("cpu")
+    hooks.apply_group_offloading(
+        m, onload_device = cpu, offload_device = cpu, offload_type = "block_level", num_blocks_per_group = 1
+    )
+    seen = []
+    try:
+        with torch.no_grad():
+            for text_len in (16, 16, 24, 20, 40):
+                before = counters["stats"]["unique_graphs"]
+                m(text_len)
+                seen.append(counters["stats"]["unique_graphs"] - before)
+    finally:
+        dt.uninstall(m)
+        torch._dynamo.reset()
+    return seen
+
+
+@pytest.mark.parametrize("name", sorted(_HOOKED_FAMILIES))
+def test_new_prompt_length_under_group_offload_hooks_reuses_the_first_graphs(name):
+    """Group offload hooks wrap block inputs as ``L['args'][i]`` / ``L['kwargs'][...]`` / ``L['___stack0'][...]``."""
+    seen = _hooked_graphs_per_render(name)
+    assert seen[0] > 0 and seen[1:] == [0, 0, 0, 0], seen
+    if name == "ZImageTransformer2DModel" or (
+        name == "MiniMaxH3Transformer3DModel" and dt.unbacked_supported()
+    ):
+        assert seen[0] == 1, seen

@@ -16,6 +16,11 @@ DEFAULT_CHUNK_OVERLAP = 200
 MAX_CHUNK_SIZE = 20000
 _MIN_BREAK_RATIO = 0.6
 _CACHE_DIR = LazyPath(unstructured_seed_cache_root)
+_WHITESPACE = re.compile(r"\s+")
+# Same matches as \n{3,}, but the literal prefix lets re skip to each newline instead of trying every offset.
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
+# Bump when chunk output changes so cached Parquet seeds are rebuilt.
+_CHUNKER_VERSION = 2
 
 _PANDAS = None
 
@@ -69,14 +74,56 @@ def build_multi_file_preview_rows(
     chunk_size: int | None,
     chunk_overlap: int | None,
 ) -> list[dict[str, str]]:
+    return build_multi_file_preview(
+        file_entries = file_entries,
+        preview_size = preview_size,
+        chunk_size = chunk_size,
+        chunk_overlap = chunk_overlap,
+    )[0]
+
+
+def build_multi_file_preview(
+    *,
+    file_entries: list[tuple[Path, str]],
+    preview_size: int,
+    chunk_size: int | None,
+    chunk_overlap: int | None,
+) -> tuple[list[dict[str, str]], int]:
+    """Preview rows plus the total chunk count, from one materialization."""
     cs = _to_int(chunk_size, DEFAULT_CHUNK_SIZE)
     co = _to_int(chunk_overlap, DEFAULT_CHUNK_OVERLAP)
-    _, rows = materialize_multi_file_unstructured_seed(
+    _, rows, cached = _materialize_multi_file(
         file_entries = file_entries,
         chunk_size = cs,
         chunk_overlap = co,
     )
-    return _round_robin_preview(rows, preview_size)
+    if rows is None:
+        return _cached_preview(cached, preview_size)
+    return _round_robin_preview(rows, preview_size), len(rows)
+
+
+def _cached_preview(df: Any, preview_size: int) -> tuple[list[dict[str, str]], int]:
+    """Converts at most ``preview_size`` rows per source: all the round-robin can reach, so its picks are unchanged."""
+    total = len(df)
+    if type(preview_size) is int and preview_size <= 0:
+        return [], total
+    sources = (
+        df["source_file"].tolist()
+        if type(preview_size) is int and df.columns.is_unique and "source_file" in df.columns
+        else None
+    )
+    if sources is None or not all(type(s) is str for s in sources):
+        rows = df.to_dict(orient = "records")
+        return _round_robin_preview(rows, preview_size), len(rows)
+    taken: dict[str, int] = {}
+    keep: list[int] = []
+    for i, source in enumerate(sources):
+        n = taken.get(source, 0)
+        if n < preview_size:
+            taken[source] = n + 1
+            keep.append(i)
+    subset = df if len(keep) == total else df.iloc[keep]
+    return _round_robin_preview(subset.to_dict(orient = "records"), preview_size), total
 
 
 def _round_robin_preview(rows: list[dict[str, str]], preview_size: int) -> list[dict[str, str]]:
@@ -147,16 +194,32 @@ def materialize_unstructured_seed_dataset(
 
 
 def materialize_multi_file_unstructured_seed(
-    *, file_entries: list[tuple[Path, str]], chunk_size: int, chunk_overlap: int
+    *,
+    file_entries: list[tuple[Path, str]],
+    chunk_size: int,
+    chunk_overlap: int,
+    include_rows: bool = True,
 ) -> tuple[Path, list[dict[str, str]]]:
-    """Chunk multiple files into one parquet dataset with a source_file column."""
+    """Chunk files into one parquet with a source_file column; ``include_rows = False`` skips cache-hit row dicts."""
+    path, rows, cached = _materialize_multi_file(
+        file_entries = file_entries,
+        chunk_size = chunk_size,
+        chunk_overlap = chunk_overlap,
+    )
+    if rows is None:
+        rows = cached.to_dict(orient = "records") if include_rows else []
+    return path, rows
+
+
+def _materialize_multi_file(
+    *, file_entries: list[tuple[Path, str]], chunk_size: int, chunk_overlap: int
+) -> tuple[Path, list[dict[str, str]] | None, Any]:
+    """(path, rows, None) after chunking, or (path, None, the cached DataFrame) on a cache hit."""
     chunk_size, chunk_overlap = resolve_chunking(chunk_size, chunk_overlap)
     cache_key = _compute_multi_file_cache_key(file_entries, chunk_size, chunk_overlap)
     cached = _CACHE_DIR / f"{cache_key}.parquet"
     if cached.exists():
-        df = _pandas().read_parquet(cached)
-        rows = df.to_dict(orient = "records")
-        return cached, rows
+        return cached, None, _pandas().read_parquet(cached)
 
     all_rows: list[dict[str, str]] = []
     for txt_path, orig_name in file_entries:
@@ -177,7 +240,7 @@ def materialize_multi_file_unstructured_seed(
     tmp = _CACHE_DIR / f"{cache_key}.tmp.parquet"
     df.to_parquet(tmp, index = False)
     tmp.replace(cached)
-    return cached, all_rows
+    return cached, all_rows, None
 
 
 def load_unstructured_text_file(path: Path) -> str:
@@ -191,7 +254,7 @@ def load_unstructured_text_file(path: Path) -> str:
 
 def normalize_unstructured_text(text: str) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    return re.sub(r"\n{3,}", "\n\n", normalized).strip()
+    return _BLANK_LINE_RUN.sub("\n\n", normalized).strip()
 
 
 def split_text_into_chunks(*, text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
@@ -222,6 +285,11 @@ def split_text_into_chunks(*, text: str, chunk_size: int, chunk_overlap: int) ->
             break
 
         next_start = end - chunk_overlap
+        if 0 < next_start < end and not text[next_start - 1].isspace():
+            boundary = _WHITESPACE.search(text, next_start, end)
+            # No space in the overlap (CJK, one long token): keep the full overlap.
+            if boundary:
+                next_start = boundary.end()
         if next_start <= start:
             next_start = end
         start = max(0, next_start)
@@ -257,6 +325,7 @@ def _compute_cache_key(*, source_path: Path, chunk_size: int, chunk_overlap: int
             str(stat.st_mtime_ns),
             str(chunk_size),
             str(chunk_overlap),
+            f"v{_CHUNKER_VERSION}",
         ]
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
@@ -269,6 +338,6 @@ def _compute_multi_file_cache_key(
     for path, name in sorted(file_entries, key = lambda e: e[1]):
         st = path.stat()
         parts.append(f"{path}|{st.st_size}|{st.st_mtime_ns}|{name}")
-    parts.append(f"cs={chunk_size}|co={chunk_overlap}")
+    parts.append(f"cs={chunk_size}|co={chunk_overlap}|v={_CHUNKER_VERSION}")
     raw = "\n".join(parts)
     return hashlib.sha256(raw.encode()).hexdigest()

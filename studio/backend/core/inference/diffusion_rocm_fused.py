@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused RoPE and AdaLN modulation Triton kernels for the FLUX DiT on ROCm (bf16 / fp16).
-
-RoPE reuses ``diffusion_flux2_rope``'s kernel (bit-identical to stock). AdaLN keeps stock's rounding chain; only the
-row-reduction order differs. Inference only, never while compiling; any ineligible call runs the forward live at
-install. ``UNSLOTH_DIFFUSION_FUSED_ROPE=auto|0|1`` (auto = ROCm and NVIDIA CUDA on Linux; ComfyUI runs FLUX RoPE
-through comfy-kitchen's fused kernel by default), ``UNSLOTH_DIFFUSION_FUSED_ADALN=auto|0|1`` (auto = off: no gfx1151
-speedup and not bit-identical).
-"""
+"""Triton RoPE (auto on ROCm and NVIDIA CUDA Linux) and AdaLN kernels for FLUX; inference only,
+never while compiling; AdaLN off by default (not bit-identical); UNSLOTH_DIFFUSION_FUSED_ROPE,
+UNSLOTH_DIFFUSION_FUSED_ADALN"""
 
 from __future__ import annotations
 
@@ -18,6 +13,7 @@ import os
 import sys
 import threading
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_FUSED_ROPE"
 FUSED_ADALN_ENV = "UNSLOTH_DIFFUSION_FUSED_ADALN"
@@ -68,7 +64,7 @@ def _is_rocm() -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    return bool(getattr(torch.version, "hip", None))
+    return is_rocm_torch(torch)
 
 
 def _is_nvidia_linux() -> bool:
@@ -79,9 +75,7 @@ def _is_nvidia_linux() -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    return getattr(torch.version, "hip", None) is None and bool(
-        getattr(torch.version, "cuda", None)
-    )
+    return not is_rocm_torch(torch) and bool(getattr(torch.version, "cuda", None))
 
 
 # gfx1151 klein 1024^2: RoPE 8.76 -> 8.09 s pixel-identical; AdaLN adds no speed and moves pixels (LPIPS 0.004).

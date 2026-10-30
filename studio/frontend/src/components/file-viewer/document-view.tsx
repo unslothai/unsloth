@@ -23,7 +23,6 @@ export function DocumentView({
   name: string;
   contentType?: string;
   scale?: number;
-  /** Card thumbnail: first PDF page or slide only, Office parses queued. */
   thumbnail?: boolean;
   /** PDF page to scroll to; a new object asks again. */
   pageTarget?: PageTarget;

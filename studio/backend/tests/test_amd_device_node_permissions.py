@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An AMD device node this account cannot open must be named, not read as "no GPU".
-
-Every AMD probe in this tree tests that ``/dev/kfd`` and ``/dev/dri/renderD*`` EXIST.
-On a stock Linux distribution they are ``root:render`` mode 0660, so an account
-outside that group passes all of them and then cannot open the device. HIP counts
-zero devices and the Vulkan loader enumerates none, which is byte-for-byte what
-owning no GPU looks like -- so Studio ran on CPU and told the user to install a
-driver stack that was already loaded (#10466: a fresh Strix Halo install, fixed by
-adding the account to the render and video groups).
-
-Both messages under test used to describe a different host: the capability line
-blamed a PyTorch mismatch and offered Repair installation, and the empty-probe
-explanation blamed the Vulkan probe. Neither repair changes group membership.
-
-No AMD hardware here, and the node paths are patched rather than created: a test
-that had to mknod would need root, which is the one account this bug cannot reach.
-"""
+"""An unopenable AMD device node must be named, not read as no GPU; the fix is group membership."""
 
 from __future__ import annotations
 
@@ -36,25 +20,17 @@ import types
 from pathlib import Path
 
 
-# grp and pwd are POSIX-only and absent on Windows, and importing them at module level took
-# the ENTIRE file down at collection there: ModuleNotFoundError before a single test ran,
-# so the file reported one collection error instead of its own verdict. The production
-# module imports both INSIDE the functions that need them for the same reason.
+# grp/pwd are POSIX-only; a module-level import breaks collection on Windows.
 try:
     import grp
     import pwd
-except ModuleNotFoundError:  # Windows
+except ModuleNotFoundError:
     grp = None
     pwd = None
 
 
 def _running_as_root() -> bool:
-    """Whether this account is root, answered on a platform that has no such idea.
-
-    os.geteuid does not exist on Windows, and these two calls sit in skipif DECORATORS,
-    which are evaluated at import: an AttributeError there is another whole-file collection
-    error rather than a skip.
-    """
+    """Root check that is safe on Windows: skipif decorators run at import, where os.geteuid is absent."""
     return getattr(os, "geteuid", lambda: -1)() == 0
 
 
@@ -63,11 +39,7 @@ import pytest
 from core.inference.llama_cpp import LlamaCppBackend
 from utils.hardware import amd
 
-# Windows has no /dev, no POSIX groups and no device-node modes, so every subject in this
-# file is absent there rather than merely untestable: amd_nodes_closed_to_this_user answers
-# [] and amd_node_permission_hint answers None on any non-Linux host, which the AMD CI run
-# on a real Windows box confirmed against this very change. macOS is NOT skipped: it has
-# both modules, and the cases that fake a Linux host still exercise the real logic there.
+# No /dev or POSIX groups on Windows; macOS still runs the faked-Linux cases.
 pytestmark = pytest.mark.skipif(
     platform.system() == "Windows",
     reason = (
@@ -88,37 +60,17 @@ _GPU_MASK_VARS = (
 
 @pytest.fixture(autouse = True)
 def _no_inherited_gpu_mask(monkeypatch):
-    """No per-GPU selector unless a test sets one.
-
-    An open render node stops being evidence of a usable path under a mask, so any of these
-    inherited from the runner would decide a case the test never mentioned. This box
-    exports CUDA_VISIBLE_DEVICES, and it silently answered for a control that was supposed
-    to be testing an empty HIP mask. GPU_DEVICE_ORDINAL is here for the same reason and not
-    because any test sets it: a ROCm or OpenCL environment exports it, the production rule
-    reads it, and a test naming no mask would then be answered by the runner's own.
-    """
+    """Clear every GPU mask variable per test, including GPU_DEVICE_ORDINAL, which ROCm or OpenCL export."""
     for _var in _GPU_MASK_VARS:
         monkeypatch.delenv(_var, raising = False)
 
 
 @pytest.fixture(autouse = True)
 def _the_account_this_process_runs_as(monkeypatch):
-    """The repair commands name the account os.access answered for, so fix what that is.
-
-    A stubbed passwd answer rather than the runner's own, which differs per machine. The
-    environment fallback, for a uid with no passwd entry, has its own test.
-    """
-    # A real struct_passwd, not a SimpleNamespace: getpass.getuser() falls through to
-    # pwd.getpwuid(os.getuid())[0] when none of LOGNAME/USER/LNAME/USERNAME is set, and
-    # pytest calls it while building tmp_path. A non-subscriptable stub raises TypeError
-    # there, which is not among the exceptions pytest catches, so on a runner with no
-    # username in the environment every tmp_path test would die in fixture setup rather
-    # than run.
+    """Stubs passwd so the account is not the runner's own, which differs per machine."""
+    # Real struct_passwd: getpass.getuser() subscripts it if no LOGNAME/USER/LNAME/USERNAME is set.
     _record = pwd.struct_passwd(("ada", "x", os.getuid(), os.getgid(), "", "/home/ada", "/bin/sh"))
     monkeypatch.setattr(pwd, "getpwuid", lambda _uid: _record)
-    # ...and the environment fallback agrees with it, so a case that is not about which
-    # account is named does not have to say. The two tests that ARE about it -- a uid with
-    # no passwd entry, and a container whose USER disagrees -- set their own.
 
 
 @pytest.fixture
@@ -126,17 +78,10 @@ def linux(monkeypatch):
     monkeypatch.setattr(amd.platform, "system", lambda: "Linux")
 
 
-# The llama-server that is never there: every empty-probe case below asks about an install
-# whose binary does not exist, because the reason under test is decided before it is run.
 _NO_SUCH_SERVER = "/nonexistent/llama-server"
 
-# The two device nodes a ROCm host has: the KFD, which only HIP opens, and one render
-# node, which HIP and the Vulkan loader both open. Named because most cases below are
-# about one of the two being shut while the other is not.
 _AMD_NODES = ["/dev/kfd", "/dev/dri/renderD128"]
 
-# The order _groups_that_own returns its buckets in. Named here so a case can say which
-# bucket it is about instead of counting commas in an eight-element tuple.
 _BUCKETS = (
     "joinable",
     "unnamed",
@@ -155,9 +100,7 @@ def _buckets(**named) -> tuple:
     return tuple(list(named.get(_name, [])) for _name in _BUCKETS)
 
 
-# The real derivation, captured before any case stubs it. _nodes() stubs _groups_that_own
-# for every case that is not about it, so a case that IS about it has to put the real one
-# back rather than describe the host twice.
+# Captured before _nodes() stubs it, so derivation tests can put the real one back.
 _REAL_GROUPS_THAT_OWN = amd._groups_that_own
 
 
@@ -167,12 +110,7 @@ def _the_real_group_derivation(monkeypatch):
 
 
 def _owning(monkeypatch, **named):
-    """Stub the group derivation with the buckets this case is about.
-
-    Every arm that is not testing the derivation itself stubs it, because these node paths
-    are patched rather than created and stat cannot name their groups. Saying so explicitly
-    keeps the answer off whatever the runner happens to have at the same path.
-    """
+    """Stubbed outside the derivation's own test, since patched node paths have no real groups to stat."""
     _answer = _buckets(**named)
     monkeypatch.setattr(amd, "_groups_that_own", lambda paths: _answer)
 
@@ -212,27 +150,8 @@ def _nodes(
     topology: "bool | None | str" = "as-owned",
     gpu_count: "int | None | str" = "as-present",
 ):
-    """A host whose ``present`` nodes exist and whose ``openable`` subset can be opened.
-
-    ``amd_owned`` is the vendor of the hardware behind those nodes, stubbed here and
-    exercised for real in the two tests below it. ``vendor_readable`` is whether sysfs will
-    say so: a container can map the node and hide the entry that names its vendor, and the
-    two are different answers.
-
-    ``gpu_count`` is how many AMD GPU agents KFD enumerates, and it defaults to the AMD
-    render nodes this host was given, since that is what the described host would report.
-    It is stubbed here rather than left live for the reason this whole helper exists: it
-    reads /sys/class/kfd, so a case that merely sets a visibility mask was asking the
-    RUNNER how many GPUs it has. On a machine with no AMD card that read is None, which
-    means "no bound", so every selector looks like a narrowing; on a real gfx1151 it is 1,
-    so a selector naming device 0 looks like the whole host. Those are opposite verdicts,
-    and that is precisely how this file passed here and failed on the hardware it is
-    written for. Pass None explicitly for the unreadable-topology case.
-    """
-    # Only the device-node enumeration. The module's other caller of the same helper walks
-    # the Vulkan icd.d directories, and answering that one with a list of render nodes made
-    # every loader question read as "no drivers at all" -- which is a verdict, not an
-    # absence, so it would have passed silently.
+    """gpu_count is stubbed: a live KFD read reports the runner's GPUs, flipping selector verdicts."""
+    # Only /dev/dri: the Vulkan icd.d walk shares glob and must see the real directories.
     _real_glob = amd.glob.glob
     monkeypatch.setattr(
         amd.glob,
@@ -246,37 +165,23 @@ def _nodes(
     monkeypatch.setattr(amd.os.path, "exists", lambda p: p in present)
     monkeypatch.setattr(amd.os, "access", lambda p, mode: p in openable)
     monkeypatch.setattr(amd, "_render_node_is_amd", lambda p: vendor_readable and amd_owned)
-    # The vendor, not the verdict: _amd_render_node_exists reads it directly, so that an
-    # unreadable entry can be told apart from one that named another vendor.
     monkeypatch.setattr(
         amd,
         "_render_node_vendor",
         lambda p: None if not vendor_readable else ("0x1002" if amd_owned else "0x10de"),
     )
-    # None is a topology that could not be READ, which the closed-node walk answers
-    # differently from one that read and named another vendor. Defaults to the hardware so
-    # every arm written before the distinction existed is unaffected.
     _topology = amd_owned if topology == "as-owned" else topology
     monkeypatch.setattr(amd, "_kfd_topology_has_an_amd_gpu", lambda: _topology is True)
     monkeypatch.setattr(amd, "_kfd_topology_amd_state", lambda: _topology)
     if gpu_count == "as-present":
         _renders = [p for p in present if p.startswith("/dev/dri/renderD")]
-        # Zero is not a bound, and the production reader says so too: a topology naming no
-        # GPU bounds nothing, so it answers None rather than 0.
         gpu_count = len(_renders) if (_renders and amd_owned) else None
     monkeypatch.setattr(amd, "amd_kfd_gpu_node_count", lambda: gpu_count)
-    # These paths are patched rather than created, so stat cannot name their groups; say
-    # so explicitly instead of leaving it to whether the runner happens to have a node at
-    # the same path. The derivation itself is exercised in its own tests below.
     _owning(monkeypatch)
 
 
-# The parameter tables below are hand-wrapped, one case to a row. Left to the formatter
-# each row becomes one argument per line, which is most of the length the review objected
-# to, so this span is fenced off. Nothing but the wrapping depends on the fence.
+# Hand-wrapped tables, one case per row.
 # fmt: off
-# The node layouts the families below are written over, named once so a case can say which
-# host it is about. SHUT is present and refused, OPEN is present and openable.
 _KFD_SHUT = dict(present = ["/dev/kfd"], openable = set())
 _RENDER_SHUT = dict(present = ["/dev/dri/renderD128"], openable = set())
 _BOTH_SHUT = dict(present = _AMD_NODES, openable = set())
@@ -291,16 +196,10 @@ _NVIDIA_KFD_OPEN = dict(present = ["/dev/kfd"], openable = {"/dev/kfd"}, amd_own
 
 @pytest.mark.parametrize("case", [
     pytest.param(("Linux", _BOTH_SHUT, _AMD_NODES), id = "a_node_this_user_cannot_open"),
-    # The control. Without it every assertion here also passes on a host with no AMD
-    # hardware, where the list is empty for a reason that is not this bug.
     pytest.param(("Linux", _BOTH_OPEN, []), id = "a_host_whose_nodes_open"),
     pytest.param(("Linux", _NO_NODES, []), id = "a_host_with_no_amd_nodes"),
-    # The false positive this nearly shipped with: render nodes are root:render for EVERY
-    # vendor, so this box (8 NVIDIA cards, an account outside the render group) listed
-    # all eight and sent a CUDA user after the AMD groups. CUDA opens /dev/nvidia*.
+    # Render nodes are root:render for every vendor; NVIDIA hosts must not be flagged.
     pytest.param(("Linux", _NVIDIA_RENDER_SHUT, []), id = "an_nvidia_hosts_closed_render_node"),
-    # macOS and Windows have no render nodes, and os.access on Windows answers for a
-    # permission model this message does not describe.
     pytest.param(("Windows", _KFD_SHUT, []), id = "the_probe_is_linux_only"),
 ])
 def test_which_nodes_are_reported_closed(monkeypatch, case):
@@ -326,7 +225,7 @@ def test_the_vendor_is_read_from_sysfs(monkeypatch):
     monkeypatch.setattr(builtins, "open", _fake)
     assert amd._render_node_is_amd("/dev/dri/renderD128") is True
     assert amd._render_node_is_amd("/dev/dri/renderD129") is False
-    assert amd._render_node_is_amd("/dev/dri/renderD130") is False  # unreadable
+    assert amd._render_node_is_amd("/dev/dri/renderD130") is False
 
 
 def test_a_node_that_cannot_be_stat_ed_is_skipped(monkeypatch, linux):
@@ -364,105 +263,62 @@ def _asserts(text: str, says, does_not_say):
 @pytest.mark.parametrize("case", [
     pytest.param((_KFD_SHUT, {}, True, ("/dev/kfd", _USERMOD), ()),
                  id = "the_hint_names_the_nodes_the_groups_and_the_account"),
-    # Vulkan never opens /dev/kfd, so a closed one does not stop every backend. Claiming
-    # it did sent a Vulkan user with an unrelated failure after ROCm groups.
     pytest.param((_KFD_SHUT, {}, True, ("ROCm cannot use",), ("no GPU backend",)),
                  id = "the_hint_is_rocm_specific_when_only_kfd_is_closed"),
-    # Its pair: HIP and the Vulkan loader both open the render node.
     pytest.param((_RENDER_SHUT, {}, True, ("no GPU backend can use",), ()),
                  id = "the_hint_covers_every_backend_when_a_render_node_is_closed"),
-    # No membership creates /dev/kfd, so a ROCm caller needs both sentences. The
-    # kernel-stack wording this used to assert was wrong, and asserting it is what kept
-    # it: that sentence needs the KFD topology, which is amdkfd's own sysfs, so the stack
-    # is loaded wherever it is readable. install.sh's branch is gated on it being ABSENT.
+    # No membership creates /dev/kfd, so a ROCm caller needs both sentences.
     pytest.param((_RENDER_SHUT, {}, True, (_USERMOD, "/dev/kfd"), ("kernel stack",)),
                  id = "the_hint_says_so_when_kfd_does_not_exist_at_all"),
-    # The control: /dev/kfd exists, so the stack is loaded and the groups are the whole
-    # repair. Telling this user to install one would be the #10466 mistake.
     pytest.param((_BOTH_SHUT, {}, True, (), ("kernel stack",)),
                  id = "a_closed_but_present_kfd_node_says_nothing_about_the_kernel_stack"),
-    # And Vulkan never opens /dev/kfd, so its absence is not that caller's problem.
     pytest.param((_RENDER_SHUT, {}, False, (), ("kernel stack",)),
                  id = "a_vulkan_caller_is_not_told_about_a_kernel_stack_it_does_not_need"),
-    # render,video is the usual pair, not a universal truth: a container gets numeric gids
-    # with no matching NAMES, a minimal distribution can ship no render group, and a
-    # root:root node is not fixed by joining. Fails before the fix, which hard-coded it.
+    # Groups are derived, not hard-coded render,video (containers, minimal distros).
     pytest.param((_BOTH_SHUT, dict(joinable = ["kfd", "gpu"]), True, ("usermod -a -G kfd,gpu ada",),
                   ("render,video",)),
                  id = "the_repair_names_the_groups_the_closed_nodes_belong_to"),
-    # One group named, so the sentence has to agree with the command rather than saying
-    # "groups" over a single name.
     pytest.param((_RENDER_SHUT, dict(joinable = ["render"]), True,
                   ("usermod -a -G render ada", "render group and then log out"), ()),
                  id = "a_single_owning_group_is_not_pluralised"),
-    # The control: the derivation is best effort, so a host whose nodes cannot be stat'd
-    # still gets advice rather than an empty -G argument, and that is the documented pair.
     pytest.param((_KFD_SHUT, {}, True, (_USERMOD,), ()),
                  id = "unreadable_nodes_fall_back_to_the_documented_pair"),
-    # usermod -a -G takes names only: shadow 4.13 answers ``group '993' does not exist``
-    # and exits 6, run live here rather than read out of the man page. Fails before the
-    # fix, which put the bare number in -G. The assertion is on the NUMBER, not on the
-    # command, because the repair does name usermod after a groupadd that names the GID.
+    # usermod -G takes names only; numeric GIDs go to --group-add.
     pytest.param((_KFD_SHUT, dict(unnamed = [993]), True, ("--group-add 993",),
                   ("usermod -a -G 993",)),
                  id = "an_unnamed_gid_is_not_handed_to_usermod"),
-    # The control that keeps that suppression narrow: a host with one node in a real
-    # group and another in an unnamed one can still fix half of it by joining.
     pytest.param((_BOTH_SHUT, dict(joinable = ["render"], unnamed = [993]), True,
                   ("usermod -a -G render ada", "GID 993"), ()),
                  id = "a_joinable_group_beside_an_unnamed_gid_is_still_prescribed"),
-    # A udev rule leaving the node root:render 0600 denies its own group, so joining
-    # render runs, succeeds, and opens nothing: the repair there is the rule. Fails before
-    # the fix, which named the owning group whatever the mode said.
+    # A 0600 udev rule denies its own group, so joining fixes nothing.
     pytest.param((_KFD_SHUT, dict(no_group = ["/dev/kfd"]), True, ("udev rule",),
                   ("usermod -a -G",)),
                  id = "a_node_no_membership_opens_is_not_answered_with_usermod"),
-    # The control for BOTH suppressions: every list empty means the nodes could not be
-    # stat'd at all, a detection miss rather than evidence that joining cannot work.
     pytest.param((_KFD_SHUT, {}, True, (_USERMOD,), ()),
                  id = "a_host_whose_nodes_could_not_be_read_still_gets_the_documented_pair"),
-    # /dev/kfd without /dev/dri passes every probe here and still cannot initialise ROCm,
-    # because ROCr opens a render node to reach amdgpu, which is why docker/run.sh passes
-    # both. No group creates the missing one. Fails before the fix, which named only kfd.
+    # ROCr also needs a render node to reach amdgpu.
     pytest.param((_KFD_SHUT, {}, True,
                   ("No AMD render node", "--device /dev/kfd --device /dev/dri"), ()),
                  id = "a_container_given_kfd_but_no_render_node_is_told_so"),
-    # Its control: an ordinary AMD host has a render node and only cannot open it, so
-    # claiming the device mapping is wrong invents a second repair.
     pytest.param((_BOTH_SHUT, {}, True, (), ("No AMD render node",)),
                  id = "a_host_that_has_a_render_node_is_not_told_to_map_one"),
-    # The sentence for the external-denial bucket, since the bucket cases below only
-    # decide it: naming a mode to fix on a node whose mode already grants rw cannot work.
     pytest.param((_KFD_SHUT, dict(external = ["/dev/kfd"]), True,
                   ("granted read and write by the permission bits that apply to this account",
                    "container device cgroup or an LSM"),
-                  # Not "owner": this bucket also holds a node the account neither owns nor
-                  # shares a group with, whose OTHER bits grant rw, and claiming ownership
-                  # there is a statement the reader can check and find false.
                   ("chmod", "is owned by this account")),
                  id = "the_external_denial_sentence_does_not_prescribe_a_mode_change"),
-    # docker's --group-add takes ONE value, so two unnamed groups need the flag twice.
-    # Fails before the fix, which interpolated unnamed[0] alone.
+    # docker --group-add takes one value, so the flag repeats.
     pytest.param((_BOTH_SHUT, dict(unnamed = [993, 994]), True,
                   ("--group-add 993 --group-add 994", "GIDs 993, 994"), ()),
                  id = "every_unnamed_gid_reaches_the_docker_repair"),
-    # The control on the wording: the one-GID host is the common one.
     pytest.param((_KFD_SHUT, dict(unnamed = [993]), True,
                   ("GID 993, which has", "--group-add 993."), ()),
                  id = "a_lone_unnamed_gid_is_still_named_in_the_singular"),
-    # root:root 0660 opens for anyone in the root group, so the derivation would print
-    # `sudo usermod -a -G root`. That grants far more than the GPU: a udev
-    # misconfiguration to report rather than a repair.
+    # Never prescribe joining root.
     pytest.param((_KFD_SHUT, dict(privileged = ["root"]), True, ("root", "udev"), ("usermod",)),
                  id = "the_hint_for_a_privileged_owner_says_it_is_not_the_repair"),
-    # The same mapping with that node OPEN: the closed list is empty, and this returned
-    # None while ROCr still had no render node. A missing node is not a permission
-    # problem, so the hint cannot be gated on one.
     pytest.param((_KFD_OPEN, {}, True, ("AMD render node", "--device /dev/dri"), ("usermod",)),
                  id = "a_container_with_an_open_kfd_and_no_render_node_is_still_told"),
-    # The mirror image, --device /dev/dri alone: `closed` is empty and `_render_missing`
-    # false, so the hint returned None before its own missing-KFD sentence and left the
-    # caller on reinstall advice.
     pytest.param((_RENDER_OPEN, {}, True, ("/dev/kfd",), ("usermod",)),
                  id = "a_container_given_only_the_render_node_is_told_about_kfd"),
 ])
@@ -479,29 +335,15 @@ def test_what_the_hint_says_about_a_host(monkeypatch, linux, case):
 
 
 @pytest.mark.parametrize("case", [
-    # The control for the closed list above: a host whose nodes open is told nothing, so
-    # the assertions here cannot be passing for the absence of hardware.
     pytest.param((_BOTH_OPEN, True, False), id = "a_host_whose_nodes_open_is_told_nothing"),
-    # And an NVIDIA host's closed render node is not this bug, whatever its mode says.
     pytest.param((_NVIDIA_RENDER_SHUT, True, False), id = "an_nvidia_host_is_told_nothing"),
-    # ``needs_kfd = False`` is a Vulkan binary saying a closed KFD node is not its
-    # problem. The render node is open, so the only thing wrong is the node that caller
-    # disclaimed; without an open one the answer would be a real Vulkan blocker.
     pytest.param((_ONLY_KFD_SHUT, False, False),
                  id = "a_vulkan_only_caller_is_not_answered_with_a_closed_kfd_node"),
-    # The same host asked by a caller that DOES need the KFD node still gets an answer,
-    # or the narrowing above has simply silenced the hint.
     pytest.param((_ONLY_KFD_SHUT, True, True), id = "a_rocm_caller_on_that_host_is_answered"),
-    # The other half of that control, so the narrowing cannot silence the real case.
     pytest.param((_RENDER_SHUT, False, True),
                  id = "a_vulkan_caller_is_still_answered_about_a_closed_render_node"),
-    # The trap a bare "the glob is empty" test falls into: every vendor's render nodes
-    # live under /dev/dri/renderD*, so the AMD signal must survive having none. The KFD
-    # topology names the vendor and is world-readable.
     pytest.param((_NVIDIA_KFD_OPEN, True, False),
                  id = "a_host_with_no_amd_card_is_not_told_to_map_a_render_node"),
-    # And the reason needs_kfd exists: a Vulkan failure with some other cause must not be
-    # sent after the ROCm kernel stack.
     pytest.param((_RENDER_OPEN, False, False),
                  id = "the_same_mapping_says_nothing_to_a_vulkan_caller"),
 ])
@@ -522,21 +364,13 @@ def _no_passwd_entry(monkeypatch):
 
 
 @pytest.mark.parametrize("case", [
-    # `docker run --user 1234` leaves the uid with no passwd entry while USER commonly
-    # still says root. usermod against that name succeeds, changes an identity nothing is
-    # running as, and leaves the nodes shut: the repair is the container's group wiring.
-    # Fails before the fix, which fell back to USER and then to a literal $USER.
+    # docker run --user <uid> has no passwd entry; usermod on USER fixes nothing.
     pytest.param((dict(joinable = ["render"]), None, ("--group-add render",),
                   ("usermod -a -G", "root")),
                  id = "a_uid_with_no_passwd_entry_is_not_given_a_usermod"),
-    # The control: a uid with a passwd entry is an account usermod can name, and that is
-    # the repair on every ordinary host. Without it the fix could be "never prescribe
-    # usermod", which removes what #10466 asked for.
     pytest.param((dict(joinable = ["render"]), "ada", ("sudo usermod -a -G render ada",),
                   ("--group-add",)),
                  id = "an_account_the_system_knows_still_gets_the_command"),
-    # The unnamed-GID repair is a groupadd AND a usermod, and the second half needs the
-    # same account, so printing the pair here would be two commands that cannot both work.
     pytest.param((dict(unnamed = [993]), None, ("--group-add 993",),
                   ("usermod -a -G", "groupadd -g")),
                  id = "an_unnamed_gid_under_that_uid_drops_the_groupadd_half_too"),
@@ -561,12 +395,7 @@ def _pins(
     hip_runtime = None,
     other_vendor = None,
 ) -> dict:
-    """Which of the three runtime probes a capability case pins, and to what.
-
-    Pinned rather than inherited: all three read whatever torch is installed beside the test,
-    and this workspace carries a ROCm one, so a live probe makes an arm pass or fail on the
-    runner's wheel rather than on the host the case describes.
-    """
+    """Runtime probes are pinned: live ones would read the runner's torch wheel, not the described host."""
     _named = {
         "_expected_rocm_flavor_was_chosen": rocm_intent,
         "_torch_reports_a_hip_runtime": hip_runtime,
@@ -576,76 +405,45 @@ def _pins(
 
 
 @pytest.mark.parametrize("case", [
-    # Fails before the fix: the old message blamed PyTorch and offered Repair
-    # installation, which cannot add an account to a group.
     pytest.param((_KFD_SHUT, {"amd"}, "torch_cuda_unavailable", "2.11.0+rocm7.0", _pins(),
                   (_USERMOD,), ("Repair installation",)),
                  id = "the_capability_message_names_the_permission_not_a_torch_mismatch"),
-    # The control: on any other unusable-GPU host the PyTorch wording has to survive, or
-    # this fix trades one wrong answer for another. A render node too, and open: "the
-    # nodes open" must mean every node this host needs, or the control is a container
-    # missing /dev/dri getting a message about that instead.
     pytest.param((_BOTH_OPEN, {"amd"}, "torch_cuda_unavailable", "2.11.0+rocm7.0", _pins(),
                   ("Repair installation",), ("usermod",)),
                  id = "the_capability_message_is_unchanged_when_the_nodes_open"),
-    # A hybrid host whose NVIDIA card raised the verdict while an AMD node happens to be
-    # closed. Joining the render group repairs nothing there and reinstalling might.
     pytest.param((_KFD_SHUT, {"nvidia"}, "torch_cuda_unavailable", "2.11.0+cu130", _pins(),
                   ("Repair installation",), ("usermod",)),
                  id = "an_nvidia_mismatch_keeps_the_pytorch_message"),
-    # Its pair, one recorded vendor apart: on a hybrid host the hint needs the install to
-    # target AMD, and a venv that asked for ROCm and got a CPU wheel is this verdict.
     pytest.param((_KFD_SHUT, {"amd", "nvidia"}, "torch_cpu_build", None,
                   _pins(rocm_intent = True, hip_runtime = False, other_vendor = False), (_USERMOD,),
                   ()),
                  id = "a_hybrid_host_whose_amd_card_raised_it_still_gets_the_hint"),
-    # Opening the node leaves a CPU-only wheel with no GPU path, so the reinstall step has
-    # to survive the permission hint rather than be replaced by it.
     pytest.param((_KFD_SHUT, {"amd"}, "torch_cpu_build", None, _pins(),
                   ("CPU-only build", "Repair installation", _USERMOD), ()),
                  id = "a_cpu_wheel_beside_a_closed_node_is_told_to_do_both"),
-    # The pair: a ROCm wheel that cannot open a device is fully explained by the node.
     pytest.param((_KFD_SHUT, {"amd"}, "torch_cuda_unavailable", "2.11.0+rocm7.0", _pins(),
                   (_USERMOD,), ("Repair installation",)),
                  id = "a_gpu_wheel_beside_a_closed_node_is_told_only_the_permission"),
-    # A supported AMD card qualifies for the mismatch whatever wheel is installed, so a
-    # hybrid host records both vendors even when the verdict is about the NVIDIA card. No
-    # membership makes a CUDA wheel use the AMD card.
     pytest.param((_KFD_SHUT, {"amd", "nvidia"}, "torch_cuda_unavailable", "2.11.0+cu130",
                   _pins(rocm_intent = False, hip_runtime = False), ("Repair installation",),
                   ("usermod",)),
                  id = "a_hybrid_host_running_cuda_torch_keeps_the_pytorch_message"),
-    # The control, and the #10466 host: AMD is the only vendor that qualified, so the
-    # verdict can only be about it and the wheel's own tag adds nothing.
     pytest.param((_KFD_SHUT, {"amd"}, "torch_cuda_unavailable", "2.11.0+rocm7.0",
                   _pins(rocm_intent = False, hip_runtime = False), (_USERMOD,), ()),
                  id = "an_amd_only_host_needs_no_runtime_evidence"),
-    # An AMD-only host running a CUDA-tagged wheel raises the same verdict, and opening
-    # the node does not make that wheel use the card, so it needs both. Fails before the
-    # fix, where "AMD is the only vendor" made the hint REPLACE the reinstall advice and
-    # left the user with a group command and no way to use the GPU.
+    # CUDA wheel on an AMD host: the hint is appended and reinstall advice kept.
     pytest.param((_KFD_SHUT, {"amd"}, "torch_cuda_unavailable", "2.11.0+cu128",
                   _pins(rocm_intent = False, hip_runtime = False),
                   (_USERMOD, "Repair installation"), ()),
                  id = "a_cuda_wheel_on_an_amd_only_host_keeps_the_reinstall_advice"),
-    # Its control, one label apart: a ROCm wheel that cannot initialise the device IS
-    # fully explained by the closed node, so the reinstall advice stays suppressed.
     pytest.param((_KFD_SHUT, {"amd"}, "torch_cuda_unavailable", "2.11.0+rocm7.0",
                   _pins(rocm_intent = False, hip_runtime = False), (_USERMOD,),
                   ("Repair installation",)),
                  id = "a_rocm_wheel_on_the_same_host_still_replaces_it"),
-    # A venv that recorded ROCm intent and then had a CUDA build installed over it still
-    # answers yes to _expected_rocm_flavor_was_chosen, and reading that as "the wheel
-    # targets AMD" replaced the repair this host needs with a sentence about groups. The
-    # hint is APPENDED instead: the node is real, and the wheel is still the repair.
     pytest.param((_BOTH_SHUT, {"amd"}, "torch_cuda_unavailable", "2.11.0+cu128",
                   _pins(rocm_intent = True, hip_runtime = False),
                   ("matching PyTorch build fixes it", "cannot open"), ()),
                  id = "a_wheel_tagged_for_another_vendor_keeps_the_reinstall_advice"),
-    # The control: +cpu names no accelerator, so it settles nothing about which vendor
-    # the install targets and the recorded intent is the best evidence there is. Without
-    # it the fix reads as "any non-ROCm label wins", which silences the hint on the
-    # CPU-torch host #10466 was reported from.
     pytest.param((_BOTH_SHUT, {"amd", "nvidia"}, "torch_cpu_build", "2.11.0+cpu",
                   _pins(rocm_intent = True, hip_runtime = False, other_vendor = False),
                   ("cannot open",), ()),
@@ -737,36 +535,21 @@ def test_the_system_tab_reads_vendors_from_the_cards_it_reports(monkeypatch, lin
 
 
 @pytest.mark.parametrize("case", [
-    # The load-time line. It runs ahead of the Vulkan branch on purpose: a closed render
-    # node is the reason UNDERNEATH "the Vulkan probe reported no device", and that
-    # phrasing sends the user after a driver that is already working.
     pytest.param((_RENDER_SHUT, {"vulkan"}, {}, (_USERMOD,),
                   ("the Vulkan probe reported no device",)),
                  id = "the_empty_probe_explanation_names_the_permission"),
-    # The control for that narrowing: same host, a non-Vulkan binary, hint must survive.
     pytest.param((_ONLY_KFD_SHUT, {"hip"}, {}, (_USERMOD,), ()),
                  id = "a_rocm_binary_is_still_told_about_the_closed_kfd_node"),
-    # A hybrid host whose CUDA build enumerated nothing for its own reasons. Every AMD
-    # node is closed, so the hint is available and any build that could use the card gets
-    # it. This one cannot, so the mask diagnosis has to survive.
     pytest.param((_BOTH_SHUT, {"cuda"}, {"CUDA_VISIBLE_DEVICES": ""}, ("CUDA_VISIBLE_DEVICES",),
                   ("usermod",)),
                  id = "a_cuda_only_build_is_not_sent_after_the_amd_render_group"),
-    # Its control, and why the rule names CUDA rather than "not ROCm": an install this
-    # probe cannot read must not lose the diagnosis.
     pytest.param((_BOTH_SHUT, set(), {}, (_USERMOD,), ()),
                  id = "a_build_whose_backend_cannot_be_read_still_gets_the_hint"),
-    # _is_vulkan_backend defers such a build to CUDA, so it is a CUDA install here too.
-    # Requiring CUDA to be the ONLY shipped library left this layout uncovered.
     pytest.param((_BOTH_SHUT, {"cuda", "vulkan"}, {"CUDA_VISIBLE_DEVICES": ""},
                   ("CUDA_VISIBLE_DEVICES",), ("usermod",)),
                  id = "a_cuda_plus_vulkan_build_is_treated_as_cuda"),
-    # A build with no GPU library cannot offload to any card, so its empty probe is not a
-    # permission problem and the groups cannot change it.
     pytest.param((_BOTH_SHUT, {"cpu", "base"}, {}, (), ("usermod",)),
                  id = "a_cpu_only_llama_build_is_not_sent_after_the_groups"),
-    # Two independent blockers need two fixes. The groups do not clear a visibility mask,
-    # so returning the hint alone hid the half the user also has to undo.
     pytest.param((_BOTH_SHUT, {"hip"}, {"HIP_VISIBLE_DEVICES": "-1"},
                   (_USERMOD, "HIP_VISIBLE_DEVICES='-1'"), ()),
                  id = "a_mask_is_reported_alongside_the_permission_hint"),
@@ -784,8 +567,6 @@ def test_the_empty_probe_reason_for_an_install(monkeypatch, linux, case):
 
 @pytest.mark.parametrize("layout", [
     pytest.param(_RENDER_OPEN, id = "the_explanation_is_unchanged_when_the_nodes_open"),
-    # End to end through the caller: a Vulkan binary on a host whose render node opens
-    # must not be told about ROCm's node.
     pytest.param(_ONLY_KFD_SHUT, id = "the_vulkan_reason_survives_a_closed_kfd_node"),
 ])
 def test_a_vulkan_host_whose_own_node_opens_keeps_its_own_reason(monkeypatch, linux, layout):
@@ -814,55 +595,31 @@ def _kernel_stack_hint_runs(
     route: bool = True,
     nvidia: bool = False,
 ) -> bool:
-    """Whether install.sh's missing-kernel-stack branch fires for this closed set.
-
-    The guard is lifted by text, not restated: a restatement would pass whatever the
-    installer went on to say. Only the condition is taken, and its two probes are stubbed
-    true so the answer depends on nothing but the closed-node reasoning.
-    """
+    """Lifted from install.sh by text, since a restated copy would pass whatever the installer prints."""
     lines = _install_sh_lines()
-    # Anchored on the part of the condition this change does NOT touch, then walked back to
-    # the "if". Anchoring on the new closed-node text would make the control vacuous: a
-    # revert would stop the extraction finding anything, and "the text changed" would read
-    # as "the behaviour changed".
     end = _install_sh_anchor(lines, _PCI_SENTENCE)
     start = _install_sh_if_above(lines, end)
     guard = "\n".join(line.strip() for line in lines[start : end + 1])
     script = "\n".join(
         [
-            "_has_amd_rocm_gpu() { return 1; }",  # ROCm cannot see the card
-            "_amd_gpu_present_via_pci() { return 0; }",  # but the PCI bus can
-            # Carried by the guard now that it sits after the case rather than inside the
-            # */cpu arm, which supplied them.
+            "_has_amd_rocm_gpu() { return 1; }",
+            "_amd_gpu_present_via_pci() { return 0; }",
             "SKIP_TORCH=false",
             "OS=linux",
-            # The run-scope predicate the guard asks in place of a bare SKIP_TORCH test.
-            # Lifted, not stubbed, so this arm goes through the installer's own rule.
             *_run_scope_defs(lines, nvidia = nvidia),
-            # The route gate, true by default: this harness asks about the closed-node
-            # reasoning, and the route has its own tests below.
             f"_amd_node_diag_route={'true' if route else 'false'}",
-            # The guard prints through substep on the way to the arm under test, and the
-            # chain asks the topology before it. Neither was defined, so on a host with no
-            # /dev/kfd the script fell through to `echo FIRED` and looked like it worked,
-            # and on a host WITH one it exited 127 from an undefined substep.
+            # Stub substep and topology: undefined ones fall through or exit 127.
             'substep() { echo "$1"; }',
             'C_WARN=""',
-            # False, because the arm under test is the third of three and the first
-            # requires a topology. Stubbed rather than read: on a real gfx1151 the
-            # topology names an AMD GPU and the first arm would answer instead.
+            # Stubbed false so the third arm answers, even on a real gfx1151.
             "_kfd_topology_has_an_amd_gpu() { return 1; }",
             guard,
             "    echo FIRED",
             "fi",
         ]
     )
-    # The arm under test requires the node to be ABSENT. Owned by the case, so a runner
-    # that has one does not answer for it.
     script = _kfd_node_the_case_owns(script, tmp_path, present = False)
-    # The set arrives as an exported variable rather than a generated assignment: a repr()
-    # inside shell single quotes turns the newline separating two nodes into a literal
-    # backslash-n, which reads as one unmatched line and looks like the suppression failing.
+    # Exported, not repr()'d into single quotes, which would make the newline a literal backslash-n.
     out = subprocess.run(
         ["bash", "-c", script],
         capture_output = True,
@@ -874,17 +631,11 @@ def _kernel_stack_hint_runs(
 
 
 @pytest.mark.parametrize("case", [
-    # /dev/kfd existing is the evidence the stack is already loaded, so telling the user
-    # to install one cannot help; the group advice after the case is the repair.
     pytest.param(("/dev/kfd", True, False), id = "a_closed_kfd_node_suppresses_it"),
     pytest.param(("/dev/kfd\n/dev/dri/renderD128", True, False),
                  id = "a_closed_pair_suppresses_it"),
-    # The case the suppression must not swallow: no /dev/kfd at all, and a render node
-    # this account cannot open. No membership creates /dev/kfd, so both have to print.
     pytest.param(("/dev/dri/renderD128", True, True), id = "a_missing_kfd_node_keeps_it"),
-    # The negative control: the branch's original behaviour is untouched.
     pytest.param(("", True, True), id = "nothing_closed_keeps_it"),
-    # And that the route variable is consulted rather than merely computed.
     pytest.param(("", False, False), id = "the_route_gate_actually_suppresses_it"),
 ])
 def test_when_the_installers_kernel_stack_hint_fires(tmp_path, case):
@@ -894,22 +645,14 @@ def test_when_the_installers_kernel_stack_hint_fires(tmp_path, case):
 
 
 def _stat_nodes(monkeypatch, modes: dict, names: dict):
-    """Stub os.stat and grp for the node set ``modes`` maps to (gid, mode).
-
-    Paths outside the map raise, which covers the vanished-node arm. The stub takes
-    ``follow_symlinks`` because pytest itself stats files while this patch is in force, and a
-    two-argument lambda takes the whole session down rather than failing the test.
-    """
+    """The stat stub takes follow_symlinks, as pytest stats files while the patch is live."""
 
     def _stat(path, *, follow_symlinks = True):
         if str(path) not in modes:
             raise OSError("gone")
         _entry = modes[str(path)]
         gid, mode = _entry[0], _entry[1]
-        # Real device nodes are root-owned and POSIX consults the owner class first, so a
-        # fake without st_uid would take the owner branch on whatever uid the runner has --
-        # often root on CI, which would assert nothing about the group classification these
-        # cases name. The tests that DO cover owner precedence build real files in tmp_path.
+        # Default uid 0: real nodes are root-owned and the owner class is checked first.
         uid = _entry[2] if len(_entry) > 2 else 0
         if uid == amd.os.getuid():
             uid += 1
@@ -922,8 +665,6 @@ def _stat_nodes(monkeypatch, modes: dict, names: dict):
 
     monkeypatch.setattr(amd.os, "stat", _stat)
     monkeypatch.setattr(grp, "getgrgid", _getgrgid)
-    # Synthetic nodes have no ACL and the account starts outside their groups. Membership
-    # tests override these defaults explicitly after building the nodes.
     monkeypatch.setattr(amd, "_has_an_access_acl", lambda _path: False)
     monkeypatch.setattr(amd.os, "getgid", lambda: 1)
     monkeypatch.setattr(amd.os, "getgroups", lambda: [])
@@ -937,38 +678,24 @@ _THREE_NODES = {
 
 
 @pytest.mark.parametrize("case", [
-    # Two nodes owned by one group name it once, and order is first-seen so the command
-    # reads like the node list.
     pytest.param((_THREE_NODES, {44: "video", 39: "render"},
                   ["/dev/dri/renderD129", "/dev/kfd", "/dev/dri/renderD128"],
                   dict(joinable = ["render", "video"])),
                  id = "the_group_derivation_reads_the_node"),
-    # The container case docker/run.sh documents: --group-add passes the host's numeric
-    # gids and no group entry inside matches them. Fails before the fix, which returned
-    # the bare number for usermod to consume.
     pytest.param(({"/dev/kfd": (993, 0o660)}, {}, ["/dev/kfd"], dict(unnamed = [993])),
                  id = "a_gid_with_no_group_entry_is_reported_rather_than_prescribed"),
-    # A udev rule leaving a node root:render 0600 denies the group as well, so joining
-    # render opens nothing. Read the mode before naming the group. Fails before the fix,
-    # which read st_gid alone and would have prescribed render.
     pytest.param(({"/dev/kfd": (44, 0o600)}, {44: "render"}, ["/dev/kfd"],
                   dict(no_group = ["/dev/kfd"])),
                  id = "a_node_whose_own_group_cannot_open_it_is_not_a_membership_problem"),
-    # Its boundary: the probe's own bar is read-write, so 0640 is not a joinable group.
     pytest.param(({"/dev/kfd": (44, 0o640)}, {44: "render"}, ["/dev/kfd"],
                   dict(no_group = ["/dev/kfd"])),
                  id = "group_read_without_write_is_not_enough"),
-    # And the failure mode that must not raise: diagnostics run where things are already
-    # wrong, so a node that vanished between the probe and the message drops out.
     pytest.param(({"/dev/dri/renderD128": (44, 0o660)}, {44: "video"},
                   ["/dev/kfd", "/dev/dri/renderD128"], dict(joinable = ["video"])),
                  id = "a_node_that_cannot_be_stat_contributes_nothing"),
-    # root:root 0660 opens for anyone in the root group, so the derivation would accept
-    # the name and hand it to usermod. That grants a great deal besides the GPU.
     pytest.param(({"/dev/kfd": (0, 0o660, 0)}, {0: "root"}, ["/dev/kfd"],
                   dict(privileged = ["root"])),
                  id = "a_root_owned_node_is_not_answered_with_usermod_root"),
-    # The control: render is not privileged, so the same shape still yields the command.
     pytest.param(({"/dev/kfd": (39, 0o660, 0)}, {39: "render"}, ["/dev/kfd"],
                   dict(joinable = ["render"])),
                  id = "an_ordinary_owning_group_is_still_prescribed"),
@@ -981,10 +708,7 @@ def test_the_group_derivation_over_a_node_set(monkeypatch, case):
     assert amd._groups_that_own(paths) == _buckets(**buckets)
 
 
-# The sentence the kernel-stack branch prints. The harnesses that lift that branch anchor on
-# it rather than on either condition: the mapping one is what an earlier change edited, and a
-# revert that stopped the extraction finding anything would read "the text changed" as "the
-# behaviour changed". _amd_gpu_present_via_pci is named twice, so it is not an anchor either.
+# Anchor on the printed sentence: the conditions change and the PCI predicate appears twice.
 _PCI_SENTENCE = "An AMD GPU is on the PCI bus but ROCm cannot see it"
 
 
@@ -994,16 +718,8 @@ def _install_sh_lines() -> "list[str]":
     return install_sh.read_text(encoding = "utf-8").splitlines()
 
 
-# The one thing a lifted guard reads that no stub can reach: `[ -e /dev/kfd ]`. A test
-# operator is not a command, so it cannot be shadowed by a function, and on a host that
-# really has an AMD GPU the node really is there -- so the branch taken was decided by the
-# runner rather than by the case. That is why this file passed on a box with no AMD card
-# and failed on the gfx1151 the feature exists for.
-#
-# Only the PATH is redirected, and only inside the existence tests. The condition, its
-# ordering and its `&&` chain are still lifted verbatim, exactly as _has_amd_rocm_gpu and
-# _amd_gpu_present_via_pci are stubbed rather than restated. The node name inside the
-# printed sentences is untouched, because the arms below assert on that text.
+# `[ -e /dev/kfd ]` cannot be stubbed, so only that path is redirected inside existence tests;
+# the condition and printed sentences stay verbatim.
 _KFD_EXISTENCE_TEST = re.compile(r"(\[ +!? ?-e +)/dev/kfd\b")
 
 
@@ -1015,19 +731,13 @@ def _kfd_node_the_case_owns(script: str, tmp_path, *, present: bool) -> str:
     elif node.exists():
         node.unlink()
     redirected, n = _KFD_EXISTENCE_TEST.subn(rf"\g<1>{node}", script)
-    # A guard that stopped containing the test would silently go back to reading the host,
-    # and every arm here would agree for the wrong reason.
     assert n, "install.sh no longer tests `-e /dev/kfd` where this harness expects it"
     return redirected
 
 
 def _install_sh_if_above(lines: "list[str]", i: int) -> int:
-    """Walk back from a line inside a condition to the `if` opening its block.
-
-    A multi-line condition puts the `if` and its last test on different lines, so requiring
-    both on one line stopped finding anything the moment a gate was added -- and a harness
-    that finds nothing raises here rather than silently testing a shorter script.
-    """
+    """Finds the if opening a multi-line condition, so a miss raises rather than testing a shorter
+    script."""
     while not lines[i].lstrip().startswith("if "):
         i -= 1
     return i
@@ -1046,14 +756,7 @@ def _install_sh_if(lines: "list[str]", tail: str) -> int:
 
 
 def _shell_fn(lines: "list[str]", name: str) -> str:
-    """One function definition lifted out of install.sh, by brace depth.
-
-    Slicing from a definition down to the block under test worked only while the two were
-    adjacent, and a shell function must be defined before the line that calls it, so the
-    run-scope predicates now sit above the diagnoses they gate and each is lifted by name. A
-    miss raises rather than returning "": an undefined function would fail the block under
-    test for a reason unrelated to the case.
-    """
+    """Lifts one shell function by brace depth; a miss raises, since an undefined one fails the block."""
     start = next(i for i, line in enumerate(lines) if line.startswith(f"{name}() {{"))
     depth = 0
     for end in range(start, len(lines)):
@@ -1064,17 +767,7 @@ def _shell_fn(lines: "list[str]", name: str) -> str:
 
 
 def _run_scope_defs(lines: "list[str]", *, nvidia: bool = False) -> "list[str]":
-    """The run-scope predicates the install.sh harnesses below share.
-
-    Lifted rather than restated so every arm goes through the installer's own rule.
-    _is_pip_rocm_family_leaf comes with _torch_opens_amd_nodes, which classifies a ROCm index
-    through it; _shell_quote with anything that pastes a command, since without it every
-    interpolated name comes back EMPTY and the arm reads as a command naming nobody; and
-    _requested_llama_backend because all three predicates read the request through it, which
-    is what makes the legacy UNSLOTH_FORCE_VULKAN reach them as in a real run.
-    _has_usable_nvidia_gpu is the exception, stubbed because the real one runs nvidia-smi and
-    would answer from the runner's hardware -- false by default, so each arm is AMD-only.
-    """
+    """Lifted, so arms run the installer's own predicates; only the NVIDIA probe is stubbed."""
     return [
         _shell_fn(lines, "_requested_llama_backend"),
         _shell_fn(lines, "_torch_index_url_leaf"),
@@ -1116,18 +809,7 @@ def _install_sh_env(
 
 
 def _the_real_stat_derivation_runs_here() -> None:
-    """Skip a case that lifts install.sh's REAL stat|awk classifier onto this host.
-
-    install.sh reads each node with GNU ``stat -c '%a|%g|%u|%n|%G'``. BSD stat on macOS
-    rejects -c outright, so the record arrives empty, the owner branch cannot match a uid it
-    never parsed, and every node falls through to "join a group" -- an artifact of running
-    the harness there, not a finding about the installer, which gates every diagnosis that
-    reaches this classifier on `[ "$OS" != "macos" ]` and so never runs it on a Mac at all.
-
-    Keyed on the OS, and never on hardware: every Linux host runs all of these whatever GPU
-    it has, which is the property the rest of this file was fixed to keep. The synthetic-record
-    harness beside this one stubs stat and therefore still runs everywhere.
-    """
+    """Skipped off Linux, since BSD stat rejects -c and every node would wrongly read as join-a-group."""
     if platform.system() != "Linux":
         pytest.skip(
             "install.sh's stat|awk node classifier needs GNU stat -c, and the installer "
@@ -1151,15 +833,7 @@ def _install_sh_hint(
     id_user: "str | None" = "ada",
     nvidia: bool = False,
 ) -> str:
-    """The installer's closed-node message, run for a given closed set.
-
-    Lifted from install.sh rather than restated, and the whole block rather than a condition,
-    because the thing under test is the sentence it prints. substep is stubbed to plain echo;
-    the node list comes in through the environment, since embedding it in the script would
-    put a literal backslash-n inside shell quotes and turn two nodes into one unmatched line.
-    """
-    # repairs None means the REAL derivation runs, reading this host's own stat(1). A
-    # stubbed one is a synthetic record and stays portable, so only the real arm is gated.
+    """Lifts the whole block, since the printed sentence is under test; the node list comes in via env."""
     if repairs is None:
         _the_real_stat_derivation_runs_here()
     lines = _install_sh_lines()
@@ -1173,22 +847,11 @@ def _install_sh_hint(
         [
             'substep() { echo "$1"; }',
             'C_WARN=""',
-            # Stubbed rather than lifted, along with _an_amd_render_node_is_open and
-            # _has_usable_nvidia_gpu below: the real ones read /sys and /dev or run
-            # nvidia-smi, so a live one would answer from the runner's own hardware. All
-            # three are false by default, so an arm reads as the AMD-only host it describes.
+            # Stubbed: the real probes read /sys, /dev or run nvidia-smi on the runner.
             f"_amd_render_node_present() {{ return {0 if render_present else 1}; }}",
-            # A real device node is root-owned; a tmp_path node belongs to the runner, and
-            # the installer stops at the owner class when those match, so the arms choose
-            # which case they test. Both spellings: the owner-class test asks `id -u` and the
-            # repair asks `id -un`, and a stub answering one for the other names a uid as an
-            # account. id_user None is a uid with no passwd entry, where the real `id -un`
-            # FAILS: the shape of `docker run --user 1234`, and why the container repair
-            # exists.
+            # Stub both id -u and id -un; id_user None mimics docker --user with no passwd entry.
             (
-                # printf with the value single-quoted, not echo: a name carrying a backslash
-                # is de-escaped by the stub itself otherwise, and the arm testing how such a
-                # name is QUOTED then never sees one.
+                # printf with a single-quoted value: echo would de-escape backslashes.
                 f'id() {{ case "$1" in -un) printf %s\\\\n {shlex.quote(id_user or "")} ;; '
                 f'-G) echo "{self_gids}" ;; *) echo {self_uid} ;; esac; }}'
                 if id_user is not None
@@ -1197,32 +860,19 @@ def _install_sh_hint(
             ),
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if amd_present else 1}; }}",
             f"_an_amd_render_node_is_open() {{ return {0 if render_open else 1}; }}",
-            # The route the diagnoses are gated on; the gate has its own tests below.
             "_amd_node_diag_route=true",
             "OS=linux",
-            # The run-scope predicate the block asks. Lifted rather than stubbed, so the
-            # default arms go through the same rule the installer applies.
             f"SKIP_TORCH={'true' if skip_torch else 'false'}",
             f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
             _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
-            # The block also asks which nodes THIS run opens, to name the right --device
-            # pair, so the predicate has to exist before the span that calls it.
             _shell_fn(lines, "_torch_index_url_leaf"),
-            # _torch_opens_amd_nodes classifies a ROCm index through _is_pip_rocm_family_leaf
-            # and every scope predicate reads the request through _requested_llama_backend,
-            # so a harness that omits either measures a missing function rather than a rule.
             _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             _shell_fn(lines, "_requested_llama_backend"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_kfd"),
-            # The block quotes every name it pastes into a command through this. Lifted, not
-            # stubbed: without it the substitutions come back EMPTY and the arms below read
-            # as commands that name nobody.
+            # Lifted: without _shell_quote the substitutions come back empty.
             _shell_fn(lines, "_shell_quote"),
-            # The real derivation by default. An override stands in only where the case
-            # cannot be built on disk -- a node whose GID has no entry in the group
-            # database -- and _amd_node_repairs has its own tests either way.
             helper if repairs is None else f"_amd_node_repairs() {{ printf '%s\\n' '{repairs}'; }}",
             block,
         ]
@@ -1238,14 +888,7 @@ def _install_sh_hint(
 
 
 def _a_node_a_membership_would_open(tmp_path, *, mode: int = 0o660):
-    """A fixture node whose owning group is one the rule calls JOINABLE, and its name.
-
-    A tmp_path file gets the runner's primary group, and on a root CI runner that group is
-    root -- which both halves classify as privileged and refuse to prescribe, so the arms
-    below would assert the privileged sentence instead of the derivation. The group is
-    therefore CHOSEN rather than inherited: root may chgrp to any group, an ordinary account
-    only to one it belongs to, and it skips when all of those are privileged.
-    """
+    """Chooses a joinable group, since a root runner's inherited primary group is one the rule refuses."""
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     node.chmod(mode)
@@ -1270,10 +913,7 @@ def _a_node_a_membership_would_open(tmp_path, *, mode: int = 0o660):
 
 
 def test_the_group_fixture_never_hands_back_a_group_the_rule_refuses(tmp_path, monkeypatch):
-    """The guard for it, since a fixture that quietly picks a privileged group does not fail,
-    it makes the arms below assert the wrong sentence -- which is how this was found. Stands
-    in for the root runner by making the group this account would otherwise inherit
-    privileged, so the search has to move off it."""
+    """Guards the fixture: a privileged group pick would not fail, just assert the wrong sentence."""
     monkeypatch.setattr(
         amd,
         "_PRIVILEGED_GROUPS",
@@ -1284,12 +924,7 @@ def test_the_group_fixture_never_hands_back_a_group_the_rule_refuses(tmp_path, m
 
 
 def test_the_installer_names_the_group_the_node_actually_has(tmp_path):
-    """The shell half of the same item, and its only arm that reads a real file: the message
-    must name the group that owns the node it refused. Fails before the fix, which printed
-    render,video for every host. The group is read with the same stat the installer uses,
-    since a runner's primary group is not knowable in advance -- but asserting it is NOT
-    render,video is what makes that comparison mean something. 0660 is the mode a real render
-    node has, and a default 0644 is a node no membership opens."""
+    """The installer must name the node's actual owning group, never a fixed render,video pair."""
     node, _group = _a_node_a_membership_would_open(tmp_path)
     owner = subprocess.run(
         ["stat", "-c", "%G", str(node)],
@@ -1325,16 +960,9 @@ def _reason_with_mask(monkeypatch, var: str, value: str, backends: set) -> str:
 
 
 @pytest.mark.parametrize("case", [
-    # HIP_VISIBLE_DEVICES=0 names a device rather than hiding one, so it is not why the
-    # probe came back empty and reporting it sends the user after a fix that cannot help,
-    # on top of the one that can. Fails before the fix, which listed every variable that
-    # was merely SET.
     pytest.param(("HIP_VISIBLE_DEVICES", "0", {"hip"}, (_USERMOD,), ("visibility mask",)),
                  id = "a_selector_that_still_exposes_a_device_is_not_a_second_blocker"),
-    # The control: -1 names no device, so that host really does need both fixes. Not an
-    # EMPTY value, which is the one thing clr's parser is never entered on: the guard is
-    # on the first byte, so an empty HIP mask is not a filter and is not the variable clr
-    # reads either.
+    # -1 names no device; an empty HIP mask is not a filter to clr.
     pytest.param(("HIP_VISIBLE_DEVICES", "-1", {"hip"}, (_USERMOD, "HIP_VISIBLE_DEVICES='-1'"), ()),
                  id = "a_mask_that_hides_everything_is_still_reported"),
     # CUDA and HIP parse the list left to right and stop at the first entry that names no
@@ -1342,17 +970,10 @@ def _reason_with_mask(monkeypatch, var: str, value: str, backends: set) -> str:
     pytest.param(("CUDA_VISIBLE_DEVICES", "-1", {"hip"},
                   ("CUDA_VISIBLE_DEVICES='-1'", "visibility mask is also in force"), ()),
                  id = "a_negative_first_entry_hides_everything"),
-    # And its control: 0,-1 stops at the -1 but has already exposed GPU 0. Without this
-    # the fix could be "any minus sign anywhere hides everything", which passes the case
-    # above and is wrong.
     pytest.param(("CUDA_VISIBLE_DEVICES", "0,-1", {"hip"}, (), ("visibility mask",)),
                  id = "a_leading_valid_entry_survives_a_later_invalid_one"),
-    # A Vulkan-only install reads none of these four, so an inherited HIP or CUDA mask is
-    # not a blocker for it at any value -- the render node it cannot open is.
     pytest.param(("HIP_VISIBLE_DEVICES", "-1", {"vulkan"}, (_USERMOD,), ("visibility mask",)),
                  id = "a_vulkan_build_is_not_told_about_a_mask_it_never_reads"),
-    # Its control, one backend apart: the identical environment must still report the
-    # mask when the install is one that actually reads it.
     pytest.param(("HIP_VISIBLE_DEVICES", "-1", {"hip"}, ("visibility mask is also in force",), ()),
                  id = "the_same_hiding_mask_still_counts_for_a_hip_build"),
 ])
@@ -1371,22 +992,10 @@ def _installer_index_summary(
     *,
     nvidia: bool = False,
 ) -> str:
-    """install.sh's index summary and the two diagnoses that follow it, run for one index.
-
-    The whole span is lifted rather than the guard alone, because the thing under test is
-    WHERE the diagnosis sits relative to the case: a copy of the condition would answer the
-    same whichever arm it had been left in.
-
-    The three arms of that case are told apart by ``-e /dev/kfd`` and the KFD topology, and
-    both of those are the HOST's until this harness takes them: the case here is a machine
-    with no runtime, so the node is withheld and the topology stubbed empty. Left to the
-    host these cases passed on a box with no AMD GPU and failed on the hardware the feature
-    is for, which is the wrong way round for every one of them.
-    """
+    """Lifts the whole span; /dev/kfd and the KFD topology are stubbed so the host cannot decide the arm."""
     lines = _install_sh_lines()
     start = max(i for i, line in enumerate(lines) if line == 'case "$TORCH_INDEX_URL" in')
     anchor = next(i for i in range(start, len(lines)) if "needs a recent kernel" in lines[i])
-    # Through the closed-node block as well, so one run shows which diagnosis this index gets.
     last = next(i for i in range(anchor, len(lines)) if "membership opens it" in lines[i])
     end = next(i for i in range(last, len(lines)) if lines[i] == "fi")
     script = "\n".join(
@@ -1396,16 +1005,12 @@ def _installer_index_summary(
             'C_WARN=""',
             "_amd_gpu_radeon=false",
             '_strip_index_url_credentials() { printf "%s\\n" "$1"; }',
-            "_has_amd_rocm_gpu() { return 1; }",  # ROCm cannot see the card
-            "_amd_gpu_present_via_pci() { return 0; }",  # but the PCI bus can
+            "_has_amd_rocm_gpu() { return 1; }",
+            "_amd_gpu_present_via_pci() { return 0; }",
             "SKIP_TORCH=false",
             "OS=linux",
             "_amd_render_node_present() { return 0; }",
             "_kfd_topology_has_an_amd_gpu() { return 1; }",
-            # The route gate classifies the index by its canonical leaf, so the classifiers
-            # are lifted rather than stubbed, or the per-URL cases below would assert about
-            # the stub. They are defined above the case in install.sh, so the span lifted
-            # below calls them without carrying them.
             *_run_scope_defs(lines, nvidia = nvidia),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
             *lines[start : end + 1],
@@ -1430,18 +1035,10 @@ _GFX_INDEX = "https://repo.radeon.com/rocm/manylinux/gfx1151"
 
 
 @pytest.mark.parametrize("case", [
-    # The runtime-less host this was written for: no /dev/kfd, so the per-arch reroute
-    # rewrote its cpu index to a gfx one and it took the other arm of the case. Left
-    # inside the */cpu arm the diagnosis never printed for the host that needed it. Fails
-    # before the fix, which produced only the wheels line for this index.
     pytest.param((_GFX_INDEX, "", ("ROCm cannot see it",), ()),
                  id = "the_kernel_stack_diagnosis_reaches_a_rerouted_gfx_index"),
-    # The control: the arm the diagnosis used to live in must keep it, or the hoist has
-    # moved the message rather than widened it.
     pytest.param(("https://download.pytorch.org/whl/cpu", "", ("ROCm cannot see it",), ()),
                  id = "a_cpu_index_on_the_same_host_still_gets_it"),
-    # And the suppression the hoist must carry with it: on a gfx index too, an existing
-    # /dev/kfd means the group advice is the repair and the kernel stack is not.
     pytest.param((_GFX_INDEX, "/dev/kfd", ("cannot open its device nodes",),
                   ("ROCm cannot see it",)),
                  id = "a_closed_kfd_node_still_suppresses_it_after_the_case"),
@@ -1459,12 +1056,7 @@ def _reason_with_masks(
     backends: set,
     gpu_count: "int | None" = None,
 ) -> str:
-    """The empty-probe reason on a closed-node host carrying several visibility masks.
-
-    ``gpu_count`` is what KFD enumerates, so a selector can be judged against something. None
-    is the default because it is what an unreadable topology answers, which is the state
-    every test written before that check ran in.
-    """
+    """gpu_count is what KFD enumerates so selectors can be judged; None means an unreadable topology."""
     _nodes(monkeypatch, present = _AMD_NODES, openable = set())
     monkeypatch.setattr(amd, "amd_kfd_gpu_node_count", lambda: gpu_count)
     for var in (
@@ -1491,81 +1083,44 @@ _IN_FORCE = "visibility mask is also in force"
 
 
 @pytest.mark.parametrize("case", [
-    # _gpu_device_ordinal_active reads a whitespace GPU_DEVICE_ORDINAL as no filter, so
-    # an empty one hides nothing. Fails before the fix, which applied the CUDA/HIP
-    # first-token rule to all four names alike and named a variable already inert.
     pytest.param(({"GPU_DEVICE_ORDINAL": ""}, None, (_USERMOD,), ("visibility mask",)),
                  id = "an_empty_ordinal_variable_is_not_a_filter"),
-    # Its control: a value that IS a filter and whose first entry names no device leaves
-    # nothing enumerated, so that host needs both fixes.
     pytest.param(({"GPU_DEVICE_ORDINAL": "-1"}, None, (_IN_FORCE, "GPU_DEVICE_ORDINAL='-1'"), ()),
                  id = "an_ordinal_that_hides_everything_is_still_reported"),
-    # clr reads HIP_VISIBLE_DEVICES when it is non-empty and CUDA_VISIBLE_DEVICES
-    # otherwise, so an empty CUDA mask underneath a valid HIP one is never looked at.
-    # Fails before the fix, which judged each of the four on its own value.
+    # clr reads HIP_VISIBLE_DEVICES if non-empty, else CUDA_VISIBLE_DEVICES.
     pytest.param(({"HIP_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": ""}, None, (_USERMOD,),
                   ("visibility mask",)),
                  id = "an_empty_cuda_mask_behind_a_valid_hip_one_is_not_consulted"),
-    # The control, one variable apart: with no HIP mask above it the same empty CUDA
-    # value is the one clr reads, and it exposes nothing.
     pytest.param(({"CUDA_VISIBLE_DEVICES": ""}, None, ("CUDA_VISIBLE_DEVICES is empty", _IN_FORCE),
                   ()),
                  id = "the_same_empty_cuda_mask_blocks_once_hip_is_unset"),
-    # ROCr is a LOWER layer than clr and composes rather than defers: it filters the
-    # agent list hsa_iterate_agents returns and the HIP ordinals index what it left, so
-    # an empty ROCr mask leaves nothing to index whatever HIP says. This is what keeps
-    # the fix from being "only the winner of the precedence chain counts".
+    # ROCr filters below clr and composes: an empty ROCr mask hides everything.
     pytest.param(({"HIP_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": ""}, None,
                   ("ROCR_VISIBLE_DEVICES is empty", _IN_FORCE), ()),
                  id = "an_empty_rocr_mask_blinds_the_runtime_under_a_valid_hip_one"),
-    # HIP stops at the first index no device answers to, so HIP_VISIBLE_DEVICES=3 on a
-    # one-GPU host exposes nothing -- which is the empty probe being explained, and was
-    # read as a valid selector.
+    # HIP stops at the first index with no device.
     pytest.param(({"HIP_VISIBLE_DEVICES": "3"}, 1, (_IN_FORCE, "HIP_VISIBLE_DEVICES='3'"), ()),
                  id = "an_ordinal_naming_a_device_that_is_not_there_hides_everything"),
-    # The control: the same host and variable pointing at a GPU it has. Without it the
-    # fix could be "any ordinal blocks", which would take the GPU off every host with a
-    # legitimate selector.
     pytest.param(({"HIP_VISIBLE_DEVICES": "0"}, 1, (), (_IN_FORCE,)),
                  id = "an_ordinal_that_does_name_a_device_is_still_not_a_blocker"),
-    # The other control: an unreadable KFD topology is a detection miss, and reading it
-    # as "no devices" would call every selector on the host a blocker.
     pytest.param(({"HIP_VISIBLE_DEVICES": "3"}, None, (), (_IN_FORCE,)),
                  id = "an_unreadable_device_count_leaves_the_selector_alone"),
-    # ROCr accepts a UUID as well as an ordinal, and one naming no device stops the list
-    # exactly as a bad ordinal does. Nothing here can match a UUID against the KFD count,
-    # so it is reported as unresolved rather than dismissed, which is what the ordinal
-    # check did. Reported, not judged: claiming it blocks would invent a fault this
-    # cannot see. Fails before the fix, which said nothing for any non-digit entry.
     pytest.param(({"ROCR_VISIBLE_DEVICES": _UUID}, 1, ("cannot resolve", "ROCR_VISIBLE_DEVICES"),
                   ("which the groups do not clear",)),
                  id = "a_rocr_selector_naming_a_uuid_is_reported_as_unresolved"),
-    # The control that keeps it narrow: an ordinal the count can resolve is judged as
-    # before, so the new sentence cannot appear on every host that sets the variable.
     pytest.param(({"ROCR_VISIBLE_DEVICES": "0"}, 2, (), ("cannot resolve", "visibility mask")),
                  id = "a_rocr_ordinal_that_names_a_device_is_still_left_alone"),
-    # The other boundary. An earlier revision asserted the opposite here, on the claim
-    # that only ROCr accepts a UUID; rocdevice.cpp refutes it, matching a "GPU-" token
-    # against each agent's own HSA_AMD_AGENT_INFO_UUID before falling back to an ordinal.
-    # So the token may name a device or nothing, as under ROCr, and nothing here can tell
-    # which. The count is deliberately known here: a UUID is not an index into it.
+    # HIP also accepts GPU- UUIDs (rocdevice.cpp), so this cannot resolve them.
     pytest.param(({"HIP_VISIBLE_DEVICES": _UUID}, 1, ("names a device this cannot resolve",),
                   (_IN_FORCE,)),
                  id = "a_uuid_in_the_hip_layer_is_unresolved_rather_than_a_blocker"),
-    # ROCr filters the physical list first and renumbers the survivors; HIP indexes
-    # those. With ROCR_VISIBLE_DEVICES=0 on a two-GPU host one survives, so HIP ordinal 1
-    # names nothing, while against the physical count of 2 it reads as a valid selector.
-    # Fails before the fix, which used the KFD count for every layer.
+    # ROCr renumbers survivors; HIP ordinals index those, not the physical count.
     pytest.param(({"ROCR_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "1"}, 2,
                   ("HIP_VISIBLE_DEVICES='1'", "which the groups do not clear"), ()),
                  id = "a_hip_ordinal_is_judged_against_what_rocr_left"),
-    # The control: ROCr leaving both devices makes HIP ordinal 1 a real device again, so
-    # the composed reading must not call every stacked pair a blocker.
     pytest.param(({"ROCR_VISIBLE_DEVICES": "0,1", "HIP_VISIBLE_DEVICES": "1"}, 2, (),
                   ("which the groups do not clear",)),
                  id = "the_same_ordinal_inside_what_rocr_left_is_not_a_blocker"),
-    # And the boundary: a UUID in the ROCr layer means the survivors cannot be counted, so
-    # the HIP ordinal is judged against nothing rather than against an invented count.
     pytest.param(({"ROCR_VISIBLE_DEVICES": _UUID, "HIP_VISIBLE_DEVICES": "1"}, 2, (),
                   ("which the groups do not clear",)),
                  id = "an_unresolvable_rocr_entry_leaves_the_hip_ordinal_alone"),
@@ -1600,25 +1155,17 @@ def _diag_route(
     lines = _install_sh_lines()
     start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_diag_leaf="))
     esac_at = next(i for i in range(start, len(lines)) if lines[i] == "esac")
-    # The --no-torch override and the explicit-backend case below it are part of the same
-    # decision, so the span runs to the end of both rather than stopping at the first esac.
     _skip_torch_end = next(i for i in range(esac_at, len(lines)) if lines[i] == "fi")
     end = next(i for i in range(_skip_torch_end, len(lines)) if lines[i] == "esac")
     script = "\n".join(
         [
             f"TORCH_INDEX_URL={index_url!r}",
             f"SKIP_TORCH={'true' if skip_torch else 'false'}",
-            # Set either way, so the arms below do not inherit whatever the runner exports.
             f"export UNSLOTH_LLAMA_CPP_BACKEND={backend or ''!r}",
-            # The classifiers, not stubs: which leaves count as a ROCm route is exactly what
-            # these tests are about. _requested_llama_backend comes with them because every
-            # scope predicate reads the backend request through it.
             _shell_fn(lines, "_torch_index_url_leaf"),
             _shell_fn(lines, "_is_pip_rocm_family_leaf"),
             _shell_fn(lines, "_requested_llama_backend"),
             _shell_fn(lines, "_torch_opens_amd_nodes"),
-            # Stubbed: the real one runs nvidia-smi and would answer from the runner's own
-            # hardware. False by default, so each arm reads as an AMD-only host.
             f"_has_usable_nvidia_gpu() {{ return {0 if nvidia else 1}; }}",
             _shell_fn(lines, "_auto_bundle_opens_amd_nodes"),
             _shell_fn(lines, "_run_may_open_a_gpu_node"),
@@ -1631,16 +1178,10 @@ def _diag_route(
 
 
 @pytest.mark.parametrize("index_url, routed", [
-    # The two arms this installer prints a wheel line for are the two the diagnoses belong
-    # to, and #10466's host reaches the second by reroute rather than the first.
     ("https://download.pytorch.org/whl/cpu", True),
     ("https://download.pytorch.org/whl/rocm7.0", True),
     ("https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/gfx1151", True),
-    # Moving the diagnoses out of the */cpu arm let them reach an index the case has no
-    # arm for at all. _has_amd_rocm_gpu returns false on ANY host with a usable NVIDIA
-    # GPU, so on a CUDA route its condition is satisfied by every hybrid box with an AMD
-    # card on the bus, and someone correctly installing CUDA wheels was told to install
-    # the ROCm kernel stack for a card this install does not use.
+    # _has_amd_rocm_gpu is false with any usable NVIDIA GPU: CUDA routes must not get ROCm advice.
     ("https://download.pytorch.org/whl/cu128", False),
     ("https://download.pytorch.org/whl/xpu", False),
 ])
@@ -1656,33 +1197,24 @@ def test_the_installer_makes_the_same_owner_versus_external_distinction(tmp_path
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
 
-    node.chmod(0o600)  # owner rw: the mode is not what is shutting it
+    node.chmod(0o600)
     out = _install_sh_hint(str(node), self_uid = str(os.getuid()), repairs = None)
     assert "granted read and write by the" in out
-    # Never by naming the owner: the same bucket carries other-class nodes this account
-    # does not own, and one wording has to be true of both.
     assert "is owned by this account and its owner bits" not in out
     # The installer wraps one sentence over several substep lines, so match a fragment
     # that cannot straddle the break.
     assert "device cgroup or an LSM" in out
     assert "fix the mode" not in out
 
-    node.chmod(0o060)  # owner has nothing: the mode IS the repair, and still is
+    node.chmod(0o060)
     out = _install_sh_hint(str(node), self_uid = str(os.getuid()), repairs = None)
     assert "fix the mode" in out
     assert "already grant read and write" not in out
 
 
 @pytest.mark.parametrize("mode, bucket", [
-    # Codex 4041533207. os.access said the node is shut, so on a node this account owns
-    # whose OWNER bits already read rw, the mode is not what denies it: an LSM or a
-    # container device policy is, and a mode change or a udev rule repairs nothing. It was
-    # filed as an owner-mode problem and prescribed exactly that.
     pytest.param(0o600, "external", id = "owner_bits_that_already_grant_it_are_external"),
-    # The control, and the owner-precedence rule itself: POSIX resolves the owner class
-    # exclusively once the uid matches, so a node this account owns whose owner bits deny
-    # cannot be opened by joining its group however the group bits read. The mode is the
-    # repair, and usermod there is a command that succeeds and changes nothing.
+    # POSIX resolves the owner class exclusively once the uid matches.
     pytest.param(0o060, "owned", id = "a_node_this_account_owns_is_not_answered_with_a_group"),
 ])
 def test_how_a_node_this_account_owns_is_classified(monkeypatch, tmp_path, mode, bucket):
@@ -1697,20 +1229,11 @@ def test_how_a_node_this_account_owns_is_classified(monkeypatch, tmp_path, mode,
 
 # fmt: off
 @pytest.mark.parametrize("mode, in_the_group, bucket", [
-    # Codex 4049299005. Neither the owner nor in the owning group puts this account in the
-    # OTHER class, which POSIX resolves exclusively just as it does the owner one: bits that
-    # already grant rw mean the mode is not what denies a node os.access() called shut, so
-    # neither a chmod nor a usermod repairs it. It was classified from the group bits and
-    # answered with a group to join.
+    # The other class is also exclusive: rw other bits mean the mode is not what denies it.
     pytest.param(0o666, False, "external",
                  id = "other_bits_that_already_grant_it_are_external"),
-    # The control, or the branch would be "never name a group", which removes a correct
-    # repair: with the other bits denying, joining the group really would open the node.
     pytest.param(0o660, False, "joinable",
                  id = "other_bits_that_deny_still_leave_a_group_worth_joining"),
-    # And membership outranks the other class, because a member is in the GROUP class and
-    # the other bits are never consulted there. `already` names the group rather than
-    # filing the node under a bucket that names nothing.
     pytest.param(0o666, True, "already",
                  id = "a_member_is_still_told_the_group_it_already_holds"),
 ])
@@ -1726,9 +1249,7 @@ def test_how_a_node_this_account_neither_owns_nor_shares_a_group_with_is_classif
     node.chmod(mode)
     _gid = node.stat().st_gid
     monkeypatch.setattr(amd, "_has_an_access_acl", lambda _path: False)
-    # Not the owner, so the owner class cannot claim the node first. Read BEFORE the patch
-    # lands: amd.os is the os module itself, so a lambda calling os.getuid() would call the
-    # replacement and recurse until the stack ends.
+    # Read before patching: amd.os is os, so os.getuid() in the lambda would recurse.
     _not_the_owner = os.getuid() + 1
     monkeypatch.setattr(amd.os, "getuid", lambda: _not_the_owner)
     _held = {_gid} if in_the_group else {_gid + 10_000}
@@ -1756,12 +1277,12 @@ def test_the_installer_makes_the_same_other_class_distinction(tmp_path):
     node.write_bytes(b"")
     _not_us = str(os.getuid() + 1)
 
-    node.chmod(0o666)  # other rw: no membership and no mode change opens this
+    node.chmod(0o666)
     out = _install_sh_hint(str(node), self_uid = _not_us, repairs = None)
     assert "device cgroup or an LSM" in out
     assert "usermod" not in out
 
-    node.chmod(0o660)  # other denies: the group really is the repair
+    node.chmod(0o660)
     out = _install_sh_hint(str(node), self_uid = _not_us, repairs = None)
     assert "device cgroup or an LSM" not in out
 
@@ -1792,9 +1313,6 @@ def test_an_ordinary_node_owned_elsewhere_is_still_prescribed_for(monkeypatch, t
     group's grant and whose owner is somebody else, so the owner class does not apply. Without
     it the rule could decline to prescribe anywhere, which removes the repair #10466 needs."""
     node, _group = _a_node_a_membership_would_open(tmp_path, mode = mode)
-    # The fixture can only chgrp to a group this account holds, and a node whose owning group
-    # the account already has is filed under `already` rather than `joinable`. These arms are
-    # about the derivation, so stand the account outside that group.
     _not_my_group = os.getgid() + 1
     monkeypatch.setattr(amd.os, "getgid", lambda: _not_my_group)
     monkeypatch.setattr(amd.os, "getgroups", lambda: [])
@@ -1841,26 +1359,13 @@ def test_the_installer_stays_quiet_on_a_host_with_no_amd_gpu():
 
 
 @pytest.mark.parametrize("case", [
-    # The probe on a file with none: it has to answer False for the common node or every
-    # host stops being prescribed for.
     pytest.param((True, None, False), id = "an_ordinary_node_reports_no_acl"),
-    # And the failure mode that must not raise: this runs where things are already wrong,
-    # so an unreadable path answers False rather than taking the hint down.
     pytest.param((False, None, False), id = "a_path_that_cannot_be_read_reports_no_acl"),
-    # os.listxattr returns ``str`` names for a ``str`` path, so the bytes literal this
-    # first shipped with could never match one and the whole ACL branch was dead. Stubbed
-    # rather than written with setfacl, which is not installed here: the shell twin above
-    # skips when it is absent, and a probe whose positive direction is only ever exercised
-    # by a skipping test is not exercised at all. That is how this survived a round.
+    # os.listxattr returns str names for a str path.
     pytest.param((True, ["security.selinux", "system.posix_acl_access"], True),
                  id = "the_acl_probe_matches_the_name_type_listxattr_returns"),
-    # A bytes path yields bytes names, and the caller chooses the path type, so both are
-    # accepted. The control for the case above: without it, swapping one literal for the
-    # other passes just as well and nothing says which type is actually returned.
     pytest.param((True, [b"system.posix_acl_access"], True),
                  id = "the_acl_probe_also_reads_bytes_names"),
-    # The negative control. An ACL is claimed from one exact name, so a node carrying only
-    # other attributes stays prescribed for.
     pytest.param((True, ["security.selinux", "user.note"], False),
                  id = "another_xattr_is_not_read_as_an_acl"),
 ])
@@ -1871,10 +1376,7 @@ def test_what_the_acl_probe_answers(monkeypatch, tmp_path, case):
     if create:
         node.write_bytes(b"")
     if xattrs is not None:
-        # raising=False: os.listxattr does not exist on macOS or Windows, so without it
-        # monkeypatch fails on the PATCH rather than the probe, and the case never runs.
-        # _has_an_access_acl already answers False through AttributeError there, which is
-        # what these cases assert about a host that cannot report an ACL.
+        # raising=False: os.listxattr does not exist on macOS/Windows.
         monkeypatch.setattr(amd.os, "listxattr", lambda path: xattrs, raising = False)
     assert amd._has_an_access_acl(str(node)) is carries_one
 
@@ -1899,16 +1401,8 @@ _VULKAN_REASON = "the Vulkan probe reported no device"
 
 
 @pytest.mark.parametrize("case", [
-    # A closed node explains an empty probe only when it is the node the runtime would
-    # have used. With renderD129 open the loader had one to enumerate and still reported
-    # nothing, so the closed renderD128 is a second finding; returning it alone sends the
-    # user after a repair that leaves the probe just as empty. It is still said, because
-    # it is still true. Fails before the fix, which returned the hint unconditionally.
     pytest.param(({"/dev/dri/renderD129"}, (_VULKAN_REASON, "/dev/dri/renderD128"), ()),
                  id = "an_open_sibling_node_keeps_the_vulkan_reason"),
-    # The control, and the #10466 host itself: with every AMD node closed there is no
-    # sibling the loader could have used, so the closed node IS the reason and must not be
-    # demoted to a footnote behind a Vulkan sentence that explains nothing.
     pytest.param((set(), ("/dev/dri/renderD128",), (_VULKAN_REASON,)),
                  id = "no_open_sibling_still_gives_the_node_hint_alone"),
 ])
@@ -1935,14 +1429,8 @@ _SEPARATELY = "Separately, and not why the probe is empty"
 
 
 @pytest.mark.parametrize("case", [
-    # ROCm needs /dev/kfd and a render node. With both open on a multi-AMD host, a closed
-    # SECOND render node is not why the probe came back empty, and returning the group
-    # repair as the sole diagnosis leaves the user fixing something that changes nothing.
-    # Fails before the fix, which asked the sibling question of Vulkan builds only.
     pytest.param(({"/dev/kfd", "/dev/dri/renderD129"}, (_SEPARATELY, "/dev/dri/renderD128"), ()),
                  id = "a_closed_sibling_beside_an_open_rocm_path_is_not_the_reason"),
-    # The control that keeps it narrow: /dev/kfd has no sibling, so a closed one blocks
-    # ROCm outright however many render nodes are open.
     pytest.param(({"/dev/dri/renderD129"}, ("/dev/kfd",), (_SEPARATELY,)),
                  id = "a_closed_kfd_is_still_the_reason_for_a_hip_build"),
 ])
@@ -1958,13 +1446,7 @@ def test_whether_a_hip_sibling_node_answers_the_empty_probe(monkeypatch, linux, 
 
 
 @pytest.mark.parametrize("layout, blocks", [
-    # --device /dev/kfd without --device /dev/dri. The one node mapped opens, so nothing
-    # is CLOSED, and this answered False -- which made hardware.py suppress the very hint
-    # that names the repair, and llama_cpp.py file it as "not why the probe is empty" when
-    # the absent render node is exactly why.
     pytest.param(_KFD_OPEN, True, id = "a_missing_render_node_blocks_the_runtime"),
-    # The control. Without it the fix could be "always blocks", which suppresses nothing
-    # and labels every empty probe a permission problem.
     pytest.param(_BOTH_OPEN, False, id = "a_complete_open_mapping_still_does_not_block"),
 ])
 def test_whether_the_node_layout_blocks_the_runtime(monkeypatch, linux, layout, blocks):
@@ -1974,13 +1456,10 @@ def test_whether_the_node_layout_blocks_the_runtime(monkeypatch, linux, layout, 
 
 
 def test_the_installer_does_not_dangle_the_group_sentence(tmp_path):
-    """When every refused node has an unnamed GID, an ACL, or a mode no group can open,
-    _amd_node_repairs names no group on purpose. The installer printed "Add yourself to the"
-    above that branch regardless, so the message read as an instruction cut off mid-sentence
-    and then contradicted."""
+    """Without a named group, the installer must not print the dangling Add yourself to the sentence."""
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
-    node.chmod(0o600)  # owner-only: no membership opens it, so no group is named
+    node.chmod(0o600)
     out = _install_sh_hint(str(node))
     assert "Add yourself to the" not in out
     assert "no" in out and "membership opens it" in out
@@ -2033,14 +1512,7 @@ def _kernel_stack_hint_text(
     topology_readable: bool = True,
     nvidia: bool = False,
 ) -> str:
-    """What install.sh actually PRINTS in the missing-/dev/kfd branch, with ROCm blind.
-
-    `_kernel_stack_hint_runs` above lifts only the guard, so it answers whether the branch
-    fires and nothing about which repair it names, which is exactly where the branch was
-    wrong. _install_sh_missing_kfd below lifts the guard AND its body, through the closing
-    `fi`, so a revert changes the text this returns; this name is the ROCm-sees-nothing
-    corner of it, which is the shape the kernel-stack advice is written for.
-    """
+    """Lifts the missing-/dev/kfd guard and body, so the printed repair text is what the test checks."""
     return _install_sh_missing_kfd(
         tmp_path,
         topology = topology,
@@ -2059,20 +1531,12 @@ def _kernel_stack_hint_text(
 ))
 # fmt: on
 def test_the_installers_missing_kfd_repair_follows_the_topology(tmp_path, topology, contains, absent):
-    """A container created with --device /dev/dri and no --device /dev/kfd sees the host's
-    /sys and not its /dev, so the KFD topology names an AMD GPU while the node is absent: the
-    driver is loaded, and "install the ROCm kernel stack" leaves HIP as unavailable as before.
-    No topology is the case the branch was written for, the driver really is missing, and
-    without that arm the fix could be "never mention the kernel stack", which removes a
-    correct diagnosis."""
+    """A KFD topology with no node means map the device; no topology means the kernel stack is missing."""
     _says(_kernel_stack_hint_text(tmp_path, topology = topology), contains, absent)
 
 
 def test_a_container_missing_kfd_is_told_to_map_it_rather_than_reinstall(monkeypatch, linux):
-    """The runtime half of the same item. `_amd_nodes_the_runtime_lacks` reports a missing
-    node only once the KFD topology names an AMD GPU, and that topology is the amdkfd
-    driver's own sysfs, so on every host this sentence can reach the kernel stack is already
-    loaded and the advice to install it is unreachable-by-construction wrong."""
+    """A missing node is reported only once KFD names a GPU, so the kernel stack is already loaded there."""
     _nodes(monkeypatch, present = ["/dev/dri/renderD128"], openable = {"/dev/dri/renderD128"})
     hint = amd.amd_node_permission_hint()
     assert "--device /dev/kfd" in hint
@@ -2093,24 +1557,9 @@ def _install_sh_missing_kfd(
     backend: "str | None" = None,
     nvidia: bool = False,
 ) -> str:
-    """What the installer says when /dev/kfd is absent, for a given pair of probes.
-
-    Lifts the two branches together, through the closing `fi`, because which of them runs
-    is the thing under test. A test operator cannot be stubbed, so `[ -e /dev/kfd ]` is
-    kept as an `-e` test on a path this case owns: the operator still runs, and what it
-    runs against is `kfd_present` rather than whatever the machine happens to have.
-
-    This used to skip on a host that has /dev/kfd, which meant the whole family ran on dev
-    boxes with no AMD GPU and vanished on the hardware it is about -- and its mirror at
-    `test_the_installer_names_the_userspace_when_the_node_is_already_there` skipped
-    everywhere else, so no single host ever ran both arms.
-    """
+    """Lifts both branches to the closing fi; -e /dev/kfd runs for real on a path this case owns."""
     lines = _install_sh_lines()
-    # Anchored on the kernel-stack SENTENCE, then walked back to the `if` above it, since
-    # neither branch's condition is stable enough to anchor on: the mapping one is what an
-    # earlier change edited, and a revert that stopped the extraction finding anything would
-    # read "the text changed" as "the behaviour changed". The predicate _amd_gpu_present_via_pci
-    # is named twice in this installer, so it is not an anchor either.
+    # Anchored on the kernel-stack sentence; the conditions are unstable anchors.
     end = _install_sh_anchor(lines, _PCI_SENTENCE)
     start = _install_sh_if_above(lines, end)
     close = next(i for i in range(end + 1, len(lines)) if lines[i] == "fi")
@@ -2123,19 +1572,11 @@ def _install_sh_missing_kfd(
             "_amd_node_diag_route=true",
             *_run_scope_defs(lines, nvidia = nvidia),
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
-            # The branch asks _amd_silicon_behind_a_missing_kfd, not the topology directly,
-            # so the real one is LIFTED and only its inputs are stubbed: a copy here would
-            # answer for itself and the container fallback would go untested.
-            # State 0 names AMD, 1 read it and found none, 2 could not read it at all.
+            # Real helper lifted, inputs stubbed. State 0 = AMD, 1 = none, 2 = unreadable.
             f"_kfd_topology_amd_state() {{ return {0 if topology else (1 if topology_readable else 2)}; }}",
             f"_a_confirmed_amd_render_node_exists() {{ return {0 if confirmed_drm else 1}; }}",
             _shell_fn(lines, "_amd_silicon_behind_a_missing_kfd"),
             _shell_fn(lines, "_kfd_node_is_amds"),
-            # Stubbed when the arm is about something else and only needs a verdict; run
-            # for real over stubbed command lookups when the arm IS about which probe the
-            # branch consults, since a stub of the probe under test would answer for it.
-            # Running it for real also exercises the "ignore-nvidia" argument the branch
-            # passes, which is what keeps the diagnosis off the NVIDIA short-circuit.
             *(
                 [f"_has_amd_rocm_gpu() {{ return {0 if amd_smi_sees_it else 1}; }}"]
                 if rocm_visible is None
@@ -2175,45 +1616,20 @@ _ABSENT_KFD = "/dev/kfd is not present"
     ("a_no_torch_rocm_bundle_is_told_its_kfd_is_missing", _NO_TORCH, [_ABSENT_KFD], []),
     ("a_no_torch_vulkan_run_is_not_told_about_it", {**_NO_TORCH, "backend": "vulkan"}, None, []),
     ("a_no_torch_cuda_run_is_not_told_about_it_either", {**_NO_TORCH, "backend": "cuda"}, None, []),
-    # Codex 4049894549, and the container this whole feature was written for: --device
-    # /dev/dri with no --device /dev/kfd, and /sys/class/kfd masked with it. The topology
-    # cannot be READ, so gating on it alone left this host with no diagnosis at all -- the
-    # two PCI branches below need `! _has_amd_rocm_gpu`, and amd-smi answers through libdrm
-    # here, while a node that does not EXIST can never reach the closed-node list. A
-    # confirmed AMD render node is the standing evidence, exactly as the Python half reads
-    # it. Fails without the fallback.
+    # --device /dev/dri without /dev/kfd and masked sysfs: fall back to the AMD render node.
     ("an_unreadable_topology_with_a_confirmed_amd_render_node",
      {"topology": False, "amd_smi_sees_it": True, "topology_readable": False,
       "confirmed_drm": True}, ["--device /dev/kfd"], [_STACK]),
-    # The control that keeps it from becoming "always advise": same masked sysfs, but no
-    # AMD render node confirmed, so there is no evidence of AMD silicon and naming one
-    # would invent the finding.
     ("an_unreadable_topology_with_no_confirmed_node_stays_silent",
      {"topology": False, "amd_smi_sees_it": True, "topology_readable": False,
       "confirmed_drm": False}, None, ["--device /dev/kfd"]),
-    # And the vendor really is read: a readable topology that names no AMD is not rescued
-    # by the fallback, or an NVIDIA-only host would claim the card.
     ("a_readable_topology_naming_no_amd_is_not_rescued_by_drm",
      {"topology": False, "amd_smi_sees_it": True, "topology_readable": True,
       "confirmed_drm": True}, None, ["--device /dev/kfd"]),
 ))
 # fmt: on
 def test_what_the_installer_says_when_the_kfd_node_is_absent(tmp_path, kwargs, contains, absent):
-    """amd-smi reads the driver over sysfs and libdrm, so it lists the card in a container
-    given only --device /dev/dri, where HIP has no /dev/kfd to open; llama_cpp.py's
-    _rocm_hip_is_reachable documents that disagreement. Behind _has_amd_rocm_gpu the mapping
-    advice was suppressed on the container shape it was written for, and nothing else spoke:
-    the render node is open, so no node is closed and none is missing. The two are separate
-    branches rather than one with an inner test because they need different evidence -- with
-    no KFD topology the driver really is missing, and that diagnosis is still gated on ROCm
-    seeing nothing, so a host whose amd-smi answers is not told to install what it has.
-
-    The missing-node report was gated on SKIP_TORCH=false, so a --no-torch run whose GGUF
-    bundle is ROCm -- which opens /dev/kfd exactly as torch would -- finished silently in a
-    container mapping /dev/dri and not /dev/kfd: nothing closed, nothing missing said, no
-    account of why the backend cannot initialise. A Vulkan or CUDA bundle opens no /dev/kfd,
-    so its absence explains nothing about them and the run stays silent, and the ordinary
-    torch install is unchanged by the gate swap."""
+    """A --no-torch ROCm bundle opens /dev/kfd, so the missing-node report keys on that, not SKIP_TORCH."""
     _says(_install_sh_missing_kfd(tmp_path, **kwargs), contains, absent)
 
 
@@ -2226,20 +1642,7 @@ def test_what_the_installer_says_when_the_kfd_node_is_absent(tmp_path, kwargs, c
 ))
 # fmt: on
 def test_a_diagnostic_cannot_take_the_install_down_with_it(assignment, needs):
-    """install.sh runs under `set -e` from line 5, so an unguarded command substitution
-    aborts the whole installer when its helper's last command fails. These three shell out
-    to stat, awk and tr, none of which is guaranteed on a minimal container, and two of
-    them run on every Linux install whether or not anything is closed.
-
-    The answer on such a host has to be "no advice", never "no install": the diagnostic
-    exists to explain a GPU that is not working, and an install that dies instead is
-    strictly worse than the silence it replaced. Every consumer already reads empty as
-    nothing to report.
-
-    Verified live rather than by reading: with tr stubbed to exit 127 the unguarded form
-    aborts at the leaf read before installing anything, and the guarded form continues.
-    Asserted on the source rather than by running the installer, because reaching these
-    lines for real means running an install."""
+    """Under set -e a missing stat, awk or tr must yield no advice, never an aborted install."""
     line = next(_l for _l in _install_sh_lines() if _l.lstrip().startswith(assignment))
     assert "|| true" in line, f"{assignment} is unguarded under set -e: {line.strip()}"
 
@@ -2252,10 +1655,7 @@ def test_a_diagnostic_cannot_take_the_install_down_with_it(assignment, needs):
 ))
 # fmt: on
 def test_the_guard_actually_holds_when_those_tools_are_missing(helper, tools):
-    """The half that makes the test above mean something: the `|| true` is only worth
-    asserting if the assignment really does survive. Every named tool is stubbed to exit
-    127, which is what a minimal container looks like, and the script must reach its last
-    line with status 0."""
+    """Runs the script with every named tool stubbed to exit 127, so the || true guard must really hold."""
     lines = _install_sh_lines()
     _lifted, _seen, _queue = [], set(), [helper]
     while _queue:
@@ -2314,16 +1714,7 @@ _RENDER = "/dev/dri/renderD128"
 ))
 # fmt: on
 def test_the_installers_unnamed_gid_repair(closed_nodes, repairs, contains, absent):
-    """--group-add takes a SINGLE value, so a comma-joined pair is one group name that does
-    not exist, and naming only the first leaves the second node shut. docker/run.sh repeats
-    the flag and the Python half already emits it repeated; the installer said "the numeric
-    GID", singular, for a value it had just printed as "993,994". The singular wording still
-    has to survive for one GID, so the fix is not "always say GIDs". groupadd gives the
-    numeric owner a NAME and does not put this account in the group, so the bare-host repair
-    needs the usermod too -- the installer printed the container flags per GID after the
-    earlier fix but still said only "create a group" -- and that usermod needs the same
-    session refresh the named-group branch ends with, in its own sentence, since this fixture
-    never reaches the named-group branch."""
+    """--group-add takes one value, so a comma-joined pair names no group; each GID needs its own pair."""
     _says(_install_sh_hint(closed_nodes, repairs = repairs), contains, absent)
 
 
@@ -2343,21 +1734,7 @@ _HIP_1_SURVIVES = ["HIP_VISIBLE_DEVICES='1'", "which the groups do not clear"]
 ))
 # fmt: on
 def test_how_a_rocr_selector_reads_on_a_two_gpu_host(monkeypatch, linux, env, contains, absent):
-    """ROCr's RvdFilter builds its list from tokens that are "Legal and NOT Terminating", so
-    an entry it cannot evaluate ends the list and the devices BEFORE it still survive:
-    ROCR_VISIBLE_DEVICES='0,' leaves one device and HIP ordinal 1 hides it, which read as an
-    unresolvable list left the HIP mask unmentioned. An enumeration index is Terminating when
-    it "maps to a device that has been previously selected", so '0,0' surfaces one device
-    rather than two -- counting every token read that as two survivors and called a HIP
-    ordinal that hides the only device a valid selector. A token is Illegal when it "can't be
-    evaluated into an instance of Device UUID or Enumeration Index" (ROCR-Runtime,
-    core/inc/amd_filter_device.h), and an Illegal token ends the list, so an illegal FIRST
-    token leaves zero survivors: _post_rocr_device_count already counts it that way, while
-    this predicate called every non-index merely unresolved and the message then offered the
-    mask as something to check if the group change fails, when it is an independent blocker no
-    membership clears. A UUID is a form ROCr accepts, so it may name a device and this host
-    cannot match it against an ordinal count; calling that a blocker would invent a fault, and
-    without the arm the rule reads as "any non-index blocks"."""
+    """ROCr stops at an illegal or repeated token, so an illegal first token leaves zero survivors."""
     _says(_reason_with_masks(monkeypatch, env, {"hip"}, gpu_count = 2), contains, absent)
 
 
@@ -2374,14 +1751,7 @@ _JOIN_THE_GROUPS = "usermod -a -G render,video ada"
 def test_an_untagged_label_is_settled_by_the_live_runtime(
     monkeypatch, linux, hip, contains, absent
 ):
-    """A conda or locally built CUDA wheel carries no +cu tag, so the label names no vendor
-    and a venv that once recorded a ROCm flavor made this read the wheel as AMD-targeted --
-    replacing the reinstall advice with group membership on a host whose CUDA build cannot
-    use the AMD card however open its nodes are. torch.version.cuda is the build's own
-    answer and is stubbed here rather than the predicate that reads it. torch.version.hip
-    set means the wheel IS a ROCm build, so the closed node explains it fully and the
-    reinstall advice would send the user after the wrong repair -- without that arm the
-    rule could be "an untagged label is never AMD"."""
+    """An untagged wheel names no vendor, so torch.version.hip and cuda decide, not the label."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     _mismatch_vendors(monkeypatch, {"amd"})
     monkeypatch.setattr(hardware, "TORCH_IMPORT_ERROR", None)
@@ -2410,14 +1780,7 @@ _THREE_NODE_PATHS = ["/dev/kfd", "/dev/dri/renderD128", "/dev/dri/renderD129"]
 def test_how_wide_a_claim_the_closed_set_supports(
     monkeypatch, linux, present, openable, contains, absent
 ):
-    """One shut render node on a multi-AMD host leaves the other GPU fully reachable: HIP has
-    /dev/kfd plus an open render node, and the Vulkan loader has the same. Claiming "no GPU
-    backend can use the AMD card" there contradicts _explain_empty_gpu_probe, which appends
-    this sentence right after saying the closed node is NOT why the probe came back empty.
-    With the only render node shut nothing enumerates and the claim is exactly right, so the
-    fix cannot be "never claim the card", which is the #10466 message gone; and /dev/kfd with
-    an open render node beside it has no sibling of its own, so the narrowing must not weaken
-    that arm either -- Vulkan works there, ROCm does not."""
+    """An open sibling node keeps the other GPU reachable, so the claim must narrow, not vanish."""
     _nodes(monkeypatch, present = present, openable = openable)
     _says(amd.amd_node_permission_hint(), contains, absent)
 
@@ -2438,19 +1801,8 @@ _GID_994_PAIR = "sudo groupadd -g 994 amdgpu994 && sudo usermod -a -G amdgpu994 
 ))
 # fmt: on
 def test_the_unnamed_gid_hint(monkeypatch, linux, gids, contains, absent):
-    """groupadd gives the numeric owner a NAME. It does not put this account in the group, so
-    a user who follows the sentence to the letter still cannot open the node: both halves are
-    needed, one pair per GID, since one groupadd names one numeric owner and the second node
-    stays shut for anyone who runs only the first command. The plural wording must not be the
-    only wording either, or one GID reads as two and stops matching what it printed. usermod
-    changes /etc/group, not the groups the running login holds, so the named-group branch has
-    always ended "then log out and back in"; the unnamed-GID branch prescribes the same
-    usermod and said nothing, so an immediate retry fails and the command reads as the one
-    that did not work. `<name>` is not a placeholder in a shell, it is a redirection:
-    `groupadd -g 993 <name>` parses as a read from ./name followed by a `>` with no target,
-    which bash, dash and sh all reject with a syntax error before groupadd runs. Every
-    character here is meant to be pasted, so it must carry no shell metacharacter it does not
-    mean. The name is derived from the GID, which by definition here has no group entry."""
+    """Each GID needs groupadd and usermod, since groupadd does not add the account; <name> is a
+    redirect."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     monkeypatch.setattr(amd, "_has_an_access_acl", lambda path: False)
     _owning(monkeypatch, unnamed = gids)
@@ -2472,20 +1824,7 @@ def _install_sh_classify(
     uid: str = "0",
     self_uid: str = "4242",
 ) -> str:
-    """One classified line from the real _amd_node_repairs, for a synthetic stat record.
-
-    The awk program is lifted whole, and only ``stat`` and ``ls`` are stubbed, because the
-    cases that matter cannot be built as files: a node whose GID has no group entry needs a
-    GID this host does not name, and a root-owned one needs root.
-
-    The record is assembled in install.sh's OWN field order, read off the shipped format
-    string, so a case names the field it means instead of counting pipes. A hand-written
-    record in a fixed order would keep passing after the format was reordered while
-    measuring the wrong fields, which is exactly what the order exists to defend against:
-    the group NAME is the one field NSS controls, so it is last, and a name carrying the
-    separator can no longer shift the mode, the GID or the uid that the classifier branches
-    on.
-    """
+    """Builds the stat record in install.sh's own field order, so the name field cannot shift the rest."""
     _by_spec = {"%a": mode, "%G": group, "%g": gid, "%n": path, "%u": uid}
     stat_line = "|".join(_by_spec[_spec] for _spec in _install_sh_stat_format().split("|"))
     lines = _install_sh_lines()
@@ -2502,12 +1841,7 @@ def _install_sh_classify(
 
 
 def _install_sh_diag_route(leaf: str) -> str:
-    """Whether install.sh routes a given torch index leaf into the AMD node diagnosis.
-
-    The case statement is lifted whole rather than re-expressed, so the globs under test
-    are the shipped ones; only the leaf it reads is supplied, through a stubbed extractor,
-    because the URL-to-leaf step has its own tests.
-    """
+    """Lifts the case statement whole, so the shipped globs are tested; only the leaf is stubbed."""
     lines = _install_sh_lines()
     start = next(i for i, line in enumerate(lines) if line.startswith("_amd_node_diag_leaf="))
     end = next(i for i in range(start, len(lines)) if lines[i] == "esac")
@@ -2531,12 +1865,7 @@ def _install_sh_kfd_scope(
     torch_index: str = "https://download.pytorch.org/whl/rocm6.4",
     nvidia: bool = False,
 ) -> str:
-    """The closed-node message with the KFD scoping in front of it.
-
-    A separate lift from _install_sh_hint because the filter sits ABOVE the block that
-    harness extracts -- deliberately, so the diagnosis itself stays one self-contained
-    block -- and the thing under test here is which nodes reach it.
-    """
+    """Lifts the KFD filter and the closed-node message it gates; the filter sits above the other lift."""
     lines = _install_sh_lines()
     _filter_start = next(
         i for i, line in enumerate(lines) if line == "if ! _run_may_open_kfd; then"
@@ -2609,35 +1938,7 @@ _KFD_REPORTED = [_CLOSED, "/dev/kfd"]
 def test_which_closed_nodes_reach_the_installers_diagnosis(
     closed, skip_torch, backend, index, contains, absent
 ):
-    """/dev/kfd is opened by ROCm and nothing else, the shell twin of the runtime's needs_kfd.
-    SKIP_TORCH cannot decide it alone: --no-torch still installs a GGUF bundle, the ROCm one
-    opens /dev/kfd exactly as torch would, and which it will be is chosen later in setup.sh,
-    so suppressing there hides the #10466 diagnosis from the GGUF users it was written for.
-    Vulkan opens the render node, so the scoping takes /dev/kfd and nothing else; dropping the
-    whole diagnosis would silence the node that blocks every backend. ROCm torch opens
-    /dev/kfd whatever the bundle, so a request cannot scope the torch diagnosis.
-
-    A CPU bundle beside --no-torch opens no GPU node at all, so the group and udev repair
-    described a card nothing in the run would touch: only /dev/kfd was filtered, right for
-    Vulkan and one node short for CPU, and the narrower rule must survive the wider one.
-    REQUESTABLE_BACKENDS is auto/cpu/cuda/rocm/vulkan and a CUDA bundle opens /dev/nvidia* and
-    neither AMD node, so that run was handed the same repairs. Both report again once torch is
-    installing, which is why the predicate reads BOTH halves.
-
-    An explicitly CPU torch index installs a wheel with no ROCm runtime in it, so with a
-    non-ROCm bundle too nothing opens /dev/kfd; the early return declared otherwise purely
-    because torch was being installed at all. "cpu" is deliberately kept in the diagnosis
-    route one layer up, since the GGUF bundle is chosen later and may be the ROCm one, and a
-    ROCm index opens /dev/kfd whatever the bundle, so the rule is not "any explicit non-ROCm
-    backend suppresses".
-
-    The bundle selector normalizes with `awk '{$1=$1}'` -- trim and collapse, never delete --
-    then REJECTS what it does not recognise and falls back to automatic selection, which may
-    install ROCm. Deleting internal whitespace made "vul kan" match, so the run went quiet
-    about the very node selection needs, while a padded upper-case value does name Vulkan and
-    must still be scoped. Asserted through the KFD scope rather than the whole diagnosis,
-    because the wider predicate matches cpu|cuda only and lets every Vulkan spelling through
-    either way, which made an earlier version of this test pass on both forms."""
+    """Only ROCm opens /dev/kfd, so SKIP_TORCH alone cannot decide it; a ROCm GGUF bundle still does."""
     out = _install_sh_kfd_scope(closed, skip_torch = skip_torch, backend = backend, torch_index = index)
     _says(out, contains, absent)
 
@@ -2653,13 +1954,7 @@ def test_which_closed_nodes_reach_the_installers_diagnosis(
 def test_an_unimportable_torch_is_read_from_its_markers_on_disk(
     monkeypatch, linux, error, hip, contains, absent
 ):
-    """_torch_reports_a_hip_runtime answers an import failure from torch/version.py on disk;
-    its mirror returned False there instead, so the untagged-CUDA clearing was inert on the
-    one path it exists for. A stale recorded ROCm flavor then spoke for a CUDA wheel, and the
-    closed node replaced the reinstall guidance with group membership that cannot make that
-    wheel use the card. The hip reading leads because a ROCm build records hip and may record
-    cuda besides, so ordering the two the other way round would send every AMD host whose
-    torch fails to import after a reinstall it does not need."""
+    """An unimportable torch is read from on-disk markers, and hip is checked before cuda."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     _mismatch_vendors(monkeypatch, {"amd"})
     monkeypatch.setattr(hardware, "TORCH_IMPORT_ERROR", ImportError(error))
@@ -2683,10 +1978,7 @@ def test_an_unimportable_torch_is_read_from_its_markers_on_disk(
 def test_the_acl_sentence_runs_getfacl_on_every_node_it_lists(
     monkeypatch, linux, present, acl, expected
 ):
-    """The sentence lists every ACL-carrying node and then ran getfacl on the first one
-    alone, so a user following it read one node's grant and was left with the second blocker
-    undiagnosed. ROCm needs both nodes and their ACLs need not agree. The single-node arm is
-    there so the fix cannot have introduced a stray separator into the common case."""
+    """The ACL sentence must run getfacl on every node it lists, not only the first."""
     _nodes(monkeypatch, present = present, openable = set())
     _owning(monkeypatch, acl = acl)
     assert expected in amd.amd_node_permission_hint()
@@ -2713,21 +2005,7 @@ _CUDA_INDEX = "https://download.pytorch.org/whl/cu128"
 ))
 # fmt: on
 def test_which_runs_take_the_amd_node_diagnosis_route(index_url, kwargs, routes):
-    """The gate globbed the raw URL for */rocm* and */gfx*, which matches exactly the custom
-    pins _is_pip_rocm_family_leaf exists to reject -- a mirror named for an arch, or a private
-    ROCm build -- so an install not on a published ROCm route was told to repair the AMD
-    kernel stack. Classifying the leaf reuses that rejection, and it stays narrow:
-    repo.radeon.com's arch leaf is a real ROCm route.
-
-    --no-torch installs no wheel, so the index resolved above this gate describes nothing that
-    will run; on a hybrid host it is the CUDA one, and reading it as the route silenced every
-    node diagnosis for a run whose Vulkan bundle opens the very render node they are about. A
-    CPU llama.cpp bundle opens no AMD node at all, so those runs stay off and the fix is not
-    "--no-torch always diagnoses". A run installing CUDA wheels stays off the route as long as
-    its bundle opens no AMD node either, so the fix is scoped to the run that installs nothing
-    rather than reopening the arm above; an explicit rocm or vulkan request is the one case
-    that does reopen it, and it has its own arm below the override. Fails before the fix,
-    which read the unused index."""
+    """Classifies the index leaf, since a raw */rocm* glob also matches custom mirror pins."""
     assert _diag_route(index_url, **kwargs) is routes
 
 
@@ -2741,10 +2019,7 @@ def test_which_runs_take_the_amd_node_diagnosis_route(index_url, kwargs, routes)
 def test_the_mapping_advice_names_the_nodes_the_caller_opens(
     monkeypatch, linux, needs_kfd, contains, absent
 ):
-    """The mapping advice named both nodes whatever the caller was. Vulkan never opens
-    /dev/kfd -- which is why _amd_nodes_the_runtime_lacks already excludes it under
-    needs_kfd = False -- so this handed a container another host device for nothing. HIP
-    opens both, so the fix must not narrow the advice for the caller it was written for."""
+    """Names only the nodes the caller opens, since Vulkan never opens /dev/kfd while HIP opens both."""
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = {"/dev/kfd"})
     _says(amd.amd_node_permission_hint(needs_kfd = needs_kfd), contains, absent)
 
@@ -2778,11 +2053,8 @@ def test_the_installers_device_pair_follows_the_run(tmp_path, kwargs, contains, 
 def test_an_unreadable_render_node_vendor_reads_as_present(
     monkeypatch, linux, present, openable, vendor_readable, exists, hint_says
 ):
-    """A container can map /dev/dri and still mask the sysfs entry that names the vendor.
-    Reading that unknown as "no AMD render node exists" told the user to recreate the
-    container with --device /dev/dri, which that shape has already done. The fix is "unknown
-    reads as present" rather than "always present": a host whose glob finds nothing has
-    nothing unreadable either, and the sentence #10466 needs must still be printed."""
+    """An unknown render-node vendor counts as present; only a glob that finds no node reports it
+    missing."""
     _nodes(monkeypatch, present = present, openable = openable, vendor_readable = vendor_readable)
     assert amd._amd_render_node_exists() is exists
     if hint_says is None:
@@ -2819,12 +2091,7 @@ def _finding(
     contains = (),
     absent = (),
 ):
-    """Check an empty-probe reason.
-
-    ``credited`` is whether another vendor's open node is still a complete path, which keeps
-    the Vulkan probe sentence in front of the reason; False means the node hint replaced it,
-    and None means this build never asks the question.
-    """
+    """True keeps the Vulkan probe sentence, False replaces it, None means the question is not asked."""
     if credited is True:
         assert reason.startswith(_PROBE_SENTENCE), reason
     elif credited is False:
@@ -2845,12 +2112,7 @@ def _finding(
 def test_whether_another_vendors_open_node_is_a_path_for_this_build(
     monkeypatch, linux, openable, other_open, backends, credited, contains, absent
 ):
-    """A Vulkan-only build enumerates any vendor, so an open Intel or NVIDIA render node is
-    a complete path for it: the closed AMD node cannot then be the whole reason the probe
-    came back empty, and returning it alone dropped the finding that was. With no open node
-    of any vendor the closed AMD one IS the reason, and the hint must still replace the bare
-    probe sentence. HIP needs /dev/kfd and an AMD render node, which no other vendor's node
-    substitutes for, so the question is not even asked for it."""
+    """Another vendor's open node is a Vulkan path, but never a HIP one, which needs an AMD node."""
     _nodes(monkeypatch, present = _AMD_NODES, openable = openable)
     monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: other_open)
     _ggml(monkeypatch, backends)
@@ -2872,8 +2134,6 @@ def test_the_installer_names_the_account_id_reports(tmp_path):
     """The shell twin: `id -un` is the account the mode tests above answered for."""
     node, _group = _a_node_a_membership_would_open(tmp_path)
     out = _install_sh_hint(str(node), env_user = "root", id_user = "ada")
-    # The group is whatever owns a tmp_path file on the runner, so the account is what is
-    # asserted -- naming a group here would be asserting about the runner.
     assert re.search(r"usermod -a -G \S+ ada", out)
     assert " root" not in out
 
@@ -2883,12 +2143,7 @@ def test_the_installer_unnamed_gid_repair_is_runnable_too(tmp_path):
     emitted lines is the assertion that a placeholder would fail. Without the parse this
     would only be testing that a string changed."""
     out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993")
-    # Reassembled across the line continuation before being parsed. The installer prints the
-    # repair as `groupadd ... && \` then an indented `usermod ...`, and taking the lines
-    # separately parses a FRAGMENT: the first half ends in a dangling backslash and is not a
-    # command at all. GNU bash accepts one at end of input and returns 0, while bash 3.2, the
-    # one macOS ships, calls it "syntax error: unexpected end of file" -- so this passed here
-    # and failed there while testing the real command on neither.
+    # Rejoin `&& \` continuations: bash 3.2 rejects a trailing backslash at EOF.
     _cmds: "list[str]" = []
     _pending = ""
     for _line in out.splitlines():
@@ -2916,14 +2171,7 @@ def test_the_installer_unnamed_gid_repair_is_runnable_too(tmp_path):
 ))
 # fmt: on
 def test_what_the_installer_makes_of_a_render_node_vendor(tmp_path, vendor, verdict):
-    """The shell twin of the Python rule, which round sixteen fixed on one side only. A
-    container mapping /dev/dri while denying its sysfs attributes has a render node; calling
-    that absence told the user to recreate the container with the device it already has. The
-    rule is "unknown", not "any node": a readable vendor that is not AMD is a real answer, and
-    treating it as presence would claim an AMD card on an NVIDIA-only host. Only the two path
-    ROOTS are substituted, so the logic under test is the shipped one, and a sysfs directory
-    with no vendor file in it is what a container denying the attribute looks like from here.
-    """
+    """An unreadable render-node vendor counts as present, but a readable non-AMD one does not."""
     lines = _install_sh_lines()
     fn = _shell_fn(lines, "_amd_render_node_present")
     fn = fn.replace("/dev/dri/renderD*", f"{tmp_path}/dev/dri/renderD*")
@@ -2962,28 +2210,10 @@ _SHUT_NO_KFD = dict(present = [_RENDER, "/dev/dri/renderD129"], openable = {"/de
 ))
 # fmt: on
 def test_whether_an_open_sibling_is_a_way_in(monkeypatch, linux, host, env, needs_kfd, blocks):
-    """HIP_VISIBLE_DEVICES=0 narrows the runtime to one GPU, and nothing here maps a render node
-    back to the index it was selected by, so an OPEN sibling may belong to the GPU the mask
-    excludes. Reading it as an alternative suppressed the repair for the node the run will
-    actually use and sent the user to reinstall a runtime instead. With no selector the runtime
-    is free to use the open node, so the closed one is a second finding rather than the cause --
-    the rule cannot be "a closed node always blocks", which the open sibling arm was added to
-    stop -- and an exported but empty variable narrows nothing, so reading it as a selector
-    would keep the repair on every host that merely exports the name.
-
-    GPU_DEVICE_ORDINAL is ROCm's fourth visibility variable, already modelled in
-    test_amd_smi_inventory_matches_hip.py and llama_cpp.py's own selector check; omitting it
-    left one of the four narrowing the runtime while the sibling was still credited. HIP's
-    selectors are HIP's, though: Vulkan reads none of them -- which is what needs_kfd is for --
-    so a Vulkan caller on a masked host may still use the open sibling, and returning the
-    permission hint as the sole cause would send an empty Vulkan probe after a group change that
-    cannot fix it. The HIP caller on that host must still block, or the rule becomes "ignore
-    selectors"; its host keeps /dev/kfd present AND open, or the answer comes back True on the
-    missing-node branch and says nothing about the mask, which is how that arm first passed."""
+    """A HIP selector can exclude the GPU behind an open sibling node; an empty variable narrows nothing."""
     _nodes(monkeypatch, **host)
     for _name, _value in env.items():
         monkeypatch.setenv(_name, _value)
-    # _no_inherited_gpu_mask has already cleared every mask variable a case does not set.
     assert amd.amd_closed_nodes_block_the_runtime(needs_kfd = needs_kfd) is blocks
 
 
@@ -3002,21 +2232,7 @@ def test_whether_an_open_sibling_is_a_way_in(monkeypatch, linux, host, env, need
 def test_which_bucket_the_owning_group_lands_in(
     monkeypatch, linux, gid, names, runner_uid, expected
 ):
-    """Membership in docker is root by another route -- a container started with the host
-    filesystem mounted -- so prescribing it to open a GPU node is a privilege escalation dressed
-    as a device repair, exactly as for wheel. A minimal container can own the node root:root and
-    carry no group database entry for gid 0; the name lookup raises there, and filing that as an
-    ordinary unnamed GID produced `sudo groupadd -g 0 amdgpu0` plus a usermod into the ROOT
-    group, a grant far beyond the GPU and exactly what the privileged branch below the lookup
-    exists to refuse. gid 0 is the root group whether or not the database can name it, and the
-    rule is keyed on gid 0 rather than on the lookup failing because an unnamed NON-privileged
-    GID is the documented container case and must still get its groupadd pair.
-
-    CI commonly runs as root, and the fakes in this file give their nodes the root owner a real
-    device node has. POSIX resolves the owner class exclusively once the uid matches, so a
-    harness that let the two coincide would answer every group test with "this account owns it"
-    and assert nothing about the classification under test. The last case fails before that fix
-    with os.getuid patched to 0, which is what a root runner is."""
+    """gid 0 is root even when unnamed, so it is refused by value, not by the name lookup failing."""
     if runner_uid is not None:
         monkeypatch.setattr(amd.os, "getuid", lambda: runner_uid)
     _stat_nodes(monkeypatch, {"/dev/kfd": (gid, 0o660, 0)}, names)
@@ -3025,17 +2241,12 @@ def test_which_bucket_the_owning_group_lands_in(
 
 # fmt: off
 @pytest.mark.parametrize("name, expected", _cases(
-    # usermod -G takes a COMMA-SEPARATED list, so this is two groups to it and the
-    # account lands in sudo. _PRIVILEGED_GROUPS compares whole names and never matches.
+    # usermod -G splits on commas, so render,sudo would add sudo.
     ("a_name_carrying_the_usermod_separator", "render,sudo", _buckets(unnamed = [993])),
-    # The shell twin parses `stat -c` output with awk -F'|', where such a name shifts
-    # every field after it. Refused in both halves for one rule rather than two.
+    # The shell twin splits stat output on '|'.
     ("a_name_carrying_the_field_separator", "render|x", _buckets(unnamed = [993])),
     ("a_name_carrying_a_shell_metacharacter", "render;id", _buckets(unnamed = [993])),
     ("a_name_that_is_only_whitespace", "  ", _buckets(unnamed = [993])),
-    # The controls, without which this collapses into "never prescribe a group" and
-    # deletes what #10466 asked for. A Samba machine account carries the trailing $,
-    # and a distribution group may carry a dot or a dash.
     ("an_ordinary_group_name", "render", _buckets(joinable = ["render"])),
     ("a_samba_machine_account", "host$", _buckets(joinable = ["host$"])),
     ("a_dotted_distribution_group", "gpu.users-1", _buckets(joinable = ["gpu.users-1"])),
@@ -3044,15 +2255,7 @@ def test_which_bucket_the_owning_group_lands_in(
 def test_a_group_name_usermod_would_read_as_structure_is_not_prescribed(
     monkeypatch, name, expected
 ):
-    """Shell quoting is the wrong layer for this, which is why it was not caught by it.
-
-    `_shell_word` hands the shell ONE argument, correctly; the splitting that grants sudo
-    happens inside usermod afterwards, on its own comma syntax. So a name outside the
-    portable groupadd(8) charset is treated as no name at all and the node is reported by
-    its GID, which is what `--group-add` takes anyway, so nothing is lost.
-
-    Reverting the check puts 'render,sudo' back in the joinable bucket and the printed
-    command back to `usermod -a -G render,sudo`."""
+    """A name with a comma is not prescribed, since usermod reads it as a list; report the GID instead."""
     _stat_nodes(monkeypatch, {"/dev/kfd": (993, 0o660, 0)}, {993: name})
     assert amd._groups_that_own(["/dev/kfd"]) == expected
 
@@ -3064,12 +2267,8 @@ def test_the_printed_command_never_names_a_group_it_did_not_mean(monkeypatch, li
     _stat_nodes(monkeypatch, {"/dev/kfd": (993, 0o660, 0)}, {993: "render,sudo"})
     _the_real_group_derivation(monkeypatch)
     hint = amd.amd_node_permission_hint()
-    # The name is never handed to usermod, in any form. Not a bare "sudo not in hint": the
-    # GID repair legitimately says `sudo groupadd`, and an assertion that cannot tell the
-    # two apart would have to be weakened later rather than tightened.
     assert "render,sudo" not in hint
     assert "-G render" not in hint
-    # What this host gets instead: the GID, which is what --group-add takes anyway.
     assert "--group-add 993" in hint
 
 
@@ -3080,29 +2279,17 @@ def test_the_printed_command_never_names_a_group_it_did_not_mean(monkeypatch, li
     ("and_still_names_an_ordinary_unnamed_gid", {"group": "UNKNOWN", "gid": "993"}, "gid:993"),
     ("and_keeps_the_name_of_a_named_root_group", {"group": "wheel", "gid": "0"},
      "privileged:wheel"),
-    # usermod -G takes a comma-separated list, so a group genuinely named "render,sudo"
-    # is TWO groups to it and the alternation above, which compares whole names, walks
-    # straight past it. Quoting is the wrong layer: the split happens inside usermod,
-    # after the shell has handed it one argument. Reported by GID instead.
+    # usermod splits on commas after the shell, so quoting cannot help; report by GID.
     ("a_name_carrying_the_usermod_separator_is_not_prescribed",
      {"group": "render,sudo", "gid": "993"}, "gid:993"),
-    # And the field-shift the format order defends against: with the name anywhere but
-    # last, a pipe inside it moved the GID and uid the classifier branches on.
     ("a_name_carrying_the_field_separator_is_not_prescribed", {"group": "render|x", "gid": "993"},
      "gid:993"),
-    # The control for both, so this cannot collapse into "never prescribe a group".
     ("an_ordinary_group_name_is_still_prescribed", {"group": "render", "gid": "993"},
      "join:render"),
 ))
 # fmt: on
 def test_how_the_installer_classifies_a_nodes_owner(record, classified):
-    """The shell twin, run through the real classifier rather than a stubbed repair line.
-    `stat -c %G` prints UNKNOWN for a gid the group database cannot name, and the unnamed
-    test ran first, so a root-owned node in a minimal container came back as `gid:0` and the
-    installer printed groupadd -g 0 plus a usermod into the root group. The same shape one
-    GID up is the documented container case and must still come back as a GID to create a
-    group for, and gid 0 WITH an entry keeps the name it has, so the reordering did not turn
-    every privileged node into the literal word root."""
+    """gid 0 must be classed privileged even when stat prints UNKNOWN, not as an unnamed GID to create."""
     assert _install_sh_classify(**record) == classified
 
 
@@ -3115,23 +2302,12 @@ def test_how_the_installer_classifies_a_nodes_owner(record, classified):
 ])
 # fmt: on
 def test_which_index_leaves_the_installer_reads_as_a_rocm_route(leaf, routes):
-    """repo.radeon.com publishes rocm-rel-6.4, rocm-rel-6.5.0, rocm-rel-7.2.1 -- digits and
-    dots after the prefix, nothing else. A pin that merely starts with it is a mirror, and it
-    may serve wheels that open no AMD node, so it gets the same anchoring the sibling
-    rocm[0-9]* arm already applies to rocm7.2-private. The anchor is on the character class
-    rather than a fixed version shape, since all six rocm-rel leaves this repository names
-    must keep routing, two and three components alike. The gfx family was deliberately left
-    alone: AMD's own indexes are gfx110X-all, gfx120X-all and gfx103X-all, so a suffix there
-    is the naming convention, and anchoring gfx the same way would drop routes we ship."""
+    """rocm-rel leaves take digits and dots only, anchored like rocm[0-9]*; gfx suffixes are the norm."""
     assert _install_sh_diag_route(leaf) == ("true" if routes else "false"), leaf
 
 
 def test_the_passwd_stub_answers_a_positional_read(monkeypatch):
-    """getpass.getuser() reads pwd.getpwuid(os.getuid())[0] once none of LOGNAME, USER,
-    LNAME or USERNAME is set, and pytest calls it while building tmp_path. A stub that only
-    carries pw_name raises TypeError there, which pytest does not catch, so the whole suite
-    would die in fixture setup on a runner with no username in its environment rather than
-    run. Reproduced by clearing all four, which is the only thing that makes it reachable."""
+    """The passwd stub must answer positionally: getpass.getuser() subscripts it when no USER env is set."""
     for _var in ("LOGNAME", "USER", "LNAME", "USERNAME"):
         monkeypatch.delenv(_var, raising = False)
     assert getpass.getuser() == "ada"
@@ -3152,20 +2328,7 @@ _CUDA = "CUDA_VISIBLE_DEVICES"
 ))
 # fmt: on
 def test_how_the_hip_selector_chain_is_read(monkeypatch, linux, env, contains, absent):
-    """clr's list terminates at the first token it cannot use, and a token does not have to
-    look numeric to be unusable: rocdevice.cpp takes `index = atoi(str_id)` and rejects it
-    unless `str_id` is that index written back out, so HIP_VISIBLE_DEVICES=garbage leaves zero
-    agents exactly as -1 does and joining the group leaves the probe as empty as it was. That
-    arm fails before the fix, which asked only whether the first token was a digit and let
-    everything else through as "not a filter".
-
-    The precedence test in clr is on the first BYTE of the value, not on whether the variable
-    exists: its flag defaults to the empty string, so an empty HIP mask reads exactly like an
-    unset one and the CUDA value below it selects devices. That value names a device in the
-    second case, so nothing is hidden and no mask is a second blocker; before the fix an empty
-    HIP mask won the chain and was reported as hiding every device. Deferring to CUDA is only
-    right if CUDA is then judged on its own merits, so a CUDA value that names no device must
-    still be reported, or the fix becomes "an empty HIP mask silences the whole chain"."""
+    """A non-numeric HIP token leaves zero agents, since clr rejects any token that is not its own index."""
     _says(_reason_with_masks(monkeypatch, env, {"hip"}), contains, absent)
 
 
@@ -3195,19 +2358,13 @@ def _kfd_topology(monkeypatch, entries: dict):
 ))
 # fmt: on
 def test_the_gpu_count_reads_the_topology(monkeypatch, entries, count):
-    """The control for the helper itself: the CPU node every KFD topology carries is excluded
-    and the GPU node is counted. One entry temporarily unreadable on a two-GPU host used to
-    answer 1 rather than unknown, and an understated bound is what calls a valid selector a
-    blocker: with a count of 1, HIP_VISIBLE_DEVICES=1 reads as hiding every device and the user
-    is told to clear a mask that hides nothing. Unknown bounds nothing, which is the documented
-    contract and what _amd_render_node_exists already does with an unreadable vendor."""
+    """An unreadable topology entry must give unknown, not a smaller count that flags valid selectors."""
     _kfd_topology(monkeypatch, entries)
     assert amd.amd_kfd_gpu_node_count() == count
 
 
 # fmt: off
 @pytest.mark.parametrize("render_open, contains, absent", _cases(
-    # The repair is unchanged: these nodes are still shut and membership opens them.
     ("the_claim_is_scoped_when_a_sibling_node_is_open", True,
      ["another AMD", "render node on this host is open", "usermod -a -G"], []),
     ("and_covers_every_backend_when_none_is", False,
@@ -3215,13 +2372,7 @@ def test_the_gpu_count_reads_the_topology(monkeypatch, entries, count):
 ))
 # fmt: on
 def test_how_wide_a_claim_the_installer_makes(tmp_path, render_open, contains, absent):
-    """The Python half already says an open sibling means the closed nodes stop the card
-    rather than the host, and the installer claimed every backend was blocked regardless --
-    on a host where a Vulkan run is working through the open node as the user reads it. With
-    no AMD node open anywhere the closed set does block every backend, so the fix must not
-    soften the claim into always saying maybe.
-
-    Fails before the fix, which printed the unconditional claim."""
+    """The blanket claim that every backend is blocked holds only when no AMD node is open."""
     node, _group = _a_node_a_membership_would_open(tmp_path)
     _says(_install_sh_hint(str(node), render_open = render_open), contains, absent)
 
@@ -3253,17 +2404,7 @@ def _icd_list_value(tmp_path, value):
 def test_which_loader_variable_replaces_the_driver_search(
     monkeypatch, linux, tmp_path, var, value, credited, contains
 ):
-    """VK_DRIVER_FILES REPLACES the loader's driver search rather than adding to it, and the
-    probe child inherits it, so a list naming AMD alone means the loader never opened the
-    other vendor's driver; crediting its node suppressed the closed-node hint on a run that
-    had no other path, which hides a real repair. VK_ICD_FILENAMES is the deprecated name for
-    the same replacing list, honoured when VK_DRIVER_FILES is unset. VK_ADD_DRIVER_FILES ADDS
-    to the standard search, so every driver the loader would have found is still found and the
-    other vendor's open node is still a complete path: without that arm the fix could be "any
-    VK_ variable suppresses", turning the finding off for a host that set the one variable
-    that changes nothing about which vendors load. The loader treats an empty value as unset,
-    so a blank VK_DRIVER_FILES must not suppress either. Fails before the fix, which asked
-    only whether the node was open."""
+    """VK_DRIVER_FILES and VK_ICD_FILENAMES replace the search, VK_ADD_DRIVER_FILES adds; blank is unset."""
     reason = _vulkan_reason_under_icd_list(monkeypatch, _icd_list_value(tmp_path, value), var = var)
     _finding(reason, credited = credited, contains = contains)
 
@@ -3291,24 +2432,7 @@ _BOTH_VENDORS = os.pathsep.join(
 def test_which_driver_lists_are_evidence_that_amd_is_all_the_loader_has(
     monkeypatch, linux, tmp_path, value, filters, credited, contains
 ):
-    """A list pinned to an Intel or NVIDIA ICD leaves the loader unable to use the AMD card at
-    all, so its closed node cannot be why the probe was empty, and the group repair alone
-    sends the user after a change that cannot help. Only an AMD-only list is evidence the
-    other vendor is unreachable, and a list is AMD-only or it is not: one non-AMD entry leaves
-    that vendor loadable and its open node a complete path. A directory, or a name this does
-    not recognise, is evidence of nothing, and the guard fires on positive evidence alone, so
-    an unreadable list leaves the finding as it is rather than suppressing on a guess.
-
-    A registration with no library behind it loads nothing, so a list holding only that leaves
-    the loader with no driver at all -- the filename says AMD; the manifest says nothing is
-    there -- as does a manifest missing outright, the shape a stale VK_DRIVER_FILES has after
-    a driver is uninstalled. VK_LOADER_DRIVERS_DISABLE applies to a forced list too, so naming
-    AMD and then disabling it leaves the loader with nothing; that manifest is entirely valid
-    and only the filter makes it unloadable, which separates it from the two arms above. The
-    last case is the control for all of them: present, parses, points at a library that exists
-    and survives the filters IS an AMD-only list, and the other vendor's node is then
-    unreachable. Without it the fix could be "never suppress". Fails before the fix, which
-    read any non-empty list as AMD's, and the name alone as a driver."""
+    """Only a list that is AMD-only is evidence; a manifest whose library is missing loads nothing."""
     reason = _vulkan_reason_under_icd_list(
         monkeypatch, _icd_list_value(tmp_path, value), filters = filters
     )
@@ -3323,10 +2447,7 @@ def test_every_amd_icd_spelling_the_installer_knows_counts_here_too():
 
 
 def test_a_blocking_hip_mask_cancels_the_verdict_before_any_node_advice(monkeypatch):
-    """A mask that hides every accelerator is the configuration working, so the whole
-    chat-only classification is cancelled and no message -- node repair included -- is
-    built. This is the first of the two gates that keep a blocking selector away from the
-    node hint, and it sits well above the code that returns it."""
+    """A mask hiding every accelerator cancels the chat-only verdict before any node advice is built."""
     monkeypatch.setattr(
         hardware,
         "get_physical_gpu_inventory",
@@ -3341,10 +2462,7 @@ def test_a_blocking_hip_mask_cancels_the_verdict_before_any_node_advice(monkeypa
 
 
 def test_a_blocking_mask_drops_amd_from_the_vendors_the_node_hint_needs(monkeypatch):
-    """The second gate, for the hybrid host the first one does not cover: an NVIDIA card still
-    raises the verdict, but the masked AMD card is dropped from the inventory that establishes
-    it, so "amd" never reaches CHAT_ONLY_MISMATCH_VENDORS and the node hint is not even
-    computed. An empty active CUDA mask is the same story, since HIP reads that variable too."""
+    """On a hybrid host a mask drops the masked AMD card from the vendors, so the node hint is skipped."""
     devices = [{"vendor": "amd"}, {"vendor": "nvidia"}]
     monkeypatch.setattr(
         hardware,
@@ -3359,10 +2477,7 @@ def test_a_blocking_mask_drops_amd_from_the_vendors_the_node_hint_needs(monkeypa
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "-1")
     kept = hardware._devices_that_can_establish_a_mismatch(devices)
     assert {device["vendor"] for device in kept} == {"nvidia"}
-    # HIP reads CUDA_VISIBLE_DEVICES too, so an emptied one hides both cards rather than
-    # just the NVIDIA half -- nothing establishes the mismatch at all and the verdict is
-    # cancelled a step earlier. Either way "amd" is not among the vendors, which is the
-    # invariant the node hint is gated on.
+    # HIP reads CUDA_VISIBLE_DEVICES too, so emptying it hides both cards.
     monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
     kept = hardware._devices_that_can_establish_a_mismatch(devices)
@@ -3376,11 +2491,7 @@ def _icd_manifest(
     library = "libvulkan_radeon.so",
     present = True,
 ):
-    """A Vulkan ICD manifest on disk, and the path to it.
-
-    Written rather than named, because the rule under test is that a manifest has to point
-    at a library that is actually there: a path string alone proves nothing.
-    """
+    """Writes an ICD manifest, and its library only if present, since a bare path string proves nothing."""
     lib = tmp_path / library
     if present:
         lib.write_bytes(b"")
@@ -3405,19 +2516,12 @@ def _vulkan_reason_under_icd_list(
     search_dirs = None,
     filters = None,
 ):
-    """The empty-probe reason for a Vulkan build with the AMD node shut and another
-    vendor's node open, under a given loader configuration.
-
-    ``value`` is a forced driver list, or None for a host that has none and is answered by
-    the loader's own search; ``search_dirs`` stands in for that search, so an arm cannot be
-    decided by whatever drivers the runner happens to have installed."""
+    """search_dirs replaces the loader's search, so the runner's installed ICDs cannot decide the arm."""
     _nodes(monkeypatch, present = _AMD_NODES, openable = set())
     monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: True)
     for _var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_ADD_DRIVER_FILES"):
         monkeypatch.delenv(_var, raising = False)
     if filters is not None or search_dirs is not None:
-        # Cleared only for the arms that state their own loader configuration, since an arm
-        # that names a filter is testing that filter and must keep it.
         for _var in ("VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE"):
             monkeypatch.delenv(_var, raising = False)
     for _var, _value in (filters or {}).items():
@@ -3464,10 +2568,7 @@ def _blocks_under_selector(
     var = "HIP_VISIBLE_DEVICES",
     also = None,
 ):
-    """Whether a closed render node blocks a HIP runtime, with one sibling open.
-
-    ``also`` sets a second selector, since which of two the runtime reads is itself a
-    question here."""
+    """The also argument sets a second selector, because which of two the runtime reads is in question."""
     _nodes(
         monkeypatch,
         present = ["/dev/dri/renderD128", "/dev/dri/renderD129", "/dev/kfd"],
@@ -3500,23 +2601,7 @@ def _blocks_under_selector(
 ))
 # fmt: on
 def test_whether_a_selector_narrows_the_host(monkeypatch, linux, value, count, var, blocks):
-    """HIP_VISIBLE_DEVICES=0,1 on a two-GPU host selects the whole host, so the open sibling
-    is still a complete ROCm path and the closed node is a second finding rather than the
-    cause; reading any selector as a narrowing handed that host the group repair in place of
-    the driver diagnosis, and with nothing set the sibling was always evidence. The rule
-    exists because nothing here maps a render node back to the index a selector chose it by,
-    so under a real narrowing the open node may be the excluded GPU's. A UUID names a device
-    by identity and an unreadable GPU count answers nothing: both leave the selector unmapped,
-    and unmapped goes on meaning narrowed.
-
-    ROCr's filter terminates on a token naming a device it has already selected, so
-    ROCR_VISIBLE_DEVICES=0,0,1 surfaces ONE GPU on a two-GPU host; counting distinct ordinals
-    read that as the whole host and kept the sibling as evidence for a runtime that can no
-    longer reach it. The rule is per layer rather than global, because clr's parser stops only
-    on a token that is not its own index written back out, so it accepts the repeat and both
-    GPUs survive -- a global repeat rule would hand that host the group repair instead of the
-    driver diagnosis. Fails before the fix, which asked only whether a selector was set, and
-    accumulated a set with no repeat rule."""
+    """A UUID or unreadable GPU count stays narrowing; only a selector naming every GPU does not."""
     assert _blocks_under_selector(monkeypatch, value, count = count, var = var) is blocks
 
 
@@ -3534,17 +2619,7 @@ def test_whether_a_selector_narrows_the_host(monkeypatch, linux, value, count, v
 def test_whether_the_installer_repairs_a_card_the_run_will_not_use(
     tmp_path, kwargs, contains, absent
 ):
-    """An unset or `auto` backend is resolved by _linux_published_attempts, which takes the
-    CUDA bundle under `if host.has_usable_nvidia:` and reaches ROCm only in the `elif
-    host.has_rocm` below it. So on a hybrid box with a usable NVIDIA GPU neither a CPU torch
-    nor the automatic bundle opens an AMD node, and the AMD-evidence gates cannot tell -- the
-    card is there and its nodes are shut, they are just unused. An explicit rocm request IS a
-    decision and the resolver honours it, so the nodes that bundle opens are the user's
-    problem to repair whatever else is on the bus; with no NVIDIA GPU the automatic bundle may
-    well be the ROCm one, which is the #10466 host, so nothing about `auto` is a reason to go
-    quiet; and a run installing ROCm wheels opens AMD nodes whatever bundle is chosen later,
-    so the bundle question is never reached. Fails before the fix, which read an unresolved
-    `auto` as "may open"."""
+    """Auto on a hybrid NVIDIA host opens no AMD node, but an explicit rocm request does."""
     node, _group = _a_node_a_membership_would_open(tmp_path)
     _says(_install_sh_hint(str(node), **kwargs), contains, absent)
 
@@ -3563,25 +2638,13 @@ def test_whether_the_installer_repairs_a_card_the_run_will_not_use(
 ))
 # fmt: on
 def test_the_installer_only_names_an_account_the_system_knows(tmp_path, kwargs, contains, absent):
-    """The shell half of the same item. `id -un` fails outright for a uid the passwd database
-    does not know, and the old fallback then named the inherited $USER -- which in a container
-    commonly still says root, so the command would succeed against an identity nothing is
-    running as and leave the node shut. With a passwd entry the command is the repair, exactly
-    as before. The unnamed-GID branch prints a groupadd AND a usermod, and the second needs
-    the same account, so with no passwd entry the container flag is the whole repair. The
-    last two cases are the control for the ordinary host: a node whose group grants read and
-    write gets the sentence and the command, in one piece. Fails before the fix, which fell
-    back to ${USER}."""
+    """Names the account only when passwd knows it, since $USER may say root while nothing runs as it."""
     node, _group = _a_node_a_membership_would_open(tmp_path)
     _says(_install_sh_hint(str(node), **kwargs), contains, absent)
 
 
 def _assert_amd_only_loader(reason: str, amd_only: bool) -> None:
-    """The two verdicts a loader configuration reaches for a host with the AMD node shut.
-
-    AMD-only means the other vendor's open node is not a path this binary has, so the node
-    repair stands; anything else leaves the empty probe explained without it.
-    """
+    """AMD-only means another vendor's open node is no path, so the node repair stands."""
     if amd_only:
         assert "the Vulkan probe reported no device" not in reason
         assert "usermod" in reason
@@ -3589,7 +2652,6 @@ def _assert_amd_only_loader(reason: str, amd_only: bool) -> None:
         assert reason.startswith("the Vulkan probe reported no device")
 
 
-# Every loader override an arm below may have to clear before stating its own.
 _VK_OVERRIDE_VARS = (
     "VK_DRIVER_FILES",
     "VK_ICD_FILENAMES",
@@ -3630,21 +2692,7 @@ _UNDER_CUDA = {"also": {"CUDA_VISIBLE_DEVICES": "0"}}
 ])
 # fmt: on
 def test_which_selector_lists_narrow_a_two_gpu_host(monkeypatch, linux, case):
-    """Whether a closed render node blocks the runtime, for each shape of selector list.
-
-    The HIP layer reads HIP_VISIBLE_DEVICES when non-empty and CUDA_VISIBLE_DEVICES only
-    otherwise, so a CUDA value under a HIP one narrows nothing while the same value alone IS
-    the selector, the precedence _hip_layer_var already applies; reading all four side by side
-    let the shadowed one discard an open sibling the runtime can still reach. clr BREAKS out
-    of its parse on a token it cannot map, having already pushed what it accepted, so 0,1,-1
-    leaves both GPUs visible and a word ends the list identically (atoi returns 0, which is
-    not the token written back) -- read as narrowed, those hosts got the group repair in place
-    of the driver diagnosis they need. The prefix is judged rather than trusted because 0,-1
-    accepts ONE of two and really is narrowed. ROCr's RvdFilter ends the same way on an
-    already-selected token.
-
-    Fails before the fix, which asked every name independently and returned False on the
-    unmappable token."""
+    """clr stops at the first unmappable token, so only the prefix before it counts; 0,-1 narrows to one."""
     value, extra, blocks = case
     assert _blocks_under_selector(monkeypatch, value, count = 2, **extra) is blocks
 
@@ -3664,16 +2712,7 @@ def _two_vendor_icd_dir(tmp_path) -> "list[str]":
 ])
 # fmt: on
 def test_a_loader_search_is_read_through_its_filters(monkeypatch, linux, tmp_path, case):
-    """VK_LOADER_DRIVERS_SELECT applies to whatever the loader would load, forced list or
-    search, so a host with no list at all can still be pinned to AMD alone; reading the two
-    force-list variables only left it crediting the other vendor's open node to a binary whose
-    loader never opens that vendor's driver. Unfiltered the loader loads both manifests, so
-    that node IS a path and the closed AMD one cannot be why the probe was empty -- otherwise
-    the rule becomes "a search always means AMD only", which suppresses the finding on every
-    host.
-
-    Fails before the fix, which asked what a forced list was named rather than what the
-    loader would load."""
+    """VK_LOADER_DRIVERS_SELECT also filters the search; a host with no forced list can be AMD-only."""
     filters, amd_only = case
     reason = _vulkan_reason_under_icd_list(
         monkeypatch, None, search_dirs = _two_vendor_icd_dir(tmp_path), filters = filters
@@ -3728,16 +2767,7 @@ def test_the_search_dirs_match_the_installers(monkeypatch):
 ])
 # fmt: on
 def test_where_the_automatic_route_reports_a_closed_kfd(case):
-    """setup.sh warns "Ignoring UNSLOTH_LLAMA_CPP_BACKEND=..." for anything outside its list
-    and the installer normalises it to auto, so a typo installs the automatically chosen
-    bundle -- on a hybrid box CUDA, which opens no AMD node. Listing the two spellings of "no
-    decision" instead of the values that ARE decisions let a rejected value pose as one. An
-    explicit rocm request is honoured by the resolver, so its bundle opens /dev/kfd on a
-    hybrid box exactly as on an AMD-only one, and reading every hybrid host as CUDA would
-    silence #10466 for the users who asked for ROCm. The automatic route is silent only where
-    it resolves away from AMD: with no NVIDIA card it resolves to ROCm and reports.
-
-    Fails before the fix, which matched "" and auto alone."""
+    """A rejected backend value normalises to auto, so only real choices may count as a decision."""
     backend, nvidia, silent, present = case
     out = _install_sh_kfd_scope("/dev/kfd", skip_torch = True, backend = backend, nvidia = nvidia)
     _assert_scope(out, silent = silent, present = present)
@@ -3753,10 +2783,6 @@ def _nvidia_probe_calls(backend = None):
             f"export UNSLOTH_LLAMA_CPP_BACKEND={backend or ''!r}",
             "_probe_calls=0",
             "_has_usable_nvidia_gpu() { _probe_calls=$((_probe_calls + 1)); return 1; }",
-            # Every one of these is lifted rather than stubbed, for the reasons
-            # _install_sh_hint gives: a harness that omits one measures a missing function
-            # rather than a rule, and _shell_quote left out makes every interpolated name
-            # come back EMPTY.
             *(
                 _shell_fn(lines, _name)
                 for _name in (
@@ -3785,13 +2811,7 @@ def _nvidia_probe_calls(backend = None):
 ])
 # fmt: on
 def test_how_often_the_nvidia_probe_runs(case):
-    """_has_usable_nvidia_gpu shells out to a bounded `nvidia-smi -L` on every call and is not
-    memoized, while the two scope predicates are consulted at every diagnosis; nothing it
-    reads changes within a run, so an NVIDIA-less host was paying a subprocess per gate. A
-    decision the resolver honours settles the question without asking about the other vendor's
-    hardware at all, so the memo is not merely cheaper there, it is unreached.
-
-    Fails before the fix, which probed on every call."""
+    """The NVIDIA probe runs nvidia-smi on every call; nothing it reads changes in a run, so memoise it."""
     backend, calls = case
     assert _nvidia_probe_calls(backend) == calls
 
@@ -3805,14 +2825,7 @@ def test_how_often_the_nvidia_probe_runs(case):
 ])
 # fmt: on
 def test_whether_an_explicit_bundle_routes_the_node_diagnoses(case):
-    """The route was derived from the torch index alone, so a CUDA-pinned index asked for the
-    ROCm bundle read as a CUDA route and silenced all three diagnoses -- for a run whose bundle
-    opens the very nodes they are about. The SKIP_TORCH override below the case could not
-    catch it, since it only runs when no wheel is installed at all. The new arm only ever
-    turns the route ON, so a cpu request and no request at all stay with the two scope
-    predicates, which is where a bundle that opens no AMD node belongs.
-
-    Fails before the fix, which had no arm for the backend request here."""
+    """A CUDA-pinned index must not hide a ROCm bundle request, which opens the nodes the diagnoses name."""
     backend, routed = case
     assert _diag_route("https://download.pytorch.org/whl/cu128", backend = backend) is routed
 
@@ -3824,14 +2837,7 @@ def test_whether_an_explicit_bundle_routes_the_node_diagnoses(case):
 ])
 # fmt: on
 def test_the_kernel_stack_hint_on_a_hybrid_rocm_host(tmp_path, case):
-    """_has_amd_rocm_gpu opens with `if _has_usable_nvidia_gpu; then return 1`, right where it
-    is choosing a torch index and wrong here: this branch has already established the run
-    opens AMD nodes, so the veto made rocminfo's answer unreachable and a healthy hybrid ROCm
-    host was told to install the ROCm kernel stack it already has. An AMD card on the bus that
-    ROCm genuinely cannot see is what the sentence is for, so dropping the veto must not have
-    dropped the finding.
-
-    Fails before the fix, which read the wrapped probe."""
+    """No NVIDIA veto here: the run already opens AMD nodes, so the rocminfo probe must still answer."""
     rocm_visible, says_rocm_cannot_see_it = case
     out = _install_sh_missing_kfd(
         tmp_path, topology = False, nvidia = True, backend = "rocm", rocm_visible = rocm_visible
@@ -3858,15 +2864,7 @@ def _search_plus_added_driver(tmp_path, name, library):
 ])
 # fmt: on
 def test_how_an_added_driver_list_is_read(monkeypatch, linux, tmp_path, case):
-    """VK_ADD_DRIVER_FILES is read FIRST and then the search, and it may name a manifest no
-    search directory holds; leaving it out made a host whose only foreign driver arrived that
-    way look AMD-only, and that vendor's open node then stopped excusing the closed AMD one.
-    The loader ignores the additive list entirely when VK_DRIVER_FILES or VK_ICD_FILENAMES is
-    set, so a foreign driver added beside a forced AMD list is not a path this binary has; and
-    reading the list must not make every host that has one look mixed-vendor, so an AMD
-    manifest added to an AMD-only search is still AMD alone.
-
-    Fails before the fix, which read the search alone."""
+    """VK_ADD_DRIVER_FILES is read too, but ignored once a forced list is set; an AMD add stays AMD-only."""
     name, library, forced, amd_only = case
     search, amd_manifest, added = _search_plus_added_driver(tmp_path, name, library)
     reason = _vulkan_reason_under_icd_list(
@@ -3894,26 +2892,7 @@ def test_how_an_added_driver_list_is_read(monkeypatch, linux, tmp_path, case):
 ])
 # fmt: on
 def test_which_shut_nodes_are_credited_to_amd(monkeypatch, linux, case):
-    """Which of the two shut nodes reaches the closed list, for each shape of evidence.
-
-    A container can map the render node and hide the sysfs entry naming its vendor. Requiring
-    a confirmed AMD vendor dropped the node, so nothing was CLOSED -- while
-    _amd_render_node_exists reads the same unknown as PRESENT and withdraws the missing-node
-    sentence too, leaving #10466's own shape with no diagnosis at all. KFD is the independent
-    evidence that keeps this off every NVIDIA host, since its topology reports 0x10DE there,
-    and a vendor that CAN be read and is not AMD is positive evidence the node is somebody
-    else's even where the topology does report an AMD GPU.
-
-    The same distinction one node over: a container can map /dev/kfd and hide /sys/class/kfd,
-    and the guard read that as "not an AMD GPU". DRM says otherwise and independently, so
-    /dev/kfd was dropped from a list the render node stayed in -- and where the two carry
-    different owning groups the hint then named a membership that leaves KFD shut and ROCm
-    with nothing to open. A topology that READS and names no AMD GPU is positive evidence
-    rather than absence, so the fallback must not fire there; and it is vendor-CONFIRMED,
-    never assumed, so an unreadable render vendor cannot stand in for a topology this could
-    not read either.
-
-    Fails before the fix, which asked for a vendor the container had hidden."""
+    """Unknown vendor still counts as AMD given KFD evidence; the DRM fallback needs a confirmed one."""
     node_kwargs, vendor, closed, hint = case
     _nodes(monkeypatch, present = _AMD_NODES, openable = set(), **node_kwargs)
     if vendor is not None:
@@ -3941,20 +2920,7 @@ _RADEON_WHEEL = "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/gfx1151"
 ])
 # fmt: on
 def test_which_nodes_reach_the_kfd_scope(case):
-    """Which closed nodes survive the KFD filter, for a wheel index and a bundle request.
-
-    Only a ROCm wheel opens /dev/kfd, and reading "any index that is not cpu" as one that does
-    was harmless only while _amd_node_diag_route dropped every non-ROCm index; the
-    explicit-backend arm keeps the route for a vulkan request, so a CUDA wheel beside a Vulkan
-    bundle reached the KFD scope and told a healthy hybrid host to repair a node neither opens.
-    That bundle DOES open a render node, so scoping /dev/kfd must not take the diagnosis the
-    explicit-backend arm exists to reach (the round-twenty-four fix), and the bundle is the
-    other half of the question, so an explicit rocm request keeps /dev/kfd even though the CUDA
-    wheel never touches it. On the route this installer reroutes #10466's own host to,
-    repo.radeon.com's leaf is rocm-rel-X.Y, not a pip family: a classifier knowing only the pip
-    spellings silences the diagnosis for the host it was written for.
-
-    Fails before the fix, which excluded the cpu leaf alone."""
+    """Only a ROCm wheel opens /dev/kfd, so a CUDA wheel must not pull it into the KFD scope."""
     nodes, backend, wheel, nvidia, silent, present, absent = case
     out = _install_sh_kfd_scope(
         nodes, skip_torch = False, backend = backend, torch_index = wheel, nvidia = nvidia
@@ -3976,18 +2942,7 @@ def test_which_nodes_reach_the_kfd_scope(case):
 ])
 # fmt: on
 def test_which_registrations_a_64_bit_binary_can_load(monkeypatch, linux, tmp_path, case):
-    """A distribution registers the 32-bit ICD beside the 64-bit one, and a 64-bit
-    llama-server cannot load it: a host left with only that has no driver at all, so the other
-    vendor's open node is not shut out by an AMD-only loader -- there is no loader. The pair is
-    the layout every multilib host has, one AMD driver registered twice, so the loader still
-    loads AMD and only AMD; otherwise the rule becomes "any i686 name means no AMD driver",
-    which is the normal case. Asked of every vendor rather than of AMD alone, because treating
-    a 32-bit manifest as simply "not AMD" would make nvidia_icd.i686.json evidence that this
-    loader reaches another vendor's card, when a 64-bit binary can load neither it nor the
-    card behind it. The same foreign driver in its loadable build IS such a path, so the
-    exclusion cannot be "ignore other vendors".
-
-    Fails before the fix, which read the name as AMD and suppressed."""
+    """A 32-bit manifest is no evidence of a rival vendor, since a 64-bit binary cannot load it."""
     manifests, amd_only = case
     paths = [
         _icd_manifest(tmp_path, _name, **({"library": _library} if _library else {}))
@@ -3998,10 +2953,7 @@ def test_which_registrations_a_64_bit_binary_can_load(monkeypatch, linux, tmp_pa
 
 
 def test_the_32_bit_rule_matches_the_installers(tmp_path):
-    """The installer decides whether an AMD driver is installed from the same filenames, and
-    a host where the two disagree gets one answer from the Vulkan route and another from this
-    diagnosis. Only the needles are shared: the installer asks it of AMD names alone, this of
-    every vendor, which is a difference in question not in rule."""
+    """Shares the 32-bit AMD ICD needles with the installer, so the two routes cannot disagree."""
     import install_llama_prebuilt
 
     assert set(amd._VULKAN_ICD_32_BIT_NEEDLES) == set(
@@ -4021,12 +2973,7 @@ def _vulkan_node_hint_under_icd_list(
     env = None,
     sibling_open = False,
 ):
-    """The empty-probe reason for a Vulkan build with the AMD node shut, so the answer is the
-    node repair and the question is what is appended to it.
-
-    ``sibling_open`` is another vendor's node being open, which demotes the node repair to a
-    second finding; the default is no such sibling.
-    """
+    """sibling_open demotes the node repair to a second finding when another vendor's node is open."""
     _nodes(monkeypatch, present = _AMD_NODES, openable = set())
     monkeypatch.setattr(amd, "a_non_amd_render_node_is_open", lambda: sibling_open)
     for _var in _VK_OVERRIDE_VARS:
@@ -4035,9 +2982,6 @@ def _vulkan_node_hint_under_icd_list(
         monkeypatch.setattr(amd, "_vulkan_icd_search_dirs", lambda: list(search_dirs))
     if value is not None:
         monkeypatch.setenv("VK_DRIVER_FILES", value)
-    # After the clearing above, since that is what makes an arm about ONE override able to
-    # set it. `value` reaches the loader through VK_DRIVER_FILES, so an arm that is about a
-    # different override passes None and names its search dirs instead.
     for _name, _value in (env or {}).items():
         monkeypatch.setenv(_name, _value)
     _ggml(monkeypatch, {"vulkan"})
@@ -4047,11 +2991,7 @@ def _vulkan_node_hint_under_icd_list(
 def test_the_no_driver_diagnosis_stays_primary_when_a_sibling_node_is_open(
     monkeypatch, linux, tmp_path
 ):
-    """Codex 4040623258. With another vendor's node open, the closed AMD node is a SECOND
-    finding: the runtime had a complete path and enumerated nothing anyway. The loader having
-    no loadable driver is not second, it is sufficient on its own, and folding it into
-    node_hint demoted it along with the permission text to "not why the probe is empty" -- the
-    one sentence that always holds, filed under the one that does not."""
+    """With a sibling node open the no-driver diagnosis stays primary, since it alone is sufficient."""
     _icd_manifest(tmp_path, "radeon_icd.json", present = False)
     reason = (
         _vulkan_node_hint_under_icd_list(
@@ -4061,11 +3001,8 @@ def test_the_no_driver_diagnosis_stays_primary_when_a_sibling_node_is_open(
     )
     assert "no driver it can load" in reason
     assert "reinstall the Vulkan driver" in reason
-    # The demotion applies to the permission finding only, so the loader sentence must come
-    # BEFORE it rather than inside it.
     _demoted = reason.index("Separately, and not why the probe is empty")
     assert reason.index("no driver it can load") < _demoted
-    # And "also" is dropped, since no node repair precedes it here.
     assert "loader also has no driver" not in reason
 
 
@@ -4081,14 +3018,7 @@ def test_the_no_driver_diagnosis_stays_primary_when_a_sibling_node_is_open(
 ])
 # fmt: on
 def test_when_the_no_driver_sentence_joins_the_node_repair(monkeypatch, linux, tmp_path, case):
-    """Two things are wrong at once and the node repair clears only one of them: with every
-    registered manifest unloadable the probe stays empty however the node is owned, so a user
-    who runs the usermod and nothing else is left exactly where they were. Fail-closed in the
-    other direction, which is the one that matters here: an enumeration that found NO
-    manifests means this could not read the loader's configuration, not that the loader has
-    nothing, and emitting the sentence there sends a working host after a driver reinstall it
-    does not need on top of a repair it does. Manifests found AND loadable is the ordinary
-    host, where the closed node is the whole story and the sentence must stay off."""
+    """Finding no manifests means the config is unreadable, not empty, so no driver sentence is printed."""
     configuration, says_no_driver = case
     _kwargs = configuration(tmp_path)
     reason = _vulkan_node_hint_under_icd_list(monkeypatch, _kwargs.pop("value"), **_kwargs)
@@ -4109,16 +3039,7 @@ def test_when_the_no_driver_sentence_joins_the_node_repair(monkeypatch, linux, t
 ])
 # fmt: on
 def test_which_bucket_an_owning_group_lands_in(monkeypatch, linux, case):
-    """os.access already said the node is shut, so a group this account is ALREADY in is not
-    what is denying it: usermod exits 0 and leaves the node exactly as closed, and the denial
-    is outside the file mode -- a container device cgroup, or an LSM. A group it does not hold
-    IS the repair, and is what #10466 asked for, so the rule cannot be "never prescribe a
-    group". The same one branch over: a numeric owner with no group-database entry is the
-    container shape, where the repair is groupadd plus --group-add, itself the same empty
-    promise once the account carries the gid -- which is why the already-held question is
-    asked BEFORE the naming branch.
-
-    Fails before the fix, which read the group bits and prescribed the membership."""
+    """A group already held is not the denial, since os.access already failed; a cgroup or LSM may be."""
     gid, names, held, expected = case
     _stat_nodes(monkeypatch, {"/dev/kfd": (gid, 0o660, 0)}, names)
     monkeypatch.setattr(amd.os, "getgroups", lambda: [gid] if held else [])
@@ -4134,7 +3055,6 @@ def test_the_hint_for_a_group_already_held_names_the_cgroup_instead(monkeypatch,
     _nodes(monkeypatch, present = ["/dev/kfd"], openable = set())
     _owning(monkeypatch, already = ["render"])
     hint = amd.amd_node_permission_hint()
-    # The command, not the word: the sentence itself says usermod would change nothing.
     assert "usermod -a -G" not in hint
     assert "already in the render group" in hint
     assert "cgroup" in hint
@@ -4148,13 +3068,7 @@ def test_the_hint_for_a_group_already_held_names_the_cgroup_instead(monkeypatch,
 ])
 # fmt: on
 def test_whether_the_installer_prescribes_the_owning_group(tmp_path, case):
-    """The shell half of the rule above, read from `id -G`; without it the two halves disagree
-    on the same host and the installer prints the usermod the Python side just declined to.
-    The control is an account outside the group, where the command comes back, so the shell
-    rule cannot be "never prescribe". The trap in reading `id -G` as text is that the list is
-    space separated, so an unpadded match makes gid 100 look held by an account that is only
-    in 1001: the last case is owned by a group the account does NOT have, whose gid is a
-    prefix of two it does."""
+    """Matches id -G gids with padding, since 100 would otherwise match an account that only holds 1001."""
     gids_for, already = case
     node, _group = _a_node_a_membership_would_open(tmp_path)
     out = _install_sh_hint(str(node), self_gids = gids_for(os.stat(node).st_gid))
@@ -4169,12 +3083,7 @@ def _bare_soname_manifest(
     name,
     soname = "libvulkan_radeon.so",
 ):
-    """An ICD manifest naming its library by soname alone, and the path to it.
-
-    The form NVIDIA registers under, and the one _icd_manifest cannot produce: that helper
-    writes an absolute path so it can put the library on disk, which is exactly the case this
-    is not.
-    """
+    """Writes a manifest that names its library by bare soname, which _icd_manifest cannot produce."""
     path = tmp_path / name
     path.write_text(
         json.dumps(
@@ -4205,18 +3114,7 @@ _NVIDIA_SONAME = "libGLX_nvidia.so.0"
 ])
 # fmt: on
 def test_when_a_bare_soname_registration_is_a_driver(monkeypatch, linux, tmp_path, case):
-    """A manifest may name its library by soname and leave the loader to find it, so the
-    package can be removed and leave the registration behind; trusting the name counted a
-    driver that is not there and withheld the reinstall half of the repair. The control is the
-    same manifest with the library where ld.so would find it, since a bare name IS the
-    ordinary case for every vendor that registers one. The cache is consulted because a
-    versioned soname such as libGLX_nvidia.so.0 lives wherever ld.so.conf put it, which need
-    not be a directory this enumerates. And it fails closed: musl ships no ldconfig -p and a
-    minimal container may ship none at all, so "not found" there is ignorance rather than
-    absence, and calling a live driver stale would promote the AMD node as the sole cause on a
-    host whose other vendor really does have a path.
-
-    Fails before the fix, which returned True for every bare name."""
+    """A bare soname counts only if ld.so finds it; a missing ldconfig cache means unknown, not stale."""
     name, soname, on_disk, cache, usable = case
     lib = tmp_path / "lib"
     lib.mkdir()
@@ -4253,12 +3151,7 @@ def test_a_stale_bare_registration_reaches_the_driver_sentence(monkeypatch, linu
 
 
 def test_the_mask_fixture_isolates_every_selector_the_rule_reads():
-    """The fixture decides what "no mask" means for this whole suite, so a selector the
-    production rule reads and the fixture does not clear is answered by the runner's own
-    environment: a ROCm or OpenCL host exports GPU_DEVICE_ORDINAL, and the no-mask controls
-    would then quietly take the narrowing branch they exist to rule out. Read out of the
-    rule's own source rather than restated, so adding a fifth selector fails here instead of
-    drifting."""
+    """Clears each selector the rule reads, taken from its source, so runner exports cannot narrow."""
     _source = inspect.getsource(amd._a_per_gpu_mask_narrows_the_runtime)
     _read = set(re.findall(r'"([A-Z_]+(?:VISIBLE_DEVICES|DEVICE_ORDINAL))"', _source))
     assert _read, "the rule named no selector, so this test proves nothing"
@@ -4266,11 +3159,7 @@ def test_the_mask_fixture_isolates_every_selector_the_rule_reads():
 
 
 def test_the_installer_chains_the_groupadd_pair(tmp_path):
-    """groupadd and usermod are a pair, and the name is generated from the GID, which says
-    nothing about whether that NAME is free. Printed as two separate lines, a host that
-    already has an amdgpu993 group at another GID fails the groupadd and then SUCCEEDS the
-    usermod against the wrong group, leaving the node shut having reported success. Fails
-    before the fix, which printed them unchained."""
+    """Chains groupadd and usermod with &&, so a name clash cannot let usermod act on the wrong group."""
     out = _install_sh_hint("/dev/dri/renderD128", repairs = "gid:993")
     _lines = out.splitlines()
     _at = next(i for i, l in enumerate(_lines) if "groupadd" in l)
@@ -4307,12 +3196,7 @@ def _a_closed_node_file(tmp_path, name):
 
 
 def _install_sh_closed_nodes(nodes, *, vendors, topology: bool) -> "list[str]":
-    """The installer's closed-node enumeration, run over a named set of files.
-
-    The real one reads /dev and /sys, which no test can reach, so the two seams it now has
-    are stubbed and the node files themselves are real: the mode tests are the rule under
-    test and must run against actual permissions.
-    """
+    """Runs the closed-node enumeration over real files, stubbing only the /dev and /sys seams it reads."""
     lines = _install_sh_lines()
     _vendor_cases = " ".join(
         f"{shlex.quote(str(_path))}) printf %s {shlex.quote(_vendor)} ;;"
@@ -4324,7 +3208,6 @@ def _install_sh_closed_nodes(nodes, *, vendors, topology: bool) -> "list[str]":
             + " ".join(shlex.quote(str(_n)) for _n in nodes)
             + "; }",
             f"_kfd_topology_has_an_amd_gpu() {{ return {0 if topology else 1}; }}",
-            # A vendor sysfs will not name exits non-zero, which is the case under test.
             '_amd_render_node_vendor() { case "$1" in ' + _vendor_cases + " *) return 1 ;; esac; }",
             _shell_fn(lines, "_amd_nodes_closed_to_this_user"),
             "_amd_nodes_closed_to_this_user",
@@ -4406,20 +3289,9 @@ def _icd_manifest_with(
 ])
 # fmt: on
 def test_what_decides_an_icd_manifests_bitness(monkeypatch, linux, tmp_path, case):
-    """library_arch is the loader's own field, read for exactly this purpose: to skip a driver
-    whose bitness cannot match the process. A neutrally named 32-bit registration passed the
-    filename test and credited a driver this binary cannot open, and a manifest named i686
-    that declares 64 is loadable, because the declaration is the loader's answer and the name
-    is only ever a guess at it. The field is optional -- Debian strips it back out of Mesa's
-    manifests to keep one file across architectures -- so its absence is ordinary and the
-    object itself still says: EI_CLASS is byte 4 of every ELF. The filename is the last
-    resort, unchanged, and is also all the installer ever has.
-
-    Fails before the fix, which asked the filename alone."""
+    """Bitness comes from library_arch, then ELF EI_CLASS byte 4, and the filename only as a last resort."""
     name, manifest_kwargs, is_32 = case
     manifest = _icd_manifest_with(tmp_path, name, **manifest_kwargs)
-    # Empty for every arm, so the filename fallback is reached only where there is no
-    # declaration and no library on disk to read.
     monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: [])
     assert amd._an_icd_is_32_bit(manifest) is is_32
 
@@ -4485,32 +3357,22 @@ def test_the_two_quoting_rules_are_the_same_rule(tmp_path):
             text = True,
         )
         assert out.returncode == 0, out.stderr
-        # What actually matters, asked of the shell rather than of the spelling: each
-        # quoting has to be ONE word that comes back as the name it started as.
         for _quoted in (out.stdout, shlex.quote(value)):
             _back = subprocess.run(
                 ["bash", "-c", "printf %s " + _quoted], capture_output = True, text = True
             )
             assert _back.returncode == 0, _back.stderr
             assert _back.stdout == value, (value, _quoted, _back.stdout)
-        # And the printed text is identical too, so the two halves show the same command.
-        # An embedded quote is the one place the spellings differ ('"'"' against \\''), and
-        # both are correct, so that case is carried by the round trip above alone.
         if "'" not in value:
             assert out.stdout == shlex.quote(value), (value, out.stdout)
 
 
-# The helpers every tests/sh ROCm harness lifts alongside _has_amd_rocm_gpu. Adding a name
-# here is only honest once all five harnesses lift it too, which is what the test below the
-# invariant checks: each name must appear in every harness that lifts the probe.
+# Each name here must be lifted by every tests/sh harness that lifts the probe.
 _ROCM_PROBE_CALLEES_THE_SH_HARNESSES_LIFT = frozenset(
     {
         "_ensure_rocm_probe_env",
         "_has_usable_nvidia_gpu",
-        # Reads UNSLOTH_FORCE_ROCM_TORCH, the opt-in that lets a mixed NVIDIA+AMD host ask
-        # for the ROCm stack (#10450). Unlifted it is an undefined command, which exits
-        # non-zero, which reads as "not requested" -- the default answer, so a harness would
-        # keep passing while the branch under test was never the one the flag selects.
+        # Unlifted, the undefined command reads as 'not requested' and the test passes vacuously.
         "_rocm_torch_explicitly_requested",
     }
 )
@@ -4529,23 +3391,13 @@ def _functions_called_by(lines: "list[str]", name: str) -> set:
 
 
 def test_the_rocm_probe_calls_nothing_the_shell_harnesses_do_not_lift():
-    """tests/sh lifts probes out of install.sh one function at a time, by name, with
-    `sed -n '/^_name()/,/^}/p'`. So _has_amd_rocm_gpu may only call helpers those harnesses
-    already lift: a call to anything else is an undefined function there, the ROCm branch
-    falls through to the CPU wheel index, and four harnesses fail on a torch-index assertion
-    that has nothing to do with what changed. That is not hypothetical -- splitting the probe
-    into a wrapper over a private _amd_rocm_gpu_visible did exactly this, and the NVIDIA veto
-    now lives inside the function so there is nothing to forget. Fails if the split comes
-    back."""
+    """tests/sh lifts probes by name, so _has_amd_rocm_gpu may call only helpers those harnesses lift."""
     called = _functions_called_by(_install_sh_lines(), "_has_amd_rocm_gpu")
     assert called <= _ROCM_PROBE_CALLEES_THE_SH_HARNESSES_LIFT, called
 
 
 def test_the_harnesses_really_lift_every_name_the_allowlist_claims():
-    """The control on the allowlist above. That test only fails when the probe grows a call,
-    so widening the frozenset silences it whether or not the harnesses were updated -- which
-    is the same silent failure by a shorter route. Check the harnesses themselves: every
-    tests/sh file that lifts _has_amd_rocm_gpu must lift each allowlisted callee too."""
+    """Each tests/sh harness that lifts _has_amd_rocm_gpu must also lift every allowlisted callee."""
     sh_dir = Path(__file__).resolve().parents[3] / "tests" / "sh"
     harnesses = [
         path
@@ -4556,8 +3408,6 @@ def test_the_harnesses_really_lift_every_name_the_allowlist_claims():
     assert len(harnesses) >= 5, [p.name for p in harnesses]
     for path in harnesses:
         source = path.read_text(encoding = "utf-8")
-        # A harness that only stubs the probe (bad_arch_gate does this for some cases) still
-        # lifts it elsewhere; asking for the name anywhere in the file is the right grain.
         for callee in sorted(_ROCM_PROBE_CALLEES_THE_SH_HARNESSES_LIFT):
             assert callee in source, f"{path.name} lifts _has_amd_rocm_gpu but not {callee}"
 
@@ -4577,12 +3427,7 @@ def test_that_check_sees_a_helper_the_harnesses_would_not_have():
 
 
 def _multilib_soname(tmp_path, *, bitnesses):
-    """Two loader search directories carrying one soname, and the manifest naming it.
-
-    Named the way a Debian multilib host names them, because the ORDER is the subject:
-    sorted(glob) puts i386-linux-gnu ahead of x86_64-linux-gnu, so a search that stops at
-    the first hit reads the wrong copy on the commonest multilib layout there is.
-    """
+    """Builds a 32-bit and 64-bit soname copy in Debian multilib order, since that order is under test."""
     dirs = []
     for _arch, _bits in (("i386-linux-gnu", 32), ("x86_64-linux-gnu", 64)):
         _dir = tmp_path / _arch
@@ -4612,15 +3457,7 @@ def _multilib_soname(tmp_path, *, bitnesses):
 ])
 # fmt: on
 def test_which_copy_of_a_multilib_soname_answers(monkeypatch, tmp_path, case):
-    """Both bitnesses of one soname is what a multilib driver install looks like. ld.so picks
-    the copy matching the process; the reconstructed search order does not, and i386 sorts
-    first, so the first hit was the 32-bit one -- _an_icd_is_32_bit then read that object and
-    discarded a manifest whose driver the loader loads, which either withholds the whole
-    no-driver repair or reports the loader as AMD-only when it is not. The control keeps the
-    rule from becoming "never 32-bit", which would put back every unloadable 32-bit
-    registration the bitness filter exists to drop.
-
-    Fails before the fix, which returned the first match."""
+    """A multilib soname must resolve to the copy matching the process, not the first directory searched."""
     bitnesses, chosen, is_32 = case
     manifest, dirs = _multilib_soname(tmp_path, bitnesses = bitnesses)
     monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: dirs)
@@ -4645,11 +3482,8 @@ def _manifest_missing(tmp_path, name, *, drop):
 
 @pytest.mark.parametrize("field", ["file_format_version", "api_version"])
 def test_a_manifest_the_loader_skips_is_not_a_driver(tmp_path, field):
-    """loader_parse_icd_manifest returns VK_ERROR_INCOMPATIBLE_DRIVER on a missing
-    file_format_version and on a missing api_version, exactly as it does on a missing
-    library_path. Reading library_path alone counted a registration the loader refuses, which
-    suppresses the no-driver repair or calls the loader AMD-only when it is neither. Fails
-    before the fix for both fields."""
+    """A manifest missing file_format_version or api_version is refused by the loader, so it is no
+    driver."""
     assert amd._icd_manifest_is_usable(_manifest_missing(tmp_path, field, drop = field)) is False
 
 
@@ -4695,11 +3529,7 @@ _EMPTY_CACHE = "0 libs found in cache `/etc/ld.so.cache'\n"
 ])
 # fmt: on
 def test_what_an_ldconfig_answer_means(monkeypatch, linux, case):
-    """glibc separates the two states by EXIT STATUS, not by row count: a cache that is
-    present and empty prints "0 libs found in cache" and exits 0, while an absent cache file
-    exits 1 with nothing on stdout. Storing only a non-empty set collapsed them, so a fresh
-    container whose cache has not been built read as "cannot enumerate". The non-zero exit is
-    the absent-cache case and must stay None, so a live driver is never called stale."""
+    """A non-zero ldconfig exit means the cache is absent, which must stay None, not an empty set."""
     returncode, stdout, sonames = case
     _ldconfig_answering(monkeypatch, returncode = returncode, stdout = stdout)
     if sonames is None:
@@ -4711,10 +3541,7 @@ def test_what_an_ldconfig_answer_means(monkeypatch, linux, case):
 def test_a_bare_soname_is_stale_when_the_readable_cache_does_not_carry_it(
     monkeypatch, linux, tmp_path
 ):
-    """What the distinction is for. The soname is on no directory ld.so searches and in a
-    cache that could be read, so it does not resolve -- and the manifest naming it is a
-    registration with no driver behind it. Read as unknown, it answered usable, which is the
-    arm that withholds the reinstall half of the repair."""
+    """A soname missing from a readable ld cache is a stale registration, not an unknown one."""
     manifest = _bare_soname_manifest(tmp_path, "radeon_icd.json", "libvulkan_radeon.so")
     monkeypatch.setattr(amd, "_dynamic_loader_search_dirs", lambda: [str(tmp_path / "lib")])
     _ldconfig_answering(monkeypatch, returncode = 0, stdout = _EMPTY_CACHE)
@@ -4731,16 +3558,8 @@ def _kernel_stack_hint_block() -> str:
 
 
 def test_the_kernel_stack_advice_is_gated_on_the_node_being_absent():
-    """The chain's guard is that /dev/kfd is not CLOSED, which is equally true when the node is
-    absent and when it is open, so an openable /dev/kfd reached a sentence saying there was
-    none -- and /dev/kfd IS the amdkfd char device, so its presence proves the stack is loaded
-    and a reinstall repairs nothing. Read off install.sh because a host with the node cannot
-    be fabricated here: the test operator is live by design, and the arm below skips without
-    one. A revert removes the `[ -e /dev/kfd ]` arm and this raises rather than passing
-    quietly."""
+    """Kernel-stack advice is gated on /dev/kfd being absent, since its presence proves the stack loaded."""
     block = _kernel_stack_hint_block()
-    # Both arms now carry the topology gate as well, since a node that merely EXISTS does
-    # not establish that the AMD driver is what created it.
     present = block.index("[ -e /dev/kfd ] && _kfd_node_is_amds")
     absent = block.index("[ ! -e /dev/kfd ] || ! _kfd_node_is_amds")
     assert present < block.index("kernel stack is already loaded") < absent
@@ -4748,23 +3567,15 @@ def test_the_kernel_stack_advice_is_gated_on_the_node_being_absent():
 
 
 def test_the_installer_names_the_userspace_when_the_node_is_already_there(tmp_path):
-    """The executed half, for a host that has the node. It used to skip unless the RUNNER
-    had /dev/kfd, which is the one machine shape a dev box never is; the arm it pairs with
-    skipped on exactly the complement, so the pair was never both run anywhere. The `-e`
-    operator is still executed -- only the path it is given belongs to this case."""
+    """Runs the -e /dev/kfd branch for real with a path this case owns, so it executes on every host."""
     out = _kernel_stack_hint_text(tmp_path, topology = True, kfd_present = True)
     assert "Install the ROCm kernel stack" not in out
     assert "kernel stack is already loaded" in out
     assert "rocminfo" in out
-    # Codex 4050704658, and the reason the arm above now needs a topology naming AMD: a
-    # /dev/kfd that exists proves a node exists, not that the AMD driver created it. Where
-    # the topology is READ and holds no AMD agent, the kernel stack is not loaded and the
-    # userspace-only advice is the wrong repair.
+    # An existing /dev/kfd does not prove the AMD driver created it.
     out = _kernel_stack_hint_text(tmp_path, topology = False, kfd_present = True)
     assert "kernel stack is already loaded" not in out
     assert "Install the ROCm kernel stack" in out
-    # ...but a topology that cannot be READ is unproven rather than contradicted, so the
-    # container masking /sys/class/kfd keeps the advice it has today.
     out = _kernel_stack_hint_text(
         tmp_path, topology = False, topology_readable = False, kfd_present = True
     )
@@ -4793,11 +3604,7 @@ def _resolved_backend(**env: str) -> str:
 
 
 def _gpu_node_scope(**env: str) -> str:
-    """Whether _run_may_open_a_gpu_node fires, on an NVIDIA host with --no-torch.
-
-    That host is the one the automatic route answers NO for, so anything that says yes here
-    says it because the run named a backend.
-    """
+    """On an NVIDIA --no-torch host only an explicit backend request can make the check fire."""
     lines = _install_sh_lines()
     script = "\n".join(
         [
@@ -4831,16 +3638,7 @@ _BACKEND = "UNSLOTH_LLAMA_CPP_BACKEND"
 ])
 # fmt: on
 def test_how_the_legacy_vulkan_flag_is_resolved(case):
-    """effective_backend_request resolves UNSLOTH_FORCE_VULKAN through
-    environment_backend_override, so a run that sets only the legacy flag installs the Vulkan
-    bundle; reading the new variable alone left that run on the automatic route here, where an
-    NVIDIA card answers no and every render-node diagnosis is suppressed for an install that
-    opens exactly those nodes. A recognised public value is authoritative, so the legacy
-    boolean cannot pull a cuda install back to Vulkan -- and "auto" is such a value, a request
-    to DETECT, which is why the override returns it rather than falling through; otherwise the
-    fix reads as "the legacy flag always wins" and takes a host that asked for detection off
-    the automatic route. Only the four truthy spellings count, exactly as the Python side
-    lists them, so a 0 leaves the automatic route alone."""
+    """The legacy UNSLOTH_FORCE_VULKAN flag yields to any recognised backend value, including auto."""
     env, resolved, scope = case
     assert _resolved_backend(**env) == resolved
     assert _gpu_node_scope(**env) == scope
@@ -4859,46 +3657,27 @@ _VK_MASK = "GGML_VK_VISIBLE_DEVICES"
                  id = "an_unboundable_mask_on_a_vulkan_build"),
     pytest.param(({_VK_MASK: ""}, {"hip"}, (), (_VK_MASK,)), id = "the_same_mask_on_a_hip_build"),
     pytest.param(({}, {"vulkan"}, (), (_VK_MASK,)), id = "no_such_mask_at_all"),
-    # A negative ordinal is the one out-of-range value decidable WITHOUT the raw device
-    # count: ggml extracts with `size_t tmp; while (ss >> tmp)`, unsigned extraction runs
-    # strtoull, and "-1" wraps to 2**64-1, which is >= any possible num_available_devices.
-    # So it always throws "Invalid Vulkan device index" and no group membership repairs it.
-    # Reported as a blocker, never as a mask merely worth checking after the group repair.
+    # ggml extracts as size_t, so -1 wraps to 2**64-1 and always throws: a blocker.
     pytest.param(({_VK_MASK: "-1"}, {"vulkan"},
                   ("visibility mask is also in force", f"{_VK_MASK}='-1'"),
                   ("names a device this cannot resolve",)),
                  id = "a_negative_ordinal_always_throws_so_it_blocks"),
-    # Extraction WALKS the list, so a negative one throws wherever it sits, as long as
-    # every token ahead of it still extracts.
     pytest.param(({_VK_MASK: "0,-1"}, {"vulkan"},
                   ("visibility mask is also in force",),
                   ("names a device this cannot resolve",)),
                  id = "a_negative_ordinal_behind_a_valid_one_still_blocks"),
-    # ... but only as far as the first token that does NOT extract: ggml stops reading
-    # there, so the negative one is never reached and cannot be what throws.
+    # ggml stops at the first token that does not extract.
     pytest.param(({_VK_MASK: "abc,-1"}, {"vulkan"},
                   ("visibility mask is also in force",), ()),
                  id = "a_negative_ordinal_after_a_dead_token_is_never_read"),
-    # "-0" wraps to 0, which is in range on any host with a device, so it is not a throw
-    # and must not be promoted to a blocker: that would invent the fault this guards.
+    # -0 wraps to 0, which is in range.
     pytest.param(({_VK_MASK: "-0"}, {"vulkan"},
                   ("names a device this cannot resolve", f"{_VK_MASK}='-0'"), ()),
                  id = "a_negative_zero_is_in_range_and_stays_unresolved"),
 ])
 # fmt: on
 def test_when_the_vulkan_selector_is_named_beside_the_node(monkeypatch, linux, case):
-    """A Vulkan build reads none of the four HIP/CUDA selectors, so the loop above skips them
-    all and the node repair was returned as the complete explanation. ggml reads
-    GGML_VK_VISIBLE_DEVICES itself and _run_vulkan_probe passes it through, and an empty value
-    extracts no ordinal at all, so the probe stays empty however the node is owned. Its
-    ordinals index the RAW vkEnumeratePhysicalDevices list, before CPU devices are dropped and
-    ICDs deduplicated, so this process does not have the bound and a merely large positive
-    ordinal throws rather than hiding: reported to check rather than called a blocker, since
-    naming it one would invent a fault. A NEGATIVE one is the exception, decidable without the
-    bound because it wraps past every possible one. A build reads its own selectors and no
-    others, so naming this
-    one to a HIP install sends the user after a variable its runtime never reads; and unset is
-    not empty, so the rule cannot be "always mention it"."""
+    """A Vulkan build reads GGML_VK_VISIBLE_DEVICES, not the HIP selectors; a negative ordinal blocks."""
     env, backends, present, absent = case
     reason = _reason_with_masks(monkeypatch, env, backends)
     for _text in present:
@@ -4908,10 +3687,7 @@ def test_when_the_vulkan_selector_is_named_beside_the_node(monkeypatch, linux, c
 
 
 def test_the_two_topology_readers_agree_on_this_host():
-    """The shell and Python tri-states are the same rule written twice, and the closed-node
-    walk on each side now branches on the third value, so a divergence would give one half the
-    DRM fallback and not the other. Asserted as AGREEMENT rather than as a fixed value, so the
-    arm is meaningful on a runner with a real KFD topology as well as on one without."""
+    """The shell and Python KFD readers must agree, asserted rather than fixed so it holds on any host."""
     lines = _install_sh_lines()
     script = "\n".join(
         [
@@ -4944,12 +3720,7 @@ def test_the_two_confirmed_render_node_readers_agree_on_this_host():
 
 
 def test_the_installer_kfd_arm_consults_the_same_fallback():
-    """Read off install.sh because a /dev/kfd cannot be fabricated here: the arm is gated on
-    the literal path and on live -e/-r/-w tests, which are the rule under test. Without the
-    fallback the installer names only the render node's group, and where the two nodes carry
-    different owning groups that membership leaves KFD shut -- and the PCI branch further down
-    then reads the node as openable. A revert removes these names and this fails rather than
-    passing quietly."""
+    """The installer's KFD arm must use the same DRM fallback, as the two nodes may differ in group."""
     lines = _install_sh_lines()
     body = _shell_fn(lines, "_amd_nodes_closed_to_this_user")
     _kfd = body.index("= /dev/kfd ]")
@@ -4957,8 +3728,6 @@ def test_the_installer_kfd_arm_consults_the_same_fallback():
     _arm = body[_kfd:_elif]
     assert "_kfd_topology_amd_state" in _arm
     assert "_a_confirmed_amd_render_node_exists" in _arm
-    # The readable-but-not-AMD state still drops the node, which is what keeps an
-    # NVIDIA-only host silent; only the unreadable one reaches DRM.
     assert "-eq 1 ]; then" in _arm and "continue" in _arm
 
 
@@ -4968,14 +3737,7 @@ def _loader_blame(
     searched = (),
     **env: str,
 ) -> "str | None":
-    """Which override amd.py blames for a loader that can load none of its manifests.
-
-    The dict value says whether that manifest still resolves to a library, which is the
-    difference between "clear the variable" and "reinstall the driver": these paths do not
-    exist on the test host, so the real _icd_manifest_is_usable would call every one of them
-    broken. ``searched`` is what the ordinary search would find with a forced list cleared,
-    which is the only way a forced list can be the repair.
-    """
+    """Each manifest's value says whether it still resolves to a library, since test paths never exist."""
     for var in _VK_OVERRIDE_VARS:
         monkeypatch.delenv(var, raising = False)
     for var, value in env.items():
@@ -5030,34 +3792,7 @@ _ICD_GONE = "/gone/radeon.json"
 ])
 # fmt: on
 def test_which_override_a_driverless_loader_blames(monkeypatch, case):
-    """Which variable clearing would actually restore a driver, and None where none would.
-
-    DISABLE applies to every driver the loader knows, so a list matching them all leaves it
-    with none and no reinstall changes an environment variable; the sentence prescribed
-    exactly that repair. SELECT is read first because _vulkan_loader_allows reads it first: a
-    set select list answers alone, so one naming a driver this host lacks excludes the ones it
-    has. A forced list REPLACES the search, so a stale path leaves the loader with manifests
-    that do not resolve while the real drivers sit unread, and reinstalling puts a driver
-    where nothing is looking. With no override the manifests are what they are and installing
-    a driver IS the repair, so the rule cannot be "always blame the environment".
-
-    Disable WINS over select, so clearing select after both name the same driver changes
-    nothing -- advice that cannot work, and what this answered before. Select is named where
-    select is what excludes the manifest; both are named where neither removal alone repairs,
-    and the same across kinds, since clearing a filter can leave a manifest that is not there
-    while clearing the list exposes a search the filter then empties. The one-sided controls
-    sit beside those, so this is not "always say both". A forced list is only the repair when
-    clearing it leaves a driver: a present, permitted manifest that has merely lost its
-    library is the reinstall case, while the same list hiding a search that WOULD have found
-    one is the repair after all.
-
-    Codex 4040623253: the counterfactual tested filename allowance, not loadability, so a
-    filter over a manifest that no longer resolves was named as the whole repair -- clear the
-    variable, and the loader keeps the same unloadable manifest and no driver. Its control
-    keeps that from becoming "never blame a filter". Finding no manifests at all says only
-    that this cannot read the loader's configuration, which
-    the_vulkan_loader_has_no_usable_driver already answers False for, so there is nothing to
-    name."""
+    """Blames the override whose clearing restores a loadable driver, or both where neither alone does."""
     manifests, searched, env, blamed = case
     _answer = _loader_blame(monkeypatch, manifests, searched = searched, **env)
     if blamed is None:
@@ -5076,11 +3811,7 @@ def test_which_override_a_driverless_loader_blames(monkeypatch, case):
 ])
 # fmt: on
 def test_which_repair_the_no_driver_sentence_prescribes(monkeypatch, linux, tmp_path, case):
-    """The message a user actually reads, since the helper above only decides it. The manifest
-    in the first case resolves perfectly well and the filter is the whole reason the loader
-    has nothing, so "reinstall the Vulkan driver" is a repair that cannot work; the control is
-    the case the sentence WAS written for, without which the fix could be "never say
-    reinstall"."""
+    """Says reinstall only when the library is missing; a filter over a good manifest needs clearing."""
     library_present, env, present, absent = case
     _icd_manifest(tmp_path, "radeon_icd.json", present = library_present)
     reason = _vulkan_node_hint_under_icd_list(
@@ -5093,10 +3824,7 @@ def test_which_repair_the_no_driver_sentence_prescribes(monkeypatch, linux, tmp_
 
 
 def _repair_user_under(id_stub: str) -> str:
-    """What install.sh captures as the account to name, given this `id`.
-
-    The assignment is lifted from the file rather than restated, so reverting it fails this.
-    """
+    """Runs install.sh's own _amd_repair_user assignment under a stubbed id, so reverting it fails."""
     lines = _install_sh_lines()
     i = _install_sh_anchor(lines, "_amd_repair_user=$(id -un")
     script = "\n".join([id_stub, lines[i].strip(), 'printf "%s" "$_amd_repair_user"'])
@@ -5111,26 +3839,13 @@ def _repair_user_under(id_stub: str) -> str:
 ])
 # fmt: on
 def test_which_account_the_installer_names(case):
-    """`docker run --user 1234`, which is the shape the paragraph above the assignment is
-    about. GNU id PRINTS the uid and THEN exits 1 for a uid it cannot resolve (coreutils id.c,
-    print_user falls back to uidtostr), so a `|| printf ''` fallback never runs and the
-    captured value was the number. The callers read empty as "no account to name" and print
-    the container repair; a numeric one reached `usermod -a -G render 1234`, which usermod
-    rejects with "user '1234' does not exist". Verified against real GNU coreutils in a
-    container before this was written. The control keeps the fix from becoming "never name an
-    account", which removes the usermod prescription on every ordinary host."""
+    """GNU id prints the uid and exits 1 for an unknown one, so an empty fallback never runs."""
     id_stub, named = case
     assert _repair_user_under(id_stub) == named
 
 
 def _topology_state(monkeypatch, tmp_path, entries: "dict[str, str | None]"):
-    """_kfd_topology_amd_state over a fabricated node tree.
-
-    A value of None is a properties file that will not open, which is what a masked sysfs
-    and an LSM both produce; the others are the file's contents. os.listdir and open are
-    redirected on the MODULE rather than on builtins: a global open patch recurses, since
-    pathlib opens files to answer the patch.
-    """
+    """Redirects os.listdir and open on the module, since a global open patch recurses through pathlib."""
     real = tmp_path / "nodes"
     for name, body in entries.items():
         node = real / name
@@ -5185,20 +3900,14 @@ def test_what_an_unreadable_topology_node_answers(monkeypatch, tmp_path, case):
         ("radeon*", "", True),
         ("nvidia*", "", False),
         ("", "radeon*", False),
-        # The case Khronos settles: disable is considered BEFORE select, and drivers have no
-        # VK_LOADER_LAYERS_ALLOW counterpart to name one back, so the real loader ends up
-        # with no driver here. Read as "select answers alone" this counted Radeon usable and
-        # reported only the device-node repair for a host groups cannot fix.
+        # Khronos: disable applies before select, so no driver remains.
         ("radeon*", "radeon*", False),
         ("radeon*", "nvidia*", True),
         ("radeon*,nvidia*", "nvidia*", True),
     ],
 )
 def test_the_loader_filters_are_an_allowlist_then_a_denylist(monkeypatch, select, disable, allowed):
-    """Vulkan-Loader, LoaderInterfaceArchitecture.md: "The values from the disable
-    environment variable will be considered before the enable or select environment
-    variable", and VK_LOADER_DRIVERS_DISABLE is "also checked before other driver
-    environment variables (such as VK_LOADER_DRIVERS_SELECT)"."""
+    """VK_LOADER_DRIVERS_DISABLE is checked before VK_LOADER_DRIVERS_SELECT, so a denylist wins."""
     monkeypatch.setenv("VK_LOADER_DRIVERS_SELECT", select)
     monkeypatch.setenv("VK_LOADER_DRIVERS_DISABLE", disable)
     assert amd._vulkan_loader_allows("/usr/share/vulkan/icd.d/radeon_icd.x86_64.json") is allowed
@@ -5223,14 +3932,7 @@ def _lacking(monkeypatch, *, topology, confirmed_drm, kfd_present, render_presen
 ])
 # fmt: on
 def test_when_a_missing_kfd_is_reported_as_missing(monkeypatch, case):
-    """`docker run --device /dev/dri` without `--device /dev/kfd`, which commonly masks
-    /sys/class/kfd too. The topology proves nothing there, but DRM names an AMD render node
-    outright, and a HIP caller cannot run without /dev/kfd -- so suppressing the diagnosis left
-    that host with the generic "no GPU" reading of its own missing device mapping. The DRM
-    evidence must be the CONFIRMED kind, since an NVIDIA-only host has render nodes under the
-    same glob and reading an unreadable vendor as AMD would hand it a ROCm device-mapping
-    repair for a card it does not have. And READ and denied is not unknown, so a host whose
-    KFD nodes all report another vendor gets nothing whatever DRM says."""
+    """Confirmed DRM names an AMD render node even when sysfs hides KFD, so /dev/kfd is reported missing."""
     topology, confirmed_drm, lacks = case
     assert (
         _lacking(
@@ -5268,14 +3970,7 @@ def test_the_wording_does_not_claim_a_loaded_driver_it_cannot_prove(monkeypatch)
 ])
 # fmt: on
 def test_the_message_ends_with_the_command_a_user_pastes(monkeypatch, case):
-    """The membership sentence ends in a command a user copies, and nothing may follow it.
-
-    Rendered in place it ran straight into the next sentence: "... -a -G render ada ROCm needs
-    /dev/kfd ...", where the command a reader selects to end-of-line picks up the word after
-    it. Ending the whole message with it is what keeps the command copyable as written; a full
-    stop would be selected along with the account name instead. The sentence that used to
-    follow it is still present, just no longer glued on, and with nothing else to say the hint
-    is still the repair, so nothing is lost by holding it back to the end."""
+    """The command ends the message, so a user copying it to end of line does not pick up the next word."""
     lacks, also_present = case
     monkeypatch.setattr(amd, "amd_nodes_closed_to_this_user", lambda **_k: ["/dev/dri/renderD128"])
     monkeypatch.setattr(amd, "_amd_nodes_the_runtime_lacks", lambda **_k: lacks)

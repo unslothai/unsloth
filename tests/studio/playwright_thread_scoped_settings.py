@@ -359,13 +359,17 @@ def read_globals(page):
     )
 
 
-def _wait_globals(page, expected):
-    """Polls up to 10 s for the Search default to read expected; on timeout the caller's check reports."""
+def _wait_globals(
+    page,
+    expected,
+    key = "unsloth_chat_tools_enabled",
+):
+    """Polls up to 10 s for a pill default to read expected; on timeout the caller's check reports."""
     try:
         wait_until(
-            lambda: read_globals(page)["unsloth_chat_tools_enabled"] == expected,
+            lambda: read_globals(page)[key] == expected,
             timeout_s = 10,
-            what = f"the Search default to read {expected}",
+            what = f"{key} to read {expected}",
             interval_s = 0.1,
             page = page,
         )
@@ -476,6 +480,16 @@ def main():
         step("an unsaved chat still edits the installation defaults")
         # Plain /chat has a runtime-made thread id with no row; it must not count as an open chat.
         settle(page)
+        # Search and Tools default on, and earlier tests share this home: pin both off first.
+        for label, key in (
+            ("Search", "unsloth_chat_tools_enabled"),
+            ("Tools", "unsloth_chat_code_tools_enabled"),
+        ):
+            if pill(page, label).get_attribute("data-active") == "true":
+                pill(page, label).click()
+            _wait_globals(page, "false", key)
+            if read_globals(page)[key] != "false":
+                fail(f"turning {label} off never reached the defaults: {read_globals(page)!r}")
         pill(page, "Search").click()
         _wait_globals(page, "true")
         enabled_globals = read_globals(page)

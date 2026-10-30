@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, NamedTuple, Optional
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 from hub.schemas.inventory import LocalModelInfo, LocalModelListResponse, ModelFormat
 from hub.storage.scan_folders import (
@@ -187,8 +188,7 @@ _NESTED_SCAN_SKIP_NAMES = frozenset({"ollama_links", "node_modules", "__pycache_
 def _is_plain_dir_entry(entry: os.DirEntry) -> bool:
     if not entry.is_dir(follow_symlinks = False):
         return False
-    # A Windows junction is a directory to is_dir(follow_symlinks=False) before 3.12; other reparse
-    # points (OneDrive placeholders) are real folders and stay walkable.
+    # Pre-3.12 junctions look like dirs; OneDrive placeholders are real folders and stay walkable.
     tag = getattr(entry.stat(follow_symlinks = False), "st_reparse_tag", 0)
     return tag != _IO_REPARSE_TAG_MOUNT_POINT
 
@@ -199,9 +199,7 @@ def is_loadable_model_dir(path: Path) -> bool:
 
 
 def nested_scan_roots(folder_path: Path) -> list[Path]:
-    """Sub-folders of a recursive scan folder to scan like the folder itself (#6371). Skips listed models, HF cache
-    repos, hidden folders, symlinks and junctions, so each model is reached once and the walk stays inside."""
-    # Same test _scan_models_dir uses to list the folder as one model; loose GGUFs beside sub-folders are not.
+    """Same test as _scan_models_dir; loose GGUFs beside sub-folders are not one model."""
     if _is_model_directory_for_scan(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES):
         return []
     roots: list[Path] = []
@@ -492,10 +490,7 @@ def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
 
 
 def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
-    """Whether the newest snapshot (the one ``_scan_hf_cache`` classifies) holds a real file.
-    Without symlinks huggingface_hub moves blobs into ``snapshots/<rev>/`` and leaves ``blobs/``
-    empty. Walked with ``scandir``, bounded by entries read (``rglob`` lists a whole directory
-    before yielding); unreadable entries are skipped."""
+    """Without symlinks, huggingface_hub leaves blobs/ empty, so real files live in snapshots/."""
     snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
     if snapshot is None:
         return False
@@ -1734,6 +1729,7 @@ def _classify_unsloth_models(models: List[LocalModelInfo]) -> List[LocalModelInf
         return models
 
 
+@in_scan_memo
 async def list_unsloth_models_response() -> LocalModelListResponse:
     # Off the loop with the scan: classifying a GGUF reads its header.
     try:
@@ -1752,6 +1748,7 @@ async def _account_local_response(response):
     return response.model_copy(update = {"models": models})
 
 
+@in_scan_memo
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
     """Coalesce overlapping local inventory requests for the same models root."""
 

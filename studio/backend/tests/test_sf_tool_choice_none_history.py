@@ -27,7 +27,6 @@ LOOKUP_TOOL = {
     },
 }
 
-# A named-template model: tool support lives ONLY in the tool_use branch.
 DEFAULT_BODY = (
     "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
 )

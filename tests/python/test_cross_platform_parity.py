@@ -1109,6 +1109,7 @@ class TestInstallUvCacheRootParity:
             "builds",
             "built-wheels",
             "environments",
+            "files",
             "flat-index",
             "git",
             "interpreter",
@@ -1118,7 +1119,7 @@ class TestInstallUvCacheRootParity:
             "simple",
             "wheels",
         }
-        assert 'UV_PINNED_VERSION="0.12.1"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
+        assert 'UV_PINNED_VERSION="0.13.5"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
         case_body = re.search(
             r'case "\$\{1%-v\*\}" in\n(.*?)\n\s*\*\) return 1', bucket_sh, re.S
         ).group(1)

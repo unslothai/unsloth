@@ -12,6 +12,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 from hub.utils import companion_assets, download_registry
 from hub.utils.gguf import gguf_variant_key
@@ -201,7 +202,9 @@ def _delete_impact_blocking(
         )
 
     # companions become reclaimable only when no runnable checkpoint survives
-    removes_last_checkpoint = not any(_repo_holds_denoiser(repo) for repo in surviving)
+    removes_last_checkpoint = not any(
+        companion_assets.repo_is_install(repo, scans) for repo in surviving
+    )
     if variant:
         for repo_info in repos:
             if _remaining_main_gguf_variants(
@@ -232,8 +235,8 @@ def _delete_impact_blocking(
         # The SAME offerability test orphan_companions_response applies, since this row points at that list: a borrowed chat GGUF repo is a curated companion id but holds a denoiser, so advertising it sent the user to Free up space to remove a row that is never there.
         elif base_key in offerable and any(not _repo_holds_denoiser(r) for r in base_repos):
             freeable.append(entry)
-        # A base only a recorded link names: the orphan endpoint is table-only by design, so advertising it here pointed the user at a Free up space list it will never appear in.
 
+        # A base only a recorded link names: the orphan endpoint is table-only by design, so advertising it here pointed the user at a Free up space list it will never appear in.
     return {
         "repo_id": repo_id,
         "variant": variant,
@@ -414,6 +417,7 @@ def _orphan_companions_blocking() -> dict:
     }
 
 
+@in_scan_memo
 async def orphan_companions_response() -> dict:
     """Cached companion bases that no installed model needs. Listing only; nothing is deleted."""
     return await asyncio.to_thread(_orphan_companions_blocking)

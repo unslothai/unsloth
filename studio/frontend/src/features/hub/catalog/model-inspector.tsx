@@ -26,7 +26,6 @@ import { cn, formatCompact } from "@/lib/utils";
 import {
   Calendar03Icon,
   CalendarAdd01Icon,
-  Copy01Icon,
   CpuIcon,
   CubeIcon,
   Database02Icon,
@@ -37,9 +36,10 @@ import {
   LayersLogoIcon,
   LibrariesIcon,
   LicenseIcon,
+  LinkSquare02Icon,
   PackageIcon,
-  Share05Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -86,7 +86,7 @@ function ViewRepositoryButton({
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
     <HugeiconsIcon
-      icon={Share05Icon}
+      icon={LinkSquare02Icon}
       strokeWidth={1.75}
       className="size-[calc(13px*var(--ui-space-scale,1))]"
     />
@@ -287,7 +287,7 @@ function ModelStatusChips({
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
-  // The Images/Video pages run these, so they are not "unsupported" to a user even though chat cannot load them.
+  // Images/Video pages run these, so they are not unsupported even though chat cannot.
   const showUnsupported =
     !isDataset &&
     unslothSupport.status === "unsupported" &&
@@ -422,9 +422,9 @@ export type ModelInspectorRuntime = {
     status: "fits" | "tight" | "exceeds";
   } | null;
   gpuGb?: number;
-  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
   gpuCount?: number;
   systemRamGb?: number;
+  unifiedLoadBudgetGb?: number | null;
 };
 
 export type ModelInspectorActions = {
@@ -465,6 +465,7 @@ export const ModelInspector = memo(function ModelInspector({
     gpuGb,
     gpuCount,
     systemRamGb,
+    unifiedLoadBudgetGb,
   } = runtime;
   const {
     onInventoryChange,
@@ -482,9 +483,7 @@ export const ModelInspector = memo(function ModelInspector({
   const datasetSize = useDatasetSize(datasetRepoId, {
     token: hfToken || undefined,
   });
-  // Inventory rows are snapshots; the download manager is the live source of
-  // truth. When a download is in flight, route through the download-aware section
-  // so progress/cancel stays visible across refreshes.
+  // Inventory rows are snapshots; route active downloads through the download-aware section.
   const activeDownloadRepoId = model?.hubRepoId ?? null;
   const hasActiveHubDownload = useDownloadManagerStore((state) =>
     activeDownloadRepoId
@@ -540,7 +539,7 @@ export const ModelInspector = memo(function ModelInspector({
   if (!model) {
     return (
       <div className="flex min-h-[60dvh] flex-col items-center justify-center gap-3 py-16 text-center">
-        <div className="inline-flex size-12 items-center justify-center rounded-[14px] bg-muted text-muted-foreground">
+        <div className="inline-flex size-12 items-center justify-center rounded-lg bg-muted text-muted-foreground">
           <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
         </div>
         <div className="space-y-1">
@@ -630,7 +629,7 @@ export const ModelInspector = memo(function ModelInspector({
           <OwnerAvatar
             owner={model.owner}
             repoName={model.title}
-            className="size-[calc(60px*var(--ui-space-scale,1))] rounded-[18px] text-ui-19"
+            className="size-[calc(60px*var(--ui-space-scale,1))] rounded-lg text-ui-19"
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
@@ -773,6 +772,9 @@ export const ModelInspector = memo(function ModelInspector({
               gpuGb={gpuGb}
               gpuCount={gpuCount}
               systemRamGb={systemRamGb}
+              unifiedLoadBudgetGb={
+                runsOnMediaRuntime ? null : unifiedLoadBudgetGb
+              }
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onRun={runAction}
@@ -787,7 +789,7 @@ export const ModelInspector = memo(function ModelInspector({
 
       <div className="pb-5 pt-5">
         {selectionHiddenByFilters && (
-          <p className="mb-3 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-11p5 leading-snug text-muted-foreground">
             Current selection is hidden by the active filters or search.
           </p>
         )}

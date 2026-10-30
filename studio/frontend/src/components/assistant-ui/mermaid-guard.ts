@@ -19,8 +19,12 @@ const FETCHING_TAG =
   /<(?=\/?(?:img|image|picture|source|video|audio|track|input|iframe|frame|embed|object|link|style|svg|use|meta|base|body|table|thead|tbody|tr|td|th)\b)/gi;
 
 // A style rule that could name a resource: CSS functions that load one, or an escape hiding one.
-const STYLE_LINE = /^[^\S\n]*(?:classDef|style|linkStyle)\b.*$/gim;
+// A statement may follow `;`; a stateDiagram classDef runs to end of line, so cut from the keyword on.
+const STYLE_START = /(^|[;\s])[^\S\n]*(?:classDef|style|linkStyle)\b/gi;
 const STYLE_FETCH = /\\|url\s*\(|image(?:-set)?\s*\(|cross-fade\s*\(|element\s*\(|@import/i;
+const STYLE_FETCHES = new RegExp(STYLE_FETCH.source, "gi");
+// These lexers take a style statement mid-line after a space and allow brackets in ids: every keyword counts.
+const MIDLINE_STYLE = /^[^\S\n]*(?:stateDiagram|erDiagram|block(?:-beta)?|requirementDiagram)\b/im;
 
 // An HTML label tag with a style attribute; its CSS can fetch (background-image and the like).
 const STYLED_TAG = /<([a-z][^<>]*\bstyle\s*=[^<>]*)/gi;
@@ -49,27 +53,89 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The `id@{ ... }` shape data blocks, as mermaid's lexer ends them: at the first `}` outside a "string". */
+/**
+ * Every `@{` with its block up to the first `}` outside a "string", read on its own: lexer state decides
+ * whether a `@{` is shape data or text, so blocks may overlap. Blocks without `img` or `\` are skipped.
+ */
 function shapeDataBlocks(source: string): { start: number; end: number; body: string }[] {
   const blocks: { start: number; end: number; body: string }[] = [];
-  let from = 0;
-  for (;;) {
-    const open = source.indexOf("@{", from);
-    if (open < 0) return blocks;
-    let inString = false;
-    let close = -1;
-    for (let index = open + 2; index < source.length; index++) {
-      const char = source[index];
-      if (char === '"') inString = !inString;
-      else if (char === "}" && !inString) {
-        close = index;
-        break;
-      }
+  if (!source.includes("@{")) return blocks;
+  // First `}` outside a string from i, starting outside (closeFrom) or inside (quotedFrom) one: linear.
+  const closeFrom = new Int32Array(source.length + 1).fill(-1);
+  const quotedFrom = new Int32Array(source.length + 1).fill(-1);
+  for (let index = source.length - 1; index >= 0; index--) {
+    const char = source[index];
+    if (char === '"') {
+      closeFrom[index] = quotedFrom[index + 1];
+      quotedFrom[index] = closeFrom[index + 1];
+    } else {
+      closeFrom[index] = char === "}" ? index : closeFrom[index + 1];
+      quotedFrom[index] = quotedFrom[index + 1];
     }
-    if (close < 0) return blocks;
-    blocks.push({ start: open, end: close + 1, body: source.slice(open + 2, close) });
-    from = close + 1;
   }
+  const hintEnd = new Int32Array(source.length + 1).fill(-1);
+  for (let index = source.length - 1; index >= 0; index--) {
+    if (source[index] === "\\") hintEnd[index] = index + 1;
+    else if (source.slice(index, index + 3).toLowerCase() === "img") hintEnd[index] = index + 3;
+    else hintEnd[index] = hintEnd[index + 1];
+  }
+  for (let open = source.indexOf("@{"); open >= 0; open = source.indexOf("@{", open + 2)) {
+    const close = closeFrom[open + 2];
+    const hint = hintEnd[open + 2];
+    if (close >= 0 && hint >= 0 && hint <= close) {
+      blocks.push({ start: open, end: close + 1, body: source.slice(open + 2, close) });
+    }
+  }
+  return blocks;
+}
+
+// Mermaid's own entity for `@`: it shows as `@` in text and never opens shape data.
+const INERT_OPENER = "#64;{";
+
+// Overlapping blocks can sum to the source's square; past this every `@{` is made inert unparsed.
+const PARSE_BUDGET = 1 << 20;
+
+/**
+ * Remote images taken out of every block: a lone block is rewritten, a run of overlapping ones has all
+ * its openers made inert (which reading wins depends on lexer state). Repeats until stable.
+ */
+function withoutRemoteShapeImages(source: string): string {
+  let current = source;
+  let budget = PARSE_BUDGET;
+  for (let pass = 0; pass < 8; pass++) {
+    // Comments are blanked to the same length, so a `@{` or `"` in one cannot hide a later block.
+    const scanned = current.replace(COMMENT_LINE, (line) => " ".repeat(line.length));
+    const fetching: { start: number; end: number; replaced: string }[] = [];
+    for (const block of shapeDataBlocks(scanned)) {
+      budget -= block.body.length;
+      if (budget < 0) return current.replaceAll("@{", INERT_OPENER);
+      const replaced = withoutRemoteImage(block.body);
+      if (replaced !== null) fetching.push({ start: block.start, end: block.end, replaced });
+    }
+    if (fetching.length === 0) return current;
+    let out = "";
+    let at = 0;
+    for (let first = 0; first < fetching.length; ) {
+      let last = first;
+      let runEnd = fetching[first].end;
+      while (last + 1 < fetching.length && fetching[last + 1].start < runEnd) {
+        last++;
+        runEnd = Math.max(runEnd, fetching[last].end);
+      }
+      if (last === first) {
+        out += current.slice(at, fetching[first].start) + fetching[first].replaced;
+        at = fetching[first].end;
+      } else {
+        for (let index = first; index <= last; index++) {
+          out += current.slice(at, fetching[index].start) + INERT_OPENER;
+          at = fetching[index].start + 2;
+        }
+      }
+      first = last + 1;
+    }
+    current = out + current.slice(at);
+  }
+  return current.replaceAll("@{", INERT_OPENER);
 }
 
 /** A shape data block without a remote `img`, or null when it carries none and stays as written. */
@@ -103,20 +169,36 @@ function withoutRemoteIcon(json: string): string | null {
   return ` ${JSON.stringify(rest)}`;
 }
 
+/** Outside `midLine` diagrams a statement starts a line or follows `;`; one inside a quoted or bracketed label is text. */
+function withoutFetchingStyle(line: string, midLine: boolean): string {
+  let lastFetch = -1;
+  for (const found of line.matchAll(STYLE_FETCHES)) lastFetch = found.index;
+  if (lastFetch < 0) return line;
+  let depth = 0;
+  let quoted = false;
+  let at = 0;
+  for (const match of line.matchAll(STYLE_START)) {
+    const start = match.index + match[1].length;
+    if (start > lastFetch) break;
+    if (midLine) return line.slice(0, start);
+    for (; at < start; at++) {
+      const ch = line[at];
+      if (ch === '"') quoted = !quoted;
+      else if (!quoted && "[({".includes(ch)) depth++;
+      else if (!quoted && ")]}".includes(ch)) depth = Math.max(0, depth - 1);
+    }
+    if (start === 0 || (match[1] === ";" && !quoted && depth === 0)) return line.slice(0, start);
+  }
+  return line;
+}
+
 /** The diagram source with every image or style that would load from elsewhere taken out. */
 export function stripRemoteDiagramImages(source: string): string {
-  let out = "";
-  let at = 0;
-  // Comments are blanked to the same length, so a `@{` or `"` in one cannot hide a later block.
+  let out = withoutRemoteShapeImages(source);
   const scanned = source.replace(COMMENT_LINE, (line) => " ".repeat(line.length));
-  for (const block of shapeDataBlocks(scanned)) {
-    const replaced = withoutRemoteImage(block.body);
-    if (replaced === null) continue;
-    out += source.slice(at, block.start) + replaced;
-    at = block.end;
-  }
-  out += source.slice(at);
   if (SEQUENCE.test(scanned)) out = out.replace(DETAILS_LINE, "");
+  // Mermaid reads the diagram type after dropping directives: `%%{init}%%stateDiagram` counts.
+  const midLine = MIDLINE_STYLE.test(scanned.replace(DIRECTIVE, ""));
   return out
     .replace(DIRECTIVE, (block) => (STYLE_FETCH.test(block) ? "" : block))
     .replace(FRONT_MATTER, (block) => (STYLE_FETCH.test(block) ? "" : block))
@@ -128,7 +210,7 @@ export function stripRemoteDiagramImages(source: string): string {
       });
       return CSS_FETCH.test(decoded) ? `#lt;${tag}` : whole;
     })
-    .replace(STYLE_LINE, (line) => (STYLE_FETCH.test(line) ? "" : line))
+    .replace(/^.*$/gm, (line) => withoutFetchingStyle(line, midLine))
     .replace(ACTOR_PROPERTIES, (whole, lead: string, head: string, json: string) => {
       const replaced = withoutRemoteIcon(json);
       return replaced === null ? whole : `${lead}${head}${replaced}`;

@@ -175,6 +175,7 @@ def saving(monkeypatch, tmp_path):
         _mtp_head_tensor_names = lambda model: [],
         raise_if_merging_mistral_format_view = lambda model, save_method: None,
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),
+        _unmerge_flags_on_error = lambda streamed: contextlib.nullcontext(),
         nullcontext = contextlib.nullcontext,
         logger = SimpleNamespace(warning_once = lambda *args: None),
         # save_method="lora" hands off to the adapter save; record the handover.
@@ -195,6 +196,7 @@ def saving(monkeypatch, tmp_path):
         "_refuse_unsaveable_text_core",
         "_cast_state_dict_16bit",
         "_requests_float32",
+        "_collect_garbage",
     }
     nodes = []
     for node in tree.body:

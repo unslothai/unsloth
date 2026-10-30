@@ -192,7 +192,7 @@ def test_foreign_ids_do_not_authorize_reads_or_writes(client, method, path, body
 def test_list_export_and_delete_stay_in_the_account(client):
     seed_chat(BOB)
     seed_run(BOB)
-    assert client.get("/chat/threads").json() == {"threads": []}
+    assert client.get("/chat/threads").json()["threads"] == []
     assert client.get("/runs/active?threadId=private").json() == {"runs": []}
     assert client.get("/chat/attachments").json()["attachments"] == []
     assert client.get("/chat/export").json()["threadCount"] == 0
@@ -456,7 +456,6 @@ def test_owner_setting_keeps_200_and_single_account_policy_is_inert(client, monk
     response = client.get("/settings/llama-cpp-path", headers = {"x-test-account": "unsloth"})
     assert response.status_code == 200, response.text
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
-    # Deactivating the last managed account must not open an owner-only setting to a request still bound to it.
     owner = client.get("/settings/llama-cpp-path", headers = {"x-test-account": "unsloth"})
     assert owner.status_code == 200
     assert client.get("/settings/llama-cpp-path").status_code == 403
@@ -488,13 +487,45 @@ def test_managed_load_uses_its_own_override_then_the_owners(fresh_override_cache
     from utils.openai_auto_switch_settings import resolve_override_for_load, set_model_override
 
     run_as(OWNER, set_model_override, "org/model", max_seq_length = 4096)
-    # Never configured by Alice: the owner's settings apply, as they did before she could save any.
     assert run_as(ALICE, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 4096
     run_as(ALICE, set_model_override, "org/model", max_seq_length = 16384)
     assert run_as(ALICE, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 16384
     assert run_as(BOB, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 4096
     assert run_as(OWNER, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 4096
     assert run_as(BOB, resolve_override_for_load, "org/other") == (None, {})
+
+
+def test_managed_default_save_shadows_the_owners_override(client, fresh_override_cache):
+    from utils.openai_auto_switch_settings import resolve_override_for_load, set_model_override
+
+    run_as(
+        OWNER,
+        set_model_override,
+        "org/model:Q4_K_M",
+        llama_extra_args = ["--no-warmup"],
+        max_seq_length = 4096,
+        gpu_layers = 10,
+    )
+    url = "/settings/openai-auto-switch/overrides"
+    defaults = {"model_id": "org/model:Q4_K_M", "remove": False, "llama_extra_args": []}
+    saved = client.put(url, json = defaults)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["overrides"] == {"org/model:Q4_K_M": {"llama_extra_args": []}}
+    for load in (("org/model:Q4_K_M",), ("org/model", None, "Q4_K_M")):
+        key, override = run_as(ALICE, resolve_override_for_load, *load)
+        assert key == "org/model:Q4_K_M" and override == {"llama_extra_args": []}
+    shown = client.get(url, params = {"model_id": "org/model", "gguf_variant": "Q4_K_M"}).json()
+    assert shown["resolved"] == {"llama_extra_args": []}
+    owner = run_as(OWNER, resolve_override_for_load, "org/model:Q4_K_M")[1]
+    assert owner["llama_extra_args"] == ["--no-warmup"] and owner["max_seq_length"] == 4096
+    assert owner["gpu_layers"] == 10
+    assert client.put(url, json = {"model_id": "org/model:Q4_K_M", "remove": False}).json()[
+        "overrides"
+    ] == {"org/model:Q4_K_M": {"llama_extra_args": []}}
+
+    forgot = client.put(url, json = {"model_id": "org/model:Q4_K_M", "remove": True})
+    assert forgot.status_code == 200 and forgot.json()["overrides"] == {}
+    assert run_as(ALICE, resolve_override_for_load, "org/model:Q4_K_M")[1] == owner
 
 
 def test_pinned_models_are_per_account(client):

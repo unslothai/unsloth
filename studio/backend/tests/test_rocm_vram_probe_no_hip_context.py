@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``_get_gpu_memory`` must not open a HIP context to read VRAM on ROCm.
-
-``torch.cuda.mem_get_info`` creates a primary context the process never releases:
-measured at 612 MiB on a B200 with CUDA 13, and reported in the 692-712 MiB range
-elsewhere. ``get_device_properties`` and ``get_device_capability`` do not, which is
-why the System tab already reads totals through properties.
-
-NVIDIA hosts were already safe because the probe asks nvidia-smi first. ROCm hosts
-were not: they fell straight through to torch, so an Unsloth backend serving GGUF
-models paid a permanent ~700 MiB for a number it only reads, on a card whose models
-run in a llama-server CHILD that then cannot use it. amd-smi answers the same
-question from a subprocess.
-
-The torch fallback stays for hosts with no smi tool at all. Callers read ``[]`` as
-"no GPU" -- ``_resolve_auto`` picks a backend from it, ``_gpu_available`` gates the
-embedder, and the loader's fit drops to CPU -- so returning "unknown" there would
-silently move inference off the GPU. Accepting the context is the lesser cost.
-
-torch, ROCm detection and amd-smi are all mocked: this repository has no AMD GPU
-and no ROCm CI, so none of this is a hardware validation.
-"""
+"""ROCm VRAM reads use amd-smi, since mem_get_info opens a HIP context that is never released."""
 
 from __future__ import annotations
 
@@ -55,14 +35,7 @@ def _hip_sees(
 
 @pytest.fixture
 def rocm(monkeypatch):
-    """A ROCm host whose nvidia-smi probe finds nothing, with no APUs.
-
-    The mask is cleared from the environment as well as patched: the probe asks
-    whether a mask is SET before asking what it resolves to, so the shell's own
-    CUDA_VISIBLE_DEVICES would otherwise read as a mask that resolves to nothing
-    (#8662 for the same trap in the APU tests). HIP reachability and its device
-    count are declared for the same reason: unpatched they read this host's own
-    GPU, and CI has none."""
+    """HIP reachability and device count are stubbed, or unpatched they would read this host's own GPU."""
     monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda torch: True))
     monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_is_reachable", staticmethod(lambda: True))
     monkeypatch.setattr(
@@ -121,16 +94,7 @@ def test_the_visibility_mask_is_honoured(rocm, monkeypatch):
 
 
 class TestAUnifiedMemoryApuDefersToTorch:
-    """amd-smi reports only the dedicated VRAM carve-out on a unified-memory APU;
-    HIP reports the GTT pool the models actually run in. ``hardware.py::
-    _apply_unified_memory_correction`` already adopts torch's larger total over
-    amd-smi's for the System tab for exactly this reason.
-
-    The field shape: a 128 GiB Strix Halo (gfx1151) whose BIOS carves out 8 GiB of
-    "VRAM". Sizing the GGUF fit off that slice cuts context or drops the model to
-    CPU, so this branch must hand the whole host back to the torch one rather than
-    answer from a different memory scope than the branch it replaces.
-    """
+    """On a unified-memory APU amd-smi reports only the VRAM carve-out, so this branch defers to torch."""
 
     @pytest.fixture
     def strix_halo(self, rocm, monkeypatch):
@@ -140,7 +104,6 @@ class TestAUnifiedMemoryApuDefersToTorch:
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 98304)
         )
-        # amd-smi: 1 GiB used of the 8 GiB dedicated slice.
         monkeypatch.setattr(amd, "_run_amd_smi", lambda *a, **k: _payload((0, 1024, 8192)))
 
     def test_the_amd_smi_branch_declines(self, strix_halo):
@@ -174,19 +137,16 @@ class TestAUnifiedMemoryApuDefersToTorch:
 @pytest.mark.parametrize(
     "envelope",
     [
-        lambda rows: rows,  # a bare JSON array
-        lambda rows: {"gpu_data": rows},  # newer versions
+        lambda rows: rows,
+        lambda rows: {"gpu_data": rows},
         lambda rows: {"gpus": rows},
         lambda rows: {"gpu": rows},
-        lambda rows: rows[0],  # the single-GPU dict get_primary_gpu_utilization takes
+        lambda rows: rows[0],
     ],
 )
 def test_every_amd_smi_envelope_shape_is_read(rocm, monkeypatch, envelope):
-    """The single-GPU dict carries its own numeric "gpu" id, so reading that key as
-    the device list yields the id itself and enumerating an int raises TypeError.
-    ``_get_gpu_memory_amd_smi`` swallows that and falls back to
-    ``torch.cuda.mem_get_info``, recreating the very HIP context this branch exists
-    to avoid."""
+    """A single-GPU envelope must parse, or the TypeError fallback reopens a HIP context via
+    mem_get_info."""
     monkeypatch.setattr(amd, "_run_amd_smi", lambda *a, **k: envelope(_payload((0, 4096, 24576))))
     assert amd.get_gpu_vram_mib() == {0: (20480, 24576)}
     assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]
@@ -226,13 +186,7 @@ def test_free_is_derived_the_way_nvidia_smi_reports_it(rocm, monkeypatch):
 
 
 class TestTheArchGateAppliesToThisBranchToo:
-    """#7624's gate lives in ``_get_gpu_memory``, and this branch returns before the
-    torch one that carries it. An llama-server placement must lose a device the
-    installed prebuilt has no kernels for here as well, or reading VRAM through
-    amd-smi reintroduces the "device kernel image is invalid" crash.
-
-    The #7624 shape: a gfx1101 dGPU beside a gfx1036 iGPU the build does not cover.
-    """
+    """The arch gate must apply on the amd-smi branch too, or an unsupported card crashes llama-server."""
 
     @pytest.fixture
     def mixed_host(self, rocm, tmp_path, monkeypatch):
@@ -259,7 +213,6 @@ class TestTheArchGateAppliesToThisBranchToo:
         ]
 
     def test_and_kept_for_every_other_caller(self, mixed_host):
-        # _resolve_auto's winner runs under PyTorch, which covers the card fine.
         assert LlamaCppBackend._get_gpu_memory_amd_smi(mixed_host) == [
             (0, 20480, 24576),
             (1, 15360, 16384),

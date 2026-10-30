@@ -4,7 +4,8 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Folder01Icon, PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
+import { FolderClosedIcon } from "@/lib/folder-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
@@ -21,16 +22,10 @@ import { formatCardTime, formatItemCount } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
-import {
-  CARD_SHADOW,
-  GLASS_CONTROL,
-  GLASS_SURFACE,
-  OVERLAY_CONTROL,
-  RAISED_SURFACE,
-  SELECTED_TINT,
-} from "../surface";
+import { CARD_MIN_HEIGHT, CARD_SHADOW, GLASS_CONTROL, GLASS_SURFACE, OVERLAY_CONTROL, RAISED_SURFACE, SELECTED_TINT } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
+import { PlayIcon } from "lucide-react";
 
 export const CARD_SURFACE = cn(
   RAISED_SURFACE,
@@ -49,7 +44,6 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
   );
 }
 
-// Audio and code glyphs are thin line art, so they get a larger size.
 export const CARD_ICON_CLASS = "size-7";
 const LARGE_CARD_ICON_CLASS = "size-8.5";
 
@@ -89,7 +83,9 @@ function ImageThumb({
       style={
         loaded && !square
           ? { aspectRatio: 1 / Math.min(Math.max(ratio, MIN_THUMB_RATIO), MAX_THUMB_RATIO) }
-          : undefined
+          : square
+            ? { minHeight: CARD_MIN_HEIGHT }
+            : undefined
       }
     >
       {!loaded && <div className="aspect-square w-full animate-pulse bg-muted" />}
@@ -112,7 +108,7 @@ function ImageThumb({
       )}
       {loaded && fileKind(item) === "video" && (
         <span className="pointer-events-none absolute inset-0 m-auto flex aspect-square w-1/4 max-w-10 items-center justify-center rounded-full bg-white/30 text-white backdrop-blur-md dark:bg-black/40">
-          <HugeiconsIcon icon={PlayIcon} strokeWidth={2} className="size-1/2 [&_path]:fill-current" />
+          <PlayIcon strokeWidth={2} className="size-1/2 [&_path]:fill-current" />
         </span>
       )}
     </div>
@@ -152,7 +148,7 @@ function CardFrame({
           select && selecting ? (event) => select.toggle(selectKey, event.shiftKey) : onOpen
         }
         className={cn(
-          "block w-full overflow-hidden rounded-[calc(var(--radius-xl)-2px)] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "block w-full overflow-hidden rounded-2xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           selected && "ring-2 ring-foreground",
           className,
           selected && SELECTED_TINT,
@@ -199,11 +195,15 @@ function PlayButton({ item }: { item: LibraryItem }) {
         "absolute bottom-3 left-4 flex size-7 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-neutral-600",
       )}
     >
-      <HugeiconsIcon
-        icon={playing ? PauseIcon : PlayIcon}
-        strokeWidth={2}
-        className="size-3.5 [&_path]:fill-current"
-      />
+      {playing ? (
+        <HugeiconsIcon
+          icon={PauseIcon}
+          strokeWidth={2}
+          className="size-3.5 [&_path]:fill-current"
+        />
+      ) : (
+        <PlayIcon strokeWidth={2} className="size-3.5 [&_path]:fill-current" />
+      )}
     </button>
   );
 }
@@ -235,7 +235,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
     >
       {thumb ? (
         <>
-          <ImageThumb item={item} square={square && fileKind(item) === "image"} />
+          <ImageThumb item={item} square={square || fileKind(item) !== "image"} />
           {showTime && (
             <span
               className={cn(
@@ -248,8 +248,10 @@ export function ItemCard({ item }: { item: LibraryItem }) {
           )}
         </>
       ) : (
-        // Two-line name slot keeps the icon in one place on every card. A 5:7 space split lifts it without growing small cards.
-        <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
+        <div
+          className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5"
+          style={{ minHeight: CARD_MIN_HEIGHT }}
+        >
           <p className="line-clamp-2 min-h-[2.75em] break-all font-medium text-ui-13p5 leading-snug text-foreground">
             {item.name}
           </p>
@@ -298,8 +300,12 @@ function FolderCard({
         menu={<LibraryActionsMenu target={{ kind: "folder", folder }} variant="overlay" />}
         className={CARD_SURFACE}
       >
-        <div className="flex aspect-square items-center justify-center">
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className={CARD_ICON_CLASS} />
+        <div
+          className="flex aspect-square items-center justify-center"
+          style={{ minHeight: CARD_MIN_HEIGHT }}
+        >
+          {/* 4.4's folder draws smaller: 30px matches 4.1's at 28px. */}
+          <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.5} className="size-7.5" />
         </div>
       </CardFrame>
       <button
@@ -316,12 +322,13 @@ function FolderCard({
   );
 }
 
-// Extra row spacing only; card width is unchanged.
 const CARD_ROW_GAP = "gap-y-6";
+// gap-5 (Masonry) and gap-x-5 (CardGrid) at 100%.
+const CARD_COLUMN_GAP_PX = 20;
 
 function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
-  const { minWidth, max } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
-  return useColumnCount(container, minWidth, max);
+  const { minWidth, max, wideMinWidth } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
+  return useColumnCount(container, minWidth, max, CARD_COLUMN_GAP_PX, wideMinWidth);
 }
 
 export function Masonry<T>({
@@ -352,11 +359,10 @@ export function Masonry<T>({
 
 export function CardGrid({
   children,
-  equalRows = false,
+  minRowHeight,
 }: {
   children: ReactNode;
-  /** Size every row to the tallest card, so all cards match. */
-  equalRows?: boolean;
+  minRowHeight?: string;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const columns = useCardColumns(container);
@@ -366,7 +372,7 @@ export function CardGrid({
       className={cn("grid gap-x-5", CARD_ROW_GAP)}
       style={{
         gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-        gridAutoRows: equalRows ? "1fr" : undefined,
+        gridAutoRows: minRowHeight ? `minmax(${minRowHeight}, auto)` : undefined,
       }}
     >
       {children}
@@ -393,13 +399,13 @@ export function FolderGrid({
 export function ItemTile({ item }: { item: LibraryItem }) {
   if (hasThumbnail(item)) {
     return (
-      <div className="size-9 shrink-0 overflow-hidden rounded-[10px] border border-border/60 bg-muted [&_img]:size-9 [&_img]:object-cover [&_img]:object-top">
+      <div className="size-9 shrink-0 overflow-hidden rounded-md border border-border/60 bg-muted [&_img]:size-9 [&_img]:object-cover [&_img]:object-top">
         <ImageThumb item={item} />
       </div>
     );
   }
   return (
-    <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-border/60">
+    <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60">
       <KindIcon item={item} className="size-5" />
     </div>
   );

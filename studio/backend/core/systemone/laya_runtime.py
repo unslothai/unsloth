@@ -569,6 +569,38 @@ def _gpu_taken() -> bool:
     return any(owner != gpu_arbiter.DECISIONS for owner in gpu_arbiter.residents())
 
 
+def _torch_gpu(checkpoint: Checkpoint) -> bool:
+    if _is_mlx(checkpoint) or _is_native(checkpoint):
+        return False
+    if checkpoint.layout == "clef":
+        return True
+    from utils.systemone_settings import get_device as preferred_device
+    from utils.hardware.hardware import DeviceType, get_device
+
+    return preferred_device() == "gpu" and get_device() in (DeviceType.CUDA, DeviceType.XPU)
+
+
+def _gpu_load_in_flight() -> bool:
+    from core.inference import gpu_arbiter
+    from core.inference.gpu_residency import chat_load_in_flight
+
+    if chat_load_in_flight():
+        return True
+    # Held by the acquire that may have just ended the idle worker.
+    if not gpu_arbiter._lock.acquire(blocking = False):
+        return True
+    try:
+        # A CPU-only image or video load releases its GPU claim, so it does not count.
+        return any(
+            owner in gpu_arbiter._residents and gpu_arbiter._media_loading(owner)
+            for owner in (gpu_arbiter.DIFFUSION, gpu_arbiter.VIDEO)
+        )
+    except Exception:
+        return False
+    finally:
+        gpu_arbiter._lock.release()
+
+
 def _auto_keeps_pytorch(checkpoint: Checkpoint, native: Checkpoint) -> str | None:
     """Why Auto answers text on PyTorch although llama.cpp could: as before llama.cpp existed here."""
     from .catalog import clef_unsupported_reason
@@ -726,11 +758,7 @@ def _checkpoint_dir(checkpoint: Checkpoint, *, local_only: bool = False) -> Path
 
 
 def _laya():
-    """The vendored laya package, registered as top-level ``laya`` (its modules import each other relatively).
-
-    Loaded by file path, not from ``sys.path``: a laya installed in the venv (Studio pinned one before
-    vendoring it) must not replace this copy, since this module drives laya internals.
-    """
+    """Loads the vendored laya by file path, so a venv-installed laya cannot replace this copy."""
     if (module := sys.modules.get("laya")) is not None:
         return module
     with _import_lock:
@@ -763,15 +791,7 @@ def _utf8_open(
     closefd = True,
     opener = None,
 ):
-    """``open`` for the vendored laya modules: text mode defaults to UTF-8.
-
-    laya reads ``rl_agent_config.json`` and ``tokenizer_config.json`` with a bare ``open()``,
-    which decodes with the locale's code page (ANSI on Windows, ASCII under a C locale). A
-    checkpoint whose tokenizer config holds non-ASCII special tokens then fails to read, and
-    ``_fix_tokenizer_config`` swallows that and skips the repair the model needs to load.
-    The vendored files stay byte-identical to the wheel (vendor/README.md), so the encoding is
-    supplied here, as each laya module's own ``open``.
-    """
+    """Defaults text mode to UTF-8 (laya bare open uses the locale); vendored files stay byte-identical."""
     if encoding is None and "b" not in mode:
         encoding = "utf-8"
     return open(
@@ -913,9 +933,17 @@ def _close(agent, release_gpu: bool = True) -> None:
         gpu_arbiter.release_if(gpu_arbiter.DECISIONS, unclaimed)
 
 
+def _unloaded() -> bool:
+    unloads = getattr(_load_generation, "unloads", None)
+    return unloads is not None and unloads != _unloads
+
+
 def _evict(external: bool = False) -> None:
     global _agent, _loaded, _device_name, _generation, _unloads
     with _run_lock:
+        # Every load evicts once its files are on disk: one unloaded meanwhile stops here.
+        if _unloaded():
+            raise RuntimeError("It was unloaded while it downloaded.")
         agent, _agent, _loaded, _device_name = _agent, None, None, None
         _generation += 1
         _unloads += external
@@ -953,7 +981,6 @@ class _MLXAgent:
             k: clamp_temperature(v) for k, v in self.cfg.get("temperature_by_options", {}).items()
         }
         self._to_internal = laya.agent.Agent._to_internal
-        # As _precision does for fp16 checkpoints on CUDA: exact fp16 weights, fp16 matmuls, fp32 norms.
         # An unsloth-zoo without compute_dtype casts the whole model instead, so it stays fp32.
         mixed = "compute_dtype" in inspect.signature(load_decision_model).parameters
         self.dtype = mx.float16 if fp16_checkpoint and mixed and not _fp32_forced() else mx.float32
@@ -1082,11 +1109,7 @@ def _load_checkpoint(checkpoint: Checkpoint):
         from .clef_runtime import ClefAgent, ClefWorkerError
 
         _evict()
-        unloads = getattr(_load_generation, "unloads", _unloads)
-        agent = ClefAgent(
-            root,
-            cancelled = lambda: _clef_preempted() or _unloads != unloads,
-        )
+        agent = ClefAgent(root, cancelled = lambda: _clef_preempted() or _unloaded())
         # Training may have started while this loaded, and Clef has no CPU fallback.
         if _clef_preempted():
             agent.close()
@@ -1103,10 +1126,12 @@ def _load_checkpoint(checkpoint: Checkpoint):
     device = "cpu" if for_training else _device()
     if device in ("cuda", "xpu"):
         try:
-            agent = LayaWorker(root, checkpoint, device, cancelled = _training_active)
+            agent = LayaWorker(
+                root, checkpoint, device, cancelled = lambda: _training_active() or _unloaded()
+            )
             return agent, agent.device
         except LayaWorkerError:
-            if not _training_active():
+            if _unloaded() or not _training_active():
                 raise
         device, for_training = "cpu", True
     agent, placed = _build_laya(root, checkpoint, device, for_training)
@@ -1167,7 +1192,7 @@ def _load_native(checkpoint: Checkpoint):
             gpu = gpu,
             clef_answers = checkpoint.layout == "clef",
             ctx = get_native_ctx(),
-            cancelled = (lambda: _training_active()) if gpu else None,
+            cancelled = lambda: (gpu and _training_active()) or _unloaded(),
         )
         if gpu and _training_active():
             agent.close()
@@ -1195,13 +1220,7 @@ def _load_laya(
     embedding_dtype = None,
     **kwargs,
 ):
-    """``laya.load`` without randomly initialising the encoder's vocabulary embedding.
-
-    laya builds a randomly initialised fp32 encoder and then loads the checkpoint over it. For mmBERT's
-    256000 x 768 embedding that init alone took ~3.2 GB of scratch RAM and ~8 s, all of it overwritten
-    by laya's strict load. The embedding is created with ``skip_init`` instead, in the dtype it will be
-    served in; the rest of the model, including buffers the checkpoint does not carry, is built as before.
-    """
+    """Builds the vocab embedding with skip_init in the serving dtype, avoiding a huge random init."""
     laya = _laya()
     hook = getattr(laya, "agent", None)
     if not hasattr(hook, "build_model"):
@@ -1238,8 +1257,7 @@ def _build_model(
     # ModernBERT reads pad_token_id only for this embedding; others keep it (RoBERTa's position ids).
     if config.model_type != "modernbert" or vocab_size <= 1:
         return original(cfg, encoder_dir = encoder_dir)
-    # A one-row placeholder, with row 0 standing in for the padding id so the check below can
-    # tell the embedding was sized and padded from the config.
+    # One-row placeholder: row 0 stands in for pad, so the check can tell config sized the embedding.
     placeholder_pad = None if pad_token_id is None else 0
     config.vocab_size, config.pad_token_id = 1, placeholder_pad
     try:
@@ -1298,11 +1316,7 @@ def _fp32_forced() -> bool:
 
 
 def _precision(device, fp16_checkpoint: bool):
-    """(weight dtype, compute dtype) for ``device``; ``(None, None)`` keeps laya's fp32 weights and compute.
-
-    An fp16 checkpoint held in fp16 is exact (fp16 -> fp32 is lossless), and fp16 compute tracked fp32 about
-    10x closer than bf16 on both GPU and CPU. Anything else follows the device: bf16 where it is native, else fp16.
-    """
+    """An fp16 checkpoint stays fp16 (exact); otherwise bf16 where native, else fp16."""
     import platform
 
     import torch
@@ -1321,8 +1335,7 @@ def _precision(device, fp16_checkpoint: bool):
             bf16 = torch.cuda.get_device_capability(device)[0] >= 8
         dtype = torch.bfloat16 if bf16 else torch.float16
         return dtype, dtype
-    # CPU only where the ISA has the format natively (AVX512-FP16 / AMX); emulated fp16 or bf16 is slower than fp32.
-    # Measured on x86 only, so other CPUs keep fp32.
+    # CPU only where the ISA has native fp16/bf16 (AVX512-FP16 / AMX); measured on x86 only.
     if device.type == "cpu" and platform.machine().lower() in ("x86_64", "amd64"):
         mkldnn = getattr(torch.ops, "mkldnn", None)
         try:
@@ -1340,12 +1353,7 @@ def _fp32_output(module, args, output):
 
 
 def _cast_matmul_weights(model, dtype) -> None:
-    """Cast the matmul and lookup weights only.
-
-    Norms stay fp32 (CPU layer_norm rejects low-precision parameters) and embedding outputs return to fp32,
-    so the residual stream keeps laya's precision. With bf16 compute this is bit-identical to fp32 weights,
-    since autocast rounds each weight to the same bf16 either way.
-    """
+    """Casts only Linear and Embedding weights; norms stay fp32 as CPU layer_norm rejects low precision."""
     import torch.nn as nn
     for module in model.modules():
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -1440,18 +1448,28 @@ def _load(checkpoint: Checkpoint, unloads: int | None = None) -> None:
         else:
             logger.warning("System One load failed: %s", message, exc_info = True)
         return
+    finally:
+        del _load_generation.unloads
     with _state_lock:
         stale = _unloads != unloads
         if not stale:
             _agent, _loaded, _device_name = agent, checkpoint, str(getattr(agent, "device", device))
-        _failure = _loading = None
+            _loading = None
+        _failure = None
         _gpu_load = False
         _generation += 1
         _last_used = time.monotonic()
         generation = _generation
     if stale:
         logger.info("System One dropped %s: it was unloaded while it loaded", checkpoint.name)
-        _close(agent)
+        # _loading stays set until its memory is back, so no other load claims the GPU first.
+        try:
+            _close(agent)
+            del agent
+            _release_memory()
+        finally:
+            with _state_lock:
+                _loading = None
         return
     if _arbitrated(checkpoint):
         _schedule_idle_unload(generation)
@@ -1520,6 +1538,25 @@ def evict_for_gpu() -> None:
     _close(agent, release_gpu = False)
 
 
+def evict_idle_worker() -> None:
+    global _agent, _loaded, _device_name, _generation, _unloads
+    from .clef_runtime import ClefAgent
+
+    if not _run_lock.acquire(blocking = False):
+        return
+    try:
+        with _state_lock:
+            if _loading is not None or not isinstance(_agent, (LayaWorker, ClefAgent)):
+                return
+            agent, _agent, _loaded, _device_name = _agent, None, None, None
+            _generation += 1
+            _unloads += 1
+    finally:
+        _run_lock.release()
+    logger.info("System One unloaded the idle decision model to free the GPU")
+    _close(agent)
+
+
 def _holds_gpu() -> bool:
     # A worker that fell back to CPU still holds its CUDA or XPU context until it ends.
     return _device_name not in (None, "cpu") or isinstance(_agent, LayaWorker)
@@ -1586,6 +1623,18 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
             raise Unavailable(503, "model_loading", f"{checkpoint.name} is loading", retry_after = 5)
         # Claimed before the registry probe, so a Hub download admitted from now on sees this load.
         _loading = checkpoint
+        if unloads is None:
+            unloads = _unloads
+    # Checked after the claim, so an eviction that lands before it is still seen.
+    if _torch_gpu(checkpoint) and _gpu_load_in_flight():
+        with _state_lock:
+            _loading = None
+        raise Unavailable(
+            409,
+            "gpu_busy",
+            f"Another model is loading on the GPU; {checkpoint.name} loads once it has.",
+            retry_after = 1,
+        )
     # Outside _state_lock: the registry calls loading_repo_ids() while holding its own lock.
     if _hub_download_active(checkpoint):
         with _state_lock:
@@ -1657,11 +1706,23 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
         share = max(4, budget // len(sizes))
         if sum(sizes) > budget and max(sizes) > share:
             raise ValueError(
-                f"options would be cut short to fit Laya's {budget}-token option budget"
+                f"options would be cut short to fit Laya's {budget}-token option budget. "
+                "Use fewer or shorter criteria"
+            )
+        ins = str(internal["ins"]).replace(tok.mask_token, " ")
+        head = tok(f"{internal['t']} question: {ins}", add_special_tokens = False)["input_ids"]
+        if len(head) > max(8, head_max_len - sum(sizes)):
+            raise ValueError(
+                f"instructions would be cut short to fit beside its options in Laya's "
+                f"{head_max_len}-token question budget. Use shorter instructions or fewer "
+                "criteria"
             )
         ids, markers = build_sequence(tok, "", internal, max_len, head_max_len)
         if len(markers) != len(sizes):
-            raise ValueError(f"options exceed the Laya context window ({max_len} tokens)")
+            raise ValueError(
+                f"options exceed the Laya context window ({max_len} tokens). "
+                "Use fewer or shorter criteria"
+            )
         if len(cache) >= _HEAD_CACHE_SIZE:
             cache.clear()
         cache[key] = (ids, markers, internal)
@@ -1683,7 +1744,7 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
         try:
             heads.append(_head(agent, questions[name], max_len, head_max_len))
         except ValueError as exc:
-            raise ValueError(f"Question {name!r} {exc}. Use fewer or shorter criteria.") from None
+            raise ValueError(f"Question {name!r} {exc}.") from None
     room = max(0, max_len - min(len(ids) for ids, _, _ in heads))
     state_ids, state_cut = _state_ids(agent.tok, state, room)
     items, truncated = [], False
@@ -1827,13 +1888,7 @@ def _run_model(agent, batch):
 
 
 def _chunk_budget(device):
-    """Padded tokens per forward, or None for one forward.
-
-    Splitting only saves memory: each extra forward costs a fixed overhead. On a CPU host memory is rarely the
-    limit and that overhead dominates (a 16-core Strix Halo ran the 64-question request 5x slower in 4096-token
-    chunks), so the CPU runs one forward. A GPU splits only past a share of its memory, so a large card keeps
-    one forward and its speed, and a small one still bounds its peak.
-    """
+    """Padded tokens per forward, or None for one pass; CPUs never split, as forward overhead dominates."""
     kind = getattr(device, "type", device)
     budget = _CHUNK_TOKENS.get(kind)
     if kind != "cuda" or budget is None:
@@ -1977,10 +2032,7 @@ def _head_layer(
     mask,
     markers = None,
 ):
-    """One eval-mode pre-norm ``TransformerEncoderLayer``; with ``markers``, only the rows at those positions.
-
-    Keys and values always span every token, so each marker row is exactly what the full layer gives it.
-    """
+    """Eval-mode pre-norm encoder layer; with markers, only those rows, as keys still span every token."""
     import torch
     import torch.nn.functional as F
 
@@ -2006,8 +2058,7 @@ def _head_layer(
         )
         q = q.view(batch, -1, heads, width // heads).transpose(1, 2)
         x = torch.gather(x, 1, index)
-    # Boolean attn_mask is True where attention is allowed (the inverse of src_key_padding_mask); SDPA
-    # applies dropout_p even in eval, so it is passed as 0.
+    # Bool attn_mask is True where attention is allowed; SDPA applies dropout_p even in eval.
     out = F.scaled_dot_product_attention(q, k, v, attn_mask = mask, dropout_p = 0.0)
     out = out.transpose(1, 2).reshape(batch, -1, width)
     x = x.add_(F.linear(out, attn.out_proj.weight, attn.out_proj.bias))
@@ -2024,11 +2075,7 @@ def _decision_logits(
     *,
     padded = True,
 ):
-    """The ``logits`` of laya's ``DecisionModel.forward``, computing only what they read.
-
-    The scorer only reads the option markers, so the last head layer runs at the markers alone, and the
-    action head Studio never returns is skipped.
-    """
+    """Computes only the logits the scorer reads: the last head layer runs at the option markers alone."""
     import torch.nn.functional as F
 
     h = model.encoder(input_ids = input_ids, attention_mask = attention_mask).last_hidden_state
@@ -2066,8 +2113,7 @@ class _CUDAGraphs:
         import torch
 
         self.agent = agent
-        # transformers 4.x wraps ModernBERT's embeddings and MLP in torch.compile on CUDA, which cannot run
-        # under capture; 5.x dropped that path, so this is what 5.x runs anyway.
+        # transformers 4.x wraps ModernBERT parts in torch.compile on CUDA, which cannot run under capture.
         config = getattr(getattr(agent.model, "encoder", None), "config", None)
         if getattr(config, "reference_compile", False) is not False:
             config.reference_compile = False
@@ -2394,19 +2440,10 @@ def status() -> dict[str, Any]:
         }
 
 
-def ensure_can_unload() -> None:
-    with _state_lock:
-        if _reloading is not None and _reloading == _loading:
-            return
-        # _loading: a load claimed but not yet started would otherwise land after this unload.
-        if _loading is not None or (_loader is not None and _loader.is_alive()):
-            raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
-
-
 def unload(reload_after_training: bool = False) -> bool:
     global _agent, _loaded, _device_name, _failure, _generation, _unloads
-    ensure_can_unload()
-    with _run_lock:
+    # _state_lock too: a load publishes under it, so it can never land just after this unload.
+    with _run_lock, _state_lock:
         agent, was_loaded, checkpoint = _agent, _agent is not None, _loaded
         _agent = _loaded = _device_name = None
         _failure = None

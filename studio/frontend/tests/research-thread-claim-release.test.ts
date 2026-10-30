@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// claimedThreadIds is what the composer reads to take deep research away. Only a finished run
-// spends the chat's research: one still going keeps the toggle lit, and a stopped one is
-// re-pointed at the next question rather than refused, so neither may claim the thread.
+// Only a finished run claims the thread; running and stopped runs keep research available.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

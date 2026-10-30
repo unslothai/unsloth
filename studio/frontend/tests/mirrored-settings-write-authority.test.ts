@@ -28,7 +28,6 @@ test("hydration backfills only from an authoritative read", () => {
     "hydratePersistedSettings: async () => {",
     "\n  beginModelLoading:",
   );
-  // Extra destructured fields are fine; fromServer is the one that gates backfill.
   assert.match(
     hydrate,
     /const \{[\s\S]*?\bsettings,[\s\S]*?\bfromServer,?[\s\S]*?\} = await loadChatSettingsWithLegacyImport\(\);/,
@@ -69,11 +68,9 @@ test("only the legacy-storage fallback is non-authoritative", () => {
   );
   const nonAuthoritative = loader.match(/fromServer: false/g) ?? [];
   assert.equal(nonAuthoritative.length, 1);
-  // ...and it is the branch that never saw a server answer.
   assert.match(
     slice(loader, "} catch (error) {", "\n  const legacySettings"),
     /return \{ settings: legacySettings, fromServer: false,[^}]*\};/,
   );
-  // Every other exit reports an answered GET, so absence stays meaningful.
   assert.ok((loader.match(/fromServer: true/g) ?? []).length >= 4);
 });

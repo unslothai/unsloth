@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// ensureThreadRecord's incognito shortcut used to key on a `__LOCALID_` id, which is the
-// permanent primary key of every chat the app creates, not a "fresh thread" marker. With the
-// toggle on, a caller passing the OPEN chat's id therefore tagged that SAVED chat incognito
-// for the session, and a tagged chat stops persisting, loses its settings snapshot and loses
-// its fork badge.
-//
-// Structural, like thread-scoped-pairing-invariants.test.ts: runtime-provider.tsx cannot be
-// loaded under stubs, so what is pinned here is the shape of the decision.
+// `__LOCALID_` is every chat's permanent id, not a fresh-thread marker, so it must not tag
+// a saved chat incognito. Structural: runtime-provider.tsx cannot be loaded under stubs.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -17,7 +11,6 @@ import { readSrc } from "./helpers/kit.ts";
 
 const provider = readSrc("features/chat/runtime-provider.tsx");
 
-/** ensureThreadRecord's body, code only. */
 function ensureThreadRecordBody(): string {
   const start = provider.indexOf("export async function ensureThreadRecord({");
   assert.ok(start > 0, "ensureThreadRecord not found");
@@ -46,7 +39,6 @@ test("the incognito shortcut is gated on the thread being new, not on its id", (
 });
 
 test("only initialize() claims a thread has never been sent to", () => {
-  // Every other caller hands in whatever chat is open, which may well be saved.
   const claims = provider.match(/neverSent: true/g) ?? [];
   assert.equal(
     claims.length,
@@ -62,7 +54,6 @@ test("only initialize() claims a thread has never been sent to", () => {
 });
 
 test("a saved chat still reaches the existing-row check before it can be tagged", () => {
-  // Without this ordering the tag is unconditional for anything the shortcut misses.
   const body = ensureThreadRecordBody();
   const shortcut = body.indexOf("incognitoAtInit && neverSent");
   const lookup = body.indexOf("await getStoredChatThread(threadId)");

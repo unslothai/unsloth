@@ -94,6 +94,13 @@ def _select(
         "AutoModelForImageTextToText": transformers.AutoModelForImageTextToText,
         "AutoModelForSpeechSeq2Seq": transformers.AutoModelForSpeechSeq2Seq,
         "_multimodal_auto_classes": lambda: (),
+        "_audio_lm_class": lambda *args, **kwargs: None,
+        "_revision": None,
+        "local_files_only": False,
+        "_config_maps_audio_auto_class": lambda config: False,
+        "_from_pretrained_left_padded": lambda loader, name, **kw: loader.from_pretrained(
+            name, padding_side = "left", **kw
+        ),
         "AutoProcessor": fake_processor,
         "AutoTokenizer": fake_tokenizer,
         "tokenizer_name": "org/repo",

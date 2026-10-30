@@ -10,11 +10,8 @@ const APP_SIDEBAR = atDefaultUiScale(readSrc("components/app-sidebar.tsx"));
 
 const INDEX = atDefaultUiScale(readSrc("index.css"));
 
-// The pinned top rows run an action rather than open a page, so neither may
-// mark itself active: nav rows paint one pill for both states, and an active
-// action row therefore sits there looking permanently hovered.
+// Action rows must not mark active: nav rows paint one pill for active and hover.
 
-/** The props of the NavItem carrying `label`, from its tag to the next one. */
 function navItemFor(source: string, label: string): string {
   const rows = source.split("<NavItem").slice(1);
   const row = rows.find((chunk) => chunk.includes(label));
@@ -33,8 +30,6 @@ test("Search never marks itself active either", async () => {
 });
 
 test("a nav row paints the same pill when active and when hovered", async () => {
-  // The reason the rows above pass false. If active ever gets its own
-  // background, that reason is gone and this can be revisited.
   const rule = /([^}]*)\{\s*background-color: var\(--nav-surface-hover\)/.exec(
     INDEX,
   );
@@ -77,11 +72,8 @@ test("footer profile sits 11px above the sidebar edge", async () => {
 });
 
 test("navigation rows align while the profile footer ignores the scroll rail", async () => {
-  // A recent chat's pill has to match New Chat's. The rows inside the scroller
-  // lose the rail's width, so New Chat adds it back and both end on one edge.
-  // The profile footer is unrelated to that list and must keep its full width
-  // when the scrollbar appears. Logical sides, since the rail moves under rtl.
-  // Both insets scale; only the measured rail stays fixed.
+  // Rows in the scroller lose the rail width, so New Chat adds it back to align.
+  // The footer keeps full width. Logical sides, since the rail moves under rtl.
   const source = APP_SIDEBAR;
   assert.match(
     source,
@@ -91,10 +83,7 @@ test("navigation rows align while the profile footer ignores the scroll rail", a
     source,
     /const unrailedRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5"/,
   );
-  // New Chat is the only outside row that aligns with the scroller's rail.
   assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 1);
-  // Nav rows, pinned chats, custom sections, Projects, Recents, and training runs sit
-  // inside the scroller; the footer is the seventh unrailed use outside it.
   assert.equal(source.match(/unrailedRowPadding[,}]/g)?.length, 7);
 
   const footer = source
@@ -108,15 +97,13 @@ test("navigation rows align while the profile footer ignores the scroll rail", a
 });
 
 test("the sidebar list measures its scroll rail", async () => {
-  // 0 where scrollbars overlay, the platform's thin rail where they are
-  // classic. Read off the scroller and written to the DOM: state loops (#185).
+  // 0 for overlay scrollbars, else the thin rail width; written to the DOM to avoid state loops.
   const source = APP_SIDEBAR;
   assert.match(
     source,
     /const rail = el\.offsetWidth - el\.clientWidth;[\s\S]*el\.parentElement\?\.style\.setProperty\(\s*"--sidebar-rail",\s*`\$\{rail\}px`,?\s*\)/,
   );
-  // A callback ref, not an effect: the Sheet unmounts on close and the
-  // breakpoint swaps subtrees, so the scroller is a new node each time.
+  // A callback ref: the Sheet unmounts on close, so the scroller is a new node each time.
   assert.match(source, /ref=\{attachScroller\}/);
   assert.match(
     source,
@@ -127,12 +114,9 @@ test("the sidebar list measures its scroll rail", async () => {
   assert.match(source, /railObserverRef\.current\?\.disconnect\(\);/);
   // Cache is per node: a new parent has no variable even at the same width.
   assert.match(source, /railWidthRef\.current = null;/);
-  // Measured on attach, or a list overflowing on arrival stays misaligned
-  // until something fires a scroll.
+  // Measured on attach, or a list overflowing on arrival stays misaligned.
   assert.match(source, /if \(!el\) return;\s*measureScrollRail\(el\);/);
-  // Then off the box, not off renders: the Images disclosure and the project
-  // toggles change the row count without rendering AppSidebar, and a scrollbar
-  // appearing shrinks the content box.
+  // Observe the box, not renders: row counts change without rendering AppSidebar.
   assert.match(
     source,
     /const observer = new ResizeObserver\(\(\) => \{\s*measureScrollRail\(el\);\s*syncFade\(el\);\s*\}\);\s*observer\.observe\(el\);/,
@@ -141,18 +125,15 @@ test("the sidebar list measures its scroll rail", async () => {
   assert.equal(/new ResizeObserver\([^)]*set[A-Z]/.test(source), false);
   assert.match(source, /if \(fade\.dataset\.visible !== visible\) fade\.dataset\.visible = visible;/);
   assert.equal(/setCanScrollDown/.test(source), false);
-  // The sections too, so the fade follows content that grows without rendering AppSidebar.
   assert.match(source, /for \(const section of el\.children\) observer\.observe\(section\);/);
   assert.match(source, /sections\.observe\(el, \{ childList: true \}\);/);
-  // And only on a change, so it cannot re-trigger itself.
+  // Only on a change, so it cannot re-trigger itself.
   assert.match(source, /if \(rail === railWidthRef\.current\) return;/);
-  // The fade stops at the rail too: the thumb ends its travel in that band.
   assert.match(
     source,
     /absolute start-0 end-\[var\(--sidebar-rail,0px\)\] bottom-full/,
   );
-  // Only the Windows-wide auto reset may set a width; hiding the rail is what a
-  // width override caused before.
+  // Only the Windows-wide auto reset may set a width; a width override hid the rail.
   const railWidthDecls = (
     INDEX.match(
       /\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width:\s*[^;}]+/g,
@@ -167,7 +148,6 @@ test("the sidebar list measures its scroll rail", async () => {
     /\.sidebar-scroll-fade::-webkit-scrollbar \{/.test(INDEX),
     false,
   );
-  // Thumb stays hidden until the list is hovered, as the other lists do.
   assert.match(INDEX, /\.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,/);
   // A mask covers the scrollbar, so the top fade keeps the rail column opaque.
   assert.match(

@@ -29,6 +29,7 @@ const { UpdateScreen } = loadWithStubs<typeof UpdateScreenModule>(
     },
     "@/components/ui/button": { Button: () => null },
     "@/components/ui/spinner": { Spinner: () => null },
+    "@/i18n": { useT: () => (key: string) => key },
   },
 );
 
@@ -62,7 +63,7 @@ test("the mac update screen keeps a window drag region", () => {
   }
 });
 
-// A Radix modal's body lock (pointer-events: none) is inherited, and would leave the strip undraggable.
+// A Radix modal's body lock (pointer-events: none) is inherited and would block dragging.
 test("the mac update screen drag region opts back into pointer events", () => {
   nativeMacTitlebar = true;
   assert.match(

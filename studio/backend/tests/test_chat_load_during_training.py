@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Loading a NEW chat model while training runs: can_load_chat_during_training
-(VRAM fit check), _guard_chat_load_against_training and _effective_load_in_4bit
-(409 + sizing wiring). The guard sizes the same effective load the backend will
-perform (HF auto reuses the loader's selector, HF explicit applies a per-GPU
-floor, GGUF sizes from on-disk weights, LoRA 4-bit->16-bit flips resolved first)
-and leaves non-training/external loads untouched."""
+"""Chat-load guard during training: sizing must match the effective load the backend performs."""
 
 import tempfile
 import asyncio
@@ -80,9 +75,6 @@ def _devices(*free_specs):
     ]
 
 
-# ── can_load_chat_during_training: HF auto (reuses auto_select_gpu_ids) ───────
-
-
 class TestCanLoadAutoHF(_GpuCacheResetMixin, unittest.TestCase):
     def _run(self, *, selection_mode, required, usable):
         meta = {"selection_mode": selection_mode, "required_gb": required, "usable_gb": usable}
@@ -106,10 +98,10 @@ class TestCanLoadAutoHF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(info["mode"], "auto")
         self.assertAlmostEqual(info["needed_gb"], 13.2, places = 3)
-        auto_mock.assert_called_once()  # mirrors the loader's own selection
+        auto_mock.assert_called_once()
 
     def test_too_tight_refuses(self):
-        # free 10 < 8*1.15+4 = 13.2 -> refuse even though raw 10 > 8
+        # free 10 < 8*1.15+4 = 13.2: refuse even though raw 10 > 8
         ok, _, _ = self._run(selection_mode = "auto", required = 8.0, usable = 10.0)
         self.assertFalse(ok)
 
@@ -117,9 +109,6 @@ class TestCanLoadAutoHF(_GpuCacheResetMixin, unittest.TestCase):
         # Selector couldn't confirm placement -> default-deny to protect training.
         ok, info = self._run(selection_mode = "fallback_all", required = 8.0, usable = 999.0)[:2]
         self.assertFalse(ok)
-
-
-# ── can_load_chat_during_training: HF explicit (per-GPU floor) ────────────────
 
 
 class TestCanLoadExplicitHF(_GpuCacheResetMixin, unittest.TestCase):
@@ -158,10 +147,9 @@ class TestCanLoadExplicitHF(_GpuCacheResetMixin, unittest.TestCase):
         ok, info, auto_mock = self._run(required = 8.0, devices = _devices((0, 80, 20)), gpu_ids = [0])
         self.assertTrue(ok)
         self.assertEqual(info["mode"], "explicit")
-        auto_mock.assert_not_called()  # explicit never calls the auto selector
+        auto_mock.assert_not_called()
 
     def test_per_gpu_floor_blocks_uneven_split(self):
-        # Aggregate capacity passes, but the 10 GB shard fails its 13.5 GB floor.
         ok, info, _ = self._run(
             required = 20.0, devices = _devices((0, 80, 35), (1, 80, 70)), gpu_ids = [0, 1]
         )
@@ -169,7 +157,6 @@ class TestCanLoadExplicitHF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertAlmostEqual(info["min_free_gb"], 10.0, places = 3)
 
     def test_per_gpu_floor_passes_when_even(self):
-        # free [30, 30]; both clear the 13.5 even-share floor -> allow.
         ok, _, _ = self._run(
             required = 20.0, devices = _devices((0, 80, 50), (1, 80, 50)), gpu_ids = [0, 1]
         )
@@ -188,9 +175,6 @@ class TestCanLoadExplicitHF(_GpuCacheResetMixin, unittest.TestCase):
         )
         self.assertTrue(ok)
         self.assertEqual(info["reason"], "invalid_gpu_ids")
-
-
-# ── can_load_chat_during_training: GGUF (sized from on-disk weights) ──────────
 
 
 class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
@@ -230,16 +214,14 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         ok, info, auto_mock = self._run(devices = _devices((0, 80, 20)), required_override = 10.0)
         self.assertTrue(ok)
         self.assertEqual(info["mode"], "gguf")
-        auto_mock.assert_not_called()  # GGUF never uses the HF auto selector
+        auto_mock.assert_not_called()
 
     def test_no_per_gpu_floor_for_gguf(self):
-        # free [45, 10], override 20 -> needed 27, aggregate 53.5 >= 27. GGUF self-
-        # places, so the per-GPU floor that would block HF doesn't apply -> allow.
+        # GGUF self-places, so the per-GPU floor that blocks HF does not apply.
         ok, _, _ = self._run(devices = _devices((0, 80, 35), (1, 80, 70)), required_override = 20.0)
         self.assertTrue(ok)
 
     def test_no_per_gpu_floor_for_gguf_with_explicit_gpu_ids(self):
-        # llama.cpp self-placement uses aggregate capacity within the pinned pool.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 35), (1, 80, 70), (2, 80, 0)),
             required_override = 20.0,
@@ -249,8 +231,6 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info["mode"], "gguf")
 
     def test_single_device_uses_selected_gpu(self):
-        # The model needs 27 GB with headroom. GPU 0 has 45 GB free, while an
-        # unrelated training-heavy GPU 1 has only 10 GB free.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 35), (1, 80, 70)),
             required_override = 20.0,
@@ -268,8 +248,6 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(blocked_info["usable_gb"], 10.0)
 
     def test_vulkan_pin_takes_precedence_over_unknown_diffusion_fallback(self):
-        # Use the Vulkan probe, not unrelated CUDA telemetry or a speculative
-        # CUDA diffusion device.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 0)),
             required_override = 20.0,
@@ -283,7 +261,6 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info["usable_gb"], 2.0)
 
     def test_vulkan_multi_gpu_guard_counts_requested_devices(self):
-        # Vulkan ordinals select the same entries reported by the Vulkan probe.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 0)),
             required_override = 10.0,
@@ -296,7 +273,6 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info["usable_gb"], 18.5)
 
     def test_vulkan_uneven_pool_uses_fitting_subset(self):
-        # The loader may choose the 20 GB device alone from this candidate pool.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 0), (1, 80, 0)),
             required_override = 10.0,
@@ -338,7 +314,6 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info["usable_gb"], 55.5)
 
     def test_single_device_unresolved_token_sizes_against_worst_device(self):
-        # Unknown single-device tokens use the least-free visible GPU.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 0)),
             required_override = 20.0,
@@ -349,8 +324,6 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertNotIn("reason", info)
 
     def test_single_device_unresolved_token_refuses_when_worst_device_full(self):
-        # Same UUID fallback, worst-case device nearly full (2 GB for a 20 GB
-        # model) -> refuse (default-deny), not on an unresolved-token technicality.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 78)),
             required_override = 20.0,
@@ -360,7 +333,6 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertNotEqual(info.get("reason"), "unresolved_gpu_id")
 
     def test_single_device_unresolved_token_uses_min_free_not_aggregate(self):
-        # Aggregate capacity cannot justify an unresolved single-device load.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 78), (1, 80, 0), (2, 80, 0)),
             required_override = 20.0,
@@ -370,7 +342,6 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info["mode"], "single_device")
 
     def test_single_device_cpu_token_allows(self):
-        # An empty device token is CPU-only and consumes no VRAM.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 78)),
             required_override = 20.0,
@@ -380,13 +351,9 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info["reason"], "cpu_only")
 
     def test_estimate_unavailable_refuses(self):
-        # No override and the estimator can't size it -> default-deny.
         ok, info, _ = self._run(devices = _devices((0, 80, 0)), required_override = None, estimate = None)
         self.assertFalse(ok)
         self.assertEqual(info["reason"], "estimate_unavailable")
-
-
-# ── can_load_chat_during_training: device-independent paths ──────────────────
 
 
 class TestCanLoadMisc(_GpuCacheResetMixin, unittest.TestCase):
@@ -403,8 +370,6 @@ class TestCanLoadMisc(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info["mode"], "non_accelerator")
 
     def test_xpu_overcommit_is_refused(self):
-        # XPU must NOT get the blanket non-accelerator allow: an oversized
-        # chat model during resident training is refused, like CUDA.
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.XPU),
             patch(
@@ -426,7 +391,6 @@ class TestCanLoadMisc(_GpuCacheResetMixin, unittest.TestCase):
         self.assertNotEqual(info.get("mode"), "non_accelerator")
 
     def test_no_visible_gpus_refuses(self):
-        # GGUF with an empty device list -> no candidate GPU -> default-deny.
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
             patch("utils.hardware.get_visible_gpu_utilization", return_value = {"devices": []}),
@@ -455,9 +419,6 @@ class TestCanLoadMisc(_GpuCacheResetMixin, unittest.TestCase):
             )
         self.assertFalse(ok)
         self.assertEqual(info["reason"], "probe_error")
-
-
-# ── _guard_chat_load_against_training + _effective_load_in_4bit (route) ───────
 
 
 def _load_inference_route():
@@ -553,7 +514,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
 
     def test_noop_when_training_inactive(self):
-        self._guard(training_active = False, decision = (False, {}))  # must not raise
+        self._guard(training_active = False, decision = (False, {}))
 
     def test_noop_when_training_state_unknown(self):
         self._guard(training_active = RuntimeError("no backend"), decision = (False, {}))
@@ -742,13 +703,8 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         self.assertEqual(len(captured), 1)
 
     def test_zero_layer_unclassified_gguf_is_not_sized_as_cpu_only(self):
-        """Reaching the guard is not enough: it must not be handed a CPU-only token.
-
-        can_load_chat_during_training short-circuits an EMPTY single_device_gpu to
-        "cpu_only" and always returns True, so an unclassified GGUF passed through with
-        force_cpu would be allowed during training on an assumption that only holds for
-        confirmed diffusion. The sibling test above stubs can_load, so it cannot see this.
-        """
+        """An unclassified GGUF must not reach the guard as cpu_only, since an empty GPU list always
+        admits."""
         captured = []
         with self.assertRaises(HTTPException):
             self._guard_zero_layer(diffusion_kind = None, captured = captured)
@@ -761,7 +717,6 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         )
 
     def test_unclassified_gguf_on_vulkan_build_budgets_as_ordinals(self):
-        # Unknown GGUFs still use the Vulkan ordinal namespace selected by the build.
         captured = []
         config = SimpleNamespace(is_gguf = True)
         with (
@@ -813,17 +768,11 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         self.assertEqual(captured[0]["vulkan_free_vram_gb"], {1: 2.0})
 
     def test_unclassified_gguf_budget_depends_on_the_pin(self):
-        # An uncached remote GGUF that neither the header nor the name can classify
-        # may still turn out to be the CUDA-only diffusion runner, so the Vulkan
-        # free-VRAM map cannot stand in for it. The pin decides what that means:
+        # An unclassifiable remote GGUF may be the CUDA-only diffusion runner.
         cases = (
-            # No gpu_ids -> no ordinal to mis-map, so fall back to the torch view
-            # (None) rather than an empty map, which would read as "no free VRAM
-            # anywhere" and 409 every such load during training.
+            # No gpu_ids: fall back to the torch view (None); {} would read as no free VRAM.
             (None, "single_device", None),
-            # An explicit pin is the opposite case: the ordinal belongs to exactly
-            # one of the two device namespaces and neither can stand in for the
-            # other, so the guard must fail closed with an empty map.
+            # An explicit pin must fail closed with an empty map.
             ([1], "gguf_vulkan", {}),
         )
         for requested_gpu_ids, mode, expected in cases:
@@ -857,7 +806,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         with self.assertRaises(HTTPException) as exc:
             self._guard(training_active = True, decision = (False, info))
         self.assertEqual(exc.exception.status_code, 409)
-        self.assertIn("39 GB", exc.exception.detail)  # reports needed_gb, not required_gb 30
+        self.assertIn("39 GB", exc.exception.detail)
         self.assertNotIn("30 GB", exc.exception.detail)
         self.assertIn("including safety headroom", exc.exception.detail)
         self.assertNotIn("chat is disabled", exc.exception.detail.lower())
@@ -932,7 +881,6 @@ class TestEffectiveLoadIn4bit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._write_adapter(d, {"unsloth_training_method": "lora"})
             cfg = SimpleNamespace(is_lora = True, path = d, base_model = "x")
-            # requested 4-bit, but a 'lora' adapter loads 16-bit
             self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
 
     def test_qlora_method_keeps_4bit(self):
@@ -979,9 +927,9 @@ class TestEffectiveLoadIn4bit(unittest.TestCase):
     def test_malformed_adapter_config_returns_request(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "adapter_config.json").write_text("[1, 2, 3]")  # not a dict
+            (Path(d) / "adapter_config.json").write_text("[1, 2, 3]")
             cfg = SimpleNamespace(is_lora = True, path = d, base_model = "x")
-            self.assertTrue(self.route._effective_load_in_4bit(cfg, True))  # no crash
+            self.assertTrue(self.route._effective_load_in_4bit(cfg, True))
 
     def _model_dir(
         self,
@@ -1191,9 +1139,6 @@ class TestNativeAudioPlacementContracts(unittest.TestCase):
             self.assertIsNone(self.route._native_audio_post_handoff_free_gb())
 
 
-# ── validate_model integration (early refusal, real settings) ────────────────
-
-
 class TestValidateRefusesDuringTraining(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1237,7 +1182,6 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         self.assertIn("training is running", exc.exception.detail)
 
     def test_passes_real_load_settings_to_guard(self):
-        # validate must size with the request's settings, not hardcoded defaults.
         captured = []
         self._validate(
             training_active = True, decision = (True, {}), captured = captured, load_in_4bit = False
@@ -1273,7 +1217,6 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         self.assertEqual(captured["request"].gpu_memory_mode, "manual")
 
     def test_validate_forwards_inherited_extras_and_parallel_to_guard(self):
-        # Validate and load must size the same inherited command.
         from models.inference import ValidateModelRequest
 
         request = ValidateModelRequest(
@@ -1306,7 +1249,6 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         self.assertTrue(captured["request"].tensor_parallel)
 
     def test_metadata_probe_skips_training_guard(self):
-        # Header-only probes allocate no VRAM.
         from models.inference import ValidateModelRequest
 
         request = ValidateModelRequest(
@@ -1370,8 +1312,6 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         template,
         canonical_path = "/picked/model.gguf",
     ):
-        # Drive validate_model for a native lease-backed GGUF template probe and
-        # capture what the embedded-template reader was called with.
         from models.inference import ValidateModelRequest
 
         request = ValidateModelRequest(
@@ -1414,18 +1354,12 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         return resp, seen, guard_called
 
     def test_include_chat_template_reads_leased_gguf_embedded_template(self):
-        # The picker chat-template GET has no lease plumbing, so a native picked
-        # GGUF surfaces its default template through this lease-aware probe: the
-        # embedded template is read from the granted canonical path and returned.
         resp, seen, _ = self._validate_gguf_template(template = "{{ messages }}")
         self.assertEqual(resp.chat_template, "{{ messages }}")
-        # Read strictly the leased file's own embedded template, never a sibling
-        # sidecar: the grant authorizes just this one path.
+        # Read only the leased file's embedded template; the grant covers just this path.
         self.assertEqual(seen["path"], "/picked/model.gguf")
 
     def test_include_chat_template_skips_training_guard(self):
-        # A template-only probe allocates no VRAM, so like include_context_length
-        # it must not be refused by the training guard.
         _, _, guard_called = self._validate_gguf_template(template = "{{ messages }}")
         self.assertEqual(guard_called, [])
 
@@ -1433,9 +1367,6 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
         resp, _, _ = self._validate_gguf_template(template = "a" * (MAX_CHAT_TEMPLATE_BYTES + 1))
         self.assertIsNone(resp.chat_template)
-
-
-# ── _estimate_gguf_required_gb (sizes the same weights the loader loads) ──────
 
 
 class TestRemoteGgufComputeReserve(unittest.TestCase):
@@ -1475,7 +1406,6 @@ class TestRemoteGgufComputeReserve(unittest.TestCase):
 
         self.assertAlmostEqual(self._reserve(n_parallel = 1), expected(1), places = 6)
         self.assertAlmostEqual(self._reserve(n_parallel = 2), expected(2), places = 6)
-        # A second slot costs rows, far less than a second activation reserve.
         self.assertLess(
             self._reserve(n_parallel = 2) - self._reserve(n_parallel = 1),
             _ASSUMED_MAX_ACTIVATION_WIDTH * ubatch * 4 / (1024**3) / 4,
@@ -1532,7 +1462,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 gguf_variant = None,
             )
             gb = self.route._estimate_gguf_required_gb(cfg)
-        self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)  # both shards
+        self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)
 
     @staticmethod
     def _dspark_capable(supported = True):
@@ -1662,10 +1592,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(auto, 5000 / (1024**3), places = 9)
 
     def test_validate_request_carries_the_mode_the_load_will_use(self):
-        """The estimate is mode-dependent, so /validate must be told the mode or
-        its verdict disagrees with the /load that follows it: a user with
-        speculative decoding off and a sidecar on disk would be refused at the
-        preflight for a load that would have been admitted."""
+        """/validate must receive the load mode, or its VRAM verdict disagrees with the /load that
+        follows."""
         from models.inference import ValidateModelRequest
 
         req = ValidateModelRequest(
@@ -1675,8 +1603,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         )
         self.assertEqual(req.speculative_type, "off")
         self.assertEqual(req.spec_draft_n_max, 3)
-        # Omitted stays None rather than defaulting to a mode, so the estimate
-        # keeps its previous behaviour for callers that do not send it.
         self.assertIsNone(ValidateModelRequest(model_path = "org/repo").speculative_type)
 
     def test_dspark_sidecar_is_not_charged_to_a_binary_that_cannot_run_it(self):
@@ -1732,7 +1658,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
                 with self._dspark_capable():
                     gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
-        self.assertAlmostEqual(gb, 9000 / (1024**3), places = 9)  # 2000 + 3000 + 4000
+        self.assertAlmostEqual(gb, 9000 / (1024**3), places = 9)
 
     @staticmethod
     def _dflash_capable(supported = True):
@@ -1887,14 +1813,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(forced_neox, 12000 / (1024**3), places = 9)
 
     def test_extra_args_drafter_is_charged_once_when_it_is_the_local_sidecar(self):
-        """--model-draft usually names the very sidecar discovery already found,
-        and charging it on both paths billed a 1.5 GiB drafter as 3 GiB, so the
-        guard refused an inference load that fits. Identity is the resolved path,
-        so a symlink or another spelling of the same file dedupes too. A drafter
-        somewhere else is charged instead of the discovered sidecar, not on top of
-        it: the loader ranks the extras path ahead of Unsloth's and the launch
-        appends the caller's flags last, so only one --model-draft is resident.
-        """
+        """A --model-draft naming the discovered sidecar is charged once, keyed by resolved path,
+        not twice."""
         import os
         import tempfile
 
@@ -1937,9 +1857,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                     llama_extra_args = ["--model-draft", str(elsewhere)],
                 )
         self.assertAlmostEqual(plain, 5000 / (1024**3), places = 9)
-        self.assertAlmostEqual(same, 5000 / (1024**3), places = 9)  # not 8000
+        self.assertAlmostEqual(same, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(through_link, 5000 / (1024**3), places = 9)
-        # 2000 target + 4000 override; the 3000 sidecar loses to it and is not charged.
         self.assertAlmostEqual(separate, 6000 / (1024**3), places = 9)
 
     def test_extras_owning_spec_type_charge_only_their_own_drafter(self):
@@ -1977,15 +1896,11 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                         str(custom),
                     ],
                 )
-        # 2000 weights + 4000 for the drafter that actually launches, not 9000.
         self.assertAlmostEqual(owned, 6000 / (1024**3), places = 9)
 
     def test_remote_weights_stay_in_the_estimate_beside_a_local_extra_args_drafter(self):
-        """A remote repo has no local main weight, so a local --model-draft was
-        the only thing making the local branch fire: it returned ~1.5 GiB and
-        skipped the listing that prices the target model entirely. The drafter is
-        a companion, not evidence of local weights, so it is added to whichever
-        branch produces the estimate."""
+        """A drafter is a companion, not local weights, so it is added to whichever branch sizes the
+        load."""
         import tempfile
 
         import utils.models.model_config as mc
@@ -2006,7 +1921,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                     speculative_type = "dflash",
                     llama_extra_args = ["--model-draft", str(drafter)],
                 )
-        # The 10 GB target weights, not just the drafter beside them.
         self.assertAlmostEqual(gb, 10.0 + 3000 / (1024**3), places = 9)
 
     def test_remote_threads_token_and_adds_companions(self):
@@ -2024,7 +1938,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         def fake_list(repo, hf_token = None):
             captured["token"] = hf_token
-            return ([variant], True)  # has_vision -> include mmproj
+            return ([variant], True)
 
         with (
             patch.object(mc, "list_gguf_variants", fake_list),
@@ -2039,8 +1953,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 hf_token = "tok",
                 speculative_type = "dspark",
             )
-        self.assertEqual(captured["token"], "tok")  # token threaded for gated repos
-        self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
+        self.assertEqual(captured["token"], "tok")
+        self.assertAlmostEqual(gb, 12.0, places = 6)
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
         self.assertFalse(comp.call_args.kwargs["include_mtp"])
         self.assertTrue(comp.call_args.kwargs["include_dspark"])
@@ -2062,7 +1976,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 include_mmproj = False,
                 include_dspark = True,
             )
-        self.assertEqual(total, 300)  # root MTP plus the preferred Q8_0 DSpark file
+        self.assertEqual(total, 300)
         with patch(
             "huggingface_hub.model_info",
             return_value = SimpleNamespace(siblings = siblings),
@@ -2077,10 +1991,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(dspark_only, 200)
 
     def test_auto_charges_only_dspark_when_a_repo_publishes_both_sidecars(self):
-        """The loader stands down on the DFlash fetch once DSpark has resolved
-        under Auto, so those bytes are never resident. Charging both is not the
-        safe over-estimate it is for an unlisted repo -- the listing has answered
-        by then -- it is a 409 for a load that fits."""
+        """Under Auto, a listed DSpark sidecar stands down the DFlash fetch, so only DSpark is charged."""
         both = [
             SimpleNamespace(rfilename = "dspark/dspark-model-Q8_0.gguf", size = 200),
             SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 400),
@@ -2103,21 +2014,16 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             _companion_bytes(both, include_dspark = True, include_dflash = True, dspark_first = True),
             200,
         )
-        # Only one kind published: Auto still charges whichever the repo has.
         self.assertEqual(
             _companion_bytes(
                 [both[1]], include_dspark = True, include_dflash = True, dspark_first = True
             ),
             400,
         )
-        # An explicit DFlash request is not the Auto race and still pays for it.
         self.assertEqual(_companion_bytes(both, include_dflash = True), 400)
 
     def test_extras_owning_the_spec_type_are_not_charged_the_repo_sidecar(self):
-        """A caller who sets --spec-type ends _build_speculative_flags before any
-        mode branch, so no repository sidecar of any kind is fetched or launched.
-        Only the drafter their --model-draft names becomes resident, and that is
-        charged separately; billing the repo's on top is a 409 for a load that fits."""
+        """With --spec-type set, no repo sidecar is launched; only the user's --model-draft is charged."""
         import utils.models.model_config as mc
 
         cfg = _gguf_cfg()
@@ -2126,13 +2032,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         _tmp = tempfile.TemporaryDirectory()
         self.addCleanup(_tmp.cleanup)
-        # A real file: the suppression is only sound for a drafter _extras_bytes
-        # can actually charge, and that charge is gated on Path(...).is_file().
         _draft = Path(_tmp.name) / "d.gguf"
         _draft.write_bytes(b"x" * 512)
-        # A repo that DOES ship a sidecar, so the assertion is about the resulting
-        # number and not about which flags were passed: a stub returning 0 whatever
-        # it is asked would pass even if the suppression stopped working.
+        # A real sidecar so a stub returning 0 cannot make this pass.
         _sidecar = 7 * 1024**3
 
         def _companions(repo, **kw):
@@ -2154,15 +2056,12 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                     cfg, speculative_type = "auto", llama_extra_args = extras
                 )
 
-        # Same load, minus the private drafter: Auto fetches the repo's sidecar and
-        # pays for it, which is the charge the suppression has to remove.
         baseline = _estimate([])
         self.assertGreater(baseline, _sidecar / (1024**3))
         for extras in (
             ["--spec-type", "draft-dflash", "--model-draft", str(_draft)],
             ["--spec-type", "draft-dspark", "--model-draft", str(_draft)],
         ):
-            # The repo sidecar gone, their own 512-byte drafter charged in its place.
             self.assertAlmostEqual(
                 _estimate(extras),
                 baseline - _sidecar / (1024**3) + 512 / (1024**3),
@@ -2171,12 +2070,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
 
     def test_a_remote_extras_drafter_is_sized_from_its_own_repository(self):
-        """--spec-draft-hf/-hfd names a SEPARATE repo, which llama-server downloads
-        and loads. The target repository's companion scan cannot see it, so a target
-        that ships no sidecar of its own left the drafter charged nowhere and let the
-        guard admit a multi-GB overcommit beside a running training job. Bounded by
-        the largest whole shard set, the only answer a listing can give: which file
-        the fetch lands on is not knowable, and a split set is resident in full."""
+        """--spec-draft-hf names a separate repo that loads beside the target, so its drafter must
+        be sized."""
         import utils.models.model_config as mc
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -2186,7 +2081,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             SimpleNamespace(rfilename = "drafter-Q4_K_M-00001-of-00002.gguf", size = 3 * 1024**3 // 2),
             SimpleNamespace(rfilename = "drafter-Q4_K_M-00002-of-00002.gguf", size = 3 * 1024**3 // 2),
             SimpleNamespace(rfilename = "drafter-Q8_0.gguf", size = 2 * 1024**3),
-            # Mid-upload: the fetch refuses a short set, so it must not set the bound.
             SimpleNamespace(rfilename = "drafter-F16-00001-of-00002.gguf", size = 5 * 1024**3),
             SimpleNamespace(rfilename = "notes.md", size = 9 * 1024**3),
         ]
@@ -2196,7 +2090,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 patch.object(
                     mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)
                 ),
-                # The exact hole: the target repo has no sidecar to be charged for.
                 patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
                 patch(
                     "huggingface_hub.model_info",
@@ -2221,15 +2114,12 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             (["--spec-type", "draft-dspark"], ["--spec-draft-hf", "org/drafter"]),
             (["--spec-type", "draft-dflash"], ["-hfd", "org/drafter"]),
         ):
-            # Everything else identical, so the difference IS the drafter charge.
             self.assertAlmostEqual(
                 _estimate(own + remote),
                 _estimate(own) + 3 * 1024**3 / (1024**3),
                 places = 9,
                 msg = remote,
             )
-        # The :quant tag is llama.cpp's own narrowing, so the bound follows it down
-        # rather than charging the repo's largest family for a small drafter.
         self.assertAlmostEqual(
             _estimate(["--spec-type", "draft-dflash", "-hfd", "org/drafter:Q8_0"]),
             _estimate(["--spec-type", "draft-dflash"]) + 2 * 1024**3 / (1024**3),
@@ -2237,10 +2127,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         )
 
     def test_an_unreadable_remote_drafter_repo_still_pays_a_flat_reserve(self):
-        """No network, a gated repo or a malformed id leaves the drafter unsized,
-        and this guard protects a running training job: charging zero for a
-        download the launch is certainly going to make is the one answer that
-        admits the overcommit."""
+        """An unreadable remote drafter repo must pay a flat reserve; charging zero would admit an
+        overcommit."""
         import utils.models.model_config as mc
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -2275,8 +2163,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         _empty = {"return_value": SimpleNamespace(siblings = [])}
         base = _estimate(["--spec-type", "draft-dflash"], _raises)
         for extras, listing in (
-            # Unreadable listing, a repo that lists no GGUF, and an id no listing
-            # could ever answer for: all of them mean "unsized", not "free".
             (["--spec-type", "draft-dflash", "-hfd", "org/drafter"], _raises),
             (["--spec-type", "draft-dflash", "-hfd", "org/drafter"], _empty),
             (["--spec-type", "draft-dflash", "-hfd", "not-a-repo-id"], _empty),
@@ -2289,13 +2175,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
 
     def test_a_priced_remote_extras_drafter_is_not_charged_twice(self):
-        """--spec-draft-hf names the drafter that actually loads, and it is now
-        priced from its own listing, so the target repository's sidecar must NOT
-        be charged as well: _build_speculative_flags returns before Unsloth emits
-        that sidecar, so it never becomes resident and billing it 409s a load
-        that fits. (Before the remote repo was priced this test asserted the
-        opposite, which was the safe reading while the drafter was charged
-        nowhere at all.)"""
+        """--spec-draft-hf is priced from its own listing; the target repo sidecar is never charged"""
         import utils.models.model_config as mc
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -2328,20 +2208,12 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 self.assertFalse(comp.call_args.kwargs["include_mtp"], extras)
 
     def test_the_unreadable_drafter_reserve_covers_the_largest_drafter_class(self):
-        """The fallback is only reached when the listing cannot be read, and
-        llama-server can still open the repo from its local HF cache, so the
-        number has to cover what it might find. A DSpark sidecar is about 11 GB
-        (llama_cpp._emit_dspark says so where it warns that --fit skips it), and
-        --spec-draft-hf can name any repo, so a typical-drafter figure here
-        underprices the load the guard is protecting a training run from."""
+        """The unlistable-drafter reserve must cover the largest class: --spec-draft-hf takes any repo."""
         self.assertGreaterEqual(self.route._REMOTE_DRAFTER_RESERVE_BYTES, 11 * 1024**3)
 
     def test_an_unlistable_remote_drafter_is_measured_from_the_local_cache(self):
-        """An unreadable listing is exactly the case where the repo is already
-        cached, which is what lets llama-server open it offline, and --spec-draft-hf
-        takes any repo, so a class-based constant can undercount a 30 GB drafter by
-        a lot. Measure what is on disk instead, with the same whole-shard-set bound
-        the listing path uses."""
+        """An unlistable remote drafter is measured from the local HF cache, with the same whole-
+        shard bound."""
         cached = SimpleNamespace(
             repo_id = "org/drafter",
             revisions = [
@@ -2358,8 +2230,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                         SimpleNamespace(file_name = "notes.txt", size_on_disk = 10),
                     ],
                 ),
-                # A stale snapshot still on disk. llama-server resolves the cached
-                # ref it was asked for, so this relic must not become the bound.
                 SimpleNamespace(
                     refs = set(),
                     last_modified = 1.0,
@@ -2375,14 +2245,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             ),
         ):
             charged = self.route._remote_drafter_repo_bytes("org/drafter", hf_token = None)
-        # The whole 30 GB set that is actually resident, not the flat reserve.
         self.assertEqual(charged, 30 * 1024**3)
 
     def test_a_local_model_draft_that_is_not_on_disk_is_not_priced_as_a_repo(self):
-        """--model-draft takes a path, --spec-draft-hf takes a repo id. A path that
-        does not exist is a drafter llama-server will not load, so it costs nothing.
-        Charging it the unreadable-repo reserve 409s the chat load over 12 GiB that
-        a typo, not a download, put in the extras."""
+        """A --model-draft path that is not on disk costs nothing; it is not priced as a repo id."""
         import utils.models.model_config as mc
 
         cfg = _gguf_cfg()
@@ -2402,10 +2268,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(charged, 4.0, places = 6)
 
     def test_only_the_winning_draft_flag_decides_repo_or_path(self):
-        """Draft flags are last-wins in llama-server, so a repo id followed by a
-        --model-draft leaves the path as the drafter. Asking "does any remote flag
-        appear" prices that path as a repository and charges the 12 GiB reserve for
-        a drafter the launch cannot open."""
+        """Draft flags are last-wins, so only the winning flag decides if the drafter is a repo or a
+        path."""
         import utils.models.model_config as mc
 
         cfg = _gguf_cfg()
@@ -2430,10 +2294,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(charged, 4.0, places = 6)
 
     def test_the_cached_drafter_scan_reads_the_cache_studio_is_pointed_at(self):
-        """A user who moved the Hugging Face cache launches llama-server against the
-        new one. Scanning huggingface_hub's import-time default finds nothing there,
-        and the reserve that replaces the measurement can undercount a large cached
-        drafter beside a running training job."""
+        """The cached-drafter scan must read the HF cache Studio is pointed at, not the import-time
+        default."""
         seen = {}
         cached = SimpleNamespace(
             repo_id = "org/drafter",
@@ -2462,10 +2324,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(charged, 7 * 1024**3)
 
     def test_underscore_spelled_draft_flags_classify_as_remote(self):
-        """llama.cpp accepts --spec_draft_hf as well as --spec-draft-hf. The value
-        parser normalises the spelling, so a classifier that compares raw tokens
-        calls the repo a local path, charges nothing, and lets the guard admit a
-        load whose drafter is multiple GB."""
+        """Underscore spellings like --spec_draft_hf must classify as remote, not be compared as raw
+        tokens."""
         import utils.models.model_config as mc
 
         cfg = _gguf_cfg()
@@ -2485,10 +2345,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(charged, 10.0, places = 6)
 
     def test_a_listing_that_carries_no_sizes_still_pays_the_reserve(self):
-        """A complete family whose listing omits sizes is not a free drafter, it is
-        an unmeasured one: something loads and the guard does not know how big. The
-        zero answer belongs to the case where every family is an incomplete split
-        and the fetch can load none of them."""
+        """A complete family with unlisted sizes still pays the reserve; it is unmeasured, not free."""
         sizeless = SimpleNamespace(
             siblings = [SimpleNamespace(rfilename = "drafter-Q4_K_M.gguf", size = None)]
         )
@@ -2526,15 +2383,11 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 speculative_type = "auto",
                 llama_extra_args = ["--spec-draft-hf", "org/drafter"],
             )
-        # The extras drafter, not the extras drafter plus the sidecar Auto no
-        # longer reaches.
         self.assertAlmostEqual(charged, 13.0, places = 6)
 
     def test_a_split_drafter_sized_in_part_is_not_charged_its_known_half(self):
-        """llama-server maps every shard, so a two-shard sidecar listed as 3 GiB
-        plus an unknown is not a 3 GiB sidecar. Charging the known half admits a
-        chat load that then exhausts VRAM beside the training job this guard is
-        protecting; the cache measurement, else the reserve, is the honest answer."""
+        """A split drafter with an unknown shard is not charged its known half; the cache or reserve
+        answers."""
         partial_sizes = SimpleNamespace(
             siblings = [
                 SimpleNamespace(rfilename = "drafter-00001-of-00002.gguf", size = 3 * 1024**3),
@@ -2611,10 +2464,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(on_gpu - on_cpu, 8.0, places = 6)
 
     def test_a_bare_model_draft_overrides_the_repository_sidecar(self):
-        """No --spec-type needed for the override to win: the loader ranks the
-        extras draft path ahead of Unsloth's and the launch appends the caller's
-        flags last, so exactly one --model-draft is resident. Charging the repo's
-        sidecar as well 409s a load that fits."""
+        """A bare --model-draft overrides the repo sidecar with no --spec-type; only one drafter is
+        charged."""
         import tempfile
 
         import utils.models.model_config as mc
@@ -2642,14 +2493,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                     speculative_type = "auto",
                     llama_extra_args = ["--model-draft", str(custom)],
                 )
-        # 2000 target + 4000 override, not the 3000 sidecar it displaces.
         self.assertAlmostEqual(charged, 6000 / (1024**3), places = 9)
 
     def test_a_cpu_pinned_discovered_sidecar_is_not_charged_vram(self):
-        """-ngld 0 applies to whichever separate drafter launches, including one
-        Unsloth resolved itself with no draft path in the extras at all. It is then
-        host-resident, so charging it against the training job's VRAM 409s a load
-        that takes none."""
+        """A -ngld 0 drafter runs host-resident, so it is not charged against training VRAM."""
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
@@ -2735,20 +2582,13 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
     _MULTI_FAMILY_SIBLINGS = [
         SimpleNamespace(rfilename = "model-A-Q4_K_M.gguf", size = 10 * 1024**3),
         SimpleNamespace(rfilename = "model-B-Q4_K_M.gguf", size = 10 * 1024**3),
-        # Named after model A and higher precision, so the name-only key ranks it
-        # first for every weight in the repo.
         SimpleNamespace(rfilename = "dflash-model-A-Q8_0.gguf", size = 1024**3),
         SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 4 * 1024**3),
     ]
 
     def test_remote_dflash_sizing_bounds_every_candidate_the_fallback_can_reach(self):
-        """_download_dflash reads a candidate's header only after paying for the
-        bytes, and a rejection falls through to the next name in the ranking, so
-        the file that lands can be any candidate -- including one LARGER than the
-        best-ranked pick. Sizing the first-ranked entry alone under-charged model
-        A by 3 GiB and admitted a load that then exhausts VRAM beside a running
-        training job. Headers are unreadable from a listing, so the bound has to
-        cover the whole reachable set."""
+        """Remote DFlash sizing bounds every reachable candidate, since headers are unreadable from
+        a listing."""
         with patch(
             "huggingface_hub.model_info",
             return_value = SimpleNamespace(siblings = self._MULTI_FAMILY_SIBLINGS),
@@ -2760,21 +2600,14 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 include_mtp = False,
                 include_dflash = True,
             )
-        # 4 GiB, the largest reachable candidate, for either weight in the repo:
-        # model A's own 1 GiB sidecar is merely the one tried FIRST.
         self.assertEqual(total, 4 * 1024**3)
 
     def test_remote_dflash_sizing_totals_every_shard_of_a_split_sidecar(self):
-        """A split sidecar is picked as its first shard, and the download then
-        fetches every sibling; llama-server keeps the whole set resident. Sizing
-        one shard budgeted a two-shard 2 GiB sidecar at 1 GiB and let it lose the
-        comparison to a smaller single-file candidate, which is the direction that
-        admits a load and then exhausts VRAM beside a running training job."""
+        """A split DFlash sidecar is sized as the sum of every shard, since the whole set stays resident."""
         siblings = [
             SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10 * 1024**3),
             SimpleNamespace(rfilename = "dflash-split-00001-of-00002.gguf", size = 1024**3),
             SimpleNamespace(rfilename = "dflash-split-00002-of-00002.gguf", size = 1024**3),
-            # Bigger than either shard, smaller than the set they form.
             SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 3 * 1024**3 // 2),
         ]
         with patch(
@@ -2788,7 +2621,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 include_mtp = False,
                 include_dflash = True,
             )
-        # The set totals 2 GiB and is the largest thing the fallback can land on.
         self.assertEqual(total, 2 * 1024**3)
 
     def test_remote_dflash_sizing_charges_a_split_set_once(self):
@@ -2854,8 +2686,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self._dflash_capable(),
         ):
             gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dflash")
-        # 10 GiB of weights plus the 4 GiB the fallback can still land on, not the
-        # 1 GiB candidate that merely goes first.
         self.assertAlmostEqual(gb, 14.0, places = 6)
 
     def test_auto_does_not_charge_dflash_when_extra_args_own_speculation(self):
@@ -2888,8 +2718,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 speculative_type = "auto",
                 llama_extra_args = ["--spec-type", "draft-dflash"],
             )
-            # Same for the forced mode: _build_speculative_flags returns before any
-            # mode branch when extra args own --spec-type, so dflash never emits.
             forced = self.route._estimate_gguf_required_gb(
                 cfg,
                 speculative_type = "dflash",
@@ -2965,8 +2793,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
         self.assertEqual(charged, 4 * 1024**3)
 
-    # ── Auto charges ONE drafter, the one the promotion leaves resident ──
-
     def _auto_companion_bytes(self, siblings):
         with patch(
             "huggingface_hub.model_info",
@@ -2983,12 +2809,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
 
     def test_auto_does_not_charge_the_mtp_drafter_dflash_replaces(self):
-        """Under Auto the caller asks for MTP and DFlash together, but the loader
-        promotes DFlash and overwrites mtp_draft_path with it, so the two are
-        never resident at once. Charging the sum was a 409 for a load that fits.
-
-        The DFlash sidecar is the larger of the two here, so the bound is its
-        size alone -- the MTP bytes are not added on top."""
+        """Under Auto DFlash replaces the MTP drafter, so charge the larger one, not the sum."""
         siblings = [
             SimpleNamespace(rfilename = "mtp-model.gguf", size = 1024**3),
             SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 3 * 1024**3),
@@ -2996,10 +2817,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(self._auto_companion_bytes(siblings), 3 * 1024**3)
 
     def test_auto_keeps_the_mtp_charge_when_the_dflash_candidates_may_all_fail(self):
-        """The other half of the same rule: every DFlash candidate can still be
-        turned away on its header, and the load then keeps the MTP drafter it has
-        already fetched. That outcome is genuinely unknown from a listing, so the
-        larger of the two is charged -- here the MTP one."""
+        """If every DFlash candidate may be rejected, MTP is kept, so charge the larger of the two."""
         siblings = [
             SimpleNamespace(rfilename = "mtp-model.gguf", size = 5 * 1024**3),
             SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 1024**3),
@@ -3007,12 +2825,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(self._auto_companion_bytes(siblings), 5 * 1024**3)
 
     def test_auto_charges_the_largest_reachable_dflash_against_the_mtp_drafter(self):
-        """Items 2 and 5 together, which is the only way they are coherent: the
-        DFlash side of the comparison is the whole reachable candidate set (4
-        GiB), not the first-ranked pick (1 GiB), and it is compared against the
-        MTP drafter rather than added to it. Fixing only one of the two lands on
-        the wrong number from either side: summing the first-ranked pick charges
-        3 GiB, and comparing against the first-ranked pick charges 2 GiB."""
+        """Under Auto, the largest reachable DFlash is compared against MTP, not summed or first-ranked."""
         siblings = [
             SimpleNamespace(rfilename = "mtp-model.gguf", size = 2 * 1024**3),
             *self._MULTI_FAMILY_SIBLINGS,
@@ -3020,10 +2833,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(self._auto_companion_bytes(siblings), 4 * 1024**3)
 
     def test_auto_charges_dspark_alone_over_both_of_the_others(self):
-        """DSpark takes first refusal in the promotion and has no post-fetch
-        rejection, so a listed sidecar settles the load: the DFlash fetch stands
-        down and mtp_draft_path is replaced. Neither of the other two is
-        resident."""
+        """A listed DSpark sidecar settles the load under Auto, so MTP and DFlash are not resident."""
         siblings = [
             SimpleNamespace(rfilename = "mtp-model.gguf", size = 1024**3),
             SimpleNamespace(rfilename = "dspark/dspark-model-Q8_0.gguf", size = 2 * 1024**3),
@@ -3061,11 +2871,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(total, 4 * 1024**3)
 
     def test_native_drafter_accept_applies_the_lease_before_the_scan_reads(self):
-        """The load route's boundary, in the shape ModelConfig.from_identifier
-        takes. Discovery runs inside from_identifier and opens a DFlash
-        candidate's header, so a dflash-*.gguf symlinked out of the granted
-        directory was read before the validated rescan could reject it, and no
-        later rejection takes a read back."""
+        """The lease must apply before from_identifier's discovery scan reads a symlinked DFlash header."""
         import os
         import tempfile
 
@@ -3117,7 +2923,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
             with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 2.0):
                 gb = self.route._estimate_gguf_required_gb(cfg, max_seq_length = 8192)
-        self.assertAlmostEqual(gb, 1000 / (1024**3) + 2.0, places = 6)  # weights + KV
+        self.assertAlmostEqual(gb, 1000 / (1024**3) + 2.0, places = 6)
 
     def test_kv_helper_graceful_on_non_gguf(self):
         import tempfile
@@ -3127,7 +2933,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertEqual(self.route._estimate_gguf_kv_gb(str(p), 4096), 0.0)
 
     def test_kv_sizes_at_larger_of_max_seq_len_and_ctx_override(self):
-        # KV sized at the larger of max_seq_length and --ctx-size, else native.
         seen = {}
 
         class _FakeBackend:
@@ -3163,7 +2968,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 seen["kv_unified"] = kv_unified
                 seen["n_ubatch"] = n_ubatch
                 seen["flash_attn"] = flash_attn
-                return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
+                return ctx * n_parallel * (1024**2)
 
             _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 0
 
@@ -3193,33 +2998,24 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
             r = self.route
-            # --ctx-size override above max_seq_length -> override wins
             self.assertAlmostEqual(
                 r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "131072"]), 128.0
             )
             self.assertEqual(seen["ctx"], 131072)
-            self.assertEqual(seen["n_parallel"], 1)  # default single slot
+            self.assertEqual(seen["n_parallel"], 1)
             self.assertFalse(seen["swa_full"])
-            # load_model appends --flash-attn on to every launch whose build has the
-            # flag, so the guard sizes the cache the launch will actually allocate.
-            # False here padded variable-width V tensors to the model-wide maximum.
+            # load_model always adds --flash-attn on when the build supports it.
             self.assertTrue(seen["flash_attn"])
-            # override below max_seq_length -> larger (max_seq_length) wins
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)
             self.assertEqual(seen["ctx"], 4096)
-            # no override, no max_seq_length -> native context fallback
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 0, None), 2.0)
             self.assertEqual(seen["ctx"], 2048)
-            # malformed extras are ignored (fall back to max_seq_length)
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "oops"]), 4.0)
-            # --parallel slots scale the cache the same way the launcher does
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, None, 4), 16.0)
             self.assertEqual(seen["n_parallel"], 4)
             self.assertTrue(seen["kv_unified"])
-            # User extras are appended after Unsloth's managed default.
             r._estimate_gguf_kv_gb("m", 4096, ["--no-kv-unified"], 4)
             self.assertFalse(seen["kv_unified"])
-            # An older binary without the flag keeps separate KV streams.
             _FakeBackend.supports_kv_unified = False
             r._estimate_gguf_kv_gb("m", 4096, None, 4)
             self.assertFalse(seen["kv_unified"])
@@ -3239,7 +3035,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             ):
                 r._estimate_gguf_kv_gb("m", 4096)
             self.assertEqual(seen["cache_type"], "q4_0")
-            # Tensor mode passes the requested type through, so the budget matches it.
             r._estimate_gguf_kv_gb(
                 "m",
                 4096,
@@ -3247,7 +3042,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 tensor_parallel = True,
             )
             self.assertEqual(seen["cache_type"], "q4_0")
-            # The heavier axis still wins, tensor or not.
             r._estimate_gguf_kv_gb(
                 "m",
                 4096,
@@ -3255,15 +3049,11 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 tensor_parallel = True,
             )
             self.assertEqual(seen["cache_type"], "f32")
-            # Full SWA mode follows the same pass-through args as the launcher.
             r._estimate_gguf_kv_gb("m", 4096, ["--swa_full"])
             self.assertTrue(seen["swa_full"])
             r._estimate_gguf_kv_gb("m", 4096, ["--kv_unified", "--ubatch_size", "256"])
             self.assertTrue(seen["kv_unified"])
             self.assertEqual(seen["n_ubatch"], 256)
-
-
-# ── load_model integration: authoritative 409, and no unload before refusal ──
 
 
 class TestLoadModelGuardIntegration(unittest.TestCase):
@@ -3310,7 +3100,6 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         info = {"required_gb": 40.0, "usable_gb": 5.0, "needed_gb": 50.0, "mode": "auto"}
 
         with (
-            # Pin the latest-sidecar tier check so the guard path stays offline.
             patch("utils.transformers_version.latest_tier_active_for", return_value = False),
             patch.object(self.route, "validate_extra_args", return_value = None),
             patch.object(
@@ -3333,13 +3122,11 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
                 )
 
         self.assertEqual(exc.exception.status_code, 409)
-        # Guard runs before the unload step, so a refused load tears down nothing.
         inf.unload_model.assert_not_called()
         inf._shutdown_subprocess.assert_not_called()
         llama.unload_model.assert_not_called()
 
     def test_gguf_inherited_draft_device_rejected_under_vulkan_gpu_ids(self):
-        # Check effective inherited extras, not only the raw request.
         import contextlib
         from unittest.mock import MagicMock
         from models.inference import LoadRequest

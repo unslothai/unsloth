@@ -382,6 +382,8 @@ test("the live adapter saves identities for ordinary, approval and provider card
             ]
           : [];
       const confirmed: string[] = [];
+      const confirmedThreads: string[] = [];
+      const confirmedRuns: string[] = [];
       const context = vm.createContext({
         toolCallParts: parts,
         toolPartIdByBackendId: new Map(
@@ -389,7 +391,12 @@ test("the live adapter saves identities for ordinary, approval and provider card
         ),
         toolConfirmationIdsByBackendId: new Map(),
         toolConfirmationScopeId: "session:thread",
+        resolvedThreadId: "thread",
         sandboxSessionId: "session",
+        // The run's key when the call parks, which can differ from the one captured at send.
+        serverCancel: () => {},
+        liveThreadKey: () => "thread-live",
+        cancelId: "cancel-1",
         generationRunId,
         generationSeq: 7,
         cumulativeText: "",
@@ -404,7 +411,19 @@ test("the live adapter saves identities for ordinary, approval and provider card
           getState: () => ({
             clearToolLiveOutput() {},
             clearToolFullOutput() {},
-            setToolConfirmation: (id: string) => confirmed.push(id),
+            setToolConfirmation: (
+              id: string,
+              _approvalId: string,
+              _sessionId: string,
+              _scopeId: string,
+              threadId: string,
+              _imageDisclosure: unknown,
+              runId: string,
+            ) => {
+              confirmed.push(id);
+              confirmedThreads.push(threadId);
+              confirmedRuns.push(runId);
+            },
           }),
         },
       });
@@ -439,6 +458,11 @@ test("the live adapter saves identities for ordinary, approval and provider card
         confirmed,
         kind === "approval" ? [saved.toolCallId] : [],
       );
+      assert.deepEqual(
+        confirmedThreads,
+        kind === "approval" ? ["thread-live"] : [],
+      );
+      assert.deepEqual(confirmedRuns, kind === "approval" ? ["cancel-1"] : []);
       const carried = [{ at: 0, part: saved }];
       const replay = createGenerationToolRecovery(carried, "run", 7);
       assert.equal(replay.replayFrom, 7);
@@ -470,7 +494,6 @@ async function recoverRun(
     cursor?: number;
     viewContent?: unknown[];
     metadata?: Record<string, unknown>;
-    /** Stall the follow after the payloads, short of this snapshot lastEventSeq. */
     stallBefore?: number;
   } = {},
 ) {
@@ -492,9 +515,7 @@ async function recoverRun(
     registerThreadServerCancel() {},
     setThreadRunning() {},
     clearThreadServerCancel() {},
-    // The real store carries these, and recovery now uses them to put Approve/Deny back in front of
-    // a call that parked while the tab was gone. A stand-in missing them would make a recovery that
-    // touches an approval look broken here and work in the app.
+    // The real store has these; a stand-in missing them would make approval recovery look broken.
     setToolConfirmation() {},
     clearToolConfirmation() {},
   };
@@ -662,7 +683,6 @@ test("the recovery scheduler persists provider compaction metadata", async () =>
 });
 
 test("reopening a run that finished without the tab saves and renders only its end", async () => {
-  // The harness yields every update twice, allowing two settlements; production stops at one.
   const payloads = Array.from({ length: 400 }, (_, index) => ({
     choices: [{ delta: { content: `w${index} ` } }],
   }));
@@ -690,7 +710,6 @@ test("a follow that stalls during catch-up saves its cursor with the replayed us
   const { metadata, content } = snapshots[0];
   assert.deepEqual(metadata.incomplete, { reason: "interrupted" });
   assert.equal(content.map((part) => part.text).join(""), "partial");
-  // A later recovery resumes after seq 2, so the usage chunk must be saved with that cursor.
   assert.deepEqual(metadata.generationRecoveryUsage, { completion_tokens: 7 });
   assert.deepEqual(metadata.generationRecoveryTimings, { predicted_n: 7 });
   assert.equal(metadata.generationChunkCount, 1);
@@ -698,7 +717,6 @@ test("a follow that stalls during catch-up saves its cursor with the replayed us
 });
 
 test("a recovered turn keeps the reasoning cut the backend reported", async () => {
-  // The producer stamps the cut on the saved turn; a settle without it is refused.
   const { snapshots } = await recoverRun(
     [],
     [
@@ -1355,7 +1373,6 @@ test("repeated source ids pair one to one instead of multiplying", () => {
   const view = [{ type: "text", text: "answer" }, source(), source()];
   const recovered = [{ type: "text", text: "answer" }, source(), source()];
   let carriedView = view;
-  // Every publish re-imports; a duplicate that reads as missing would grow each round.
   for (let round = 0; round < 3; round++) {
     carriedView = recovery.recoveredContentToImport(
       carriedView,
@@ -1442,7 +1459,6 @@ test("the id-less sentinel keeps the file searchable and cannot collide", () => 
 
 test("a source an earlier recovery saved stays behind text replayed after it", async () => {
   const citations = "Title: Docs\nURL: https://docs.unsloth.ai/\nSnippet: g";
-  // What a previous recovery session persisted: the card, then the source it appended.
   const saved = [
     { type: "text", text: "Searching." },
     {
@@ -1467,7 +1483,6 @@ test("a source an earlier recovery saved stays behind text replayed after it", a
     { choices: [{ delta: { content: " I found** next." } }] },
   ]);
 
-  // Carried at its old offset the source would split the reply, and the emphasis with it.
   assert.equal(content.at(-1)?.type, "source");
   assert.deepEqual(
     content.filter((part) => part.type === "source").map((part) => part.url),
@@ -1499,7 +1514,6 @@ test("two rounds finding the same page keep a source each, with their own titles
       { type: "tool_end", tool_call_id: "ws_1", result: second },
     ],
   );
-  // The live path flat-maps the cards, so the panel lists the page once per round.
   assert.deepEqual(
     content.filter((part) => part.type === "source").map((part) => part.title),
     ["Docs v1", "Docs v2"],
@@ -1507,10 +1521,7 @@ test("two rounds finding the same page keep a source each, with their own titles
 });
 
 test("a card that finishes twice rebuilds its sources from the newer result", () => {
-  // Sources are parsed once per card rather than once per rebuild, so the cache key has to
-  // move whenever the result does. Keying it on the card's backend id instead, which reads
-  // as the obvious choice, breaks exactly here: OpenAI Responses ends a web search twice,
-  // a placeholder and then the citations, and the panel would keep the placeholder's.
+  // Key the cache on the result, not the card id: OpenAI Responses ends a web search twice.
   const carried: Carried[] = [];
   const { apply, withSources } = createGenerationToolRecovery(carried, "run");
   apply({ type: "tool_start", tool_call_id: "ws_0", tool_name: "web_search" }, 0, 1);
@@ -1544,8 +1555,6 @@ test("a card that finishes twice rebuilds its sources from the newer result", ()
 });
 
 test("each rebuild yields its own source objects", () => {
-  // Same reason: the parse is shared between rebuilds, the objects must not be. A caller
-  // that edits a part it was handed would otherwise change what the next rebuild returns.
   const carried: Carried[] = [];
   const { apply, withSources } = createGenerationToolRecovery(carried, "run");
   apply({ type: "tool_start", tool_call_id: "ws_0", tool_name: "web_search" }, 0, 1);

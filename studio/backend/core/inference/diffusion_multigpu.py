@@ -1,32 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Several selected CUDA / ROCm cards for one image or video pipeline, without NCCL.
-
-Three levers, all at a component or denoiser-call boundary, never inside a model forward:
-
-* Component split (planner): the DiT stays whole and resident on the primary card while the text encoders, VAE and
-  other companions sit on a secondary card, when that removes offload on the primary. Inputs move to a module's own
-  card at its entry points and outputs come back to the primary, so the pipeline still sees one device. Copies are
-  exact, so the output is bit-identical to a single-card resident run.
-* Layer split (``diffusion_layer_split``): a DiT that fits no single selected card is split by contiguous ranges of
-  its repeated blocks, the rest of it on the primary. Activations cross at the range boundaries only; outputs are
-  bit-identical to a one-card run.
-* Second denoiser (after load): a two-DiT pipeline (an MoE ``transformer_2``) keeps one expert per card when both
-  experts do not fit one card.
-* CFG-parallel (generate): when guidance runs separate cond / uncond denoiser calls on the same latents, every odd
-  branch of a step runs on a replica of the denoiser on the secondary card, launched from a worker thread bound to
-  that card, while the primary computes the even branch. One output is copied per step; guidance and the scheduler
-  step stay on the primary. Branches are recognised from the call boundary alone (same latent tensor object in
-  consecutive calls), so true CFG, rescale and multi-branch guidance work unchanged and a guidance-distilled model
-  (one call per step) never builds a replica.
-* Layer split (after load, diffusion_layer_split_plan): when one card would offload the denoiser itself and no
-  component assignment fits, the denoiser's blocks are cut across the cards. Excludes CFG-parallel.
-
-Kill switches: ``UNSLOTH_DIFFUSION_MULTIGPU=0`` (everything here; one card as before), ``UNSLOTH_DIFFUSION_CFG_PARALLEL=0``
-(only the replica). ``UNSLOTH_DIFFUSION_MULTIGPU=force`` splits the companions even when one card would hold
-everything (for proving bit-identity). With one selected card nothing here engages.
-"""
+"""Several CUDA/ROCm cards per pipeline without NCCL, split only at component or denoiser-call
+boundaries, never inside a forward; outputs bit-identical; UNSLOTH_DIFFUSION_MULTIGPU=0 disables"""
 
 from __future__ import annotations
 
@@ -305,21 +281,40 @@ def probe_devices(ordinals: Sequence[int]) -> dict[int, DeviceProbe]:
 
 
 def best_secondary(
-    selection: MultiGpuSelection, probes: Optional[dict[int, DeviceProbe]] = None
+    selection: MultiGpuSelection,
+    probes: Optional[dict[int, DeviceProbe]] = None,
+    *,
+    mode: Optional[str] = None,
 ) -> Optional[int]:
     if not selection.secondaries:
         return None
+    from .diffusion_memory import (
+        DeviceMemory,
+        _fast_device_budget_mib,
+        _safe_device_budget_mib,
+        _user_budget_reserve_mib,
+    )
+
+    budgeted = _user_budget_reserve_mib(1 << 20) > 0
+    limit_of = _fast_device_budget_mib if mode == "fast" else _safe_device_budget_mib
+
+    def usable(free: Optional[int], total: Optional[int]) -> int:
+        if free is None:
+            return -1
+        if not budgeted:
+            return int(free)
+        memory = DeviceMemory("cuda", "cuda", "discrete_vram", int(free), total)
+        return int(limit_of(memory) or 0)
+
     if probes is None and selection.automatic:
-        free = {o: _free_total_mib(o)[0] for o in selection.secondaries}
-        return max(
-            selection.secondaries, key = lambda o: (free[o] if free[o] is not None else -1, -o)
-        )
+        free = {o: _free_total_mib(o) for o in selection.secondaries}
+        return max(selection.secondaries, key = lambda o: (usable(*free[o]), -o))
     if probes is None:
         probes = probe_devices((selection.primary, *selection.secondaries))
 
     def key(o: int) -> tuple[int, int]:
         p = probes.get(o)
-        return (p.free_mib if p is not None and p.free_mib is not None else -1, -o)
+        return (usable(p.free_mib, p.total_mib) if p is not None else -1, -o)
 
     return max(selection.secondaries, key = key)
 
@@ -414,7 +409,42 @@ def plan_companion_split(
     return None
 
 
-def choose_component_assignment(
+@dataclasses.dataclass(frozen = True)
+class AssignmentTrial:
+    """One companion assignment the planner tried: what moves, and each card's need against its resident limit."""
+
+    moved: tuple[str, ...]
+    moved_mib: int
+    primary_need_mib: int
+    primary_limit_mib: int
+    secondary_need_mib: int
+    secondary_limit_mib: int
+
+    @property
+    def fits(self) -> bool:
+        return (
+            self.primary_need_mib <= self.primary_limit_mib
+            and self.secondary_need_mib <= self.secondary_limit_mib
+        )
+
+    def why_not(self, primary: int, secondary: int) -> str:
+        moved = "+".join(self.moved)
+        if self.primary_need_mib > self.primary_limit_mib:
+            return (
+                f"{moved} on cuda:{secondary}: cuda:{primary} still needs {_gib(self.primary_need_mib)} of "
+                f"{_gib(self.primary_limit_mib)}"
+            )
+        return (
+            f"{moved} on cuda:{secondary}: needs {_gib(self.secondary_need_mib)} there, "
+            f"{_gib(self.secondary_limit_mib)} allowed"
+        )
+
+
+def _gib(mib: Optional[int]) -> str:
+    return "unknown" if mib is None else f"{int(mib) / 1024:.1f} GiB"
+
+
+def component_assignment_trials(
     sizes: dict[str, tuple[int, str]],
     *,
     headroom_mib: int,
@@ -422,16 +452,15 @@ def choose_component_assignment(
     primary_limit_mib: int,
     secondary_limit_mib: int,
     move_denoisers: bool = True,
-) -> Optional[tuple[str, ...]]:
-    """Names to place on the secondary so each card holds its share resident, or None. ``sizes`` maps component name
-    -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. A card running a denoiser or the VAE (any 'other'
-    component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room.
-    Tried in order: every companion; the text encoders alone; the second denoiser; the second denoiser plus the
-    companions. The first denoiser always stays on the primary; ``move_denoisers=False`` (the secondary cannot run the
-    denoiser's attention backend) keeps every denoiser there."""
+    encoders_only_limit_mib: Optional[int] = None,
+) -> list[AssignmentTrial]:
+    """Every assignment :func:`choose_component_assignment` tries, in its order, priced (the first that fits wins).
+    ``encoders_only_limit_mib``: what a secondary holding nothing but text encoders may take (its free memory minus
+    ComfyUI's per-card floor); such a card runs one encoder forward per prompt, so it is priced with the weights and
+    an encoder forward's room instead of the base overhead and the 85% resident margin of a card that denoises."""
     dits = [n for n, (_m, r) in sizes.items() if r == "dit"]
     if not dits:
-        return None
+        return []
     first = "transformer" if "transformer" in dits else dits[0]
     seconds = [n for n in dits if n != first]
     companions = [
@@ -455,10 +484,59 @@ def choose_component_assignment(
         busy = any(sizes[n][1] != "text_encoder" for n in names)
         return weights + (headroom_mib if busy else TEXT_ENCODER_HEADROOM_MIB) + overhead_mib
 
+    def secondary(moved: tuple[str, ...]) -> tuple[int, int]:
+        standard = (need(list(moved)), int(secondary_limit_mib))
+        if encoders_only_limit_mib is None or any(sizes[n][1] != "text_encoder" for n in moved):
+            return standard
+        encoders = (
+            sum(sizes[n][0] for n in moved) + TEXT_ENCODER_HEADROOM_MIB,
+            int(encoders_only_limit_mib),
+        )
+        return encoders if encoders[1] - encoders[0] > standard[1] - standard[0] else standard
+
+    trials = []
     for moved in candidates:
-        on_primary = [n for n in sizes if n not in moved]
-        if need(on_primary) <= primary_limit_mib and need(list(moved)) <= secondary_limit_mib:
-            return moved
+        sec_need, sec_limit = secondary(moved)
+        trials.append(
+            AssignmentTrial(
+                moved = moved,
+                moved_mib = sum(sizes[n][0] for n in moved),
+                primary_need_mib = need([n for n in sizes if n not in moved]),
+                primary_limit_mib = int(primary_limit_mib),
+                secondary_need_mib = sec_need,
+                secondary_limit_mib = sec_limit,
+            )
+        )
+    return trials
+
+
+def choose_component_assignment(
+    sizes: dict[str, tuple[int, str]],
+    *,
+    headroom_mib: int,
+    overhead_mib: int,
+    primary_limit_mib: int,
+    secondary_limit_mib: int,
+    move_denoisers: bool = True,
+    encoders_only_limit_mib: Optional[int] = None,
+) -> Optional[tuple[str, ...]]:
+    """Names to place on the secondary so each card holds its share resident, or None. ``sizes`` maps component name
+    -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. A card running a denoiser or the VAE (any 'other'
+    component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room.
+    Tried in order: every companion; the text encoders alone; the second denoiser; the second denoiser plus the
+    companions. The first denoiser always stays on the primary; ``move_denoisers=False`` (the secondary cannot run the
+    denoiser's attention backend) keeps every denoiser there."""
+    for trial in component_assignment_trials(
+        sizes,
+        headroom_mib = headroom_mib,
+        overhead_mib = overhead_mib,
+        primary_limit_mib = primary_limit_mib,
+        secondary_limit_mib = secondary_limit_mib,
+        move_denoisers = move_denoisers,
+        encoders_only_limit_mib = encoders_only_limit_mib,
+    ):
+        if trial.fits:
+            return trial.moved
     return None
 
 
@@ -488,6 +566,88 @@ def _secondary_runs_denoiser(
     return False
 
 
+@dataclasses.dataclass(frozen = True)
+class PlacementCandidate:
+    """One placement the automatic planner considered: ``kind`` is one of ``one_card`` (everything resident on the
+    primary), ``companion_split``, ``layer_split``, ``offload`` (one card, streamed) or ``cfg_parallel``."""
+
+    kind: str
+    reason: str
+
+
+@dataclasses.dataclass(frozen = True)
+class PlacementDecision:
+    """What the multi-GPU refinement chose for a load under a multi-card selection, and why every other candidate
+    was rejected. Recorded per pipeline; ``status()["multi_gpu"]["decision"]`` shows it (``"placement"`` there stays
+    the companion split's component-to-device map). ``fallback_resident``: the one-card plan a split would fall back
+    to keeps everything resident (a forced split of a model that fits one card)."""
+
+    chosen: str
+    summary: str
+    primary: int
+    automatic: bool
+    rejected: tuple[PlacementCandidate, ...] = ()
+    fallback_resident: bool = False
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "chosen": self.chosen,
+            "summary": self.summary,
+            "primary": f"cuda:{self.primary}",
+            "automatic": self.automatic,
+            "rejected": [{"kind": c.kind, "reason": c.reason} for c in self.rejected],
+        }
+
+
+_DECISIONS: "weakref.WeakKeyDictionary[Any, PlacementDecision]" = weakref.WeakKeyDictionary()
+
+
+def placement_decision(pipe: Any) -> Optional[PlacementDecision]:
+    try:
+        return _DECISIONS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return None
+
+
+def _record_decision(
+    pipe: Any,
+    selection: MultiGpuSelection,
+    chosen: str,
+    summary: str,
+    rejected: Sequence[PlacementCandidate] = (),
+    *,
+    fallback_resident: bool = False,
+) -> None:
+    with contextlib.suppress(TypeError):
+        _DECISIONS[pipe] = PlacementDecision(
+            chosen = chosen,
+            summary = f"placement: {summary}",
+            primary = int(selection.primary),
+            automatic = bool(selection.automatic),
+            rejected = tuple(rejected),
+            fallback_resident = bool(fallback_resident),
+        )
+
+
+def forget_placement_decision(pipe: Any) -> None:
+    with contextlib.suppress(TypeError):
+        _DECISIONS.pop(pipe, None)
+
+
+def _denoiser_mib(sizes: dict[str, tuple[int, str]]) -> int:
+    return sum(m for m, role in sizes.values() if role == "dit")
+
+
+def _one_card_rejection(plan: Any, primary: int) -> PlacementCandidate:
+    required = plan.estimates.get("resident_required_mib")
+    budget = plan.estimates.get("safe_device_budget_mib")
+    return PlacementCandidate(
+        "one_card",
+        f"everything resident on cuda:{primary} needs {_gib(required)}, {_gib(budget)} free after the reserve; "
+        f"one card would use '{plan.offload_policy}'",
+    )
+
+
 def refine_plan_for_multigpu(
     pipe: Any,
     plan: Any,
@@ -497,62 +657,113 @@ def refine_plan_for_multigpu(
 
     No-op without a selection, for explicit offload modes, a plan already resident (unless forced) or split, unified memory
     or an unknown budget. When no component assignment fits, a layer split (diffusion_layer_split_plan) is tried before
-    keeping the offload plan. Returns the plan (a ``dataclasses.replace`` copy when it changed)."""
+    keeping the offload plan. Returns the plan (a ``dataclasses.replace`` copy when it changed). Under a selection the
+    decision and every rejected candidate are recorded for :func:`placement_status`."""
     selection = current_selection()
     if selection is None or plan is None:
         return plan
-    if (
-        getattr(plan, "secondary_ordinal", None) is not None
-        or getattr(plan, "layer_split", None) is not None
-    ):
+    primary = int(selection.primary)
+
+    def keep(chosen: str, summary: str, *rejected: PlacementCandidate) -> Any:
+        fallback = getattr(plan, "fallback_plan", None)
+        _record_decision(
+            pipe,
+            selection,
+            chosen,
+            summary,
+            rejected,
+            fallback_resident = getattr(fallback, "offload_policy", None) == "none",
+        )
         return plan
+
+    def one_card_plan(why: str) -> Any:
+        if plan.offload_policy == "none":
+            return keep("one_card", f"one card: everything resident on cuda:{primary} ({why})")
+        return keep(
+            "offload", f"one card with '{plan.offload_policy}' offload on cuda:{primary} ({why})"
+        )
+
+    if getattr(plan, "secondary_ordinal", None) is not None:
+        return keep(
+            "companion_split",
+            f"companion split: {', '.join(plan.secondary_components or ('companions',))} on "
+            f"cuda:{plan.secondary_ordinal}, the denoiser resident on cuda:{primary} (planned before the load)",
+        )
+    if getattr(plan, "layer_split", None) is not None:
+        return keep("layer_split", f"layer split across {_cards(plan.layer_split.cards)}")
     from .diffusion_layer_split_plan import layer_split_mode, refine_plan_for_layer_split
 
     layer_force = layer_split_mode() == "force"
     if plan.offload_policy == "none" and multigpu_mode() != "force" and not layer_force:
-        return plan
+        required = plan.estimates.get("resident_required_mib")
+        budget = plan.estimates.get("safe_device_budget_mib")
+        not_needed = f"not needed: the model fits cuda:{primary}"
+        return keep(
+            "one_card",
+            f"one card: everything resident on cuda:{primary} (needs {_gib(required)}, {_gib(budget)} free after "
+            "the reserve)",
+            PlacementCandidate("companion_split", not_needed),
+            PlacementCandidate("layer_split", not_needed),
+        )
     if getattr(plan, "requested_mode", None) not in ("auto", "fast"):
-        return plan
+        return one_card_plan(
+            f"memory mode '{getattr(plan, 'requested_mode', None)}' was chosen explicitly"
+        )
     if plan.estimates.get("explicit_cpu_offload"):
-        return plan
+        return one_card_plan("CPU offload was requested explicitly")
     memory = plan.device_memory
     if memory.is_unified or getattr(memory, "device", None) != "cuda":
         if memory.is_unified:
             from .diffusion_layer_split_plan import note_unified_primary
             note_unified_primary(pipe, selection, logger)
-        return plan
+        return one_card_plan("unified memory" if memory.is_unified else "not a CUDA card")
     budget = plan.estimates.get("safe_device_budget_mib")
     if budget is None:
-        return plan
+        return one_card_plan(f"free memory of cuda:{primary} is unknown")
     from .diffusion_memory import _loaded_component_mib
 
     sizes = _loaded_component_mib(pipe)
     if not sizes:
-        return plan
-    secondary = best_secondary(selection)
-    if secondary is None:
-        return plan
+        return one_card_plan("component sizes are unreadable")
     mode = getattr(plan, "requested_mode", None)
+    secondary = best_secondary(selection, mode = mode)
+    if secondary is None:
+        return one_card_plan("no second card")
     sec_limit = secondary_resident_limit_mib(secondary, mode)
     if sec_limit is None:
-        return plan
+        return one_card_plan(f"free memory of cuda:{secondary} is unknown")
     from .diffusion_memory import _fast_device_budget_mib
 
     primary_limit = (
         _fast_device_budget_mib(memory) if mode == "fast" else int(int(budget) * _RESIDENT_FRACTION)
     )
     if primary_limit is None:
-        return plan
-    headroom = int(
-        plan.estimates.get("measured_runtime_headroom_mib")
-        or plan.estimates.get("calibrated_headroom_mib")
+        return one_card_plan(f"free memory of cuda:{primary} is unknown")
+    from .diffusion_memory import plan_keeps_transformer_resident
+
+    if mode != "fast" and plan.offload_policy != "none" and plan_keeps_transformer_resident(plan):
+        # The one-card plan already holds the denoiser resident against the full budget and streams only the
+        # encoders: moving companions off leaves the primary holding no more than that, so the 85% margin would
+        # refuse a split that is lighter than the plan it replaces (the text encoder then streamed from host memory
+        # beside an idle second card).
+        primary_limit = max(int(primary_limit), int(budget))
+    measured_headroom = plan.estimates.get("measured_runtime_headroom_mib")
+    flat_headroom = (
+        plan.estimates.get("calibrated_headroom_mib")
+        or plan.estimates.get("calibrated_split_headroom_mib")
         or plan.estimates.get("runtime_headroom_mib")
-        or 0
     )
+    headroom = int(measured_headroom or flat_headroom or 0)
+    if plan.estimates.get("measured_omits_references"):
+        # A split has no resident groups to stream back, so a reference request needs the flat headroom.
+        headroom = max(headroom, int(flat_headroom or 0))
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
+    rejected: list[PlacementCandidate] = []
+    if plan.offload_policy != "none":
+        rejected.append(_one_card_rejection(plan, primary))
 
     def layer_split_or_plan() -> Any:
-        return refine_plan_for_layer_split(
+        refined = refine_plan_for_layer_split(
             pipe,
             plan,
             selection = selection,
@@ -563,18 +774,76 @@ def refine_plan_for_multigpu(
             overhead_mib = overhead,
             logger = logger,
         )
+        split = getattr(refined, "layer_split", None)
+        if split is not None:
+            _record_decision(
+                pipe,
+                selection,
+                "layer_split",
+                f"layer split: denoiser blocks across {_cards(split.cards)} (denoiser "
+                f"{_gib(_denoiser_mib(sizes))} does not fit one card with its working memory)",
+                rejected,
+                fallback_resident = plan.offload_policy == "none",
+            )
+            return refined
+        from .diffusion_layer_split_plan import (
+            LAYER_SPLIT_ENV,
+            engine_available,
+            layer_split_status,
+            plan_offloads_denoiser,
+        )
+
+        if layer_split_mode() == "off":
+            declined = f"{LAYER_SPLIT_ENV}=0"
+        elif not engine_available():
+            declined = "the layer split engine is unavailable"
+        elif not plan_offloads_denoiser(plan) and not layer_force:
+            declined = f"not needed: the denoiser stays resident on cuda:{primary}"
+        else:
+            declined = (layer_split_status(pipe) or {}).get("declined") or "no split fits"
+        rejected.append(PlacementCandidate("layer_split", str(declined)))
+        if plan.offload_policy == "none":
+            # a forced split of a model one card already holds: the plan returned is that resident one-card plan
+            _record_decision(
+                pipe,
+                selection,
+                "one_card",
+                f"one card: everything resident on cuda:{primary} (no forced split fits)",
+                rejected,
+            )
+        else:
+            _record_decision(
+                pipe,
+                selection,
+                "offload",
+                f"one card with '{plan.offload_policy}' offload on cuda:{primary} (no split fits)",
+                rejected,
+            )
+        return refined
 
     if layer_force:
         return layer_split_or_plan()
-    moved = choose_component_assignment(
+    move_denoisers = _secondary_runs_denoiser(pipe, selection, secondary, sizes, logger)
+    trials = component_assignment_trials(
         sizes,
         headroom_mib = headroom,
         overhead_mib = overhead,
         primary_limit_mib = int(primary_limit),
         secondary_limit_mib = int(sec_limit),
-        move_denoisers = _secondary_runs_denoiser(pipe, selection, secondary, sizes, logger),
+        move_denoisers = move_denoisers,
+        encoders_only_limit_mib = encoder_card_limit_mib(secondary),
     )
+    winner = next((t for t in trials if t.fits), None)
+    moved = winner.moved if winner is not None else None
+    for trial in trials:
+        if trial is winner:
+            break
+        rejected.append(PlacementCandidate("companion_split", trial.why_not(primary, secondary)))
     if moved is None:
+        if not trials:
+            rejected.append(
+                PlacementCandidate("companion_split", "no denoiser among the loaded components")
+            )
         return layer_split_or_plan()
     reason = (
         f"multi-GPU (loaded sizes): {', '.join(moved)} on cuda:{secondary}, the rest resident on "
@@ -582,6 +851,17 @@ def refine_plan_for_multigpu(
     )
     if logger is not None:
         logger.info("diffusion.multigpu: %s", reason)
+    on_primary = winner.primary_need_mib
+    _record_decision(
+        pipe,
+        selection,
+        "companion_split",
+        f"companion split: {', '.join(moved)} on cuda:{secondary} (denoiser {_gib(_denoiser_mib(sizes))} fits "
+        f"cuda:{primary}, {_gib(on_primary)} of {_gib(int(primary_limit))} with its working memory; "
+        f"{', '.join(moved)} {_gib(winner.moved_mib)} does not fit beside it)",
+        rejected,
+        fallback_resident = plan.offload_policy == "none",
+    )
     return dataclasses.replace(
         plan,
         offload_policy = "none",
@@ -598,6 +878,28 @@ def refine_plan_for_multigpu(
         secondary_components = tuple(moved),
         fallback_plan = plan,
     )
+
+
+def _cards(ordinals: Sequence[int]) -> str:
+    return ", ".join(f"cuda:{int(o)}" for o in ordinals)
+
+
+def encoder_card_limit_mib(ordinal: int) -> Optional[int]:
+    """What a secondary that only runs text encoders may hold: free memory minus ComfyUI's per-card floor (the layer
+    split prices its block-only cards the same way). None when the card cannot be read."""
+    from .diffusion_layer_split_plan import secondary_reserve_mib
+    from .diffusion_memory import _user_budget_reserve_mib
+
+    free, total = _free_total_mib(int(ordinal))
+    if free is None:
+        return None
+    return max(0, int(free) - max(secondary_reserve_mib(), _user_budget_reserve_mib(total or free)))
+
+
+def _replica_reserve_mib(free: Optional[int], total: Optional[int]) -> int:
+    """Room a CFG replica leaves free on its card: 1 GiB, or what the user's VRAM Budget keeps free when larger."""
+    from .diffusion_memory import _user_budget_reserve_mib
+    return max(1024, _user_budget_reserve_mib(total or free))
 
 
 def secondary_device_memory(ordinal: int) -> Any:
@@ -817,34 +1119,55 @@ def _split_home(pipe: Any) -> Any:
     return None
 
 
-def install_execution_device_patch() -> bool:
-    """``DiffusionPipeline._execution_device`` / ``.device`` report the primary card of a split pipeline. diffusers
-    returns the first non-CPU component in signature order, which is the VAE (on the secondary) for most families.
-    Inert for any pipeline without a split denoiser; also covers ``from_pipe`` siblings, which share the modules."""
+def _pipeline_bases() -> list[type]:
+    """``DiffusionPipeline`` plus ``ModularPipeline`` (FLUX.3 / MiniMax-H3; not a subclass) when this diffusers has it."""
+    bases: list[type] = []
     try:
         from diffusers import DiffusionPipeline
+        bases.append(DiffusionPipeline)
     except Exception:  # noqa: BLE001
+        pass
+    try:
+        from diffusers import ModularPipeline
+        bases.append(ModularPipeline)
+    except Exception:  # noqa: BLE001 - diffusers before modular pipelines
+        pass
+    return bases
+
+
+def _patch_execution_device(cls: type) -> bool:
+    if getattr(cls, "_unsloth_split_exec_patch", False):
+        return True
+    orig_exec = cls.__dict__.get("_execution_device")
+    orig_dev = cls.__dict__.get("device")
+    if not isinstance(orig_exec, property) or not isinstance(orig_dev, property):
+        return False
+
+    def _exec(self: Any) -> Any:
+        home = _split_home(self)
+        return home if home is not None else orig_exec.fget(self)
+
+    def _dev(self: Any) -> Any:
+        home = _split_home(self)
+        return home if home is not None else orig_dev.fget(self)
+
+    cls._execution_device = property(_exec, doc = orig_exec.__doc__)
+    cls.device = property(_dev, doc = orig_dev.__doc__)
+    cls._unsloth_split_exec_patch = True
+    return True
+
+
+def install_execution_device_patch() -> bool:
+    """``_execution_device`` / ``.device`` report the primary card of a split pipeline. diffusers returns the first
+    non-CPU component (the VAE) or, for a modular pipeline, the first component (the text encoder), so latents landed
+    on the secondary. Inert without a split denoiser; covers ``from_pipe`` siblings. True when ``DiffusionPipeline``
+    is patched."""
+    bases = _pipeline_bases()
+    if not bases:
         return False
     with _EXEC_PATCH_LOCK:
-        if getattr(DiffusionPipeline, "_unsloth_split_exec_patch", False):
-            return True
-        orig_exec = DiffusionPipeline.__dict__.get("_execution_device")
-        orig_dev = DiffusionPipeline.__dict__.get("device")
-        if not isinstance(orig_exec, property) or not isinstance(orig_dev, property):
-            return False
-
-        def _exec(self: Any) -> Any:
-            home = _split_home(self)
-            return home if home is not None else orig_exec.fget(self)
-
-        def _dev(self: Any) -> Any:
-            home = _split_home(self)
-            return home if home is not None else orig_dev.fget(self)
-
-        DiffusionPipeline._execution_device = property(_exec, doc = orig_exec.__doc__)
-        DiffusionPipeline.device = property(_dev, doc = orig_dev.__doc__)
-        DiffusionPipeline._unsloth_split_exec_patch = True
-        return True
+        patched = [_patch_execution_device(cls) for cls in bases]
+    return patched[0]
 
 
 def companion_names(pipe: Any) -> tuple[str, ...]:
@@ -1009,7 +1332,8 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
     from .diffusion_layer_split_plan import layer_split_status
 
     layer = layer_split_status(pipe)
-    if info is None and cfg is None and declined is None and layer is None:
+    decision = placement_decision(pipe)
+    if info is None and cfg is None and declined is None and layer is None and decision is None:
         return None
     out: dict[str, Any] = dict(info or {})
     from .diffusion_layer_split import layer_split_stats
@@ -1032,6 +1356,47 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
         out["cfg_parallel"] = cfg.describe()
     elif declined is not None:
         out["cfg_parallel"] = {"armed": False, "declined": declined}
+    if decision is not None:
+        if cfg is None:
+            cfg_rejected = declined
+        elif cfg.disabled_reason not in (None, "uninstalled"):
+            # armed, then fell back to one card at run time: say so where the placement is reported
+            cfg_rejected = f"disabled at run time: {cfg.disabled_reason}"
+        else:
+            cfg_rejected = None
+        out["decision"] = _live_decision(pipe, decision, info, layer, cfg_rejected)
+    return out
+
+
+def _live_decision(
+    pipe: Any,
+    decision: PlacementDecision,
+    info: Optional[dict],
+    layer: Optional[dict],
+    cfg_declined: Optional[str],
+) -> dict[str, Any]:
+    """The recorded decision, corrected by what engaged: a split whose placement failed reports its one-card fallback,
+    and a declined CFG-parallel replica joins the rejected candidates."""
+    out = decision.describe()
+    failed = None
+    if decision.chosen == "companion_split" and info is None:
+        failed = "the companion split did not engage at placement"
+    elif decision.chosen == "layer_split" and not (layer or {}).get("cards"):
+        failed = f"the layer split did not engage ({(layer or {}).get('declined') or 'placement failed'})"
+    if failed is not None:
+        out["rejected"] = [{"kind": decision.chosen, "reason": failed}, *out["rejected"]]
+        if decision.fallback_resident:
+            out["chosen"] = "one_card"
+            out["summary"] = (
+                f"placement: one card: everything resident on cuda:{decision.primary} ({failed})"
+            )
+        else:
+            out["chosen"] = "offload"
+            out["summary"] = (
+                f"placement: one card with offload on cuda:{decision.primary} ({failed})"
+            )
+    if cfg_declined is not None:
+        out["rejected"] = [*out["rejected"], {"kind": "cfg_parallel", "reason": cfg_declined}]
     return out
 
 
@@ -1266,9 +1631,32 @@ def _rebind_root_forward(original: Any, source: Any, replica: Any) -> None:
 
 def build_replica(module: Any, device: Any) -> Any:
     """A copy of ``module`` whose parameters and buffers are created directly on ``device`` (never staged on the
-    source card), with every recorded ``Module.compile`` re-applied to the copy. Raises when it cannot be built."""
+    source card), with every recorded ``Module.compile`` re-applied to the copy. Raises when it cannot be built.
+
+    Built outside inference mode: inside it, torchao weights made outside raise "Cannot set version_counter for
+    inference tensor" and ones made inside silently stay on the source card."""
     torch = _torch()
     device = torch.device(device)
+    with torch.inference_mode(False), torch.no_grad():
+        replica = _copy_module(module, device)
+    stray = sorted(
+        {
+            str(t.device)
+            for t in (*replica.parameters(), *replica.buffers())
+            if t.device.type == "cuda" and t.device != device
+        }
+    )
+    if stray:
+        raise RuntimeError(f"replica weights stayed on {', '.join(stray)}, not {device}")
+    # The ROCm flash gate is thread-local state its root hooks set; the copy runs on its own worker thread.
+    from .diffusion_attention import track_rocm_flash_replica
+
+    track_rocm_flash_replica(module, replica, device)
+    return replica
+
+
+def _copy_module(module: Any, device: Any) -> Any:
+    torch = _torch()
     memo: dict[int, Any] = {}
     keep: list[Any] = []
     for _name, param in module.named_parameters(remove_duplicate = True):
@@ -1291,8 +1679,13 @@ def build_replica(module: Any, device: Any) -> Any:
     for sub in module.modules():
         offload_keys = set(_offload_attr_keys(sub))
         for key, value in sub.__dict__.items():
-            if isinstance(value, CfgParallelRouter) or key in offload_keys:
-                # never traversed: offload state holds pinned host copies a deepcopy would duplicate
+            if (
+                isinstance(value, CfgParallelRouter)
+                or key in offload_keys
+                or key in _SOURCE_ONLY_ATTRS
+            ):
+                # never traversed: offload state holds pinned host copies a deepcopy would duplicate, and a
+                # source-only cache holds source-card tensors
                 memo[id(value)] = _DROP
         for attr in ("_forward_hooks", "_forward_pre_hooks"):
             for hook in (getattr(sub, attr, None) or {}).values():
@@ -1306,6 +1699,15 @@ def build_replica(module: Any, device: Any) -> Any:
     guard = module.__dict__.get("_unsloth_compile_guard")
     if guard is not None:
         memo[id(guard)] = _DROP
+    # A baked LoRA's scale pinned as a 0-d device tensor (diffusion._pin_baked_lora_scales) lives in a plain dict,
+    # not a buffer: the copy needs its own on ``device``.
+    for sub in module.modules():
+        scaling = sub.__dict__.get("scaling")
+        if isinstance(scaling, dict):
+            for value in scaling.values():
+                if isinstance(value, torch.Tensor) and id(value) not in memo:
+                    memo[id(value)] = value.detach().to(device)
+                    keep.append(value)
     memo[id(memo)] = keep
     replica = copy.deepcopy(module, memo)
     router = module.__dict__.get("forward")
@@ -1353,6 +1755,9 @@ def build_replica(module: Any, device: Any) -> Any:
 
 
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
+# Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
+# forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
+_SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas"})
 
 
 def _rewrap_compiled(source: Any, replica: Any) -> None:
@@ -1399,9 +1804,67 @@ def weights_fingerprint(module: Any) -> int:
     for name, sub in module.named_modules():
         for attr in _ADAPTER_ATTRS:
             value = sub.__dict__.get(attr)
+            if isinstance(value, dict):
+                # A pinned scale tensor: identity + version (an in-place write bumps it), no device read per call.
+                value = {
+                    k: (id(v), v._version) if hasattr(v, "_version") else v
+                    for k, v in value.items()
+                }
             if value is not None and not callable(value):
                 parts.append((name, attr, repr(value)))
     return hash(tuple(parts))
+
+
+_PROBE_SAMPLES = 64
+
+
+def _dense_leaves(t: Any, depth: int = 0) -> Iterator[Any]:
+    """The plain tensors holding ``t``'s values: ``t`` itself, or a torchao subclass's inner tensors (qdata, scales)."""
+    flatten = getattr(type(t), "__tensor_flatten__", None)
+    if flatten is None or depth > 4:
+        yield t
+        return
+    try:
+        names, _ctx = t.__tensor_flatten__()
+    except Exception:  # noqa: BLE001 - an opaque subclass: probe the outer tensor
+        yield t
+        return
+    for name in names:
+        inner = getattr(t, name, None)
+        if inner is not None:
+            yield from _dense_leaves(inner, depth + 1)
+
+
+def weights_probe(module: Any, index_cache: Optional[dict] = None) -> Optional[bytes]:
+    """Sampled bytes of every inference tensor (no version counter, so invisible to :func:`weights_fingerprint`),
+    read back in one host sync; None when there are none. Edits missing every sampled byte go unseen."""
+    torch = _torch()
+    cache = {} if index_cache is None else index_cache
+    by_device: dict = {}
+    with torch.no_grad():
+        for _name, t in (*module.named_parameters(), *module.named_buffers()):
+            if not t.is_inference():
+                continue
+            for leaf in _dense_leaves(t):
+                if not isinstance(leaf, torch.Tensor) or leaf.numel() == 0 or leaf.is_meta:
+                    continue
+                # bytes, not elements: a gather is not implemented for every weight dtype (fp8, packed fp4)
+                flat = _as_bytes(leaf)
+                n = flat.numel()
+                key = (n, flat.device)
+                idx = cache.get(key)
+                if idx is None:
+                    # integer spacing: a float32 linspace rounds n - 1 up to n past 2**24 bytes and reads past the end
+                    k = min(n, _PROBE_SAMPLES)
+                    idx = torch.arange(k, device = flat.device) * (n - 1) // max(k - 1, 1)
+                    cache[key] = idx
+                by_device.setdefault(flat.device, []).append(flat.index_select(0, idx))
+    if not by_device:
+        return None
+    return b"".join(
+        torch.cat(chunks).cpu().numpy().tobytes()
+        for _dev, chunks in sorted(by_device.items(), key = lambda kv: str(kv[0]))
+    )
 
 
 _LATENT_KEYS = ("hidden_states", "sample", "x", "latents", "img", "latent")
@@ -1447,10 +1910,93 @@ def _holds_opaque_tensors(obj: Any, depth: int = 0) -> bool:
             isinstance(value, (list, tuple, dict)) and next(_iter_tensors(value), None) is not None
         ):
             return True
-        if not isinstance(value, (*_PLAIN_TYPES, list, tuple, dict)) and depth < 4:
-            if _holds_opaque_tensors(value, depth + 1):
-                return True
+        if (
+            depth < 4
+            and not isinstance(value, _PLAIN_TYPES)
+            and _holds_opaque_tensors(value, depth + 1)
+        ):
+            return True
     return False
+
+
+# Prefix-KV cache (Qwen-Image-2.1): step-0 prefill ("extract") runs on the primary; "cached" odd branches use a replica copy.
+_KV_KWARG = "kv_cache"
+_KV_MODE_KWARG = "kv_cache_mode"
+
+
+class _Unmirrorable(Exception):
+    pass
+
+
+def _walk_cache(
+    obj: Any,
+    move: Optional[Callable[[Any], Any]],
+    found: list,
+    depth: int = 0,
+) -> Any:
+    """Structural copy of a cache object (``move`` applied to every tensor), or with ``move`` None only the tensors
+    collected into ``found``. Raises :class:`_Unmirrorable` on anything but plain values, containers and ``__dict__``
+    value holders (a module, a slotted or foreign object), which then stays on the primary."""
+    torch = _torch()
+    if isinstance(obj, torch.Tensor):
+        found.append(obj)
+        return move(obj) if move is not None else obj
+    if isinstance(obj, (*_PLAIN_TYPES, torch.device, torch.dtype)):
+        return obj
+    if depth >= 4 or isinstance(obj, torch.nn.Module):
+        raise _Unmirrorable(type(obj).__name__)
+    if isinstance(obj, list):
+        out = [_walk_cache(v, move, found, depth + 1) for v in obj]
+        return out if move is not None else obj
+    if isinstance(obj, tuple) and not hasattr(obj, "_fields"):
+        out_t = tuple(_walk_cache(v, move, found, depth + 1) for v in obj)
+        return out_t if move is not None else obj
+    if isinstance(obj, dict) and type(obj) is dict:
+        out_d = {k: _walk_cache(v, move, found, depth + 1) for k, v in obj.items()}
+        return out_d if move is not None else obj
+    attrs = getattr(obj, "__dict__", None)
+    if type(attrs) is not dict or hasattr(type(obj), "__slots__"):
+        raise _Unmirrorable(type(obj).__name__)
+    copied = {k: _walk_cache(v, move, found, depth + 1) for k, v in attrs.items()}
+    if move is None:
+        return obj
+    cls = type(obj)
+    clone = cls.__new__(cls)  # not object.__new__: a C base (SimpleNamespace) refuses it
+    clone.__dict__.update(copied)
+    return clone
+
+
+def _cache_tensors(cache: Any) -> Optional[list]:
+    """Tensors held by a mirrorable cache, in fixed order; None if not mirrorable."""
+    torch = _torch()
+    if cache is None or isinstance(cache, (torch.Tensor, list, tuple, dict, *_PLAIN_TYPES)):
+        return None
+    found: list = []
+    try:
+        _walk_cache(cache, None, found)
+    except _Unmirrorable:
+        return None
+    return found
+
+
+def _prefix_kv_mode(kwargs: Any) -> Optional[str]:
+    if not isinstance(kwargs, dict) or kwargs.get(_KV_KWARG) is None:
+        return None
+    mode = kwargs.get(_KV_MODE_KWARG)
+    if mode not in ("extract", "cached"):
+        return None
+    return mode if _cache_tensors(kwargs[_KV_KWARG]) is not None else None
+
+
+def _is_prefill(kwargs: Any) -> bool:
+    """A prefill writes (or returns, FLUX.2) the cache the pipeline reads back: always on the primary."""
+    return isinstance(kwargs, dict) and kwargs.get(_KV_MODE_KWARG) == "extract"
+
+
+def _without_prefix_kv(args: tuple, kwargs: dict) -> tuple:
+    if _prefix_kv_mode(kwargs) != "cached":
+        return args, kwargs
+    return args, {k: v for k, v in kwargs.items() if k != _KV_KWARG}
 
 
 def _iter_tensors(obj: Any, depth: int = 0) -> Iterator[Any]:
@@ -1639,6 +2185,34 @@ def _bitwise_equal(a: Any, b: Any) -> bool:
         return False
 
 
+def _bitwise_equal_all(pairs: Any) -> bool:
+    """``all(_bitwise_equal(a, b) for a, b in pairs)`` with one host read per device instead of one per pair: each
+    pair's comparison stays on its device and only the combined flag is read back. Same verdict as the per-pair form
+    (a byte view compared elementwise is what ``torch.equal`` does on it); metadata mismatches still answer on the host
+    without touching the device."""
+    torch = _torch()
+    by_device: dict = {}
+    for a, b in pairs:
+        if not (isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor)):
+            return False
+        if a.shape != b.shape or a.dtype != b.dtype or a.device != b.device:
+            return False
+        if a is b or a.numel() == 0:
+            continue
+        try:
+            if a.device.type == "cpu":
+                if not torch.equal(_as_bytes(a), _as_bytes(b)):
+                    return False
+                continue
+            by_device.setdefault(a.device, []).append((_as_bytes(a) == _as_bytes(b)).all())
+        except Exception:  # noqa: BLE001 - a layout that cannot be viewed as bytes is never assumed equal
+            return False
+    try:
+        return all(bool(torch.stack(flags).all().item()) for flags in by_device.values())
+    except Exception:  # noqa: BLE001 - an unreadable verdict is never assumed equal
+        return False
+
+
 def _unchanged_since_launch(snapshots: list) -> bool:
     """True when every (source, launch-time copy) pair still holds the same bytes. One host sync for all pairs, on
     the replica's card; it waits for the primary branch (the copy is ordered after it), which the guidance combine
@@ -1717,21 +2291,38 @@ def _mirror_hook_state(pairs: list) -> tuple:
     return state
 
 
+def _autocast_state(torch: Any) -> tuple:
+    try:
+        return (
+            torch.is_autocast_cache_enabled(),
+            *(
+                (dev, torch.get_autocast_dtype(dev))
+                if torch.is_autocast_enabled(dev)
+                else (dev, None)
+                for dev in ("cuda", "cpu")
+            ),
+        )
+    except Exception:  # noqa: BLE001 - torch without per-device autocast queries
+        return ()
+
+
 def _call_signature(args: tuple, kwargs: dict) -> tuple:
-    """What a compiled forward's guards mostly key on: tensor layout, flags and modes (never per-step scalars)."""
+    """What a compiled forward's guards key on, numbers by value: 0 / 1 and ``dynamic=False`` compiles stay specialised."""
     torch = _torch()
     sig: list = []
     for path, leaf in _leaves((args, kwargs)):
         if isinstance(leaf, torch.Tensor):
             try:
                 stride = tuple(leaf.stride())
+                offset = leaf.storage_offset()
             except Exception:  # noqa: BLE001 - layouts without strides
-                stride = None
+                stride = offset = None
             sig.append(
                 (
                     path,
                     tuple(leaf.shape),
                     stride,
+                    offset,
                     leaf.dtype,
                     leaf.requires_grad,
                     leaf.is_inference(),
@@ -1739,9 +2330,19 @@ def _call_signature(args: tuple, kwargs: dict) -> tuple:
             )
         elif leaf is None or isinstance(leaf, (bool, str)):
             sig.append((path, leaf))
+        elif isinstance(leaf, (int, float)):
+            sig.append((path, type(leaf), leaf))
+        elif path and path[-1] == _KV_KWARG and (held := _cache_tensors(leaf)) is not None:
+            # a new prefix length (another prompt) may compile: it must not count as warm
+            sig.append((path, type(leaf), tuple((tuple(t.shape), t.dtype) for t in held)))
         else:
             sig.append((path, type(leaf)))
-    return tuple(sig), torch.is_inference_mode_enabled(), torch.is_grad_enabled()
+    return (
+        tuple(sig),
+        torch.is_inference_mode_enabled(),
+        torch.is_grad_enabled(),
+        _autocast_state(torch),
+    )
 
 
 def _note_warm(seen: set, sig: tuple) -> None:
@@ -1784,6 +2385,12 @@ class CfgParallelRouter:
         torch = _torch()
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
+        # FLUX.3's modular denoise step passes only kwargs named in forward's signature: expose the wrapped one.
+        try:
+            import inspect
+            self.__signature__ = inspect.signature(self.orig_forward)
+        except (TypeError, ValueError):
+            pass
         self.inner: Any = None
         self._pairing = False
         self.had_override = "forward" in module.__dict__
@@ -1814,7 +2421,15 @@ class CfgParallelRouter:
             "opaque_primary_calls": 0,
             "pairs_parallel": 0,
             "exclusion_skips": 0,
+            "kv_cache_copies": 0,
+            "kv_cache_declined": 0,
+            "kv_prefill_primary_calls": 0,
+            "replica_failures": 0,
         }
+        # source prefix-KV cache id -> (source cache, the tensors it held when copied, the replica's copy)
+        self.kv_mirrors: dict[int, tuple[Any, list, Any]] = {}
+        self.kv_declined: dict[int, tuple[Any, list]] = {}
+        self._opaque_logged = False
         # Set when replica work was refused by a long recording: until that capture ends, later replica attempts go
         # straight to the source instead of each waiting OUTSIDE_WAIT_S again.
         self.exclusion_refused = False
@@ -1822,6 +2437,9 @@ class CfgParallelRouter:
         self.pending: Optional[dict] = None
         self.b0_leaves: dict = {}
         self.fingerprint: Optional[int] = None
+        self.probe: Optional[bytes] = None
+        self.probe_index: dict = {}
+        self.probed_this_render = False
         self.pairs: list = []
         # A call new to either side may compile (FX tracing is process-wide up to torch 2.13): it never overlaps the other side.
         self.warm_primary: set = set()
@@ -1831,6 +2449,7 @@ class CfgParallelRouter:
     def describe(self) -> dict[str, Any]:
         return {
             "secondary": str(self.secondary),
+            "armed": self.disabled_reason is None,
             "replica_built": self.replica is not None,
             "replica_compiled_submodules": getattr(self.replica, "_unsloth_replica_compiled", None),
             "disabled_reason": self.disabled_reason,
@@ -1840,6 +2459,8 @@ class CfgParallelRouter:
     def disable(self, reason: str) -> None:
         if self.disabled_reason is None:
             self.disabled_reason = reason
+            if reason.startswith("replica "):
+                self.stats["replica_failures"] += 1
             if self.logger is not None:
                 self.logger.warning(
                     "diffusion.multigpu: CFG-parallel disabled (%s); one card from here", reason
@@ -1852,6 +2473,8 @@ class CfgParallelRouter:
             self.worker = None
         self._drop_pending()
         self.replica = None
+        self.kv_mirrors.clear()
+        self.kv_declined.clear()
         self.pairs = []
         self.warm_primary.clear()
         self.warm_replica.clear()
@@ -1865,6 +2488,8 @@ class CfgParallelRouter:
     def end_render(self) -> None:
         self._drop_pending()
         self.prefetched.clear()
+        self.kv_mirrors.clear()
+        self.kv_declined.clear()
         self.carry = []
         self.next_carry = []
         self.prev_latent = None
@@ -1874,6 +2499,7 @@ class CfgParallelRouter:
         # the next render shows its own guidance shape: no speculative branch before its first odd call
         self.cfg_seen = False
         self.singles = 0
+        self.probed_this_render = False
 
     def _note_refusal(self, exc: BaseException) -> None:
         from .diffusion_cuda_graph import OutsideWorkRefused
@@ -1938,21 +2564,33 @@ class CfgParallelRouter:
                 self._prefetch(args, kwargs)
                 sig = _call_signature(args, kwargs)
                 self._launch_prediction(latent, sig)
+        prefill = self.branch % 2 == 1 and _is_prefill(kwargs)
         if (
             self.branch % 2 == 1
             and self.disabled_reason is None
-            and _holds_opaque_tensors((args, kwargs))
+            and not prefill
+            and _holds_opaque_tensors(_without_prefix_kv(args, kwargs))
         ):
             self._drop_pending()
             self.template = None
             self.stats["opaque_primary_calls"] += 1
+            if not self._opaque_logged and self.logger is not None:
+                self._opaque_logged = True
+                self.logger.info(
+                    "diffusion.multigpu: a guidance branch carries tensors inside an object the replica cannot copy;"
+                    " that branch stays on %s",
+                    self.primary,
+                )
         elif self.branch % 2 == 1 and self.disabled_reason is None:
             self.singles = 0
             if self.replica is None:
                 self.cfg_seen = True
                 self._build_replica()
-                if self.branch == 1:
+                if self.branch == 1 and not prefill:
                     self._record_template(args, kwargs, latent)
+            elif prefill:
+                self._drop_pending()
+                self.template = None
             elif self.cfg_seen and self._refused_this_capture():
                 # this step's prefetch or prediction was refused: the branch runs on the source, no further wait
                 self._drop_pending()
@@ -1967,10 +2605,14 @@ class CfgParallelRouter:
                     if self.branch == 1:
                         self.stats["steps_parallel"] += 1
                     return out
+                except _KVMirrorDeclined:
+                    self._drop_pending()
                 except Exception as exc:  # noqa: BLE001 - this branch is recomputed on the primary below
                     self._note_refusal(exc)
                     self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
             self.cfg_seen = True
+        if prefill:
+            self.stats["kv_prefill_primary_calls"] += 1
         self.stats["primary_calls"] += 1
         return self._primary_noting(sig, args, kwargs)
 
@@ -2004,6 +2646,8 @@ class CfgParallelRouter:
         try:
             r_args = self._to_replica(args)
             r_kwargs = self._to_replica(kwargs)
+        except _KVMirrorDeclined:
+            return None  # the prefix cache does not fit on the replica card: both halves run on the source
         except Exception as exc:  # noqa: BLE001 - e.g. no room left on the replica card: both halves run on the source
             self.disable(f"replica input copy failed: {type(exc).__name__}: {exc}")
             return None
@@ -2088,6 +2732,8 @@ class CfgParallelRouter:
         if predicted is None or self.worker is None:
             return
         p_args, p_kwargs = predicted
+        if _is_prefill(p_kwargs):
+            return
         if (
             sig not in self.warm_primary
             or _call_signature(p_args, p_kwargs) not in self.warm_replica
@@ -2127,9 +2773,16 @@ class CfgParallelRouter:
         actual = _leaves((args, kwargs))
         predicted = pending["leaves"]
         by_value = pending["by_value"]
-        ok = len(actual) == len(predicted) and all(
-            pa == pp and (_bitwise_equal(va, vp) if pa in by_value else _same_value(va, vp))
-            for (pa, va), (pp, vp) in zip(actual, predicted)
+        # Host-side checks first (paths, plain values), then every by-value tensor pair under one device read.
+        ok = (
+            len(actual) == len(predicted)
+            and all(
+                pa == pp and (pa in by_value or _same_value(va, vp))
+                for (pa, va), (pp, vp) in zip(actual, predicted)
+            )
+            and _bitwise_equal_all(
+                (va, vp) for (pa, va), (_pp, vp) in zip(actual, predicted) if pa in by_value
+            )
         )
         # the source's root hooks have now run for THIS call: the replica must have seen the same per-call state
         ok = ok and _hook_state(self.pairs) == pending["hook_state"]
@@ -2163,6 +2816,20 @@ class CfgParallelRouter:
         except Exception as exc:  # noqa: BLE001 - unverifiable weights: never risk a stale replica
             self.disable(f"cannot fingerprint the denoiser: {exc}")
             return
+        if current == self.fingerprint and not self.probed_this_render:
+            from .diffusion_cuda_graph import OutsideWorkRefused, outside_capture
+            try:
+                with outside_capture():
+                    probe = weights_probe(module, self.probe_index)
+            except OutsideWorkRefused:
+                probe = self.probe  # another pipeline is recording: re-read on the next step
+            except Exception as exc:  # noqa: BLE001 - unverifiable weights: never risk a stale replica
+                self.disable(f"cannot probe the denoiser weights: {exc}")
+                return
+            else:
+                self.probed_this_render = True
+            if probe != self.probe:
+                current = None
         if current != self.fingerprint:
             if self.logger is not None:
                 self.logger.info(
@@ -2191,22 +2858,18 @@ class CfgParallelRouter:
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
             ) // (1 << 20)
-            free, _total = _free_total_mib(self.secondary.index)
-            if free is not None:
-                with contextlib.suppress(Exception):
-                    torch = _torch()
-                    free += (
-                        torch.cuda.memory_reserved(self.secondary)
-                        - torch.cuda.memory_allocated(self.secondary)
-                    ) // (1 << 20)
-            if free is not None and need_mib + 1024 > free:
+            free, total = self._secondary_free_total_mib()
+            reserve = _replica_reserve_mib(free, total)
+            if free is not None and need_mib + reserve > free:
                 raise RuntimeError(
                     f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
                 )
             self.fingerprint = weights_fingerprint(module)
             # Copying the weights to the replica card is CUDA work another pipeline's capture prohibits.
             with outside_capture(), _device_context(self.secondary):
+                self.probe = weights_probe(module, self.probe_index)
                 self.replica = self.replica_factory()
+            self.probed_this_render = True
             self.pairs = list(zip(module.modules(), self.replica.modules()))
             self.worker = _ReplicaWorker(self.secondary)
             weakref.finalize(self, self.worker.close)
@@ -2259,6 +2922,11 @@ class CfgParallelRouter:
         def walk(value: Any, depth: int = 0) -> Any:
             if isinstance(value, torch.Tensor):
                 return one(value)
+            if depth == 0 and isinstance(value, dict) and _prefix_kv_mode(value) == "cached":
+                return type(value)(
+                    (k, self._kv_mirror(v) if k == _KV_KWARG else walk(v, depth + 1))
+                    for k, v in value.items()
+                )
             if depth < 4 and isinstance(value, tuple) and not hasattr(value, "_fields"):
                 return tuple(walk(v, depth + 1) for v in value)
             if depth < 4 and isinstance(value, list):
@@ -2272,6 +2940,57 @@ class CfgParallelRouter:
         with outside_capture():
             return walk(obj)
 
+    def _kv_mirror(self, cache: Any) -> Any:
+        """Replica copy of a filled prefix-KV cache, reused while the source holds the same K/V tensors."""
+        held = _cache_tensors(cache) or []
+        entry = self.kv_mirrors.get(id(cache))
+        if (
+            entry is not None
+            and entry[0] is cache
+            and len(entry[1]) == len(held)
+            and all(a is b for a, b in zip(entry[1], held))
+        ):
+            return entry[2]
+        declined = self.kv_declined.get(id(cache))
+        if (
+            declined is not None
+            and declined[0] is cache
+            and len(declined[1]) == len(held)
+            and all(a is b for a, b in zip(declined[1], held))
+        ):
+            raise _KVMirrorDeclined("prefix cache does not fit on the replica card")
+        need = sum(t.numel() * t.element_size() for t in held)
+        free, total = self._secondary_free_total_mib()
+        if free is not None and need + (_replica_reserve_mib(free, total) << 20) > free * (1 << 20):
+            self.kv_declined[id(cache)] = (cache, held)
+            self.stats["kv_cache_declined"] += 1
+            if self.logger is not None:
+                self.logger.info(
+                    "diffusion.multigpu: prefix KV cache (%d MiB) does not fit on %s (%d MiB free);"
+                    " its guidance branch stays on %s this render",
+                    need >> 20,
+                    self.secondary,
+                    free,
+                    self.primary,
+                )
+            raise _KVMirrorDeclined("prefix cache does not fit on the replica card")
+        secondary = self.secondary
+        mirror = _walk_cache(cache, lambda t: t if t.device == secondary else t.to(secondary), [])
+        while len(self.kv_mirrors) >= 4:
+            self.kv_mirrors.pop(next(iter(self.kv_mirrors)))
+        self.kv_mirrors[id(cache)] = (cache, held, mirror)
+        self.stats["kv_cache_copies"] += 1
+        return mirror
+
+    def _secondary_free_total_mib(self) -> tuple[Optional[int], Optional[int]]:
+        """(free, total) MiB on the replica card; free counts the allocator's cached-but-unused blocks, minus CUDA graph pools."""
+        free, total = _free_total_mib(self.secondary.index)
+        if free is not None:
+            with contextlib.suppress(Exception):
+                from .diffusion_memory import cuda_reusable_cache_bytes
+                free += cuda_reusable_cache_bytes(self.secondary) // (1 << 20)
+        return free, total
+
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:
         # Unpredicted: nothing verified the copies made before the primary branch ran, and an input edited in place
         # since then would reach the replica stale. Copy this call's inputs now (ordered after the primary branch).
@@ -2284,6 +3003,10 @@ class CfgParallelRouter:
         out = self.worker.call(_replica_call(replica, r_args, r_kwargs))
         _note_warm(self.warm_replica, sig)
         return _to_primary(out, self.primary)
+
+
+class _KVMirrorDeclined(RuntimeError):
+    """A prefix-KV cache too large for the replica card's free memory: the branch runs on the primary."""
 
 
 def _replica_call(replica: Any, args: tuple, kwargs: dict) -> Callable[[], Any]:
@@ -2392,9 +3115,19 @@ def install_cfg_parallel(
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*denoiser.parameters(), *denoiser.buffers())
             ) // (1 << 20)
-            best = max(candidates, key = lambda o: probes[o].free_mib or -1)
+
+            def usable(o: int) -> int:
+                free_o = probes[o].free_mib
+                if free_o is None:
+                    return -1
+                return int(free_o) - _replica_reserve_mib(free_o, probes[o].total_mib)
+
+            best = max(candidates, key = usable)
             free = probes[best].free_mib
-            if free is not None and need_mib + 1024 > free:
+            if (
+                free is not None
+                and need_mib + _replica_reserve_mib(free, probes[best].total_mib) > free
+            ):
                 reason = f"replica needs {need_mib} MiB, {free} MiB free on cuda:{best}"
             else:
                 graph = _resident_graph(denoiser)
@@ -2498,6 +3231,17 @@ def end_cfg_render(pipe: Any) -> None:
         return
     if router is not None:
         router.end_render()
+
+
+def release_cfg_prefix_kv(pipe: Any) -> None:
+    """Drop the replica's prefix-KV copies (and their hold on the primary's tensors) after the last denoise step."""
+    try:
+        router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return
+    if router is not None:
+        router.kv_mirrors.clear()
+        router.kv_declined.clear()
 
 
 def uninstall_cfg_parallel(pipe: Any) -> None:

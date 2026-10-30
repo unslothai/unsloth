@@ -249,7 +249,7 @@ def test_local_files_only_reaches_every_fetch(env):
     "kwargs, needle",
     [
         ({"gguf_filename": None}, "gguf_filename is required"),
-        ({"gguf_filename": "z-image-turbo-Q4_K_M.gguf"}, "Q4_K_M"),
+        ({"gguf_filename": "z-image-turbo-Q3_K_M.gguf"}, "Q3_K_M"),
         ({"gguf_filename": GGUF, "model_kind": "pipeline"}, "GGUF"),
         ({"gguf_filename": "sdxl-Q4_0.gguf", "family_override": "sdxl"}, "no MLX implementation"),
         ({"gguf_filename": GGUF, "loras": [("a/b", 1.0)]}, "LoRA"),
@@ -542,6 +542,219 @@ def test_a_local_undistilled_gguf_resolves_without_the_hub(tmp_path, monkeypatch
     assert resolve(str(tmp_path), fam, None, "z-image-turbo-Q4_K_M.gguf", fallback = BASE) == BASE
 
 
+GIB = 1024**3
+# Unsloth's Z-Image-Turbo Q4_0 GGUF converted at dense_bits 0 / 8 / 4, and the base repo's Qwen3-4B text encoder and
+# VAE in bf16 (header sizes of the real files).
+ZIMAGE_Q4_0 = {0: int(4.51 * GIB), 8: int(3.90 * GIB), 4: int(3.58 * GIB)}
+ZIMAGE_TE_BF16 = int(7.5 * GIB)
+ZIMAGE_VAE = int(0.16 * GIB)
+
+
+def _clear_quant_env(monkeypatch):
+    for name in ("UNSLOTH_DIFFUSION_MLX_TE_BITS", "UNSLOTH_DIFFUSION_MLX_DENSE_BITS"):
+        monkeypatch.delenv(name, raising = False)
+
+
+@pytest.mark.parametrize(
+    "budget, expected, fits",
+    [
+        # 32 GB and 16 GB Macs (Metal working set 21.3 / 10.67 GiB): the 8-bit text encoder and the GGUF as stored.
+        (int(21.3 * GIB), (8, 0), True),
+        (int(10.67 * GIB), (8, 0), True),
+        # Tighter budgets walk down the rungs: the dense tensors first, the text encoder last.
+        (int(10.2 * GIB), (8, 8), True),
+        (int(9.8 * GIB), (8, 4), True),
+        (int(9.0 * GIB), (4, 0), True),
+        (int(8.5 * GIB), (4, 8), True),
+        (int(8.0 * GIB), (4, 4), True),
+        # 8 GB Mac: nothing fits, so the smallest build (what the RAM rule picked).
+        (int(5.33 * GIB), (4, 4), False),
+    ],
+)
+def test_quant_plan_takes_the_most_accurate_build_that_fits(monkeypatch, budget, expected, fits):
+    _clear_quant_env(monkeypatch)
+    plan = mb.plan_quantization(
+        budget_bytes = budget,
+        transformer_bytes = ZIMAGE_Q4_0,
+        text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+        vae_bytes = ZIMAGE_VAE,
+    )
+    assert (plan.te_bits, plan.dense_bits) == expected
+    assert plan.fits is fits and plan.budget_bytes == budget
+    if fits:
+        assert plan.planned_bytes <= budget
+
+
+def test_quant_plan_shrinks_monotonically_with_the_budget(monkeypatch):
+    _clear_quant_env(monkeypatch)
+    previous = None
+    seen = set()
+    for tenth in range(220, 40, -1):
+        plan = mb.plan_quantization(
+            budget_bytes = int(tenth / 10 * GIB),
+            transformer_bytes = ZIMAGE_Q4_0,
+            text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+            vae_bytes = ZIMAGE_VAE,
+        )
+        if previous is not None:
+            assert plan.planned_bytes <= previous
+        previous = plan.planned_bytes
+        seen.add((plan.te_bits, plan.dense_bits))
+    assert seen == {(8, 0), (8, 8), (8, 4), (4, 0), (4, 8), (4, 4)}
+
+
+def test_quant_plan_env_pins_one_axis(monkeypatch):
+    _clear_quant_env(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_TE_BITS", "16")
+    plan = mb.plan_quantization(
+        budget_bytes = int(10.67 * GIB),
+        transformer_bytes = ZIMAGE_Q4_0,
+        text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+        vae_bytes = ZIMAGE_VAE,
+    )
+    assert plan.te_bits is None and plan.dense_bits == 4 and not plan.fits
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_TE_BITS", "4")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", "0")
+    plan = mb.plan_quantization(
+        budget_bytes = int(64 * GIB),
+        transformer_bytes = ZIMAGE_Q4_0,
+        text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+    )
+    assert (plan.te_bits, plan.dense_bits) == (4, 0)
+
+
+def _header_only_safetensors(path, shapes):
+    import struct
+
+    header = {"__metadata__": {"format": "pt"}}
+    offset = 0
+    for name, shape in shapes.items():
+        size = 2
+        for dim in shape:
+            size *= dim
+        header[name] = {
+            "dtype": "BF16",
+            "shape": list(shape),
+            "data_offsets": [offset, offset + size],
+        }
+        offset += size
+    blob = json.dumps(header).encode()
+    path.write_bytes(struct.pack("<Q", len(blob)) + blob)
+
+
+def test_a_16gb_mac_loads_z_image_q4_0_with_an_8bit_text_encoder(env, monkeypatch, tmp_path):
+    """main quantized the text encoder to 4 bits on every Mac up to 16 GB, which costs +0.03 LPIPS."""
+    backend, runtime, calls = env
+    _clear_quant_env(monkeypatch)
+    base_dir = tmp_path / "base"
+    # 3.75 Gi bf16 elements = the 7.5 GiB text encoder; 80 Mi = the VAE.
+    _header_only_safetensors(
+        base_dir / "text_encoder" / "model.safetensors", {"w": (3 * 1024, 1024, 1280)}
+    )
+    _header_only_safetensors(base_dir / "vae" / "model.safetensors", {"w": (80, 1024, 1024)})
+    monkeypatch.setattr(mb.convert, "planned_output_bytes", lambda path, *a, **k: dict(ZIMAGE_Q4_0))
+    monkeypatch.setattr(mb, "_total_ram_bytes", lambda: 16 * GIB)
+    monkeypatch.setattr(mb, "working_set_bytes", lambda ram_bytes = None: int(10.67 * GIB))
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING", raising = False)
+    # A runtime that tiles the decode when it would not fit, so the tiled 2 GiB decode peak is what is reserved.
+    monkeypatch.setattr(runtime, "vae_tiled", lambda: False, raising = False)
+    assert _load(backend)["phase"] == "ready"
+    assert runtime.builds[-1]["te_bits"] == 8
+    assert calls["dense_bits"] == 0
+    status = backend.status()
+    assert status["text_encoder_quant"] == "mlx_int8"
+    plan = status["mlx"]["timings"]["quant_plan"]
+    assert plan["source"] == "plan" and plan["fits"] is True
+    assert plan["planned_bytes"] <= plan["budget_bytes"] == int(10.67 * GIB)
+
+
+def test_a_runtime_without_tiled_decode_reserves_the_untiled_decode_peak(
+    env, monkeypatch, tmp_path
+):
+    """The untiled 1024x1024 decode needs 6.64 GiB above the weights, not the tiled 2 GiB: on a 16 GB Mac nothing fits
+    then, so the plan takes the smallest build instead of an 8-bit text encoder that pages at decode."""
+    backend, runtime, calls = env
+    _clear_quant_env(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING", raising = False)
+    assert not hasattr(runtime, "vae_tiled")
+    base_dir = tmp_path / "base"
+    _header_only_safetensors(
+        base_dir / "text_encoder" / "model.safetensors", {"w": (3 * 1024, 1024, 1280)}
+    )
+    _header_only_safetensors(base_dir / "vae" / "model.safetensors", {"w": (80, 1024, 1024)})
+    monkeypatch.setattr(mb.convert, "planned_output_bytes", lambda path, *a, **k: dict(ZIMAGE_Q4_0))
+    monkeypatch.setattr(mb, "working_set_bytes", lambda ram_bytes = None: int(10.67 * GIB))
+    assert _load(backend)["phase"] == "ready"
+    plan = backend.status()["mlx"]["timings"]["quant_plan"]
+    assert (plan["te_bits"], plan["dense_bits"]) == (4, 4) and plan["fits"] is False
+    assert runtime.builds[-1]["te_bits"] == 4 and calls["dense_bits"] == 4
+
+
+def test_decode_headroom_follows_the_decode_path(monkeypatch):
+    class _Tiles:
+        def vae_tiled(self):
+            return False
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING", raising = False)
+    assert mb.decode_headroom_bytes(object()) == mb.UNTILED_DECODE_HEADROOM_BYTES
+    assert mb.decode_headroom_bytes(_Tiles()) == mb.ACTIVATION_HEADROOM_BYTES
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING", "0")
+    assert mb.decode_headroom_bytes(_Tiles()) == mb.UNTILED_DECODE_HEADROOM_BYTES
+
+
+def test_unquantizable_text_encoder_tensors_stay_full_size(monkeypatch, tmp_path):
+    """Norms, biases and odd-width weights are not quantized by the runtime, so the plan keeps them at bf16."""
+    _clear_quant_env(monkeypatch)
+    folder = tmp_path / "text_encoder"
+    folder.mkdir()
+    _header_only_safetensors(
+        folder / "model.safetensors",
+        {"q.weight": (256, 128), "q.bias": (256,), "norm.weight": (128,), "odd.weight": (64, 100)},
+    )
+    quantizable, retained = mb._safetensors_numel_split(folder)
+    assert quantizable == 256 * 128 and retained == 256 + 128 + 64 * 100
+    assert mb._safetensors_numel(folder) == quantizable + retained
+    # A text encoder that is half retained tensors: the 8-bit rung must not count those at 8 bits.
+    half = int(2 * GIB)
+    assert (
+        mb.text_encoder_resident_bytes(half, 8, half)
+        == mb.text_encoder_resident_bytes(half, 8) + half
+    )
+    budget = (
+        ZIMAGE_Q4_0[0] + mb.text_encoder_resident_bytes(2 * half, 8) + mb.ACTIVATION_HEADROOM_BYTES
+    )
+    all_quantized = mb.plan_quantization(
+        budget_bytes = budget, transformer_bytes = ZIMAGE_Q4_0, text_encoder_bf16_bytes = 2 * half
+    )
+    split = mb.plan_quantization(
+        budget_bytes = budget,
+        transformer_bytes = ZIMAGE_Q4_0,
+        text_encoder_bf16_bytes = half,
+        text_encoder_retained_bytes = half,
+    )
+    assert (all_quantized.te_bits, all_quantized.dense_bits) == (8, 0)
+    assert (split.te_bits, split.dense_bits) != (8, 0)
+    assert split.planned_bytes <= budget
+
+
+def test_an_unreadable_gguf_keeps_the_ram_rule(env, monkeypatch):
+    backend, runtime, calls = env
+    _clear_quant_env(monkeypatch)
+    monkeypatch.setattr(mb, "_total_ram_bytes", lambda: 16 * GIB)
+    assert _load(backend)["phase"] == "ready"
+    assert runtime.builds[-1]["te_bits"] == 4 and calls["dense_bits"] == 4
+    assert backend.status()["mlx"]["timings"]["quant_plan"]["source"] == "ram_rule"
+
+
+def test_working_set_falls_back_to_two_thirds_of_ram(monkeypatch):
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(hw, "_metal_recommended_working_set_bytes", lambda: 0)
+    assert mb.working_set_bytes(12 * GIB) == 8 * GIB
+    monkeypatch.setattr(hw, "_metal_recommended_working_set_bytes", lambda: 11 * GIB)
+    assert mb.working_set_bytes(12 * GIB) == 11 * GIB
+
+
 def test_policy_helpers(monkeypatch):
     for name in (
         "UNSLOTH_DIFFUSION_MLX_TE_BITS",
@@ -562,6 +775,105 @@ def test_policy_helpers(monkeypatch):
     assert mb.compute_precision_name("Apple M3 Pro") == "bfloat16"
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_PRECISION", "bf16")
     assert mb.compute_precision_name("Apple M1") == "bfloat16"
+
+
+_GIB = 1024**3
+
+
+@pytest.mark.parametrize(
+    "side, free_gib, tiled",
+    [
+        # 16 GB Mac (10.67 GiB working set) holding Z-Image Q4_0 + an 8-bit text encoder (8.65 GiB): 2 GiB left.
+        (1024, 2.0, True),
+        (512, 2.0, False),
+        # 64 GB Mac: the untiled 1024 decode (about 6.6 GiB) fits, so it stays untiled, bit for bit as before.
+        (1024, 38.0, False),
+        (2048, 38.0, False),
+        (2048, 20.0, True),
+    ],
+)
+def test_vae_tiling_engages_only_when_the_untiled_decode_does_not_fit(
+    monkeypatch, side, free_gib, tiled
+):
+    monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
+    assert mb.vae_tiling_needed(side, side, int(free_gib * _GIB)) is tiled
+
+
+def test_vae_tiling_env_and_unknown_budget(monkeypatch):
+    monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
+    assert mb.vae_tiling_needed(4096, 4096, None) is False
+    monkeypatch.setenv(mb.VAE_TILING_ENV, "1")
+    assert mb.vae_tiling_needed(256, 256, 64 * _GIB) is True
+    monkeypatch.setenv(mb.VAE_TILING_ENV, "0")
+    assert mb.vae_tiling_needed(4096, 4096, 0) is False
+
+
+def test_untiled_decode_estimate_matches_the_metal_measurements():
+    # mflux Z-Image VAE, bf16, Apple M1 (Virtual) via Metal: 1.99 GiB at 512 and 6.64 GiB at 1024 above the weights.
+    assert abs(mb.untiled_decode_bytes(512, 512) / _GIB - 1.99) < 0.05
+    assert abs(mb.untiled_decode_bytes(1024, 1024) / _GIB - 6.64) < 0.05
+
+
+@pytest.mark.parametrize(
+    "free_gib, implicit, expected", [(2.0, True, True), (40.0, True, False), (2.0, False, False)]
+)
+def test_the_runtime_sets_mfluxs_tiling_config_per_generation(
+    monkeypatch, free_gib, implicit, expected
+):
+    pytest.importorskip("mlx.core")
+    tiling = pytest.importorskip("mflux.models.common.vae.tiling_config")
+    pytest.importorskip("mflux.utils.exceptions")
+    monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
+
+    seen = {}
+
+    class _Registry:
+        def __init__(self):
+            self.in_loop = []
+
+        def register(self, callback):
+            self.in_loop.append(callback)
+
+    class _Vae:
+        supports_implicit_tiling = implicit
+
+    class _Model:
+        callbacks = _Registry()
+        vae = _Vae()
+        tiling_config = None
+
+        def generate_image(self, **kwargs):
+            seen["tiling_config"] = self.tiling_config
+            return type("R", (), {"image": "png"})()
+
+    runtime = mb.MfluxRuntime()
+    monkeypatch.setattr(runtime, "free_working_set_bytes", lambda: int(free_gib * _GIB))
+    model = _Model()
+    image = runtime.generate(
+        model,
+        prompt = "p",
+        negative_prompt = None,
+        seed = 1,
+        steps = 1,
+        width = 1024,
+        height = 1024,
+        guidance = None,
+        on_step = lambda done: None,
+    )
+    assert image == "png"
+    assert isinstance(seen["tiling_config"], tiling.TilingConfig) is expected
+    assert runtime.vae_tiled() is expected
+
+
+def test_a_new_load_does_not_report_the_previous_models_tiled_decode(env):
+    backend, runtime, _calls = env
+    assert _load(backend)["phase"] == "ready"
+    # The previous model's last generation tiled its decode.
+    runtime.last_vae_tiled = True
+    assert backend.status()["vae_tiling"] is True
+    backend.unload()
+    assert _load(backend)["phase"] == "ready"
+    assert backend.status()["vae_tiling"] is False
 
 
 def test_importing_the_engine_does_not_import_mlx():
@@ -806,7 +1118,7 @@ def test_base_fetch_is_cancellable_between_files(monkeypatch):
     out = mb.fetch_base_snapshot(
         "Tongyi-MAI/Z-Image-Turbo", None, local_files_only = False, cancel_event = cancel
     )
-    assert out == "/hub/snapshots/abc"
+    assert Path(out) == Path("/hub/snapshots/abc")  # native separators on Windows
     assert fetched == files[:3]  # README is outside the allow patterns
 
 
@@ -853,7 +1165,7 @@ def test_the_load_route_takes_the_gpu_arbiter_for_mlx_on_a_cpu_torch_host(monkey
     monkeypatch.setattr("routes.inference._selected_gpu_ordinal", _no_ordinal)
     calls = []
     monkeypatch.setattr(
-        arbiter, "acquire_for_request", lambda owner, fn: calls.append("acquire") or fn()
+        arbiter, "acquire_for_request", lambda owner, fn, **_: calls.append("acquire") or fn()
     )
     monkeypatch.setattr(arbiter, "release", lambda owner: calls.append("release"))
     asyncio.run(
@@ -1335,7 +1647,7 @@ def test_online_companions_land_under_one_cache_root(monkeypatch, tmp_path):
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
     out = mb.fetch_base_snapshot(BASE, None, local_files_only = False)
     assert roots == [live] * len(files)
-    assert out == f"{live}/snapshots/abc"
+    assert Path(out) == Path(live) / "snapshots" / "abc"
 
 
 def test_cache_only_companions_skip_a_snapshot_without_tokenizer_config(monkeypatch, tmp_path):
@@ -1442,3 +1754,178 @@ def test_the_mlx_plan_names_the_base_the_load_will_read(monkeypatch, tmp_path):
     assert recorder.calls[-1]["base_repo"] == BASE
     mb.MlxDiffusionBackend().download_plan(str(local), gguf_filename = gguf, base_repo = BASE)
     assert recorder.calls[-1]["base_repo"] == BASE
+
+
+@pytest.mark.parametrize("outcome", ["done", "cancelled", "failed"])
+def test_the_runtime_releases_mlx_buffer_cache_after_every_generation(monkeypatch, outcome):
+    """Freed activations otherwise sit in MLX's buffer cache, i.e. in system RAM, until unload."""
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mflux.utils.exceptions")
+
+    class _Registry:
+        """The two members of mflux's CallbackRegistry the runtime touches."""
+
+        def __init__(self):
+            self.in_loop = []
+
+        def register(self, callback):
+            self.in_loop.append(callback)
+
+    cleared = []
+    real_clear = mx.clear_cache
+    monkeypatch.setattr(mx, "clear_cache", lambda: (cleared.append(1), real_clear()))
+
+    class _Image:
+        image = "png"
+
+    class _Model:
+        callbacks = _Registry()
+
+        def generate_image(self, **kwargs):
+            latents = mx.zeros((2, 2))
+            for t in range(kwargs["num_inference_steps"]):
+                for cb in self.callbacks.in_loop:
+                    cb.call_in_loop(t, kwargs["seed"], kwargs["prompt"], latents, None, None)
+            if outcome == "failed":
+                raise RuntimeError("boom")
+            return _Image()
+
+    def on_step(done):
+        if outcome == "cancelled" and done == 2:
+            raise mb.MlxCancelled("cancelled")
+
+    runtime = mb.MfluxRuntime()
+    kwargs = dict(
+        prompt = "p",
+        negative_prompt = None,
+        seed = 1,
+        steps = 3,
+        width = 64,
+        height = 64,
+        guidance = None,
+        on_step = on_step,
+    )
+    model = _Model()
+    if outcome == "done":
+        assert runtime.generate(model, **kwargs) == "png"
+    else:
+        with pytest.raises(mb.MlxCancelled if outcome == "cancelled" else RuntimeError):
+            runtime.generate(model, **kwargs)
+    assert cleared == [1]
+    assert model.callbacks.in_loop == []
+
+
+def test_every_mlx_cache_clear_goes_through_the_drain():
+    """The only ``clear_cache`` call is inside ``release_buffer_cache``, right after its synchronize."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(mb))
+    sites = []
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(func):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "clear_cache"
+            ):
+                sites.append(func.name)
+    assert sites == ["release_buffer_cache"]
+
+
+def _recording_mx(sync_error = None, clear_error = None):
+    events = []
+
+    class _Mx:
+        @staticmethod
+        def synchronize(stream = None):
+            events.append("synchronize")
+            if sync_error is not None:
+                raise sync_error
+
+        @staticmethod
+        def clear_cache():
+            events.append("clear_cache")
+            if clear_error is not None:
+                raise clear_error
+
+    return _Mx, events
+
+
+def test_release_buffer_cache_drains_before_clearing():
+    mx, events = _recording_mx()
+    mb.release_buffer_cache(mx)
+    assert events == ["synchronize", "clear_cache"]
+
+
+def test_release_buffer_cache_never_replaces_the_callers_exception():
+    mx, events = _recording_mx(sync_error = RuntimeError("sync"), clear_error = RuntimeError("clear"))
+    with pytest.raises(ValueError, match = "generation failed"):
+        try:
+            raise ValueError("generation failed")
+        finally:
+            mb.release_buffer_cache(mx)
+    assert events == ["synchronize", "clear_cache"]
+
+
+def test_the_mlx_base_fetch_keeps_the_fallback_scheduler_config():
+    import fnmatch
+
+    from core.inference.mlx_diffusion_backend import BASE_ALLOW_PATTERNS
+    for name in ("scheduler/scheduler_config.json", "model_index.json"):
+        assert any(fnmatch.fnmatch(name, pattern) for pattern in BASE_ALLOW_PATTERNS), name
+
+
+def test_the_renderer_sees_the_shared_pool_beside_a_chat_model(monkeypatch):
+    """Its own working set cannot see a chat worker, so tiling decides on the system-wide headroom too."""
+    import sys
+    import types
+
+    import core.inference.gpu_residency as gr
+    import core.inference.llama_cpp as llama_cpp
+
+    core = types.SimpleNamespace(
+        device_info = lambda: {"max_recommended_working_set_size": 96 * _GIB},
+        get_active_memory = lambda: 8 * _GIB,
+    )
+    monkeypatch.setitem(sys.modules, "mlx", types.SimpleNamespace(core = core))
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    monkeypatch.setattr(gr, "_on_metal", lambda: True)
+    monkeypatch.setattr(llama_cpp, "_apple_wired_headroom_bytes", lambda: 16 * _GIB)
+    monkeypatch.setattr(gr, "_mlx_chat_unallocated_mib", lambda: 4096)
+    runtime = mb.MfluxRuntime()
+    monkeypatch.setattr(gr, "media_held_mib", lambda: {0: 9000})
+    monkeypatch.setattr("psutil.virtual_memory", lambda: types.SimpleNamespace(available = 64 * _GIB))
+    assert runtime.free_working_set_bytes() == 12 * _GIB
+    monkeypatch.setattr("psutil.virtual_memory", lambda: types.SimpleNamespace(available = 5 * _GIB))
+    assert runtime.free_working_set_bytes() == 1 * _GIB
+    assert gr.metal_media_priced()
+    monkeypatch.setattr(gr, "media_held_mib", lambda: {})
+    assert runtime.free_working_set_bytes() == 88 * _GIB
+
+
+@pytest.mark.parametrize("priced, free_gib, expected", [(True, 40.0, True), (False, 40.0, False)])
+def test_a_priced_media_model_on_metal_always_tiles(monkeypatch, priced, free_gib, expected):
+    """Its price reserved the tiled decode, and a chat model may join on it while this render runs."""
+    import sys
+    import types
+
+    import core.inference.gpu_residency as gr
+
+    class _TilingConfig:
+        @staticmethod
+        def may_tile_implicitly(model):
+            return True
+
+    module = types.ModuleType("mflux.models.common.vae.tiling_config")
+    module.TilingConfig = _TilingConfig
+    monkeypatch.setitem(sys.modules, "mflux.models.common.vae.tiling_config", module)
+    monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
+    monkeypatch.setattr(gr, "metal_media_priced", lambda: priced)
+    runtime = mb.MfluxRuntime()
+    monkeypatch.setattr(runtime, "free_working_set_bytes", lambda: int(free_gib * _GIB))
+    model = types.SimpleNamespace(tiling_config = None)
+    runtime._plan_vae_tiling(model, 1024, 1024)
+    assert runtime.vae_tiled() is expected

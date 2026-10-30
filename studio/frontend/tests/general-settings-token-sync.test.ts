@@ -156,6 +156,10 @@ function generalTab(initialToken: string) {
       cn: (...values: unknown[]) => values.filter(Boolean).join(" "),
     },
     "lucide-react": componentStub,
+    "@/lib/tick-icon": { Tick02Icon: {} },
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
+    "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
+    "@/lib/folder-icons": new Proxy({}, { get: () => ({}) }),
     "../api/helper-precache": {
       loadHelperPrecacheSettings: never,
       updateHelperPrecacheSettings: never,
@@ -188,6 +192,7 @@ function generalTab(initialToken: string) {
       LIBRARY_SETTINGS_STORAGE_KEY: "library-settings",
       LIBRARY_VIEW_STORAGE_KEY: "library-view",
     },
+    "../components/full-install-dialog": componentStub,
     "../components/change-password-dialog": componentStub,
     "../components/desktop-repair-control": componentStub,
     "../components/desktop-update-control": componentStub,

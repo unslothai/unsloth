@@ -22,12 +22,6 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
-/**
- * The fence body that replaced streamdown's `Block`. What is RUN is the part deciding what
- * characters a line shows; the `.tsx` side is pinned by regex over source, since the runner cannot
- * load JSX.
- */
-
 const DEFER = readSrc("components/assistant-ui/code-fence-defer.tsx");
 const MARKDOWN_TEXT = readSrc("components/assistant-ui/markdown-text.tsx");
 const LINE_SOURCE = DEFER.slice(DEFER.indexOf("const FenceLine = memo"), DEFER.indexOf("const FenceLineChunk = memo"));
@@ -43,8 +37,7 @@ test("a line shows the same characters inside the window and outside it", () => 
 });
 
 test("the plain form is the tokens, never a slice of the source", () => {
-  // Shiki drops the CR of a CRLF pair, so a source slice would make a line gain a character on
-  // leaving the window.
+  // Shiki drops the CR of a CRLF pair, so a source slice would gain a character.
   assert.equal(plainLineText([{ content: "x = 1" }]), "x = 1");
   assert.ok(
     !/source\.slice|split\(["'`]\\n["'`]\)/.test(
@@ -55,7 +48,7 @@ test("the plain form is the tokens, never a slice of the source", () => {
 });
 
 test("a blank line is one line tall, not nothing", () => {
-  // An empty text node has no line box, so the fence would close up and everything below it moves.
+  // An empty text node has no line box, so the fence would collapse.
   assert.equal(isBlankLine([]), true);
   assert.equal(isBlankLine([{ content: "" }]), true);
   assert.equal(isBlankLine([{ content: " " }]), false);
@@ -68,8 +61,6 @@ test("a blank line is one line tall, not nothing", () => {
 });
 
 test("the line component is memoized, which is the whole point of it", () => {
-  // A committed line's identity is already stable, so without `memo` a one-character growth still
-  // reconciles every line: the cost this change removes.
   assert.ok(
     /const FenceLine = memo\(function FenceLine\(/.test(DEFER),
     "FenceLine must be memoized",
@@ -86,7 +77,7 @@ test("the fence branch no longer renders streamdown's Block", () => {
   const to = MARKDOWN_TEXT.indexOf("const StreamdownBlock = memo(", from);
   assert.ok(from > 0 && to > from, "FenceBlock still bounds a branch of its own");
   const body = MARKDOWN_TEXT.slice(from, to);
-  // Comment lines stripped: this branch still EXPLAINS `<Block>` at length, and should.
+  // Comment lines stripped: this branch still explains `<Block>` in comments.
   const code = body.replace(/^\s*(?:\/\/|\/?\*).*$/gm, "");
   assert.ok(
     !/<Block\b/.test(code),
@@ -136,8 +127,6 @@ test("a fence in the thinking box is coloured off the main thread, while it grow
 });
 
 test("a completed fence on a non-``` form keeps the bounded renderer", () => {
-  // A completed tilde / four-backtick / indented fence used to fall to `Block` and remount every
-  // span; a stopped reply takes the same route.
   assert.ok(
     /const settledFence = props\.isIncomplete \? null : markdownBlockFallback\(props\.content\);\s*if \(settledFence\?\.fenced/.test(
       MARKDOWN_TEXT,
@@ -166,8 +155,6 @@ test("a completed fence on a non-``` form keeps the bounded renderer", () => {
 });
 
 test("markdownBlockFallback is what recognises the open fence, not getCodeFence", () => {
-  // `getCodeFence` claims only unindented triple backticks; a fence this route misses goes back to
-  // the renderer that cannot afford it.
   assert.ok(
     MARKDOWN_TEXT.includes(
       'import { markdownBlockFallback } from "./markdown-block-fallback";',
@@ -188,8 +175,6 @@ test("the window decision is not reimplemented in the component", () => {
 });
 
 test("the text is never removed from the document, only its colour", () => {
-  // Why this is not virtualization: the text never leaves the document, so find-in-page, copy and
-  // print are untouched (`progressive-mount-controller.ts`, and the `content-visibility` ban).
   const body = DEFER.slice(DEFER.indexOf("export const FenceBody = memo("));
   assert.ok(
     /tokens\.map\(\(line, index\) => \(/.test(body),
@@ -202,7 +187,6 @@ test("the text is never removed from the document, only its colour", () => {
 });
 
 test("one scroll listener serves every windowed fence on the page", () => {
-  // A listener per fence reads layout per fence per scroll, costing more than it saves.
   assert.ok(
     /const windowedFences = new Set<\(\) => void>\(\);/.test(DEFER),
     "the registry must be shared",
@@ -219,9 +203,7 @@ test("one scroll listener serves every windowed fence on the page", () => {
 });
 
 test("the scrolling ancestor is resolved from outside the code block", () => {
-  // A code block carries `overflow-x: auto`, which makes `overflow-y` compute to `auto` as well,
-  // so walking up from the <code> is one scrollHeight away from rooting the whole calculation
-  // inside the fence's own horizontal scroller.
+  // overflow-x: auto forces overflow-y to auto too, so walking up from <code> stops at the fence.
   assert.ok(
     /const scroller = scrollerOf\(outer\);/.test(DEFER),
     "resolve from the fence's outermost element, not from the code element",
@@ -229,10 +211,6 @@ test("the scrolling ancestor is resolved from outside the code block", () => {
 });
 
 test("the body reproduces streamdown's language class and incomplete flag", () => {
-  // Both were MEASURED missing against the merge base, on the same scene, and neither has a
-  // reader in the tree today. That is what makes them worth pinning rather than shrugging at: a
-  // published rendering contract with no current consumer is exactly the kind of thing that goes
-  // quietly and is found by a user stylesheet months later.
   const body = DEFER.slice(DEFER.indexOf("export const FenceBody = memo("));
   assert.ok(
     /const languageClass = language === null \? null : `language-\$\{language\}`;/.test(DEFER),
@@ -253,9 +231,6 @@ test("the body reproduces streamdown's language class and incomplete flag", () =
 });
 
 test("a print colours the whole fence, and the window comes back afterwards", () => {
-  // MEASURED: a 3,000 line fence printed with 342 spans against the 23,139 the merge base
-  // printed. `upgradeEverythingForPrint` makes this argument for a deferred fence already; the
-  // line window reintroduced the same defect one level down.
   assert.ok(
     /let printing = false;/.test(DEFER),
     "the print state has to be module-global: a print is a document-wide event",
@@ -281,10 +256,6 @@ test("a print colours the whole fence, and the window comes back afterwards", ()
 });
 
 test("a block is scanned for a mermaid fence once per render, not twice", () => {
-  // `findMermaidFence` splits the block and regex-scans every line. Asking "is it open" and "what
-  // is the source" as two calls walked it twice on every render of every block, on the hot path
-  // this change exists to shorten. Measured on a 3,000 line fence: 0.118 ms per walk, so the
-  // redundant one cost 0.092 ms per render, about 5.5 ms per second at 60 fps.
   const body = MARKDOWN_TEXT.slice(MARKDOWN_TEXT.indexOf("function StreamdownBlockContent("));
   const walks = body.match(/findMermaidFence\(props\.content\)/g) ?? [];
   assert.equal(walks.length, 1, "the walk must happen once and both answers come off it");
@@ -299,9 +270,6 @@ test("a block is scanned for a mermaid fence once per render, not twice", () => 
 });
 
 test("a fence source is highlighted once per revision, not twice", () => {
-  // This was a passive effect and a layout effect, same inputs and same deps. `code.highlight`
-  // caches, but the plugin's throttled `approximateResult` hands back a FRESH object each call, so
-  // both setters were observable and every source change scheduled a second render of the body.
   const hook = MARKDOWN_TEXT.slice(
     MARKDOWN_TEXT.indexOf("function useFenceTokens("),
     MARKDOWN_TEXT.indexOf("function StreamingFenceBlock("),
@@ -330,7 +298,6 @@ const POSITIONAL_ANCESTOR =
 const TABLE_BUTTON =
   /height: calc\(var\(--spacing\) \* 8\);[\s\S]*border-radius: 9999px;\s*color: var\(--color-chat-icon-fg\);/;
 
-// Streamdown draws the table's buttons itself, 23px with no hover fill, beside these 32px ones.
 test("a table's toolbar buttons are drawn like the code block's", () => {
   const css = readSrc("index.css");
   const at = css.indexOf(`${TABLE_CONTROLS} > .relative > button {`);

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Disk-backed persistence for generated images.
-
-Each image is a PNG under ``workspace_root()/images`` with its recipe embedded as PNG text chunks:
-an ``unsloth`` JSON blob (the source of truth) plus an Automatic1111-style ``parameters`` string,
-so a downloaded PNG carries its own settings. The route owns the schema; this only stores files.
-"""
+"""Image PNGs in workspace_root()/images; recipe in an unsloth JSON text chunk (source of truth)"""
 
 from __future__ import annotations
 
@@ -17,8 +12,9 @@ import json
 import os
 import re
 import sys
+import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any, Optional
 
@@ -50,6 +46,10 @@ _IMG2IMG_WORKFLOWS = ("img2img", "inpaint", "outpaint", "edit", "upscale")
 
 def _params_text(meta: dict[str, Any]) -> str:
     """Automatic1111-style ``parameters`` string for cross-tool interop."""
+    from core.inference.diffusion_hires import infotext_fields as hires_infotext, infotext_meta
+
+    # A Hires fix image is written the way A1111 writes one: Size is the base pass, Hires upscale the factor.
+    meta = infotext_meta(meta)
     # The caption the model encoded (FLUX.3 prompt upsampler): other tools reproduce the image from this line. The
     # typed prompt stays in the Unsloth chunk.
     lines = [str(meta.get("enhanced_prompt") or meta.get("prompt", ""))]
@@ -95,9 +95,14 @@ def _params_text(meta: dict[str, Any]) -> str:
         fields += ", Inpaint area: Only masked"
         if meta.get("inpaint_padding") is not None:
             fields += f", Masked area padding: {meta['inpaint_padding']}"
+    fields += hires_infotext(meta)
     # Static flow shift, read back by the paste parser; base / max shift stay in the recipe chunk only.
     if meta.get("shift") is not None:
         fields += f", Shift: {meta['shift']}"
+    # ADetailer's own keys (adetailer/args.py), so a paste into Studio or a webui with ADetailer restores the pass.
+    if meta.get("detailer"):
+        from core.inference.diffusion_detailer import infotext_fields
+        fields += infotext_fields(meta["detailer"])
     if meta.get("generator"):
         fields += f", Version: {meta['generator']}"
     lines.append(fields)
@@ -150,23 +155,81 @@ def _engine() -> Optional[str]:
         return None
 
 
-def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
-    """Persist a PIL image with its recipe embedded; return the gallery record."""
-    image_id = uuid.uuid4().hex
-    meta = {
+def _recipe(meta: dict[str, Any]) -> dict[str, Any]:
+    return {
         # A Connection run never touched the local engine.
         "engine": None if meta.get("model_kind") == "connection" else _engine(),
         "generator": _generator(),
         **meta,
         "schema_version": RECIPE_SCHEMA_VERSION,
     }
+
+
+def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
+    """Persist a PIL image with its recipe embedded; return the gallery record."""
+    image_id = uuid.uuid4().hex
+    meta = _recipe(meta)
     # Encoded before the folder is looked up: a Settings move during the encode would otherwise
     # finish first, and the image land in the folder it left.
-    data = _png_bytes(image, meta)
+    data = _encoded_ahead(image, meta)
+    if data is None:
+        data = _png_bytes(image, meta)
+    return _publish(image_id, meta, data)
+
+
+# Pillow releases the GIL while it filters and deflates, so a batch's PNGs encode side by side.
+_MAX_ENCODE_WORKERS = 8
+_ahead = threading.local()
+
+
+def _encoded_ahead(image: Any, meta: dict[str, Any]) -> Optional[bytes]:
+    """The PNG ``save_many`` already encoded from this image and this exact recipe, else None."""
+    pending = getattr(_ahead, "pending", None)
+    entry = pending.pop(id(image), None) if pending else None
+    if entry is None or entry[0] is not image or list(entry[1].items()) != list(meta.items()):
+        return None
+    return entry[2].result()
+
+
+def save_many(items: Iterable[tuple[Any, dict[str, Any]]]) -> Iterator[dict[str, Any]]:
+    """``save`` each (image, meta) in order, with every PNG encoded concurrently up front.
+
+    Each ``save`` still writes its file and builds its record in turn, so the bytes, the gallery
+    order and what a failure leaves behind are those of a plain loop of ``save``."""
+    items = list(items)
+    cpus = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+    workers = min(len(items), cpus, _MAX_ENCODE_WORKERS)
+    # One image object twice would be loaded by two threads at once.
+    if workers < 2 or len({id(image) for image, _ in items}) < len(items):
+        for image, meta in items:
+            yield save(image, meta)
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "gallery-png") as pool:
+        pending = {}
+        for image, meta in items:
+            recipe = _recipe(meta)
+            pending[id(image)] = (image, recipe, pool.submit(_png_bytes, image, recipe))
+        futures = [entry[2] for entry in pending.values()]
+        _ahead.pending = pending
+        # The gallery sorts by mtime and back-to-back writes can tie (Windows ~15.6 ms tick): keep each strictly newer.
+        _ahead.floor_ns = None
+        try:
+            for image, meta in items:
+                yield save(image, meta)
+        finally:
+            if getattr(_ahead, "pending", None) is pending:
+                _ahead.pending = None
+                _ahead.floor_ns = None
+            for future in futures:
+                future.cancel()
+
+
+def _publish(image_id: str, meta: dict[str, Any], data: bytes) -> dict[str, Any]:
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
-    # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write never leaves a
-    # truncated {id}.png in the listing.
+    # Dotted temp (skipped by the *.png glob) then atomic rename: no truncated PNG in the listing.
     tmp_path = directory / f".{image_id}.png.tmp"
     try:
         tmp_path.write_bytes(data)
@@ -177,17 +240,37 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
         except OSError:
             pass
         raise
-    return _record(image_id, meta)
+    if getattr(_ahead, "pending", None) is not None:
+        _keep_after_previous(final_path)
+    return _record(image_id, meta, directory = directory)
+
+
+def _keep_after_previous(path: Path) -> None:
+    """In a ``save_many`` batch, move ``path``'s mtime 1 us past the previous image's when it is not already later."""
+    try:
+        stat = path.stat()
+        mtime_ns = stat.st_mtime_ns
+        floor = getattr(_ahead, "floor_ns", None)
+        if floor is not None and mtime_ns <= floor:
+            mtime_ns = floor + 1000
+            os.utime(path, ns = (stat.st_atime_ns, mtime_ns))
+        _ahead.floor_ns = mtime_ns
+    except OSError:
+        pass
 
 
 def _record(
     image_id: str,
     meta: dict[str, Any],
     flags: Optional[dict[str, dict[str, Any]]] = None,
+    *,
+    directory: Optional[Path] = None,
 ) -> dict[str, Any]:
+    if directory is None:
+        directory = gallery_dir()
     # flags are library state, not recipe: they come from the sidecar store, never the PNG chunk
     if flags is None:
-        flags = gallery_flags.read(gallery_dir())
+        flags = gallery_flags.read(directory)
     return {
         **meta,
         "id": image_id,
@@ -195,7 +278,7 @@ def _record(
         **gallery_flags.flags_for(flags, image_id),
         # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
         "order_at": gallery_flags.order_rank(
-            flags, image_id, _mtime(gallery_dir() / f"{image_id}.png")
+            flags, image_id, _mtime(directory / f"{image_id}.png")
         ),
     }
 
@@ -204,9 +287,10 @@ def image_path(image_id: str) -> Optional[Path]:
     """Resolve an id to its on-disk PNG, or None if missing / unsafe."""
     if not _ID_RE.match(image_id):
         return None
-    path = gallery_dir() / f"{image_id}.png"
+    directory = gallery_dir()
+    path = directory / f"{image_id}.png"
     try:
-        path.resolve().relative_to(gallery_dir().resolve())
+        path.resolve().relative_to(directory.resolve())
     except ValueError:
         return None
     return path if path.is_file() else None
@@ -219,8 +303,7 @@ def image_b64(image_id: str) -> Optional[str]:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-# Required recipe keys (GalleryImage fields minus id/url). A PNG missing any is skipped as foreign, so a hand-dropped
-# or older-schema file cannot 500 the listing.
+# A PNG missing any required key is skipped as foreign so it cannot 500 the listing.
 _REQUIRED_META = ("prompt", "width", "height", "steps", "guidance", "seed", "created_at")
 
 
@@ -229,8 +312,7 @@ def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any
 
     try:
         with Image.open(path) as im:
-            # _png_bytes writes the chunk before IDAT, so the header parse has it; im.text would
-            # decode every pixel looking for chunks after IDAT.
+            # The chunk is written before IDAT; im.text would decode every pixel to find later chunks.
             raw = im.info.get(_META_KEY) or im.text.get(_META_KEY)  # type: ignore[attr-defined]
     except OSError as exc:
         if strict_io and exc.errno not in (None, errno.ENOENT):
@@ -250,10 +332,7 @@ def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any
 
 
 def owned_image_path(image_id: str) -> Optional[Path]:
-    """Resolve an id to its PNG only when it is an Unsloth-owned image (a readable recipe chunk),
-    else None. The serve route uses this instead of image_path() so a guessed stem for a
-    hand-dropped foreign PNG -- which list_images/delete/clear already treat as not ours -- can't
-    be streamed out. Mirrors the delete/clear ownership guard."""
+    """Returns None unless the PNG is Unsloth-owned, so a guessed id cannot stream a hand-dropped file."""
     path = image_path(image_id)
     if path is None or _read_meta(path) is None:
         return None
@@ -289,27 +368,14 @@ def list_images(
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
     archived: bool = False,
 ) -> list[dict[str, Any]]:
-    """A window of images for infinite scroll: pinned first (most recently pinned leading), then
-    newest-first by file mtime (or the manual key once dragged).
-
-    mtime is a cheap stat ~= generation order, so a large gallery isn't opened in full just to
-    sort; only the window's recipes are read. limit=None returns everything from ``offset`` on.
-
-    ``archived`` selects WHICH shelf to page over, it does not widen one: False lists only active
-    images, True lists only archived ones. The archived section needs its own scrollable page, so
-    a chat-style "include archived" flag would not do.
-
-    ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and has_more
-    all count over the accepted-record domain. Pass the route's schema validator: a record with
-    every required key (so ``_read_meta`` accepts it) but a wrong value type would otherwise be
-    counted here yet dropped after slicing, stalling infinite scroll at offset 0."""
+    """Pinned first, then mtime; archived selects a shelf, never widens; valid filter runs before paging."""
     try:
-        paths = list(gallery_dir().glob("*.png"))
+        directory = gallery_dir()
+        paths = list(directory.glob("*.png"))
     except OSError:
         return []
-    flags = gallery_flags.read(gallery_dir())
-    # Both the shelf split and the pin sort run on file stems, BEFORE any recipe is read, so they cost one dict lookup
-    # per file and leave the early break below intact.
+    flags = gallery_flags.read(directory)
+    # Shelf split and pin sort use file stems before any recipe read, keeping the early break intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
     paths.sort(
         key = lambda p: (
@@ -318,16 +384,14 @@ def list_images(
         ),
         reverse = True,
     )
-    # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced window would drop
-    # valid images and make has_more wrong. Known limit: this re-reads headers from newest down to `offset+limit` per
-    # page, so a deep scroll is O(offset) header-opens.
+    # Page over readable records, not raw files, or has_more is wrong. Deep scroll is O(offset).
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
         meta = _read_meta(path)
         if meta is None:
             continue
-        record = _record(path.stem, meta, flags)
+        record = _record(path.stem, meta, flags, directory = directory)
         if valid is not None and not valid(record):
             continue
         records.append(record)
@@ -345,8 +409,7 @@ def set_flags(
     """Patch one image's pin/archive flags and return its updated record, or None when the id is
     not an Unsloth-owned image. Ownership-gated like delete: a guessed stem for a hand-dropped
     foreign PNG must not become flaggable (and so listable under a shelf we own)."""
-    # Ownership check and write under one lock, so a concurrent clear cannot delete the file between them and leave this
-    # reporting success for an image that is already gone.
+    # Check and write under one lock so a concurrent clear cannot delete the file between them.
     with gallery_flags.exclusive(gallery_dir()):
         path = owned_image_path(image_id)
         if path is None:
@@ -419,21 +482,10 @@ def delete(image_id: str) -> bool:
 
 
 def clear(include_archived: bool = False) -> int:
-    """Delete Unsloth-owned gallery PNGs (readable recipe chunk); return how many were removed.
-
-    Archived images are SPARED by default: archiving is how a user sets something aside, so a
-    "clear the gallery" action that destroyed the archive would defeat it. Pass
-    include_archived=True to remove those too.
-
-    Raises FlagsUnavailable when the archive has to be spared but the flag store cannot be read.
-    Fail CLOSED: read() answers "nothing is archived" for an unreadable store, which here would
-    quietly delete the very archive this promises to keep.
-
-    Foreign PNGs are preserved: list_images already hides them, so clear must not destroy them."""
+    """Owned PNGs only; archived spared unless include_archived; fails closed if flags unreadable."""
     removed = 0
     directory = gallery_dir()
-    # Hold the flag lock across the whole read-then-delete: an archive landing mid-loop would otherwise be judged active
-    # from the stale snapshot and deleted, after its PATCH had already reported success.
+    # Hold the flag lock across read-then-delete, or an archive landing mid-loop gets deleted.
     with gallery_flags.exclusive(directory):
         # read flags BEFORE listing: nothing is unlinked if the store turns out to be untrusted
         flags = {} if include_archived else gallery_flags.read_trusted(directory)
@@ -453,8 +505,7 @@ def clear(include_archived: bool = False) -> int:
                 cleared.append(path.stem)
             except OSError:
                 continue
-        # Nothing left for an unreadable store to protect once every image we own is gone, so this is where the escape
-        # hatch escapes: replace it, or every later default clear still refuses.
+        # Every owned image is gone, so replace the untrusted store or later clears keep refusing.
         if include_archived and not gallery_flags.is_trusted(directory):
             gallery_flags.reset_locked(directory)
         else:

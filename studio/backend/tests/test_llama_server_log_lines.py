@@ -23,7 +23,7 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
 import core.inference.llama_cpp as llama_cpp  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
-# Verbatim from llama.cpp b11317 (load of a missing GGUF, then a normal start).
+# Verbatim from llama.cpp b11317.
 _NOISE = (
     "0.00.003.868 I srv  llama_server: initializing ...",
     "0.13.635.789 I srv    load_model: loading model '/nonexistent.gguf'",

@@ -114,7 +114,7 @@ def test_compile_below_hooks_kill_switch_and_missing_kwargs(monkeypatch):
     dit = _streamed_dit()
     for block in dit.transformer_blocks:
         block.compile(backend = "eager")
-    assert compile_blocks_below_offload_hooks(dit) == 0  # no recorded kwargs
+    assert compile_blocks_below_offload_hooks(dit) == 0
     dit._unsloth_regional_compile_kwargs = {"backend": "eager"}
     monkeypatch.setenv("UNSLOTH_H3_COMPILE_BELOW_HOOKS", "0")
     assert compile_blocks_below_offload_hooks(dit) == 0
@@ -165,7 +165,6 @@ def test_the_top_level_group_gets_a_pinned_copy_and_the_block_stream(monkeypatch
     assert res.pin_streamed_top_level_group(object())
     assert top.stream is stream and top.cpu_param_dict == {"w": "pinned"}
     assert top.record_stream and not top.non_blocking and not top.low_cpu_mem_usage
-    # idempotent: a group that already has a stream is left alone
     assert not res.pin_streamed_top_level_group(object())
 
 
@@ -177,7 +176,7 @@ def test_the_top_level_pin_kill_switch_and_unstreamed_blocks(monkeypatch):
 
     top = _FakeGroup(None)
     monkeypatch.setattr(res, "h3_offload_groups", lambda t: (top, [_FakeGroup(None)]))
-    assert not res.pin_streamed_top_level_group(object())  # blocks have no stream (sync tier)
+    assert not res.pin_streamed_top_level_group(object())
     monkeypatch.setattr(res, "h3_offload_groups", lambda t: (top, [_FakeGroup(object())]))
     monkeypatch.setenv("UNSLOTH_H3_TOP_GROUP_PIN", "0")
     assert not res.pin_streamed_top_level_group(object())
@@ -242,9 +241,8 @@ def test_a_rotating_vae_moves_by_repointing_at_its_pinned_copy(monkeypatch):
     weight = vae[0].weight
     expect = {k: v.clone() for k, v in vae.state_dict().items()}
     assert install_pinned_swap(vae)
-    assert vae[0].weight is weight  # identity kept (code that captured it still sees it)
+    assert vae[0].weight is weight
     host_ptr = weight.data_ptr()
-    # A device copy stands in for the uploaded weight; the CPU move must re-point, not copy it back.
     weight.data = weight.data.clone()
     vae.to("cpu")
     assert weight.data_ptr() == host_ptr, "the CPU move copied instead of re-pointing"
@@ -258,8 +256,7 @@ def test_a_pinned_swap_round_trip_on_cuda(monkeypatch, pin_capped):
     import core.inference.diffusion_memory as mem
     from core.inference.video_minimax_h3_residency import install_pinned_swap
 
-    # The round trip is under test, not the host pin policy: Windows / WSL cap pinned memory, so
-    # h3_te_pin_allowed() declines there by default. Opt in through the production override.
+    # Windows/WSL cap pinned memory, so h3_te_pin_allowed declines; opt in via override.
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: pin_capped)
     monkeypatch.setenv(mem.GROUP_OFFLOAD_PIN_ENV, "1")
     vae = torch.nn.Sequential(torch.nn.Conv2d(3, 4, 3), torch.nn.GroupNorm(2, 4))
@@ -283,9 +280,9 @@ def test_the_pinned_swap_falls_back_on_dtype_moves_and_honours_its_kill_switch(m
     _swap_ready(monkeypatch)
     vae = torch.nn.Linear(4, 4)
     assert install_pinned_swap(vae)
-    vae.to(torch.float16)  # stock path
+    vae.to(torch.float16)
     assert vae.weight.dtype is torch.float16
-    vae.to("meta")  # pinned copy no longer matches: stock move, still correct
+    vae.to("meta")
     assert vae.weight.device.type == "meta" and vae.weight.dtype is torch.float16
     other = torch.nn.Linear(4, 4)
     monkeypatch.setenv("UNSLOTH_H3_VAE_PINNED_SWAP", "0")
@@ -299,3 +296,59 @@ def test_the_pinned_swap_only_installs_from_the_parked_state(monkeypatch):
     _swap_ready(monkeypatch)
     vae = torch.nn.Linear(4, 4).to("meta")
     assert not install_pinned_swap(vae)
+
+
+def test_a_vae_that_cannot_pin_still_parks_by_repointing_at_its_pageable_copy(monkeypatch):
+    import core.inference.video_minimax_h3_te as te
+    from core.inference.video_minimax_h3_residency import install_pinned_swap
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *a: False)
+    monkeypatch.setattr(
+        te, "pin_module_in_place", lambda *a, **k: pytest.fail("pinned without a pin budget")
+    )
+    vae = torch.nn.Sequential(torch.nn.Conv2d(3, 4, 3), torch.nn.GroupNorm(2, 4))
+    expect = {k: v.clone() for k, v in vae.state_dict().items()}
+    host_ptr = vae[0].weight.data_ptr()
+    assert install_pinned_swap(vae)
+    assert not vae[0].weight.is_pinned()
+    vae[0].weight.data = vae[0].weight.data.clone()
+    vae.to("cpu")
+    assert vae[0].weight.data_ptr() == host_ptr, "the CPU move copied instead of re-pointing"
+    for k, v in vae.state_dict().items():
+        assert torch.equal(v, expect[k])
+
+
+def test_the_pageable_swap_honours_its_kill_switch(monkeypatch):
+    import core.inference.video_minimax_h3_te as te
+    from core.inference.video_minimax_h3_residency import install_pinned_swap
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *a: False)
+    monkeypatch.setenv("UNSLOTH_H3_VAE_PAGEABLE_SWAP", "0")
+    vae = torch.nn.Linear(4, 4)
+    assert not install_pinned_swap(vae)
+    assert "to" not in vae.__dict__
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+def test_a_pageable_swap_round_trip_on_cuda(monkeypatch):
+    import core.inference.video_minimax_h3_te as te
+    from core.inference.video_minimax_h3_residency import install_pinned_swap
+
+    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda *a: False)
+    vae = torch.nn.Sequential(torch.nn.Conv2d(3, 4, 3), torch.nn.GroupNorm(2, 4))
+    expect = {k: v.clone() for k, v in vae.state_dict().items()}
+    host_ptr = vae[0].weight.data_ptr()
+    assert install_pinned_swap(vae)
+    x = torch.randn(1, 3, 8, 8)
+    ref = vae(x)
+    for _ in range(2):
+        vae.to("cuda")
+        assert all(t.is_cuda for t in vae.parameters())
+        y = vae(x.cuda()).cpu()
+        vae.to("cpu")
+        assert vae[0].weight.data_ptr() == host_ptr
+    for k, v in vae.state_dict().items():
+        assert torch.equal(v, expect[k])
+    assert torch.allclose(y, ref, atol = 1e-5)
