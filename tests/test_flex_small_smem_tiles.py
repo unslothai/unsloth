@@ -193,6 +193,7 @@ def test_wrapper_no_grad_prefill_gets_tiles_decode_does_not(monkeypatch):
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
     wrapped(_Causal(), *_qkv(128, grad = False), object())
     assert seen.get("fwd_BLOCK_M") == 64
+    assert "FORCE_USE_FLEX_ATTENTION" not in seen  # q_len >= 128 is the main kernel already
     wrapped(_Causal(), *_qkv(8, grad = False), object())
     assert seen == {}  # flex_decoding keeps its own config
 
@@ -232,6 +233,8 @@ def test_wrapper_short_prompt_whose_decode_tile_does_not_fit_gets_tiles(
         assert {
             k: seen.get(k) for k in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
         } == u._FLEX_SMALL_SMEM_KERNEL_OPTIONS
+        # On the main kernel: flex_decoding with these tiles is wrong on torch 2.10, fails on 2.11.
+        assert seen.get("FORCE_USE_FLEX_ATTENTION") is True
     else:
         assert seen == {}
     wrapped, seen = _wrapped(monkeypatch, small_ok = False)

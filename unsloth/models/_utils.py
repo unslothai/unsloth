@@ -1223,6 +1223,17 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         ):
             kernel_options = _flex_small_smem_kernel_options(query.shape[-1], small_smem_device_ok)
+            # A short query admitted only for its decode tile runs these tiles on the main kernel:
+            # flex_decoding with fwd_BLOCK_M 64 below its row count computes only the first 64 rows
+            # on torch 2.10 (wrong output) and fails to compile at q_len 127 on 2.11. Shape last, as
+            # above, so training calls add no sequence guard.
+            if (
+                kernel_options is not None
+                and not _flex_call_needs_backward(query, key, value)
+                and not _flex_main_kernel_forced(kwargs)
+                and query.shape[2] < 128
+            ):
+                kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
         if (
             kernel_options is None
             and tuned_bwd_device_ok
