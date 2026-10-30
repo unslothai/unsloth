@@ -187,9 +187,10 @@ def _path_inside_venv(path: str) -> bool:
 
 
 def _external_hipinfo_on_path() -> bool:
-    """True if a hipinfo outside the venv is on PATH: shutil.which returns only the first hit, which
-    could be the venv copy shadowing a real HIP SDK, so every PATH entry is scanned and the venv
-    copy skipped."""
+    """True if a hipinfo OUTSIDE the venv is on PATH.
+
+    shutil.which returns only the first hit, so the venv hipInfo could shadow a
+    real HIP SDK's; scan every PATH entry and skip the venv copy."""
     for _dir in os.environ.get("PATH", "").split(os.pathsep):
         _dir = _dir.strip('"')  # PATH entries can be quoted on Windows
         if not _dir:
