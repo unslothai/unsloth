@@ -244,7 +244,7 @@ def _vision_nonre_checkpoint(offload_hooks):
             "_orig_checkpoint": torch.utils.checkpoint.checkpoint,
             "_offload": True,
             "_offload_activation_hooks": offload_hooks,
-            "_gc_owner": lambda: None,
+            "_gc_checkpoint_owner": lambda function: None,
         }
         for n in body:
             if isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint":

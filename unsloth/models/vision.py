@@ -3333,46 +3333,130 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
-def _gc_offload_owner(model):
-    # The owner's forward pre-hook marks each forward, so it must be a module every forward calls as
-    # a module. PEFT 0.18's BaseTuner calls the wrapped model's .forward() directly, skipping its hooks,
-    # so unwrap PEFT first: the same object is then chosen before and after get_peft_model.
-    get_base_model = getattr(model, "get_base_model", None)
-    if callable(get_base_model):
-        base = get_base_model()
-        if isinstance(base, torch.nn.Module):
-            model = base
-    # Deepest module holding every checkpointed layer (text and vision towers). OPT / Bart / Whisper
-    # *ForCausalLM call self.model.decoder(...), never self.model, so .model alone is not enough.
+# hf_modeling_utils.checkpoint is one function for every model in the process, so the offloader owner is
+# resolved per call from the layer being checkpointed: the module that calls it (ModuleList / ModuleDict are
+# iterated, never called). Llama -> LlamaModel, OPT -> OPTDecoder, each vision tower its own encoder.
+_GC_CONTAINERS = (torch.nn.ModuleList, torch.nn.ModuleDict)
+# Models post_patch_model prepared; weak, the checkpoint function outlives them.
+_GC_OFFLOAD_ROOTS = weakref.WeakSet()
+# Module -> weakref to its calling module. A strong value would keep its own key alive.
+_GC_MODULE_PARENTS = weakref.WeakKeyDictionary()
+_GC_UNRESOLVED = weakref.WeakSet()
+# Owner -> its forwards in flight, from its own hooks.
+_GC_OWNER_DEPTH = weakref.WeakKeyDictionary()
+
+
+def _gc_is_compiling():
+    try:
+        return torch.compiler.is_compiling()
+    except Exception:
+        return False
+
+
+def _gc_owner_pre_hook(module, args):
+    if _gc_is_compiling():
+        return
+    _GC_OWNER_DEPTH[module] = _GC_OWNER_DEPTH.get(module, 0) + 1
+
+
+def _gc_owner_post_hook(module, args, output):
+    if _gc_is_compiling():
+        return
+    depth = _GC_OWNER_DEPTH.get(module, 0)
+    if depth > 0:
+        _GC_OWNER_DEPTH[module] = depth - 1
+
+
+def _gc_track_owner(owner):
+    # Module-level hooks looked up per call: the model stays picklable and a copy tracks only itself.
+    if _gc_owner_pre_hook not in owner._forward_pre_hooks.values():
+        owner.register_forward_pre_hook(_gc_owner_pre_hook)
+        owner.register_forward_hook(_gc_owner_post_hook, always_call = True)
+
+
+def _gc_index_parents(root, track = False):
     try:
         from transformers.modeling_layers import GradientCheckpointingLayer
     except ImportError:
-        GradientCheckpointingLayer = None
-    if GradientCheckpointingLayer is not None:
-        names = [
-            n for n, m in model.named_modules() if n and isinstance(m, GradientCheckpointingLayer)
-        ]
-        outer = [n for n in names if not any(n.startswith(o + ".") for o in names)]
-        if outer:
-            common = None
-            for n in outer:
-                parts = n.split(".")[:-1]
-                if common is None:
-                    common = parts
-                else:
-                    k = 0
-                    while k < min(len(common), len(parts)) and common[k] == parts[k]:
-                        k += 1
-                    common = common[:k]
-            owner = model.get_submodule(".".join(common)) if common else model
-            # A ModuleList / ModuleDict is iterated, never called.
-            while common and isinstance(owner, (torch.nn.ModuleList, torch.nn.ModuleDict)):
-                common = common[:-1]
-                owner = model.get_submodule(".".join(common)) if common else model
-            if owner is not model:
-                return owner
-    backbone = getattr(model, "model", None)
-    return backbone if isinstance(backbone, torch.nn.Module) else model
+        GradientCheckpointingLayer = ()
+    for parent in root.modules():
+        if isinstance(parent, _GC_CONTAINERS):
+            continue
+        children = list(parent.children())
+        layered = stacked = False
+        while children:
+            child = children.pop()
+            if isinstance(child, _GC_CONTAINERS):
+                stacked = True
+                layered = layered or any(
+                    isinstance(m, GradientCheckpointingLayer) for m in child.children()
+                )
+                children.extend(child.children())
+                continue
+            if child not in _GC_MODULE_PARENTS:
+                _GC_MODULE_PARENTS[child] = weakref.ref(parent)
+        # Decoder / encoder stacks (old style: the stack carries .gradient_checkpointing) are watched from
+        # the first forward; any other owner from the forward after its first checkpoint.
+        if track and (layered or (stacked and hasattr(parent, "gradient_checkpointing"))):
+            _gc_track_owner(parent)
+
+
+def _register_gc_offload_root(model, offload = True):
+    if not offload:
+        return
+    _GC_OFFLOAD_ROOTS.add(model)
+    _GC_UNRESOLVED.clear()
+    _gc_index_parents(model, track = True)
+
+
+def _gc_checkpointed_module(function):
+    # transformers' GradientCheckpointingLayer passes partial(super().__call__, **kwargs); older stacks
+    # pass layer.__call__ or a create_custom_forward(layer) closure.
+    for _ in range(8):
+        if not isinstance(function, functools.partial):
+            break
+        function = function.func
+    module = getattr(function, "__self__", None)
+    if isinstance(module, torch.nn.Module):
+        return module
+    found = []
+    for cell in getattr(function, "__closure__", None) or ():
+        try:
+            value = cell.cell_contents
+        except ValueError:
+            continue
+        if isinstance(value, torch.nn.Module):
+            found.append(value)
+    return found[0] if len(found) == 1 else None
+
+
+def _gc_checkpoint_owner(function):
+    """The module owning this checkpoint's offloader, or None for the shared one."""
+    if activation_offloader_for is None:
+        return None
+    try:
+        layer = _gc_checkpointed_module(function)
+        if layer is None:
+            return None
+        ref = _GC_MODULE_PARENTS.get(layer)
+        if ref is None and layer not in _GC_UNRESOLVED:
+            for root in list(_GC_OFFLOAD_ROOTS):
+                _gc_index_parents(root)
+            ref = _GC_MODULE_PARENTS.get(layer)
+            if ref is None:
+                _GC_UNRESOLVED.add(layer)
+        owner = None if ref is None else ref()
+        if owner is None:
+            return None
+        # An owned offloader starts each forward from the owner's pre-hook, in place of the shared one's
+        # dead-record reset. An owner not called as a module (bypassed, or .forward() called directly)
+        # never fires it, and its records would pile up across discarded forwards: share instead.
+        if _GC_OWNER_DEPTH.get(owner, 0) > 0:
+            return owner
+        _gc_track_owner(owner)
+    except TypeError:  # an unhashable / non-weakrefable module
+        pass
+    return None
 
 
 def _offload_activation_hooks(owner = None):
@@ -5551,14 +5635,13 @@ class FastBaseModel:
                 torch_checkpoint.checkpoint,
             )
             _offload = use_gradient_checkpointing == "unsloth"
-            # Weak: torch_checkpoint.checkpoint outlives the model.
-            _gc_owner = weakref.ref(_gc_offload_owner(model))
+            _register_gc_offload_root(model, _offload)
 
             def _nonre_checkpoint(function, *args, **kwargs):
                 kwargs["use_reentrant"] = False
                 if not _offload:
                     return _orig_checkpoint(function, *args, **kwargs)
-                with _offload_activation_hooks(_gc_owner()):
+                with _offload_activation_hooks(_gc_checkpoint_owner(function)):
                     return _orig_checkpoint(function, *args, **kwargs)
 
             _nonre_checkpoint._unsloth_original = _orig_checkpoint

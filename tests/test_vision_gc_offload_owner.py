@@ -3,7 +3,7 @@
 
 """vision.py's non-reentrant offloaded checkpoint gives each model its own zoo offloader."""
 
-import ast, contextlib, gc, os, weakref
+import ast, contextlib, functools, gc, os, weakref
 import pytest
 import torch
 import torch.utils.checkpoint as torch_checkpoint
@@ -14,7 +14,6 @@ MODULE_FUNCS = (
     "_offload_activation_pack",
     "_offload_activation_unpack",
     "_offload_activation_hooks",
-    "_gc_offload_owner",
 )
 
 
@@ -50,12 +49,18 @@ class _Event:
         return True
 
 
-def _labelling_offloader(G, phase, labels, made):
-    """unsloth_stream offloader on CPU tensors (CPU plays the device); labels each record with the model packing it."""
+def _labelling_offloader(
+    G,
+    phase,
+    labels,
+    made,
+    stream_mode = True,
+):
+    """Zoo offloader on CPU tensors (CPU plays the device); labels each record with the model packing it."""
 
     class Offloader(G.NonReentrantActivationOffloader):
         def __init__(self):
-            super().__init__(stream_mode = True)
+            super().__init__(stream_mode = stream_mode)
             made.append(self)
 
         def _on_host(self, x):
@@ -106,19 +111,36 @@ def _vision_ns(G, **overrides):
     src = open(VISION, encoding = "utf-8").read()
     ns = {
         "torch": torch,
+        "weakref": weakref,
+        "functools": functools,
         "non_reentrant_offload_hooks": G.non_reentrant_offload_hooks,
         "activation_offloader_for": G.activation_offloader_for,
     }
-    ns.update(overrides)
     for n in ast.parse(src).body:
-        if isinstance(n, ast.FunctionDef) and n.name in MODULE_FUNCS:
+        if isinstance(n, ast.FunctionDef) and (
+            n.name in MODULE_FUNCS or n.name.startswith(("_gc_", "_register_gc_"))
+        ):
             exec(ast.get_source_segment(src, n), ns)
+        elif isinstance(n, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id.startswith("_GC_") for t in n.targets
+        ):
+            exec(ast.get_source_segment(src, n), ns)
+    ns.update(overrides)
     return ns, src
 
 
-def _vision_nonre_checkpoint(G, model, **overrides):
-    """from_pretrained's _nonre_checkpoint (DDP vision models, DeepSeek-V4.1) for `model`, offloading."""
-    ns, src = _vision_ns(G, **overrides)
+def _vision_nonre_checkpoint(
+    G,
+    model,
+    ns = None,
+    **overrides,
+):
+    """post_patch_model's _nonre_checkpoint (DDP vision models, DeepSeek-V4.1) for `model`, offloading.
+    Pass one `ns` for several loads: vision.py's module state, and the one global checkpoint, are shared."""
+    if ns is None:
+        ns, src = _vision_ns(G, **overrides)
+    else:
+        src = open(VISION, encoding = "utf-8").read()
     ns.update(
         model = model,
         weakref = weakref,
@@ -134,8 +156,13 @@ def _vision_nonre_checkpoint(G, model, **overrides):
         for n in body:
             if isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint":
                 exec(ast.get_source_segment(src, n), ns)
-            elif isinstance(n, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "_gc_owner" for t in n.targets
+            elif (
+                isinstance(n, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "_gc_owner" for t in n.targets)
+            ) or (
+                isinstance(n, ast.Expr)
+                and isinstance(n.value, ast.Call)
+                and getattr(n.value.func, "id", "") == "_register_gc_offload_root"
             ):
                 exec(ast.get_source_segment(src, n), ns)
         del ns["model"]  # from_pretrained's frame is gone once loading returns
@@ -143,15 +170,27 @@ def _vision_nonre_checkpoint(G, model, **overrides):
     pytest.fail("_nonre_checkpoint not found in vision.py")
 
 
+class _Layer(torch.nn.Module):  # plain nn.Module, as OPTDecoderLayer on transformers 4.52
+    def __init__(self, width):
+        super().__init__()
+        self.proj = torch.nn.Linear(width, width)
+
+    def forward(self, h):
+        return torch.tanh(self.proj(h))
+
+
 class _Backbone(torch.nn.Module):
+    """A pre-GradientCheckpointingLayer decoder stack: it checkpoints layer.__call__ itself."""
+
     def __init__(self, width, layers):
         super().__init__()
-        self.layers = torch.nn.ModuleList(torch.nn.Linear(width, width) for _ in range(layers))
+        self.layers = torch.nn.ModuleList(_Layer(width) for _ in range(layers))
+        self.gradient_checkpointing = True
         self._gradient_checkpointing_func = None
 
     def forward(self, h):
         for layer in self.layers:
-            h = self._gradient_checkpointing_func(lambda t, layer = layer: torch.tanh(layer(t)), h)
+            h = self._gradient_checkpointing_func(layer.__call__, h)
         return h
 
 
@@ -167,6 +206,31 @@ class _VLM(torch.nn.Module):
         return self.model(h)
 
 
+class _OPTModel(torch.nn.Module):
+    def __init__(self, width, layers):
+        super().__init__()
+        self.decoder = _Backbone(width, layers)
+
+
+class _OldOPTForCausalLM(torch.nn.Module):
+    """transformers 4.52 OPTForCausalLM: plain nn.Module layers, and forward calls self.model.decoder(...)."""
+
+    def __init__(self, width, layers, seed):
+        super().__init__()
+        torch.manual_seed(seed)
+        self.model = _OPTModel(width, layers)
+
+    def forward(self, h):
+        return self.model.decoder(h)
+
+
+class _BypassingVLM(_VLM):
+    """Calls the stack's .forward() directly (as PEFT 0.18 does one level up): its hooks never fire."""
+
+    def forward(self, h):
+        return self.model.forward(h)
+
+
 def _grads(model, x):
     out = [p.grad.clone() for p in model.parameters()] + [x.grad.clone()]
     model.zero_grad(set_to_none = True)
@@ -179,13 +243,16 @@ def _input(seed, *shape):
     return torch.randn(*shape, requires_grad = True)
 
 
+@pytest.mark.parametrize("stream_mode", [False, True], ids = ["default", "unsloth_stream"])
 @pytest.mark.parametrize("keep_last", ["0", "1"])
-def test_interleaved_models_use_their_own_offloaders(G, monkeypatch, keep_last):
+def test_interleaved_models_use_their_own_offloaders(G, monkeypatch, keep_last, stream_mode):
     # Two models trained in one process: forward A, forward B, then B's backward before A's.
     monkeypatch.setenv("UNSLOTH_GC_STREAM_KEEP_LAST", keep_last)
     phase, labels, made = ["A"], weakref.WeakKeyDictionary(), []
     monkeypatch.setattr(
-        G, "_new_activation_offloader", _labelling_offloader(G, phase, labels, made)
+        G,
+        "_new_activation_offloader",
+        _labelling_offloader(G, phase, labels, made, stream_mode = stream_mode),
     )
     a, b = _VLM(16, 4, seed = 0), _VLM(16, 6, seed = 1)
     xa, xb = _input(2, 2, 5, 16), _input(3, 3, 4, 16)
@@ -198,8 +265,9 @@ def test_interleaved_models_use_their_own_offloaders(G, monkeypatch, keep_last):
     b(xb).square().mean().backward()
     ref = _grads(a, xa) + _grads(b, xb)
 
-    a.model._gradient_checkpointing_func = _vision_nonre_checkpoint(G, a)
-    b.model._gradient_checkpointing_func = _vision_nonre_checkpoint(G, b)
+    ns, _ = _vision_ns(G)
+    a.model._gradient_checkpointing_func = _vision_nonre_checkpoint(G, a, ns)
+    b.model._gradient_checkpointing_func = _vision_nonre_checkpoint(G, b, ns)
     la = a(xa).square().mean()
     phase[0] = "B"
     lb = b(xb).square().mean()
@@ -312,14 +380,14 @@ def test_owner_forward_hook_fires_under_peft(G, monkeypatch, peft_wrapped, arch)
     model = _tiny_causal_lm(arch)
     backbone = model.model if arch == "llama" else model.model.decoder
     ns, _ = _vision_ns(G)
-    assert ns["_gc_offload_owner"](model) is backbone
+    checkpoint = _vision_nonre_checkpoint(G, model, ns)
     if peft_wrapped:
         peft = pytest.importorskip("peft")
         model = peft.get_peft_model(
             model, peft.LoraConfig(r = 4, target_modules = ["q_proj", "v_proj"], task_type = "CAUSAL_LM")
         )
-        assert ns["_gc_offload_owner"](model) is backbone
-    _install_checkpoint(model, _vision_nonre_checkpoint(G, model))
+        checkpoint = _vision_nonre_checkpoint(G, model, ns)
+    _install_checkpoint(model, checkpoint)
     ids = torch.randint(0, 64, (2, 6))
     lengths = []
     for _ in range(4):  # discarded forwards: no backward (e.g. a skipped non-finite loss)
@@ -332,3 +400,112 @@ def test_owner_forward_hook_fires_under_peft(G, monkeypatch, peft_wrapped, arch)
     assert lengths == [lengths[0]] * 4, lengths
     model(input_ids = ids, labels = ids).loss.backward()
     assert offloader.stats["forwards"] == 5
+
+
+def _discarded_forward_lengths(
+    model,
+    made,
+    run,
+    n = 4,
+):
+    lengths = []
+    for _ in range(n):  # discarded forwards: no backward (e.g. a skipped non-finite loss)
+        out = run(model)
+        del out
+        lengths.append([len(o.order) for o in made])
+    return lengths
+
+
+def test_reenable_after_another_load_keeps_its_own_offloader(G, monkeypatch):
+    # Load A, load B (the global checkpoint is now B's), then A.gradient_checkpointing_enable() as Trainer
+    # does: A's layers get the one global function and must still use A's offloader.
+    phase, labels, made = ["A"], weakref.WeakKeyDictionary(), []
+    monkeypatch.setattr(
+        G, "_new_activation_offloader", _labelling_offloader(G, phase, labels, made)
+    )
+    a, b = _tiny_causal_lm("llama"), _tiny_causal_lm("llama")
+    ns, _ = _vision_ns(G)
+    _vision_nonre_checkpoint(G, a, ns)
+    global_checkpoint = _vision_nonre_checkpoint(G, b, ns)
+    _install_checkpoint(a, global_checkpoint)
+    _install_checkpoint(b, global_checkpoint)
+    ids = torch.randint(0, 64, (2, 6))
+    lengths = _discarded_forward_lengths(a, made, lambda m: m(input_ids = ids, labels = ids).loss)
+    assert lengths == [lengths[0]] * 4, lengths
+    assert G._OWNED_OFFLOADERS.get(b.model) is None, "A's forwards went to B's offloader"
+    (offloader,) = made
+    assert G._OWNED_OFFLOADERS.get(a.model) is offloader
+    assert offloader.stats["forwards"] == 4
+    phase[0] = "B"
+    lb = b(input_ids = ids, labels = ids).loss
+    a(input_ids = ids, labels = ids).loss.backward()
+    assert not any(r.unpacked for r, who in labels.items() if who == "B")
+    lb.backward()
+    assert len(made) == 2 and G._OWNED_OFFLOADERS.get(b.model) is made[1]
+
+
+@pytest.mark.parametrize("hide_gc_layer", [False, True])
+def test_plain_module_layers_called_through_decoder(G, monkeypatch, hide_gc_layer):
+    # transformers 4.52.4 OPT: OPTDecoderLayer is a plain nn.Module and OPTForCausalLM.forward calls
+    # self.model.decoder(...), never self.model.
+    phase, labels, made = ["A"], weakref.WeakKeyDictionary(), []
+    monkeypatch.setattr(
+        G, "_new_activation_offloader", _labelling_offloader(G, phase, labels, made)
+    )
+    if (
+        hide_gc_layer
+    ):  # real OPT, with the GradientCheckpointingLayer base 4.52 lacks hidden from vision.py
+        layers = pytest.importorskip("transformers.modeling_layers")
+        model = _tiny_causal_lm("opt")
+        monkeypatch.setattr(layers, "GradientCheckpointingLayer", type("NotALayer", (), {}))
+        decoder = model.model.decoder
+        ids = torch.randint(0, 64, (2, 6))
+        run = lambda m: m(input_ids = ids, labels = ids).loss
+    else:
+        model = _OldOPTForCausalLM(8, 3, seed = 0)
+        decoder = model.model.decoder
+        x = _input(1, 2, 8)
+        run = lambda m: m(x).sum()
+    ns, _ = _vision_ns(G)
+    _install_checkpoint(model, _vision_nonre_checkpoint(G, model, ns))
+    run(model).backward()  # forward 1: the decoder is watched from here on, if it was not already
+    lengths = _discarded_forward_lengths(model, made, run)
+    assert lengths == [lengths[0]] * 4, lengths
+    owned = G._OWNED_OFFLOADERS.get(decoder)
+    assert owned is not None and owned.owned
+    assert G._OWNED_OFFLOADERS.get(model.model) is None
+    run(model).backward()
+
+
+def test_owner_not_called_as_module_uses_the_shared_offloader(G, monkeypatch):
+    # An owner whose forward pre-hook never fires cannot mark forwards: the shared offloader's
+    # dead-record reset must stay in charge, else discarded forwards pile up.
+    phase, labels, made = ["A"], weakref.WeakKeyDictionary(), []
+    monkeypatch.setattr(
+        G, "_new_activation_offloader", _labelling_offloader(G, phase, labels, made)
+    )
+    model = _BypassingVLM(8, 3, seed = 0)
+    ns, _ = _vision_ns(G)
+    model.model._gradient_checkpointing_func = _vision_nonre_checkpoint(G, model, ns)
+    x = _input(1, 2, 8)
+    lengths = _discarded_forward_lengths(model, made, lambda m: m(x).sum())
+    assert lengths == [lengths[0]] * 4, lengths
+    assert G._OWNED_OFFLOADERS.get(model.model) is None
+    assert len(made) == 1 and made[0] is G.NONREENTRANT_OFFLOADER
+    model(x).sum().backward()
+    assert x.grad is not None
+
+
+def test_unresolvable_checkpoint_function_uses_the_shared_offloader(G, monkeypatch):
+    phase, labels, made = ["A"], weakref.WeakKeyDictionary(), []
+    monkeypatch.setattr(
+        G, "_new_activation_offloader", _labelling_offloader(G, phase, labels, made)
+    )
+    model = _VLM(8, 2, seed = 0)
+    ns, _ = _vision_ns(G)
+    checkpoint = _vision_nonre_checkpoint(G, model, ns)
+    model.model._gradient_checkpointing_func = lambda f, h: checkpoint(lambda t: f(t), h)
+    x = _input(1, 2, 8)
+    model(x).sum().backward()
+    assert made == [G.NONREENTRANT_OFFLOADER]
+    assert G._OWNED_OFFLOADERS.get(model.model) is None
