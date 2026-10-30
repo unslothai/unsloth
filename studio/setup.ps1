@@ -8422,6 +8422,37 @@ python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
 $script:SetupVenvChanged = $true
 
+# ── AMD ROCm: pair triton-windows with torch ──
+# The stack resolves unsloth's unpinned triton-windows. 3.9 removed the block pointers that torch 2.11 / 2.12's
+# flex_decoding template builds: the first decode fails to compile and flex attention then runs unfused for the rest
+# of the process (gpt-oss 4k prefill 0.1 -> 6.7 GB on gfx1151). 3.6 has no HIP headers; 3.8 is the verified build.
+function Get-TritonWindowsRocmSpec {
+    param([string]$TorchVersion)
+    if ($TorchVersion -match '^2\.(\d+)\.' -and @(11, 12) -contains [int]$Matches[1]) { return "triton-windows>=3.8,<3.9" }
+    return $null
+}
+if ($stackExit -eq 0 -and $ROCmIndexUrl) {
+    # No double quotes: Invoke-BoundedPythonProbe wraps $Code in them.
+    $_rocmTritonCode = "import importlib.metadata as m; " +
+        "print('TORCH=' + m.version('torch')); " +
+        "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
+        "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
+    $_rocmTritonProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_rocmTritonCode
+    $_rocmTorchVer = if ($_rocmTritonProbe.Ok -and $_rocmTritonProbe.Output -match '(?m)^TORCH=(\S+)\s*$') { $Matches[1] } else { "" }
+    $_rocmTritonVer = if ($_rocmTritonProbe.Ok -and $_rocmTritonProbe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
+    $_rocmTritonSpec = Get-TritonWindowsRocmSpec -TorchVersion $_rocmTorchVer
+    $_rocmTritonOk = $_rocmTritonVer -match '^3\.8(\.|$)'
+    if ($_rocmTritonSpec -and -not $_rocmTritonOk) {
+        $_rocmTritonFrom = if ($_rocmTritonVer) { "triton-windows $_rocmTritonVer" } else { "no triton-windows" }
+        substep "pairing Triton for Windows with torch $_rocmTorchVer ($_rocmTritonFrom -> $_rocmTritonSpec)..." "Cyan"
+        $_rocmTritonOut = Fast-Install $_rocmTritonSpec | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            substep "[WARN] could not install $_rocmTritonSpec; flex attention decode may run unfused" "Yellow"
+            Write-StudioLine (Redact-InstallOutput $_rocmTritonOut) -ForegroundColor Yellow
+        }
+    }
+}
+
 # ── Intel XPU: bitsandbytes must carry XPU kernels ──
 # Only bitsandbytes' XPU library exports the 4-bit kernels; floor 0.50.0 (<=0.49.2 NaNs on AMD).
 # Never the unsloth[intel-gpu-torch*] extra. Must stay above the EAP restore below (5.1 needs Continue).
