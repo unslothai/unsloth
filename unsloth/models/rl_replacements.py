@@ -2311,13 +2311,8 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_single_turn)
 
 
 def _unsloth_grpo_is_truncated(trainer, completion_ids, prompt_ids, eos_and_pad):
-    """Which completions were cut by a length limit rather than ended by EOS or a stop string.
-
-    A stop string ends a completion below max_completion_length without an EOS token, so a short
-    non-EOS completion is not truncated by itself. vLLM also stops a request once prompt plus
-    completion reaches max_model_len (FINISHED_LENGTH_CAPPED), and the fast_inference engine is
-    built with max_model_len = max_seq_length while TRL asks for max_tokens = max_completion_length,
-    so a long prompt can be cut by the context before the completion budget: still truncated."""
+    """Completions cut by a length limit, not ended by EOS or a stop string (no EOS either).
+    vLLM also caps prompt + completion at max_model_len (= max_seq_length), so that counts too."""
     limit = getattr(trainer, "max_completion_length", None)
     max_model_len = None
     if getattr(trainer, "use_vllm", False):
@@ -2353,9 +2348,8 @@ def _unsloth_grpo_is_truncated(trainer, completion_ids, prompt_ids, eos_and_pad)
 
 
 def _unsloth_patch_grpo_truncation_check(function):
-    # TRL 0.24+ marks every completion whose last token is not EOS / pad as truncated. Route both
-    # sites through _unsloth_grpo_is_truncated: `_generate` holds the unpadded `prompt_ids` list
-    # and `_generate_and_score_completions` holds `prompt_ids_list` (same names 0.24.0 to 1.17).
+    # TRL 0.24+ marks any non-EOS / pad ending as truncated. `_generate` has `prompt_ids`,
+    # `_generate_and_score_completions` has `prompt_ids_list` (0.24.0 to 1.17).
     def _replace(match):
         completions = match.group(1)
         prompts = "prompt_ids_list" if completions.endswith("_list") else "prompt_ids"
