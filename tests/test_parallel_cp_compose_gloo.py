@@ -62,11 +62,22 @@ def _checkpoint(tmp):
 
 def _full(t):
     from torch.distributed.tensor import DTensor
-
     return (t.full_tensor() if isinstance(t, DTensor) else t).detach().float().clone()
 
 
-def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = True, keep = False, rows_dp = None):
+def _case_train(
+    rank,
+    world,
+    tmp,
+    ckpt,
+    bs,
+    cp = 1,
+    steps = 2,
+    ga = 2,
+    sft_cp = True,
+    keep = False,
+    rows_dp = None,
+):
     error = _import_checkout_unsloth()
     if error is not None:
         return {"skip": error}
@@ -92,7 +103,11 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
     attention_dispatch.HAS_FLASH_ATTENTION = False
     layout = tp_env.env_layout()
 
-    def load(model_name, load_in_4bit = True, **kwargs):
+    def load(
+        model_name,
+        load_in_4bit = True,
+        **kwargs,
+    ):
         return AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype = torch.float32, attn_implementation = "sdpa"
         )
@@ -100,7 +115,11 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
     def peft(model):
         torch.manual_seed(1)
         config = LoraConfig(
-            r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False, lora_dropout = 0.0
+            r = 4,
+            lora_alpha = 8,
+            target_modules = "all-linear",
+            init_lora_weights = False,
+            lora_dropout = 0.0,
         )
         return get_peft_model(model, config)
 
@@ -124,7 +143,9 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
     def collate(rows):
         input_ids = torch.tensor([r["input_ids"] for r in rows])
         batch = {"input_ids": input_ids, "labels": input_ids.clone()}
-        batch["labels"][batch["labels"] % 5 == 0] = -100  # uneven token counts per row and per shard
+        batch["labels"][
+            batch["labels"] % 5 == 0
+        ] = -100  # uneven token counts per row and per shard
         return batch
 
     class SequentialSFT(trl.SFTTrainer):
@@ -134,7 +155,14 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
     grads = {}
 
     class Grabber(transformers.TrainerCallback):
-        def on_pre_optimizer_step(self, args, state, control, model = None, **kwargs):
+        def on_pre_optimizer_step(
+            self,
+            args,
+            state,
+            control,
+            model = None,
+            **kwargs,
+        ):
             if grads:
                 return
             target = trainer.model
@@ -203,8 +231,14 @@ def _case_train(rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = 
         "losses": [h["loss"] for h in logs],
         "grad_norms": [h.get("grad_norm") for h in logs],
         "grads": {k.replace("module.", "").replace("_orig_mod.", ""): v for k, v in grads.items()},
-        "state": {k.replace("module.", "").replace("_orig_mod.", ""): _full(v) for k, v in state.items() if "lora_" in k},
-        "cp_group": None if manager is None else sorted(int(r) for r in manager.mesh.mesh.flatten().tolist()),
+        "state": {
+            k.replace("module.", "").replace("_orig_mod.", ""): _full(v)
+            for k, v in state.items()
+            if "lora_" in k
+        },
+        "cp_group": None
+        if manager is None
+        else sorted(int(r) for r in manager.mesh.mesh.flatten().tolist()),
         "is_tp": is_tp,
         "is_fsdp2": fsdp2_native.is_native_fsdp2(trainer.model),
         "seen_lengths": sorted(seen_lengths),
@@ -239,7 +273,6 @@ def _worker(rank, world, port, case, tmp, env, kwargs):
             res = CASES[case](rank, world, tmp, **kwargs)
         except Exception as e:
             import traceback
-
             res = {"error": f"{type(e).__name__}: {e}", "trace": traceback.format_exc()}
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
     finally:
@@ -250,7 +283,12 @@ def _worker(rank, world, port, case, tmp, env, kwargs):
                 pass
 
 
-def _spawn(case, world = 1, env = None, **kwargs):
+def _spawn(
+    case,
+    world = 1,
+    env = None,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
@@ -289,18 +327,33 @@ def _ref(bs):
     return _REF[bs]
 
 
-def _close(got, want, rel = 1e-4, what = ""):
+def _close(
+    got,
+    want,
+    rel = 1e-4,
+    what = "",
+):
     assert "error" not in got, (what, got.get("error"), got.get("trace"))
-    assert got["losses"] == pytest.approx(want["losses"], rel = rel), (what, got["losses"], want["losses"])
+    assert got["losses"] == pytest.approx(want["losses"], rel = rel), (
+        what,
+        got["losses"],
+        want["losses"],
+    )
     assert got["grad_norms"] == pytest.approx(want["grad_norms"], rel = rel), (
         what,
         got["grad_norms"],
         want["grad_norms"],
     )
     for kind in ("grads", "state"):
-        assert set(got[kind]) <= set(want[kind]) and got[kind], (what, kind, sorted(set(got[kind]) - set(want[kind])))
+        assert set(got[kind]) <= set(want[kind]) and got[kind], (
+            what,
+            kind,
+            sorted(set(got[kind]) - set(want[kind])),
+        )
         for key, value in got[kind].items():
-            torch.testing.assert_close(value, want[kind][key], rtol = rel * 10, atol = 1e-6, msg = f"{what} {kind} {key}")
+            torch.testing.assert_close(
+                value, want[kind][key], rtol = rel * 10, atol = 1e-6, msg = f"{what} {kind} {key}"
+            )
 
 
 def _engaged(res, cp = 2):

@@ -24,14 +24,18 @@ def clean_env(monkeypatch):
 
 def _fake(monkeypatch, inits, kind):
     class Trainer:
-        def __init__(self, model = None, args = None, **kwargs):
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
             inits.append(model)
             self.model = model
             self.args = args
 
     if kind == "sft":
         import trl
-
         monkeypatch.setattr(trl, "SFTTrainer", Trainer)
         cp.patch_sft_trainer()
     else:
@@ -40,7 +44,9 @@ def _fake(monkeypatch, inits, kind):
 
 
 def _config(size, **kwargs):
-    return types.SimpleNamespace(context_parallel_size = size, context_parallel_backend = "ulysses", **kwargs)
+    return types.SimpleNamespace(
+        context_parallel_size = size, context_parallel_backend = "ulysses", **kwargs
+    )
 
 
 @pytest.mark.parametrize("kind", ["sft", "dpo_trainer", "grpo_trainer"])
@@ -79,7 +85,12 @@ def test_cp_on_a_model_split_by_hand_is_refused(clean_env, split):
 
 @pytest.mark.parametrize(
     "env, size",
-    [({}, 2), ({"UNSLOTH_FSDP2": "1"}, 2), ({"UNSLOTH_TP_SIZE": "1"}, 2), ({"UNSLOTH_TP_SIZE": "2"}, 1)],
+    [
+        ({}, 2),
+        ({"UNSLOTH_FSDP2": "1"}, 2),
+        ({"UNSLOTH_TP_SIZE": "1"}, 2),
+        ({"UNSLOTH_TP_SIZE": "2"}, 1),
+    ],
     ids = ["cp_alone", "cp_fsdp2", "tp1_cp2", "tp2_cp1"],
 )
 def test_cp_alone_with_fsdp2_and_tp_without_cp_are_not_refused(clean_env, monkeypatch, env, size):
