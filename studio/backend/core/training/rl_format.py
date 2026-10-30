@@ -166,6 +166,17 @@ def warmup_callback(
     return _WarmupProgress()
 
 
+def _warmup_optimizer(device_backend: Optional[str] = None) -> str:
+    """The notebooks' 8-bit AdamW, normalised for the device as the run's own optimizer is (XPU has
+    no bitsandbytes optimizers)."""
+    from core.training.training import normalize_training_optimizer_for_device
+
+    if device_backend is None:
+        from utils.hardware import get_device
+        device_backend = get_device().value
+    return normalize_training_optimizer_for_device("adamw_8bit", device_backend = device_backend)
+
+
 def run_format_warmup(
     model,
     tokenizer,
@@ -212,7 +223,7 @@ def run_format_warmup(
         max_steps = steps,
         learning_rate = WARMUP_LEARNING_RATE,
         warmup_steps = min(5, max(steps // 10, 0)),
-        optim = "adamw_8bit",
+        optim = _warmup_optimizer(),
         weight_decay = 0.001,
         lr_scheduler_type = "linear",
         logging_steps = 5,

@@ -262,3 +262,8 @@ def test_the_tool_refusal_and_the_offline_skip_come_before_the_warmup():
 def test_the_warmup_reads_the_source_it_was_handed(monkeypatch):
     monkeypatch.setattr(rl_format, "load_warmup_source", lambda: pytest.fail("loaded again"))
     assert len(build_warmup_dataset(_tok(), 400, rows = 10, dataset = ROWS)) > 0
+
+
+def test_the_warmup_optimizer_is_normalised_for_xpu():
+    assert rl_format._warmup_optimizer("cuda") == "adamw_8bit"
+    assert rl_format._warmup_optimizer("xpu") == "adamw_torch"
