@@ -122,6 +122,24 @@ _ULYSSES_OWN_MASK_LAYER_TYPES = {
 }
 
 
+def ulysses_packing_blocker(model) -> Optional[str]:
+    """Class name of the first module whose Ulysses forward refuses packed batches (Kimi delta,
+    MiniMax Lightning, DeepSeek V3.2 / V4 attention), else None. SFT keeps padding-free off for them."""
+    from .utils.ulysses_deepseek import DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+    from .utils.ulysses_hybrid import is_ulysses_kimi_delta, is_ulysses_lightning
+
+    if not isinstance(model, torch.nn.Module):
+        return None
+    for module in model.modules():
+        if (
+            type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+            or is_ulysses_kimi_delta(module)
+            or is_ulysses_lightning(module)
+        ):
+            return type(module).__name__
+    return None
+
+
 def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     # Ring and Llama's forward ignore mask, window and softcap, so both backends refuse them.
     allowed = {"full_attention", "linear_attention"} if backend == "ulysses" else {"full_attention"}

@@ -306,3 +306,66 @@ def test_chunked_attention_gradients_match_and_nest_in_checkpointing(wrap, monke
             grads.append([x.grad for x in leaves])
         for dense, chunked in zip(*grads):
             torch.testing.assert_close(chunked, dense, rtol = 1e-5, atol = 1e-6)
+
+
+class _PackingStubTrainer:
+    def __init__(
+        self,
+        model = None,
+        args = None,
+        **kwargs,
+    ):
+        self.model = model
+        self.args = args
+
+
+class _KwargsModel(torch.nn.Module):
+    def __init__(self, attention):
+        super().__init__()
+        self.self_attn = attention
+
+    def forward(self, input_ids = None, **kwargs):
+        return None
+
+
+@pytest.mark.parametrize("kind", [k for k in KINDS if k in ("v32", "v4")])
+def test_ulysses_sft_turns_padding_free_off_for_attention_that_refuses_packing(kind, monkeypatch):
+    """V3.2 / V4 Ulysses forwards refuse packed batches, so SFT must not pick padding-free under
+    Ulysses CP: the automatic choice turned it on and the first CP step raised (Colab L4, i6)."""
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    for name in ("enable_padding_free_metadata", "enable_sample_packing"):
+        monkeypatch.setattr(trainer_module, name, lambda model, trainer: None)
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    module = SimpleNamespace(SFTTrainer = type("SFTTrainer", (_PackingStubTrainer,), {}))
+    trainer_module._patch_sft_trainer_auto_packing(module)
+
+    name = {"v32": "DeepseekV32Attention", "v4": "DeepseekV4Attention"}[kind]
+    refusing = _KwargsModel(type(name, (torch.nn.Module,), {})())
+    plain = _KwargsModel(type("DeepseekV3Attention", (torch.nn.Module,), {})())
+
+    def config(backend):
+        return SimpleNamespace(
+            packing = False,
+            padding_free = None,
+            max_length = 64,
+            context_parallel_size = 2,
+            context_parallel_backend = backend,
+            eval_packing = True,
+        )
+
+    args = config("ulysses")
+    module.SFTTrainer(model = refusing, args = args)
+    assert args.padding_free is False and args.packing is False
+    assert args.eval_packing is False
+    # Ulysses attention that takes packed batches keeps the automatic padding-free choice.
+    args = config("ulysses")
+    module.SFTTrainer(model = plain, args = args)
+    assert args.padding_free is not False
+    # Without CP the refusing class trains packed as before.
+    args = config("ulysses")
+    args.context_parallel_size = 1
+    module.SFTTrainer(model = refusing, args = args)
+    assert args.padding_free is not False
