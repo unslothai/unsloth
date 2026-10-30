@@ -223,7 +223,7 @@ export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
   allowedDomains: [],
   blockedDomains: [],
 };
-export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 900;
+export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 0;
 
 /** The patch and run routes reject anything other than 0 or a finite budget with 400. */
 function isSupportedResearchModelTimeout(value: number): boolean {

@@ -504,12 +504,14 @@ export function WindowTitlebar({
         )}
         data-titlebar-live-width-scope=""
         data-slot="window-titlebar"
+        data-wallpaper-sidebar-pinned={showSidebarSurface && pinned || undefined}
         data-viewport-backdrop-open={backdropOpen ? "" : undefined}
         data-viewport-backdrop-tone={backdropTone ?? undefined}
         aria-label={t("desktopShell.titlebar")}
       >
         {showSidebarSurface && (
           <div
+            data-wallpaper-chrome-controls=""
             // Glyph in the sidebar's icon column, over New chat's pencil: 19px in, less 6px padding.
             className="pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center pl-[calc(4.75*var(--spacing)-6px)]"
             style={{ width: titlebarNavigationWidth }}
@@ -539,6 +541,7 @@ export function WindowTitlebar({
             "pointer-events-auto absolute right-0 top-0 z-[100] flex h-full",
             focused ? "text-foreground" : "text-muted-foreground",
           )}
+          data-wallpaper-chrome-controls=""
           role="toolbar"
           aria-label={t("desktopShell.windowControls")}
         >

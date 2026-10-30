@@ -1600,6 +1600,7 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         resident_xformers = None,
         installed_spec = False,
         torchao_install_fails = False,
+        is_windows = False,
     ):
         calls = {"torchao": [], "removed": []}
 
@@ -1609,6 +1610,7 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
             return not torchao_install_fails
 
         with (
+            patch.object(stack_mod, "IS_WINDOWS", is_windows),
             patch.object(stack_mod, "_probe_installed_torch_version", return_value = after),
             # "Already matching" means the exact wheel the pin would fetch, local tag included.
             patch.object(
@@ -1663,6 +1665,10 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         calls = self._resync("2.10.0+cu124", "2.10.0+cu128")
         assert calls["torchao"], "the leaf moved, so the pinned build has to be re-selected"
         assert any("cu128" in " ".join(c) for c in calls["torchao"]), calls["torchao"]
+
+    def test_windows_re_selects_torchao_unpinned(self):
+        calls = self._resync("2.10.0+cu124", "2.10.0+cu130", is_windows = True)
+        assert calls["torchao"] and not any("--index-url" in c for c in calls["torchao"])
 
     def test_a_cpu_to_xpu_move_re_pins_torchao(self):
         """Neither side names a CUDA major, so None == None skipped the resync entirely."""

@@ -28,7 +28,10 @@ from utils.process_lifetime import (
     is_process_shutting_down,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
-from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs,
+    windows_loader_error_boxes_suppressed,
+)
 from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
@@ -447,17 +450,18 @@ def sd_cpp_binary_identifies(binary: str) -> bool:
             return cached[0]
     returncode = None
     try:
-        result = subprocess.run(
-            [binary, "--help"],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 10,
-            check = False,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            result = subprocess.run(
+                [binary, "--help"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                check = False,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
         help_text = (result.stdout or "") + "\n" + (result.stderr or "")
         returncode = result.returncode
     except (OSError, subprocess.SubprocessError):
@@ -652,16 +656,18 @@ class SdCppEngine:
         if self._version is not None:
             return self._version
         try:
-            res = subprocess.run(
-                [self.binary, "--version"],
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = timeout,
-                check = False,
-                env = runtime_env(self.binary),
-            )
+            with windows_loader_error_boxes_suppressed():
+                res = subprocess.run(
+                    [self.binary, "--version"],
+                    capture_output = True,
+                    text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    timeout = timeout,
+                    check = False,
+                    env = runtime_env(self.binary),
+                    **windows_hidden_subprocess_kwargs(),
+                )
         except (OSError, subprocess.SubprocessError):
             return None
         if res.returncode != 0:

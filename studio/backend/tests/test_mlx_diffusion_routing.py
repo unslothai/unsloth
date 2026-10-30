@@ -295,7 +295,6 @@ def test_when_both_fit_both_stay_resident_and_txt2img_returns_to_mlx(rig):
         ({"upscale": 2.0}, "upscaling"),
         ({"prompts": ["a", "b"]}, "lists"),
         ({"seeds": [1, 2]}, "lists"),
-        ({"loras": [("l", 1.0)]}, "LoRA"),
         ({"controlnet": ("c", "img", "canny", 0.8, 0.0, 1.0)}, "ControlNet"),
         ({"sampler": "euler"}, "sampler"),
         ({"schedule_type": "karras"}, "sampler"),
@@ -640,6 +639,20 @@ def test_a_pinned_original_precision_keeps_the_load_on_diffusers(field, value):
     assert blocker and value in blocker
 
 
+def test_a_lora_request_stays_on_mlx_for_a_family_whose_build_applies_loras(rig):
+    assert routing.mlx_capabilities("z-image").loras is True
+    assert (
+        routing.request_blocker(
+            {"prompt": "p", "loras": [("l", 1.0)]},
+            family = "z-image",
+            mlx_params = frozenset({"prompt", "loras"}),
+        )
+        is None
+    )
+    assert rig.engine.generate(prompt = "p", loras = [("l", 1.0)])["engine"] == "mlx"
+    assert "LoRA" in routing.request_blocker({"prompt": "p", "loras": [("l", 1.0)]}, family = "other")
+
+
 def test_unload_forwards_the_account_scope_to_the_fallback(rig):
     rig.fit["coexist"] = True
     _img2img(rig.engine)
@@ -690,7 +703,6 @@ def test_generate_signature_is_the_union_of_both_engines(rig):
 def test_load_blocker_matrix():
     assert routing.load_blocker() is None
     assert routing.load_blocker(transformer_quant = "auto", text_encoder_quant = "default") is None
-    assert "LoRA" in routing.load_blocker(loras = [("a", 1.0)])
     assert "VAE" in routing.load_blocker(component_files = {"vae_file": "v"})
     assert "int8" in routing.load_blocker(transformer_quant = "int8")
     assert "fp8" in routing.load_blocker(text_encoder_quant = "fp8")

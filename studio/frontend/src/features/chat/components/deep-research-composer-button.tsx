@@ -28,7 +28,6 @@ import {
   type ResearchMcpTool,
 } from "../api/mcp-servers-api";
 import {
-  DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
   MAX_RESEARCH_MCP_SOURCES,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -42,6 +41,7 @@ import type {
 const MAX_RESEARCH_MODEL_TIMEOUT_MINUTES = Math.floor(
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS / 60,
 );
+const LIMITED_RESEARCH_MODEL_TIMEOUT_SECONDS = 15 * 60;
 
 function normalizeDomain(raw: string): string | null {
   const value = raw.trim();
@@ -376,11 +376,10 @@ function DeepResearchWebsiteAccessContent({
   const [draft, setDraft] = useState<ResearchWebsitePolicy>(policy);
   const [mcpDraft, setMcpDraft] = useState<ResearchMcpSource[]>(mcpSources);
   const [unlimited, setUnlimited] = useState(modelTimeoutSeconds === 0);
-  // re-enabling the limit from unlimited starts at the default.
   const [timeoutMinutes, setTimeoutMinutes] = useState(
     String(
       Math.ceil(
-        (modelTimeoutSeconds || DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS) / 60,
+        (modelTimeoutSeconds || LIMITED_RESEARCH_MODEL_TIMEOUT_SECONDS) / 60,
       ),
     ),
   );
@@ -468,16 +467,16 @@ function DeepResearchWebsiteAccessContent({
             setPolicy(draft);
             setMcpSources(mcpDraft);
             const minutes = Number(timeoutMinutes);
-            // typed values bypass max; clamp to avoid a short default timeout.
-            setModelTimeoutSeconds(
-              unlimited
-                ? 0
-                : !timeoutEdited
-                  ? modelTimeoutSeconds
+            // An untouched value stays unstored so it follows the default; typed values bypass max, so clamp.
+            if (timeoutEdited) {
+              setModelTimeoutSeconds(
+                unlimited
+                  ? 0
                   : Number.isSafeInteger(minutes) && minutes >= 1
                     ? Math.min(minutes, MAX_RESEARCH_MODEL_TIMEOUT_MINUTES) * 60
-                    : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
-            );
+                    : LIMITED_RESEARCH_MODEL_TIMEOUT_SECONDS,
+              );
+            }
             onClose();
           }}
         >

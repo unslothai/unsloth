@@ -443,9 +443,11 @@ export const BUDGET = {
   // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
   // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
   // the eager English catalog and its search rows. Raised by that.
+  // Chat wallpaper prefs, reset and English strings: +6,365 B raw / +3,589 B transfer (Node 24,
+  // 85 -> 89 eager chunks). Renderer, contrast and pixel worker stay lazy.
   // The llama-bench tab (#12522), the lazy Benchmarks route's longer preload list: +1,540 B raw / +259 B transfer. Raised by that on top of main.
-  transferBytes: 1_850_669,
-  rawBytes: 5_992_930,
+  transferBytes: 1_854_258,
+  rawBytes: 5_999_295,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

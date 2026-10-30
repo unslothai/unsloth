@@ -1175,7 +1175,7 @@ export function ExportPage() {
   }, [showPanel]);
 
   return (
-    <div className="flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] flex-col bg-background">
+    <div data-wallpaper-page-canvas="" className="flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] flex-col bg-background">
       <main className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-7 px-5 pb-20 pt-8 max-sm:px-4 sm:px-9">
         <GuidedTour {...tour.tourProps} />
 

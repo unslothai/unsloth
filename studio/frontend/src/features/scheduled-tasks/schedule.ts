@@ -2,17 +2,19 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 
-/** Mirrors core/scheduled_tasks/schedule.py: wall clock in the task's zone, ISO weekdays, a missing monthly day runs on the last. */
+/** Mirrors core/scheduled_tasks/schedule.py: hourly intervals use elapsed time; calendar schedules use the task's zone. */
 export type TaskSchedule =
   | { kind: "once"; at: string }
+  | { kind: "hourly"; hours: number }
   | { kind: "daily"; time: string }
   | { kind: "weekly"; time: string; days: number[] }
   | { kind: "monthly"; time: string; day: number };
 
-export type RepeatKind = "once" | "daily" | "weekdays" | "weekly" | "monthly";
+export type RepeatKind = "once" | "hourly" | "daily" | "weekdays" | "weekly" | "monthly";
 
 export const REPEAT_KINDS: readonly RepeatKind[] = [
   "once",
+  "hourly",
   "daily",
   "weekdays",
   "weekly",
@@ -24,6 +26,7 @@ const WORKDAYS = [1, 2, 3, 4, 5];
 
 export interface ScheduleForm {
   repeat: RepeatKind;
+  hours: number;
   time: string;
   date: string;
   days: number[];
@@ -55,6 +58,7 @@ export function defaultScheduleForm(now: Date): ScheduleForm {
   tomorrow.setDate(now.getDate() + 1);
   return {
     repeat: "daily",
+    hours: 1,
     time: "09:00",
     date: localDateKey(tomorrow),
     days: [isoWeekday(now)],
@@ -69,6 +73,8 @@ export function formFromSchedule(schedule: TaskSchedule, now: Date): ScheduleFor
       const [date, time] = schedule.at.split("T");
       return { ...form, repeat: "once", date, time };
     }
+    case "hourly":
+      return { ...form, repeat: "hourly", hours: schedule.hours };
     case "daily":
       return { ...form, repeat: "daily", time: schedule.time };
     case "weekly":
@@ -84,6 +90,8 @@ export function scheduleFromForm(form: ScheduleForm): TaskSchedule {
   switch (form.repeat) {
     case "once":
       return { kind: "once", at: `${form.date}T${form.time}` };
+    case "hourly":
+      return { kind: "hourly", hours: form.hours };
     case "daily":
       return { kind: "daily", time: form.time };
     case "weekdays":
@@ -100,6 +108,9 @@ export function scheduleFromForm(form: ScheduleForm): TaskSchedule {
 }
 
 export function scheduleFormComplete(form: ScheduleForm): boolean {
+  if (form.repeat === "hourly") {
+    return Number.isInteger(form.hours) && form.hours >= 1 && form.hours <= 24;
+  }
   if (!CLOCK.test(form.time)) return false;
   switch (form.repeat) {
     case "once":
@@ -199,6 +210,8 @@ export function sameSchedule(a: TaskSchedule, b: TaskSchedule): boolean {
   switch (a.kind) {
     case "once":
       return b.kind === "once" && a.at === b.at;
+    case "hourly":
+      return b.kind === "hourly" && a.hours === b.hours;
     case "daily":
       return b.kind === "daily" && a.time === b.time;
     case "weekly":
@@ -214,12 +227,19 @@ export function sameSchedule(a: TaskSchedule, b: TaskSchedule): boolean {
 }
 
 export type ScheduleSummary =
+  | { key: "hourly"; values: Record<string, never> }
+  | { key: "everyHours"; values: { hours: number } }
   | { key: "once"; values: { date: string; time: string } }
   | { key: "daily" | "weekdays"; values: { time: string } }
   | { key: "weekly"; values: { days: string; time: string } }
   | { key: "monthly"; values: { day: number; time: string } };
 
 export function summarizeSchedule(schedule: TaskSchedule, locale: string): ScheduleSummary {
+  if (schedule.kind === "hourly") {
+    return schedule.hours === 1
+      ? { key: "hourly", values: {} }
+      : { key: "everyHours", values: { hours: schedule.hours } };
+  }
   const clock = schedule.kind === "once" ? schedule.at.split("T")[1] : schedule.time;
   const time = formatClock(clock, locale);
   switch (schedule.kind) {
@@ -243,12 +263,17 @@ export function summarizeSchedule(schedule: TaskSchedule, locale: string): Sched
 
 /** The Repeats column: the cadence alone; weekly is the days themselves. */
 export type RepeatsSummary =
-  | { key: "once" | "daily" | "weekdays" }
+  | { key: "once" | "hourly" | "daily" | "weekdays" }
+  | { key: "everyHours"; hours: number }
   | { key: "weekly"; days: string }
   | { key: "monthly"; day: number };
 
 export function summarizeRepeats(schedule: TaskSchedule, locale: string): RepeatsSummary {
   switch (schedule.kind) {
+    case "hourly":
+      return schedule.hours === 1
+        ? { key: "hourly" }
+        : { key: "everyHours", hours: schedule.hours };
     case "once":
     case "daily":
       return { key: schedule.kind };
