@@ -68,6 +68,7 @@ import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wh
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import {
   THREAD_GUTTER_CHANGE_EVENT,
+  syncThreadGutter,
   watchThreadGutter,
 } from "@/components/assistant-ui/thread-gutter";
 import { observeThreadWidthSteps } from "@/components/assistant-ui/thread-width-steps";
@@ -2129,7 +2130,8 @@ export const Thread: FC<{
     return attachWheelHoverSuppression(viewportEl);
   }, [viewportEl]);
 
-  useEffect(() => {
+  // Layout, not passive: a thread switch remounts the viewport, and the column must be shifted before the first paint.
+  useLayoutEffect(() => {
     if (!viewportEl) return;
     return watchThreadGutter(viewportEl);
   }, [viewportEl]);
@@ -2596,6 +2598,8 @@ const ThreadComposerDock: FC<{
     const resizeObserver = new ResizeObserver(() => apply());
     let observedFooter: Element | null = null;
     const apply = () => {
+      // This observer can fire before the gutter's: measured unshifted, the composer paints a scrollbar width off-centre.
+      syncThreadGutter(viewport);
       // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
       const footer = childWithClass(viewport, "aui-thread-viewport-footer");
       if (footer && footer !== observedFooter) {
