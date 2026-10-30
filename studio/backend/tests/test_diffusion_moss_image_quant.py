@@ -303,7 +303,11 @@ def test_a_handed_in_encoder_gets_the_vision_drop_and_offload_guard(monkeypatch)
     monkeypatch.setattr(
         diffusers.AutoencoderKLFlux2, "from_pretrained", classmethod(lambda cls, *a, **k: "vae")
     )
-    monkeypatch.setattr(moss, "MOSSImagePipeline", lambda **kw: kw)
+
+    class Parts(dict):
+        """The pipeline's components, and room for the attributes the loader sets on a real pipeline."""
+
+    monkeypatch.setattr(moss, "MOSSImagePipeline", lambda **kw: Parts(kw))
     encoder = Encoder()
     parts = moss.load_moss_image_pipeline(
         "OpenMOSS-Team/MOSS-Image-SFT",
@@ -314,6 +318,8 @@ def test_a_handed_in_encoder_gets_the_vision_drop_and_offload_guard(monkeypatch)
     )
     assert parts["text_encoder"] is encoder and encoder.visual is None
     assert getattr(encoder.layer, "_unsloth_conv_guard", False)
+    # No checkpoint handed in: the repo id decides the negative-branch skip default.
+    assert parts._unsloth_checkpoint == "OpenMOSS-Team/MOSS-Image-SFT"
 
 
 def test_tokenizer_class_comes_from_its_config(tmp_path, offline_empty):
