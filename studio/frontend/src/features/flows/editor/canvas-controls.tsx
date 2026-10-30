@@ -7,6 +7,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { MiniMap, Panel, useReactFlow } from "@xyflow/react";
 import { memo, useEffect, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
+import { newId, useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import { FIT_MIN_ZOOM } from "./canvas-rules";
 import type { RfNode } from "./derive-rf";
@@ -18,12 +19,16 @@ import {
 } from "./icon-data";
 import { addNodeConnected } from "./node-factory";
 import {
+  PLACE_GROUP,
+  PLACE_NOTE,
   placeableTarget,
+  placedRect,
   placementPosition,
   stopPlacement,
   usePlacement,
 } from "./placement";
-import { PlacementGhost } from "./placement-ghost";
+import { PlacementGhost, ShapeGhost } from "./placement-ghost";
+import { REROUTE_TYPE, addReroute } from "./reroutes";
 
 // React Flow Controls' fit (default padding), animated.
 const FIT_VIEW_OPTIONS = { duration: 200, minZoom: FIT_MIN_ZOOM };
@@ -69,7 +74,30 @@ function FloatingButton({
   );
 }
 
-/** While a Nodes panel item or the toolbar Reroute is armed: each click on empty canvas, a group or a note places one;
+function placeArmed(
+  type: string,
+  flow: { x: number; y: number },
+  snap: boolean,
+): void {
+  const rect = placedRect(type, flow, snap);
+  if (!rect) {
+    addNodeConnected(type, placementPosition(flow, snap));
+    return;
+  }
+  const doc = useDocStore.getState();
+  if (type === REROUTE_TYPE) {
+    useUiStore.getState().setSelection([addReroute([rect[0], rect[1]])], []);
+  } else if (type === PLACE_GROUP) {
+    doc.groupNodes(
+      { id: newId("g"), label: "Group", color: "#8b5cf6", rect },
+      [],
+    );
+  } else if (type === PLACE_NOTE) {
+    doc.upsertNote({ id: newId("note"), text: "", rect });
+  }
+}
+
+/** While a Nodes panel item or a toolbar Group, Note or Reroute is armed: each click on empty canvas, a group or a note places one;
  *  Esc, right-click or leaving the editor stops. Clicks on cards and on controls are left alone. */
 function ArmedPlacement() {
   const armed = usePlacement((s) => s.armed);
@@ -77,9 +105,7 @@ function ArmedPlacement() {
     armed ? s.catalog?.nodes.find((n) => n.type === armed) : undefined,
   );
   const { screenToFlowPosition } = useReactFlow();
-  const [pointer, setPointer] = useState<{ x: number; y: number } | null>(
-    null,
-  );
+  const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => stopPlacement, []);
 
@@ -92,12 +118,10 @@ function ArmedPlacement() {
     const click = (e: MouseEvent) => {
       if (e.button !== 0 || e.detail > 1 || !onPane(e)) return;
       const snap = useUiStore.getState().snapToGrid;
-      addNodeConnected(
+      placeArmed(
         armed,
-        placementPosition(
-          screenToFlowPosition({ x: e.clientX, y: e.clientY }),
-          snap,
-        ),
+        screenToFlowPosition({ x: e.clientX, y: e.clientY }),
+        snap,
       );
     };
     const dblclick = (e: MouseEvent) => {
@@ -137,9 +161,12 @@ function ArmedPlacement() {
           Click to place · Esc to stop
         </span>
       </Panel>
-      {pointer && spec && (
-        <PlacementGhost spec={spec} x={pointer.x} y={pointer.y} />
-      )}
+      {pointer &&
+        (spec ? (
+          <PlacementGhost spec={spec} x={pointer.x} y={pointer.y} />
+        ) : (
+          <ShapeGhost type={armed} x={pointer.x} y={pointer.y} />
+        ))}
     </>
   );
 }

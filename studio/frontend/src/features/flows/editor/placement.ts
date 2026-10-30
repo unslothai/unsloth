@@ -40,6 +40,31 @@ export function placementPosition(
   return snapPoint([flow.x - GRAB[0], flow.y - GRAB[1]], snap);
 }
 
+export const PLACE_GROUP = "flows:group";
+export const PLACE_NOTE = "flows:note";
+
+/** Placeables that are not catalog cards: their box and where the pointer holds it, in flow units. */
+export const PLACE_SHAPES: Record<
+  string,
+  { size: [number, number]; grab: [number, number] }
+> = {
+  reroute: { size: [28, 16], grab: [14, 8] },
+  [PLACE_GROUP]: { size: [480, 320], grab: [20, 20] },
+  [PLACE_NOTE]: { size: [240, 140], grab: [20, 20] },
+};
+
+/** The rect a shape placed at `flow` takes; the snapped point is the grab point, so a reroute centres on a dot. */
+export function placedRect(
+  type: string,
+  flow: { x: number; y: number },
+  snap: boolean,
+): [number, number, number, number] | null {
+  const shape = PLACE_SHAPES[type];
+  if (!shape) return null;
+  const [x, y] = snapPoint([flow.x, flow.y], snap);
+  return [x - shape.grab[0], y - shape.grab[1], ...shape.size];
+}
+
 /** Empty canvas, or the body of a group or note: a card lands on top of those. */
 export function placeableTarget(target: Element | null): boolean {
   if (!target) return false;

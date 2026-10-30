@@ -162,7 +162,7 @@ test("a read-only flow's toolbar cannot edit the document", () => {
   assert.match(page, /<Toolbar readOnly=\{readOnly\} \/>/);
   const bar = readSrc("features/flows/editor/toolbar.tsx");
   assert.match(bar, /<input\s+value=\{name\}\s+readOnly=\{readOnly\}/);
-  for (const label of ["Undo", "Redo", "Tidy up layout", "Group selection", "Add note", "Add reroute"]) {
+  for (const label of ["Undo", "Redo", "Tidy up layout", "Add group", "Add note", "Add reroute"]) {
     const at = bar.indexOf(`label="${label}`);
     assert.ok(at > 0, label);
     assert.match(bar.slice(at, bar.indexOf("/>", at)), /disabled=\{readOnly( \|\||\})/, label);
@@ -171,7 +171,7 @@ test("a read-only flow's toolbar cannot edit the document", () => {
 
 test("Reroute is armed from the toolbar beside Group and Note, not the palette", () => {
   const bar = readSrc("features/flows/editor/toolbar.tsx");
-  const group = bar.indexOf('label="Group selection');
+  const group = bar.indexOf('label="Add group');
   const note = bar.indexOf('label="Add note"');
   const reroute = bar.indexOf('label="Add reroute');
   assert.ok(group > 0 && group < note && note < reroute);

@@ -6,6 +6,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  PLACE_GROUP,
+  PLACE_NOTE,
+  PLACE_SHAPES,
+  placedRect,
   placementPosition,
   stopPlacement,
   togglePlacement,
@@ -73,4 +77,22 @@ test("the ghost uses the same grab point and canvas zoom, portaled clear of tran
   assert.match(src, /createPortal\(/);
   for (const file of ["canvas-controls.tsx", "palette.tsx"])
     assert.match(readFileSync(new URL(`../src/features/flows/editor/${file}`, import.meta.url), "utf8"), /<PlacementGhost /);
+});
+
+test("a reroute is centred on the pointer, groups and notes hang from it", () => {
+  const reroutes = readFileSync(new URL("../src/features/flows/editor/reroutes.ts", import.meta.url), "utf8");
+  const [, rw, rh] = reroutes.match(/REROUTE_SIZE = \{ width: (\d+), height: (\d+) \}/) ?? [];
+  assert.deepEqual(PLACE_SHAPES.reroute.size, [Number(rw), Number(rh)]);
+  assert.match(reroutes, /REROUTE_TYPE = "reroute"/);
+  const [x, y, w, h] = placedRect("reroute", { x: 203, y: 97 }, true) ?? [];
+  assert.deepEqual([x + w / 2, y + h / 2], [200, 100]);
+  assert.deepEqual(placedRect(PLACE_NOTE, { x: 300, y: 300 }, false), [280, 280, 240, 140]);
+  assert.deepEqual(placedRect(PLACE_GROUP, { x: 300, y: 300 }, false)?.slice(0, 2), [280, 280]);
+  assert.equal(placedRect("text.input", { x: 0, y: 0 }, true), null);
+});
+
+test("armed toolbar shapes place through placedRect and show their own ghost", () => {
+  const src = readFileSync(new URL("../src/features/flows/editor/canvas-controls.tsx", import.meta.url), "utf8");
+  assert.match(src, /placeArmed\(\s*armed,\s*screenToFlowPosition/);
+  assert.match(src, /<ShapeGhost type=\{armed\}/);
 });

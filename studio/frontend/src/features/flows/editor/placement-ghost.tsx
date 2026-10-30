@@ -7,7 +7,7 @@ import type { NodeSpec } from "../types";
 import { nodeIcon } from "./icons";
 import { NodeIconTile } from "./node-card";
 import { CATEGORY_TONES } from "./node-tones";
-import { GRAB } from "./placement";
+import { GRAB, PLACE_GROUP, PLACE_SHAPES } from "./placement";
 
 /** The card-to-be under the pointer, at canvas zoom, exactly where placementPosition puts it.
  *  Portaled to body: a transformed ancestor would otherwise shift a `fixed` box. */
@@ -34,6 +34,37 @@ export function PlacementGhost({
       <span className="truncate font-semibold text-sm text-foreground">
         {spec.title}
       </span>
+    </div>,
+    document.body,
+  );
+}
+
+/** Outline of the group, note or reroute an armed toolbar button places, held at its grab point. */
+export function ShapeGhost({
+  type,
+  x,
+  y,
+}: { type: string; x: number; y: number }) {
+  const zoom = useStore((s) => s.transform[2]);
+  const shape = PLACE_SHAPES[type];
+  if (!shape) return null;
+  const reroute = type === "reroute";
+  return createPortal(
+    <div
+      className={`pointer-events-none fixed z-[1000] border-2 border-dashed border-primary/60 bg-primary/5 opacity-80 ${reroute ? "rounded-full" : "rounded-lg"}`}
+      style={{
+        left: x - shape.grab[0] * zoom,
+        top: y - shape.grab[1] * zoom,
+        width: shape.size[0] * zoom,
+        height: shape.size[1] * zoom,
+      }}
+      data-testid="flows-placement-ghost"
+    >
+      {!reroute && (
+        <span className="absolute top-1 left-2 font-medium text-muted-foreground text-xs">
+          {type === PLACE_GROUP ? "Group" : "Note"}
+        </span>
+      )}
     </div>,
     document.body,
   );

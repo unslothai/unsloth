@@ -7,7 +7,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useReactFlow } from "@xyflow/react";
 import { memo } from "react";
 import { toast } from "sonner";
-import { newId, useDocStore } from "../stores/doc-store";
+import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import { FIT_MIN_ZOOM } from "./canvas-rules";
 import {
@@ -20,7 +20,12 @@ import {
   Undo02Icon,
 } from "./icon-data";
 import { autoLayout } from "./layout";
-import { togglePlacement, usePlacement } from "./placement";
+import {
+  PLACE_GROUP,
+  PLACE_NOTE,
+  togglePlacement,
+  usePlacement,
+} from "./placement";
 import { REROUTE_TYPE } from "./reroutes";
 import { groupSelection } from "./use-editor-shortcuts";
 
@@ -71,10 +76,10 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
   const canUndo = useDocStore((s) => s.past.length > 0);
   const canRedo = useDocStore((s) => s.future.length > 0);
   const saveState = useUiStore((s) => s.saveState);
-  const rerouteArmed = usePlacement((s) => s.armed === REROUTE_TYPE);
+  const armed = usePlacement((s) => s.armed);
   const snap = useUiStore((s) => s.snapToGrid);
   const wireStyle = useUiStore((s) => s.wireStyle);
-  const { getInternalNode, getViewport, fitView } = useReactFlow();
+  const { getInternalNode, fitView } = useReactFlow();
 
   return (
     <div className="grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 bg-sidebar px-2 text-foreground">
@@ -181,45 +186,29 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
         />
         <IconButton
           icon={GroupItemsIcon}
-          label="Group selection (Shift+G)"
+          label="Add group (Shift+G groups the selection)"
           disabled={readOnly}
+          active={armed === PLACE_GROUP}
           onClick={() => {
-            const vp = getViewport();
-            groupSelection([
-              -vp.x / vp.zoom + 80,
-              -vp.y / vp.zoom + 80,
-              520,
-              340,
-            ]);
+            if (useUiStore.getState().selectedNodes.length) groupSelection();
+            else togglePlacement(PLACE_GROUP);
           }}
         />
         <IconButton
           icon={StickyNote01Icon}
           label="Add note"
           disabled={readOnly}
-          onClick={() => {
-            const vp = getViewport();
-            useDocStore.getState().upsertNote({
-              id: newId("note"),
-              text: "",
-              rect: [
-                Math.round(-vp.x / vp.zoom + 120),
-                Math.round(-vp.y / vp.zoom + 120),
-                240,
-                140,
-              ],
-            });
-          }}
+          active={armed === PLACE_NOTE}
+          onClick={() => togglePlacement(PLACE_NOTE)}
         />
         <IconButton
           icon={Route01Icon}
           label="Add reroute (drop it on a wire to split it)"
           disabled={readOnly}
-          active={rerouteArmed}
+          active={armed === REROUTE_TYPE}
           onClick={() => togglePlacement(REROUTE_TYPE)}
         />
       </div>
-
     </div>
   );
 }
