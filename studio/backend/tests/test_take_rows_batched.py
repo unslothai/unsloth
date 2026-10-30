@@ -147,8 +147,7 @@ def test_take_rows_builds_the_schema_per_batch_not_per_row(tmp_path, monkeypatch
 
 
 def test_take_rows_matches_when_files_drift_from_declared_features(tmp_path):
-    # README features with per-file inferred schemas that differ: datasets 4.3 cannot join the two
-    # files into one Arrow batch (ArrowInvalid), so take_rows must fall back to the row-by-row read.
+    # README features vs differing per-file schemas: datasets 4.3 raises ArrowInvalid batched, so take_rows falls back.
     (tmp_path / "data").mkdir()
     (tmp_path / "README.md").write_text(
         "---\ndataset_info:\n  features:\n  - name: a\n    dtype: int64\n  - name: b\n"

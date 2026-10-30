@@ -25,10 +25,9 @@ def take_rows(
     count: int,
     batch_size: int = 1000,
 ) -> list:
-    """``list(stream.take(count))``; typed streams read in batches since per-row reads rebuild the Arrow schema each row.
+    """``list(stream.take(count))``, batched for typed streams: per-row reads rebuild the Arrow schema each row.
 
-    Untyped streams (rows may differ in keys), formatted streams (batches are stacked arrays) and
-    source files disagreeing on schema (ArrowException) read row by row.
+    Untyped, formatted (stacked-array batches) or schema-mismatched (ArrowException) streams read row by row.
     """
     taken = stream.take(count)
     if (
