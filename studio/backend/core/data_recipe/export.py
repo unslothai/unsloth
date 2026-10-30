@@ -211,6 +211,17 @@ def _artifact_image_files(dataset_path: Path) -> list[Path]:
     ]
 
 
+def _processor_parquet_dirs(dataset_path: Path) -> list[Path]:
+    processors_dir = dataset_path / "processors-files"
+    if not processors_dir.is_dir():
+        return []
+    return [
+        path
+        for path in drop_appledouble_metadata(sorted(processors_dir.iterdir()))
+        if path.is_dir() and _parquet_files(path)
+    ]
+
+
 def download_filename(*, artifact_path: str, export_format: ExportFormat, stem: str) -> str:
     """The name the export will have, and the checks ``build_dataset_download`` will make, so a
     run whose shards are gone is refused while the caller can still be told."""
@@ -221,7 +232,9 @@ def download_filename(*, artifact_path: str, export_format: ExportFormat, stem: 
     _parquet_dir(dataset_path)
     if export_format == "parquet":
         return f"{stem}.parquet.zip"
-    return f"{stem}.jsonl.zip" if _artifact_image_files(dataset_path) else f"{stem}.jsonl"
+    if _artifact_image_files(dataset_path) or _processor_parquet_dirs(dataset_path):
+        return f"{stem}.jsonl.zip"
+    return f"{stem}.jsonl"
 
 
 def _add_images_to_archive(archive: zipfile.ZipFile, dataset_path: Path) -> None:
@@ -261,6 +274,14 @@ def build_dataset_download(
             with zipfile.ZipFile(zip_path, "w", compression = zipfile.ZIP_DEFLATED) as archive:
                 for parquet_file in _parquet_files(parquet_dir):
                     archive.write(parquet_file, arcname = parquet_file.name)
+                for processor_dir in _processor_parquet_dirs(dataset_path):
+                    for parquet_file in _parquet_files(processor_dir):
+                        archive.write(
+                            parquet_file,
+                            arcname = str(
+                                Path("processors") / processor_dir.name / parquet_file.name
+                            ),
+                        )
                 _add_images_to_archive(archive, dataset_path)
         except BaseException:
             zip_path.unlink(missing_ok = True)
@@ -273,15 +294,22 @@ def build_dataset_download(
     try:
         _write_jsonl_from_parquet(parquet_dir, jsonl_path)
         image_files = _artifact_image_files(dataset_path)
-        if not image_files:
+        processor_dirs = _processor_parquet_dirs(dataset_path)
+        if not image_files and not processor_dirs:
             return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
-        # Rows reference these by relative path, so a bare JSONL loses every image.
+        # Rows reference images by relative path, so a bare JSONL loses every image.
         zip_tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".zip")
         zip_tmp.close()
         zip_path = Path(zip_tmp.name)
         try:
             with zipfile.ZipFile(zip_path, "w", compression = zipfile.ZIP_DEFLATED) as archive:
                 archive.write(jsonl_path, arcname = f"{stem}.jsonl")
+                for processor_dir in processor_dirs:
+                    _write_jsonl_from_parquet(processor_dir, jsonl_path)
+                    archive.write(
+                        jsonl_path,
+                        arcname = str(Path("processors") / f"{processor_dir.name}.jsonl"),
+                    )
                 _add_images_to_archive(archive, dataset_path)
         except BaseException:
             zip_path.unlink(missing_ok = True)

@@ -22,9 +22,9 @@ import {
   AlertCircleIcon,
   CancelCircleIcon,
   CheckmarkCircle02Icon,
-  FolderSearchIcon,
   Key01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
