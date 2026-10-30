@@ -48,7 +48,6 @@ function textContent(node: unknown): string {
   return "";
 }
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
-// Real English so the assertions below keep reading the rendered copy.
 function translate(key: string, values: Record<string, string> = {}) {
   const message = key
     .split(".")

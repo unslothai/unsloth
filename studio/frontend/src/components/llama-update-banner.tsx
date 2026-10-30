@@ -49,7 +49,6 @@ const RUNNING_CAP = 0.95;
 
 type Translate = ReturnType<typeof useT>;
 
-// Unknown backends keep their identifiers.
 function backendLabel(backend: string | null | undefined, t: Translate): string {
   if (!backend) {
     return "";
