@@ -1457,6 +1457,37 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
+    # Pure in the name and the family table, and every inventory request asks again for each row.
+    memo = _detect_family_memo()
+    try:
+        return memo[repo_id]
+    except (KeyError, TypeError):
+        pass
+    match = _detect_family_by_name(repo_id)
+    try:
+        if len(memo) >= _DETECT_FAMILY_MEMO_MAX:
+            memo.clear()
+        memo[repo_id] = match
+    except TypeError:
+        pass
+    return match
+
+
+_DETECT_FAMILY_MEMO_MAX = 8192
+# Paired with the table it was filled from: a replaced _FAMILIES starts an empty memo.
+_detect_family_memo_state: tuple[object, dict] = ((), {})
+
+
+def _detect_family_memo() -> dict:
+    global _detect_family_memo_state
+    families, memo = _detect_family_memo_state
+    if families is not _FAMILIES:
+        memo = {}
+        _detect_family_memo_state = (_FAMILIES, memo)
+    return memo
+
+
+def _detect_family_by_name(repo_id: str) -> Optional[DiffusionFamily]:
     needle = model_identity(repo_id).lower()
     match = _best_family_match(needle)
     if match is not None:
