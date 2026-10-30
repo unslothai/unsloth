@@ -392,7 +392,7 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
         transformer,
         _quiet_config(Int8WeightOnlyConfig),
         filter_fn = make_filter_fn(
-            512, exclude_name_tokens = exclude_tokens_for_scheme("int8", family)
+            512, exclude_name_tokens = exclude_tokens_for_scheme("int8", family, baked = True)
         ),
     )
     # After quantize_: the helper reparents the Linears it wraps. Not best-effort: a raise leaves the base quantized but not safely runnable.
@@ -406,7 +406,7 @@ _LOWP_EXTRA_EXCLUDE_TOKENS = ("final_layer",)
 
 def _lowp_exclude_tokens(family: Optional[str] = None) -> tuple[str, ...]:
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
-    return tuple(exclude_tokens_for_scheme("int8", family)) + _LOWP_EXTRA_EXCLUDE_TOKENS
+    return tuple(exclude_tokens_for_scheme("int8", family, baked = True)) + _LOWP_EXTRA_EXCLUDE_TOKENS
 
 
 def _lowp_module_filter(

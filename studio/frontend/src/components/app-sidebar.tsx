@@ -118,7 +118,6 @@ import {
   BadgeInfoIcon,
   ChefHatIcon,
   CloudIcon,
-  CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
   DashboardSquareEditIcon,
@@ -126,15 +125,13 @@ import {
   Download01Icon,
   DashboardSpeed01Icon,
   Edit03Icon,
-  FolderExportIcon,
-  Folder01Icon,
-  Folder02Icon,
   FlimSlateIcon,
   HelpCircleIcon,
   Image01Icon,
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
+  Moon02Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
   Search01Icon,
@@ -152,14 +149,15 @@ import {
   ZapIcon,
   PanelLeftIcon,
   LeftToRightListBulletIcon,
-  ArrowUpDownIcon,
   LayerIcon,
   ApiIcon,
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import {
   AiSpeechIcon,
+  ChipIcon,
   MessageCircleIcon,
   TestTubeOutlineIcon,
   withNoticeDot,
@@ -171,7 +169,9 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, GitBranchIcon, Moon } from "lucide-react";
+import { ProjectIcon } from "@/lib/project-icon";
+import { ArrowRightIcon, GitBranchIcon } from "lucide-react";
+import { SortIcon } from "@/lib/sort-icon";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -249,6 +249,7 @@ import {
   removeCustomSectionWithUndo,
   sectionKeyLanding,
   useSectionDrag,
+  prefetchChatPage,
 } from "@/features/chat";
 import {
   imeOwnsInputKeydown,
@@ -366,7 +367,7 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
 > = {
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: BrushCleaningIcon, labelKey: "settings.tabs.appearance" },
-  resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
+  resources: { icon: ChipIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
@@ -591,7 +592,7 @@ const ORGANIZE_OPTIONS: Array<{
   key: TranslationKey;
   icon: typeof ZapIcon;
 }> = [
-  { value: "project", key: "shell.organize.byProject", icon: Folder01Icon },
+  { value: "project", key: "shell.organize.byProject", icon: ProjectIcon },
   { value: "list", key: "shell.organize.inOneList", icon: LeftToRightListBulletIcon },
 ];
 
@@ -3325,7 +3326,7 @@ export function AppSidebar() {
 
   const navRows: Record<SidebarNavItemId, NavRowDef> = {
     projects: {
-      icon: Folder01Icon,
+      icon: ProjectIcon,
       label: t("shell.navigation.projects"),
       active: pathname === "/projects" || pathname.startsWith("/projects/"),
       onClick: () => {
@@ -4409,7 +4410,7 @@ export function AppSidebar() {
     return (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={ArrowUpDownIcon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={SortIcon} strokeWidth={1.75} className="size-icon" />
           <span className="min-w-0 flex-1 truncate">{config.label}</span>
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent {...sidebarSubmenuOffsets} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-44">
@@ -4492,7 +4493,7 @@ export function AppSidebar() {
               closeMobileIfOpen();
             }}
           >
-            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.organize.projectsHome")}</span>
           </DropdownMenuItem>
         </>
@@ -5301,7 +5302,7 @@ export function AppSidebar() {
                         key={project.id}
                         onSelect={() => void moveChatToProjectFromMenu(item, project.id)}
                       >
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
                         <span className="truncate">{project.name}</span>
                       </P.Item>
                     ))}
@@ -5681,7 +5682,7 @@ export function AppSidebar() {
     return (
       <>
           <P.Item onSelect={() => openProject(project.id)}>
-            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
             <span>Project home</span>
           </P.Item>
           <P.Item onSelect={() => toggleProjectPin(project.id)}>
@@ -5802,7 +5803,7 @@ export function AppSidebar() {
             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16 [@media(pointer:coarse)]:pr-16"
           >
             <HugeiconsIcon
-              icon={expanded ? Folder02Icon : Folder01Icon}
+              icon={expanded ? Folder02Icon : ProjectIcon}
               strokeWidth={1.75}
               className="size-icon! shrink-0"
             />
@@ -5961,6 +5962,8 @@ export function AppSidebar() {
                     if (chatDisabled) return;
                     openNewChat(null);
                   }}
+                  onPointerEnter={prefetchChatPage}
+                  onFocus={prefetchChatPage}
                   className={cn(
                     "flex min-w-0 items-center gap-[calc(6px*var(--ui-space-scale,1))] select-none transition-opacity",
                     chatDisabled && "pointer-events-none",
@@ -6085,6 +6088,7 @@ export function AppSidebar() {
                   : t("shell.navigation.newChat")
               }
               spinner={anyChatRunning && !isChatRoute}
+              onIntent={prefetchChatPage}
               // On every route: the waiting row can be folded away, behind Show more, or scrolled off.
               waiting={
                 anyChatWaiting
@@ -6812,7 +6816,7 @@ export function AppSidebar() {
                         ref={anchorRef as React.Ref<HTMLDivElement>}
                         onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
                       >
-                        {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
+                        {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <HugeiconsIcon icon={Moon02Icon} strokeWidth={1.75} className="size-icon" />}
                         <span>
                           {isDark
                             ? t("shell.navigation.lightMode")
@@ -7109,6 +7113,7 @@ export function AppSidebar() {
           </Button>
           <Button
             type="button"
+            variant="dark"
             onClick={() => void commitRename()}
             disabled={!renameDirty}
           >

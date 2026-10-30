@@ -411,12 +411,12 @@ test("sections have created and last modified dates, and Last modified is the de
   assert.doesNotMatch(readSrc("features/library/chats/chats-items.tsx"), /field="updated"/);
 });
 
-test("chat, project and section cards are square like folder and file cards, dated bottom left", () => {
+test("chat, project and section cards are as tall as their content, dated bottom left", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const card = items.slice(items.indexOf("const CARD = cn("), items.indexOf("const ICON ="));
   assert.doesNotMatch(card, /aspect-\[/);
   assert.match(card, /min-h-0 min-w-0/);
-  assert.match(items, /export const CHAT_CARD_ROW_MIN = CARD_MIN_HEIGHT;/);
+  assert.match(items, /export const CHAT_CARD_ROW_MIN =\s*"calc\(var\(--spacing\) \* 20 \+ 2\.75 \* var\(--text-ui-12p5\) \+ 3 \* var\(--text-ui-11p5\)\)"/);
   assert.match(
     readSrc("features/library/surface.ts"),
     /CARD_MIN_HEIGHT =\s*"calc\(var\(--spacing\) \* 26 \+ 2\.75 \* var\(--text-ui-13\) \+ 3 \* var\(--text-ui-11p5\)\)"/,
@@ -426,8 +426,8 @@ test("chat, project and section cards are square like folder and file cards, dat
     3,
   );
   const grid = readSrc("features/library/components/library-cards.tsx");
-  assert.match(grid, /max\(\$\{minRowHeight\}, calc\(\(100cqw - \$\{columns - 1\} \* var\(--spacing\) \* 5\) \/ \$\{columns\}\)\)/);
-  assert.match(grid, /<div className="@container">\{grid\}<\/div>/);
+  assert.match(grid, /gridAutoRows: minRowHeight \? `minmax\(\$\{minRowHeight\}, auto\)` : undefined/);
+  assert.doesNotMatch(grid, /100cqw/);
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.doesNotMatch(library, /<CardGrid(?! minRowHeight=\{CHAT_CARD_ROW_MIN\})/);
   assert.doesNotMatch(library, /aspect-\[8\/7\]/);
@@ -443,16 +443,17 @@ test("chat, project and section tiles share one box and hover tint", () => {
   assert.equal(items.split("group-hover/chat:bg-primary/10").length - 1, 1, "one tile style");
   assert.match(items, /<div className=\{cn\(TILE, className\)\}>/);
   assert.match(items, /<span className=\{TILE\}>/);
+  assert.match(items, /const CARD_ICON =\s*"[^"]*group-hover\/chat:text-primary"/);
   assert.doesNotMatch(items, /group-hover\/chat:opacity-0/);
 });
 
 test("grid cards share a two-line title and a footer of contents over date", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   assert.match(items, /const CARD_TITLE =\s*"[^"]*\[overflow-wrap:anywhere\]/);
-  assert.match(items, /const CARD_TITLE =\s*"[^"]*font-medium text-ui-13 /);
+  assert.match(items, /const CARD_TITLE =\s*"[^"]*font-medium text-ui-12p5 /);
   const footer = items.slice(items.indexOf("function CardFooter("), items.indexOf("const CARD_TITLE"));
   assert.match(footer, /flex-col items-start/);
-  assert.match(footer, /\{meta && <span className="w-full min-w-0 truncate">\{meta\}<\/span>\}\s*<span className="truncate">\{date\}<\/span>/);
+  assert.match(footer, /\{meta && <span className="w-full min-w-0 truncate">\{meta\}<\/span>\}\s*<span className="truncate text-ui-10p5">\{date\}<\/span>/);
   assert.doesNotMatch(footer, /·/);
   const cardOf = (start: string, end: string) =>
     items.slice(items.indexOf(start), items.indexOf(end));
@@ -462,11 +463,12 @@ test("grid cards share a two-line title and a footer of contents over date", () 
     cardOf("export function SectionCard(", "export function SectionRow("),
   ];
   for (const card of cards) {
-    assert.match(card, /className=\{cn\(CARD_TITLE, !showTile && TILELESS_TITLE\)\}/);
+    assert.match(card, /className=\{CARD_TITLE\}/);
     assert.match(card, /<span className="line-clamp-2">/);
     assert.match(card, /<CardFooter/);
     assert.match(card, /showTile = true,/);
     assert.match(card, /className=\{cn\("flex items-center gap-2", !showTile && TILELESS_ROW\)\}/);
+    assert.match(card, /\{showTile && <(ChatTile chat=\{chat\}|CollectionTile icon=\{\w+\}) bare \/>\}/);
   }
   assert.doesNotMatch(cards[0], /modelLabel|model &&/);
   assert.match(cards[0], /<ChatBadges chat=\{chat\} marksOnly=\{showTile\} \/>/);
@@ -478,7 +480,7 @@ test("cards drop the kind tile everywhere but All, which mixes chats, projects a
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.match(library, /<ChatCard[^>]*showTile=\{shownEntries !== null\}/s);
   assert.match(library, /<ChatRow[^>]*showTile=\{shownEntries !== null\}/s);
-  assert.equal(library.split("showTile={false}").length - 1, 6);
+  assert.equal(library.split("showTile={false}").length - 1, 4);
   const favorites = library.slice(library.indexOf("function favoriteEntries("));
   assert.doesNotMatch(favorites.slice(0, favorites.indexOf("cards:")), /showTile/);
   const items = readSrc("features/library/chats/chats-items.tsx");
@@ -556,13 +558,13 @@ test("the library header row casts a light shadow once stuck", () => {
   assert.match(header, /setStuck\(gap > /);
 });
 
-test("a favorite project tile uses the open project folder, not the file folder", () => {
+test("a favorite project tile uses the closed project folder, not the file folder", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const tile = items.slice(
     items.indexOf("export function FavoriteProjectTile("),
     items.indexOf("}", items.indexOf("menu={<ProjectMenu", items.indexOf("export function FavoriteProjectTile("))),
   );
-  assert.match(tile, /icon=\{Folder02Icon\}/);
+  assert.match(tile, /icon=\{ProjectIcon\}/);
   assert.doesNotMatch(tile, /Folder01Icon/);
 });
 
@@ -658,7 +660,7 @@ test("a section's menu reads New chat, New project and Edit", () => {
 test("a chat card's location has its project or section icon; menus leave out View chats", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const plain = items.slice(items.indexOf("  if (plain) {"), items.indexOf('<span className="flex min-w-0 items-center gap-3">'));
-  assert.match(plain, /icon=\{projectId \? Folder02Icon : LayerIcon\}/);
+  assert.match(plain, /icon=\{projectId \? ProjectIcon : LayerIcon\}/);
   assert.match(plain, /<span className="truncate">\{projectId \? projectName : section\?\.name\}<\/span>/);
   for (const file of [
     "features/library/chats/chats-items.tsx",
@@ -671,11 +673,11 @@ test("a chat card's location has its project or section icon; menus leave out Vi
   assert.doesNotMatch(readSrc("i18n/locales/en.ts"), /viewChats/);
 });
 
-test("the Chats library draws every project with the open project folder", () => {
+test("the Chats library draws every project with the closed project folder", () => {
   for (const file of ["chats-library.tsx", "chats-toolbar.tsx", "chats-items.tsx"]) {
     assert.doesNotMatch(readSrc(`features/library/chats/${file}`), /Folder01Icon/, file);
   }
-  assert.match(readSrc("features/library/chats/chats-library.tsx"), /projects: Folder02Icon,/);
+  assert.match(readSrc("features/library/chats/chats-library.tsx"), /projects: ProjectIcon,/);
 });
 
 test("a chat's menu has no Open chat, and its folder sits under Export", () => {

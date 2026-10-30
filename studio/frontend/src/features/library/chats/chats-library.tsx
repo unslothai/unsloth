@@ -63,8 +63,6 @@ import {
   ArchiveRestoreIcon,
   Cancel01Icon,
   Delete02Icon,
-  Folder02Icon,
-  FolderAddIcon,
   LayerIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -74,6 +72,7 @@ import {
   CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactNode,
@@ -110,7 +109,6 @@ import {
   GroupHeading,
   MoveSubmenu,
   ProjectCard,
-  ProjectListHeader,
   ProjectRow,
   SectionCard,
   SectionListHeader,
@@ -118,6 +116,7 @@ import {
   SectionRow,
 } from "./chats-items";
 import { ChatsToolbar, type SortChoice, SortMenu } from "./chats-toolbar";
+import { ProjectsPage } from "@/features/chat/projects-page";
 import {
   type ChatFilters,
   type ChatGroup,
@@ -192,7 +191,7 @@ const SECTION_LABELS: Record<ChatsSection, TranslationKey> = {
 
 const SECTION_ICONS: Partial<Record<ChatsSection, IconSvgElement>> = {
   chats: MessageCircleIcon,
-  projects: Folder02Icon,
+  projects: ProjectIcon,
   sections: LayerIcon,
   archived: Archive03Icon,
 };
@@ -835,12 +834,6 @@ export function ChatsLibrary({
     DATE_FIELDS,
     prefs.dateField,
   );
-  const projectDateColumn = dateColumn(
-    prefs.projectSort,
-    (projectSort) => prefs.set({ projectSort }),
-    DATE_FIELDS,
-    prefs.dateField,
-  );
   const sectionDateColumn = dateColumn(
     prefs.sectionSort,
     (sectionSort) => prefs.set({ sectionSort }),
@@ -1114,7 +1107,7 @@ export function ChatsLibrary({
           )
         ) : (
           groups.map((group) => (
-            <section key={group.key} aria-label={groupBy === "none" ? undefined : groupLabel(group)}>
+            <section key={group.key} aria-label={groupBy === "none" ? undefined : groupLabel(group)} className="not-first:mt-6">
               {groupBy !== "none" && (
                 <GroupHeading count={groupTotals.get(group.key) ?? group.items.length}>
                   {groupLabel(group)}
@@ -1241,63 +1234,6 @@ export function ChatsLibrary({
           </CardGrid>
         )}
       </div>
-    );
-  }
-
-  function renderProjects() {
-    if (!projectsLoaded || !loaded) return null;
-    if (visibleProjects.length === 0) {
-      return query.trim() ? (
-        <EmptyState
-          icon={Folder02Icon}
-          title={t("library.empty.noMatchesTitle")}
-          description={t("library.empty.noMatchesDescription")}
-        />
-      ) : (
-        <EmptyState
-          icon={Folder02Icon}
-          title={t("library.chats.empty.projectsTitle")}
-          description={t("library.chats.empty.projectsDescription")}
-          action={
-            <Button variant="muted" className="rounded-full" onClick={() => setCreatingProject(true)}>
-              {t("library.chats.toolbar.newProject")}
-            </Button>
-          }
-        />
-      );
-    }
-    return <div className="mt-6">{projectListing()}</div>;
-  }
-
-  function projectListing() {
-    if (view === "list") {
-      return (
-        <div className="@container">
-          <ProjectListHeader date={projectDateColumn} />
-          <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>
-            {visibleProjects.map((project) => (
-              <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
-            ))}
-          </div>
-        </div>
-      );
-    }
-    return (
-      <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>
-        {!embedded && (
-          <button
-            type="button"
-            onClick={() => setCreatingProject(true)}
-            className="flex min-h-0 flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-          >
-            <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.5} className="size-6" />
-            {t("library.chats.toolbar.newProject")}
-          </button>
-        )}
-        {visibleProjects.map((project) => (
-          <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
-        ))}
-      </CardGrid>
     );
   }
 
@@ -1522,6 +1458,7 @@ export function ChatsLibrary({
                   openSectionId ? newProjectInSection(openSectionId) : setCreatingProject(true)
                 }
                 onNewSection={() => setMovingIntoNew({ kind: "section", chats: [] })}
+                showView={section !== "projects"}
               />
             }
             tabs={tabs ?? null}
@@ -1534,7 +1471,22 @@ export function ChatsLibrary({
             {section === "all"
               ? renderAll()
               : section === "projects"
-                ? renderProjects()
+                ? (
+                    <ProjectsPage
+                      embedded
+                      ordered={visibleProjects}
+                      searching={query.trim() !== ""}
+                      orderedDesc={prefs.projectSort.key !== "updated" || prefs.projectSort.desc}
+                      onToggleOrder={() =>
+                        prefs.set({
+                          projectSort: {
+                            key: "updated",
+                            desc: prefs.projectSort.key === "updated" ? !prefs.projectSort.desc : false,
+                          },
+                        })
+                      }
+                    />
+                  )
                 : section === "sections"
                   ? renderSections()
                   : renderChats()}

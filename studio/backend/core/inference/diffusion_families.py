@@ -262,12 +262,19 @@ _QWEN_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS 
 
 # --- Shared FamilyProfile data (see family_profile.FamilyProfile) ---
 
-# int8 PER-FAMILY exclusions, on top of diffusion_transformer_quant._INT8_EXCLUDE_NAME_TOKENS. Qwen-Image MMDiT runs
-# every TEXT-stream Linear at M = actual prompt tokens (unpadded, unlike FLUX's 512-token T5), so a short prompt falls
-# under _int_mm's M floor of 16 and the denoise crashes. bf16 there costs ~nothing. Baked into the published int8
-# artifacts of qwen-image / qwen-image-edit, so it moves only with a rebuild and republish.
+# Qwen-Image text-stream Linears run at M = prompt tokens (~6 for the empty CFG negative), under _int_mm's floor of 16
+# where a compiled torchao int8 Linear raises. Baked into published int8 artifacts; streamed builds pad part (below).
 _QWENIMAGE_INT8_EXCLUDES = (
     "txt_in",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "txt_mlp",
+)
+# Quantised (row-padded to 32) by STREAMED qwen-image t2i int8 builds only: 12.90 -> 10.43 s/image on 2512 at a 16 GiB
+# budget. Resident int8 measured slower and LPIPS-worse; txt_in int8 scored worse too. Edit / layered unmeasured.
+_QWENIMAGE_TEXT_STREAM_INT8 = (
     "add_q_proj",
     "add_k_proj",
     "add_v_proj",
@@ -865,6 +872,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "Qwen-Image",
         profile = FamilyProfile(
             int8_exclude_tokens = _QWENIMAGE_INT8_EXCLUDES,
+            int8_runtime_quant_tokens = _QWENIMAGE_TEXT_STREAM_INT8,
             scheme_deny = _QWENIMAGE_SCHEME_DENY,
             train_scheme_deny = _QWENIMAGE_TRAIN_SCHEME_DENY,
             auto_prefer = _GATED_AUTO_PREFER,

@@ -6,6 +6,10 @@ hooks' Module.to(); torch imported lazily"""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import os
+import time
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
@@ -35,6 +39,11 @@ _INT_MM_FUSED_CHUNK_ELEMS = _INT_MM_CHUNK_ELEMS
 NATIVE_INT8_FUSED_ENV = "UNSLOTH_NATIVE_INT8_FUSED"
 # fp8 codes a native fp8 layer may hold; e5m2 only from a checkpoint (the quantise path writes e4m3fn).
 NATIVE_FP8_FORMATS = ("float8_e4m3fn", "float8_e5m2")
+# ``0`` quantises host-resident linears on the host again instead of one at a time on the card.
+NATIVE_QUANT_ON_DEVICE_ENV = "UNSLOTH_NATIVE_QUANT_ON_DEVICE"
+_HOST_QUANT_DEVICE: contextvars.ContextVar = contextvars.ContextVar(
+    "unsloth_native_host_quant_device", default = None
+)
 
 
 def fp8_bits_to_float32(bits: Any, fmt: str = "float8_e4m3fn") -> Any:
@@ -705,20 +714,25 @@ def apply_native_weight_quant(
     rot_group = int8_rotation_group() if act_int8 else 0
     # Names only: holding the old modules would keep every bf16 weight alive until the pass ends.
     names = [name for name, mod in transformer.named_modules() if name and filter_fn(mod, name)]
+
+    def build(linear: Any) -> Any:
+        return cls(
+            linear,
+            scheme,
+            act_int8 = act_int8,
+            rot_group = rot_group,
+            scale_dtype = scale_dtype if scheme == NATIVE_INT8 and not act_int8 else None,
+        )
+
+    device = _HOST_QUANT_DEVICE.get()
+    mover = _HostLinearMover(device) if device is not None else None
     for name in names:
         parent_name, _, leaf = name.rpartition(".")
         parent = transformer.get_submodule(parent_name) if parent_name else transformer
-        setattr(
-            parent,
-            leaf,
-            cls(
-                getattr(parent, leaf),
-                scheme,
-                act_int8 = act_int8,
-                rot_group = rot_group,
-                scale_dtype = scale_dtype if scheme == NATIVE_INT8 and not act_int8 else None,
-            ),
-        )
+        linear = getattr(parent, leaf)
+        setattr(parent, leaf, mover.build(linear, build) if mover is not None else build(linear))
+    if mover is not None:
+        mover.close(logger)
     if logger is not None:
         logger.info(
             "diffusion.transformer_quant: %s %s (torchao-free) on %d linears",
@@ -729,6 +743,125 @@ def apply_native_weight_quant(
             len(names),
         )
     return len(names)
+
+
+def native_quant_on_device_enabled() -> bool:
+    return os.environ.get(NATIVE_QUANT_ON_DEVICE_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+@contextlib.contextmanager
+def quantise_host_linears_on(device: Any):
+    """Inside, ``apply_native_weight_quant`` builds each host-resident Linear on ``device`` and returns it to the
+    host. Same kernels as a layer staged on the card, so the codes match a fully staged build bit for bit."""
+    token = _HOST_QUANT_DEVICE.set(device)
+    try:
+        yield
+    finally:
+        _HOST_QUANT_DEVICE.reset(token)
+
+
+class _HostLinearMover:
+    """A card failure builds that layer and the rest on the host, as without this."""
+
+    def __init__(self, device: Any) -> None:
+        import torch
+
+        self.device = torch.device(device)
+        self._pinned: dict = {}
+        self.layers = 0
+        self.up_bytes = 0
+        self.started = time.perf_counter()
+        self.failed: Optional[str] = None
+
+    def _staging(self, slot: str, nbytes: int) -> Any:
+        import torch
+
+        buf = self._pinned.get(slot)
+        if buf is None or buf.numel() < nbytes:
+            self._pinned[slot] = None
+            try:
+                buf = torch.empty(nbytes, dtype = torch.uint8, pin_memory = True)
+            except Exception:  # noqa: BLE001 -- no pinnable memory: pageable copies, same bytes
+                buf = torch.empty(0, dtype = torch.uint8)
+            self._pinned[slot] = buf
+        return buf if buf.numel() >= nbytes else None
+
+    def _to_device(self, tensor: Any) -> Any:
+        import torch
+
+        nbytes = tensor.numel() * tensor.element_size()
+        buf = self._staging("up", nbytes) if tensor.is_contiguous() else None
+        if buf is None:
+            return tensor.to(self.device)
+        host = buf[:nbytes].view(tensor.dtype).view(tensor.shape)
+        host.copy_(tensor)
+        out = torch.empty(tensor.shape, dtype = tensor.dtype, device = self.device)
+        out.copy_(host, non_blocking = True)
+        return out
+
+    def _to_host(self, tensor: Any) -> Any:
+        import torch
+
+        nbytes = tensor.numel() * tensor.element_size()
+        buf = self._staging("down", nbytes) if tensor.is_contiguous() else None
+        if buf is None:
+            return tensor.to("cpu")
+        host = buf[:nbytes].view(tensor.dtype).view(tensor.shape)
+        host.copy_(tensor)
+        return torch.empty(tensor.shape, dtype = tensor.dtype).copy_(host)
+
+    def build(self, linear: Any, make: Callable[[Any], Any]) -> Any:
+        import torch
+
+        weight = getattr(linear, "weight", None)
+        if (
+            self.failed is not None
+            or not isinstance(weight, torch.nn.Parameter)
+            or weight.device.type != "cpu"
+        ):
+            return make(linear)
+        cuda = self.device.type == "cuda"
+        try:
+            linear.weight = torch.nn.Parameter(
+                self._to_device(weight.detach()), requires_grad = False
+            )
+            built = make(linear)
+            for key, buf in list(built._buffers.items()):
+                if buf is not None and buf.device.type != "cpu":
+                    built._buffers[key] = self._to_host(buf)
+            # The next upload reuses the pinned buffer.
+            if cuda:
+                torch.cuda.synchronize(self.device)
+        except Exception as exc:  # noqa: BLE001 -- out of memory or a device fault: the host build, as before
+            self.failed = f"{type(exc).__name__}: {exc}".splitlines()[0][:200]
+            linear.weight = weight
+            if cuda:
+                torch.cuda.empty_cache()
+            return make(linear)
+        finally:
+            if linear.weight is not weight:
+                linear.weight = weight
+        self.layers += 1
+        self.up_bytes += weight.numel() * weight.element_size()
+        return built
+
+    def close(self, logger: Any = None) -> None:
+        self._pinned.clear()
+        if logger is None or not (self.layers or self.failed):
+            return
+        logger.info(
+            "diffusion.transformer_quant: built %d host linear(s) on %s one at a time (%.1f GB in %.1f s)%s",
+            self.layers,
+            self.device,
+            self.up_bytes / 1e9,
+            time.perf_counter() - self.started,
+            f"; the rest on the host ({self.failed})" if self.failed else "",
+        )
 
 
 def _first_native_linear(module: Any) -> Any:
