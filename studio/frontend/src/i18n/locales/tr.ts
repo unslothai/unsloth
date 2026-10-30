@@ -4801,6 +4801,8 @@ export const tr = {
     edit: "Düzenle",
     options: "Görev seçenekleri",
     schedule: {
+      hourly: "Her saat",
+      everyHours: "Her {hours} saatte bir",
       once: "Bir kez, {date} saat {time}",
       daily: "Her gün saat {time}",
       weekdays: "Her hafta içi saat {time}",
@@ -4808,6 +4810,9 @@ export const tr = {
       monthly: "Her ayın {day}. günü saat {time}",
     },
     form: {
+      hourly: "Saatlik",
+      intervalHours: "Aralık (saat)",
+      hourlyNote: "İlk çalıştırma, kaydettikten bir aralık sonra yapılır. Aralığı değiştirmek veya devam ettirmek beklemeyi yeniden başlatır.",
       createTitle: "Görev zamanla",
       editTitle: "Zamanlanmış görevi düzenle",
       name: "Ad",

@@ -4773,6 +4773,8 @@ export const fa = {
     edit: "ویرایش",
     options: "گزینه‌های وظیفه",
     schedule: {
+      hourly: "هر ساعت",
+      everyHours: "هر {hours} ساعت",
       once: "یک بار، {date} ساعت {time}",
       daily: "هر روز ساعت {time}",
       weekdays: "هر روز کاری ساعت {time}",
@@ -4780,6 +4782,9 @@ export const fa = {
       monthly: "هر ماه در روز {day} ساعت {time}",
     },
     form: {
+      hourly: "ساعتی",
+      intervalHours: "فاصله (ساعت)",
+      hourlyNote: "نخستین اجرا یک فاصله پس از ذخیره انجام می‌شود. تغییر فاصله یا ازسرگیری، انتظار را از نو آغاز می‌کند.",
       createTitle: "زمان‌بندی یک وظیفه",
       editTitle: "ویرایش وظیفهٔ زمان‌بندی‌شده",
       name: "نام",

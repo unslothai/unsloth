@@ -4800,6 +4800,8 @@ export const vi = {
     edit: "Sửa",
     options: "Tùy chọn tác vụ",
     schedule: {
+      hourly: "Mỗi giờ",
+      everyHours: "Mỗi {hours} giờ",
       once: "Một lần, {date} lúc {time}",
       daily: "Hằng ngày lúc {time}",
       weekdays: "Mỗi ngày trong tuần lúc {time}",
@@ -4807,6 +4809,9 @@ export const vi = {
       monthly: "Hằng tháng vào ngày {day} lúc {time}",
     },
     form: {
+      hourly: "Hằng giờ",
+      intervalHours: "Khoảng cách (giờ)",
+      hourlyNote: "Lần chạy đầu tiên diễn ra sau một khoảng cách kể từ khi lưu. Thay đổi khoảng cách hoặc tiếp tục sẽ bắt đầu lại thời gian chờ.",
       createTitle: "Lên lịch tác vụ",
       editTitle: "Sửa tác vụ theo lịch",
       name: "Tên",

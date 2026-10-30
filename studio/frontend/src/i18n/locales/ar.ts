@@ -4457,6 +4457,8 @@ export const ar = {
     edit: "تعديل",
     options: "خيارات المهمة",
     schedule: {
+      hourly: "كل ساعة",
+      everyHours: "كل {hours} ساعة",
       once: "مرة واحدة، {date} في {time}",
       daily: "كل يوم في {time}",
       weekdays: "أيام العمل في {time}",
@@ -4464,6 +4466,9 @@ export const ar = {
       monthly: "كل شهر في اليوم {day} في {time}",
     },
     form: {
+      hourly: "كل ساعة",
+      intervalHours: "الفاصل الزمني (بالساعات)",
+      hourlyNote: "يبدأ التشغيل الأول بعد مرور فاصل زمني واحد من الحفظ. يؤدي تغيير الفاصل الزمني أو استئناف المهمة إلى بدء الانتظار من جديد.",
       createTitle: "جدولة مهمة",
       editTitle: "تعديل المهمة المجدولة",
       name: "الاسم",

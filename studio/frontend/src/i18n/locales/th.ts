@@ -4573,6 +4573,8 @@ export const th = {
     edit: "แก้ไข",
     options: "ตัวเลือกงาน",
     schedule: {
+      hourly: "ทุกชั่วโมง",
+      everyHours: "ทุก {hours} ชั่วโมง",
       once: "ครั้งเดียว {date} เวลา {time}",
       daily: "ทุกวันเวลา {time}",
       weekdays: "ทุกวันทำงานเวลา {time}",
@@ -4580,6 +4582,9 @@ export const th = {
       monthly: "ทุกเดือนวันที่ {day} เวลา {time}",
     },
     form: {
+      hourly: "รายชั่วโมง",
+      intervalHours: "ช่วงห่าง (ชั่วโมง)",
+      hourlyNote: "การเรียกใช้ครั้งแรกจะเกิดขึ้นหลังจากบันทึกครบหนึ่งช่วงห่าง การเปลี่ยนช่วงห่างหรือการทำงานต่อจะเริ่มนับเวลารอใหม่",
       createTitle: "ตั้งเวลางาน",
       editTitle: "แก้ไขงานตามกำหนดเวลา",
       name: "ชื่อ",

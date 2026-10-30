@@ -6117,7 +6117,12 @@ class DiffusionStatusResponse(BaseModel):
         "LoRA picker's enabled state). torchao int8/fp8 builds support LoRA via the load-time "
         "bake: select the adapters when loading; weight changes apply live, a different adapter "
         "set needs a reload. False on unsupported families/quant (e.g. nvfp4/mxfp8, "
-        "GGUF-via-diffusers, or Qwen-Image on the native engine).",
+        "a whole-pipeline SDXL GGUF, or Qwen-Image on the native engine).",
+    )
+    lora_unavailable_reason: Optional[str] = Field(
+        None,
+        description = "Why the loaded model cannot apply LoRA adapters on its current engine, shown on the "
+        "Images page in place of the LoRA picker. Null when supports_lora is true or nothing is loaded.",
     )
     supports_controlnet: bool = Field(
         False,

@@ -4850,6 +4850,8 @@ export const pl = {
     edit: "Edytuj",
     options: "Opcje zadania",
     schedule: {
+      hourly: "Co godzinę",
+      everyHours: "Co {hours} godz.",
       once: "Jednorazowo, {date} o {time}",
       daily: "Codziennie o {time}",
       weekdays: "W dni robocze o {time}",
@@ -4857,6 +4859,9 @@ export const pl = {
       monthly: "Co miesiąc, dzień {day}, o {time}",
     },
     form: {
+      hourly: "Co godzinę",
+      intervalHours: "Odstęp (godziny)",
+      hourlyNote: "Pierwsze uruchomienie nastąpi jeden odstęp po zapisaniu. Zmiana odstępu lub wznowienie rozpoczyna oczekiwanie od nowa.",
       createTitle: "Zaplanuj zadanie",
       editTitle: "Edytuj zaplanowane zadanie",
       name: "Nazwa",
