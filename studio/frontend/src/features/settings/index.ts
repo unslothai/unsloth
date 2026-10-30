@@ -16,6 +16,7 @@ export {
   updateDownloadTransportSettings,
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
+export { notifyRendererReady } from "./api/gpu-rendering";
 export { updateHubSource } from "./api/hub-settings";
 export { loadLanAccess, publishLanUrls } from "./api/lan-access";
 export { lanApiUrls } from "./api/lan-access-state";
@@ -121,6 +122,7 @@ export {
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { SETTINGS_TABS, useSettingsDialogStore } from "./stores/settings-dialog-store";
+export { trainingApiRequestFromPayload } from "./components/training-api-snippets";
 export { settingsTabVisible } from "./settings-tab-visibility";
 export { DIALOG_SETTINGS_SEARCH_INDEX } from "./dialog-search-index";
 export type { SettingsTab } from "./stores/settings-dialog-store";
