@@ -528,8 +528,7 @@ import importlib.util
 import unsloth  # noqa: F401
 
 if importlib.util.find_spec("triton") is None:
-    # The CPU path of `import unsloth` never loads the kernels, so with no Triton (Windows CPU) define them
-    # against unsloth_zoo's stub, as the GPU path does, and keep the stub out of sys.modules for torch.compile.
+    # The CPU path never loads the kernels: define them against the stub as the GPU path does, then drop it.
     from unsloth_zoo.stubs import triton_stub
 
     meta_path, modules = list(sys.meta_path), set(sys.modules)
