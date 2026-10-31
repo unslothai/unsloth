@@ -298,7 +298,6 @@ def test_a_commit_modelscope_lacks_is_a_missing_revision_not_a_missing_repo(hub)
 def test_every_decision_gguf_pin_has_its_modelscope_commit():
     # ModelScope re-commits its mirrors, so a Hugging Face pin alone 404s there (#16263).
     from core.systemone.catalog import GGUF_COMPANIONS
-
     for name, companion in GGUF_COMPANIONS.items():
         mapped = upstream.upstream_commit("model", companion.repo, companion.revision)
         assert mapped != companion.revision, f"{name}: add its ModelScope commit to _PINNED_COMMITS"
