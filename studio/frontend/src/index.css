@@ -6797,8 +6797,9 @@ html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wal
 [data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) [data-chat-page-root] {
   background: transparent;
 }
+/* Other pages carry dense UI, so they read over a near-solid wash whatever the image's contrast. */
 [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] {
-  background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * 100%), transparent);
+  background: color-mix(in srgb, var(--background) max(86%, calc((1 - var(--wallpaper-safe, 0)) * 100%)), transparent);
 }
 @supports not (backdrop-filter: blur(1px)) {
   :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
@@ -7060,4 +7061,55 @@ html[data-glass][data-glass-menus] :is(.tooltip-compact, .tooltip-rich) {
 html[data-glass^="liquid"][data-glass-menus] :is(.tooltip-compact, .tooltip-rich) {
   background-image: var(--glass-sheen);
   box-shadow: var(--glass-rim);
+}
+
+/* All pages under glass: each page sits on one frosted pane (tint and blur follow Glass strength, with a
+   floor so dense pages stay readable over any image). Inside it the surface tokens turn translucent, so
+   page canvases, headers, cards, fields and chips become lighter glass over the pane rather than solid
+   blocks; hover fills take the glass wash. --glass-page-* hold the solid colours, resolved on <html>. */
+html {
+  --glass-page-floor: 70%;
+  --glass-page-bg: var(--background);
+  --glass-page-card: var(--card);
+  --glass-page-muted: var(--muted);
+  --glass-page-secondary: var(--secondary);
+  --glass-page-input: var(--panel-input-surface);
+}
+html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] {
+  background-color: color-mix(in srgb, var(--glass-page-bg) clamp(var(--glass-page-floor), calc(var(--glass-tint) + 22%), 88%), transparent);
+  background-image: var(--glass-sheen, none);
+  --background: color-mix(in srgb, var(--glass-page-bg) 35%, transparent);
+  --card: color-mix(in srgb, var(--glass-page-card) 55%, transparent);
+  --muted: color-mix(in srgb, var(--glass-page-muted) 60%, transparent);
+  --secondary: color-mix(in srgb, var(--glass-page-secondary) 60%, transparent);
+  --panel-input-surface: color-mix(in srgb, var(--glass-page-input) 60%, transparent);
+  --accent: var(--glass-hover);
+  --nav-surface-hover: var(--glass-hover);
+  --panel-surface-hover: var(--glass-hover);
+  --chat-icon-bg-hover: var(--glass-hover);
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-muted: var(--muted);
+  --color-secondary: var(--secondary);
+  --color-accent: var(--glass-hover);
+  --color-nav-surface-hover: var(--glass-hover);
+  --color-panel-surface-hover: var(--glass-hover);
+  --color-chat-icon-bg-hover: var(--glass-hover);
+}
+html.dark { --glass-page-floor: 60%; }
+/* The image itself is frosted on these pages rather than through a backdrop-filter on the pane: a pane
+   that is a backdrop root makes every sticky header inside re-tint it into a visible band. !important
+   beats the inline image blur, which this always exceeds. */
+html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper[data-ready] .chat-wallpaper-artwork {
+  filter: blur(max(var(--glass-blur), 22px)) saturate(var(--glass-saturate)) !important;
+}
+/* The top wash is for the chat header; on a frosted page it shows as a band behind page headers. */
+html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper::after {
+  content: none;
+}
+/* Sticky headers frost the rows scrolling under them instead of painting a band over the pane. */
+html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] .sticky {
+  background-color: transparent;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
 }
