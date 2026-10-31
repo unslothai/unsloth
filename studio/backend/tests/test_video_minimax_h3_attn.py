@@ -373,14 +373,38 @@ def test_install_is_idempotent(quantized):
         (None, (8, 0), None),
     ],
 )
-def test_arch_pick_moves_only_the_automatic_cudnn_pick_on_measured_archs(selected, cap, expected):
+def test_arch_pick_moves_only_the_automatic_cudnn_pick_on_measured_archs(
+    selected, cap, expected, monkeypatch
+):
+    # Assume flash SDPA is present so the measured-arch upgrade itself is what is under test.
+    monkeypatch.setattr(A, "_flash_sdpa_ready", lambda target = None: True)
     assert A.h3_attention_backend(selected, cap) == expected
 
 
 @pytest.mark.parametrize("requested", ["cudnn", "flash", "native"])
-def test_arch_pick_keeps_an_explicit_request(requested):
+def test_arch_pick_keeps_an_explicit_request(requested, monkeypatch):
+    monkeypatch.setattr(A, "_flash_sdpa_ready", lambda target = None: True)
     assert A.h3_attention_backend("_native_cudnn", (8, 0), requested = requested) == "_native_cudnn"
     assert A.h3_attention_backend("_native_cudnn", (8, 0), requested = "auto") == "_native_flash"
+
+
+@pytest.mark.parametrize("cap", [(8, 0), (8, 9)])
+def test_arch_pick_keeps_cudnn_when_flash_sdpa_is_missing(cap, monkeypatch):
+    # Windows CUDA wheels often ship without flash; Auto must not exclusive-pin FLASH (#16294).
+    monkeypatch.setattr(A, "_flash_sdpa_ready", lambda target = None: False)
+    assert A.h3_attention_backend("_native_cudnn", cap, requested = "auto") == "_native_cudnn"
+
+
+def test_arch_pick_keeps_cudnn_when_sdpa_probe_is_empty(monkeypatch):
+    monkeypatch.setattr(
+        "core.inference.diffusion_attention.available_sdpa_kernels",
+        lambda target: (),
+    )
+    target = type("T", (), {"device": "cuda", "dtype": "torch.bfloat16"})()
+    assert (
+        A.h3_attention_backend("_native_cudnn", (8, 9), requested = "auto", target = target)
+        == "_native_cudnn"
+    )
 
 
 def test_h3_load_wires_the_request_and_the_speed_gate():
@@ -397,6 +421,7 @@ def test_h3_load_wires_the_request_and_the_speed_gate():
         if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "h3_attention_backend"
     ]
     assert calls and all(any(k.arg == "requested" for k in c.keywords) for c in calls)
+    assert calls and all(any(k.arg == "target" for k in c.keywords) for c in calls)
     gates = [
         n
         for n in ast.walk(tree)

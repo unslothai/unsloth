@@ -3476,6 +3476,20 @@ def apply_attention_backend(
             and not _cudnn_serves_pipe(pipe, target, logger)
         ):
             backend = None
+        if backend == "_native_flash" and target is not None:
+            # H3 Auto can pick flash after select(); refuse exclusive flash when this build has no kernel (#16294).
+            try:
+                flash_ready = SDPA_FLASH in available_sdpa_kernels(target)
+            except Exception:  # noqa: BLE001 -- an unreadable probe must not force flash
+                flash_ready = False
+            if not flash_ready:
+                if logger is not None:
+                    logger.info(
+                        "diffusion.attention: flash SDPA unavailable on this torch build; keeping cuDNN"
+                    )
+                backend = AUTO_CUDNN
+                if not _cudnn_serves_pipe(pipe, target, logger):
+                    backend = None
         if (
             isinstance(backend, _AutoCudnn)
             and target is not None
