@@ -9301,6 +9301,7 @@ class DiffusionBackend:
                                             local_files_only = local_files_only,
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
+                                            checkpoint = base,
                                         )
                                     finally:
                                         self._stop_load_prefetch()
@@ -11597,6 +11598,7 @@ class DiffusionBackend:
                 text_encoder = moss_te,
                 check_cancelled = check_cancelled,
                 local_files_only = local_files_only,
+                checkpoint = base,
             )
             check_cancelled()
             pipe.to(device)

@@ -1064,8 +1064,13 @@ def test_fused_lora_functions_read_local_shards():
             plain["calls"],
             fused["calls"],
         )
-        torch.testing.assert_close(fused["O"], plain["O"], rtol = 1e-5, atol = 1e-5)
-        torch.testing.assert_close(fused["dX"], plain["dX"], rtol = 1e-5, atol = 1e-5)
+        for key in ("O", "dX"):
+            # fp32 sums err by an ulp of their largest term, so a small element that cancels out of large ones
+            # (dX here peaks near 1e3, where one ulp is 1.2e-4) needs an atol at the tensor's scale.
+            atol = max(1e-5, 1e-6 * plain[key].abs().max().item())
+            torch.testing.assert_close(
+                fused[key], plain[key], rtol = 1e-5, atol = atol, msg = lambda m, key = key: f"{key}: {m}"
+            )
         assert set(fused["grads"]) == set(plain["grads"]) and plain["grads"]
         for name in plain["grads"]:
             torch.testing.assert_close(
