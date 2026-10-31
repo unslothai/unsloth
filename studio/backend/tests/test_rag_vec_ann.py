@@ -36,7 +36,11 @@ def _exact(rows, keys, q, k):
     return [int(keys[i]) for i in order]
 
 
-def _built(rows, keys, threads = 2):
+def _built(
+    rows,
+    keys,
+    threads = 2,
+):
     index = vec_ann.new_index(rows.shape[1])
     vec_ann.add(np, index, keys, rows, threads = threads)
     index.expansion_search = vec_ann.EXPANSION_SEARCH
