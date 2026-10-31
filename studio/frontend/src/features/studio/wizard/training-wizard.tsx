@@ -31,12 +31,12 @@ import {
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
-  ChipIcon,
   Database02Icon,
-  PencilEdit02Icon,
+  PencilEdit01Icon,
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import type { ReactNode } from "react";
@@ -389,7 +389,7 @@ export function TrainingWizard({
       <SectionBox
         title={t("studio.wizard.configTitle")}
         description={t("studio.wizard.configDescription")}
-        icon={PencilEdit02Icon}
+        icon={PencilEdit01Icon}
         chipTint="var(--chart-1)"
       >
         <ConfigActions />

@@ -8,6 +8,9 @@ uv installs without .pyc, so the first launch paid for compiling every module `i
 loads. studio/precompile_bytecode.py runs compileall over site-packages (and an editable checkout)
 after setup.sh / setup.ps1 changed the venv. uv itself is left alone: no installer sets
 UV_COMPILE_BYTECODE, because a uv compile failure or timeout fails the install command (#5983).
+
+Opt-in on every OS (UNSLOTH_STUDIO_COMPILE_BYTECODE=1): a whole-venv compile per update cost more
+than Python's lazy compile on first import.
 """
 
 from __future__ import annotations
@@ -68,6 +71,7 @@ def _clean_env(monkeypatch):
         "SOURCE_DATE_EPOCH",
     ):
         monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1")
 
 
 def _tree(root: Path) -> Path:
@@ -166,10 +170,13 @@ def _setup_sh_block() -> str:
 @pytest.mark.parametrize(
     "changed, rerun, opt_out, fake_exit, expect_call",
     [
-        ("true", "", None, 1, True),
-        ("true", "", None, 0, True),
-        ("false", "1", None, 1, True),
-        ("false", "", None, 0, False),
+        ("true", "", None, 1, False),
+        ("false", "1", None, 1, False),
+        ("true", "", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1"), 1, True),
+        ("true", "", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1"), 0, True),
+        ("false", "1", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", " On "), 1, True),
+        ("false", "", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1"), 0, False),
+        ("true", "", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", "maybe"), 0, False),
         ("true", "", ("UV_COMPILE_BYTECODE", " FALSE "), 0, False),
         ("true", "", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", "0"), 0, False),
         ("true", "", ("UV_COMPILE_BYTECODE", "1"), 0, True),
@@ -215,14 +222,19 @@ def test_setup_sh_block_never_fails_and_runs_only_after_a_deps_pass(
 
 @pytest.mark.skipif(PWSH is None or BASH is None, reason = "needs PowerShell")
 @pytest.mark.parametrize(
-    "opt_out, expect_call",
+    "switches, expect_call",
     [
-        (None, True),
-        (("UV_COMPILE_BYTECODE", "False"), False),
-        (("UNSLOTH_STUDIO_COMPILE_BYTECODE", "off"), False),
+        ({}, False),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1"}, True),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": " On "}, True),
+        ({"UV_COMPILE_BYTECODE": "true"}, True),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "maybe"}, False),
+        ({"UV_COMPILE_BYTECODE": "False"}, False),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "off"}, False),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1", "UV_COMPILE_BYTECODE": "0"}, False),
     ],
 )
-def test_setup_ps1_block_never_fails(tmp_path, opt_out, expect_call):
+def test_setup_ps1_block_never_fails(tmp_path, switches, expect_call):
     lines = _lines(SETUP_PS1)
     start = _index(lines, r"^\$_pycPython = ")
     footer = next(i for i, line in enumerate(lines) if line == "# Footer")
@@ -268,8 +280,7 @@ def test_setup_ps1_block_never_fails(tmp_path, opt_out, expect_call):
         }
     else:
         env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
-    if opt_out:
-        env[opt_out[0]] = opt_out[1]
+    env.update(switches)
     result = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         env = env,
@@ -283,6 +294,37 @@ def test_setup_ps1_block_never_fails(tmp_path, opt_out, expect_call):
     ]
     assert [line for line in result.stdout.splitlines() if line.strip()] == expected
     assert marker.exists() is expect_call
+
+
+def test_helper_is_off_by_default(tmp_path, monkeypatch):
+    _clean_env(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", raising = False)
+    helper = _helper()
+    _tree(tmp_path)
+    before = _snapshot(tmp_path)
+    assert helper.main([str(tmp_path)]) == 0
+    assert _snapshot(tmp_path) == before, "no OS may precompile without the opt-in"
+
+
+@pytest.mark.parametrize(
+    "switches, compiles",
+    [
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1"}, True),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "TRUE"}, True),
+        ({"UV_COMPILE_BYTECODE": "yes"}, True),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": ""}, False),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1", "UV_COMPILE_BYTECODE": "0"}, False),
+    ],
+)
+def test_helper_opt_in(tmp_path, monkeypatch, switches, compiles):
+    _clean_env(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", raising = False)
+    for name, value in switches.items():
+        monkeypatch.setenv(name, value)
+    helper = _helper()
+    pkg = _tree(tmp_path)
+    assert helper.main([str(tmp_path)]) == 0
+    assert len(_pycs(pkg)) == (2 if compiles else 0)
 
 
 def test_helper_compiles_a_tree_and_is_idempotent(tmp_path, monkeypatch):
@@ -441,7 +483,10 @@ def test_a_stop_signal_kills_the_compile_and_undoes_it(tmp_path, signame):
         encoding = "utf-8",
     )
     proc = subprocess.Popen(
-        [sys.executable, str(driver)], stdout = subprocess.PIPE, stderr = subprocess.PIPE
+        [sys.executable, str(driver)],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        env = {**os.environ, "UNSLOTH_STUDIO_COMPILE_BYTECODE": "1"},
     )
     deadline = time.monotonic() + 30
     while not pidfile.exists() and time.monotonic() < deadline:

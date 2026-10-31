@@ -1315,7 +1315,8 @@ class TestProbeTier:
         # The probe must not import huggingface_hub before the sidecar is on sys.path.
         self._patch_common(monkeypatch)
         monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
-        sys.modules.pop("huggingface_hub", None)
+        # delitem, not pop: later tests patch the huggingface_hub module object they imported
+        monkeypatch.delitem(sys.modules, "huggingface_hub", raising = False)
         _probe_tier("org/m", None, "x")
         assert "huggingface_hub" not in sys.modules
 

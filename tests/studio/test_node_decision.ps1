@@ -137,6 +137,26 @@ Check "global bun install lives in the bundled branch, not the system arm" (
     $bundledBranchOffset -lt $globalBunOffset -and $globalBunOffset -lt $systemArmOffset
 )
 
+$bunGate = @($ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.IfStatementAst] -and
+    $n.Clauses[0].Item1.Extent.Text -match 'Get-Command bun' -and $n.Clauses[0].Item2.Extent.Text -match 'npm install -g bun'
+}, $true))
+if ($bunGate.Count -ne 1) { throw "expected one bun install gate, found $($bunGate.Count)" }
+$bunCond = $bunGate[0].Clauses[0].Item1.Extent.Text
+$FrontendDir = Join-Path ([System.IO.Path]::GetTempPath()) ('unsloth-bun-gate-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $FrontendDir | Out-Null
+$oldPath = $env:PATH
+try {
+    $env:PATH = $FrontendDir
+    $NeedFrontendBuild = $true
+    Check 'bun fetched for a frontend build without a lockfile' ([bool](Invoke-Expression $bunCond))
+    $NeedFrontendBuild = $false
+    Check 'bun not fetched when Node serves only OXC (Desktop)' (-not (Invoke-Expression $bunCond))
+} finally {
+    $env:PATH = $oldPath
+    Remove-Item -LiteralPath $FrontendDir -Recurse -Force
+}
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) FAILED" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed" -ForegroundColor Green

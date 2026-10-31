@@ -1437,7 +1437,7 @@ def load_comfy_quant_transformer(
     filters = {
         fmt: make_filter_fn(
             min_features,
-            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family),
+            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family, baked = True),
             require_divisible = divisible_for_scheme(scheme),
         )
         for fmt, scheme in schemes.items()

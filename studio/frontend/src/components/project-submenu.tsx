@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Folder01Icon, FolderAddIcon, FolderExportIcon } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { useCallback, useState } from "react";
 
 import {
@@ -83,7 +84,7 @@ export function useProjectSubmenu({
               key={project.id}
               onClick={() => void addToProject(project.id, project.name)}
             >
-              <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
               <span className="truncate">{project.name}</span>
             </DropdownMenuItem>
           ))
