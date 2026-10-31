@@ -269,7 +269,7 @@ _FORMAT_LITERALS = frozenset(" $-+/():!^&'~{}<>=\u20ac\u00a3\u00a5")
 
 
 def _format_tokens(code: str) -> list[tuple[str, str]] | None:
-    """("lit" | "ph" | "exp" | "sep", text) tokens of a number format, or None if unsupported."""
+    """("lit" | "ph" | "exp" | "sep" | "text", text) tokens of a format, or None if unsupported."""
     tokens, i = [], 0
     while i < len(code):
         ch = code[i]
@@ -302,6 +302,9 @@ def _format_tokens(code: str) -> list[tuple[str, str]] | None:
             i += 2
         elif ch == ";":
             tokens.append(("sep", ";"))
+            i += 1
+        elif ch == "@":  # where a text cell's value goes
+            tokens.append(("text", ch))
             i += 1
         elif ch in _FORMAT_LITERALS:
             tokens.append(("lit", ch))
@@ -377,6 +380,13 @@ def _format_number(value: float, code: str) -> str | None:
             sections.append([])
         else:
             sections[-1].append(token)
+    # Sections are positive;negative;zero;text, and a shorter format's last is text if it holds "@".
+    if len(sections) > 3:
+        del sections[3:]
+    elif ("text", "@") in sections[-1]:
+        sections.pop()
+    if not sections or any(("text", "@") in section for section in sections):
+        return None
     if value < 0 and len(sections) > 1 and sections[1]:
         return _format_section(-value, sections[1])
     if value == 0 and len(sections) > 2 and sections[2]:
