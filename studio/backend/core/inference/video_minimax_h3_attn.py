@@ -44,7 +44,6 @@ def _flash_sdpa_ready(target: Any = None) -> bool:
     if target is not None:
         try:
             from .diffusion_attention import SDPA_FLASH, available_sdpa_kernels
-
             kernels = available_sdpa_kernels(target)
             # Empty means unanswerable, not "flash works".
             return bool(kernels) and SDPA_FLASH in kernels
@@ -52,7 +51,6 @@ def _flash_sdpa_ready(target: Any = None) -> bool:
             return False
     try:
         import torch
-
         check = getattr(torch.backends.cuda, "is_flash_attention_available", None)
         if callable(check):
             return bool(check())
