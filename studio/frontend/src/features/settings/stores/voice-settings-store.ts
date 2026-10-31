@@ -405,6 +405,8 @@ export interface VoiceSettingsState {
     text: string,
     fixes: number,
   ) => void;
+  /** Delete the just-recorded note, including its audio, after a rejected transcript. */
+  removeLatestRecentDictation: (rawText: string) => void;
   removeRecentDictation: (id: string) => void;
   clearRecentDictations: () => void;
 
@@ -874,6 +876,35 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
             fixes,
           };
           return { recentDictations };
+        }),
+      removeLatestRecentDictation: (rawText) =>
+        set((state) => {
+          const normalize = (value: string) =>
+            value.trim().replace(/\s+/g, " ");
+          const raw = normalize(rawText);
+          let index = state.recentDictations.findIndex(
+            (dictation) =>
+              normalize(dictation.text) === raw ||
+              (dictation.originalText !== undefined &&
+                normalize(dictation.originalText) === raw),
+          );
+          if (index === -1) {
+            // The adapter's cleaned transcript can differ by whitespace or a
+            // trailing mark. For a rejected note, remove the just-recorded
+            // audio entry rather than leave it behind.
+            const now = Date.now();
+            index = state.recentDictations.findIndex(
+              (dictation) =>
+                now - dictation.at < 10_000 &&
+                dictation.audioDataUrl !== undefined,
+            );
+          }
+          if (index === -1) return state;
+          return {
+            recentDictations: state.recentDictations.filter(
+              (_, position) => position !== index,
+            ),
+          };
         }),
       removeRecentDictation: (id) =>
         set((state) => ({

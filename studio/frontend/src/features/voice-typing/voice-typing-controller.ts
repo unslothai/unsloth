@@ -40,6 +40,7 @@ import {
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { fixGrammar } from "./grammar-fixer";
+import { containsAbusiveLanguage } from "./abusive-language";
 import { invoke } from "@tauri-apps/api/core";
 import { type UnlistenFn, listen } from "@tauri-apps/api/event";
 import {
@@ -786,6 +787,12 @@ export class VoiceTypingController {
       }
       return;
     }
+    // Voice typing only: an abusive note is discarded before any refinement,
+    // insertion, clipboard copy or history write.
+    if (containsAbusiveLanguage(rawText)) {
+      this.rejectAbusive(rawText);
+      return;
+    }
     const storeState = useVoiceTypingStore.getState();
     const { grammarFixerEnabled, llmPostProcessEnabled } = storeState;
     if (llmPostProcessEnabled) {
@@ -805,6 +812,10 @@ export class VoiceTypingController {
     const withTerminal = ensureTerminalPeriod(text);
     if (withTerminal !== text) fixes += 1;
     text = withTerminal;
+    if (containsAbusiveLanguage(text)) {
+      this.rejectAbusive(rawText);
+      return;
+    }
     // The dictation adapter records the pre-refinement transcript for the
     // history; replace it with what was actually inserted.
     useVoiceSettingsStore
@@ -866,6 +877,18 @@ export class VoiceTypingController {
       toast.error(translate("settings.voice.voiceTyping.insertFailed"));
       this.setPhase("idle");
     }
+  }
+
+  private rejectAbusive(rawText: string): void {
+    // The adapter records the note before delivery; remove that record (and
+    // its audio) so nothing survives in history or local storage.
+    useVoiceSettingsStore.getState().removeLatestRecentDictation(rawText);
+    this.transcript = "";
+    this.setPhase("idle");
+    toast.error(
+      translate("settings.voice.voiceTyping.abusiveLanguage"),
+      { duration: 3000 },
+    );
   }
 
   private cancelSession(): void {

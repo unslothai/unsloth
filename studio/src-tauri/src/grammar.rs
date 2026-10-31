@@ -310,6 +310,44 @@ static CURRENCY_HYPHEN_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(\d{2})-\$(\d{1,3}(?:,\d{3})+)\b")
         .expect("currency hyphen regex")
 });
+const CURRENCY_CODES: &str = "USD|EUR|GBP|INR|PKR|JPY|CNY|KRW|RUB|TRY|NGN|PHP|THB|VND|ILS|UAH|KZT|BDT|LKR|NPR|AED|SAR|QAR|KWD|BHD|OMR|CAD|AUD|NZD|CHF|SEK|NOK|DKK|PLN|CZK|HUF|RON|BGN|ZAR|MXN|BRL|ARS|CLP|COP|PEN|SGD|HKD|TWD";
+static SPACED_CURRENCY_CODE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b([A-Z])\s+([A-Z])\s+([A-Z])\b")
+        .expect("spaced currency code regex")
+});
+static DOLLARS_CENTS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:\$\s*)?(\d[\d,]*)\s+(?:dollars?\s+)?(?:and\s+)?(\d{1,2})\s+cents?\b",
+    )
+    .expect("dollars cents regex")
+});
+static CENTS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(\d{1,3})\s+cents?\b").expect("cents regex")
+});
+static CURRENCY_CODE_SPLIT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"(?i)\b({CURRENCY_CODES})\s+(\d{{1,3}})\s+(\d{{1,3}}(?:,\d{{3}})+|\d{{3}})\b"
+    ))
+    .expect("currency code split regex")
+});
+static CURRENCY_CODE_AMOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"(?i)\b({CURRENCY_CODES})\s+(\d[\d,]*(?:\.\d+)?)\b"
+    ))
+    .expect("currency code amount regex")
+});
+static SPLIT_RS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(\d[\d,]*)\s*\.\s*R'?s\.?\s*(\d[\d,]*(?:\.\d+)?)\b")
+        .expect("split rupees regex")
+});
+static RS_AMOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bR'?s\.?\s*(\d[\d,]*(?:\.\d+)?)\b")
+        .expect("rupees amount regex")
+});
+static RUPEES_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\brupees?\s+(\d[\d,]*(?:\.\d+)?)\b")
+        .expect("rupees prefix regex")
+});
 static NUMERIC_PERCENT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(\d+(?:\.\d+)?)\s+(?:percent|per\s+cent)\b")
         .expect("numeric percent regex")
@@ -379,6 +417,18 @@ static AUX_SENTENCE_RE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("auxiliary sentence regex")
 });
+static PRONOUN_CONTRACTION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(I|you|he|she|it|we|they)\s+(am|have|has|will|would|are|is)\b")
+        .expect("pronoun contraction regex")
+});
+static NEGATION_CONTRACTION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(do|does|did|is|are|was|were|have|has|had|will|would|could|should|must|can)\s+not\b",
+    )
+    .expect("negation contraction regex")
+});
+static CANNOT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bcannot\b").expect("cannot regex"));
 
 fn format_number(value: u64) -> String {
     let digits = value.to_string();
@@ -532,7 +582,7 @@ fn currency_symbol(phrase: &str) -> (String, bool) {
         return code("SAR");
     }
     if lower.contains("rupee") {
-        return code("Rs");
+        return ("Rs.".to_string(), true);
     }
     if lower.contains("dollar") || lower == "usd" {
         return ("$".to_string(), false);
@@ -633,13 +683,189 @@ fn is_number_word(word: &str) -> bool {
         || matches!(word, "hundred" | "thousand" | "million" | "billion" | "and")
 }
 
-fn normalize_numbers(text: &str) -> (String, usize) {
+fn format_amount(value: f64) -> String {
+    let rounded = (value * 100.0).round() / 100.0;
+    let integer = rounded.trunc() as u64;
+    let cents = ((rounded - integer as f64) * 100.0).round() as u64;
+    if cents == 0 {
+        format_number(integer)
+    } else {
+        format!("{}.{:02}", format_number(integer), cents)
+    }
+}
+
+fn combine_amounts(first: &str, second: &str) -> Option<String> {
+    let left: f64 = first.replace(',', "").parse().ok()?;
+    let right: f64 = second.replace(',', "").parse().ok()?;
+    // A split "fifty two thousand eight hundred..." arrives as "50 2,873":
+    // the first part is the thousands bucket. A whole amount followed by a
+    // decimal remainder ("58,000. R's 733.27") is a straightforward sum.
+    let value = if !first.contains(',') && left < 1000.0 && !second.contains('.') {
+        left * 1000.0 + right
+    } else {
+        left + right
+    };
+    Some(format_amount(value))
+}
+
+fn currency_code_symbol(code: &str) -> (String, bool) {
+    match code.to_ascii_uppercase().as_str() {
+        "USD" | "CAD" | "AUD" | "NZD" | "SGD" | "HKD" | "MXN" | "BRL"
+        | "ARS" | "CLP" | "COP" | "PEN" => {
+            let symbol = match code.to_ascii_uppercase().as_str() {
+                "USD" => "$".to_string(),
+                "CAD" => "C$".to_string(),
+                "AUD" => "A$".to_string(),
+                "NZD" => "NZ$".to_string(),
+                "SGD" => "S$".to_string(),
+                "HKD" => "HK$".to_string(),
+                "MXN" => "MX$".to_string(),
+                "BRL" => "R$".to_string(),
+                "ARS" => "AR$".to_string(),
+                "CLP" => "CLP".to_string(),
+                "COP" => "COL$".to_string(),
+                "PEN" => "S/".to_string(),
+                _ => "$".to_string(),
+            };
+            (symbol, false)
+        }
+        "EUR" => ("€".to_string(), false),
+        "GBP" => ("£".to_string(), false),
+        "INR" => ("₹".to_string(), false),
+        "JPY" | "CNY" => ("¥".to_string(), false),
+        "KRW" => ("₩".to_string(), false),
+        "RUB" => ("₽".to_string(), false),
+        "TRY" => ("₺".to_string(), false),
+        "NGN" => ("₦".to_string(), false),
+        "PHP" => ("₱".to_string(), false),
+        "THB" => ("฿".to_string(), false),
+        "VND" => ("₫".to_string(), false),
+        "ILS" => ("₪".to_string(), false),
+        "UAH" => ("₴".to_string(), false),
+        "KZT" => ("₸".to_string(), false),
+        "BDT" => ("৳".to_string(), false),
+        "LKR" | "NPR" => ("₨".to_string(), false),
+        "ZAR" => ("R".to_string(), true),
+        // PKR and the Gulf codes are clearer as ISO codes.
+        _ => (code.to_ascii_uppercase(), true),
+    }
+}
+
+fn normalize_currency_expressions(text: &str) -> (String, usize) {
     let changes = Cell::new(0usize);
+
+    // The model sometimes spells a code as "P K R".
+    let mut out = SPACED_CURRENCY_CODE_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            let code = format!(
+                "{}{}{}",
+                &caps[1].to_ascii_uppercase(),
+                &caps[2].to_ascii_uppercase(),
+                &caps[3].to_ascii_uppercase()
+            );
+            if CURRENCY_CODES.split('|').any(|known| known == code) {
+                changes.set(changes.get() + 1);
+                code
+            } else {
+                caps[0].to_string()
+            }
+        })
+        .into_owned();
+
+    // "58,000. R's 733.27" is one amount split by the speech model.
+    out = SPLIT_RS_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            match combine_amounts(&caps[1], &caps[2]) {
+                Some(value) => {
+                    changes.set(changes.get() + 1);
+                    format!("Rs. {value}")
+                }
+                None => caps[0].to_string(),
+            }
+        })
+        .into_owned();
+
+    // "$87 14 cents" -> $87.14
+    out = DOLLARS_CENTS_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let dollars = caps[1].replace(',', "");
+            let cents: u32 = caps[2].parse().unwrap_or(0);
+            if dollars.parse::<u64>().is_err() || cents > 99 {
+                return caps[0].to_string();
+            }
+            changes.set(changes.get() + 1);
+            format!("${dollars}.{cents:02}")
+        })
+        .into_owned();
+
+    // "13 cents" -> ¢13
+    out = CENTS_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            changes.set(changes.get() + 1);
+            format!("¢{}", &caps[1])
+        })
+        .into_owned();
+
+    // "PKR 50 2,873" -> PKR 52,873
+    out = CURRENCY_CODE_SPLIT_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let code = caps[1].to_ascii_uppercase();
+            match combine_amounts(&caps[2], &caps[3]) {
+                Some(value) => {
+                    changes.set(changes.get() + 1);
+                    let (symbol, spaced) = currency_code_symbol(&code);
+                    if spaced {
+                        format!("{symbol} {value}")
+                    } else {
+                        format!("{symbol}{value}")
+                    }
+                }
+                None => caps[0].to_string(),
+            }
+        })
+        .into_owned();
+
+    // "INR 27" -> ₹27, "PKR 47" -> PKR 47.
+    out = CURRENCY_CODE_AMOUNT_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let code = caps[1].to_ascii_uppercase();
+            let amount = format_numeric_amount(&caps[2]);
+            changes.set(changes.get() + 1);
+            let (symbol, spaced) = currency_code_symbol(&code);
+            if spaced {
+                format!("{symbol} {amount}")
+            } else {
+                format!("{symbol}{amount}")
+            }
+        })
+        .into_owned();
+
+    // "R's 8,000" -> Rs. 8,000
+    out = RS_AMOUNT_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            changes.set(changes.get() + 1);
+            format!("Rs. {}", format_numeric_amount(&caps[1]))
+        })
+        .into_owned();
+
+    out = RUPEES_PREFIX_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            changes.set(changes.get() + 1);
+            format!("Rs. {}", format_numeric_amount(&caps[1]))
+        })
+        .into_owned();
+
+    (out, changes.get())
+}
+
+fn normalize_numbers(text: &str) -> (String, usize) {
+    let (currency_text, currency_changes) = normalize_currency_expressions(text);
+    let changes = Cell::new(currency_changes);
 
     // Repair the speech model's hyphenated or split number words before any
     // currency/number rule sees them: "twenty-five" -> "twenty five".
     let mut out = HYPHENATED_NUMBER_RE
-        .replace_all(text, |caps: &regex::Captures<'_>| {
+        .replace_all(&currency_text, |caps: &regex::Captures<'_>| {
             let first = caps[1].to_ascii_lowercase();
             let second = caps[2].to_ascii_lowercase();
             if is_number_word(&first) && is_number_word(&second) {
@@ -1022,17 +1248,20 @@ fn join_auxiliary_sentences(text: &str) -> (String, usize) {
 }
 
 fn normalize_math(text: &str) -> (String, usize) {
-    let changes = Cell::new(0usize);
+    // Harper can mistake "Rs." for "R's."; re-run the currency rules after
+    // linting so the amount keeps its conventional form.
+    let (currency_fixed, currency_fixes) = normalize_currency_expressions(text);
+    let changes = Cell::new(currency_fixes);
     let count = || changes.set(changes.get() + 1);
 
     let mut out = EQUAL_TO_RE
-        .replace_all(text, |caps: &regex::Captures<'_>| {
+        .replace_all(&currency_fixed, |caps: &regex::Captures<'_>| {
             let start = caps.get(0).map(|m| m.start()).unwrap_or(0);
             let window_start = start.saturating_sub(40);
-            let window_end = (start + 80).min(text.len());
-            let window = text
+            let window_end = (start + 80).min(currency_fixed.len());
+            let window = currency_fixed
                 .get(window_start..window_end)
-                .unwrap_or(text)
+                .unwrap_or(&currency_fixed)
                 .to_ascii_lowercase();
             let maths = window.chars().any(|ch| ch.is_ascii_digit())
                 || [
@@ -1152,6 +1381,146 @@ fn normalize_math(text: &str) -> (String, usize) {
     (joined, changes.get())
 }
 
+fn apply_case(original: &str, value: &str) -> String {
+    if original.chars().next().is_some_and(char::is_uppercase) {
+        let mut chars = value.chars();
+        match chars.next() {
+            Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+            None => value.to_string(),
+        }
+    } else {
+        value.to_string()
+    }
+}
+
+fn pronoun_contraction(pronoun: &str, verb: &str) -> Option<&'static str> {
+    Some(match (pronoun, verb) {
+        ("i", "am") => "i'm",
+        ("i", "have") => "i've",
+        ("i", "will") => "i'll",
+        ("i", "would") => "i'd",
+        ("you", "are") => "you're",
+        ("you", "have") => "you've",
+        ("you", "will") => "you'll",
+        ("you", "would") => "you'd",
+        ("he", "is") | ("he", "has") => "he's",
+        ("she", "is") | ("she", "has") => "she's",
+        ("it", "is") | ("it", "has") => "it's",
+        ("we", "are") => "we're",
+        ("we", "have") => "we've",
+        ("we", "will") => "we'll",
+        ("we", "would") => "we'd",
+        ("they", "are") => "they're",
+        ("they", "have") => "they've",
+        ("they", "will") => "they'll",
+        ("they", "would") => "they'd",
+        _ => return None,
+    })
+}
+
+fn negation_contraction(verb: &str) -> Option<&'static str> {
+    Some(match verb {
+        "do" => "don't",
+        "does" => "doesn't",
+        "did" => "didn't",
+        "is" => "isn't",
+        "are" => "aren't",
+        "was" => "wasn't",
+        "were" => "weren't",
+        "have" => "haven't",
+        "has" => "hasn't",
+        "had" => "hadn't",
+        "will" => "won't",
+        "would" => "wouldn't",
+        "could" => "couldn't",
+        "should" => "shouldn't",
+        "must" => "mustn't",
+        "can" => "can't",
+        _ => return None,
+    })
+}
+
+fn normalize_contractions(text: &str) -> (String, usize) {
+    let changes = Cell::new(0usize);
+
+    let mut out = PRONOUN_CONTRACTION_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            let pronoun = caps[1].to_ascii_lowercase();
+            let verb = caps[2].to_ascii_lowercase();
+            let Some(contraction) = pronoun_contraction(&pronoun, &verb) else {
+                return caps[0].to_string();
+            };
+            // "I have 5 apples" / "I have $87" read better uncontracted; only
+            // contract before a normal word, matching the requested style.
+            if pronoun == "i" && verb == "have" {
+                let end = caps.get(0).map(|m| m.end()).unwrap_or(text.len());
+                let rest = text.get(end..).unwrap_or("").trim_start();
+                let next_char = rest.chars().next();
+                let next_word = rest
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_matches(|ch: char| !ch.is_alphanumeric())
+                    .to_ascii_uppercase();
+                let currency_symbol = matches!(
+                    next_char,
+                    Some(
+                        '$' | '€'
+                            | '£'
+                            | '₹'
+                            | '¥'
+                            | '₩'
+                            | '₽'
+                            | '₺'
+                            | '₦'
+                            | '₱'
+                            | '฿'
+                            | '₫'
+                            | '₪'
+                            | '₴'
+                            | '₸'
+                            | '৳'
+                            | '₨'
+                            | '¢'
+                    )
+                );
+                let currency_code = CURRENCY_CODES
+                    .split('|')
+                    .any(|code| code == next_word)
+                    || next_word == "RS";
+                if next_char.is_some_and(|ch| ch.is_ascii_digit())
+                    || currency_symbol
+                    || currency_code
+                {
+                    return caps[0].to_string();
+                }
+            }
+            changes.set(changes.get() + 1);
+            apply_case(&caps[1], contraction)
+        })
+        .into_owned();
+
+    out = NEGATION_CONTRACTION_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let verb = caps[1].to_ascii_lowercase();
+            let Some(contraction) = negation_contraction(&verb) else {
+                return caps[0].to_string();
+            };
+            changes.set(changes.get() + 1);
+            apply_case(&caps[1], contraction)
+        })
+        .into_owned();
+
+    out = CANNOT_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            changes.set(changes.get() + 1);
+            apply_case(&caps[0], "can't")
+        })
+        .into_owned();
+
+    (out, changes.get())
+}
+
 fn correct(text: &str, language: &str, custom_words: &[String]) -> (String, usize) {
     if text.trim().is_empty() || text.chars().count() > MAX_TEXT_CHARS {
         return (text.to_owned(), 0);
@@ -1218,13 +1587,17 @@ fn correct(text: &str, language: &str, custom_words: &[String]) -> (String, usiz
 
     let raw_fixed: String = source.into_iter().collect();
     let (math_fixed, math_fixes) = normalize_math(&raw_fixed);
-    let mut fixed: Vec<char> = math_fixed.chars().collect();
+    let (contraction_fixed, contraction_fixes) = normalize_contractions(&math_fixed);
+    let mut fixed: Vec<char> = contraction_fixed.chars().collect();
     capitalize_start(&mut fixed);
     let fixed: String = fixed.into_iter().collect();
     if fixed.trim().is_empty() {
         (text.to_owned(), 0)
     } else {
-        (fixed, applied + number_fixes + math_fixes)
+        (
+            fixed,
+            applied + number_fixes + math_fixes + contraction_fixes,
+        )
     }
 }
 
@@ -1319,6 +1692,20 @@ mod tests {
         assert!(height.contains("5 feet 6 inches"), "{height}");
         let model_split = fix("i am earning 20-$5,000 per month");
         assert!(model_split.contains("$25,000"), "{model_split}");
+        let cents = fix("i have $87 14 cents");
+        assert!(cents.contains("$87.14"), "{cents}");
+        let cents_only = fix("i have 13 cents");
+        assert!(cents_only.contains("¢13"), "{cents_only}");
+        let inr = fix("i have INR 27");
+        assert!(inr.contains("₹27"), "{inr}");
+        let spaced_code = fix("i have 47 P K R");
+        assert!(spaced_code.contains("PKR 47"), "{spaced_code}");
+        let rs = fix("i have R's 8,000 to spend");
+        assert!(rs.contains("Rs. 8,000"), "{rs}");
+        let split_pkr = fix("i have PKR 50 2,873 to spend");
+        assert!(split_pkr.contains("PKR 52,873"), "{split_pkr}");
+        let split_rs = fix("i have 58,000. R's 733.27");
+        assert!(split_rs.contains("Rs. 58,733.27"), "{split_rs}");
     }
 
     #[test]
@@ -1339,7 +1726,8 @@ mod tests {
         );
         assert!(approx.contains("~98.37%"), "{approx}");
         let prose = fix("she is equal to the task");
-        assert!(prose.contains("is equal to"), "{prose}");
+        assert!(prose.contains("equal to the task"), "{prose}");
+        assert!(!prose.contains(" = "), "{prose}");
         let domain = fix("we use llama dot cpp daily");
         assert!(domain.contains("llama.cpp"), "{domain}");
     }
@@ -1349,11 +1737,31 @@ mod tests {
         let day = fix("today is thursday, and yesterday were. wednesday");
         assert!(day.contains("were Wednesday"), "{day}");
         let modal = fix("i cannot Go to college today");
-        assert!(modal.contains("cannot go"), "{modal}");
+        assert!(modal.contains("can't go"), "{modal}");
         let clause = fix(
             "people building crazy stuff with ai, and someone on youtube. is earning 40 k a month",
         );
         assert!(clause.contains("YouTube is earning 40k"), "{clause}");
+    }
+
+    #[test]
+    fn applies_common_contractions() {
+        let bike = fix("I have a bike.");
+        assert!(bike.contains("I've a bike."), "{bike}");
+        let apples = fix("I have 5 apples.");
+        assert!(apples.contains("I have 5 apples."), "{apples}");
+        let money = fix("I have $87.14.");
+        assert!(money.contains("I have $87.14."), "{money}");
+        let worry = fix("do not worry");
+        assert!(worry.contains("Don't worry"), "{worry}");
+        let she = fix("she is here");
+        assert!(she.contains("She's here"), "{she}");
+        let they = fix("they are ready");
+        assert!(they.contains("They're ready"), "{they}");
+        let will = fix("will not go");
+        assert!(will.contains("Won't go"), "{will}");
+        let cannot = fix("cannot go");
+        assert!(cannot.contains("Can't go"), "{cannot}");
     }
 
     #[test]

@@ -36,16 +36,16 @@
         justify-content: center;
         pointer-events: none;
       }
-      /* 176x44 pill centred in a 248x96 window: the 26px vertical and 36px side
+      /* 196x50 pill centred in a 248x96 window: the 23px vertical and 26px side
          margins clear the shadow, so it is never clipped by the window bounds. */
       .vt-pill {
         box-sizing: border-box;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        width: 176px;
-        height: 44px;
-        padding: 0 16px 0 8px;
+        width: 196px;
+        height: 50px;
+        padding: 0 18px 0 10px;
         border: 1px solid rgba(255, 255, 255, 0.09);
         border-radius: 999px;
         background: rgba(17, 19, 24, 0.94);
@@ -64,8 +64,8 @@
       .vt-logo {
         position: relative;
         flex: 0 0 auto;
-        width: 28px;
-        height: 28px;
+        width: 32px;
+        height: 32px;
         padding: 0;
         border: 0;
         border-radius: 999px;
@@ -110,8 +110,8 @@
           transform 160ms cubic-bezier(0.2, 0.9, 0.3, 1.25);
       }
       .vt-stop svg {
-        width: 10px;
-        height: 10px;
+        width: 11px;
+        height: 11px;
         display: block;
       }
       .vt-logo:hover img,
@@ -133,7 +133,7 @@
         align-items: center;
         justify-content: center;
         gap: 3px;
-        height: 28px;
+        height: 32px;
       }
       .vt-bar {
         width: 3px;
@@ -145,13 +145,13 @@
       }
       .vt-time {
         flex: 0 0 auto;
-        min-width: 38px;
+        min-width: 42px;
         text-align: right;
         color: #cbd0d8;
         font-family:
           "JetBrains Mono", "Cascadia Mono", "SF Mono", ui-monospace, Menlo,
           Consolas, "Liberation Mono", monospace;
-        font-size: 12px;
+        font-size: 13px;
         font-variant-numeric: tabular-nums;
         font-weight: 500;
         letter-spacing: -0.01em;

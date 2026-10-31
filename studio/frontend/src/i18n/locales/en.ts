@@ -1840,6 +1840,7 @@ export const en = {
         autoStopDescription: "Stop dictation automatically after silence",
         stoppedAfterSilence: "Stopped after a pause",
         noSpeechNotice: "No speech detected",
+        abusiveLanguage: "Abusive Language is Discouraged!",
         openSettingsAction: "Open Voice settings",
         micAccessGranted: "Allowed",
         micAccessNeeded: "Not granted yet",
