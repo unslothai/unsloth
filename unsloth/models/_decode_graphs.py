@@ -2,7 +2,14 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
 """CUDA-graph decode; UNSLOTH_DECODE_CUDA_GRAPHS=1 forces, =0 disables; unset, only RL-trainer
-generate on NVIDIA CUDA; graphs dropped when params, LoRA, quant or RoPE change."""
+generate on NVIDIA CUDA; graphs dropped when params, LoRA, quant or RoPE change.
+
+UNSLOTH_DECODE_CUDA_GRAPHS_FULL=1 also captures the attention cores: each step is then ONE graph that
+attends over a fixed span of cache rows (the next power of two >= the KV length, at least BUCKET, at
+most the cache) with a device-side keep mask, so no eager launch is left between the layers. Rows past
+the true length are masked to -inf, so the result matches the eager step up to the summation order of
+the softmax / PV reductions (not bit for bit); one graph is captured per (batch size, span). Only
+batch 1 by default (UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ): larger batches keep the segmented capture."""
 
 import math
 import os
@@ -13,10 +20,17 @@ import torch
 # Programmatic override (tests, harnesses): True / False force graphs on / off, None (default) follows
 # the environment variable read at call time and the RL generation scope (enabled()).
 ENABLED = None
+# Whole-step graphs (attention captured too, over a power-of-two span of cache rows).
+FULL = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_FULL", "0") == "1"
+# Largest batch the whole-step capture takes; larger batches keep the segmented (bit-exact) capture.
+# Batched decode measured slower whole-step on a T4 (+9-15%: GPU bound, nothing to hide).
+FULL_MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ", "1"))
 # KV-cache rows are allocated in multiples of this with graphs on.
 BUCKET = 256
 # Captured steps (one per batch size / autocast state) kept per model.
 MAX_GRAPHS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_MAX", "8"))
+# Whole-step graphs keep one graph per span too (log2(cache / BUCKET) + 1 per batch size).
+MAX_FULL_GRAPHS = int(os.environ.get("UNSLOTH_DECODE_FULL_GRAPH_MAX", "16"))
 
 __all__ = [
     "ENABLED",
@@ -113,14 +127,26 @@ class _StepStatics:
     length, and (per replayed step) the true KV length + mask for the eager attention cores.
     attention(fn) is the split point: eager it runs fn, capturing it closes the current segment."""
 
-    __slots__ = ("rope_len", "slot", "kv_len", "mask", "attention")
+    __slots__ = ("rope_len", "slot", "kv_len", "mask", "attention", "span", "keep", "drop")
 
-    def __init__(self, rope_len, slot):
+    def __init__(
+        self,
+        rope_len,
+        slot,
+        span = None,
+        keep = None,
+        drop = None,
+    ):
         self.rope_len = rope_len
         self.slot = slot
         self.kv_len = None
         self.mask = None
         self.attention = _run_now
+        # Whole-step graphs: cache rows the captured attention reads, and their bool keep mask
+        # [bsz, 1, 1, rows] (refilled outside the graph before every replay).
+        self.span = span
+        self.keep = keep
+        self.drop = drop  # ~keep, so the graph does not invert it once per layer
 
 
 def _run_now(fn):
@@ -434,6 +460,43 @@ def _eligible(model, layers):
     return None
 
 
+def _full_span(
+    model,
+    kv_len,
+    cap,
+    bsz = 1,
+):
+    """The cache rows a whole-step graph attends over, or None for the segmented capture."""
+    if not FULL or bsz > FULL_MAX_BSZ:
+        return None
+    sliding_window = getattr(model.config, "sliding_window", None)
+    if sliding_window is not None and cap > sliding_window:
+        # The segmented path slices the window off eagerly; a span would read rows outside it.
+        return None
+    return min(cap, max(BUCKET, 1 << (kv_len - 1).bit_length()))
+
+
+def _fill_keep(state, s, mask, bsz, kv_len, cap, device):
+    """Writes this step's keep mask (true KV rows, padding applied) into the static buffer."""
+    keep = s.get("keep")
+    if keep is None or keep.shape[0] != bsz or keep.shape[-1] != cap:
+        with _no_inference_tensors():
+            keep = torch.zeros((bsz, 1, 1, cap), dtype = torch.bool, device = device)
+            drop = torch.ones((bsz, 1, 1, cap), dtype = torch.bool, device = device)
+        if s.get("keep") is not None:
+            # Graphs captured against the old buffers would read freed memory.
+            state.clear()
+        s["keep"], s["drop"] = keep, drop
+    drop = s["drop"]
+    keep[..., kv_len:] = False
+    if mask is None:
+        keep[..., :kv_len] = True
+    else:
+        keep[..., :kv_len] = mask[..., -kv_len:]
+    torch.logical_not(keep, out = drop)
+    return keep
+
+
 def _static_inputs(state, bsz, device, dtype, hidden_size):
     key = (bsz, device)
     s = state.statics.get(key)
@@ -594,17 +657,24 @@ def decode_step(
     s["pos"].copy_(last.view(bsz, 1))
     s["slot"].fill_(seq_len)
 
+    span = _full_span(model, kv_len, cap, bsz)
+    if span is not None:
+        mask = mask_fn(model, attention_mask, bsz, 1, s["like"], seq_len)
+        if mask is not None and mask.shape[-2] != 1:
+            return None
+        _fill_keep(state, s, mask, bsz, kv_len, cap, device)
+
     autocast = _autocast_state()
-    key = (bsz, device, autocast, torch.is_inference_mode_enabled())
+    key = (bsz, device, autocast, torch.is_inference_mode_enabled(), span)
     step = state.graphs.get(key)
     if step is None:
-        if len(state.graphs) >= MAX_GRAPHS:
+        if len(state.graphs) >= (MAX_GRAPHS if span is None else MAX_FULL_GRAPHS):
             state.graphs.clear()
             state.pool = None
         try:
             step = _capture(
                 state, model, fast_forward_inference, logits_fn, mask_fn, s, rope_len,
-                past_key_values, autocast, attention_mask, seq_len,
+                past_key_values, autocast, attention_mask, seq_len, span,
             )  # fmt: skip
             # The warmup may have built LoRA cast caches or RoPE rows the graph now reads.
             state.fingerprint = _fingerprint(model, layers, rope_len)
@@ -618,7 +688,9 @@ def decode_step(
         state.captures += 1
     st = step.statics
     st.kv_len = kv_len
-    st.mask = mask_fn(model, attention_mask, bsz, 1, s["like"], seq_len)
+    st.mask = (
+        None if span is not None else mask_fn(model, attention_mask, bsz, 1, s["like"], seq_len)
+    )
     try:
         step.replay()
     finally:
@@ -656,6 +728,7 @@ def _capture(
     autocast,
     attention_mask,
     seq_len,
+    span = None,
 ):
     if state.stream is not None and state.stream.device.index != torch.cuda.current_device():
         state.stream = None
@@ -665,9 +738,13 @@ def _capture(
     if state.stream is None:
         state.stream = torch.cuda.Stream()
     stream = state.stream
-    st = _StepStatics(rope_len, s["slot"])
+    st = _StepStatics(
+        rope_len, s["slot"], span,
+        s.get("keep") if span is not None else None, s.get("drop") if span is not None else None,
+    )  # fmt: skip
     st.kv_len = seq_len + 1
-    st.mask = mask_fn(model, attention_mask, s["ids"].shape[0], 1, s["like"], seq_len)
+    if span is None:
+        st.mask = mask_fn(model, attention_mask, s["ids"].shape[0], 1, s["like"], seq_len)
     enabled, dtype = autocast
     # No autocast weight cache: a cast cached during capture would be freed into the graph's pool.
     no_cache = lambda: torch.autocast("cuda", dtype = dtype, enabled = enabled, cache_enabled = False)
@@ -696,7 +773,8 @@ def _capture(
 
         graph = torch.cuda.CUDAGraph()
         step.segments.append(graph)
-        st.attention = split
+        if span is None:
+            st.attention = split
         _begin(graph, state.pool)
         try:
             step.logits = _run_step(
