@@ -114,7 +114,10 @@ env:
 jobs:
   pytest:
     name: (Python ${{ matrix.python }}, ${{ matrix.shard }})
-    runs-on: ubuntu-24.04
+    # Repo variable LINUX_TEST_RUNNER moves the CPU test jobs onto another pool
+    # (e.g. tenki-standard-large-8c-16g) without editing each workflow. Unset, they
+    # stay on GitHub-hosted ubuntu-24.04; the override must also be an Ubuntu 24.04 image.
+    runs-on: ${{ vars.LINUX_TEST_RUNNER || 'ubuntu-24.04' }}
     # Hang backstop, not a performance budget; the per-test --timeout names hangs.
     timeout-minutes: 45
     strategy:
@@ -313,7 +316,8 @@ jobs:
   repo-cpu-tests:
     # tests/conftest.py mocks torch.cuda.is_available for the import chain.
     name: Repo tests (CPU, ${{ matrix.shard }})
-    runs-on: ubuntu-24.04
+    # Pool override: see LINUX_TEST_RUNNER on the first job in this file.
+    runs-on: ${{ vars.LINUX_TEST_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 45
     strategy:
       # Three shards balanced on measured runner time. `rest` is "tests/ minus the other roots"
