@@ -5644,8 +5644,8 @@ def _project_folder_tip(tool_names) -> str:
         "This chat belongs to a project, and the current working directory is the folder the "
         'user chose for it, so "my project" and "my files" mean the files there. When asked '
         f"about the project or its files, list and read them with the {reader} first{web}. "
-        "Do not say you cannot see them or ask the user to upload or paste them. Use relative "
-        "paths."
+        "Read them rather than asking the user to upload or paste them, and if a read fails or "
+        "is denied, say what failed instead of saying you have no access. Use relative paths."
     )
 
 
