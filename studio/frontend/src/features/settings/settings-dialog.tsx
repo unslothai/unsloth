@@ -357,6 +357,11 @@ export function SettingsDialog() {
     tab: SettingsTab;
     entry: string;
   } | null>(null);
+  // Last result opened; the query stays so the list can be reused.
+  const [openedResult, setOpenedResult] = useState<{
+    tab: SettingsTab;
+    entry?: string;
+  } | null>(null);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Shared scroller: reset per tab. panelTab, not activeTab, so the old panel does not jump mid-defer.
@@ -367,7 +372,7 @@ export function SettingsDialog() {
 
   const openResult = (tab: SettingsTab, entry?: string) => {
     setActiveTab(tab);
-    setQuery("");
+    setOpenedResult({ tab, entry });
     setPendingScroll(entry ? { tab, entry } : null);
   };
 
@@ -423,6 +428,7 @@ export function SettingsDialog() {
     }
     const frame = window.requestAnimationFrame(() => {
       setQuery("");
+      setOpenedResult(null);
       setPendingScroll(null);
     });
     return () => window.cancelAnimationFrame(frame);
@@ -524,11 +530,15 @@ export function SettingsDialog() {
                 />
                 <input
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setOpenedResult(null);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Escape" && query) {
                       e.stopPropagation();
                       setQuery("");
+                      setOpenedResult(null);
                     }
                   }}
                   data-type-to-activate="settings-search"
@@ -539,7 +549,10 @@ export function SettingsDialog() {
                 {query && (
                   <button
                     type="button"
-                    onClick={() => setQuery("")}
+                    onClick={() => {
+                      setQuery("");
+                      setOpenedResult(null);
+                    }}
                     aria-label={t("settings.dialog.closeAriaLabel")}
                     className="absolute top-1/2 right-2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
                   >
@@ -559,7 +572,12 @@ export function SettingsDialog() {
                         <button
                           type="button"
                           onClick={() => openResult(tab.id)}
-                          className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                          aria-current={
+                            openedResult?.tab === tab.id && !openedResult.entry
+                              ? "true"
+                              : undefined
+                          }
+                          className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-[current=true]:bg-accent aria-[current=true]:text-accent-foreground"
                         >
                           {tab.iconComponent ? (
                             <tab.iconComponent className="size-icon shrink-0" />
@@ -577,7 +595,13 @@ export function SettingsDialog() {
                             key={entry}
                             type="button"
                             onClick={() => openResult(tab.id, entry)}
-                            className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                            aria-current={
+                              openedResult?.tab === tab.id &&
+                              openedResult.entry === entry
+                                ? "true"
+                                : undefined
+                            }
+                            className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-[current=true]:bg-accent aria-[current=true]:text-accent-foreground"
                           >
                             <span className="min-w-0 truncate">{entry}</span>
                           </button>
