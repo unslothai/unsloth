@@ -300,7 +300,12 @@ def test_chat_help_lists_the_image_command():
 
 
 class _FakeOrchestrator:
-    def __init__(self, *, is_vision = True, several = False):
+    def __init__(
+        self,
+        *,
+        is_vision = True,
+        several = False,
+    ):
         self.active_model_name = "fake/vlm"
         self.models = {
             "fake/vlm": {
