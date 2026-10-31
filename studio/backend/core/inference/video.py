@@ -6648,6 +6648,16 @@ class VideoBackend:
                     hf_token = hf_token,
                     ltx25_dev = ltx25_dev,
                 ):
+                    from .video_hosted_int8_native import hosted_int8_offload_ok
+
+                    if hosted_int8_offload_ok(fam, scheme, target, base):
+                        logger.info(
+                            "video.denoiser_prequant: an artifact-sized plan for %s still offloads on "
+                            "this card; the hosted checkpoint is read as torchao-free W8A8 layers, so "
+                            "the dense denoiser shards are not fetched",
+                            scheme,
+                        )
+                        return scheme
                     logger.info(
                         "video.denoiser_prequant: an artifact-sized plan for %s still offloads on "
                         "this card, and offload moves the DiT, so the dense denoiser shards are "
@@ -8702,7 +8712,22 @@ class VideoBackend:
         plan, bf16_plan, quant_replanned = _plan_for_te_scale(
             te_scale, log = True, denoiser_gb = denoiser_seed_gb
         )
-        if denoiser_seed_scheme is not None and not plan_keeps_transformer_resident(plan):
+        from .video_hosted_int8_native import hosted_int8_offload_ok
+
+        denoiser_seed_native = False
+        if (
+            denoiser_seed_scheme is not None
+            and not plan_keeps_transformer_resident(plan)
+            and hosted_int8_offload_ok(fam, denoiser_seed_scheme, target, base)
+        ):
+            denoiser_seed_native = True
+            logger.info(
+                "video.denoiser_prequant: the %s denoiser is offloaded ('%s') on this card, so the "
+                "hosted checkpoint is read as torchao-free W8A8 layers",
+                denoiser_seed_scheme,
+                _video_plan_label(plan),
+            )
+        elif denoiser_seed_scheme is not None and not plan_keeps_transformer_resident(plan):
             logger.info(
                 "video.denoiser_prequant: the %s denoiser would have to be offloaded ('%s') on this "
                 "card, so the hosted checkpoint is not seeded",
@@ -8723,6 +8748,7 @@ class VideoBackend:
             )
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
+            denoiser_seed_native = False
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
         comfy_priced_offload = False
         if comfy_scan is not None and _video_comfy_reprice(plan, bf16_plan):
@@ -8871,9 +8897,15 @@ class VideoBackend:
                 settled_te_scale, log = False, denoiser_gb = denoiser_seed_gb
             )
             if denoiser_seed_scheme is not None and not plan_keeps_transformer_resident(plan):
-                denoiser_seed_scheme = None
-                denoiser_seed_gb = None
-                plan, bf16_plan, quant_replanned = _plan_for_te_scale(settled_te_scale, log = False)
+                if hosted_int8_offload_ok(fam, denoiser_seed_scheme, target, base):
+                    denoiser_seed_native = True
+                else:
+                    denoiser_seed_scheme = None
+                    denoiser_seed_gb = None
+                    denoiser_seed_native = False
+                    plan, bf16_plan, quant_replanned = _plan_for_te_scale(
+                        settled_te_scale, log = False
+                    )
         _nvfp4_install_outcome = self._install_flashinfer_for_seed(
             _nvfp4_install_wanted, denoiser_seed_scheme, device, local_files_only = local_files_only
         )
@@ -8893,9 +8925,11 @@ class VideoBackend:
                 local_files_only = local_files_only,
                 cache_dir = hub_cache_dir(),
                 logger = logger,
+                native_offload = denoiser_seed_native,
             )
             pipe_kwargs.update(denoiser_injected)
             if not denoiser_injected:
+                denoiser_seed_native = False
                 logger.warning(
                     "video.denoiser_prequant: no pre-quantized denoiser was seeded; re-planning "
                     "memory at the dense bf16 DiT size"
@@ -9320,8 +9354,10 @@ class VideoBackend:
                 family = fam.name,
                 offload = video_offload,
             )
-            # A seeded denoiser is a torchao checkpoint; the torchao-free path must not claim it.
+            # A seeded denoiser is a torchao checkpoint unless read natively; the torchao-free path must not claim it.
             if kind == "pipeline" and not denoiser_injected
+            else TQ_INT8
+            if denoiser_injected and denoiser_seed_native
             else TQ_INT8
             if comfy_scheme == TQ_INT8 and comfy_info.get("backend") == "native"
             else None
@@ -9420,6 +9456,11 @@ class VideoBackend:
             transformer_quant_source = (
                 f"hosted pre-quantized {denoiser_seed_scheme} denoiser checkpoint "
                 f"({', '.join(sorted({src.location for src in denoiser_seed_sources.values()}))})"
+                + (
+                    ", read as torchao-free W8A8 layers so the offloaded DiT can stream"
+                    if denoiser_seed_native
+                    else ""
+                )
             )
             logger.info(
                 "video.transformer_quant: %s pre-quantized denoiser(s) seeded for %s; skipping "
