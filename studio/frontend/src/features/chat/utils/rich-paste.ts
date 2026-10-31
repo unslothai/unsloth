@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The slice of a DOM node the converter reads, so tests can build trees without a DOM. */
 export interface PasteNode {
   nodeType: number;
   nodeName: string;
@@ -12,7 +11,6 @@ export interface PasteNode {
 
 type Ctx = { pre: boolean; bold: boolean; italic: boolean };
 
-// Only these make a paste worth converting; code and styled spans alone paste as before.
 const STRUCTURE =
   /<a\s[^>]*\bhref|<(?:table|ul|ol|h[1-6]|blockquote|strong|em|del|s|b|i)[\s>]/i;
 const SKIP = new Set([
@@ -24,7 +22,6 @@ const BLOCK = new Set([
   "P", "DIV", "SECTION", "ARTICLE", "HEADER", "FOOTER", "MAIN", "ASIDE",
   "NAV", "FIGURE", "FIGCAPTION", "DL", "DT", "DD", "BODY", "HTML", "CAPTION",
 ]);
-// Placeholders that survive whitespace cleanup: list indentation and fenced code.
 const INDENT = "\u0001";
 const FENCE_OPEN = "\u0002";
 const FENCE_CLOSE = "\u0003";
@@ -45,7 +42,6 @@ function children(node: PasteNode, ctx: Ctx): string {
 
 const FENCED = new RegExp(`${FENCE_OPEN}[\\s\\S]*?${FENCE_CLOSE}`, "g");
 
-/** Collapses layout whitespace, leaving fenced code exactly as copied. */
 function clean(text: string): string {
   const fences: string[] = [];
   return text
@@ -93,13 +89,12 @@ function list(node: PasteNode, ctx: Ctx, ordered: boolean): string {
   for (const item of elements(node)) {
     const tag = item.nodeName.toUpperCase();
     if (tag === "UL" || tag === "OL") {
-      // Some editors nest a list as a sibling of the items instead of inside one.
       for (const line of list(item, ctx, tag === "OL").split("\n"))
         lines.push(`${INDENT.repeat(ordered ? 3 : 2)}${line}`);
       continue;
     }
     const marker = ordered ? `${index++}.` : "-";
-    // Blank lines go, except inside fenced code, where they are part of the copied text.
+    // Blank lines are kept only inside fenced code.
     let fenced = false;
     const body = clean(children(item, ctx))
       .split("\n")
@@ -218,7 +213,6 @@ function convert(node: PasteNode, ctx: Ctx): string {
     case "TABLE":
       return `\n\n${table(node, ctx)}\n\n`;
     case "SPAN": {
-      // Docs and Word mark emphasis with inline styles rather than tags.
       let inner = children(node, {
         ...ctx,
         bold: ctx.bold || /font-weight:\s*(?:bold|[6-9]00)/.test(style),
@@ -233,7 +227,6 @@ function convert(node: PasteNode, ctx: Ctx): string {
   }
 }
 
-/** Markdown for a pasted HTML tree: links, tables, lists, headings, quotes, code and emphasis. */
 export function htmlNodeToMarkdown(root: PasteNode): string {
   return clean(convert(root, { pre: false, bold: false, italic: false })).replace(
     new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}]`, "g"),
@@ -243,16 +236,12 @@ export function htmlNodeToMarkdown(root: PasteNode): string {
 
 const squash = (text: string) => text.replace(/\s+/g, " ").trim();
 
-/**
- * Markdown to insert for a rich paste, or null to let the browser paste plain text: no HTML, an
- * editor's code copy, nothing structural, or a conversion that adds nothing to the plain text.
- */
 export function richPasteMarkdown(
   data: Pick<DataTransfer, "getData" | "types"> | null | undefined,
   parse: (html: string) => PasteNode | null = parseHtml,
 ): string | null {
   if (!data) return null;
-  // VS Code and other editors put syntax-colored HTML beside the code.
+  // Skip VS Code and other editors' syntax-colored HTML.
   if (Array.from(data.types ?? []).includes("vscode-editor-data")) return null;
   const html = data.getData("text/html");
   if (!html || !STRUCTURE.test(html)) return null;
@@ -261,17 +250,16 @@ export function richPasteMarkdown(
   const markdown = htmlNodeToMarkdown(root);
   const plain = data.getData("text/plain");
   if (!markdown || squash(markdown) === squash(plain)) return null;
-  // Conversion trims its edges; the copied text's own edges still separate it from its neighbours.
+  // Restore the copied text's edge whitespace, which conversion trims.
   return `${/^\s*/.exec(plain)?.[0] ?? ""}${markdown}${/\s*$/.exec(plain)?.[0] ?? ""}`;
 }
 
 function parseHtml(html: string): PasteNode | null {
   if (typeof DOMParser === "undefined") return null;
-  // An inert document: nothing in it runs or loads, and only its text is read.
+  // Inert document: nothing in it runs or loads.
   return new DOMParser().parseFromString(html, "text/html").body as unknown as PasteNode;
 }
 
-/** Inserts at the caret through the browser so Undo still reverts the paste. */
 export function insertAtCaret(
   input: HTMLTextAreaElement,
   text: string,

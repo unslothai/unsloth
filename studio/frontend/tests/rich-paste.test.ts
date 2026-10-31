@@ -9,7 +9,6 @@ import {
   richPasteMarkdown,
 } from "../src/features/chat/utils/rich-paste.ts";
 
-// No DOM in this project: build the trees the converter reads by hand.
 type Child = PasteNode | string;
 function el(tag: string, attrs: Record<string, string> | Child = {}, ...kids: Child[]): PasteNode {
   const attributes = typeof attrs === "object" && !("nodeType" in attrs) ? attrs : {};
@@ -119,7 +118,6 @@ test("Google Docs: the normal-weight wrapper adds nothing, styled spans become e
 test("rich paste falls back to the plain text when it would add nothing", () => {
   const parse = () => el("body", el("b", { style: "font-weight:normal" }, "just words"));
   assert.equal(richPasteMarkdown(clipboard('<b style="font-weight:normal">just words</b>', "just words"), parse), null);
-  // No structural tag at all: spans and divs from a styled copy paste as before.
   assert.equal(richPasteMarkdown(clipboard("<div><span>x</span></div>", "x"), () => el("body", "x")), null);
   assert.equal(richPasteMarkdown(clipboard("", "plain only")), null);
 });
