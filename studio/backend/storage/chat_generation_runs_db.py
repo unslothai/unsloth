@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import time
 import weakref
+from functools import partial
 from pathlib import Path
 from typing import Any, Iterable, Union
 
@@ -276,6 +277,10 @@ def _prepare_connection() -> tuple[sqlite3.Connection, bool]:
     return conn, db_path.resolve() in _schema_ready
 
 
+def _dumps_payload(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii = False, separators = (",", ":"))
+
+
 def _loads(value: str | None, fallback: Any) -> Any:
     if value is None:
         return fallback
@@ -366,7 +371,8 @@ def _append_events_locked(
                 run_id,
                 seq,
                 event_type,
-                json.dumps(payload, ensure_ascii = False, separators = (",", ":")),
+                # The events route splices this text into SSE frames as is, so it must stay its encoding.
+                _dumps_payload(payload),
                 created,
             ),
         )
@@ -932,9 +938,37 @@ def list_events(
     run_id: str,
     after: int = 0,
     limit: int = 1000,
+    *,
+    raw: bool = False,
 ) -> list[dict[str, Any]]:
+    """raw=True hands back payload_json untouched as "payloadJson" instead of a parsed "payload".
+
+    Every row is written by _append_events_locked with the same dumps options the SSE route encodes
+    with, so the stored text is already the exact bytes a parse and re-encode would give back. A row
+    SQLite does not see as one line of valid JSON (corrupt, hand edited, NaN) takes the old parse and
+    re-encode, so the route never splices text the client cannot parse or that splits the SSE frame."""
     conn = _connect()
     try:
+        if raw:
+            rows = conn.execute(
+                """SELECT seq, event_type, payload_json, created_at,
+                          json_valid(payload_json) AND instr(payload_json, char(10))=0
+                              AND instr(payload_json, char(13))=0 AS splice_ok
+                   FROM chat_generation_events
+                   WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?""",
+                (run_id, after, limit),
+            ).fetchall()
+            return [
+                {
+                    "seq": int(row["seq"]),
+                    "type": row["event_type"],
+                    "payloadJson": row["payload_json"]
+                    if row["splice_ok"]
+                    else _dumps_payload(_loads(row["payload_json"], {})),
+                    "createdAt": int(row["created_at"]),
+                }
+                for row in rows
+            ]
         rows = conn.execute(
             """SELECT seq, event_type, payload_json, created_at
                FROM chat_generation_events
@@ -958,19 +992,21 @@ def wait_for_events(
     run_id: str,
     after: int = 0,
     timeout: float = 15,
+    raw: bool = False,
 ) -> list[dict[str, Any]]:
+    read = partial(list_events, raw = True) if raw else list_events
     # Bumped under the lock after each notifying commit: unchanged means the unlocked read saw them all.
     seen = _EVENTS_COMMITS
-    events = list_events(run_id, after)
+    events = read(run_id, after)
     if events:
         return events
     with _EVENTS_CHANGED:
         if _EVENTS_COMMITS != seen:
-            events = list_events(run_id, after)
+            events = read(run_id, after)
             if events:
                 return events
         _EVENTS_CHANGED.wait(timeout)
-    return list_events(run_id, after)
+    return read(run_id, after)
 
 
 def reconcile_runs(
