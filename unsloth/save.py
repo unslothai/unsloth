@@ -4054,8 +4054,8 @@ def _restore_lfm3_audio_release_config(model, save_directory):
             continue
         if vocab is not None and release["lfm"].get("vocab_size") != vocab:
             continue  # resized embeddings: the release config no longer describes these weights
-        # The dtype the weights were written in, not the release's.
-        release = {**release, **{k: saved[k] for k in ("dtype", "torch_dtype") if k in saved}}
+        # The dtype the weights were written in and the code modules the save copied, not the release's.
+        release = {**release, **{k: saved[k] for k in ("dtype", "torch_dtype", "auto_map") if k in saved}}
         with open(path, "w", encoding = "utf-8") as f:
             json.dump(release, f, indent = 2)
         return True
@@ -4072,6 +4072,29 @@ def _release_layout_for_merged_save(model, save_directory, save_method):
     if "16bit" not in str(save_method) or not os.path.isdir(str(save_directory)):
         return False
     return _restore_lfm3_audio_release_config(model, save_directory)
+
+
+def _push_lfm3_audio_release_config(model, repo_id, token = None):
+    # A plain PEFT merged push uploads straight from the merge, so the release layout is pushed after it.
+    if getattr(getattr(model, "config", None), "model_type", None) != "lfm3_audio":
+        return False
+    import tempfile
+
+    from huggingface_hub import HfApi, hf_hub_download
+
+    with tempfile.TemporaryDirectory(prefix = "unsloth-lfm3-config-") as directory:
+        hf_hub_download(
+            repo_id, "config.json", token = token, local_dir = directory, force_download = True
+        )
+        if not _restore_lfm3_audio_release_config(model, directory):
+            return False
+        HfApi(token = token).upload_file(
+            path_or_fileobj = os.path.join(directory, "config.json"),
+            path_in_repo = "config.json",
+            repo_id = repo_id,
+            commit_message = "Unsloth: LFM3-Audio config in its release layout",
+        )
+    return True
 
 
 def _stamp_saved_config_float32(save_directory):
@@ -7037,6 +7060,10 @@ def unsloth_generic_save(
         if not push_to_hub:
             _stitch_mtp_head(model, save_directory)
             _release_layout_for_merged_save(model, save_directory, save_method)
+        elif "16bit" in save_method and is_main_process:
+            _push_lfm3_audio_release_config(
+                model, _determine_username(save_directory, None, token)[0], token = token
+            )
 
     if push_to_hub and datasets:
         try:
