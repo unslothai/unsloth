@@ -54,8 +54,8 @@ CHAT_ONLY_REASON: Optional[str] = None
 CHAT_ONLY_DETAIL: Optional[str] = None
 # (reason, hint) from the last detection pass that found a torch mismatch.
 _CHAT_ONLY_HINT: Optional[tuple[Optional[str], Optional[str]]] = None
-# Detection reached the CPU fallback off Mac with a PyTorch that imports, or with a --no-torch install and no card a GPU build could train on: training here runs on the CPU backend (unsloth/_cpu_init.py). Read through trains_on_cpu(), which ties it to the verdict.
-_CPU_TRAINING_HOST: bool = False
+# The verdict under which training here runs on the CPU backend (unsloth/_cpu_init.py): "no_gpu" when the CPU fallback off Mac found a PyTorch that imports, "no_torch" for a --no-torch install with no card a GPU build could train on, else None. Read through trains_on_cpu(), which matches it against the verdict it is asked about.
+_CPU_TRAINING_REASON: Optional[str] = None
 # The vendors whose cards established the two mismatch reasons, empty otherwise: current_chat_only_verdict() freezes a mismatch while the inventory cannot answer, and without this a detached AMD eGPU stays "unusable" for as long as nvidia-smi is broken on a host that never had an NVIDIA card.
 CHAT_ONLY_MISMATCH_VENDORS: frozenset = frozenset()
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
@@ -102,13 +102,13 @@ def owning_detection_epoch(epoch: Optional[int]):
 def _discard_detection_locked() -> None:
     """Drop a verdict produced for an epoch that has been retired."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
-    global CHAT_ONLY_MISMATCH_VENDORS, _CPU_TRAINING_HOST
+    global CHAT_ONLY_MISMATCH_VENDORS, _CPU_TRAINING_REASON
     DEVICE = None
     CHAT_ONLY = True
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
     CHAT_ONLY_MISMATCH_VENDORS = frozenset()
-    _CPU_TRAINING_HOST = False
+    _CPU_TRAINING_REASON = None
     IS_ROCM = False
     DETECTION_COMPLETE.clear()
 
@@ -1558,7 +1558,7 @@ def _print_cuda_device_list(is_rocm: bool) -> None:
 def detect_hardware() -> DeviceType:
     """Detect the best compute device and set the module-level DEVICE global; call once at FastAPI lifespan startup, idempotent. Order: XPU only on an unambiguous "prefer XPU" signal (CUDA hidden or unavailable, or UNSLOTH_FORCE_XPU=1) AND a non-empty ZE_AFFINITY_MASK AND torch.xpu reporting a device, since a stray inherited mask must not beat CUDA on hybrid hosts; then CUDA, XPU, MLX, CPU."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM, DETECTION_GENERATION
-    global _CPU_TRAINING_HOST
+    global _CPU_TRAINING_REASON
     with _DETECT_LOCK:
         # A forced pass mutates the globals partway through; leaving the event set lets /api/health serve that as settled, so the sidebar MLX poll caches reason=None, stops, and leaves Train hidden on a repaired host.
         was_complete = DETECTION_COMPLETE.is_set()
@@ -1569,7 +1569,7 @@ def detect_hardware() -> DeviceType:
             CHAT_ONLY_REASON,
             CHAT_ONLY_DETAIL,
             IS_ROCM,
-            _CPU_TRAINING_HOST,
+            _CPU_TRAINING_REASON,
         )
         # Owning epoch first, current only as a fallback: the MLX self-heal calls this after a pip install that can outlast the lifespan, and reading current would adopt the epoch shutdown moved to, so the next lifespan finds DEVICE set and skips its own detection.
         epoch = getattr(_OWNING_EPOCH, "value", None)
@@ -1586,7 +1586,7 @@ def detect_hardware() -> DeviceType:
                 # Shutdown ran mid-pass. Restoring would put back the verdict it just cleared, and the next lifespan would treat that as measured.
                 _discard_detection_locked()
                 raise
-            DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM, _CPU_TRAINING_HOST = (
+            DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM, _CPU_TRAINING_REASON = (
                 published
             )
             # Restore rather than leave it clear: start_background_detection() declines once DEVICE is set, so an unset event keeps health provisional forever.
@@ -1681,7 +1681,7 @@ def _configure_rocm_miopen(torch) -> None:
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
-    global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS, _CPU_TRAINING_HOST
+    global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS, _CPU_TRAINING_REASON
     global _gfx_candidates_cache, _gfx_detect_epoch
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
     # A forced detection asks the ROCm CLIs again, and an older probe cannot publish.
@@ -1695,7 +1695,7 @@ def _detect_hardware_locked() -> DeviceType:
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
     CHAT_ONLY_MISMATCH_VENDORS = frozenset()
-    _CPU_TRAINING_HOST = False
+    _CPU_TRAINING_REASON = None
     _MLX_BLOCKERS_MEASURED = None
     IS_ROCM = False
 
@@ -1849,7 +1849,7 @@ def _detect_hardware_locked() -> DeviceType:
         CHAT_ONLY_REASON = "no_gpu"
         if torch_ok:
             # Only "no_gpu" trains here (trains_on_cpu()): a GPU this PyTorch cannot use still gets its repair message.
-            _CPU_TRAINING_HOST = True
+            _CPU_TRAINING_REASON = "no_gpu"
             _build_reason, _build_detail = _mismatch_verdict_for_this_host()
             if _build_reason is not None:
                 CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
@@ -1865,7 +1865,7 @@ def _detect_hardware_locked() -> DeviceType:
         elif _installed_without_torch():
             # GGUF-only by request; the full install trains on the GPU, or on the CPU backend without one.
             CHAT_ONLY_REASON = "no_torch"
-            _CPU_TRAINING_HOST = not _a_gpu_build_would_train_here()
+            _CPU_TRAINING_REASON = None if _a_gpu_build_would_train_here() else "no_torch"
             _record_chat_only_hint("no_torch", None)
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
@@ -1936,7 +1936,7 @@ def _uncertainty_could_hide_the_frozen_mismatch(inventory: Dict[str, Any]) -> bo
 
 def trains_on_cpu(reason: Optional[str]) -> bool:
     """Whether training on this host runs on the CPU backend, for ``reason`` from current_chat_only_verdict(): "no_gpu" with PyTorch installed (Train is enabled), or "no_torch" without a GPU (the full install would train on CPU). CHAT_ONLY stays True on both, so chat stays GGUF-only and Export and Video keep their own GPU verdicts."""
-    return _CPU_TRAINING_HOST and reason in ("no_gpu", "no_torch")
+    return reason is not None and reason == _CPU_TRAINING_REASON
 
 
 def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:

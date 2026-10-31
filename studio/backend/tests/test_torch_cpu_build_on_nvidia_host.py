@@ -313,7 +313,7 @@ def _detect(monkeypatch):
         ("CHAT_ONLY", True),
         ("CHAT_ONLY_REASON", None),
         ("CHAT_ONLY_DETAIL", None),
-        ("_CPU_TRAINING_HOST", False),
+        ("_CPU_TRAINING_REASON", None),
     ):
         monkeypatch.setattr(hw, name, value)
     with hw._DETECT_LOCK:

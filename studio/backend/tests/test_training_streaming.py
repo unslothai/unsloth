@@ -29,6 +29,8 @@ def _shared_setup_1(request, training_route):
     with (
         patch.object(training_route, "get_training_backend", return_value = backend),
         patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+        # On a GPU-less runner the CPU platform refusal would answer first.
+        patch.object(training_route, "_validate_training_platform", lambda request: None),
     ):
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(training_route.start_training(request, current_subject = "test-user"))

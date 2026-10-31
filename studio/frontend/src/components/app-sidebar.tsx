@@ -1439,7 +1439,7 @@ export function AppSidebar() {
               : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
           : chatOnlyReason === "no_gpu"
             ? // With PyTorch this host trains on CPU; without it there is nothing to train with.
-              "Training needs PyTorch, which is not installed. Reinstall Unsloth Studio without --no-torch to enable Train."
+              "Training needs PyTorch, which is not installed. Reinstall without --no-torch to enable Train."
             : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
   const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining);

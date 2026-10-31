@@ -28,11 +28,11 @@ def _no_torch(monkeypatch):
     monkeypatch.setattr(hw, "_NO_TORCH_SETTLED_EPOCH", None)
     monkeypatch.setattr(hw, "_CHAT_ONLY_HINT", None)
     # detect_hardware sets these globals directly; restore them so they do not leak.
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM, hw._CPU_TRAINING_HOST)
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM, hw._CPU_TRAINING_REASON)
     try:
         yield
     finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM, hw._CPU_TRAINING_HOST = saved
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM, hw._CPU_TRAINING_REASON = saved
 
 
 def test_apple_silicon_without_mlx_is_chat_only_with_reason(monkeypatch):

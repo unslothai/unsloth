@@ -41,7 +41,7 @@ def _restore_real_logging_modules() -> dict:
     return removed
 
 
-def _health(monkeypatch, *, reason, cpu_training_host) -> dict:
+def _health(monkeypatch, *, reason, established) -> dict:
     """The authed /api/health body for a settled chat-only verdict."""
     swapped = _restore_real_logging_modules()
     import auth.authentication as authmod
@@ -54,7 +54,7 @@ def _health(monkeypatch, *, reason, cpu_training_host) -> dict:
     monkeypatch.setattr(hw, "CHAT_ONLY", True)
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", reason)
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
-    monkeypatch.setattr(hw, "_CPU_TRAINING_HOST", cpu_training_host)
+    monkeypatch.setattr(hw, "_CPU_TRAINING_REASON", established)
     monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: (reason, None))
     monkeypatch.setattr(main_mod, "_torch_warm_in_progress", lambda: False)
     was_complete = hw.DETECTION_COMPLETE.is_set()
@@ -76,21 +76,25 @@ def _health(monkeypatch, *, reason, cpu_training_host) -> dict:
 
 
 @pytest.mark.parametrize(
-    "reason, host, expected",
+    "reason, established, expected",
     [
-        ("no_gpu", True, True),
-        ("no_torch", True, True),
+        ("no_gpu", "no_gpu", True),
+        ("no_torch", "no_torch", True),
         # No PyTorch and no --no-torch record: nothing to train with.
-        ("no_gpu", False, False),
+        ("no_gpu", None, False),
         # A GPU this PyTorch cannot use is repaired, not trained around.
-        ("torch_cpu_build", True, False),
-        ("torch_cuda_unavailable", True, False),
-        ("no_torch", False, False),
-        ("detection_failed", True, False),
+        ("torch_cpu_build", "no_gpu", False),
+        ("torch_cuda_unavailable", "no_gpu", False),
+        ("no_torch", None, False),
+        ("detection_failed", "no_gpu", False),
+        # Established under another verdict, e.g. an Apple --no-torch install.
+        ("no_torch", "no_gpu", False),
     ],
 )
-def test_health_reports_cpu_training_only_beside_its_verdicts(monkeypatch, reason, host, expected):
-    body = _health(monkeypatch, reason = reason, cpu_training_host = host)
+def test_health_reports_cpu_training_only_beside_its_verdicts(
+    monkeypatch, reason, established, expected
+):
+    body = _health(monkeypatch, reason = reason, established = established)
     assert body["chat_only"] is True
     assert body["chat_only_reason"] == reason
     assert body["cpu_training"] is expected
@@ -119,7 +123,7 @@ def _request(**overrides) -> TrainingStartRequest:
 @pytest.fixture
 def cpu_training_host(monkeypatch):
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
-    monkeypatch.setattr(hw, "_CPU_TRAINING_HOST", True)
+    monkeypatch.setattr(hw, "_CPU_TRAINING_REASON", "no_gpu")
     monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_gpu", None))
 
 
@@ -154,7 +158,7 @@ def test_a_gpu_host_is_not_held_to_the_cpu_limits(monkeypatch):
     _route()._validate_training_platform(_request(is_embedding = True))
 
 
-def _run_worker_until_dispatch(monkeypatch, *, reason, host):
+def _run_worker_until_dispatch(monkeypatch, *, reason, established):
     """Runs run_training_process() up to its first backend dispatch and returns the environment it left."""
     from core.training import worker
 
@@ -162,7 +166,7 @@ def _run_worker_until_dispatch(monkeypatch, *, reason, host):
     monkeypatch.setattr(hw, "detect_hardware", lambda: hw.DeviceType.CPU)
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", reason)
-    monkeypatch.setattr(hw, "_CPU_TRAINING_HOST", host)
+    monkeypatch.setattr(hw, "_CPU_TRAINING_REASON", established)
     monkeypatch.setattr(worker, "_validate_training_worker_config", lambda *_a: True)
     monkeypatch.setattr(worker, "_escaping_weights_error", lambda _c: None)
     monkeypatch.setattr(worker, "apply_gpu_ids", lambda *_a, **_k: None)
@@ -194,9 +198,9 @@ class _Queue:
 
 def test_the_worker_trains_on_cpu_where_studio_enabled_train(monkeypatch):
     # The parent's UNSLOTH_DISABLE_CPU_FALLBACK=1 would make `import unsloth` refuse this host.
-    assert _run_worker_until_dispatch(monkeypatch, reason = "no_gpu", host = True) == "1"
+    assert _run_worker_until_dispatch(monkeypatch, reason = "no_gpu", established = "no_gpu") == "1"
 
 
-@pytest.mark.parametrize("reason, host", [("torch_cpu_build", True), ("no_gpu", False)])
-def test_the_worker_leaves_every_other_host_alone(monkeypatch, reason, host):
-    assert _run_worker_until_dispatch(monkeypatch, reason = reason, host = host) is None
+@pytest.mark.parametrize("reason, established", [("torch_cpu_build", "no_gpu"), ("no_gpu", None)])
+def test_the_worker_leaves_every_other_host_alone(monkeypatch, reason, established):
+    assert _run_worker_until_dispatch(monkeypatch, reason = reason, established = established) is None
