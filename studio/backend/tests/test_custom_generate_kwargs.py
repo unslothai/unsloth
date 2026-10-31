@@ -179,3 +179,64 @@ def test_a_text_load_without_generate_is_refused_by_name():
     with pytest.raises(ValueError, match = "Lfm3AudioModel, which cannot generate text"):
         _refuse_without_generate(Lfm3AudioModel(), "LiquidAI/LFM3-Audio-2B")
     _refuse_without_generate(types.SimpleNamespace(generate = lambda **kw: None), "any/causal-lm")
+
+
+_OPEN, _CLOSE, _EOS = 901, 902, 900
+_THINK_TOKENIZER = types.SimpleNamespace(
+    unk_token_id = 0,
+    convert_tokens_to_ids = lambda t: {"<think>": _OPEN, "</think>": _CLOSE}.get(t, 0),
+)
+
+
+class _ScriptedGenerate:
+    """Streams a fixed reply as LFM3's generate does: the prompt, then one (1, 1) tensor per token."""
+
+    _generation_fields_unsupported = {"cache_implementation": None}
+
+    def __init__(self, reply):
+        self.reply, self.steps = reply, 0
+
+    def generate(self, *, input_ids, streamer, **kwargs):
+        import torch
+
+        try:
+            streamer.put(input_ids)
+            for token in self.reply:
+                self.steps += 1
+                streamer.put(torch.tensor([[token]]))
+        finally:
+            streamer.end()
+        return torch.cat((input_ids, torch.tensor([self.reply])), 1)
+
+
+def _scripted(reply, **extra):
+    import torch
+    from core.inference.inference import _generate_supported
+
+    model, streamer = _ScriptedGenerate(reply), _Recorder()
+    kwargs = {"input_ids": torch.tensor([[1, 2]]), "streamer": streamer, "eos_token_id": [_EOS], **extra}
+    out = _generate_supported(model, kwargs, _THINK_TOKENIZER)
+    return model, [int(t) for t in streamer.tokens[1:]], out
+
+
+def test_a_second_think_close_ends_the_reply_before_its_restatement():
+    # LFM3-Audio-2B: "<think>R</think>\nFour\n</think>\nFour<|im_end|>" showed "Four" twice.
+    model, streamed, out = _scripted([_OPEN, 10, _CLOSE, 11, _CLOSE, 11, _EOS])
+    assert streamed == [_OPEN, 10, _CLOSE, 11]
+    assert model.steps == 5
+    assert out.tolist() == [[1, 2, _OPEN, 10, _CLOSE, 11, _EOS]]
+
+
+def test_one_think_block_and_a_prefilled_close_stream_untouched():
+    for reply in ([_OPEN, 10, _CLOSE, 11, _EOS], [10, _CLOSE, 11, _EOS], [_OPEN, 10, _CLOSE, _OPEN, 12, _CLOSE, 11, _EOS]):
+        model, streamed, out = _scripted(reply)
+        assert streamed == reply and out.tolist() == [[1, 2, *reply]]
+
+
+def test_cancel_still_returns_no_sequences_beside_the_think_guard():
+    import threading
+
+    cancel = threading.Event()
+    cancel.set()
+    _, streamed, out = _scripted([_OPEN, 10, _CLOSE, 11, _EOS], stopping_criteria = _criteria(cancel))
+    assert out is None and streamed == []
