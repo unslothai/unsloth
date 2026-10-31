@@ -79,6 +79,7 @@ function userTexts(
 }
 import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
 import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
+import { computerAgentToolsForTurn } from "@/features/computer/tools";
 import { shownBrowserChat } from "@/features/browser/panel-availability";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
@@ -2321,6 +2322,7 @@ export async function buildLocalTokenCountExtras(
     userTexts(messages),
   );
   const browserTools = browserAgentToolsForTurn();
+  const computerTools = computerAgentToolsForTurn();
   const localMediaTools = localMediaToolsForTurn(state);
   if (
     !toolsEnabled &&
@@ -2329,6 +2331,7 @@ export async function buildLocalTokenCountExtras(
     !ragOn &&
     !deepResearchEnabled &&
     browserTools.length === 0 &&
+    computerTools.length === 0 &&
     localMediaTools.length === 0 &&
     skillTools.length === 0
   ) {
@@ -2359,6 +2362,7 @@ export async function buildLocalTokenCountExtras(
       // match the request gate so token pricing includes only sent skill tools.
       ...skillTools,
       ...browserTools,
+      ...computerTools,
       ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
@@ -7441,6 +7445,31 @@ export function createOpenAIStreamAdapter(
                           action_id: raw.id,
                           session_id: typeof raw.session_id === "string" ? raw.session_id : "",
                           result: { ok: false, error: "the browser panel could not load; ask the user to reload Unsloth." },
+                        }),
+                      }).catch(() => undefined);
+                    },
+                  );
+                  continue;
+                }
+                if (toolEvent.type === "tool_output" && (toolEvent as Record<string, unknown>).computer_action) {
+                  const request = (toolEvent as Record<string, unknown>).computer_action;
+                  void import("@/features/computer/executor").then(
+                    ({ parseComputerAction, runComputerAction }) => {
+                      const action = parseComputerAction(request);
+                      if (action) {
+                        void runComputerAction(action, { signal: runSignal });
+                      }
+                    },
+                    () => {
+                      const raw = (request ?? {}) as Record<string, unknown>;
+                      if (typeof raw.id !== "string") return;
+                      void authFetch("/api/inference/computer-action-result", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          action_id: raw.id,
+                          session_id: typeof raw.session_id === "string" ? raw.session_id : "",
+                          result: { ok: false, error: "The computer use agent could not run this action." },
                         }),
                       }).catch(() => undefined);
                     },
