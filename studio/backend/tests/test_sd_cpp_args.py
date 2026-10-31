@@ -818,9 +818,15 @@ def test_img_gen_schedule_choice_reaches_both_native_transports(scheduler):
     assert _pair(cmd, "--sampling-method") == "euler_a"
     assert _pair(cmd, "--scheduler") == scheduler
 
-    request = build_img_gen_request(prompt = "a fox", sample_method = "euler_a", scheduler = scheduler)
+    request = build_img_gen_request(
+        prompt = "a fox",
+        sample_method = "euler_a",
+        scheduler = scheduler,
+        extra_sample_args = "moss_uncond_skip=false",
+    )
     assert request["sample_params"]["sample_method"] == "euler_a"
     assert request["sample_params"]["scheduler"] == scheduler
+    assert request["sample_params"]["extra_sample_args"] == "moss_uncond_skip=false"
 
     default_cmd = build_sd_cpp_command(
         "/bin/sd-cli",
@@ -1084,9 +1090,10 @@ def _all_builders(binary, extra_args = None):
 @pytest.mark.parametrize(
     "tag, expected",
     [
-        ("master-982-0518b34-ud331c66", True),  # the pinned bundle
-        ("master-968-8cd731e-ubdb47d1", True),  # the previous pin
-        ("master-951-f89d9b1-uafac7a7", True),  # the pin before it
+        ("master-982-0518b34-uaba3a1c", True),  # the pinned bundle
+        ("master-982-0518b34-ud331c66", True),  # the previous pin
+        ("master-968-8cd731e-ubdb47d1", True),  # the pin before it
+        ("master-951-f89d9b1-uafac7a7", True),  # an older pin
         ("master-907-500ef5f", True),  # the build that merged #2037
         ("master-906-abcdef0", False),  # --mmap there hands Metal an unaddressable CPU buffer
         ("master-813-bfbef5b-u6321a69", False),

@@ -1,24 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Local cache of runtime-quantized denoisers for families with no hosted pre-quant, written in the hosted
-artifacts' exact container + metadata so the next load takes the hosted path from a local file.
-
-KEY: sha256 of every source shard's safetensors header plus content identity (Hub blob name, else stat; two uploads
-of one architecture share a header), component, scheme, POLICY_VERSION, class, Linear filter, ConvRot, fp8
-fast-accum and torch / torchao minors. The multi-GB payload is never read for the key.
-
-TRUST: only Studio writes the root (safetensors, no pickle), so files under its exact realpath count as allowlisted.
-
-COMMIT: artifact then manifest, each via temp + os.replace; the manifest is the commit point.
-
-ENV:
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE         0 disables lookups and saves (default on)
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE_DIR     cache root (default <studio cache>/diffusion_prequant_cache)
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE_MAX_GB  LRU budget in GB (default 40; 0 disables eviction)
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE_ASYNC   0 writes a pipeline load's build before the load returns (default: on a
-                                           background thread once the load is published)
-"""
+"""Runtime-quantized denoiser cache, hosted artifact format; only Studio writes it (safetensors, no
+pickle), so files under its exact realpath are allowlisted; manifest is commit point"""
 
 from __future__ import annotations
 
@@ -308,12 +292,6 @@ def source_shards(
     return None
 
 
-def _source_shards_in(base: str, component: str, cache_dir: Optional[str]) -> Optional[list[str]]:
-    for found in _shard_sets_in(base, component, cache_dir):
-        return found
-    return None
-
-
 def _shard_sets_in(base: str, component: str, cache_dir: Optional[str]):
     candidates = [str(base)]
     try:
@@ -376,9 +354,12 @@ def key_parts(
         divisible_for_scheme,
         exclude_tokens_for_scheme,
         int8_convrot_enabled,
+        streamed_weight_only_layout,
     )
 
     group, suffixes = convrot_spec_for_scheme(scheme, family)
+    # Only when set (streamed qwen-image int8), so every other build keeps its existing key.
+    extra = streamed_weight_only_layout(scheme, family)
     return {
         "policy": POLICY_VERSION,
         "family": str(family or ""),
@@ -395,6 +376,7 @@ def key_parts(
         if group and int8_convrot_enabled(family)
         else None,
         "fast_accum": _resolve_fast_accum(None) if scheme == TQ_FP8 else None,
+        **extra,
         **_toolchain(),
     }
 
@@ -605,7 +587,6 @@ _REMOTE_MEMO: dict[tuple, tuple] = {}
 _GONE = "gone"
 # Shared hub_reachability verdict: after one failure, lookups answer "unknown" (local snapshot stands) for the TTL.
 _UNREACHABLE = _reach._UNREACHABLE
-_connection_failed = _reach.connection_failed
 _endpoint = _reach.endpoint
 
 
@@ -1212,6 +1193,14 @@ def save_runtime_quant(
                     "skipped (fp8 quantized with a forced non-default accumulate mode)",
                 )
                 return None
+        wo_keys = ("weight_only_name_tokens", "weight_only_mode", "weight_only_outliers")
+        wanted_wo = {k: parts[k] for k in wo_keys if k in parts}
+        if {k: info[k] for k in wo_keys if k in info} != wanted_wo:
+            _log(logger, "info", "skipped (weight-only modulation state differs from the key)")
+            return None
+        if wanted_wo and wanted_wo["weight_only_mode"] != "wo":
+            _log(logger, "info", "skipped (diagnostic W8A8 modulation mode)")
+            return None
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
             _log(logger, "info", "skipped (ConvRot state differs from the key)")
             return None
@@ -1289,6 +1278,9 @@ def save_runtime_quant(
         if scheme == "fp8":
             from .diffusion_transformer_quant import FP8_GRANULARITY
             metadata["fp8_granularity"] = FP8_GRANULARITY
+        if wanted_wo:
+            metadata["weight_only_name_tokens"] = list(wanted_wo["weight_only_name_tokens"])
+            metadata["weight_only_outliers"] = int(wanted_wo["weight_only_outliers"])
         metadata.update(_rotation(transformer, info))
         header[UNSLOTH_FORMAT_KEY] = prequant_format_for(metadata)
         header[UNSLOTH_METADATA_KEY] = json.dumps(metadata, default = str)

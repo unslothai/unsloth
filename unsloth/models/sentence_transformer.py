@@ -93,6 +93,8 @@ def fsdp2_st_usage_snippet(model):
     from .fsdp2_native import native_fsdp2_unsharded
 
     model.__dict__["to"] = lambda *args, **kwargs: model
+    # encode() switches the model to eval mode; a save must not change training mode.
+    modes = [(module, module.training) for module in model.modules()]
     try:
         # Whole weights on every rank for the snippet: older sentence-transformers' encode calls
         # self.forward, which skips the root unit's FSDP2 hooks.
@@ -102,11 +104,21 @@ def fsdp2_st_usage_snippet(model):
         print(f"Unsloth: FSDP2 save: model card usage snippet not computed ({exc}).")
     finally:
         model.__dict__.pop("to", None)
+        for module, training in modes:
+            module.training = training
     card.__dict__["run_usage_snippet"] = lambda *args, **kwargs: None
     try:
         yield
     finally:
         card.__dict__.pop("run_usage_snippet", None)
+
+
+def _save_creates_model_card(save, model, args, kwargs):
+    try:
+        bound = inspect.signature(save).bind_partial(model, *args, **kwargs)
+    except (TypeError, ValueError):
+        return kwargs.get("create_model_card", True) is not False
+    return bound.arguments.get("create_model_card", True) is not False
 
 
 def _install_fsdp2_collective_st_save(SentenceTransformer):
@@ -145,9 +157,15 @@ def _install_fsdp2_collective_st_save(SentenceTransformer):
             # The writer inside a gather already made (Trainer.save_model under native FSDP2, which
             # also ran fsdp2_st_usage_snippet on every rank).
             return plainly_named(self, args, kwargs)
+        # No card: skip the snippet's unshard + forward.
+        snippet = (
+            fsdp2_st_usage_snippet(self)
+            if _save_creates_model_card(original, self, args, kwargs)
+            else contextlib.nullcontext()
+        )
         # Every parameter, not just the trainable ones: ST writes its other modules (Dense, ...) too,
         # and embedding models are small.
-        with fsdp2_st_usage_snippet(self), fsdp2_gathered(self) as writer:
+        with snippet, fsdp2_gathered(self) as writer:
             if writer is False:
                 return None
             return plainly_named(self, args, kwargs)

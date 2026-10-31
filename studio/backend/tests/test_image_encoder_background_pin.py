@@ -75,7 +75,7 @@ def wanted(monkeypatch):
     monkeypatch.delenv(dm.ENCODER_BACKGROUND_PIN_ENV, raising = False)
     monkeypatch.delenv(dm.BACKGROUND_PIN_ENV, raising = False)
     monkeypatch.setattr(dm, "host_pinning_allowed", lambda *a, **k: True)
-    monkeypatch.setattr(dm, "_fast_pin_supported", lambda: True)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda *_a, **_k: True)
     pipe = types.SimpleNamespace()
     dm.request_background_encoder_pins(pipe)
     return pipe
@@ -97,9 +97,9 @@ def test_the_kill_switches_restore_the_up_front_pin(wanted, monkeypatch, env):
 
 def test_no_deferral_without_the_registered_pin_or_on_an_integrated_gpu(wanted, monkeypatch):
     # the allocator's pin_memory() rounds every tensor to a power of two, past the weight-byte budget
-    monkeypatch.setattr(dm, "_fast_pin_supported", lambda: False)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda *_a, **_k: False)
     assert not dm._encoder_background_pin_wanted(wanted)
-    monkeypatch.setattr(dm, "_fast_pin_supported", lambda: True)
+    monkeypatch.setattr(dm, "_fast_pin_supported", lambda *_a, **_k: True)
     monkeypatch.setattr(dm, "host_pinning_allowed", lambda *a, **k: False)
     assert not dm._encoder_background_pin_wanted(wanted)
 

@@ -407,3 +407,130 @@ def test_probe_scales_follow_each_cast_config(monkeypatch):
         (torch.float8_e5m2, e4m3, (), ()),
     ]
     assert _probe_calls(monkeypatch, "rowwise") == [(e4m3, e4m3, (16, 1), (1, 16))]
+
+
+def _counting_align_hook():
+    from accelerate.hooks import AlignDevicesHook
+    class CountingAlignDevicesHook(AlignDevicesHook):
+        calls = []
+
+        def pre_forward(self, module, *args, **kwargs):
+            CountingAlignDevicesHook.calls.append(id(module))
+            return super().pre_forward(module, *args, **kwargs)
+
+    return CountingAlignDevicesHook
+
+
+def test_accelerate_dispatch_hooks_survive_conversion():
+    pytest.importorskip("accelerate")
+    from accelerate.hooks import add_hook_to_module
+
+    hook_cls = _counting_align_hook()
+    model = _tiny_qwen3()
+    hooks = {}
+    for name, m in model.named_modules():
+        if isinstance(m, torch.nn.Linear):
+            hooks[name] = hook_cls(execution_device = torch.device("cpu"), io_same_device = True)
+            add_hook_to_module(m, hooks[name])
+    weights = {name: m.weight for name, m in model.named_modules() if name in hooks}
+
+    converted = f8t.convert_model_to_float8_training(
+        model, _emulated_config("tensorwise"), size_filter = False, check_hardware = False
+    )
+    assert converted
+    modules = dict(model.named_modules())
+    after = {name: m for name, m in modules.items() if getattr(m, "_hf_hook", None) is not None}
+    assert set(after) == set(hooks)
+    for name in converted:
+        assert isinstance(modules[name], _float8_linear())
+        assert modules[name]._hf_hook is hooks[name]
+        assert modules[name].weight is weights[name]
+        assert "init_hook" not in vars(hooks[name])
+
+    hook_cls.calls.clear()
+    ids = torch.randint(0, 256, (2, 32), generator = torch.Generator().manual_seed(1))
+    out = model(input_ids = ids, labels = ids)
+    out.loss.backward()
+    assert torch.isfinite(out.loss)
+    assert {id(modules[name]) for name in converted} <= set(hook_cls.calls)
+
+
+def test_conversion_adds_no_hooks_to_an_undispatched_model():
+    model = _tiny_qwen3()
+    converted = f8t.convert_model_to_float8_training(
+        model, _emulated_config("tensorwise"), size_filter = False, check_hardware = False
+    )
+    assert converted
+    assert not any(hasattr(m, "_hf_hook") for m in model.modules())
+
+
+def _probe_out_dtypes(monkeypatch, recipe, *args):
+    seen = []
+
+    def fake_scaled_mm(
+        a,
+        b,
+        scale_a,
+        scale_b,
+        out_dtype = None,
+        **kwargs,
+    ):
+        seen.append((tuple(scale_a.shape) != (), out_dtype))
+
+    monkeypatch.setattr(torch, "_scaled_mm", fake_scaled_mm)
+    f8t._probe_float8_gemm(torch.device("cpu"), recipe, *args)
+    return seen
+
+
+def test_probe_writes_the_output_dtype_torchao_asks_for(monkeypatch):
+    # bfloat16 training: every GEMM writes bfloat16 (unchanged).
+    assert {o for _, o in _probe_out_dtypes(monkeypatch, "tensorwise")} == {torch.bfloat16}
+    # float16 training: tensorwise GEMMs write float16 (a different cuBLAS path); torchao runs rowwise
+    # float16 in bfloat16 and casts, so rowwise still probes bfloat16.
+    tensorwise = _probe_out_dtypes(monkeypatch, "tensorwise", torch.float16)
+    assert tensorwise and all(
+        o == torch.float16 for rowwise, o in tensorwise if not rowwise
+    ), tensorwise
+    rowwise = _probe_out_dtypes(monkeypatch, "rowwise", torch.float16)
+    assert rowwise and {o for _, o in rowwise} == {torch.bfloat16}, rowwise
+
+
+def test_float16_model_probes_float16_output(monkeypatch):
+    """A float16 full finetune runs torchao's tensorwise GEMMs with a float16 output, which the bfloat16-only
+    probe never exercised: the hardware check must probe what training runs, and say so when it fails."""
+    seen = []
+    monkeypatch.setattr(
+        f8t, "_check_hardware", lambda device, recipe, dtype = torch.bfloat16: seen.append(dtype)
+    )
+    config = _emulated_config("tensorwise")
+    object.__setattr__(config, "emulate", False)
+    f8t.convert_model_to_float8_training(_tiny_qwen3(torch.float16), config, size_filter = False)
+    assert seen and set(seen) == {torch.float16}, seen
+    seen.clear()
+    f8t.convert_model_to_float8_training(_tiny_qwen3(torch.bfloat16), config, size_filter = False)
+    assert seen and set(seen) == {torch.bfloat16}, seen
+
+
+def test_float16_probe_failure_names_the_output_dtype(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA RTX PRO 6000 Blackwell")
+    monkeypatch.setattr(torch.version, "hip", None)
+    calls = []
+
+    def fp16_unsupported(
+        device,
+        recipe,
+        dtype = torch.bfloat16,
+    ):
+        calls.append(dtype)
+        if dtype == torch.float16:
+            raise RuntimeError("out_dtype float16 not supported")
+
+    monkeypatch.setattr(f8t, "_probe_float8_gemm", fp16_unsupported)
+    f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
+    with pytest.raises(
+        RuntimeError, match = "tensorwise scaling, float16 output\\) is not supported"
+    ):
+        f8t._check_hardware(torch.device("cuda", 0), "tensorwise", torch.float16)
+    assert calls == [torch.bfloat16, torch.float16]

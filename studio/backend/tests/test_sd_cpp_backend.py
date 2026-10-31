@@ -850,6 +850,16 @@ def test_status_loaded_shape():
     assert st["gguf_variant"] is None
     for k in ("transformer_quant", "attention_backend", "transformer_cache", "text_encoder_quant"):
         assert st[k] is None
+    assert st["supports_lora"] is True and st["lora_unavailable_reason"] is None
+
+
+def test_status_names_why_a_native_family_has_no_lora():
+    st = _loaded_backend(fam_name = "qwen-image").status()
+    assert st["supports_lora"] is False
+    assert (
+        st["lora_unavailable_reason"]
+        == "The native sd.cpp engine cannot apply LoRAs to qwen-image."
+    )
 
 
 def test_generate_returns_images_and_seed():

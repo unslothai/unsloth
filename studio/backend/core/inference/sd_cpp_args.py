@@ -1,19 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pure command builder for the ``sd-cli`` (stable-diffusion.cpp) native engine.
-
-No torch / diffusers / subprocess: a pure function of its arguments, so argv construction
-unit-tests without a GPU, binary, or model files. sd.cpp consumes the SAME split GGUF assets as
-the diffusers path -- a transformer (``--diffusion-model``), a VAE (``--vae``), and text encoders
-wired to the family flag (Z-Image Qwen3 -> ``--llm``, Qwen-Image Qwen2-VL -> ``--qwen2vl``, FLUX.1
--> ``--clip_l`` / ``--t5xxl``). The diffusers memory policy maps to sd.cpp's offload flags here, so
-one knob drives both engines. Ref: sd.cpp ``examples/cli`` and ``docs/z_image.md``.
-"""
+"""Pure sd-cli argv builder for stable-diffusion.cpp; no torch, diffusers or subprocess imports, so
+tests need no GPU, binary, or model files"""
 
 from __future__ import annotations
 
 import functools
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Optional
@@ -476,6 +470,36 @@ SD_CPP_MMAP_ENV = "UNSLOTH_DIFFUSION_SD_CPP_MMAP"
 # --mmap but hand Metal a CPU buffer it cannot address, so the flag is only safe from this build on.
 METAL_MMAP_MIN_BUILD = 907
 _INSTALL_RECORD = ".unsloth-sd-cpp-install.json"
+
+
+# MOSS-Image negative-branch skip, matching diffusion_moss_image.reference_uncond_skip: SFT skips nothing; Base skips
+# block 22 while sigma-percent is in 0 .. 0.5 (shift 5: steps 0-12 of 25). Builds without these --extra-sample-args keys
+# ignore them and keep sd.cpp's default (block 22 every step); UNSLOTH_MOSS_REFERENCE_SKIP=0 sends nothing.
+MOSS_REFERENCE_SKIP_ENV = "UNSLOTH_MOSS_REFERENCE_SKIP"
+MOSS_BASE_UNCOND_SKIP_END = 0.5
+
+
+def moss_is_base_checkpoint(*identities: Optional[str]) -> bool:
+    """True when any repo id / folder / filename spells MOSS-Image-Base (separators folded); else the SFT default."""
+    for identity in identities:
+        folded = "".join(c for c in str(identity or "").lower() if c.isalnum())
+        if "mossimagebase" in folded:
+            return True
+    return False
+
+
+def moss_uncond_skip_sample_args(*identities: Optional[str]) -> Optional[str]:
+    """sd.cpp ``extra_sample_args`` for a MOSS-Image checkpoint, or None for the binary's every-step default."""
+    if (os.environ.get(MOSS_REFERENCE_SKIP_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return None
+    if moss_is_base_checkpoint(*identities):
+        return f"moss_uncond_skip_start=0,moss_uncond_skip_end={MOSS_BASE_UNCOND_SKIP_END:g}"
+    return "moss_uncond_skip=false"
 
 
 def sd_cpp_build_number(tag: Optional[str]) -> Optional[int]:
@@ -1089,6 +1113,7 @@ def build_img_gen_request(
     custom_sigmas: Optional[list[float]] = None,
     hires: Optional[dict] = None,
     scheduler: Optional[str] = None,
+    extra_sample_args: Optional[str] = None,
 ) -> dict:
     """Build the sd-server image request, omitting unset sampling settings to preserve model defaults.
 
@@ -1118,6 +1143,8 @@ def build_img_gen_request(
         sample_params["custom_sigmas"] = [float(s) for s in custom_sigmas]
     if guidance:
         sample_params["guidance"] = guidance
+    if extra_sample_args:
+        sample_params["extra_sample_args"] = str(extra_sample_args)
 
     req: dict = {
         "prompt": prompt,

@@ -173,7 +173,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -1986,12 +1986,9 @@ jobs:
             trl_spec: "__from_pyproject__"
     name: "Core zoo (${{ matrix.combo.label }})"
     runs-on: ubuntu-24.04
-    # Same as `consolidated`. The zoo suite (`pytest -n 4` plus the serial files)
-    # now takes up to about 23 min on a busy runner, so a 25 min cap cancelled
-    # cells that had already passed, while the pip cache was being saved. The cap
-    # still turns a hung test into a bounded failure; PYTEST_TIMEOUT in the step
-    # below is the mechanism that actually names the culprit.
-    timeout-minutes: 35
+    # A passing cell takes ~35 min (35 min cap cancelled it at 99%); PYTEST_TIMEOUT
+    # below names a hung test, this cap only bounds it.
+    timeout-minutes: 50
     # Same contract as `consolidated`: no job-level or per-step
     # `continue-on-error`, so a failing test fails the cell.
     env:
@@ -2007,7 +2004,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -2158,7 +2155,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 

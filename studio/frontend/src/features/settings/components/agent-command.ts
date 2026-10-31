@@ -103,8 +103,10 @@ export function buildAgentShellCommands(
   os: AgentCommandOs,
   agent: string,
   modelArgs: string,
+  // Fresh keys only: the CLI caches an explicit key per base, so a stale one overwrites a working one.
+  freshKey: string | null = null,
 ): AgentShellCommands {
-  const primaryBase = buildAgentCommand(base, null, os, agent);
+  const primaryBase = buildAgentCommand(base, freshKey, os, agent);
   return {
     primary: appendCommand(primaryBase, modelArgs),
     subagent: appendCommand(

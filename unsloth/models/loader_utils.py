@@ -201,14 +201,30 @@ def fsdp2_keeps_fused_lora():
     return fsdp2_requested()
 
 
+def _zoo_gathers_fsdp2_lora():
+    """unsloth_zoo hands vLLM whole adapters from FSDP2 DTensor shards (older ones pass the shards)."""
+    try:
+        from unsloth_zoo import vllm_utils
+    except Exception:
+        return False
+    return hasattr(vllm_utils, "_lora_state_dict")
+
+
 def raise_if_fast_inference_under_fsdp2(fast_inference):
-    """Unsupported combination: refuse it before vLLM loads instead of failing mid-run (unsloth#3551)."""
-    if fast_inference and fsdp2_requested():
-        raise NotImplementedError(
-            "Unsloth: `fast_inference = True` (vLLM) is not supported with FSDP2.\n"
-            "Load the model with `fast_inference = False` to train with FSDP2, "
-            "or launch without FSDP2 to use vLLM."
-        )
+    """Refuse vLLM under accelerate's FSDP2 early (unsloth#3551); native FSDP2 keeps it (one engine per rank)."""
+    if not fast_inference or not fsdp2_requested():
+        return
+    from ..fsdp2_launch import unsloth_fsdp2_native_requested
+
+    if unsloth_fsdp2_native_requested() and _zoo_gathers_fsdp2_lora():
+        return
+    raise NotImplementedError(
+        "Unsloth: `fast_inference = True` (vLLM) is not supported with accelerate's FSDP2, or with an "
+        "unsloth_zoo that cannot gather FSDP2 adapters for vLLM (update unsloth_zoo).\n"
+        "Load the model with `fast_inference = False` to train with FSDP2, launch with "
+        "`UNSLOTH_FSDP2=1 torchrun ...` (Unsloth's native FSDP2 keeps vLLM), "
+        "or launch without FSDP2 to use vLLM."
+    )
 
 
 def prepare_device_map():
@@ -1638,7 +1654,6 @@ def _get_new_mapper():
                         table[ast.literal_eval(target.slice)] = ast.literal_eval(node.value)
                     except ValueError:
                         continue
-                pass
             elif isinstance(node, ast.Delete):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
@@ -4177,13 +4192,14 @@ def _hub_live_commit(
 _ESCAPING_WEIGHTS_FILENAME = object()
 
 
-def _explicit_weights_filename(transformers_weights):
-    """File transformers loads instead of standard names; None if unused, sentinel if it escapes the model dir."""
+def _explicit_weights_filename(transformers_weights, model_dir = None):
+    """File transformers loads instead of standard names; None if unused, sentinel if it escapes the model dir.
+    `model_dir` is the real local dir (+ subfolder): transformers accepts an absolute name inside it."""
     if not isinstance(transformers_weights, str) or not transformers_weights.endswith(
         (".safetensors", ".safetensors.index.json")
     ):
         return None
-    base = os.path.abspath("model_dir")
+    base = os.path.abspath(model_dir or "model_dir")
     try:
         contained = (
             os.path.commonpath([base, os.path.abspath(os.path.join(base, transformers_weights))])
@@ -4209,7 +4225,10 @@ def _checkpoint_tensor_dtypes(
     file order, `variant`, `use_safetensors` and `transformers_weights`. Raises _UnreadableCheckpointNames for an unreadable lone .bin."""
     if not isinstance(model_name, str) or not model_name:
         return None
-    explicit = _explicit_weights_filename(transformers_weights)
+    local_root = None
+    if os.path.isdir(model_name):
+        local_root = os.path.join(model_name, subfolder) if subfolder else model_name
+    explicit = _explicit_weights_filename(transformers_weights, local_root)
     if explicit is _ESCAPING_WEIGHTS_FILENAME:
         return None
     st_index, st_single = (
@@ -4461,13 +4480,16 @@ def quantization_config_is_bnb_4bit(quantization_config):
     return quantization_config_selects_bnb_4bit(quantization_config)
 
 
-def refuse_gpt_oss_fused_4bit_float16(dtype):
-    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32)."""
-    if dtype != torch.float16:
+def refuse_gpt_oss_fused_4bit_float16(dtype, supports_bfloat16 = True):
+    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32).
+    Without bfloat16, dtype = torch.float32 still computes in float16: gpt-oss is a FORCE_FLOAT32 family, whose
+    float32 request there becomes the float16 weights + float32 islands recipe."""
+    if dtype != torch.float16 and (supports_bfloat16 or dtype != torch.float32):
         return
     raise NotImplementedError(
         "Unsloth: this gpt-oss checkpoint stores fused experts, and in float16 (this GPU has no bfloat16, "
-        "or dtype = torch.float16) its fused 4-bit experts would overflow. Use the pre-quantized "
+        "or dtype = torch.float16) its fused 4-bit experts would overflow. dtype = torch.float32 does not "
+        "help on a GPU without bfloat16, since gpt-oss then still computes in float16. Use the pre-quantized "
         "unsloth/gpt-oss-20b-unsloth-bnb-4bit (or -120b), or a GPU with bfloat16."
     )
 

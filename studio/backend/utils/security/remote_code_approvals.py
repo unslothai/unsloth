@@ -1,21 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persistent, per-user trust_remote_code approval cache.
-
-Remembers a user's explicit approval so the consent gate can skip only the DIALOG on a
-later load of the SAME unchanged code. The gate ALWAYS re-scans (the cache never skips the
-scan), so CRITICAL is hard-blocked every time and a hand-edited store cannot auto-approve
-malicious code. Keyed per subject; honored only when the content fingerprint matches AND
-the scanner-rules version matches AND (when resolvable) the commit SHA matches. CRITICAL is
-never stored or honored, and any store/SHA error degrades to "ask again", never auto-approve.
-"""
+"""Per-user approval cache skips only the dialog, honored only on matching fingerprint, rules
+version and SHA; gate always re-scans, never stores CRITICAL; errors mean ask again, never auto-
+approve."""
 
 from __future__ import annotations
 
 import contextlib
 import json
 import os
+import pathlib
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -165,6 +160,49 @@ def lookup(subject: str, target_key: str) -> Optional[StoredApproval]:
         approved_at = entry.get("approved_at", ""),
         scanner_version = entry.get("scanner_version", 0),
     )
+
+
+def approved_local_fingerprint(subject: str, approved_as, load_dir: str) -> Optional[str]:
+    """The consent fingerprint of *load_dir*'s remote code when *subject* approved that exact
+    code under any id in *approved_as* (one id or several) with the current ruleset, else None.
+    Only an external auto_map repo is fetched; the rest is read from disk."""
+    from utils.paths import is_local_path
+    from utils.security.consent import _fingerprint_target_key
+    from utils.security.remote_code_scan import (
+        RemoteCodeUnscannable,
+        remote_code_fingerprint,
+        repo_remote_code_files,
+    )
+
+    ids = [approved_as] if isinstance(approved_as, str) else list(dict.fromkeys(approved_as))
+    approvals = [
+        (target, stored)
+        for target in ids
+        if target
+        and (stored := lookup(subject, approval_target_key([target]))) is not None
+        and stored.scanner_version == SCANNER_VERSION
+    ]
+    if not approvals:
+        return None
+    try:
+        files = repo_remote_code_files(load_dir)
+    except RemoteCodeUnscannable:
+        return None
+    if not files:
+        return None
+
+    def keyed(target, name_of = str):
+        key = _fingerprint_target_key(target)
+        return remote_code_fingerprint(
+            {f"{key}\0{name_of(name)}": body for name, body in files.items()}
+        )
+
+    for target, stored in approvals:
+        # A Hub approval fingerprinted "a/b.py"; a local one, like the worker, "a\\b.py" on Windows.
+        name_of = str if is_local_path(target) else (lambda n: pathlib.PurePath(n).as_posix())
+        if keyed(target, name_of) == stored.fingerprint:
+            return keyed(load_dir)
+    return None
 
 
 def record(

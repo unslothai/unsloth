@@ -22,6 +22,7 @@ import {
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
+import { useExpandedComposerFill } from "@/components/assistant-ui/use-expanded-composer-fill";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import {
   composerSubmitIntent,
@@ -32,7 +33,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
@@ -117,9 +118,6 @@ import {
   Bookmark02Icon,
   CodeIcon,
   Download01Icon,
-  FileDatabaseIcon,
-  Folder01Icon,
-  FolderAddIcon,
   Image03Icon,
   McpServerIcon,
   Scroll01Icon,
@@ -128,10 +126,12 @@ import {
   SlidersHorizontalIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { StopIcon } from "@/lib/media-control-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { toast } from "@/lib/toast";
 import {
   PromptStorageDialog,
@@ -637,7 +637,7 @@ export function SharedComposer({
     useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
   );
   const [draftSource] = useState(() => Symbol("compare composer"));
-  // Text that came from the chat composer or another tab, so it isn't published back.
+  // Text that came from the chat composer, so it isn't published back.
   const remoteDraftRef = useRef<string | null>(null);
   const unsavedDraftRef = useRef<string | null>(null);
   const incognitoBeforeRef = useRef(incognito);
@@ -1223,6 +1223,7 @@ export function SharedComposer({
     setIsWritingExpanded((expanded) => !expanded);
     textareaRef.current?.focus({ preventScroll: true });
   };
+  useExpandedComposerFill(editorRef, isWritingExpanded, true);
 
   const addFilesUntracked = useCallback(
     async (input: FileList | readonly File[] | null) => {
@@ -1799,6 +1800,7 @@ export function SharedComposer({
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
+          mlx_ane_prefill: ownConfig.mlxAnePrefill ?? false,
           mlx_ple_offload: ownConfig.mlxPleOffload ?? null,
           mlx_expert_offload: ownConfig.mlxExpertOffload ?? null,
           speculative_type: effectiveSpeculativeType,
@@ -2083,6 +2085,7 @@ export function SharedComposer({
           audioType: resp.audio_type ?? null,
           hasAudioInput: Boolean(resp.has_audio_input),
           hasVideoInput: Boolean(resp.has_video_input),
+          speaks: Boolean(resp.speaks),
         };
         if (idx === -1) {
           store.setModels([
@@ -2487,7 +2490,7 @@ export function SharedComposer({
           setRagEnabled(!ragEnabled);
         }}
       >
-        <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+        <HugeiconsIcon icon={FileSearchIcon} strokeWidth={2} />
         Chat with files
         {ragEnabled && !ragDisabled ? (
           <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
@@ -2611,7 +2614,7 @@ export function SharedComposer({
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(232px*var(--ui-space-scale,1))]">
@@ -2626,7 +2629,7 @@ export function SharedComposer({
                 key={project.id}
                 onSelect={() => openProject(project.id)}
               >
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
                 <span className="truncate">{project.name}</span>
               </DropdownMenuItem>
             ))

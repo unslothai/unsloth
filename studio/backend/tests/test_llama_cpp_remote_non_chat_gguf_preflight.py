@@ -25,19 +25,21 @@ def _gguf_bytes(
     arch: str | None,
     tensor_count: int = 1,
     declared_kv: int | None = None,
+    general_type: str | None = None,
 ) -> bytes:
     """A GGUF header as BYTES. ``declared_kv`` overstates the KV count without writing the
     pairs -- the shape a byte-range prefix of a chat model has: the counts say more is
     coming and the buffer ends first."""
     body = b""
     kv_count = 0
-    if arch is not None:
-        key = b"general.architecture"
-        val = arch.encode()
+    for key, value in ((b"general.architecture", arch), (b"general.type", general_type)):
+        if value is None:
+            continue
+        val = value.encode()
         body += struct.pack("<Q", len(key)) + key
         body += struct.pack("<I", 8)
         body += struct.pack("<Q", len(val)) + val
-        kv_count = 1
+        kv_count += 1
     if declared_kv is not None:
         kv_count = declared_kv
     return struct.pack("<II", GGUF_MAGIC, 3) + struct.pack("<QQ", tensor_count, kv_count) + body
@@ -88,6 +90,27 @@ def test_a_media_repo_gguf_is_refused_from_its_header_alone(monkeypatch, arch, p
     assert message is not None
     assert page in message
     assert requests == [("owner/model", "model-Q4_K_M.gguf")]
+
+
+def test_adapter_repo_gguf_is_refused_from_its_header_alone(monkeypatch):
+    message, requests = _probe(
+        monkeypatch,
+        header = _gguf_bytes(arch = "deepseek41", general_type = "adapter"),
+    )
+    assert message is not None
+    assert "LoRA adapter" in message
+    assert "base model" in message
+    assert requests == [("owner/model", "model-Q4_K_M.gguf")]
+
+
+def test_adapter_type_is_refused_from_a_prefix_cut_mid_kv(monkeypatch):
+    # An adapter that embeds its tokenizer can outgrow the 256 KiB probe.
+    message, _ = _probe(
+        monkeypatch,
+        header = _gguf_bytes(arch = "phi3", general_type = "adapter", declared_kv = 32),
+    )
+    assert message is not None
+    assert "LoRA adapter" in message
 
 
 def test_a_placeholder_arch_repo_gguf_is_refused(monkeypatch):
@@ -228,7 +251,21 @@ def _repo_load(monkeypatch, backend, order):
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *_a, **_k: None)
 
 
-def test_a_media_repo_load_keeps_the_resident_model_and_never_downloads(monkeypatch):
+@pytest.mark.parametrize(
+    "arch,general_type,repo,message_match",
+    [
+        ("wan", None, "unsloth/Wan2.2-TI2V-5B-GGUF", "Video page"),
+        (
+            "deepseek41",
+            "adapter",
+            "AtomicChat/DeepSeek-V4.1-Flash-1017-Uncensored-GGUF",
+            "LoRA adapter",
+        ),
+    ],
+)
+def test_a_non_chat_repo_load_keeps_the_resident_model_and_never_downloads(
+    monkeypatch, arch, general_type, repo, message_match
+):
     backend = LlamaCppBackend()
     order: list[str] = []
     _repo_load(monkeypatch, backend, order)
@@ -236,47 +273,143 @@ def test_a_media_repo_load_keeps_the_resident_model_and_never_downloads(monkeypa
         backend, "_download_gguf", lambda **_kwargs: order.append("download") or "/cache/m.gguf"
     )
     monkeypatch.setattr(
-        diffusion_compat, "_read_gguf_header", lambda *_a, **_k: _gguf_bytes(arch = "wan")
+        diffusion_compat,
+        "_read_gguf_header",
+        lambda *_a, **_k: _gguf_bytes(arch = arch, general_type = general_type),
     )
 
-    with pytest.raises(ValueError, match = "Video page"):
+    with pytest.raises(ValueError, match = message_match):
         backend.load_model(
             GgufLoadIntent(
-                hf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
+                hf_repo = repo,
                 hf_variant = "Q4_K_M",
-                model_identifier = "unsloth/Wan2.2-TI2V-5B-GGUF",
+                model_identifier = repo,
             )
         )
 
     assert order == []
 
 
-def test_a_chat_repo_load_still_proceeds_past_the_teardown(monkeypatch):
-    backend = LlamaCppBackend()
-    order: list[str] = []
+_SIDECARS = ("_download_mmproj", "_download_mtp", "_download_dspark", "_download_dflash")
+
+
+def _chat_repo_load(monkeypatch, backend, order, **downloads):
     _repo_load(monkeypatch, backend, order)
-
-    def _download(**_kwargs):
-        order.append("download")
-        raise RuntimeError("stop here")
-
-    monkeypatch.setattr(backend, "_download_gguf", _download)
+    monkeypatch.setattr(
+        backend, "_download_gguf", lambda **_kwargs: order.append("download") or "/cache/m.gguf"
+    )
+    for name in _SIDECARS:
+        monkeypatch.setattr(backend, name, lambda **_kwargs: None)
+    for name, fn in downloads.items():
+        monkeypatch.setattr(backend, name, fn)
     monkeypatch.setattr(
         diffusion_compat,
         "_read_gguf_header",
         lambda *_a, **_k: _gguf_bytes(arch = "qwen3", declared_kv = 32),
     )
 
-    with pytest.raises(RuntimeError, match = "stop here"):
-        backend.load_model(
-            GgufLoadIntent(
-                hf_repo = "unsloth/Qwen3-0.6B-GGUF",
-                hf_variant = "Q4_K_M",
-                model_identifier = "unsloth/Qwen3-0.6B-GGUF",
-            )
-        )
+    def _launch(*_a, **_k):
+        order.append("launch")
+        raise RuntimeError("stop here")
 
-    assert order == ["kill", "download"]
+    monkeypatch.setattr(backend, "_read_gguf_metadata", _launch)
+    return backend.load_model(
+        GgufLoadIntent(
+            hf_repo = "unsloth/Qwen3-VL-2B-Instruct-GGUF",
+            hf_variant = "Q4_K_M",
+            model_identifier = "unsloth/Qwen3-VL-2B-Instruct-GGUF",
+            is_vision = True,
+        )
+    )
+
+
+def _connection_reset(**_kwargs):
+    raise RuntimeError("connection reset")
+
+
+def test_a_chat_repo_load_still_proceeds_past_the_teardown(monkeypatch):
+    order: list[str] = []
+    with pytest.raises(RuntimeError, match = "stop here"):
+        _chat_repo_load(monkeypatch, LlamaCppBackend(), order)
+    assert order == ["download", "kill", "launch"]
+
+
+def test_a_failed_download_leaves_the_resident_model_running(monkeypatch):
+    order: list[str] = []
+
+    def _download(**_kwargs):
+        order.append("download")
+        raise RuntimeError("connection reset")
+
+    with pytest.raises(RuntimeError, match = "connection reset"):
+        _chat_repo_load(monkeypatch, LlamaCppBackend(), order, _download_gguf = _download)
+    assert order == ["download"]
+
+
+@pytest.mark.parametrize("sidecar", _SIDECARS)
+def test_a_failed_sidecar_download_leaves_the_resident_model_running(monkeypatch, sidecar):
+    order: list[str] = []
+    with pytest.raises(RuntimeError, match = "connection reset"):
+        _chat_repo_load(monkeypatch, LlamaCppBackend(), order, **{sidecar: _connection_reset})
+    assert order == ["download"]
+
+
+@pytest.mark.parametrize("sidecar", _SIDECARS)
+def test_a_sidecar_download_cancelled_mid_fetch_leaves_the_resident_model_running(
+    monkeypatch, sidecar
+):
+    backend = LlamaCppBackend()
+    order: list[str] = []
+    cancel = {sidecar: lambda **_k: backend._cancel_event.set()}
+    assert _chat_repo_load(monkeypatch, backend, order, **cancel) is False
+    assert order == ["download"]
+
+
+def _sidecar_outcome(backend):
+    def _dspark(**_kwargs):
+        backend._dspark_sidecar_absent = False
+
+    def _dflash(**_kwargs):
+        backend._dflash_sidecar_absent = False
+        backend._dflash_retry_needed = True
+
+    return {"_download_dspark": _dspark, "_download_dflash": _dflash}
+
+
+def _sidecar_flags(backend):
+    return (
+        backend._dspark_sidecar_absent,
+        backend._dflash_sidecar_absent,
+        backend._dflash_retry_needed,
+    )
+
+
+def test_a_failed_load_keeps_the_resident_servers_sidecar_flags(monkeypatch):
+    backend = LlamaCppBackend()
+    backend._dspark_sidecar_absent = backend._dflash_sidecar_absent = True
+    downloads = _sidecar_outcome(backend)
+    fetched = downloads["_download_dflash"]
+
+    def _dflash_then_fail(**kwargs):
+        fetched(**kwargs)
+        raise RuntimeError("connection reset")
+
+    downloads["_download_dflash"] = _dflash_then_fail
+    order: list[str] = []
+    with pytest.raises(RuntimeError, match = "connection reset"):
+        _chat_repo_load(monkeypatch, backend, order, **downloads)
+    assert order == ["download"]
+    assert _sidecar_flags(backend) == (True, True, False)
+
+
+def test_a_committed_load_takes_the_fetched_sidecar_flags(monkeypatch):
+    backend = LlamaCppBackend()
+    backend._dspark_sidecar_absent = backend._dflash_sidecar_absent = True
+    order: list[str] = []
+    with pytest.raises(RuntimeError, match = "stop here"):
+        _chat_repo_load(monkeypatch, backend, order, **_sidecar_outcome(backend))
+    assert order == ["download", "kill", "launch"]
+    assert _sidecar_flags(backend) == (False, False, True)
 
 
 def test_a_preflighted_file_is_judged_without_a_second_request(monkeypatch, tmp_path):
@@ -369,7 +502,7 @@ def test_the_per_load_resets_sit_below_the_teardown_in_source():
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
     teardown = src.index("# ── Phase 1: kill old process")
     assert src.index("self._launch_binary_revision = self._binary_revision(binary)") > teardown
-    assert src.index("self._dflash_retry_needed = False") > teardown
+    assert src.index(") = _load_sidecar_flags") > teardown
 
 
 def test_the_cached_probe_is_verified_the_way_the_loader_verifies_it(monkeypatch, tmp_path):
@@ -763,8 +896,8 @@ def test_the_launch_reuses_the_carried_file_instead_of_resolving_it_again():
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
     teardown = src.index("# ── Phase 1: kill old process")
     reuse = src.index("self._verified_cached_gguf(intent, hf_repo, hf_variant)")
-    download = src.index("model_path = self._download_gguf(", teardown)
-    assert teardown < reuse < download, "the carried file is not consulted before the download"
+    download = src.index("model_path = self._download_gguf(", reuse)
+    assert reuse < download < teardown, "the carried file is not consulted before the download"
 
 
 def test_a_carried_path_outside_the_active_cache_is_not_reused(monkeypatch, tmp_path):
@@ -843,17 +976,19 @@ def test_the_launch_opens_the_carried_file_instead_of_resolving_it(monkeypatch, 
             diffusion_compat, "_read_gguf_header", lambda *_a, **_k: _gguf_bytes(arch = "llama")
         )
 
-        def _stop(**_kwargs):
+        for name in _SIDECARS:
+            monkeypatch.setattr(backend, name, lambda **_k: None)
+
+        def _stop(*_a, **_k):
             raise RuntimeError("stop here")
 
-        # _download_mtp is the first fetch past the download decision.
-        monkeypatch.setattr(backend, "_download_mtp", _stop)
+        monkeypatch.setattr(backend, "_read_gguf_metadata", _stop)
         with pytest.raises(RuntimeError, match = "stop here"):
             backend.load_model(_intent(verified_gguf = verified))
         return order
 
     assert _load(_verified(cached)) == ["kill"]
-    assert _load(None) == ["kill", "download"]
+    assert _load(None) == ["download", "kill"]
 
 
 def _launchable_backend(monkeypatch) -> LlamaCppBackend:

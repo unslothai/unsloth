@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reaching the media backends, and waiting until nothing a switch would interrupt is running.
-
-Loading a media model is not a private act. The load route takes the GPU through the arbiter,
-whose cross-owner handoff unloads whichever owner holds it, so a switch can cancel a video
-generation or terminate a streaming chat completion that has nothing to do with the request that
-asked for it. The drain here waits all of that out first, and refuses rather than interrupting.
-"""
+"""Waits for unrelated work to drain or refuses; arbiter handoff would cancel video or chat streams."""
 
 from __future__ import annotations
 

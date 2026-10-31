@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unified SQLite store: relational chunks + FTS5 lexical + sqlite-vec dense.
-
-Module-level functions each take a ``conn`` the caller opens and closes. Inserts
-are incremental: ``add_chunks`` appends one document's rows without rebuilding the
-scope. Scope ("kb_<id>" / "thread_<id>") is a column on every table and the vec0
-partition key.
-"""
+"""Unified SQLite store (chunks, FTS5, sqlite-vec); caller-opened conn; add_chunks appends
+incrementally; scope kb_<id>/thread_<id> is the vec0 partition key."""
 
 from __future__ import annotations
 
@@ -17,6 +12,7 @@ import os
 import re
 import sqlite3
 import struct
+import sys
 import threading
 import uuid
 from collections import OrderedDict
@@ -24,7 +20,7 @@ from datetime import datetime, timezone
 
 from storage import rag_db
 
-from . import config
+from . import config, vec_cache
 
 
 def kb_scope(kb_id: str) -> str:
@@ -54,6 +50,17 @@ def _scopes(scope) -> list[str]:
 
 def _f32(vector) -> bytes:
     """Pack a vector into float32 bytes for vec0."""
+    np = sys.modules.get("numpy")
+    if (
+        np is not None
+        and type(vector) is np.ndarray
+        and vector.ndim == 1
+        and vector.dtype == np.float32
+        and vector.dtype.isnative
+        and not np.isnan(vector).any()
+    ):
+        # float32 -> float -> 'f' is exact, so the buffer is the packed bytes; NaN keeps the struct path.
+        return vector.tobytes()
     return struct.pack(f"{len(vector)}f", *(float(x) for x in vector))
 
 
@@ -398,12 +405,14 @@ def add_chunks(
     per-chunk PDF highlight rects, stored as JSON."""
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]), document_id)
+    epoch_before = vec_cache.read_epoch(conn, scope) if vec_cache.enabled() else None
     vec_rowids: list[int] = []
+    chunk_rowids: list[int] = []
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         chunk_id = f"{document_id}:{chunk.chunk_index}"
         chunk_regions = regions[i] if regions and i < len(regions) else None
         regions_json = json.dumps(chunk_regions) if chunk_regions else None
-        conn.execute(
+        cur = conn.execute(
             "INSERT OR REPLACE INTO chunks("
             "id, document_id, scope, chunk_index, text, page_number, "
             "source_page_index, page_char_start, page_char_end, token_count, "
@@ -425,6 +434,7 @@ def add_chunks(
                 regions_json,
             ),
         )
+        chunk_rowids.append(cur.lastrowid)
         conn.execute(
             "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
             (chunk.text, chunk_id, scope),
@@ -435,10 +445,28 @@ def add_chunks(
                 (scope, chunk_id, _f32(vector)),
             ).lastrowid
         )
+    epoch_after = appended = None
+    if epoch_before is not None:
+        epoch_after = vec_cache.read_epoch(conn, scope)
+        appended = conn.execute(
+            "SELECT count(*) FROM chunks WHERE scope=? AND rowid > ?", (scope, epoch_before[2])
+        ).fetchone()[0]
     # Another writer's width change may have marked this document while it was encoding.
     rag_db.restore_dropped_identity(conn, document_id)
     conn.commit()
     _remember_vec_rowids(conn, document_id, vec_rowids)
+    if epoch_after is not None:
+        vec_cache.note_append(
+            _db_file(conn),
+            scope,
+            epoch_before,
+            epoch_after,
+            appended,
+            vec_rowids,
+            [f"{document_id}:{chunk.chunk_index}" for chunk in chunks[: len(vec_rowids)]],
+            vectors[: len(vec_rowids)],
+            chunk_rowids = chunk_rowids,
+        )
 
 
 def replace_document_vectors(
@@ -515,18 +543,7 @@ def delete_document(
     commit: bool = True,
 ) -> None:
     """Remove a document and all its chunks (+ fts + vec rows)."""
-    ids = [
-        r["id"]
-        for r in conn.execute(
-            "SELECT id FROM chunks WHERE document_id=?", (document_id,)
-        ).fetchall()
-    ]
-    has_vec = rag_db.vec_table_exists(conn)
-    for chunk_id in ids:
-        conn.execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
-        if has_vec:
-            conn.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
-    conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+    rag_db._delete_document_chunks(conn, document_id)
     conn.execute("DELETE FROM documents WHERE id=?", (document_id,))
     if commit:
         conn.commit()
@@ -831,30 +848,23 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
     kept: dict[str, list[tuple[str, float]]] = {}
     fetches = dict.fromkeys(scopes, max(k * 3, k + 10))
     pending = list(scopes)
+    query = _f32(vector) if pending else b""
+    db_file = _db_file(conn) if pending and vec_cache.enabled() else None
     while pending:
         widen: list[str] = []
         for s in pending:
             fetch = fetches[s]
-            # SQLite < 3.41 does not pass LIMIT to vec0's KNN planner; bind k explicitly.
-            rows = conn.execute(
-                "SELECT chunk_id, distance FROM chunks_vec "
-                "WHERE scope=? AND embedding MATCH ? AND k=? ORDER BY distance",
-                (s, _f32(vector), fetch),
-            ).fetchall()
+            rows, cap = _knn(conn, db_file, s, vector, query, fetch)
             kept[s] = _drop_incompatible(
                 conn,
                 # A NaN vector written by an fp16 embedder reads back as a NULL distance: skip it, or the
                 # subtraction raises and the whole retrieval fails.
-                [
-                    (r["chunk_id"], 1.0 - r["distance"])
-                    for r in rows
-                    if r["distance"] is not None and math.isfinite(r["distance"])
-                ],
+                [(cid, 1.0 - d) for cid, d in rows if d is not None and math.isfinite(d)],
                 embedding_model,
                 untagged,
             )
-            if len(kept[s]) < k and len(rows) >= fetch and fetch < _MAX_DENSE_FETCH:
-                fetches[s] = min(fetch * 4, _MAX_DENSE_FETCH)
+            if len(kept[s]) < k and len(rows) >= fetch and fetch < cap:
+                fetches[s] = min(fetch * 4, cap)
                 widen.append(s)
         pending = widen
     out = [hit for s in scopes for hit in kept[s]]
@@ -864,6 +874,23 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
 
 # 4096 is vec0's own ceiling; raising this errors the query.
 _MAX_DENSE_FETCH = 4096
+
+
+def _knn(conn, db_file, scope: str, vector, query: bytes, fetch: int):
+    """(chunk_id, distance) rows plus the largest fetch worth asking for: the cache's row count, or vec0's cap."""
+    if db_file is not None:
+        hit = vec_cache.search(conn, db_file, scope, vector, fetch)
+        if hit is not None:
+            return hit
+    # SQLite < 3.41 does not pass LIMIT to vec0's KNN planner; bind k explicitly.
+    rows = conn.execute(
+        "SELECT chunk_id, distance FROM chunks_vec "
+        "WHERE scope=? AND embedding MATCH ? AND k=? ORDER BY distance",
+        (scope, query, min(fetch, _MAX_DENSE_FETCH)),
+    ).fetchall()
+    return [(r["chunk_id"], r["distance"]) for r in rows], _MAX_DENSE_FETCH
+
+
 # One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
 _ID_BATCH = 900
 

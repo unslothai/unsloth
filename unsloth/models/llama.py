@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import torch
-import gc
 import contextlib
 import math
 import functools
@@ -25,7 +24,7 @@ from ._utils import _ignore_block_swap_params_for_ddp
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
-from ._utils import per_layer_device
+from ._utils import per_layer_device, refresh_moved_layer_devices
 from ._utils import embedding_applies_scale
 from ._utils import (
     _get_inference_mode_context_manager,
@@ -118,6 +117,7 @@ try:
 except ImportError:
     # Older unsloth_zoo: fall back to reading the config fields directly.
     detect_logit_transforms = None
+from .._gc_passes import collect_garbage
 from ..device_type import (
     xpu_keeps_explicit_bf16,
     xpu_vllm_refuses_bf16,
@@ -1781,6 +1781,7 @@ def _LlamaModel_fast_forward_inference(
 
         next_decoder_cache = []
         block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
+        refresh_moved_layer_devices(self.model.layers, block_swap)
 
         for idx, decoder_layer in enumerate(self.model.layers):
             if block_swap is not None:
@@ -3310,6 +3311,22 @@ def _gated_method(cls, name, fast, original):
     return gated
 
 
+def runs_fast_forward(
+    module,
+    fast,
+    name = "forward",
+):
+    """True when `module` runs Unsloth's `fast` as its class `name`: directly, or through the gate that
+    pre_patch installs (which runs `fast` only on modules marked by mark_unsloth_fast_path)."""
+    method = getattr(type(module), name, None)
+    method = getattr(method, "__func__", method)
+    if method is fast:
+        return True
+    if getattr(method, "_unsloth_gated", False) and getattr(method, "__wrapped__", None) is fast:
+        return bool(getattr(module, "_unsloth_fast_path", False))
+    return False
+
+
 def mark_unsloth_fast_path(model):
     """Opt every module of an Unsloth-loaded model into the patched forwards."""
     for module in model.modules():
@@ -3369,12 +3386,53 @@ def _fused_lora_modules(model) -> list:
         ):
             fused.append(module)
             continue
-        for name in ("forward", "_unsloth_forward"):
-            func = getattr(module.__dict__.get(name), "__func__", None)
-            if getattr(func, "func", func) in _FUSED_LORA_MLPS:
-                fused.append(module)
-                break
+        if _fused_lora_mlp_slot(module) is not None:
+            fused.append(module)
     return fused
+
+
+# `_old_forward`: an accelerate hook calls it, so the kernel can live behind the hook.
+_MLP_FORWARD_SLOTS = ("forward", "_unsloth_forward", "_old_forward", "_orig_moe_forward")
+
+
+def _is_fused_lora_mlp(fn) -> bool:
+    func = getattr(fn, "__func__", None)
+    return getattr(func, "func", func) in _FUSED_LORA_MLPS
+
+
+def _fused_lora_mlp_slot(module):
+    d = getattr(module, "__dict__", {})
+    for name in _MLP_FORWARD_SLOTS:
+        if _is_fused_lora_mlp(d.get(name)):
+            return name
+    return None
+
+
+_PRE_FUSED_FORWARD = "_unsloth_forward_before_fused_lora"
+
+
+def _install_fused_lora_mlp(mlp_module, kernel):
+    """Bind the kernel into `_old_forward` (accelerate hook), `_unsloth_forward` (tiled) or `forward`."""
+    d = mlp_module.__dict__
+    if "_hf_hook" in d and "_old_forward" in d:
+        slot = "_old_forward"
+    elif hasattr(mlp_module, "_unsloth_forward"):
+        slot = "_unsloth_forward"
+    else:
+        slot = "forward"
+    current = d.get(slot)
+    if _PRE_FUSED_FORWARD not in d and not _is_fused_lora_mlp(current):
+        # Class forward is recorded as None: restored unbound into `forward` it would drop `self`. A plain
+        # instance function already takes x: partial() stops a tiled inner slot binding `self` again.
+        if current is type(mlp_module).forward:
+            previous = None
+        elif slot == "forward" and isinstance(current, types.FunctionType):
+            previous = functools.partial(current)
+        else:
+            previous = current
+        d[_PRE_FUSED_FORWARD] = previous
+    setattr(mlp_module, slot, types.MethodType(kernel, mlp_module))
+    return True
 
 
 def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
@@ -3394,14 +3452,25 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
         if getattr(module, "apply_o", None) is apply_lora_o:
             module.apply_o = original_apply_o
             n += 1
-        for name in ("forward", "_unsloth_forward"):
-            func = getattr(module.__dict__.get(name), "__func__", None)
-            if getattr(func, "func", func) not in _FUSED_LORA_MLPS:
+        for name in _MLP_FORWARD_SLOTS:
+            if not _is_fused_lora_mlp(module.__dict__.get(name)):
                 continue
+            previous = module.__dict__.pop(_PRE_FUSED_FORWARD, None)
+            if previous is type(module).forward:
+                previous = None
             if name == "forward":
-                delattr(module, "forward")
+                if previous is None:
+                    delattr(module, "forward")
+                else:
+                    module.forward = previous
+            elif name == "_unsloth_forward":
+                module._unsloth_forward = module.__class__.forward if previous is None else previous
             else:
-                module._unsloth_forward = module.__class__.forward
+                module.__dict__[name] = (
+                    types.MethodType(module.__class__.forward, module)
+                    if previous is None
+                    else previous
+                )
             n += 1
     if n:
         if reason is None:
@@ -3421,9 +3490,11 @@ def _fused_lora_layers(layers, mlp_function):
         if getattr(getattr(layer, "self_attn", None), "apply_qkv", None) is apply_lora_qkv
         or getattr(getattr(layer, "self_attn", None), "apply_o", None) is apply_lora_o
         or any(
-            getattr(getattr(getattr(layer, "mlp", None), name, None), "__func__", None)
+            getattr(
+                getattr(getattr(layer, "mlp", None), "__dict__", {}).get(name), "__func__", None
+            )
             is mlp_function
-            for name in ("forward", "_unsloth_forward")
+            for name in _MLP_FORWARD_SLOTS
         )
     ]
 
@@ -5083,17 +5154,13 @@ class FastLlamaModel:
                 print("Unsloth: Offloading input_embeddings to disk to save VRAM")
                 offload_input_embeddings(model, temporary_location)
 
-            for _ in range(3):
-                gc.collect()
-                clean_gpu_cache()
+            collect_garbage(after = clean_gpu_cache)
 
             if train_lm_head:
                 print("Unsloth: Offloading output_embeddings to disk to save VRAM")
                 offload_output_embeddings(model, temporary_location)
 
-            for _ in range(3):
-                gc.collect()
-                clean_gpu_cache()
+            collect_garbage(after = clean_gpu_cache)
 
         from .lora_init import fast_lora_init, record_fast_pissa
 
@@ -5210,9 +5277,7 @@ class FastLlamaModel:
         # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
         _mark_unsloth_disable_data_parallel(model)
 
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
 
         patch_peft_fast_inference(model)
 
@@ -5287,7 +5352,6 @@ class FastLlamaModel:
                 if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
                     name = name[: len(name) - len("-bnb-4bit")]
                     model.peft_config[active_adapter].base_model_name_or_path = name
-                pass
             # Adding a revision to enable future fast inference paths bugs out; see #492.
 
         from transformers.trainer import Trainer
@@ -5361,14 +5425,7 @@ class FastLlamaModel:
                         and not _fast_lora.lora_bias_blocks_fused(up_proj)
                         and not _fast_lora.lora_bias_blocks_fused(down_proj)
                     ):
-                        # MethodType binds the replacement; see stackoverflow.com/questions/50599045.
-                        if hasattr(mlp_module, "_unsloth_forward"):
-                            # _unsloth_forward identifies an existing TiledMLP patch.
-                            mlp_module._unsloth_forward = types.MethodType(
-                                _apply_lora_mlp, mlp_module
-                            )
-                        else:
-                            mlp_module.forward = types.MethodType(_apply_lora_mlp, mlp_module)
+                        _install_fused_lora_mlp(mlp_module, _apply_lora_mlp)
                         n_mlp += 1
                     else:
                         logger.warning_once(
@@ -5457,9 +5514,7 @@ class FastLlamaModel:
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "right"
 
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
 
         patch_peft_fast_inference(model)
 

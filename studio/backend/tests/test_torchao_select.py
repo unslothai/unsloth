@@ -96,6 +96,7 @@ def test_an_old_torch_install_on_torchao_014_is_repinned(monkeypatch, installed)
     """An existing torch <= 2.8 install keeps torchao 0.14 until its next dependency pass, which
     must force 0.15.0 over it even when the pass has evidence to skip satisfied steps."""
     mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "IS_WINDOWS", False)
     monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: installed)
     monkeypatch.setattr(mod, "_may_skip_on_evidence", lambda: True)
     calls = []
@@ -197,7 +198,7 @@ def _torchao_installer_source():
 def test_the_torchao_step_pins_the_index_and_retries_without_it():
     """a lagging accelerator leaf retries the default index, but failure there remains fatal."""
     body = _torchao_installer_source()
-    assert "index = None if default_index else _torch_accelerator_index_url(torch_version)" in body
+    assert "index = None if default_index else _torchao_index_url(torch_version)" in body
     assert '"--index-url", index, spec' in body
     assert "retrying from the default index" in body
     # The unpinned attempt is pip_install, not pip_install_try: still fatal on failure.
@@ -269,6 +270,69 @@ def test_the_wanted_tag_follows_the_index_that_will_be_pinned(monkeypatch):
     assert mod._torch_index_tag("2.13.0+cu128") == "cu128"
 
 
+_PYTORCH_WHL = "https://download.pytorch.org/whl"
+_MIRROR_WHL = "https://mirror.example/whl"
+
+
+@pytest.mark.parametrize(
+    "is_windows, torch_version, family, url, base, expected",
+    [
+        (True, "2.13.0+cu130", "", "", _PYTORCH_WHL, None),
+        (True, "2.12.0+cu126", "", "", _PYTORCH_WHL, None),
+        (True, "2.10.0+cu128", "", "", _PYTORCH_WHL, None),
+        (True, "2.13.0+cu128", "cu130", "", _PYTORCH_WHL, None),
+        # The cpu and xpu leaves serve Windows a py3-none-any wheel.
+        (True, "2.12.0+cpu", "", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/cpu"),
+        (True, "2.14.0+xpu", "", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/xpu"),
+        (True, "2.13.0+cu130", "cpu", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/cpu"),
+        (True, "2.13.0", "", "", _PYTORCH_WHL, None),
+        # Mirrors and explicit indexes stay pinned.
+        (True, "2.13.0+cu130", "", "", _MIRROR_WHL, f"{_MIRROR_WHL}/cu130"),
+        (True, "2.13.0+cu130", "", f"{_MIRROR_WHL}/cu130", _PYTORCH_WHL, f"{_MIRROR_WHL}/cu130"),
+        # Not a CUDA leaf, though it starts with "cu".
+        (True, "2.13.0+cu130", "current", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/current"),
+        (False, "2.13.0+cu130", "", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/cu130"),
+        (False, "2.12.0+cu126", "", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/cu126"),
+    ],
+)
+def test_windows_cuda_takes_torchao_unpinned(
+    monkeypatch, is_windows, torch_version, family, url, base, expected
+):
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "IS_WINDOWS", is_windows)
+    monkeypatch.setattr(mod, "_PYTORCH_WHL_BASE", base)
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", url)
+    assert mod._torchao_index_url(torch_version) == expected
+
+
+def test_a_windows_cuda_update_leaves_the_installed_torchao_alone(monkeypatch):
+    """The untagged wheel the first run installs must satisfy the next run's tag check."""
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "IS_WINDOWS", True)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.delenv(mod._FULL_DEPS_ENV, raising = False)
+    notes: list[str] = []
+    calls: list[tuple] = []
+    monkeypatch.setattr(mod, "_note", notes.append)
+    monkeypatch.setattr(mod, "pip_install", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(mod, "pip_install_try", lambda *a, **k: calls.append(a) or True)
+
+    installed = {"torchao": None}
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda n: installed.get(n))
+    monkeypatch.setattr(mod, "_PASS_EVIDENCE", None)
+    mod._install_torchao_for_torch("2.13.0+cu130")
+    assert len(calls) == 1 and "--index-url" not in calls[0], calls
+    assert not any("did not serve" in n for n in notes), notes
+
+    installed["torchao"] = "0.18.0"
+    monkeypatch.setattr(mod, "_PASS_EVIDENCE", {"pass_inputs": {}, "step_results": {}})
+    mod._install_torchao_for_torch("2.13.0+cu130")
+    assert len(calls) == 1, calls
+    assert mod._STEP_RESULTS.get("torchao") == "skipped"
+
+
 def test_every_torchao_call_site_asks_for_the_pinned_tag():
     """Passing the torch version rather than the pinned tag would reintroduce the drift the
     helper exists to remove, so no call site may spell it any other way."""
@@ -276,6 +340,7 @@ def test_every_torchao_call_site_asks_for_the_pinned_tag():
     assert source.count("_pin_needs_reinstall(") == 3  # the def plus both call sites
     assert '_torch_index_tag(torch_version) if index else ""' in source
     assert '_torch_index_tag(_label_after) if _ao_index else ""' in source
+    assert "_ao_index = _torchao_index_url(_label_after)" in source
 
 
 def test_no_torchao_install_can_resolve_a_dependency():

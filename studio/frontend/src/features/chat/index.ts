@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
+export { validateChatSearch, type ChatSearch } from "./chat-search";
+export {
+  loadChatPage,
+  loadedChatPage,
+  prefetchChatPage,
+} from "./load-chat-page";
 export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
   browseFolders,
@@ -66,11 +71,6 @@ export { requestReplyFinishedPermission } from "./utils/reply-finished-notificat
 export { forgetAgentsMd } from "./utils/agents-md";
 export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
-  hydrateModelDisclaimerPreference,
-  refreshModelDisclaimerPreference,
-  saveModelDisclaimerPreference,
-} from "./sync-model-disclaimer-preference";
-export {
   ChatComposerFocusableContext,
   pythonToolRunsInStudio,
   useChatActive,
@@ -116,7 +116,7 @@ export {
   usePermissionModeChoice,
   useSandboxCapability,
 } from "./permission-mode-select";
-export { sandboxSwitchState } from "./sandbox-level";
+export { SANDBOX_DOCS_URL, sandboxSwitchState } from "./sandbox-level";
 export { pickSandboxLevel } from "./sandbox-pick";
 export { SandboxSetupDialog } from "./sandbox-setup-dialog";
 export {
@@ -215,6 +215,7 @@ export {
   type SectionLanding,
 } from "./hooks/use-section-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
+export { usePinnedChatsSync } from "./hooks/use-pinned-chats-sync";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
   applyManualOrder,
@@ -484,7 +485,10 @@ export {
   onChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
-export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export {
+  emitChatAttachmentDeleted,
+  prepareChatAttachmentDeletion,
+} from "./utils/chat-attachment-events";
 export { forkCountFor, subscribeForkCounts } from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
@@ -521,6 +525,7 @@ export {
 export {
   adoptLegacyDraft,
   latestDraft,
+  latestPasteDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,

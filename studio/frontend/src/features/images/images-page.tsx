@@ -20,13 +20,11 @@ import {
   useState,
 } from "react";
 import {
-  ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderAddIcon,
   Image03Icon,
   ImageAdd02Icon,
   ImageCropIcon,
@@ -34,8 +32,9 @@ import {
   PlusSignIcon,
   Refresh01Icon,
   SparklesIcon,
+  UndoIcon,
 } from "@hugeicons/core-free-icons";
-import { ReloadIcon } from "@/lib/reload-icon";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -124,7 +123,7 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaApiButton } from "@/components/media-api-button";
-import { LibraryPageLink } from "@/components/media-page-link";
+import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { translate, useT } from "@/i18n";
 import {
   chatAboutMedia,
@@ -192,6 +191,7 @@ import {
   matchAspect,
 } from "@/components/media-size-controls";
 import { cn } from "@/lib/utils";
+import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import {
@@ -429,6 +429,7 @@ import {
   engineRequestField,
   engineSelectVisible,
   loadedEngineChoice,
+  loraUnavailableNote,
   nativeLoadAdvanced,
   nativeReloadTarget,
   offersCompiledLoraReload,
@@ -462,6 +463,7 @@ import {
   TrainBaseSelector,
   type TrainFamilyOption,
 } from "./train/train-base-selector";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 
 function withEngagedFamily(
   { repoId, kind, filename, textEncoderFiles, vaeFile }: RememberedImageModel,
@@ -679,9 +681,9 @@ async function downloadImage(
       }
     }
     const filename = exportFilename(image, outputFormat);
-    await downloadFile(output, filename, output.type || "image/png");
-    if (isTauri) {
-      toast.success("Image saved", { description: filename });
+    const savedFileName = await downloadFile(output, filename, output.type || "image/png");
+    if (savedFileName !== undefined) {
+      toast.success("Image saved", { description: savedFileName });
     }
   } catch (error) {
     if (isDownloadCancelled(error)) {
@@ -952,14 +954,16 @@ function AdvancedTextField({
         {hint && <InfoHint>{hint}</InfoHint>}
       </span>
       {multiline ? (
+        // One line at the selects' 36px that grows with each file. No resize grip or inner scrollbar: WebKit paints
+        // both square over the 18px corners.
         <Textarea
           aria-label={label}
-          rows={2}
+          rows={1}
           spellCheck={false}
           placeholder={placeholder}
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
-          className="min-h-0 resize-y font-mono text-xs"
+          className="min-h-9 overflow-hidden rounded-[18px] py-[calc((var(--spacing)*9-2px-1lh)/2)] font-mono text-xs leading-5"
         />
       ) : (
         <Input
@@ -968,7 +972,7 @@ function AdvancedTextField({
           placeholder={placeholder}
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
-          className="h-8 font-mono text-xs"
+          className="h-9 font-mono text-xs"
         />
       )}
     </div>
@@ -1437,7 +1441,7 @@ function RecipePopover({
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
-            <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
+            <HugeiconsIcon icon={UndoIcon} className="size-4" />
             Restore these settings
           </Button>
           {/* The caption that actually ran, with Enhance prompt off, so the run reproduces without the upsampler. */}
@@ -1765,6 +1769,9 @@ export function ImagesPage({
   );
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
+  // Mounted on first visit, then hidden rather than unmounted, so switching to Create keeps the training form.
+  const [trainMounted, setTrainMounted] = useState(false);
+  if (pageMode === "train" && !trainMounted) setTrainMounted(true);
   const setPageMode = useImageWorkflowStore((s) => s.setPageMode);
   const tourSteps = useMemo(
     () => buildImagesTourSteps({ pageMode }),
@@ -2148,6 +2155,7 @@ export function ImagesPage({
   // Refresh the LoRA picker when the loaded family changes, since a LoRA is family-specific.
   // Not on first load or unload (a restore can precede the load), so track it in a ref.
   const loraCapable = Boolean(!external && status?.loaded && status?.supports_lora);
+  const loraOffNote = external ? null : loraUnavailableNote(status);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   const bakedLorasOnLoad = useRef(false);
   useEffect(() => {
@@ -3194,6 +3202,18 @@ export function ImagesPage({
       // Status is best-effort; a failed poll should not surface an error toast.
     }
   }, [setStatusIfNewest]);
+
+  // Starting a training run unloads the image model, so re-read it on the way back to Create.
+  const leftForTrain = useRef(false);
+  useEffect(() => {
+    if (pageMode === "train") {
+      leftForTrain.current = true;
+      return;
+    }
+    if (!active || !leftForTrain.current) return;
+    leftForTrain.current = false;
+    void refreshStatus();
+  }, [active, pageMode, refreshStatus]);
 
   useEffect(() => {
     isMounted.current = true;
@@ -4693,6 +4713,16 @@ export function ImagesPage({
     },
     [applyImageModelDefaults, busy, handleLoad, pickGuard, pickToast, quant, revertPick, setPageMode],
   );
+  const deployFromVideo = useImageWorkflowStore((s) => s.pendingDeploy);
+  useEffect(() => {
+    if (!active || !deployFromVideo) return;
+    const request = useImageWorkflowStore.getState().takeDeploy();
+    if (request) handleDeployAdapter(request);
+  }, [active, deployFromVideo, handleDeployAdapter]);
+  const trainingCompletions = useImageWorkflowStore((s) => s.trainingCompletions);
+  useEffect(() => {
+    if (trainingCompletions > 0) setLoraRefreshKey((k) => k + 1);
+  }, [trainingCompletions]);
 
   const handleUnload = useCallback(async (): Promise<boolean> => {
     pendingRecalledGeneration.current = null;
@@ -5855,12 +5885,12 @@ export function ImagesPage({
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
-      className="diffusion-surface @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+      className="diffusion-surface media-header-layout @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
     >
       <MediaRailResizeHandle kind="images" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(var(--media-header-min-width),1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden pr-3 @[50rem]:border-r @[50rem]:border-border/60",
@@ -5894,8 +5924,7 @@ export function ImagesPage({
                 resolveDownloadFootprint={resolveDownloadFootprint}
                 onEject={status?.loaded ? handleUnload : undefined}
                 variant="ghost"
-                className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
-                triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
+                className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
                 opaqueKind={opaqueKind}
@@ -5924,65 +5953,64 @@ export function ImagesPage({
             )}
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
-          <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
+        <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
               dataTour="images-mode"
               ariaLabel="Page mode"
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
               ]}
             />
           </div>
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              <MediaApiButton
-                kind="images"
-                model={status?.loaded ? (status.repo_id ?? null) : null}
-              />
-              <LibraryPageLink
-                tab="images"
-                labelClassName="hidden @[50rem]:inline"
-                arrowClassName="hidden @[50rem]:block"
-              />
-            </div>
-          </div>
+          {/* The chat header's right inset. */}
+          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <MediaApiButton
+              kind="images"
+              model={status?.loaded ? (status.repo_id ?? null) : null}
+            />
+            <LibraryPageLink tab="images" iconOnly={true} />
+            <SiblingMediaPageLink to="/video" />
+          </MediaHeaderActions>
         </div>
       </div>
-      {pageMode === "train" ? (
-        <DiffusionTrainPanel
-          active={active && pageMode === "train"}
-          loadedFamily={status?.family ?? null}
-          loadedBaseRepo={
-            // For a GGUF load repo_id is a checkpoint path, not a trainable base.
-            status?.base_repo ?? status?.repo_id ?? null
-          }
-          onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
-          onDeploy={handleDeployAdapter}
-          familyName={trainFamilyName}
-          onFamilyNameChange={setTrainFamilyName}
-          baseChoice={trainBaseChoice}
-          onBaseChoiceChange={setTrainBaseChoice}
-          onFamiliesChange={setTrainFamilies}
-        />
-      ) : (
+      {trainMounted && (
+        <div className={pageMode === "train" ? "contents" : "hidden"} inert={pageMode !== "train" || undefined}>
+          <DiffusionTrainPanel
+            active={active && pageMode === "train"}
+            loadedFamily={status?.family ?? null}
+            loadedBaseRepo={
+              // For a GGUF load repo_id is a checkpoint path, not a trainable base.
+              status?.base_repo ?? status?.repo_id ?? null
+            }
+            onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
+            onDeploy={handleDeployAdapter}
+            familyName={trainFamilyName}
+            onFamilyNameChange={setTrainFamilyName}
+            baseChoice={trainBaseChoice}
+            onBaseChoiceChange={setTrainBaseChoice}
+            onFamiliesChange={setTrainFamilies}
+          />
+        </div>
+      )}
+      {pageMode !== "train" && (
       /* Settings column + preview canvas. Structural borders stay edge-to-edge; spacing belongs inside each pane.
          The same 50rem page-container breakpoint drives this body and the header above. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="images-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-var(--media-header-min-width)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0px))]",
               settingsFadeClass,
             )}
           >
@@ -6001,8 +6029,8 @@ export function ImagesPage({
               </div>
 
               {workflow === "create" && (
-                // Top edge on the heading's cap top (text-xl, leading-none; Hellix: 0.122em).
-                <div className="mt-[calc(var(--text-xl)*0.122)]">
+                // Top edge on the icon's drawn top (its stroke starts 1.25/24 into the glyph).
+                <div className="mt-[calc((var(--text-xl)-18px*var(--ui-space-scale,1))/2+18px*var(--ui-space-scale,1)*0.052)]">
                   <MediaGenerationPresetControl
                     kind="image"
                     presets={imagePresets.presets}
@@ -6550,7 +6578,7 @@ export function ImagesPage({
             )}
             {!external && !loraCapable && offersNativeLoraReload(status) && (
               <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                <span>LoRAs need the native engine for this GGUF; diffusers runs it without them.</span>
+                <span>LoRAs are off on this load; the native engine applies them to this GGUF.</span>
                 <Button size="sm" variant="secondary" className="shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
                   Reload with native engine
                 </Button>
@@ -6565,6 +6593,9 @@ export function ImagesPage({
                   </Button>
                 )}
               </div>
+            )}
+            {loraOffNote && (
+              <div className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">{loraOffNote}</div>
             )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
@@ -6909,8 +6940,8 @@ export function ImagesPage({
               </Button>
             ) : (
               <>
-                <Button variant="dark"
-                  className="relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                <Button variant="primary"
+                  className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
@@ -6950,7 +6981,7 @@ export function ImagesPage({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={ReloadIcon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>
@@ -7060,7 +7091,7 @@ export function ImagesPage({
                       openViewer();
                     }}
                   >
-                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                    <HugeiconsIcon icon={ExpandArrowsIcon} strokeWidth={1.5} className="size-4" />
                   </Button>
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
@@ -7159,7 +7190,7 @@ export function ImagesPage({
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."
-                    : "Select a diffusion model to load"}
+                    : "Select image model to create an image"}
                 </p>
               </div>
             )}
