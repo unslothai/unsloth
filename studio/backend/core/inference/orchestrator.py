@@ -214,6 +214,9 @@ _DISPATCH_POLL_INTERVAL = 0.5
 _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _CANCELLED_ROWS_GRACE = 5.0
+# Old fixed post-cancel sleep, now added to the exit wait so a slow cancel keeps its full budget.
+_SHUTDOWN_CANCEL_GRACE_S = 0.5
+_SHUTDOWN_JOIN_SLICE_S = 0.05
 
 # Transformers TTS only; generous since _ensure_subprocess_alive already catches dead workers.
 _AUDIO_GENERATION_TIMEOUT = 900.0
@@ -857,19 +860,15 @@ class InferenceOrchestrator:
 
         self._teardown_going_out()
         self._cancel_generation()
-        time.sleep(0.5)
-
         self._drain_queue()
 
+        # The worker reads commands in order, so shutdown runs once the cancelled reply ends.
         try:
             self._cmd_queue.put({"type": "shutdown"})
         except (OSError, ValueError):
             self._teardown_not_sent()
 
-        try:
-            self._proc.join(timeout = timeout)
-        except Exception:
-            pass
+        self._join_worker_draining(timeout + _SHUTDOWN_CANCEL_GRACE_S)
 
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Inference subprocess did not exit gracefully, terminating")
@@ -914,6 +913,26 @@ class InferenceOrchestrator:
         self._reset_worker_scoped_state()
         logger.info("Inference subprocess shut down")
         return True
+
+    def _join_worker_draining(self, timeout: float) -> None:
+        """Wait for worker exit, emptying replies meanwhile: a child exits only once its queue
+        feeder flushes, and a full pipe would hold it until the terminate fallback."""
+        proc = self._proc
+        try:
+            if getattr(proc, "sentinel", None) is None:
+                proc.join(timeout = timeout)
+                return
+            deadline = time.monotonic() + max(timeout, 0.0)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                proc.join(timeout = min(_SHUTDOWN_JOIN_SLICE_S, remaining))
+                self._drain_queue()
+                if not proc.is_alive():
+                    break
+        except Exception:
+            pass
 
     @staticmethod
     def _wait_for_worker_vram_settle(
@@ -2147,8 +2166,8 @@ class InferenceOrchestrator:
             had_worker_handle = self._proc is not None
             worker_shutdown_at = 0.0
             if self._ensure_subprocess_alive():
+                # _shutdown_subprocess cancels too and waits on worker exit, not a fixed sleep.
                 self._cancel_generation()
-                time.sleep(0.3)
                 if self._shutdown_subprocess() is False:
                     # Worker survived kill (wedged CUDA syscall); do not spawn a second over its GPU memory.
                     raise RuntimeError(
