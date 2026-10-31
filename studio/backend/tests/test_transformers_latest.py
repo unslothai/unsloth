@@ -1698,6 +1698,27 @@ class TestCustomCodeRouting:
         assert result["supported_in_pypi"] is False and result["supported_in_main"] is True
         assert result["main_version"] == "5.14.0.dev0"
 
+    def test_nested_saving_version_routes_when_top_level_has_none(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """LFM3-Audio-2B: only its ``lfm`` / ``depthformer`` sub-configs carry transformers_version."""
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.22.0")
+        d = Path(_custom_code_model(tmp_path, "unused"))
+        cfg = json.loads((d / "config.json").read_text())
+        del cfg["transformers_version"]
+        cfg["lfm"] = {"model_type": "lfm3", "transformers_version": "5.19.0.dev0"}
+        cfg["depthformer"] = {"model_type": "lfm3", "transformers_version": "5.8.0"}
+        (d / "config.json").write_text(json.dumps(cfg))
+        assert get_transformers_tier(str(d)) == "latest"
+
+    def test_no_saving_version_anywhere_is_not_routed(self, tmp_path: Path):
+        d = Path(_custom_code_model(tmp_path, "unused"))
+        cfg = json.loads((d / "config.json").read_text())
+        del cfg["transformers_version"]
+        cfg["encoder"] = {"hidden_size": 8}
+        (d / "config.json").write_text(json.dumps(cfg))
+        assert tv._remote_code_min_version(cfg) is None
+
     def test_hub_name_match_is_raised_to_saving_version(self, monkeypatch):
         cfg = {
             "model_type": "qwen3_5",
