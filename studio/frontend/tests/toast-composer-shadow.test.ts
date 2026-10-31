@@ -17,7 +17,8 @@ function rules(): [string, string][] {
   return out;
 }
 
-const SURFACE = /chat-composer-surface|unsloth-composer-surface|\[data-sonner-toast\]\[data-styled='true'\]/;
+// The surface itself, not a control inside it (a pill's hover rim is its own shadow).
+const SURFACE = /(chat-composer-surface|unsloth-composer-surface|\[data-sonner-toast\]\[data-styled='true'\])\s*(,|$)/;
 
 test("toasts and the composer read one shadow variable", () => {
   const shadows = rules()

@@ -40,6 +40,18 @@ export const fr = {
     dimensionsError: "Choisissez une image de moins de 40 mégapixels.",
     decodeError: "Impossible de lire cette image. Essayez un autre fichier.",
     effectError: "Impossible de générer l’effet. Choisissez Aucun ou une autre image.",
+    material: "Verre",
+    materialDescription: "Comment la barre latérale et la zone de saisie laissent voir l’arrière-plan.",
+    materialSolid: "Désactivé",
+    materialTransparent: "Transparent",
+    materialFrosted: "Dépoli",
+    materialBlurred: "Flou",
+    materialLiquid: "Verre liquide",
+    materialLiquid3d: "Verre liquide 3D",
+    materialNeedsImage: "S’affiche sur une image d’arrière-plan. Importez-en une pour le voir.",
+    materialMenus: "Menus en verre",
+    materialMenusDescription: "Les listes déroulantes, menus et sélecteurs utilisent aussi le verre.",
+    materialStrength: "Intensité du verre",
   },
 
   linkMenu: {

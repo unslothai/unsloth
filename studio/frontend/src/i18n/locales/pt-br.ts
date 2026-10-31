@@ -40,6 +40,18 @@ export const ptBR = {
     dimensionsError: "Escolha uma imagem menor que 40 megapixels.",
     decodeError: "Não foi possível ler a imagem. Tente outro arquivo.",
     effectError: "Não foi possível criar o efeito. Escolha Nenhum ou outra imagem.",
+    material: "Vidro",
+    materialDescription: "Como a barra lateral e a caixa de mensagem deixam o fundo aparecer.",
+    materialSolid: "Desativado",
+    materialTransparent: "Transparente",
+    materialFrosted: "Fosco",
+    materialBlurred: "Desfocado",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "Aparece sobre uma imagem de fundo. Envie uma para ver.",
+    materialMenus: "Menus de vidro",
+    materialMenusDescription: "Listas suspensas, menus e seletores também usam vidro.",
+    materialStrength: "Intensidade do vidro",
   },
 
   linkMenu: {

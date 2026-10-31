@@ -40,6 +40,18 @@ export const hi = {
     dimensionsError: "40 मेगापिक्सेल से छोटी छवि चुनें।",
     decodeError: "छवि पढ़ी नहीं जा सकी। दूसरी फ़ाइल आज़माएँ।",
     effectError: "प्रभाव बनाया नहीं जा सका। कोई नहीं या दूसरी छवि चुनें।",
+    material: "ग्लास",
+    materialDescription: "साइडबार और कंपोज़र बैकग्राउंड को कैसे दिखने देते हैं।",
+    materialSolid: "बंद",
+    materialTransparent: "पारदर्शी",
+    materialFrosted: "फ़्रॉस्टेड",
+    materialBlurred: "धुंधला",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "बैकग्राउंड छवि पर दिखता है। इसे देखने के लिए एक छवि अपलोड करें।",
+    materialMenus: "ग्लास मेनू",
+    materialMenusDescription: "ड्रॉपडाउन, मेनू और पिकर भी ग्लास का उपयोग करते हैं।",
+    materialStrength: "ग्लास की तीव्रता",
   },
 
   linkMenu: {

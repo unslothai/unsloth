@@ -41,6 +41,18 @@ export const ja = {
     dimensionsError: "4000万画素未満の画像を選択してください。",
     decodeError: "画像を読み込めませんでした。別のファイルを試してください。",
     effectError: "エフェクトを生成できませんでした。「なし」または別の画像を選択してください。",
+    material: "ガラス",
+    materialDescription: "サイドバーと入力欄から背景をどのように透かすかを設定します。",
+    materialSolid: "オフ",
+    materialTransparent: "透明",
+    materialFrosted: "すりガラス",
+    materialBlurred: "ぼかし",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "背景画像の上で表示されます。確認するには画像をアップロードしてください。",
+    materialMenus: "ガラスのメニュー",
+    materialMenusDescription: "ドロップダウン、メニュー、ピッカーにもガラスを使用します。",
+    materialStrength: "ガラスの強さ",
   },
 
   linkMenu: {

@@ -40,6 +40,18 @@ export const zhCN = {
     dimensionsError: "请选择小于 4000 万像素的图片。",
     decodeError: "无法读取图片。请尝试其他文件。",
     effectError: "无法生成效果。请选择“无”或其他图片。",
+    material: "玻璃",
+    materialDescription: "侧边栏和输入框透出背景的方式。",
+    materialSolid: "关闭",
+    materialTransparent: "透明",
+    materialFrosted: "磨砂",
+    materialBlurred: "模糊",
+    materialLiquid: "液态玻璃",
+    materialLiquid3d: "液态玻璃 3D",
+    materialNeedsImage: "在背景图片上显示。上传一张图片即可查看。",
+    materialMenus: "玻璃菜单",
+    materialMenusDescription: "下拉列表、菜单和选择器也使用玻璃效果。",
+    materialStrength: "玻璃强度",
   },
 
   linkMenu: {

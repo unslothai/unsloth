@@ -37,6 +37,18 @@ export const sv = {
     dimensionsError: "Välj en bild mindre än 40 megapixlar.",
     decodeError: "Det gick inte att läsa bilden. Prova en annan fil.",
     effectError: "Det gick inte att skapa effekten. Välj Ingen eller en annan bild.",
+    material: "Glas",
+    materialDescription: "Hur sidofältet och skrivfältet släpper igenom bakgrunden.",
+    materialSolid: "Av",
+    materialTransparent: "Genomskinligt",
+    materialFrosted: "Frostat",
+    materialBlurred: "Suddigt",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "Syns över en bakgrundsbild. Ladda upp en för att se det.",
+    materialMenus: "Glasmenyer",
+    materialMenusDescription: "Rullgardinsmenyer, menyer och väljare använder också glas.",
+    materialStrength: "Glasstyrka",
   },
 
   linkMenu: {

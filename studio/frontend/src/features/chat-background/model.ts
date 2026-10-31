@@ -12,6 +12,27 @@ export const EFFECTS = [
 	"Scanlines",
 ] as const;
 export type BackgroundEffect = (typeof EFFECTS)[number];
+/** Glass for the sidebar and composer. */
+export const MATERIALS = [
+	"solid",
+	"transparent",
+	"frosted",
+	"blurred",
+	"liquid",
+	"liquid-3d",
+] as const;
+export type WindowMaterial = (typeof MATERIALS)[number];
+export function sanitizeMaterial(value: unknown): WindowMaterial {
+	return MATERIALS.includes(value as WindowMaterial)
+		? (value as WindowMaterial)
+		: "solid";
+}
+/** 0-100; 50 is each material's own tint and blur. */
+export function sanitizeStrength(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value)
+		? Math.max(0, Math.min(100, Math.round(value)))
+		: 50;
+}
 export const IMAGE_SIZING = [
 	"cover",
 	"contain",

@@ -40,6 +40,18 @@ export const ru = {
     dimensionsError: "Выберите изображение меньше 40 мегапикселей.",
     decodeError: "Не удалось прочитать изображение. Попробуйте другой файл.",
     effectError: "Не удалось применить эффект. Выберите Нет или другое изображение.",
+    material: "Стекло",
+    materialDescription: "Как боковая панель и поле ввода пропускают фон.",
+    materialSolid: "Выкл.",
+    materialTransparent: "Прозрачное",
+    materialFrosted: "Матовое",
+    materialBlurred: "Размытое",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "Видно поверх фонового изображения. Загрузите изображение, чтобы увидеть эффект.",
+    materialMenus: "Стеклянные меню",
+    materialMenusDescription: "Раскрывающиеся списки, меню и средства выбора тоже используют стекло.",
+    materialStrength: "Сила стекла",
   },
 
   linkMenu: {

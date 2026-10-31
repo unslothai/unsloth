@@ -22,6 +22,8 @@ import { ChatBackground } from "./index";
 import {
 	DEFAULT_ADJUSTMENTS,
 	EFFECTS,
+	MATERIALS,
+	type WindowMaterial,
 	IMAGE_SIZING,
 	type ImageSizing,
 	POSITIONS,
@@ -38,6 +40,7 @@ import {
 	useChatBackground,
 } from "./storage";
 import { canvasBlob, decodeImage } from "./image";
+import { useMaterialStore } from "./material";
 
 const labels: Record<BackgroundEffect, TranslationKey> = {
 	None: "chatBackground.none",
@@ -52,6 +55,86 @@ const sizingLabels: Record<ImageSizing, TranslationKey> = {
 	stretch: "chatBackground.stretch",
 	original: "chatBackground.original",
 };
+const materialLabels: Record<WindowMaterial, TranslationKey> = {
+	solid: "chatBackground.materialSolid",
+	transparent: "chatBackground.materialTransparent",
+	frosted: "chatBackground.materialFrosted",
+	blurred: "chatBackground.materialBlurred",
+	liquid: "chatBackground.materialLiquid",
+	"liquid-3d": "chatBackground.materialLiquid3d",
+};
+function MaterialRow({ hasImage }: { hasImage: boolean }) {
+	const t = useT();
+	const { material, setMaterial } = useMaterialStore();
+	const note =
+		material !== "solid" && !hasImage ? "chatBackground.materialNeedsImage" : null;
+	return (
+		<SettingsRow
+			label={t("chatBackground.material")}
+			description={note ? t(note) : t("chatBackground.materialDescription")}
+		>
+			<Select
+				value={material}
+				onValueChange={(next) => setMaterial(next as WindowMaterial)}
+			>
+				<SelectTrigger
+					aria-label={t("chatBackground.material")}
+					className="w-52"
+				>
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					{MATERIALS.map((m) => (
+						<SelectItem key={m} value={m}>
+							{t(materialLabels[m])}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+		</SettingsRow>
+	);
+}
+function MaterialMenusRow() {
+	const t = useT();
+	const { material, menus, setMenus } = useMaterialStore();
+	const off = material === "solid";
+	return (
+		<SettingsRow
+			label={t("chatBackground.materialMenus")}
+			description={t("chatBackground.materialMenusDescription")}
+		>
+			<Switch
+				aria-label={t("chatBackground.materialMenus")}
+				checked={menus && !off}
+				disabled={off}
+				onCheckedChange={setMenus}
+			/>
+		</SettingsRow>
+	);
+}
+function MaterialStrengthRow() {
+	const t = useT();
+	const { material, strength, setStrength } = useMaterialStore();
+	const off = material === "solid";
+	return (
+		<SettingsRow label={t("chatBackground.materialStrength")}>
+			<div className="flex w-52 items-center gap-3">
+				<Slider
+					disabled={off}
+					aria-label={t("chatBackground.materialStrength")}
+					min={0}
+					max={100}
+					step={1}
+					value={[strength]}
+					onValueChange={([v]) => setStrength(v)}
+				/>
+				<span className="w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+					{strength}%
+				</span>
+			</div>
+		</SettingsRow>
+	);
+}
 const errors = {
 	storage: "chatBackground.storageError",
 	file: "chatBackground.fileError",
@@ -157,6 +240,9 @@ export function ChatBackgroundControls() {
 					}
 				}}
 			/>
+			<MaterialRow hasImage={Boolean(value)} />
+			<MaterialStrengthRow />
+			<MaterialMenusRow />
 			{error && (
 				<p role="alert" className="mt-3 mb-3 text-sm text-destructive">
 					{t(errors[error])}

@@ -40,6 +40,18 @@ export const he = {
     dimensionsError: "בחרו תמונה קטנה מ־40 מגה־פיקסל.",
     decodeError: "לא ניתן לקרוא את התמונה. נסו קובץ אחר.",
     effectError: "לא ניתן ליצור את האפקט. בחרו ללא או תמונה אחרת.",
+    material: "זכוכית",
+    materialDescription: "איך סרגל הצד ותיבת הכתיבה מעבירים את הרקע.",
+    materialSolid: "כבוי",
+    materialTransparent: "שקוף",
+    materialFrosted: "חלבי",
+    materialBlurred: "מטושטש",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "מופיע מעל תמונת רקע. העלו תמונה כדי לראות אותו.",
+    materialMenus: "תפריטי זכוכית",
+    materialMenusDescription: "גם תפריטים נפתחים, תפריטים ובוררים משתמשים בזכוכית.",
+    materialStrength: "עוצמת הזכוכית",
   },
 
   linkMenu: {

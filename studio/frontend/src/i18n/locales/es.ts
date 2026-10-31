@@ -40,6 +40,18 @@ export const es = {
     dimensionsError: "Elige una imagen de menos de 40 megapíxeles.",
     decodeError: "No se pudo leer esta imagen. Prueba otro archivo.",
     effectError: "No se pudo generar el efecto. Elige Ninguno u otra imagen.",
+    material: "Vidrio",
+    materialDescription: "Cómo la barra lateral y el cuadro de texto dejan ver el fondo.",
+    materialSolid: "Desactivado",
+    materialTransparent: "Transparente",
+    materialFrosted: "Esmerilado",
+    materialBlurred: "Desenfocado",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "Se ve sobre una imagen de fondo. Sube una para verlo.",
+    materialMenus: "Menús de vidrio",
+    materialMenusDescription: "Los desplegables, menús y selectores también usan vidrio.",
+    materialStrength: "Intensidad del vidrio",
   },
 
   linkMenu: {

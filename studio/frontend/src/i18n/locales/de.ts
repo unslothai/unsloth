@@ -40,6 +40,18 @@ export const de = {
     dimensionsError: "Wähle ein Bild mit weniger als 40 Megapixeln.",
     decodeError: "Das Bild konnte nicht gelesen werden. Versuche eine andere Datei.",
     effectError: "Der Effekt konnte nicht erstellt werden. Wähle Keiner oder ein anderes Bild.",
+    material: "Glas",
+    materialDescription: "Wie Seitenleiste und Eingabefeld den Hintergrund durchscheinen lassen.",
+    materialSolid: "Aus",
+    materialTransparent: "Transparent",
+    materialFrosted: "Milchglas",
+    materialBlurred: "Verschwommen",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "Wirkt über einem Hintergrundbild. Lade eines hoch, um es zu sehen.",
+    materialMenus: "Glasmenüs",
+    materialMenusDescription: "Auch Dropdowns, Menüs und Auswahlfelder verwenden Glas.",
+    materialStrength: "Glasstärke",
   },
 
   linkMenu: {

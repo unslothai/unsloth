@@ -37,6 +37,18 @@ export const en = {
     dimensionsError: "Choose an image smaller than 40 megapixels.",
     decodeError: "Could not decode this image. Try another file.",
     effectError: "Could not render the effect. Try None or choose another image.",
+    material: "Glass",
+    materialDescription: "How the sidebar and composer let the background through.",
+    materialSolid: "Off",
+    materialTransparent: "Transparent",
+    materialFrosted: "Frosted",
+    materialBlurred: "Blurred",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "Shows through a background image. Upload one to see it.",
+    materialMenus: "Glass menus",
+    materialMenusDescription: "Dropdowns, menus and pickers use the glass too.",
+    materialStrength: "Glass strength",
   },
 
   linkMenu: {

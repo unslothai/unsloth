@@ -40,6 +40,18 @@ export const ko = {
     dimensionsError: "4천만 화소 미만의 이미지를 선택하세요.",
     decodeError: "이미지를 읽을 수 없습니다. 다른 파일을 시도하세요.",
     effectError: "효과를 생성할 수 없습니다. 없음 또는 다른 이미지를 선택하세요.",
+    material: "유리",
+    materialDescription: "사이드바와 입력창에 배경이 비치는 방식입니다.",
+    materialSolid: "끄기",
+    materialTransparent: "투명",
+    materialFrosted: "반투명",
+    materialBlurred: "흐림",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "배경 이미지 위에서 보입니다. 이미지를 업로드하여 확인하세요.",
+    materialMenus: "유리 메뉴",
+    materialMenusDescription: "드롭다운, 메뉴 및 선택기에도 유리를 사용합니다.",
+    materialStrength: "유리 강도",
   },
 
   linkMenu: {

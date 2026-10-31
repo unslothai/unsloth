@@ -6805,8 +6805,231 @@ html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wal
   .wallpaper-preview-composer { background: var(--background); }
 }
 
+/* Fade off means the image runs to the bottom edge, so drop the solid band the thread fades into behind the composer. */
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready] .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade {
+  display: none;
+}
+
 /* Clear only route canvases; cards, menus and reading surfaces retain their fills. */
 [data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) :is(.hub-page, .hub-page .hub-canvas, [data-wallpaper-page-canvas]) { background: transparent; }
 
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
 .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer { --composer-shadow: none; }
+
+/* Glass materials (html[data-glass]): sidebar and composer frost over the wallpaper.
+   The unprefixed backdrop-filter goes last: the minifier keeps only the last of the pair, and Chromium
+   (WebView2, Chrome) ignores the -webkit- one. */
+/* --glass-strength (Settings, 0.2-2, default 1) scales every material's tint and blur; the cap keeps it glass. */
+html[data-glass] {
+  --glass-tint: min(92%, calc(var(--glass-tint-base) * var(--glass-strength, 1)));
+  --glass-blur: calc(var(--glass-blur-base) * var(--glass-strength, 1));
+}
+html[data-glass="transparent"] { --glass-tint-base: 42%; --glass-blur-base: 0px; --glass-saturate: 100%; }
+html[data-glass="frosted"] { --glass-tint-base: 60%; --glass-blur-base: 26px; --glass-saturate: 170%; }
+html[data-glass="blurred"] { --glass-tint-base: 26%; --glass-blur-base: 48px; --glass-saturate: 125%; }
+html[data-glass="liquid"] { --glass-tint-base: 14%; --glass-blur-base: 10px; --glass-saturate: 190%; }
+html[data-glass="liquid-3d"] { --glass-tint-base: 14%; --glass-blur-base: 10px; --glass-saturate: 190%; }
+/* A floor: navigation text sits over the image on every page. */
+html { --glass-sidebar-floor: 52%; }
+html.dark { --glass-sidebar-floor: 40%; }
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
+  background-color: color-mix(in srgb, var(--sidebar) max(var(--glass-tint), var(--glass-sidebar-floor)), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--foreground) 9%, transparent);
+}
+/* Sticky section labels would otherwise paint solid sidebar bands across the glass. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label) {
+  background-color: transparent;
+}
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+html[data-glass] .wallpaper-preview-composer {
+  background-color: color-mix(in srgb, var(--background) calc(var(--glass-tint) + 14%), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / .1);
+}
+html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
+html[data-glass="frosted"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+html[data-glass="frosted"] .wallpaper-preview-composer {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .07 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+/* Liquid Glass: a nearly clear pane with a thin lit rim and a sheen (--glass-rim, --glass-sheen). No outer
+   shadows on any glass. Liquid Glass 3D adds a lit bevel (--glass-edge), light pooling inside the top and
+   bottom edges and bead-like controls (--glass-bead). */
+html[data-glass^="liquid"] {
+  --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .3), transparent 58%), linear-gradient(rgb(255 255 255 / .08), transparent 45%, rgb(255 255 255 / .06));
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .5), inset 0 0 0 1px rgb(255 255 255 / .12);
+}
+html.dark[data-glass^="liquid"] {
+  --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .1), transparent 58%);
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .16), inset 0 0 0 1px rgb(255 255 255 / .05);
+}
+html[data-glass="liquid-3d"] {
+  --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .45), rgb(255 255 255 / .08) 30%, transparent 55%, rgb(255 255 255 / .08) 80%, rgb(255 255 255 / .3));
+  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .7), inset 0 16px 30px -20px rgb(255 255 255 / .8), inset 0 -18px 34px -20px rgb(255 255 255 / .6);
+  --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .55), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .4), transparent 62%), linear-gradient(172deg, rgb(255 255 255 / .14), transparent 50%);
+  --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .6), rgb(255 255 255 / .14) 62%, rgb(255 255 255 / .28));
+  --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .8), inset 0 -2px 5px rgb(255 255 255 / .3), inset 0 0 0 1px rgb(255 255 255 / .2);
+}
+html.dark[data-glass="liquid-3d"] {
+  --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .2), rgb(255 255 255 / .04) 30%, transparent 55%, rgb(255 255 255 / .04) 80%, rgb(255 255 255 / .12));
+  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .22), inset 0 16px 30px -20px rgb(255 255 255 / .22), inset 0 -18px 34px -20px rgb(255 255 255 / .14);
+  --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .16), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .08), transparent 62%);
+  --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .2), rgb(255 255 255 / .04) 62%, rgb(255 255 255 / .08));
+  --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .28), inset 0 -2px 5px rgb(255 255 255 / .06), inset 0 0 0 1px rgb(255 255 255 / .07);
+}
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
+  background-image: var(--glass-sheen);
+  box-shadow: inset -1px 0 0 rgb(255 255 255 / .28), inset -14px 0 24px -16px rgb(255 255 255 / .3);
+}
+html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
+  box-shadow: inset -1px 0 0 rgb(255 255 255 / .08);
+}
+html[data-glass^="liquid"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+html[data-glass^="liquid"] .wallpaper-preview-composer {
+  position: relative;
+  background-image: var(--glass-sheen);
+  --composer-shadow: var(--glass-rim);
+}
+/* The bevel: a gradient ring, since a gradient border-box layer would show through the clear fill. */
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface::before,
+html[data-glass="liquid-3d"] .wallpaper-preview-composer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: var(--glass-edge);
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+}
+/* Controls inside are glass beads; the send button and switched-on pills are tinted, glossy glass. */
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface .unsloth-composer-plus:not(:hover, [data-state="open"], :focus-visible) {
+  background-image: var(--glass-bead);
+  box-shadow: var(--glass-bead-rim);
+}
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill)[data-active="true"]:not(:hover, [data-state="open"], :focus-visible) {
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--primary) 20%, rgb(255 255 255 / .5)), color-mix(in srgb, var(--primary) 12%, rgb(255 255 255 / .12)));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .7), inset 0 0 0 1px color-mix(in srgb, var(--primary) 14%, rgb(255 255 255 / .18));
+}
+html.dark[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill)[data-active="true"]:not(:hover, [data-state="open"], :focus-visible) {
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--primary) 22%, rgb(255 255 255 / .08)), color-mix(in srgb, var(--primary) 12%, transparent));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .16), inset 0 0 0 1px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface button.aui-composer-send:not(:disabled) {
+  background-image: linear-gradient(180deg, rgb(255 255 255 / .38), rgb(255 255 255 / .05) 55%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .5);
+}
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wallpaper-sidebar-pinned] > [data-wallpaper-chrome-controls]:first-child {
+  background: color-mix(in srgb, var(--sidebar) var(--glass-tint), transparent);
+}
+
+/* Composer outline off: no ring or bevel on glass either. */
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
+html[data-glass] .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer {
+  --composer-shadow: none;
+}
+html[data-glass^="liquid"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
+html[data-glass^="liquid"] .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer {
+  --composer-shadow: none;
+}
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface::before,
+html[data-glass="liquid-3d"] .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer::before {
+  content: none;
+}
+
+/* Run settings panel: the same pane as the sidebar; its header and fields keep their own fills. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
+  background-color: color-mix(in srgb, var(--panel-surface) var(--glass-tint), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface {
+  background-color: transparent;
+}
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
+  background-image: var(--glass-sheen);
+  box-shadow: inset 1px 0 0 rgb(255 255 255 / .28), inset 14px 0 24px -16px rgb(255 255 255 / .3);
+}
+html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
+  box-shadow: inset 1px 0 0 rgb(255 255 255 / .08);
+}
+
+/* Hover and open fills on glass: a translucent wash (lit on liquid glass) instead of a solid grey chip. */
+html[data-glass] {
+  --glass-hover: color-mix(in srgb, var(--foreground) 9%, transparent);
+  --glass-hover-rim: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 5%, transparent);
+}
+html.dark[data-glass] {
+  --glass-hover: rgb(255 255 255 / .1);
+  --glass-hover-rim: inset 0 0 0 1px rgb(255 255 255 / .06);
+}
+html[data-glass] { --glass-field: color-mix(in srgb, var(--background) 55%, transparent); }
+html.dark[data-glass] { --glass-field: rgb(255 255 255 / .07); }
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
+  --panel-input-surface: var(--glass-field);
+  --panel-input-surface-hover: var(--glass-hover);
+  --secondary: var(--glass-field);
+}
+html[data-glass^="liquid"] {
+  --glass-hover: rgb(255 255 255 / .38);
+  --glass-hover-rim: inset 0 1px 0 rgb(255 255 255 / .5);
+}
+html.dark[data-glass^="liquid"] {
+  --glass-hover: rgb(255 255 255 / .12);
+  --glass-hover-rim: inset 0 1px 0 rgb(255 255 255 / .14);
+}
+html[data-glass="liquid-3d"],
+html.dark[data-glass="liquid-3d"] {
+  --glass-hover-rim: var(--glass-bead-rim);
+}
+html[data-glass][data-chat-wallpaper-workspace-ready] :is([data-slot="sidebar-inner"], [data-slot="chat-settings-panel"]),
+html[data-glass][data-chat-wallpaper-ready] [data-wallpaper-chrome-controls],
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface {
+  --accent: var(--glass-hover);
+  --sidebar-accent: var(--glass-hover);
+  --nav-surface-hover: var(--glass-hover);
+  --panel-surface-hover: var(--glass-hover);
+  --chat-icon-bg-hover: var(--glass-hover);
+  --muted: var(--glass-hover);
+  /* Some rules read the --color-* alias, which resolved on :root. */
+  --color-accent: var(--glass-hover);
+  --color-sidebar-accent: var(--glass-hover);
+  --color-nav-surface-hover: var(--glass-hover);
+  --color-panel-surface-hover: var(--glass-hover);
+  --color-chat-icon-bg-hover: var(--glass-hover);
+  --color-muted: var(--glass-hover);
+}
+/* Dark pills mix their fill with the opaque card. */
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible),
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]) {
+  background-color: var(--glass-hover);
+  box-shadow: var(--glass-hover-rim);
+}
+
+/* Glass menus (html[data-glass-menus]): readable over anything, so always some blur and a heavier tint. */
+html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+  --accent: var(--glass-hover);
+  background-color: color-mix(in srgb, var(--popover) min(100%, calc(var(--glass-tint) + 30%)), transparent);
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
+}
+html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+  background-image: var(--glass-sheen);
+  /* !important: the base dropdown shadow rules are. No outer shadow on glass. */
+  box-shadow: var(--glass-rim) !important;
+}
+html[data-glass][data-glass-menus] :is([role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]):is([data-highlighted], :focus-visible) {
+  box-shadow: var(--glass-hover-rim);
+}
+/* Tooltips and hover cards (context usage, token counts) take the same glass over their own dark fill. */
+html[data-glass][data-glass-menus] :is(.tooltip-compact, .tooltip-rich) {
+  background-color: color-mix(in srgb, var(--tooltip-bg) min(100%, calc(var(--glass-tint) + 40%)), transparent);
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
+}
+html[data-glass^="liquid"][data-glass-menus] :is(.tooltip-compact, .tooltip-rich) {
+  background-image: var(--glass-sheen);
+  box-shadow: var(--glass-rim);
+}

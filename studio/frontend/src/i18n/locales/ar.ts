@@ -40,6 +40,18 @@ export const ar = {
     dimensionsError: "اختر صورة أصغر من 40 ميغابكسل.",
     decodeError: "تعذرت قراءة الصورة. جرّب ملفًا آخر.",
     effectError: "تعذر إنشاء التأثير. اختر بلا أو صورة أخرى.",
+    material: "الزجاج",
+    materialDescription: "كيف يُظهر الشريط الجانبي ومربع الكتابة الخلفية من خلالهما.",
+    materialSolid: "إيقاف",
+    materialTransparent: "شفاف",
+    materialFrosted: "مصنفر",
+    materialBlurred: "ضبابي",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "يظهر عبر صورة خلفية. ارفع صورة لرؤيته.",
+    materialMenus: "قوائم زجاجية",
+    materialMenusDescription: "تستخدم القوائم المنسدلة والقوائم وأدوات الاختيار الزجاج أيضًا.",
+    materialStrength: "قوة الزجاج",
   },
 
   linkMenu: {

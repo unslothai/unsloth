@@ -37,6 +37,18 @@ export const it = {
     dimensionsError: "Scegli un’immagine inferiore a 40 megapixel.",
     decodeError: "Impossibile leggere l’immagine. Prova un altro file.",
     effectError: "Impossibile creare l’effetto. Scegli Nessuno o un’altra immagine.",
+    material: "Vetro",
+    materialDescription: "Come la barra laterale e il compositore lasciano trasparire lo sfondo.",
+    materialSolid: "Disattivato",
+    materialTransparent: "Trasparente",
+    materialFrosted: "Smerigliato",
+    materialBlurred: "Sfocato",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialNeedsImage: "Si vede su un’immagine di sfondo. Caricane una per vederlo.",
+    materialMenus: "Menu in vetro",
+    materialMenusDescription: "Anche menu a discesa, menu e selettori usano il vetro.",
+    materialStrength: "Intensità del vetro",
   },
 
   linkMenu: {
