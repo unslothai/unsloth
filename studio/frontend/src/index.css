@@ -2354,12 +2354,16 @@ html[data-code-wrap] [data-streamdown="code-block"] :is(pre, code) {
 	white-space: pre-wrap !important;
 	overflow-wrap: anywhere;
 }
-/* With numbers on, wrapped lines hang past Streamdown's number column (w-6 + mr-4). */
-html[data-code-wrap][data-code-line-numbers] [data-streamdown="code-block"] code > span {
+/* Wrapped lines hang past Streamdown's number column (w-6 + mr-4) wherever numbers show. */
+html[data-code-wrap] [data-streamdown="code-block"] code > span {
 	padding-inline-start: 2.5rem;
 	text-indent: -2.5rem;
 }
-html[data-code-wrap][data-code-line-numbers] [data-streamdown="code-block"] code > span::before {
+html[data-code-wrap] [data-streamdown="code-block"] code > span::before {
+	text-indent: 0;
+}
+html[data-code-wrap]:not([data-code-line-numbers]) :is(.aui-thread-root, [data-code-preview]) [data-streamdown="code-block"] code > span {
+	padding-inline-start: 0;
 	text-indent: 0;
 }
 html[data-code-no-ligatures] :is(pre, code, kbd, samp),
