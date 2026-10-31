@@ -55,7 +55,9 @@ def test_the_backend_learning_recipes_are_the_frontend_files():
         p.name for p in LEARNING.glob("*.json")
     )
     for path in LEARNING.glob("*.json"):
-        assert json.loads((copies / path.name).read_text(encoding = "utf-8")) == json.loads(path.read_text(encoding = "utf-8"))
+        assert json.loads((copies / path.name).read_text(encoding = "utf-8")) == json.loads(
+            path.read_text(encoding = "utf-8")
+        )
 
 
 def test_a_recipe_group_survives_a_save_and_a_plain_group_saves_as_before():
