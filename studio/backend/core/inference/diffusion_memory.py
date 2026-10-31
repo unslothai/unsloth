@@ -6001,14 +6001,64 @@ def apply_memory_plan(
 
 
 UNET_STREAM_ENV = "UNSLOTH_DIFFUSION_UNET_STREAM"
-# activations + workspace of one SDXL-class UNet call at 1024^2 (CFG batch 2, fp16 SDPA), beside the streamed weights
-_UNET_STREAM_RESERVE_MIB = 1536
-# kept free beside the resident leaves for the tiled VAE decode (a decode OOM releases resident groups; leaf-level
-# groups do not survive that round trip)
-_UNET_STREAM_DECODE_MIB = 2048
+# SDXL base, 1024^2, 25 steps, CFG 7, MiB above the weights on the card (diffusers 0.41, L4 bf16 + T4 fp16).
+# Whole-module offload: reserved peak of the denoise above the 4897 MiB UNet (L4 5714, T4 5694 reserved).
+_MEASURED_UNET_OFFLOAD_DENOISE_MIB = 817
+# Streamed (leaf level, encoders streamed, VAE resident + tiled, prefetch window included): the worst phase of one render
+# (max_memory_allocated) is the VAE decode. L4 bf16: encode 121, denoise 333, decode 2435 (SDXL-Turbo at 512^2: 610).
+_MEASURED_UNET_STREAMED_PEAK_MIB = 2435
+# A force_upcast fp16 VAE (T4 and other pre-Ampere cards) decodes in fp32 (diffusers' upcast). T4 fp16: encode 121,
+# denoise 333, decode 3228 (SDXL-Turbo at 512^2: 923).
+_MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB = 3228
+# allocator fragmentation beside the reserve
+_UNET_STREAM_SLACK_MIB = 512
 
 
-def _stream_unet_instead_of_model_offload(pipe: Any, placement: str, logger: Any = None) -> bool:
+def _measured_reserve_mib(peak_mib: int) -> int:
+    step = _MEASURED_PEAK_ROUND_MIB
+    return int(-(-(peak_mib * _MEASURED_PEAK_MARGIN) // step) * step)
+
+
+def unet_stream_room_mib(
+    free_mib: int,
+    unet_mib: int,
+    vae_mib: int,
+    *,
+    fp32_decode: bool = False,
+) -> Optional[int]:
+    """None when whole-module offload fits the UNet (its weights plus the measured denoise peak); else the MiB of
+    UNet leaves a streamed UNet keeps resident beside the VAE and the measured worst phase of a render (a decode OOM
+    releases resident groups, and leaf-level groups do not survive that round trip, so the decode must fit too)."""
+    if unet_mib + _measured_reserve_mib(_MEASURED_UNET_OFFLOAD_DENOISE_MIB) <= free_mib:
+        return None
+    peak = (
+        _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB
+        if fp32_decode
+        else _MEASURED_UNET_STREAMED_PEAK_MIB
+    )
+    reserve = _measured_reserve_mib(peak) + _UNET_STREAM_SLACK_MIB
+    return max(0, int(free_mib) - int(vae_mib) - reserve)
+
+
+def _vae_decodes_in_fp32(vae: Any) -> bool:
+    """diffusers' SDXL pipelines upcast a force_upcast fp16 VAE to fp32 for the decode (bf16 decodes as is)."""
+    try:
+        import torch
+        first = next(iter(vae.parameters()), None)
+        return (
+            first is not None
+            and first.dtype == torch.float16
+            and bool(getattr(getattr(vae, "config", None), "force_upcast", False))
+        )
+    except Exception:  # noqa: BLE001 - duck-typed VAE: price the larger fp32 decode
+        return True
+
+
+def _stream_unet_instead_of_model_offload(
+    pipe: Any,
+    placement: str,
+    logger: Any = None,
+) -> bool:
     """Whole-module offload moves the whole UNet onto the card for every call: a UNet larger than the free VRAM
     (SDXL's 4.8 GiB fp16 UNet on a 4-6 GiB card) then OOMs on the first step. Stream it leaf by leaf instead (text
     encoders streamed too, the VAE resident), keeping as many leaves resident as the free VRAM holds. Only when the
@@ -6025,6 +6075,7 @@ def _stream_unet_instead_of_model_offload(pipe: Any, placement: str, logger: Any
         if onload.type != "cuda" or not torch.cuda.is_available():
             return False
         free_mib = int(torch.cuda.mem_get_info(onload)[0]) >> 20
+
         def _mib(m: Any) -> int:
             if not isinstance(m, torch.nn.Module):
                 return 0
@@ -6032,10 +6083,12 @@ def _stream_unet_instead_of_model_offload(pipe: Any, placement: str, logger: Any
             return sum(t.numel() * t.element_size() for t in ts.values()) >> 20
 
         unet_mib = _mib(unet)
-        if unet_mib + _UNET_STREAM_RESERVE_MIB <= free_mib:
+        vae = getattr(pipe, "vae", None)
+        room = unet_stream_room_mib(
+            free_mib, unet_mib, _mib(vae), fp32_decode = vae is not None and _vae_decodes_in_fp32(vae)
+        )
+        if room is None:
             return False
-        vae_mib = _mib(getattr(pipe, "vae", None))
-        room = max(0, free_mib - vae_mib - _UNET_STREAM_RESERVE_MIB - _UNET_STREAM_DECODE_MIB - 512)
     except Exception:  # noqa: BLE001 - keep the stock whole-module path
         return False
     _set_group_offload_failure(pipe, None)
@@ -6059,7 +6112,9 @@ def _stream_unet_instead_of_model_offload(pipe: Any, placement: str, logger: Any
             "diffusion.memory: UNet (%d MiB) does not fit %d MiB free for whole-module offload; %s",
             unet_mib,
             free_mib,
-            f"streaming it leaf by leaf, {room} MiB kept resident" if applied else "streaming failed, whole-module offload",
+            f"streaming it leaf by leaf, {room} MiB kept resident"
+            if applied
+            else "streaming failed, whole-module offload",
         )
     return applied
 
