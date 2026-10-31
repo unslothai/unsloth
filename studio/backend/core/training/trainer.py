@@ -2402,11 +2402,16 @@ class UnslothTrainer:
 
             feature = dataset.features.get(image_col)
             inner = feature[0] if isinstance(feature, list) else getattr(feature, "feature", None)
+
+            # Image(decode = False) yields {"path", "bytes"} dicts the processor rejects.
+            def decodes(f):
+                return isinstance(f, Image) and f.decode
+
             if inner is not None:
                 # A list of images per row (e.g. an "images" column) stays a list.
-                if not isinstance(inner, Image):
+                if not decodes(inner):
                     dataset = dataset.cast_column(image_col, Sequence(Image()))
-            elif not isinstance(feature, Image):
+            elif not decodes(feature):
                 dataset = dataset.cast_column(image_col, Image())
             logger.info(f"Audio VLM dataset also has images in '{image_col}'; training on both\n")
 

@@ -283,3 +283,32 @@ def test_a_none_image_row_gets_no_slot_and_no_image(audio_vlm_trainer):
     image = PIL_Image.new("L", (4, 4))
     assert [len(x) for x in _collate("image", rows = [None, image])["images"]] == [0, 1]
     assert "images" not in _collate("image", rows = [None, None])
+
+
+@pytest.mark.parametrize("many", [False, True])
+def test_a_non_decoding_image_feature_is_decoded(audio_vlm_trainer, many):
+    image = PIL_Image.new("RGB", (8, 8), "red")
+    inner = datasets.Image(decode = False)
+    schema = datasets.Features(
+        {
+            "audio": {
+                "array": datasets.Sequence(datasets.Value("float32")),
+                "sampling_rate": datasets.Value("int64"),
+            },
+            "text": datasets.Value("string"),
+            "image": datasets.Sequence(inner) if many else inner,
+        }
+    )
+    rows = {
+        "audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * 2,
+        "text": ["one", "two"],
+        "image": [[image], [image, image]] if many else [image, image],
+    }
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(
+        _NoAudioCast(datasets.Dataset.from_dict(rows, features = schema))
+    )
+
+    cell = formatted[1]["image"]
+    cells = cell if many else [cell]
+    assert len(cells) == (2 if many else 1)
+    assert all(isinstance(x, PIL_Image.Image) for x in cells)
