@@ -10,6 +10,13 @@ import pytest
 import unsloth  # noqa: F401  (must precede transformers)
 import unsloth.models._utils as u
 
+
+@pytest.fixture(autouse = True)
+def _flex_decoding_available(monkeypatch):
+    # These pin the routing where flex_decoding compiles; test_flex_decode_guard_wrapper.py covers a host where it cannot.
+    monkeypatch.setattr(u, "_flex_decoding_unavailable", lambda: False, raising = False)
+
+
 T4 = ((7, 5), 65536)
 A10 = ((8, 6), 101376)
 RTX3090 = ((8, 6), 101376)

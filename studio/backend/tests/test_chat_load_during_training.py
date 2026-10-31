@@ -1073,6 +1073,79 @@ class TestNativeAudioPlacementContracts(unittest.TestCase):
                 selected = [0, 1],
             )
 
+    def _automatic_preflight(
+        self,
+        devices,
+        *,
+        required_gb,
+        availability = None,
+    ):
+        """The real automatic selector over ``devices`` ((index, total, used) tuples)."""
+        config = SimpleNamespace(identifier = "test/native-audio", audio_type = "higgs_tts2")
+        request = SimpleNamespace(gpu_ids = None, hf_token = None, max_seq_length = 2048)
+        placement = self.route._LoadPlacement(None, None, False, False)
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch.object(_hw_module, "IS_ROCM", False),
+            patch(
+                "utils.hardware.hardware.get_visible_gpu_utilization",
+                return_value = {"devices": _devices(*devices)},
+            ),
+            patch(
+                "utils.hardware.hardware.get_parent_visible_gpu_ids",
+                return_value = [index for index, _total, _used in devices],
+            ),
+            patch("utils.hardware.hardware._with_mig_instance_memory", side_effect = lambda d: d),
+            # Skip the host torch probe: it would be the first torch import, made from a worker thread.
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = set()),
+            patch(
+                "utils.hardware.hardware.estimate_required_model_memory_gb",
+                return_value = (required_gb, {"required_gb": required_gb}),
+            ),
+            patch(
+                "core.inference.native_audio.native_audio_security_targets",
+                return_value = [config.identifier],
+            ),
+            patch.object(
+                self.route,
+                "_native_audio_post_handoff_free_gb",
+                return_value = availability,
+            ),
+        ):
+            return asyncio.run(
+                self.route._preflight_native_audio_placement(config, request, placement)
+            )
+
+    def test_automatic_selection_never_pools_cards(self):
+        # GPU 0 holds the chat model: 4 GB free now, 24 GB once the handoff evicts it.
+        availability = self.route._NativeAudioAvailability({0: 24.0, 1: 6.0}, {0: 20.0})
+        placement = self._automatic_preflight(
+            ((0, 24, 20), (1, 8, 2)), required_gb = 9.0, availability = availability
+        )
+        self.assertEqual(placement.resolved_gpu_ids, [0])
+        self.assertEqual(placement.native_post_handoff_free_gb, {0: 24.0})
+
+    def test_automatic_selection_weighs_a_card_outside_the_pooled_prefix(self):
+        availability = self.route._NativeAudioAvailability({0: 22.0, 1: 6.0, 2: 5.0}, {0: 20.0})
+        placement = self._automatic_preflight(
+            ((0, 24, 22), (1, 8, 2), (2, 8, 3)), required_gb = 9.0, availability = availability
+        )
+        self.assertEqual(placement.resolved_gpu_ids, [0])
+
+    def test_automatic_selection_without_a_fitting_card_is_a_placement_refusal(self):
+        with self.assertRaises(HTTPException) as raised:
+            self._automatic_preflight(((0, 8, 2), (1, 8, 2)), required_gb = 9.0)
+        detail = str(raised.exception.detail)
+        self.assertIn("No single GPU has enough free memory", detail)
+        self.assertIn("CPU RAM", detail)
+        self.assertNotIn("Select a", detail)
+
+    def test_automatic_selection_keeps_the_freest_card_that_fits_now(self):
+        placement = self._automatic_preflight(((0, 24, 20), (1, 24, 2)), required_gb = 9.0)
+        self.assertEqual(placement.resolved_gpu_ids, [1])
+        self.assertEqual(placement.native_required_gb, 9.0)
+
     def test_live_training_recheck_cannot_switch_off_selected_gpu(self):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),

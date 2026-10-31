@@ -41,6 +41,7 @@ function loadRows(): Rows {
     "@/i18n": { useT: () => (key: string) => key },
     "@/lib/toast": { toast: {} },
     "@hugeicons/core-free-icons": { Delete02Icon: {} },
+    "@/lib/folder-icons": { Delete02Icon: {} },
     "@hugeicons/react": { HugeiconsIcon: noop },
     "../api/caches": {
       bulkPurgeKeys: () => [],
@@ -187,6 +188,7 @@ function driveRows(options: {
       },
     },
     "@hugeicons/core-free-icons": { Delete02Icon: {} },
+    "@/lib/folder-icons": { Delete02Icon: {} },
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
     "../api/caches": {
       bulkPurgeKeys: () => ["uv"],

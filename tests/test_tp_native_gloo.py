@@ -390,6 +390,47 @@ def _case_qlora(rank, world, tmp, nested):
     }
 
 
+class _DropoutMLP(torch.nn.Module):
+    """LlamaMLP with dropout between the column (gate / up) and row (down) projections."""
+
+    def forward(self, x):
+        return self.down_proj(self.drop(self.act_fn(self.gate_proj(x)) * self.up_proj(x)))
+
+
+def _add_mlp_dropout(model, p = 0.25):
+    for module in list(model.modules()):
+        if type(module).__name__ == "LlamaMLP":
+            module.add_module("drop", torch.nn.Dropout(p))
+            module.__class__ = type("LlamaMLP", (_DropoutMLP, type(module)), {})
+    return model
+
+
+def _case_mlp_dropout(rank, world, tmp, quantized):
+    from torch.distributed.device_mesh import init_device_mesh
+
+    def make():
+        if quantized:
+            return _add_mlp_dropout(_qlora_model(False))
+        return _add_mlp_dropout(build(LLAMA, QLORA_SIZES).train())
+
+    ref, model = make(), make()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    widths = [
+        r.module._unsloth_tp_local_width for r in model._unsloth_tp_plan.regions if r.kind == "mlp"
+    ]
+    ids = _batch(ref)
+    out = {}
+    for name, m, clip in (
+        ("ref", ref, torch.nn.utils.clip_grad_norm_),
+        ("tp", model, tpn.tp_clip_grad_norm_),
+    ):
+        torch.manual_seed(1234)  # the same dropout RNG state on every rank and in the reference
+        out[name] = _train(m, ids, 2, clip)
+    out["widths"] = widths
+    return out
+
+
 def _case_qlora_misaligned(rank, world, tmp):
     from torch.distributed.device_mesh import init_device_mesh
 
@@ -710,7 +751,10 @@ def _case_trainer(
             )
         for key, overrides in {
             "checkpoints": {"save_strategy": "steps", "save_steps": 1},
-            "eval": {"eval_strategy": "steps", "eval_steps": 1},
+            "eval": {
+                "eval_strategy": "steps",
+                "eval_steps": 1,
+            },  # evaluates over dp (test_tp_eval_gloo.py)
             "optim_8bit": {"optim": "adamw_bnb_8bit"},
         }.items():
             refusals[key] = _raised(
@@ -737,7 +781,6 @@ def _case_trainer(
         model = model, args = _trainer_args(tmp, 2 * dp if tp == 1 else 2), train_dataset = data
     )
     trainer.train()
-    refusals["evaluate"] = _raised(lambda: trainer.evaluate(data)) if tp > 1 else None
     logs = [h for h in trainer.state.log_history if "loss" in h]
     out_dir = os.path.join(tmp, f"adapter_{world}_{rank}")
     trainer.save_model(out_dir)
@@ -932,6 +975,7 @@ CASES = {
     "guards": _case_guards,
     "qlora": _case_qlora,
     "qlora_misaligned": _case_qlora_misaligned,
+    "mlp_dropout": _case_mlp_dropout,
     "sharded_load": _case_sharded_load,
     "sharded_lora_init": _case_sharded_lora_init,
     "tp_fsdp2": _case_tp_fsdp2,
@@ -1049,6 +1093,24 @@ def test_tp2_qlora_matches_one_process(nested):
         assert norms == pytest.approx(ref_norms, rel = 1e-5)
 
 
+@pytest.mark.parametrize("quantized", [False, True], ids = ["bf16_weights", "4bit_weights"])
+def test_tp2_mlp_dropout_between_column_and_row_matches_one_process(quantized):
+    # The row projection's local in_features is intermediate_size / tp, also once a 4-bit weight is sharded.
+    results = _spawn("mlp_dropout", 2, quantized = quantized)
+    for res in results:
+        assert res["widths"] and set(res["widths"]) == {QLORA_SIZES["intermediate_size"] // 2}, res[
+            "widths"
+        ]
+        ref_logits, ref_grads, ref_losses, ref_norms = res["ref"]
+        logits, grads, losses, norms = res["tp"]
+        torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
+        assert set(grads) == set(ref_grads) and grads
+        for name in ref_grads:
+            torch.testing.assert_close(grads[name], ref_grads[name], rtol = 1e-4, atol = 1e-6, msg = name)
+        assert losses == pytest.approx(ref_losses, rel = 1e-5, abs = 1e-6)
+        assert norms == pytest.approx(ref_norms, rel = 1e-5)
+
+
 def test_tp4_gqa_matches_one_process():
     overrides = {"num_attention_heads": 8, "num_key_value_heads": 4, "intermediate_size": 64}
     _check_parity(_spawn("parity", 4, arch = "qwen3", overrides = overrides), 4)
@@ -1064,12 +1126,24 @@ def test_fused_lora_functions_read_local_shards():
             plain["calls"],
             fused["calls"],
         )
-        torch.testing.assert_close(fused["O"], plain["O"], rtol = 1e-5, atol = 1e-5)
-        torch.testing.assert_close(fused["dX"], plain["dX"], rtol = 1e-5, atol = 1e-5)
+        for key in ("O", "dX"):
+            # fp32 sums err by an ulp of their largest term, so a small element that cancels out of large ones
+            # (dX here peaks near 1e3, where one ulp is 1.2e-4) needs an atol at the tensor's scale.
+            atol = max(1e-5, 1e-6 * plain[key].abs().max().item())
+            torch.testing.assert_close(
+                fused[key], plain[key], rtol = 1e-5, atol = atol, msg = lambda m, key = key: f"{key}: {m}"
+            )
         assert set(fused["grads"]) == set(plain["grads"]) and plain["grads"]
         for name in plain["grads"]:
+            # The fused order sums in a different order than PEFT, so as for O / dX an element that cancels out of
+            # large terms needs an atol at the tensor's scale; a wrong shard would be off by O(1).
+            ref = plain["grads"][name]
             torch.testing.assert_close(
-                fused["grads"][name], plain["grads"][name], rtol = 1e-4, atol = 1e-6, msg = name
+                fused["grads"][name],
+                ref,
+                rtol = 1e-4,
+                atol = max(1e-6, 1e-5 * ref.abs().max().item()),
+                msg = lambda m, name = name: f"{name}: {m}",
             )
 
 
@@ -1347,9 +1421,8 @@ def test_trainer_trains_a_tensor_parallel_model_like_one_process(dp, tp):
         refusals = res["refusals"]
         # Checkpoints are per rank, bitsandbytes AdamW steps local shards (or switches to torch's AdamW).
         assert refusals["checkpoints"] is None, refusals
-        assert "evaluation during training" in (refusals["eval"] or ""), refusals
+        assert refusals["eval"] is None, refusals
         assert refusals["optim_8bit"] is None, refusals
-        assert "Trainer.evaluate is not supported" in (refusals["evaluate"] or ""), refusals
         if dp > 1:
             assert "covers 2 of 4 ranks" in (refusals["no_shard_model"] or ""), refusals
     # The tp ranks of a replica read the same batches; dp replicas read different ones.

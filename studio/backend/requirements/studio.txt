@@ -66,9 +66,12 @@ av>=12.3.0
 # sqlite-vec publishes win_amd64 only and no sdist, so there is nothing to floor to. The RAG
 # store treats a missing sqlite_vec as "RAG unavailable".
 sqlite-vec==0.1.9; sys_platform != "win32" or platform_machine != "ARM64"
-# pymupdf publishes a win_arm64 wheel from 1.28 only.
+# HNSW for gigantic scopes (vec_cache); wheels for every target incl. win_arm64 and macOS 11+. A missing or
+# unloadable wheel keeps the exact / vec0 paths.
+usearch==2.26.6
+# pymupdf publishes a win_arm64 wheel only for 1.28.2 (2.0 has none, so ">=" builds MuPDF from source).
 pymupdf==1.27.2.3; sys_platform != "win32" or platform_machine != "ARM64"
-pymupdf>=1.28.2; sys_platform == "win32" and platform_machine == "ARM64"
+pymupdf==1.28.2; sys_platform == "win32" and platform_machine == "ARM64"
 # 0.3.x keeps pymupdf-layout (which pulls onnxruntime) an optional extra; the
 # lockstep 1.27.x line makes it a hard dep we do not need for to_markdown().
 pymupdf4llm==0.3.4
