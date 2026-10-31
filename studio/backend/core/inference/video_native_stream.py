@@ -2,12 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Native int8 video denoisers built per shard into the local prequant cache when the dense load would not fit host
-RAM (Wan2.2-T2V-A14B: two fp32 14B experts, 57 GB at bf16, on a 53 GB host).
-
-An offloaded CUDA load on a native-cache miss loads every dense denoiser at bf16, then quantises it in place. Here
-each expert is instead built tensor by tensor from its dense shards (``diffusion_native_cache.build_from_shards``,
-the same quantiser on the same device), written to the cache the returning load reads, and freed before the next
-expert; the experts are then read back from that cache. The dense experts are never held in host RAM.
+RAM (Wan2.2-T2V-A14B: two fp32 14B experts, 57 GB at bf16, on a 53 GB host); the dense experts are never held in RAM.
 ``UNSLOTH_VIDEO_NATIVE_STREAM_BUILD=0`` keeps the dense load, ``=1`` streams even where it fits.
 """
 
@@ -22,7 +17,6 @@ from typing import Any, Callable, Optional
 
 VIDEO_NATIVE_STREAM_ENV = "UNSLOTH_VIDEO_NATIVE_STREAM_BUILD"
 _MIB = 1024 * 1024
-# The non-denoiser weight files a pipeline load reads (transformers first, diffusers second).
 _WEIGHT_NAMES = ("model", "diffusion_pytorch_model")
 
 
@@ -239,7 +233,6 @@ def build_into_cache(
     for component in components:
         if cancel_check is not None:
             cancel_check()
-        # An expert an earlier (interrupted) build already cached is read back, not rebuilt.
         hit = NC.lookup(
             fam, spec, base_repo = base, source_base = source, component = component, logger = logger
         )
@@ -260,7 +253,7 @@ def build_into_cache(
             cancel_check = cancel_check,
         )
         if path is None:
-            # Unwritable cache (disabled, disk short, over budget): keep this expert in memory, still never dense.
+            # Unwritable cache: keep this expert in memory, still never dense.
             kept[component] = module
         else:
             paths[component] = path
@@ -283,7 +276,7 @@ def build_into_cache(
         if module is None:
             if cancel_check is not None:
                 cancel_check()
-            # Evicted or unreadable since it was written (a small cache budget): rebuild it, kept in memory.
+            # Evicted since written (small cache budget): rebuild, kept in memory.
             if logger is not None:
                 logger.warning(
                     "video.native_stream: the cached %s did not read back; rebuilding it per shard",
