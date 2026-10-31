@@ -429,6 +429,21 @@ def test_chat_settings_payload_rejects_junk_per_model_params():
         )
 
 
+def test_chat_settings_payload_carries_model_preset_links():
+    """extra="forbid" means the link map only reaches the DB if the schema names it. A null value
+    has to survive validation, since it is how one model's link is removed."""
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {"modelPresets": {"unsloth/Qwen3.5-9B-GGUF": "Research", "openai:gpt-x": None}}
+    )
+    assert payload.model_dump(exclude_unset = True) == {
+        "modelPresets": {"unsloth/Qwen3.5-9B-GGUF": "Research", "openai:gpt-x": None},
+    }
+    with pytest.raises(ValidationError):
+        chat_history.ChatSettingsPayload.model_validate({"modelPresets": {"qwen": 3}})
+    with pytest.raises(ValidationError):
+        chat_history.ChatSettingsPayload.model_validate({"modelPresets": {"qwen": "x" * 201}})
+
+
 def test_conditional_chat_settings_payload_validates_both_sides():
     payload = chat_history.ConditionalChatSettingsPayload.model_validate(
         {
