@@ -134,6 +134,10 @@ class NVFP4StepController:
             )
         return self.steps
 
+    def compile_key(self) -> tuple:
+        """What a compiled ``NVFP4Linear.forward`` guards on (``armed and protected``): a change recompiles."""
+        return (bool(self.armed), bool(self.armed and self.protected))
+
     def advance(self) -> int:
         self.index += 1
         self.protected = self.index in self.steps
