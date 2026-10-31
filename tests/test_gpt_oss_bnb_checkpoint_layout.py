@@ -191,8 +191,7 @@ def _expert_weight(experts, name):
 
 
 def _dense_expert_checkpoint(tensors_saved, original):
-    """A 4-bit save with its fused experts swapped for the dense originals. The packed experts'
-    quant state goes too: left beside a dense tensor it would be applied to the dense bytes."""
+    """Swap fused 4-bit experts for dense originals, dropping their quant state (else applied to dense bytes)."""
     experts = ("experts.gate_up_proj", "experts.down_proj")
     replaced = [name for name in tensors_saved if name.endswith(experts)]
     tensors = {
