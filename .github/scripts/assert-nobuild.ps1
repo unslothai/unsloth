@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# The `nobuild` contract from clean-machine-assert.sh, for Windows. A port, not
-# `shell: bash`: the scrub drops every `*\Git\*` PATH entry the bash version needs
-# sed/grep/tr/sort from, and it also runs inside the servercore container, which has no
-# bash. Both Windows lanes call this one file so the sdist allowlist cannot drift.
+# Windows port of clean-machine-assert.sh nobuild; must not need bash (PATH scrub, servercore).
 # Usage: assert-nobuild.ps1 -LogPath logs/install.log   (exit 1 = a source build)
 [CmdletBinding()]
 param([Parameter(Mandatory = $true)][string] $LogPath)
@@ -14,31 +11,22 @@ if (-not (Test-Path -LiteralPath $LogPath)) {
     exit 1
 }
 
-# "Built an sdist" is NOT "needed a compiler": each name was verified against its own
-# sdist (setuptools.build_meta, no ext_modules, no .c/.cpp/.pyx/.rs), so its PEP 517
-# build is a pure-Python copy step. clean-machine-assert.sh carries the per-name detail.
-# diffusers is here only for the `overlay: false` legs, which install the released wheel
-# and its pre-0.40.0 GitHub-archive pin; remove it once a release carries the wheel pin.
+# Pure-Python sdists; keep in sync with clean-machine-assert.sh. Drop diffusers once a release has the wheel pin.
 $allow = @('openai-whisper', 'argbind', 'randomname', 'antlr4-python3-runtime', 'triton-kernels', 'diffusers')
 if ($env:UNSLOTH_ALLOW_SDIST) {
     $allow += ($env:UNSLOTH_ALLOW_SDIST -split '\s+' | Where-Object { $_ })
 }
-# Lowercased and underscore-folded on both sides: the distribution name and the name uv
-# prints can differ on the separator (triton_kernels vs triton-kernels).
+# Normalise case and separators: uv and the dist name can differ (triton_kernels).
 $allow = @($allow | ForEach-Object { $_.ToLowerInvariant() -replace '_', '-' })
 
-# [char]27, not "`e": that escape is PowerShell 6+ and degrades to a literal "e" under
-# 5.1, so the strip would eat real text instead of ANSI codes.
+# [char]27, not "`e", which is PS 6+ only.
 $esc = [char]27
 $text = (Get-Content -LiteralPath $LogPath -Raw) -replace "$esc\[[0-9;]*[A-Za-z]", ''
 $built = @()
 foreach ($line in ($text -split "`r?`n")) {
-    # A local-path build is one the caller pointed at (the overlay), never one
-    # resolution chose; index deps always print `==<version>`.
+    # A local file:// build is the overlay the caller chose, not resolution.
     if ($line -imatch 'building [a-z0-9._-]+ @ file://') { continue }
-    # pip prints `Building wheel for <pkg>`, uv `Building <pkg>==<ver>`
-    # (astral-sh/uv#11165); the `==` / ` @ ` keeps this off the installer's own
-    # "building frontend..." text.
+    # pip prints `Building wheel for <pkg>`, uv `Building <pkg>==<ver>`; `==`/` @ ` skips frontend text.
     foreach ($m in [regex]::Matches($line, '(?i)building wheel for ([a-z0-9._-]+)|building ([a-z0-9._-]+)(==| @ )')) {
         $name = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
         $built += ($name.ToLowerInvariant() -replace '_', '-')
@@ -54,7 +42,6 @@ if ($bad.Count -gt 0) {
 } else {
     Write-Host "[assert] OK  no non-allowlisted source build (built: $(if ($built) { $built -join ' ' } else { 'none' }))"
 }
-# Independent of package names: a compiler error means a toolchain was needed.
 $compilerErr = Select-String -Path $LogPath -Pattern "error: command '(cc|gcc|clang|cl)' failed", 'clang: error', 'cargo: not found', 'Microsoft Visual C\+\+ 14.0 or greater is required'
 if ($compilerErr) {
     Write-Host '::error::compiler invocation appears in the install log'

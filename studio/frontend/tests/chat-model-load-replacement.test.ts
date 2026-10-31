@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Source contracts cover decisions inside a React hook whose awaits span dialogs,
-// backend unload and load. Keep each regression named; share only its assertion runner.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -47,7 +45,7 @@ const blocks = {
   loadGate: section(runtime, "async function performLoad(): Promise<void> {", "const pendingLoadConfig ="),
   stagedMetadata: section(runtime, "if (isGguf && isDiffusion === undefined) {", "const targetIsDiffusion = isDiffusion === true;"),
   validation: section(runtime, "const validation = await validateModel({", "if (validation.mlx_loads_base_model) {"),
-  recheck: section(runtime, "// Re-check the tracked picker for a load that was already starting", "const forceCancelActive = stopDecision.forceCancelActive;"),
+  recheck: section(runtime, "// Re-check the tracked picker for a load that was already starting", "let forceCancelActive = stopDecision.forceCancelActive;"),
   terminal: section(runtime, "await performLoad();", "// Last act of this run's coroutine"),
   failedCancel: section(section(runtime, "const cancelLoadRun = useCallback(", "const cancelLoadingWithCheckpointPolicy = useCallback("), "// The request failed, so reconcile against the backend before releasing the", "return false;"),
   cancelReconcile: section(section(runtime, "const cancelLoadRun = useCallback(", "const cancelLoadingWithCheckpointPolicy = useCallback("), "if (\n              (!run.loadAttemptPath", "activeLoadRunRef.current = releaseOwnedModelLoadRun("),
@@ -74,7 +72,7 @@ const contracts: Contract[] = [
       ["cancel", /run\.cancelPromise = cancelPromise;/],
       ["cancel", /ownsModelLoadRun\(activeLoadRunRef\.current, run\)/], ["cancel", /releaseOwnedModelLoadRun\(/]] },
   { name: "the matching request ID is threaded to both /load and its cancel",
-    match: [["registration", /requestId: crypto\.randomUUID\(\),/],
+    match: [["registration", /requestId: createNavigationNonce\(\),/],
       ["runtime", /load_request_id: loadRun\.requestId,/],
       ["cancel", /cancel_load_request_id: run\.requestId,/], ["cancel", /model_path: run\.loadAttemptPath,/],
       ["runtime", /loadRun\.loadAttemptPath = loadPath;/]],
@@ -135,8 +133,6 @@ const contracts: Contract[] = [
     match: [["runtime", /residentUnloaded\?: boolean;/],
       ["inherit", /residentUnloaded: cancelledRun\.residentModelUnloaded,/], ["registration", /residentModelUnloaded: inheritedPendingRollback\?\.residentUnloaded === true,/],
       ["loadGate", /let previousWasUnloaded =\n\s*inheritedPendingRollback\?\.residentUnloaded === true;/],
-      // The rollback is gated on the inherited unloaded state; further guards (#11729's
-      // answered-failure check) may follow, and the formatter may wrap the condition.
       ["runtime", /if \(\s*previousWasUnloaded &&\s*previousCheckpoint\s*(?:&&|\))/]] },
   { name: "a failed cancellation clears the rollback the replacement would inherit",
     match: [["loop", /pendingReplacementRollback = null;/], ["loop", /if \(throwOnError\) throw new Error\(message\);/]],
@@ -269,6 +265,7 @@ test("declining B before A unloads X lets C inherit X's newly edited settings", 
   const decline = section(runtime, "if (!stopDecision.proceed) {", "// Re-check the tracked picker for a load");
   const chooseC = section(runtime, "if (pendingReplacementRollback?.config) {", "// The cancelled run's own rollback target");
   const declineB = new Function("state", `let pendingReplacementRollback = state.pending;
+    let modelLoadCancelEpoch = 0;
     const modelSelectionIntentEpoch = state.epoch, loadIntentId = 2, stopDecision = { proceed: false };
     const releasePreflightLifecycleLease = () => { state.released = true; };
     const restorePreviousConfig = () => { state.restored = true; };

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``/api/system.quantised_streaming``: whether group offload can stream torchao weights.
-
-The picker offers MiniMax-H3's streamed 30 GiB tier only when this is true, so an install whose
-diffusers predates torchao-aware group offload, or a GPU without INT8 cores, routes to the GGUF row
-instead of a refused load.
-"""
+"""The streamed MiniMax tier is offered only when torchao group offload works, else GGUF is used."""
 
 import ast
 import sys

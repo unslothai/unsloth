@@ -14,6 +14,8 @@ const {
   datasetSourceInvariantPatch,
   initialTrainingConfigState,
   resolveDeferredTrainOnCompletionsDefault,
+  trainingToggleDefaults,
+  resolveTrainingToggleDefaults,
 } = await import("../src/features/training/stores/training-config-policy.ts");
 
 test("selecting an on-device Hub dataset disables streaming", () => {
@@ -120,4 +122,19 @@ test("resolves deferred completion defaults without violating training constrain
     }),
     false,
   );
+});
+
+
+test("training objectives and data capabilities constrain enabled defaults", () => {
+  const base = { ...initialTrainingConfigState, modelType: "text" as const };
+  assert.deepEqual(trainingToggleDefaults(base), { packing: true, trainOnCompletions: true });
+  assert.deepEqual(trainingToggleDefaults({ ...base, isVisionModel: true }), { packing: true, trainOnCompletions: true });
+  assert.deepEqual(trainingToggleDefaults({ ...base, isVisionModel: true, isDatasetImage: true }), { packing: false, trainOnCompletions: true });
+  for (const patch of [{ isEmbeddingModel: true }, { modelType: "decision" as const }, { isAudioModel: true }]) {
+    assert.deepEqual(trainingToggleDefaults({ ...base, ...patch }), { packing: false, trainOnCompletions: false });
+  }
+  for (const patch of [{ datasetStreaming: true }, { datasetFormat: "raw" as const }, { trainingMethod: "cpt" as const }]) {
+    assert.equal(trainingToggleDefaults({ ...base, ...patch }).trainOnCompletions, false);
+  }
+  assert.deepEqual(resolveTrainingToggleDefaults({ ...base, trainingToggleChoices: { packing: false, trainOnCompletions: false } }), { packing: false, trainOnCompletions: false });
 });

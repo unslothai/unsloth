@@ -7,12 +7,7 @@ import test from "node:test";
 import { createSegmentedAssistantText } from "../src/features/chat/utils/incremental-assistant-content.ts";
 import { parseAssistantContent } from "../src/features/chat/utils/parse-assistant-content.ts";
 
-/**
- * What the adapter did before: cut the whole reply at the tool cursors and
- * parse each run from scratch. The incremental parse has to agree with this
- * for every state a stream passes through, which is what the sweep below
- * checks, so this is the oracle and must stay a plain rewrite of the original.
- */
+/** Oracle: the original full reparse at the tool cursors. Must stay a plain rewrite of it. */
 function referenceRuns(
   rawText: string,
   boundaries: readonly number[],
@@ -27,8 +22,6 @@ function referenceRuns(
   return out;
 }
 
-// ---------------------------------------------------------------- random ---
-
 function makeRandom(seed: number): () => number {
   let value = seed >>> 0;
   return () => {
@@ -37,8 +30,7 @@ function makeRandom(seed: number): () => number {
   };
 }
 
-// Pieces chosen so a tag can be split at every offset, and so text that only
-// looks like a tag ("<thi", "</thin", "<<think>") is generated often.
+// Pieces split tags at every offset and often produce tag lookalikes ("<thi", "<<think>").
 const PIECES = [
   "a",
   " ",
@@ -84,8 +76,6 @@ function randomArrivals(random: () => number, text: string): string[] {
   return out;
 }
 
-// ------------------------------------------------------------------ tests ---
-
 test("the incremental parse matches a full reparse at every arrival", () => {
   const CASES = 3000;
   let states = 0;
@@ -122,8 +112,6 @@ test("the incremental parse matches a full reparse across tool boundaries", () =
     for (const arrival of arrivals) {
       accumulated += arrival;
       segmented.appendText(arrival);
-      // A tool call lands at the end of the reply as it stands, which is the
-      // only place the adapter puts one.
       if (random() < 0.2) {
         if (boundaries[boundaries.length - 1] !== accumulated.length) {
           boundaries.push(accumulated.length);
@@ -157,8 +145,6 @@ test("the incremental parse recovers when a suffix is removed", () => {
       accumulated += arrival;
       segmented.appendText(arrival);
       if (random() < 0.15 && accumulated.length > 1) {
-        // The trailing placeholder strip is the only thing that shortens the
-        // buffer, and it always takes a suffix.
         accumulated = accumulated.slice(
           0,
           Math.floor(random() * accumulated.length),
@@ -180,16 +166,13 @@ test("the incremental parse recovers when a suffix is removed", () => {
 });
 
 test("a rewritten prefix is reparsed rather than extended", () => {
-  // What `mergeContinuation` does to an external continuation. The cache is
-  // built with the fast path off for that case, so it must still be right.
+  // What `mergeContinuation` does; the cache is built with the fast path off for that case.
   const segmented = createSegmentedAssistantText({ trustAppends: false });
   segmented.appendText("<think>one</think>two");
   assert.deepEqual(
     segmented.runs("<think>ONE</think>two", []),
     referenceRuns("<think>ONE</think>two", []),
   );
-  // Same length, different characters: the length check alone cannot see this,
-  // which is why that path does not rely on it.
   assert.deepEqual(
     segmented.runs("<think>xxx</think>two", []),
     referenceRuns("<think>xxx</think>two", []),
@@ -199,7 +182,6 @@ test("a rewritten prefix is reparsed rather than extended", () => {
 test("held-back characters are reclassified when the tag completes", () => {
   const segmented = createSegmentedAssistantText();
   segmented.appendText("hello<thi");
-  // Nothing has said this is a tag yet, so it reads as text.
   assert.deepEqual(segmented.runs("hello<thi", []), [
     [{ type: "text", text: "hello<thi" }],
   ]);
@@ -224,10 +206,7 @@ test("the parts a run hands out are not shared with its retained state", () => {
 });
 
 test("a tool call before any text leaves an empty run in front of it", () => {
-  // The adapter gives a tool part the reply's length as its cursor, so a tool
-  // call that arrives before the model has written anything sits at 0. The run
-  // in front of it is empty and must contribute no parts at all, not an empty
-  // text part.
+  // A tool call before any text sits at cursor 0; the empty run must contribute no parts.
   const segmented = createSegmentedAssistantText();
   assert.deepEqual(segmented.runs("", [0]), referenceRuns("", [0]));
   segmented.appendText("after the tool");
@@ -242,10 +221,7 @@ test("a tool call before any text leaves an empty run in front of it", () => {
 });
 
 test("a think block split by a tool boundary parses as the adapter parses it", () => {
-  // The reference cuts the text at the cursor and parses each side on its own,
-  // so the opening tag on the near side leaves an unclosed reasoning part and
-  // the far side starts fresh, as text. That is the existing behaviour, odd as
-  // it looks, and the incremental parse has to reproduce it rather than fix it.
+  // Odd but existing reference behaviour, which the incremental parse must reproduce.
   const segmented = createSegmentedAssistantText();
   segmented.appendText("<think>before");
   segmented.appendText("after</think> done");

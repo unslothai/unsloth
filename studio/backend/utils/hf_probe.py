@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Probe optional Hub files without caching missing entries.
-
-``hf_hub_download`` can leave a ref pointing to a snapshot that is not on disk after a 404, causing
-``scan_cache_dir`` to omit the repo. Metadata requests answer the same question without changing
-the cache.
-"""
+"""Probe optional Hub files via metadata, since hf_hub_download can leave a dangling ref after a 404."""
 
 from __future__ import annotations
 
@@ -25,11 +20,8 @@ def hf_file_definitely_absent(
     revision: Optional[str] = None,
     token: Optional[str] = None,
 ) -> bool:
-    """Return True only when the Hub confirms that *filename* is absent.
-
-    Offline, authentication, rate-limit, and resolution failures return False so callers preserve
-    their existing download and error handling.
-    """
+    """True only when the Hub confirms absence; any other failure returns False so existing handling
+    runs."""
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
         from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError

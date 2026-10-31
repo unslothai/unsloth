@@ -18,6 +18,12 @@ SNAPSHOT_IGNORE_PATTERNS: tuple[str, ...] = (
     "*.bin.index.json.bak",
 )
 CONSOLIDATED_PATTERN = "consolidated*"
+# No q<N>: GGUF quant names (Q4_K_M) must never match. [0-9], not \d: mirrored in dataset-size.ts.
+PRECISION_FOLDER_SOURCE = (
+    "(?:mlx[-_]?)?(?:[0-9]{1,2}[-_]?bits?(?:[-_][a-z0-9]+)*"
+    "|bf16|fp16|f16|fp32|f32|fp8|mxfp4|nvfp4)"
+)
+PRECISION_FOLDER_RE = re.compile(PRECISION_FOLDER_SOURCE, re.IGNORECASE)
 DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
     "original/*",
     "metal/*",
@@ -28,10 +34,7 @@ DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
     "flax_model.msgpack.index.json",
     "rust_model.ot",
 )
-# Resolved per repo, not globbed: a dtype variant is redundant only when the SAME variant ships
-# as safetensors (test_prefetch_snapshot_scope.py::test_variant_keeps_bin_when_only_default_safetensors),
-# and a glob kept whisper-large-v3's pytorch_model.bin.index.fp32.json while dropping its shards.
-# Both shard layouts, since transformers writes the counter-first one (unsloth/models/_utils.py).
+# Per repo, not globbed: a dtype variant is redundant only if the SAME variant ships as safetensors.
 _BIN_WEIGHT_RES = (
     re.compile(r"pytorch_model(?:\.(?P<variant>[A-Za-z0-9_]+))?(?:[-_][0-9]+-of-[0-9]+)?\.bin"),
     re.compile(r"pytorch_model[-_][0-9]+-of-[0-9]+\.(?P<variant>[A-Za-z0-9_]+)\.bin"),
@@ -48,8 +51,7 @@ def _variant_shard_re(variant: str) -> "re.Pattern[str]":
 _BIN_INDEX_RE = re.compile(
     r"pytorch_model(?:\.(?P<pre>[A-Za-z0-9_]+))?\.bin\.index(?:\.(?P<post>[A-Za-z0-9_]+))?\.json"
 )
-# [0-9] rather than \d: Python's \d also matches non-ASCII digits while JavaScript's does not, and the
-# frontend mirror in studio/frontend/src/features/hub/lib/dataset-size.ts has to answer this identically.
+# [0-9], not \d: must match the JS mirror in features/hub/lib/dataset-size.ts.
 SHARDED_SAFETENSORS_RE = re.compile(r"model[-_][0-9]+-of-[0-9]+\.safetensors")
 SAFETENSORS_INDEX = "model.safetensors.index.json"
 SNAPSHOT_WEIGHT_EXTENSIONS = (
@@ -93,11 +95,7 @@ def repo_ships_transformers_weights(filenames: Iterable[str]) -> bool:
 
 
 def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
-    """Whether a load would find a COMPLETE root safetensors checkpoint.
-
-    Numbered shards are resolved through the index; with none, a load looks for a single
-    file and raises. So one shard is not evidence a checkpoint is there.
-    """
+    """One numbered shard proves nothing: a complete set must be named by the index."""
     names = list(filenames)
     if any(name == "model.safetensors" for name in names):
         return True
@@ -107,17 +105,13 @@ def repo_ships_root_safetensors(filenames: Iterable[str]) -> bool:
 
 
 def _variant_ships_as_safetensors(names: list[str], variant: str | None) -> bool:
-    """Whether `variant` is already covered by a COMPLETE safetensors checkpoint.
-
-    ``None`` is the canonical one, established by the root-safetensors gate. A named variant
-    needs its own safetensors, and its sharded form needs an index, as the canonical one does.
-    """
+    """A named variant needs its own safetensors, plus an index when sharded; None is the root
+    checkpoint."""
     if variant is None:
         return True
     if f"model.{variant}.safetensors" in names:
         return True
-    # _add_variant puts the variant second-to-last, so this is the only index spelling a
-    # variant load can find; accepting another would drop bins over an index nothing reads.
+    # _add_variant puts the variant second-to-last; accepting other index spellings would drop bins.
     if f"model.safetensors.index.{variant}.json" not in names:
         return False
     return any(_variant_shard_re(variant).fullmatch(name) for name in names)
@@ -140,6 +134,23 @@ def redundant_torch_bin_files(filenames: Iterable[str]) -> list[str]:
     return redundant
 
 
+def precision_variant_subfolders(filenames: Iterable[str]) -> dict[str, list[str]]:
+    """Top-level folders that each hold a whole checkpoint at one precision (``4-bit/``, ``8bit/``,
+    ``mlx-4bit/``, ``bf16/``), mapped to their files. A folder needs a precision-like name, its own
+    ``config.json`` and safetensors weights, so component folders (``vae/``, ``mtp/``) never count."""
+    by_folder: dict[str, list[str]] = {}
+    for name in filenames:
+        folder, sep, rest = name.partition("/")
+        if sep and rest and "/" not in rest and PRECISION_FOLDER_RE.fullmatch(folder):
+            by_folder.setdefault(folder, []).append(name)
+    return {
+        folder: names
+        for folder, names in by_folder.items()
+        if f"{folder}/config.json" in names
+        and any(name.lower().endswith(".safetensors") for name in names)
+    }
+
+
 def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list[str]:
     names = list(filenames)
     ignore = list(SNAPSHOT_IGNORE_PATTERNS)
@@ -149,6 +160,9 @@ def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list
         ignore.extend(DUPLICATE_WEIGHT_FORMAT_PATTERNS)
         # Exact names, not globs: fnmatch treats "." literally, so each entry matches only itself.
         ignore.extend(redundant_torch_bin_files(names))
+        # Only when the root is itself a checkpoint, or the folders are the only runnable copies.
+        if "config.json" in names:
+            ignore.extend(f"{folder}/*" for folder in precision_variant_subfolders(names))
     return ignore
 
 
@@ -173,16 +187,12 @@ def snapshot_download_size(siblings: Iterable) -> int:
 
 
 def total_size_for_siblings(siblings: Iterable) -> int:
-    """Sum of declared sizes across siblings verbatim (no ignore filter).
-
-    Use for repo types that download every file (datasets); models go
-    through ``snapshot_download_size`` so the ignore patterns apply."""
+    """Sums sibling sizes verbatim, with no ignore filter; models use snapshot_download_size instead."""
     return sum(_size(sibling) for sibling in siblings)
 
 
 def blob_hashes_for_siblings(siblings: Iterable) -> frozenset[str]:
-    # Blob filename == file etag (LFS sha256, else git blob id), so collecting both lets progress count
-    # exactly this revision's files without summing stale blobs from other revisions.
+    # Blob filename == etag, so progress counts only this revision's files.
     hashes: set[str] = set()
     for sibling in siblings:
         sha = getattr(getattr(sibling, "lfs", None), "sha256", None)

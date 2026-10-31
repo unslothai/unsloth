@@ -2,16 +2,23 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useState } from "react";
-import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
+import {
+  type AudioSttEngine,
+  sttEngineForRepoId,
+  sttSidecarKeyFor,
+} from "../catalog";
 import { fetchSttCapabilities } from "../transcribe-api";
 import type { SttCapabilities } from "../transcribe-capabilities";
 
 // Answers change only after an aligner download, so one fetch per model per visit.
 const cache = new Map<string, SttCapabilities>();
 
-export function useTranscribeCapabilities(repo: string | null) {
+export function useTranscribeCapabilities(
+  repo: string | null,
+  repoEngine?: AudioSttEngine | null,
+) {
   const model = repo ? sttSidecarKeyFor(repo) : null;
-  const engine = repo ? sttEngineForRepoId(repo) : null;
+  const engine = repo ? (repoEngine ?? sttEngineForRepoId(repo)) : null;
   const key = model ? `${engine ?? ""}:${model}` : null;
   const [caps, setCaps] = useState<SttCapabilities | null>(
     key ? (cache.get(key) ?? null) : null,

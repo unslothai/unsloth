@@ -1,32 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF dequant accelerator for the light-compile (``default``) diffusion path.
-
-Profiling showed ~70-80% of EAGER GGUF denoise CUDA time is the per-forward weight dequant:
-every ``GGUFLinear.forward`` calls ``dequantize_gguf_tensor`` -> ``dequantize_blocks_Q4_K``, a
-~20-op pure-PyTorch chain, once per linear per step.
-
-``install_compiled_dequant`` swaps ``dequantize_gguf_tensor`` for ``torch.compile(orig,
-dynamic=True)``, which Inductor fuses into a few kernels. Measured 1.24-1.64x warm at a small
-compile (~7.5-10.4s), zero extra VRAM (weights stay quantized). ``dynamic=True`` is key: the
-dequant inputs are the fixed-shape WEIGHT tensors, so it compiles once and never recompiles on a
-resolution change. ``forward_native`` resolves the function as a module global, so replacing the
-module attribute reroutes every linear.
-
-The ``default`` tier's lever (block stays eager). NOT used under ``max``: there the block compiles
-as one graph that fuses the dequant inline, and a separate compiled dequant would break that graph.
-
-The swap goes through the shared reversible patch backend; ``uninstall_*`` restores the exact
-original so a later bit-identical ``off`` load runs stock dequant. Kill-switch:
-``UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT=0``. torch / diffusers imported lazily.
-
-(A weight-buffer accelerator was removed: neutral end-to-end, since the CUDA caching allocator
-already serves the per-forward cast from its pool. See outputs/arch_patch/SUMMARY.md.)
-"""
+"""Compiles GGUF dequant with dynamic=True for the default tier and for max where the block cannot
+compile; never where max compiles the block (would break it); torch and diffusers imported
+lazily; UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT=0 disables."""
 
 from __future__ import annotations
 
+import functools
 import os
 from typing import Any
 
@@ -52,6 +33,7 @@ def _gguf_utils():
 
 
 _compiled_dequant_installed = False
+_compile_error: str | None = None
 _DEQUANT_ATTR = "dequantize_gguf_tensor"
 
 
@@ -59,10 +41,15 @@ def is_compiled_dequant_installed() -> bool:
     return _compiled_dequant_installed
 
 
+def compile_error() -> str | None:
+    """Why the installed compiled dequant now runs eager, or None while it still compiles."""
+    return _compile_error if _compiled_dequant_installed else None
+
+
 def install_compiled_dequant(logger: Any = None) -> bool:
     """Replace ``dequantize_gguf_tensor`` with ``torch.compile(orig, dynamic=True)`` via the patch
     backend. Idempotent. Returns True if the compiled dequant is in place, False otherwise."""
-    global _compiled_dequant_installed
+    global _compiled_dequant_installed, _compile_error
     if not _enabled(_ENV_COMPILE_DEQUANT):
         return False
     if _compiled_dequant_installed:
@@ -73,17 +60,52 @@ def install_compiled_dequant(logger: Any = None) -> bool:
     try:
         import torch  # noqa: PLC0415
 
-        compiled = torch.compile(gguf_utils.dequantize_gguf_tensor, dynamic = True)
+        eager = gguf_utils.dequantize_gguf_tensor
+        compiled = _guard(torch.compile(eager, dynamic = True), eager, logger)
         # force=True: the compiled callable's fingerprint differs from the original, which can_safely_patch would
         # correctly reject.
         if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
             _compiled_dequant_installed = True
+            _compile_error = None
             return True
         return False
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "install_compiled_dequant", exc)
         _compiled_dequant_installed = False
         return False
+
+
+def _guard(compiled: Any, eager: Any, logger: Any) -> Any:
+    """``compiled`` behind an eager fallback, like the block and VAE decode compiles: a lazy compile that fails on
+    the first generation (#9897, Triton could not build its driver) ran nothing, so the stock dequant answers."""
+    failed: list = []
+
+    from . import diffusion_compile_config  # noqa: PLC0415
+
+    @functools.wraps(eager)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        from .diffusion_bg_compile import eager_forced  # noqa: PLC0415
+        if not failed and not eager_forced():
+            # The lazy compile runs in the caller's context; on torch 2.12+ the load's knob writes may not be visible.
+            diffusion_compile_config.apply()
+            try:
+                return compiled(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - reraised unless a compile-time failure
+                from .diffusion_speed import is_compile_failure  # noqa: PLC0415 - diffusion_speed imports this
+
+                if not is_compile_failure(exc):
+                    raise
+                global _compile_error
+                failed.append(type(exc).__name__)
+                _compile_error = (
+                    f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"[:300]
+                )
+                # The handled exception pins inductor's frames through the eager retry.
+                exc.__traceback__ = None
+                _warn(logger, "compiled dequant (running eager)", exc)
+        return eager(*args, **kwargs)
+
+    return guarded
 
 
 def uninstall_compiled_dequant() -> None:

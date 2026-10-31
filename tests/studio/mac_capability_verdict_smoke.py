@@ -80,26 +80,15 @@ AUTH_DIR = Path(
     os.environ.get("STUDIO_AUTH_DIR", str(Path.home() / ".unsloth" / "studio" / "auth"))
 )
 
-# Fast enough that a verdict published for a moment cannot slip between two reads, slow enough that minutes of polling
-# stay a rounding error next to the warm. While detection is unsettled /api/health spends up to its own 1s budget per
-# call anyway, so the real rate over the interesting window is set by the server, not by this.
 POLL_INTERVAL_S = float(os.environ.get("STUDIO_MAC_VERDICT_POLL_S", "0.25"))
-# How long a verdict is watched after it settles. A verdict that settles and then goes back to provisional is the same
-# bug wearing a different hat.
 STABLE_HOLD_S = float(os.environ.get("STUDIO_MAC_VERDICT_STABLE_S", "15"))
-# Detection is stage one of the warm, so this covers a cold `import torch` and no more.
 SETTLE_BUDGET_S = float(os.environ.get("STUDIO_MAC_VERDICT_SETTLE_S", "300"))
-# The self-heal is scheduled after join_background_warm(), i.e. behind transformers, datasets and unsloth_zoo as well.
-# Minutes on a cold runner, hence the separate budget.
+# The self-heal is scheduled behind the whole background warm, so it can take minutes.
 REPAIR_START_BUDGET_S = float(os.environ.get("STUDIO_MAC_VERDICT_REPAIR_START_S", "600"))
-# How long the stub installer runs. Must clear main._MLX_PRESTART_GRACE_AFTER_WARM_S with room to spare: samples taken
-# after that grace would have expired are the only ones that prove the LIVE WORKER is holding the verdict rather than
-# the pre-start window.
+# Must clear main._MLX_PRESTART_GRACE_AFTER_WARM_S so late samples prove the live worker holds the verdict.
 UV_SLEEP_S = float(os.environ.get("STUDIO_MAC_VERDICT_UV_SLEEP_S", "75"))
-# Where "the grace has certainly expired" starts, measured from the installer's first
-# breath. Comfortably past the 30s grace so a slow scheduler cannot blur the two.
+# From the installer's start; comfortably past the 30s pre-start grace.
 WORKER_PROOF_MARGIN_S = float(os.environ.get("STUDIO_MAC_VERDICT_WORKER_PROOF_S", "45"))
-# Once the worker is gone nothing holds the verdict, so this is a settle, not a wait.
 SETTLE_AFTER_REPAIR_S = float(os.environ.get("STUDIO_MAC_VERDICT_POST_REPAIR_S", "120"))
 
 _failed: list[str] = []
@@ -123,9 +112,6 @@ def ok(msg: str) -> None:
     print(f"[verdict]   OK {msg}", flush = True)
 
 
-# --------------------------------------------------------------------------- HTTP
-
-
 def _get(
     url: str,
     token: str | None = None,
@@ -140,8 +126,7 @@ def _get(
     except urllib.error.HTTPError as exc:
         return exc.code, None
     except Exception:
-        # Connection refused before the socket binds, and read timeouts while a C-extension import holds the GIL.
-        # Neither is a reply, so neither is a sample.
+        # Refused connections and GIL-held read timeouts are not replies, so they are not samples.
         return None, None
 
 
@@ -165,12 +150,9 @@ def _post(
         return None, None
 
 
-# --------------------------------------------------------------- the reply timeline
-
-
 @dataclass(frozen = True)
 class Sample:
-    t: float  # seconds since the poller started, i.e. since just before boot
+    t: float
     token_sent: bool
     body: dict
 
@@ -231,7 +213,6 @@ class HealthPoller(threading.Thread):
         self.samples: list[Sample] = []
         self.token: str | None = None
         self.first_reply_at: float | None = None
-        # Filled in once the boot script reports it, so the waits below can tell "still starting" from "already dead".
         self.server_pid: int | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -248,8 +229,6 @@ class HealthPoller(threading.Thread):
                         self.first_reply_at = now
                     self.samples.append(Sample(now, token is not None, body))
             elif status is not None and status != 200:
-                # A non-200 from /api/health is not a verdict, but it is worth seeing:
-                # the route has no failure mode that should ever produce one.
                 info(f"/api/health answered {status}")
             self._stop.wait(POLL_INTERVAL_S)
 
@@ -354,10 +333,7 @@ class TokenGetter(threading.Thread):
         if not token:
             self.error = "bootstrap login never returned a token"
             return
-        # The seeded password is must-change, and its token only opens /api/auth/change-password: everything else,
-        # /api/health's authed half included, sees no subject and silently answers with the unauthenticated body.
-        # Read chat_only_reason off that and it is always None, which looks exactly like a training-capable Mac.
-        # So rotate first, the same way studio_api_smoke.py does.
+        # The seeded must-change token sees /api/health as unauthenticated (chat_only_reason None), so rotate first.
         rotated = f"{password}-Rotated1!"
         status, _ = _post(
             f"{self.base}/api/auth/change-password",
@@ -370,9 +346,6 @@ class TokenGetter(threading.Thread):
 
     def stop(self) -> None:
         self._stop.set()
-
-
-# ------------------------------------------------------------------- the simulations
 
 
 def _write_mlx_block_shim(directory: Path) -> Path:
@@ -469,9 +442,6 @@ def _read_marker(marker: Path) -> dict | None:
         return None
 
 
-# ------------------------------------------------------------------- boot / teardown
-
-
 def boot(port: int, log: Path, env: dict) -> int | None:
     """Run the repo's boot script and return the server pid.
 
@@ -497,8 +467,6 @@ def boot(port: int, log: Path, env: dict) -> int | None:
     )
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
-    # Flushed here, not left to the next print: everything else in this file flushes as it goes, so an unflushed boot
-    # banner surfaces minutes later next to the timeout it preceded, and reads like the boot itself took that long.
     sys.stdout.flush()
     sys.stderr.flush()
     match = re.search(r"pid (\d+)", result.stdout)
@@ -565,9 +533,6 @@ def tail_log(log: Path, lines: int = 80) -> None:
         print(f"  | {line}", flush = True)
 
 
-# ------------------------------------------------------------------ shared assertions
-
-
 def assert_watched_the_window(poller: HealthPoller) -> None:
     """The poll has to have produced replies, or nothing below was actually tested."""
     samples = poller.snapshot()
@@ -578,10 +543,7 @@ def assert_watched_the_window(poller: HealthPoller) -> None:
     if provisional:
         ok(f"{len(provisional)} provisional replies seen before the verdict settled")
         return
-    # Not a failure. Detection is stage one of the warm and the socket binds right after the lifespan starts it, so on a
-    # quick host the verdict can be settled before the first connection succeeds. It does not make the run vacuous: the
-    # verdict this file guards against stands for as long as the reinstall takes, i.e. minutes, so a first reply
-    # carrying it would be caught by the same check that catches a later one.
+    # Not a failure: on a fast host the verdict can settle before the first connection succeeds.
     info(
         f"no provisional reply was observed; detection settled within "
         f"{poller.first_reply_at:.2f}s, before the socket answered"
@@ -672,9 +634,7 @@ def booted(port: int, log: Path, env: dict):
     try:
         pid = boot(port, log, env)
         poller.server_pid = pid
-        # Started only now: the boot script wipes the auth directory, so a login thread
-        # running before it would read the previous scenario's bootstrap password and
-        # spend its retries on a credential this server has never heard of.
+        # Start only now: the boot script wipes auth, so an earlier login would use a stale bootstrap password.
         getter.start()
         yield poller, getter
     finally:
@@ -684,16 +644,11 @@ def booted(port: int, log: Path, env: dict):
         stop(pid)
 
 
-# ---------------------------------------------------------------------- the scenarios
-
-
 def scenario_real_mlx(port: int, log: Path) -> None:
     """A healthy Apple Silicon host must never look chat-only, not even briefly."""
     step("scenario real-mlx: the verdict on a Mac whose MLX stack works")
 
-    # Preflight in this process, with the product's own criterion. On a host where the stack is genuinely broken the
-    # boot below would take the chat-only path, quietly test nothing this scenario claims, and set a real 15-minute
-    # reinstall going.
+    # Preflight with the product's criterion: on a broken stack the boot would take the chat-only path.
     sys.path.insert(0, str(REPO / "studio" / "backend"))
     from utils.mlx_repair import mlx_stack_available  # noqa: PLC0415
 
@@ -715,9 +670,6 @@ def scenario_real_mlx(port: int, log: Path) -> None:
         info(f"verdict settled at t+{settled.t:.2f}s")
 
         assert_watched_the_window(poller)
-        # The reported bug in the exact shape it reached users: a settled chat-only answer on a Mac that can train,
-        # greying Train and Video until the self-heal takes it back. Checked over every reply, because it was only ever
-        # true for a while.
         assert_never_published(
             poller,
             lambda s: s.chat_only is True,
@@ -728,8 +680,7 @@ def scenario_real_mlx(port: int, log: Path) -> None:
         if authed is not None and assert_settled_verdict(authed, False, None, "training-capable"):
             ok("the settled verdict is chat_only=false with device_type mac")
 
-        # device_type names the platform; which backend detection actually selected lives on /api/system, and "mlx"
-        # there is the only proof it took the MLX branch rather than falling through to CPU with training switched off.
+        # Only backend == mlx on /api/system proves the MLX branch was taken rather than a CPU fallthrough.
         if poller.token:
             status, body = _get(f"http://127.0.0.1:{port}/api/system", poller.token, timeout = 60)
             if status != 200 or not isinstance(body, dict):
@@ -758,8 +709,6 @@ def scenario_no_mlx_settles(port: int, log: Path, work: Path) -> None:
     env["UNSLOTH_DISABLE_MLX_AUTOREPAIR"] = "1"
 
     with booted(port, log, env) as (poller, getter):
-        # The window under test opens once detection settles, not at the first byte, so gating on the repo's health
-        # wait here costs nothing and buys its log tail.
         if not wait_for_health(port, log):
             fail("the server never became healthy")
             return
@@ -825,8 +774,6 @@ def scenario_no_mlx_repair(port: int, log: Path, work: Path) -> None:
                 "in-flight hold; check that the post-warm scheduler ran"
             )
             return
-        # Anchor the installer's clock to the poller's, so the two timelines can be compared. Both come from this host;
-        # only the origin differs.
         uv_started = record["started"] - (time.time() - time.monotonic()) - poller.t0
         argv = " ".join(record.get("argv", []))
         info(f"installer invoked at t+{uv_started:.2f}s: uv {argv[:300]}")
@@ -862,9 +809,7 @@ def scenario_no_mlx_repair(port: int, log: Path, work: Path) -> None:
             else:
                 ok(f"{len(in_flight)} replies during the install, none published")
 
-            # The pre-start window would have expired 30s after the warm ended, and the warm ends before the scheduler
-            # runs. A reply this late that is still held back can only be held by the live worker, which is the half of
-            # the hold no clock bounds.
+            # The pre-start grace expires 30s after the warm, so a reply this late can only be held by the worker.
             proof = [s for s in in_flight if s.t >= uv_started + WORKER_PROOF_MARGIN_S]
             if not proof:
                 fail(

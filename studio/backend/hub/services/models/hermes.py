@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hermes model inventory: the GGUFs Hermes Desktop's one-click download stages.
-
-Hermes keeps its managed runtime's weights as flat ``.gguf`` files directly in
-``<hermes root>/models``, with vision projectors and speculative-decode drafters
-tucked under a ``models/assets/`` subdirectory so its own router never lists them
-as servable. Which files count is decided by
-``hermes_cli.local_runtime.bootstrap.staged_models``; :func:`staged_gguf_files`
-mirrors that rule, because a file Hermes does not consider servable is one Studio
-must not offer to load either.
-"""
+"""Hermes GGUF inventory; mirrors hermes_cli's staged_models rule, so unservable files stay hidden."""
 
 from __future__ import annotations
 
@@ -39,14 +30,7 @@ def staged_model_id(path: Path) -> str:
 
 
 def staged_gguf_files(hermes_dir: Path) -> List[Path]:
-    """Servable GGUFs staged in *hermes_dir*, a split counted once by its first part.
-
-    A flat glob, never a walk: ``assets/`` holds companions rather than models,
-    and Hermes excludes it by scanning only the top level. A split counts only
-    when EVERY part is on disk -- a download still in flight is not loadable, and
-    surfacing it would offer a model that fails at load. Continuation parts are
-    never rows of their own; llama.cpp opens the whole set from part one.
-    """
+    """Flat glob, not a walk, so assets/ is skipped; continuation parts are never rows of their own."""
     try:
         files = sorted(p for p in hermes_dir.glob("*.gguf") if p.is_file())
     except OSError as exc:
@@ -56,8 +40,7 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
     names = {p.name for p in files}
     staged: List[Path] = []
     for path in files:
-        # mmproj/drafter companions belong under assets/, but a hand-dropped one
-        # at the top level is still not something to serve.
+        # A hand-dropped companion at top level is not servable.
         if not _is_main_gguf_filename(path.name):
             continue
         part = _SPLIT_PART.search(path.name)
@@ -94,8 +77,7 @@ def scan_hermes_dir(hermes_dir: Path, *, limit: Optional[int] = None) -> List[Lo
             display_name = staged_model_id(path),
             updated_at = updated_at,
         )
-        # The row points at part one and the classifier sizes the one file it was handed;
-        # the download is the whole set.
+        # Row points at part one; the download is the whole set.
         shards, _complete = colocated_split_shards(path)
         if len(shards) > 1:
             size_bytes = _sum_file_sizes(shards)

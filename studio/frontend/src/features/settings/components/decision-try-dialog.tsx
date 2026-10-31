@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -30,13 +31,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
-  Add01Icon,
   AlertCircleIcon,
-  ArrowDown01Icon,
   BookOpen01Icon,
   Cancel01Icon,
   CodeIcon,
-  PlayIcon,
+  PlusSignIcon,
   SlidersHorizontalIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
@@ -80,9 +79,10 @@ import {
   DECISION_MODEL_LABELS,
   isClefDecisionModel,
 } from "../lib/decision-model-labels";
-import { isMacPlatform } from "../lib/keyboard-shortcuts";
+import { isModEnter, modEnterLabel } from "../lib/keyboard-shortcuts";
+import { type LucideIcon, PlayIcon } from "lucide-react";
 
-const SHORTCUT = isMacPlatform() ? "⌘↵" : "Ctrl ↵";
+const SHORTCUT = modEnterLabel();
 
 const TYPE_LABELS: Record<DecisionType, TranslationKey> = {
   noul: "decisions.typeNoul",
@@ -281,7 +281,7 @@ function AddButton({
       onClick={onClick}
       className="w-fit gap-1.5 px-2.5 text-ui-12 text-muted-foreground"
     >
-      <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-3.5" />
+      <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-3.5" />
       {children}
     </Button>
   );
@@ -601,11 +601,11 @@ function AnswerPreview({
       </div>
     );
   }
-  const { keys, nearest, max } = scoreLevels(answer);
+  const { keys, top, max } = scoreLevels(answer);
   return (
     <div className="flex flex-col gap-6">
       <AnswerHeading
-        answer={criterionText(answer.legend[nearest]) ?? nearest}
+        answer={criterionText(answer.legend[top]) ?? top}
         detail={t("decisions.scoreDetail", {
           score: answer.score.toFixed(2),
           max,
@@ -618,7 +618,7 @@ function AnswerPreview({
             index={key}
             label={criterionText(answer.legend[key]) ?? key}
             value={answer.probabilities[key] ?? 0}
-            top={key === nearest}
+            top={key === top}
             percent={percent}
           />
         ))}
@@ -632,14 +632,23 @@ function Notice({
   title,
   children,
 }: {
-  icon: IconSvgElement;
+  icon: IconSvgElement | LucideIcon;
   title: string;
   children?: ReactNode;
 }): ReactElement {
+  const Glyph = Array.isArray(icon) ? null : (icon as LucideIcon);
   return (
     <div className="flex min-h-64 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border/70 px-6 py-10 text-center">
       <span className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
-        <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
+        {Glyph ? (
+          <Glyph strokeWidth={1.75} className="size-4" />
+        ) : (
+          <HugeiconsIcon
+            icon={icon as IconSvgElement}
+            strokeWidth={1.75}
+            className="size-4"
+          />
+        )}
       </span>
       <div className="flex max-w-xs flex-col items-center gap-3">
         <span className="text-sm font-medium text-foreground">{title}</span>
@@ -660,7 +669,7 @@ function ErrorResult({
   return (
     <div
       role="alert"
-      className="flex gap-3 rounded-xl border border-red-500/25 bg-red-500/5 px-4 py-3.5"
+      className="flex gap-3 rounded-lg border border-red-500/25 bg-red-500/5 px-4 py-3.5"
     >
       <HugeiconsIcon
         icon={AlertCircleIcon}
@@ -988,9 +997,7 @@ export function DecisionTryDialog({
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (
-      event.key !== "Enter" ||
-      !(event.metaKey || event.ctrlKey) ||
-      event.nativeEvent.isComposing ||
+      !isModEnter(event) ||
       event.repeat ||
       (event.target instanceof Element &&
         event.target.closest('[role="menu"], [role="listbox"]'))
@@ -1197,7 +1204,7 @@ export function DecisionTryDialog({
                     />
                     {t("decisions.examples")}
                     <HugeiconsIcon
-                      icon={ArrowDown01Icon}
+                      icon={ChevronDownStandardIcon}
                       strokeWidth={1.75}
                       className="size-3.5"
                     />
@@ -1221,22 +1228,19 @@ export function DecisionTryDialog({
                 </DropdownMenuContent>
               </DropdownMenu>
               <Button
+                variant="dark"
                 type="button"
                 onClick={() => void run()}
                 aria-busy={running}
-                className="gap-2 pl-3.5 pr-2"
+                className="gap-2"
               >
                 {running ? (
-                  <Spinner className="size-4 text-primary-foreground" />
+                  <Spinner className="size-4 text-background" />
                 ) : (
-                  <HugeiconsIcon
-                    icon={PlayIcon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
+                  <PlayIcon strokeWidth={1.75} className="size-4" />
                 )}
                 {t("decisions.run")}
-                <kbd className="rounded-full bg-primary-foreground/20 px-1.5 py-0.5 font-mono text-ui-10 text-primary-foreground/90">
+                <kbd className="rounded-full bg-background/20 px-1.5 py-0.5 font-mono text-ui-10 text-background/90">
                   {SHORTCUT}
                 </kbd>
               </Button>

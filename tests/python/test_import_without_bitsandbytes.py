@@ -1,18 +1,6 @@
-"""`import unsloth` must survive a missing bitsandbytes.
+"""A module-level bitsandbytes import on the import chain breaks import unsloth on hosts without bnb."""
 
-device_type.py already tells the user "bitsandbytes is not installed - 4bit QLoRA
-unallowed, but 16bit and full finetuning works", and the gfx906 install path
-(#7354) deliberately removes the generic wheel because it carries no gfx906
-kernels. Any module-level `import bitsandbytes` on the import chain turns that
-into an unimportable package instead.
-
-peft's 4bit LoRA layer is exported only when bnb is importable, so
-`from peft.tuners.lora import Linear4bit` fails on the same hosts and is checked
-here too.
-"""
-
-# Path | None below is a PEP 604 union;
-# the project still supports Python 3.9.
+# Path | None needs this on Python 3.9.
 from __future__ import annotations
 
 import ast
@@ -51,11 +39,8 @@ def _allow_bitsandbytes_gated(test: ast.expr) -> bool:
 
 
 def _scan(path: Path, module: str):
-    """Yield (lineno, source) for unguarded top-level imports.
-
-    Imports inside a `try`, or under an ALLOW_BITSANDBYTES branch, are guarded.
-    Other `if` bodies are not: the condition may well be true on a host without bnb.
-    """
+    """Only try blocks and ALLOW_BITSANDBYTES branches guard an import; plain ifs may be true
+    without bnb."""
     is_package = path.name == "__init__.py"
     package = module if is_package else module.rpartition(".")[0]
     tree = ast.parse(path.read_text(encoding = "utf-8"))
@@ -187,7 +172,6 @@ def test_bitsandbytes_guard_drops_a_bnb_quantization_config():
         assert any(
             _is_pop(n) for n in ast.walk(guard)
         ), f"guard at line {guard.lineno} leaves the bnb config in kwargs"
-        # the pop must be conditional on the config actually asking for bnb
         pops = [
             node
             for node in ast.walk(guard)
@@ -238,8 +222,7 @@ def test_capability_fallback_precedes_the_mutually_exclusive_mode_check():
     src, _ = _bnb_guards()
     tree = ast.parse(src)
     checked = 0
-    # Scope to the enclosing function: the other loader's guard sits earlier in the file and would
-    # otherwise satisfy a plain line-number comparison.
+    # Scope to the enclosing function: the other loader's guard sits earlier in the file.
     for func in ast.walk(tree):
         if not isinstance(func, ast.FunctionDef):
             continue

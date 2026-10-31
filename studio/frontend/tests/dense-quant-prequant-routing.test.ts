@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A dense-quant host loads an official image pipeline from the hosted pre-quantised transformer, so
-// the picker must name that precision AND judge fit against the quantised resident size. Both read
-// `dense_quant_schemes`; older backends omit it, and absent is [] with nothing changed.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -26,7 +22,6 @@ import {
   curatedBudgetText,
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 
-// The bf16 rows are the unsloth mirrors of the vendor repos.
 const Z_TURBO = "unsloth/Z-Image-Turbo";
 const QWEN_IMAGE = "unsloth/Qwen-Image";
 const QWEN_2512 = "unsloth/Qwen-Image-2512";
@@ -34,7 +29,6 @@ const QWEN_21 = "unsloth/Qwen-Image-2.1";
 const H3 = "MiniMaxAI/MiniMax-H3";
 const notDownloaded = () => false;
 
-/** A card with plenty of host RAM: only the GPU figure varies between cases. */
 const onCard = (gpuGb: number, denseQuantSchemes?: readonly string[]) => ({
   gpuGb,
   systemRamGb: 128,
@@ -234,8 +228,6 @@ test("every diffusion GGUF row is tagged Slow, not only H3's", () => {
 });
 
 test("a host with no accelerator is not told which row is slow", () => {
-  // Off an accelerator the GGUF is the only row that runs, so the qualifier would read as a
-  // warning about the user's one option rather than a comparison.
   for (const host of ["gguf-only", "unknown"] as const) {
     for (const [repoId, catalog] of [
       ["unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG],
@@ -281,16 +273,15 @@ test("the scheme reaches the name and never the chip", () => {
   }
 });
 
-// Show the verdict's estimate, not the dense catalog size.
 test("Qwen-Image-2.1 is badged with the size its verdict used", () => {
   const card = onCard(22.49, ["int8", "fp8"]);
   const fit = curatedArtifactFit(QWEN_21, IMAGE_CATALOG, card);
   assert.ok(fit?.sizeGb !== undefined);
-  assert.ok(Math.abs(fit.sizeGb - 27.01) < 0.01, String(fit.sizeGb));
+  // int8 DiT 7.26 + the companions with the Qwen3-VL-8B at its hosted int8 ConvRot size (8.71, not 16.33 bf16).
+  assert.ok(Math.abs(fit.sizeGb - 19.39) < 0.01, String(fit.sizeGb));
   assert.equal(fit.allowanceGb, 22.49 * 0.7);
   assert.equal(fit.fits, false);
   assert.equal(curatedArtifactFitsDevice(QWEN_21, IMAGE_CATALOG, card), fit.fits);
-  // No dense-quant scheme reported: the dense figure.
   assert.equal(curatedArtifactFit(QWEN_21, IMAGE_CATALOG, onCard(22.49, []))?.sizeGb, 33);
 });
 
@@ -314,12 +305,10 @@ test("the over-budget text never shows the size below the budget it exceeds", ()
     assert.ok(budget);
     return curatedBudgetText(Math.round(fit.sizeGb), gpuGb, budget);
   };
-  // 13.50 GB rounds to 13, under the 13.3 budget, so it is shown rounded up.
   assert.equal(
     text(Z_TURBO, 19),
     "Needs ~13.5GB for weights (budget: ~13.3GB, 70% of a 19GB GPU)",
   );
-  // A whole 4 GB against a 3.99 allowance: the budget is rounded down so 4.0 still reads as over.
   const whisper = curatedArtifactFit("unsloth/whisper-large-v3", AUDIO_CATALOG, {
     gpuGb: 1,
     systemRamGb: 5.7,
@@ -333,11 +322,11 @@ test("the over-budget text never shows the size below the budget it exceeds", ()
   );
   assert.equal(
     text(QWEN_21, 22.49),
-    "Needs ~27GB for weights (budget: ~15.7GB, 70% of a 22.49GB GPU)",
+    "Needs ~19GB for weights (budget: ~15.7GB, 70% of a 22.49GB GPU)",
   );
 });
 
-test("Qwen-Image-2.1 routes every card as on main", () => {
+test("Qwen-Image-2.1 routes by the int8 text encoder an auto load takes", () => {
   const group = groupForRepoId(QWEN_21, IMAGE_CATALOG);
   assert.ok(group);
   const pick = (gpuGb: number) =>
@@ -345,9 +334,28 @@ test("Qwen-Image-2.1 routes every card as on main", () => {
       ...onCard(gpuGb, ["int8"]),
       isDownloaded: notDownloaded,
     }).repoId;
-  // Include 36 GiB to catch changes just below the existing routing threshold.
+  // 19.39 GiB resident against the 70% rule: the dense row from a 27.7 GiB card up, the GGUF below.
   assert.equal(pick(24), "unsloth/Qwen-Image-2.1-GGUF");
-  assert.equal(pick(31.84), "unsloth/Qwen-Image-2.1-GGUF");
-  assert.equal(pick(36), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(27.6), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(27.8), QWEN_21);
+  assert.equal(pick(31.84), QWEN_21);
   assert.equal(pick(39.5), QWEN_21);
+});
+
+test("the Wan2.1 rows are sized by the bf16 weights the backend keeps resident", () => {
+  // Backend bf16_components_gb: 14B 28.6 + 11.4 + 0.5, 1.3B 2.8 + 11.4 + 0.5, not the repo download.
+  const WAN21_14B = "Wan-AI/Wan2.1-T2V-14B-Diffusers";
+  const WAN21_1_3B = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers";
+  assert.equal(curatedArtifactFitsDevice(WAN21_14B, VIDEO_CATALOG, onCard(80)), true);
+  assert.equal(curatedArtifactFitsDevice(WAN21_14B, VIDEO_CATALOG, onCard(48)), false);
+  assert.equal(curatedArtifactFitsDevice(WAN21_1_3B, VIDEO_CATALOG, onCard(24)), true);
+  assert.equal(curatedArtifactFitsDevice(WAN21_1_3B, VIDEO_CATALOG, onCard(16)), false);
+});
+
+test("the Cosmos3 rows are sized by the bf16 weights the backend keeps resident", () => {
+  const EDGE = "nvidia/Cosmos3-Edge";
+  assert.equal(artifactForRepoId("nvidia/Cosmos3-Nano", VIDEO_CATALOG), null);
+  assert.equal(artifactForRepoId(EDGE, VIDEO_CATALOG)?.artifact.approxSizeGb, 9);
+  assert.equal(curatedArtifactFitsDevice(EDGE, VIDEO_CATALOG, onCard(16)), true);
+  assert.equal(curatedArtifactFitsDevice(EDGE, VIDEO_CATALOG, onCard(12)), false);
 });

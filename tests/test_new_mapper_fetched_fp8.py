@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""What ``_get_new_mapper`` hands back to the upgrade probe.
-
-``test_new_mapper_no_global_leak.py`` serves the repo's own ``mapper.py`` as both the
-installed and the fetched source, so it cannot tell the two apart. Two gaps: an fp8
-repo only the FETCHED mapper knows, and a fetched file with no fp8 tables at all, where
-reading them with ``[]`` raises ``KeyError`` and takes the 4bit half down with it.
-
-The last two tests take the ROW branch, which nothing else here covers.
-"""
+"""A fetched mapper with no fp8 tables must not KeyError on [] reads and take the 4bit half down."""
 
 import ast
 import os
@@ -26,13 +18,12 @@ _WANTED = {
     "get_model_name",
 }
 
-# An fp8 ("8") model, spliced into the FETCHED mapper only.
 _NEW_KEY = "unsloth/Zeta-9B-Only-On-Main"
 _NEW_OFFICIAL = "zeta-org/Zeta-9B-Only-On-Main-FP8"
 _NEW_BLOCK = "unsloth/Zeta-9B-Only-On-Main-FP8-Block"
 _NEW_ROW = "unsloth/Zeta-9B-Only-On-Main-FP8-Row"
 _ANCHOR = '    "unsloth/Kimi-K2-Instruct-BF16" : ('
-# Row table only, so the block branch cannot answer for it and mask a row-path regression.
+# Row table only, so the block branch cannot mask a row-path regression.
 _ROW_ONLY = "zeta-org/Zeta-9B-Row-Only-FP8"
 
 
@@ -140,8 +131,7 @@ def _load_resolver(installed_source):
     """Stand-in for loader_utils' module globals, built from `installed_source`."""
     from unsloth_zoo.utils import Version
 
-    # loader_utils imports this from .mapper; _get_new_mapper derives the fetched tables with it, so the stand-in
-    # globals need it or the probe NameErrors into its own bare except and returns empty tables.
+    # _get_new_mapper needs this in globals, else it NameErrors into its bare except.
     from unsloth.models.mapper import build_mappers
 
     mapper_ns = {}
@@ -154,8 +144,6 @@ def _load_resolver(installed_source):
         "FLOAT_TO_FP8_BLOCK_MAPPER": mapper_ns["FLOAT_TO_FP8_BLOCK_MAPPER"],
         "FLOAT_TO_FP8_ROW_MAPPER": mapper_ns["FLOAT_TO_FP8_ROW_MAPPER"],
         "build_mappers": build_mappers,
-        # Imported from loader_utils rather than rebuilt, so a new helper added there
-        # cannot silently drop out of this stand-in and make the probe look broken.
         "_MAPPER_HELPERS": _loader_utils_globals()["_MAPPER_HELPERS"],
         "SUPPORTS_FOURBIT": True,
         "transformers_version": Version("4.57.6"),
@@ -198,7 +186,6 @@ def test_probe_answers_for_an_fp8_repo_only_the_fetched_mapper_knows(monkeypatch
             f"a fetched-only fp8 repo must raise the upgrade error, got {resolved!r}"
         )
 
-    # Answering must not have adopted the fetched tables.
     assert namespace["FLOAT_TO_FP8_BLOCK_MAPPER"] is installed_block
     assert namespace["FLOAT_TO_FP8_ROW_MAPPER"] is installed_row
     assert _NEW_OFFICIAL.lower() not in namespace["FLOAT_TO_FP8_BLOCK_MAPPER"]

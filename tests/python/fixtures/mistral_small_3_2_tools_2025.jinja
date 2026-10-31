@@ -1,0 +1,158 @@
+{#- Tool handling of the 2025 Unsloth Mistral Small 3.2 chat_template.jinja (date / default system prompt block trimmed). #}
+{%- set default_system_message = "DEFAULT" %}
+
+{{- bos_token }}
+
+{%- if messages[0]['role'] == 'system' %}
+    {%- if messages[0]['content'] is string %}
+        {%- set system_message = messages[0]['content'] %}
+    {%- elif messages[0]['content'] is iterable %}
+        {%- set system_message = messages[0]['content'][0]['text'] %}
+    {%- else %}
+        {%- set system_message = messages[0]['content']|string %}
+    {%- endif %}
+    {%- set loop_messages = messages[1:] %}
+{%- else %}
+    {%- set system_message = default_system_message %}
+    {%- set loop_messages = messages %}
+{%- endif %}
+{{- '[SYSTEM_PROMPT]' + system_message + '[/SYSTEM_PROMPT]' }}
+
+
+{#- Tool description appended ONLY to last user message. Edits made by Unsloth #}
+{#- Tool description appended also if last message is tool. Edits made by Unsloth #}
+{%- set tools_description = "" %}
+{%- set has_tools = false %}
+{#- Cannot use set append_tools_index = loop.index0 since temporary variable - must use namespace #}
+{%- set ns = namespace(append_tools_index=0, append_tools=false) %}
+
+{%- if tools is defined and tools is not none and tools|length > 0 %}
+
+    {%- set has_tools = true %}
+    {%- set tools_description = "[AVAILABLE_TOOLS]" + (tools | tojson) + "[/AVAILABLE_TOOLS]" %}
+
+    {#- If User,Assistant,Tool,Tool we also need to append tools_description to  last assistant WITHOUT tool_calls defined. Edits made by Unsloth #}
+    {%- if (loop_messages|last)['role'] == 'tool' %}
+
+        {#- Find last assistant WITHOUT tool_calls defined #}
+        {%- set ns.append_tools = true %}
+        {%- for message in loop_messages %}
+            {%- if message['role'] == 'assistant' %}
+
+                {#- Cannot use set append_tools_index = loop.index0 since temporary variable - must use namespace #}
+
+                {%- if message['tool_calls'] is not defined or message['tool_calls'] is none %}
+                    {%- set ns.append_tools_index = loop.index0 %}
+                {%- endif %}
+
+            {%- endif %}
+        {%- endfor %}
+
+    {%- endif %}
+
+{%- endif %}
+
+{%- for message in loop_messages %}
+    {%- if message['role'] == 'user' %}
+
+        {%- if has_tools and loop.last %}
+            {{- tools_description }}
+        {%- endif %}
+
+        {#- If directly called tools in first turn, prepend to user #}
+        {%- if ns.append_tools and ns.append_tools_index == 0 %}
+            {{- tools_description }}
+        {%- endif %}
+
+        {%- if message['content'] is string %}
+            {{- '[INST]' + message['content'] + '[/INST]' }}
+        {%- else %}
+            {{- '[INST]' }}
+            {%- for block in message['content'] %}
+                {%- if block['type'] == 'text' %}
+
+                    {#- Original did not have content which is weird. Added by Un-sloth. #}
+                    {%- if block['text'] is defined %}
+                        {{- block['text'] }}
+                    {%- else %}
+                        {{- block['content'] }}
+                    {%- endif %}
+
+                {%- elif block['type'] in ['image', 'image_url'] %}
+                    {{- '[IMG]' }}
+                {%- else %}
+                    {{- raise_exception('Only text and image blocks are supported in message content!') }}
+                {%- endif %}
+            {%- endfor %}
+            {{- '[/INST]' }}
+        {%- endif %}
+
+    {%- elif message['role'] == 'system' %}
+        {%- if message['content'] is string %}
+            {{- '[SYSTEM_PROMPT]' + message['content'] + '[/SYSTEM_PROMPT]' }}
+        {%- elif message['content'] is iterable %}
+            {{- '[SYSTEM_PROMPT]' + message['content'][0]['text'] + '[/SYSTEM_PROMPT]' }}
+        {%- else %}
+            {{- '[SYSTEM_PROMPT]' + message['content']|string + '[/SYSTEM_PROMPT]' }}
+        {%- endif %}
+        
+
+    {%- elif message['role'] == 'assistant' %}
+        {%- if message['content'] is string %}
+            {{- message['content'] }}
+        {%- elif message['content'] is iterable %}
+            {{- message['content'][0]['text'] }}
+        {%- else %}
+            {{- message['content']|string }}
+        {%- endif %}
+
+        {#- If User,Assistant,Tool,Tool we also need to append tools_description. Edits made by Unsloth #}
+
+        {%- if has_tools and (loop.index0 == ns.append_tools_index) %}
+            {{- eos_token }}
+            {{- tools_description }}
+        {%- endif %}
+
+        {%- if message['tool_calls'] is defined and message['tool_calls'] is not none %}
+            {%- for tool in message['tool_calls'] %}
+                {%- if tool['id'] is not defined %}
+                    {{- raise_exception('Tool ID must be provided!') }}
+                {%- endif %}
+                {%- set tool_call_id = tool['id'] %}
+                {%- if tool_call_id is not string or tool_call_id|length < 9 %}
+                    {{- raise_exception("Tool call IDs should be alphanumeric strings with length >= 9!") }}
+                {%- endif %}
+                {%- set arguments = tool['function']['arguments'] %}
+                {%- if arguments is not string %}
+                    {%- set arguments = arguments|tojson %}
+                {%- endif %}
+                {#- Must list tool calls AFTER assistant. Edits made by Un-sloth #}
+                {{- "[TOOL_CALLS]" + tool['function']['name'] + "[CALL_ID]" + tool_call_id + "[ARGS]" + arguments }}
+            {%- endfor %}
+        {%- endif %}
+
+        {#- Must not add EOS if added tools_description. Unsloth edits. #}
+        {%- if (loop.index0 != ns.append_tools_index) %}
+            {{- eos_token }}
+        {%- endif %}
+
+    {%- elif message["role"] == "tool_results" or message["role"] == "tool" %}
+        {%- if message.content is defined and message.content.content is defined %}
+            {%- set content = message.content.content %}
+        {%- else %}
+            {%- set content = message.content %}
+        {%- endif %}
+        {%- if message['tool_call_id'] is not defined %}
+            {{- raise_exception('tool_call_id must be provided!') }}
+        {%- endif %}
+        {%- set tool_call_id = message['tool_call_id'] %}
+        {%- if tool_call_id is not string or tool_call_id|length < 9 %}
+            {{- raise_exception("Tool call IDs should be alphanumeric strings with length >= 9!") }}
+        {%- endif %}
+        {{- "[TOOL_RESULTS]" + tool_call_id + "[TOOL_CONTENT]" + content|string + "[/TOOL_RESULTS]" }}
+
+    {%- else %}
+        {{- raise_exception('Only user, systemm assistant and tool roles are supported in the custom template made by Unsloth!') }}
+    {%- endif %}
+{%- endfor %}
+{#- Copyright 2025-present Unsloth. Apache 2.0 License. #}

@@ -168,7 +168,7 @@ def test_exact_with_fp_fusion_on_or_off(fp_fusion):
     """Eager launches with fp fusion off; torch.compile re-emits the kernel with it on. Both must
     keep code2 * absmax2 and + offset as two roundings (fp32 output shows a 1 ulp scale error)."""
     if fp_fusion and not nf4_mod._HAS_MUL_RN:
-        # Without libdevice.mul_rn (HIP, the interpreter) the kernel never runs with fusion on.
+        # Without libdevice.mul_rn (HIP, interpreter) the kernel never runs with fusion on.
         pytest.skip("no mul_rn: this route never launches with fp fusion on")
     for dtype in (torch.float32, torch.bfloat16):
         q, s = _quantize((4096, 4096), dtype, seed = 3)
@@ -235,7 +235,6 @@ def test_every_launch_config_is_exact(shape, words, evict, lut_mode, monkeypatch
 
 
 def test_every_table_config_is_exact_here(monkeypatch):
-    # Each GPU's table entry, run on this GPU: exactness does not depend on the GPU it was tuned on.
     configs = {row[1:] for table in nf4_mod._CONFIGS.values() for row in table}
     for shape in [(17, 33), (1024, 4096)]:
         for dtype in (torch.float16, torch.bfloat16):

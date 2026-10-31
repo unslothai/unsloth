@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Backport of torch 2.14's polynomial-gcd proof in ``SizeVarAllocator.statically_known_multiple_of``.
-
-torch 2.12 / 2.13 cannot prove ``(k*a - k*b) % (a - b) == 0`` and raise inductor ``CantSplit`` under
-``torch.compile(dynamic=True)`` (Qwen-Image-2.1 torchao fp8 / int8, FLUX.1 single-stream blocks). Probe-gated, not
-version-gated; only turns False into True when the gcd equals the denominator up to sign.
-Kill switch: ``UNSLOTH_DIFFUSION_INDUCTOR_BACKPORTS=0``."""
+"""Backport of torch 2.14 gcd multiple-of proof; probe-gated, not version-gated, and only turns
+False into True; UNSLOTH_DIFFUSION_INDUCTOR_BACKPORTS=0 disables."""
 
 from __future__ import annotations
 

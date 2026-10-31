@@ -28,7 +28,7 @@ import { screenshotPage } from "./capture";
 import { type AnnotateEvent, type AnnotateRect, MAX_MARKS } from "./frame-message";
 import { startNativeAnnotate } from "./native-annotate";
 import { focusPanel, nativeViewBounds } from "./native-view";
-import { type FrameCommand, frameRect, onFrameAnnotate, sendFrameCommand } from "./page-frame";
+import { type FrameCommand, frameRect, frameScale, onFrameAnnotate, sendFrameCommand } from "./page-frame";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { useBrowserStore } from "./store";
 
@@ -54,13 +54,16 @@ async function annotationScreenshot(page: HTMLElement | null): Promise<File[]> {
 type Annotation = {
   id: number;
   ranges: Range[];
+  places?: (Place | null)[];
   quote: string;
   frame?: Frame;
   request: string;
 };
-/** A drag's box, offset from its content so it scrolls with it, at the zoom it was drawn at. */
-type Frame = { left: number; top: number; width: number; height: number; zoom: number };
-type Pending = { id: number | null; ranges: Range[]; quote: string; frame?: Frame };
+/** A drag's box, offset from its content so it scrolls with it, at the zoom and page width it was drawn at. */
+type Frame = { left: number; top: number; width: number; height: number; zoom: number; item?: number };
+type Pending = { id: number | null; ranges: Range[]; places?: (Place | null)[]; quote: string; frame?: Frame };
+/** Where a range sits in a virtualized page: its text offsets, or the path to the element it selects. */
+type Place = { item: string; start: number; end: number; text: string } | { item: string; path: number[]; tag: string };
 type Box = { left: number; top: number; width: number; height: number };
 
 function hasOwnText(element: Element): boolean {
@@ -91,7 +94,6 @@ function pdfLine(span: Element): Range[] {
     });
 }
 
-/** A block's own content: an image whole, a list item up to the lists nested in it. */
 function blockRange(block: Element): Range {
   const range = document.createRange();
   if (block.tagName === "IMG") {
@@ -230,12 +232,157 @@ function zoomAt(ranges: Range[]): number {
   return cssZoomOf(element);
 }
 
+// PDF pages and slides: virtualized, and remounted at a new width on zoom.
+const ITEM = "[data-index]";
+
+const itemOf = (node: Node): HTMLElement | null =>
+  (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>(ITEM) ?? null;
+
+/** A page's text nodes and where each starts, built once and shared by all its ranges. */
+type TextIndex = { nodes: Text[]; starts: number[]; at: Map<Node, number>; length: number };
+
+function textIndex(item: Element): TextIndex {
+  const nodes: Text[] = [];
+  const starts: number[] = [];
+  const at = new Map<Node, number>();
+  let length = 0;
+  const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    nodes.push(node as Text);
+    starts.push(length);
+    at.set(node, length);
+    length += node.textContent?.length ?? 0;
+  }
+  return { nodes, starts, at, length };
+}
+
+/** Index of the last item `test` holds for, when it holds for a prefix; else -1. */
+function lastWhere<T>(items: readonly T[], test: (item: T) => boolean): number {
+  let low = 0;
+  let high = items.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (test(items[middle] as T)) low = middle + 1;
+    else high = middle;
+  }
+  return low - 1;
+}
+
+/** Characters of the page before a boundary point. */
+function offsetIn(index: TextIndex, node: Node, offset: number): number {
+  const start = index.at.get(node);
+  if (start !== undefined) return start + offset;
+  // A point beside a text node, as around a span's own text.
+  const next = node.childNodes[offset];
+  const after = next && index.at.get(next);
+  if (after !== undefined) return after;
+  const prior = node.childNodes[offset - 1];
+  const before = prior && index.at.get(prior);
+  if (before !== undefined) return before + (prior.textContent?.length ?? 0);
+  // Elsewhere between nodes: count the text nodes that start before it.
+  const point = document.createRange();
+  point.setStart(node, offset);
+  const last = lastWhere(index.nodes, (text) => point.comparePoint(text, 0) < 0);
+  const text = index.nodes[last];
+  return text ? (index.starts[last] ?? 0) + text.length : 0;
+}
+
+/** The text node and offset `offset` characters in; a start between nodes takes the next. */
+function pointIn(index: TextIndex, offset: number, start: boolean): [Node, number] | null {
+  const found = lastWhere(index.starts, (at) => (start ? at <= offset : at < offset));
+  const node = index.nodes[Math.max(found, 0)];
+  const local = offset - (index.starts[Math.max(found, 0)] ?? 0);
+  return node && local >= 0 && local <= node.length ? [node, local] : null;
+}
+
+/** The element a range selects whole, as an image's does. */
+function selectedElement(range: Range): Element | null {
+  const node = range.startContainer.childNodes[range.startOffset];
+  return node instanceof Element && range.endContainer === range.startContainer && range.endOffset === range.startOffset + 1
+    ? node
+    : null;
+}
+
+function placesOf(ranges: Range[]): (Place | null)[] {
+  const indexes = new Map<Element, TextIndex>();
+  return ranges.map((range) => {
+    const item = itemOf(range.startContainer);
+    if (!item || itemOf(range.endContainer) !== item) return null;
+    const text = range.toString();
+    const element = selectedElement(range);
+    if (!text.trim()) {
+      if (!element) return null;
+      const path: number[] = [];
+      for (let node: Element = element; node !== item; node = node.parentElement!) {
+        path.unshift([...node.parentElement!.children].indexOf(node));
+      }
+      return { item: item.dataset.index ?? "", path, tag: element.tagName };
+    }
+    let index = indexes.get(item);
+    if (!index) indexes.set(item, (index = textIndex(item)));
+    const start = offsetIn(index, range.startContainer, range.startOffset);
+    const end = offsetIn(index, range.endContainer, range.endOffset);
+    return { item: item.dataset.index ?? "", start, end, text };
+  });
+}
+
+/** The place's content in its remounted page, if that page shows the same thing. */
+function rangeAt(place: Place, page: HTMLElement, indexes: Map<Element, TextIndex>): Range | null {
+  // Hidden tabs keep their documents, with the same page numbers: only a shown page counts.
+  const item = [...page.querySelectorAll(`${ITEM}[data-index="${CSS.escape(place.item)}"]`)].find(
+    (candidate) => candidate.getClientRects().length > 0,
+  );
+  if (!item) return null;
+  const range = document.createRange();
+  if ("path" in place) {
+    let element: Element | undefined = item;
+    for (const step of place.path) element = element?.children[step];
+    if (element?.tagName !== place.tag) return null;
+    range.selectNode(element);
+    return range;
+  }
+  let index = indexes.get(item);
+  if (!index) indexes.set(item, (index = textIndex(item)));
+  const start = pointIn(index, place.start, true);
+  const end = pointIn(index, place.end, false);
+  if (!start || !end) return null;
+  range.setStart(...start);
+  range.setEnd(...end);
+  return range.toString() === place.text ? range : null;
+}
+
+const rebound = new WeakMap<Range, Range>();
+
+/** Whether a range still holds what was marked; removed nodes collapse it onto what is left. */
+function holds(range: Range, place: Place): boolean {
+  if (!("path" in place)) return range.toString() === place.text;
+  return selectedElement(range)?.tagName === place.tag && range.startContainer.isConnected;
+}
+
+/** The ranges, found again where their page remounted; `indexes` is shared by every mark in a render. */
+function liveRanges(
+  mark: { ranges: Range[]; places?: (Place | null)[] },
+  page: HTMLElement,
+  indexes: Map<Element, TextIndex>,
+): Range[] {
+  return mark.ranges.map((range, index) => {
+    const place = mark.places?.[index];
+    if (!place || holds(range, place)) return range;
+    const known = rebound.get(range);
+    if (known && holds(known, place)) return known;
+    const found = rangeAt(place, page, indexes);
+    if (found) rebound.set(range, found);
+    return found ?? range;
+  });
+}
+
 /** A drag's box if any, else the box around the content. */
 function markBoxOf(ranges: Range[], frame: Frame | undefined, origin: DOMRect): Box | null {
   const content = boxOf(ranges, origin);
   if (!content || !frame) return content;
-  // Scale by the zoom change since the drag, as the content did.
-  const k = zoomAt(ranges) / frame.zoom;
+  // Scale by the zoom and page width change since the drag, as the content did.
+  const item = ranges[0] && frame.item ? itemOf(ranges[0].startContainer) : null;
+  const k = (zoomAt(ranges) / frame.zoom) * (item && frame.item ? item.offsetWidth / frame.item : 1);
   return {
     left: content.left + PAD + frame.left * k,
     top: content.top + PAD + frame.top * k,
@@ -287,7 +434,14 @@ export function AnnotateLayer({
       if (!request) return items;
       return [
         ...items,
-        { id: nextId.current++, ranges: pending.ranges, quote: pending.quote, frame: pending.frame, request },
+        {
+          id: nextId.current++,
+          ranges: pending.ranges,
+          places: pending.places,
+          quote: pending.quote,
+          frame: pending.frame,
+          request,
+        },
       ];
     }
     return request
@@ -336,12 +490,18 @@ export function AnnotateLayer({
     page.addEventListener("transitionend", zoomed, true);
     const resize = new ResizeObserver(redraw);
     resize.observe(page);
+    // A remounted page renders its text later; marks are found again then.
+    const added = new MutationObserver((records) => {
+      if (records.some((record) => record.addedNodes.length && !layerRef.current?.contains(record.target))) redraw();
+    });
+    added.observe(page, { childList: true, subtree: true });
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settle);
       page.removeEventListener("scroll", redraw, { capture: true });
       page.removeEventListener("transitionend", zoomed, true);
       resize.disconnect();
+      added.disconnect();
     };
   }, [page]);
 
@@ -394,9 +554,10 @@ export function AnnotateLayer({
             width: area.width,
             height: area.height,
             zoom: zoomAt(ranges),
+            item: itemOf(ranges[0]!.startContainer)?.offsetWidth,
           }
         : undefined;
-      setPending({ id: null, ranges, quote, frame });
+      setPending({ id: null, ranges, places: placesOf(ranges), quote, frame });
       setDraft("");
     };
     const onDown = (event: PointerEvent) => {
@@ -508,7 +669,8 @@ export function AnnotateLayer({
   const hoverBox = hover ? boxOf(hover, origin) : null;
   if (hoverBox) lastHoverBox.current = hoverBox;
   const shownHover = hoverBox ?? lastHoverBox.current;
-  const pendingBox = pending ? markBoxOf(pending.ranges, pending.frame, origin) : null;
+  const indexes = new Map<Element, TextIndex>();
+  const pendingBox = pending ? markBoxOf(liveRanges(pending, page, indexes), pending.frame, origin) : null;
   const count = items.length;
   // A first comment still being typed can go too: Send commits it.
   const canSend = count > 0 || (pending?.id === null && draft.trim() !== "");
@@ -522,7 +684,7 @@ export function AnnotateLayer({
       {shownHover ? (
         <div
           className={cn(
-            "absolute rounded-md border-[1.5px] border-primary/70 transition-[left,top,width,height,opacity] duration-150 ease-out group-data-[scrolling]/annotate:transition-none motion-reduce:transition-none",
+            "absolute rounded-md border-[1.5px] border-wash-70 transition-[left,top,width,height,opacity] duration-150 ease-out group-data-[scrolling]/annotate:transition-none motion-reduce:transition-none",
             hoverBox && !area ? "opacity-100" : "opacity-0",
           )}
           style={shownHover}
@@ -530,12 +692,12 @@ export function AnnotateLayer({
       ) : null}
       {area ? (
         <div
-          className="absolute rounded-md border-[1.5px] border-dashed border-primary/70 bg-primary/5"
+          className="absolute rounded-md border-[1.5px] border-dashed border-wash-70 bg-wash-5"
           style={area}
         />
       ) : null}
       {items.map((item, index) => {
-        const box = item.id === pending?.id ? null : markBoxOf(item.ranges, item.frame, origin);
+        const box = item.id === pending?.id ? null : markBoxOf(liveRanges(item, page, indexes), item.frame, origin);
         return box ? (
           <Mark
             key={item.id}
@@ -546,6 +708,7 @@ export function AnnotateLayer({
               setPending({
                 id: item.id,
                 ranges: item.ranges,
+                places: item.places,
                 quote: item.quote,
                 frame: item.frame,
               });
@@ -591,7 +754,7 @@ function Mark({
   return (
     <>
       <div
-        className="absolute animate-in rounded-md border-[1.5px] border-dashed border-primary/60 bg-primary/5 fade-in-0 duration-150"
+        className="absolute animate-in rounded-md border-[1.5px] border-dashed border-wash-60 bg-wash-5 fade-in-0 duration-150"
         style={box}
       />
       <button
@@ -622,7 +785,6 @@ function markNumber<Item extends { id: number }>(items: Item[], id: number | nul
 const SURFACE =
   "border border-border bg-background text-foreground shadow-[0_8px_28px_-6px_rgba(0,0,0,0.18)] dark:border-white/10 dark:bg-neutral-800 dark:text-white dark:shadow-[0_12px_40px_-4px_rgba(0,0,0,0.85),0_4px_12px_-2px_rgba(0,0,0,0.6)]";
 
-/** Voice typing into a comment, as the composer's microphone does. */
 function useCommentDictation(draft: string, onDraft: (value: string) => void) {
   const t = useT();
   const session = useRef<ReturnType<StudioDictationAdapter["listen"]> | null>(null);
@@ -721,7 +883,7 @@ function CommentForm({
           type="submit"
           aria-label={t("browser.annotate.save")}
           title={t("browser.annotate.save")}
-          className="flex size-9 shrink-0 animate-in cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity fade-in-0 zoom-in-75 duration-150 hover:opacity-90"
+          className="flex size-9 shrink-0 animate-in cursor-pointer items-center justify-center rounded-full bg-action text-background transition-opacity fade-in-0 zoom-in-75 duration-150 hover:opacity-90"
         >
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4.5" />
         </button>
@@ -799,7 +961,7 @@ function AnnotateBar({
       data-annotate-chrome=""
       data-native-inset={besidePage ? "" : undefined}
       className={cn(
-        "pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-2xl pr-1.5 pl-2.5 text-ui-15",
+        "pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-full pr-1.5 pl-2.5 text-ui-15",
         SURFACE,
       )}
       style={{
@@ -824,7 +986,7 @@ function AnnotateBar({
       <button
         type="button"
         onClick={onExit}
-        className="h-9 cursor-pointer whitespace-nowrap rounded-xl px-3 transition-colors hover:bg-muted dark:hover:bg-neutral-700"
+        className="h-9 cursor-pointer whitespace-nowrap rounded-full px-3 transition-colors hover:bg-muted dark:hover:bg-neutral-700"
       >
         {t("browser.annotate.cancel")}
       </button>
@@ -833,7 +995,7 @@ function AnnotateBar({
           type="button"
           onClick={onSend}
           disabled={sendDisabled}
-          className="h-9 cursor-pointer whitespace-nowrap rounded-xl bg-primary px-4 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+          className="cursor-pointer whitespace-nowrap rounded-full bg-action px-3 py-2 font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
         >
           {t("browser.annotate.send")}
         </button>
@@ -868,7 +1030,7 @@ export function WebAnnotateLayer({
   url,
   page,
   native = false,
-}: { tabId: string; title: string; url: string; page: HTMLElement | null; native?: boolean }) {
+}: { tabId: string; title: string; url?: string; page: HTMLElement | null; native?: boolean }) {
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -929,7 +1091,6 @@ export function WebAnnotateLayer({
   const send = async () => {
     const outgoing = committed();
     if (outgoing.length === 0 || !sendAnnotations || sending) return;
-    // One at a time: a second click while staging would add the annotations twice.
     setSending(true);
     // Keep the open comment and close its form, so a native view shows again for the screenshot.
     setItems(outgoing);
@@ -937,7 +1098,7 @@ export function WebAnnotateLayer({
     setDraft("");
     const files = await annotationScreenshot(page);
     const sent = await sendAnnotations(
-      { file: title || url, url, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
+      { file: title || url || "", url, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
       files,
     ).finally(() => setSending(false));
     if (sent) exit();
@@ -1064,7 +1225,7 @@ export function WebAnnotateLayer({
   // Native views report CSS pixels; scale by their zoom.
   const bounds = native ? nativeViewBounds(tabId) : null;
   const frame = bounds ? { left: bounds.x, top: bounds.y } : (frameRect(tabId) ?? origin);
-  const scale = bounds ? zoom : 1;
+  const scale = bounds ? zoom : frameScale(tabId);
   const rect = pending ? rects.get(pending.id) : null;
   const pendingBox: Box | null = rect
     ? {

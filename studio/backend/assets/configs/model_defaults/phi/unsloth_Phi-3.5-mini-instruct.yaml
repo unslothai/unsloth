@@ -1,10 +1,7 @@
-# Model defaults for unsloth/Phi-3.5-mini-instruct
-# Based on Phi_3.5_Mini-Conversational.ipynb
 # Also applies to: "unsloth/Phi-3.5-mini-instruct-bnb-4bit", "microsoft/Phi-3.5-mini-instruct"
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

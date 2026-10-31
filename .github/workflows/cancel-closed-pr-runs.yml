@@ -1,0 +1,122 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# When a pull request closes (merged or not), cancel its pull_request runs that
+# are still queued or running. Nobody reads them any more, and while the queue
+# is hours deep they hold slots the open PRs are waiting for: on 2026-10-14,
+# 121 of 498 queued pull_request runs belonged to PRs that were already merged
+# or closed.
+#
+# Trigger: `pull_request` (types: closed), not `pull_request_target`, which this
+# repo bans (scripts/lint_workflow_triggers.py). The cost is fork PRs: their
+# GITHUB_TOKEN is read-only whatever `permissions:` says, so for them the cancel
+# calls are refused and the job only reports what it would have cancelled. Same-
+# repository branches, where most of the stale runs come from (104 of the 121),
+# get the write token and are cleaned up.
+#
+# Nothing from the PR is checked out or executed. The head branch name is
+# untrusted text, so it reaches the shell only through env and is passed to
+# `gh api` as an argument, never interpolated into a command line.
+#
+# Which runs: event pull_request, status queued / waiting / pending / requested
+# / in_progress, and
+#   - the run lists this PR number in pull_requests[], or
+#   - pull_requests[] is empty (fork PRs) and the run's head branch AND head
+#     repository match this PR's, and no other OPEN PR has that same head.
+# Never a push, schedule or dispatch run, never another fork's same-named
+# branch, never this workflow's own runs. /cancel only, never /force-cancel:
+# force-cancel skips `always()` steps, where workflows keep their cleanup.
+
+name: Cancel closed PR runs
+
+on:
+  pull_request:
+    types: [closed]
+
+# One per PR, latest wins: a second close (after a reopen) lists and cancels the
+# same runs again, so the earlier pass has nothing left that only it would do.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  cancel:
+    name: Cancel this PR's leftover runs
+    # A rarely requested hosted label: the ubuntu-latest queue can be hours deep,
+    # which is exactly when this job matters. It needs only gh and jq.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      actions: write          # list and cancel workflow runs, this repository only
+      pull-requests: read     # is another open PR using the same head?
+    steps:
+      - name: Cancel queued and running pull_request runs of this PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          SELF_RUN: ${{ github.run_id }}
+          SELF_WORKFLOW: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          # A head repository that was deleted has no full_name; branch matching
+          # alone could then reach another fork's runs, so match by number only.
+          [ -n "${HEAD_REPO:-}" ] || HEAD_REPO="-"
+          self_path="${SELF_WORKFLOW#*/*/}"; self_path="${self_path%@*}"
+
+          # Another OPEN PR with the same head (repo + branch) shares its runs'
+          # head_branch; for runs with empty pull_requests we cannot tell them
+          # apart, so leave those alone.
+          shared=0
+          if [ "$HEAD_REPO" != "-" ]; then
+            owner="${HEAD_REPO%%/*}"
+            n_open=$(gh api -X GET "repos/$REPO/pulls" -f state=open -f head="$owner:$HEAD_REF" \
+                       --jq "[.[] | select(.number != $PR)] | length" 2>/dev/null || echo 1)
+            [ "$n_open" = 0 ] || shared=1
+          fi
+
+          # Take every list before cancelling anything: a cancelled run leaves the
+          # status filter that defines the result set, so cancelling while
+          # paginating would shift the pages and skip runs.
+          list="$RUNNER_TEMP/runs.tsv"; : > "$list"
+          for st in queued waiting pending requested in_progress; do
+            if ! gh api --paginate -X GET "repos/$REPO/actions/runs" \
+                   -f event=pull_request -f status="$st" -f branch="$HEAD_REF" -f per_page=100 \
+                   --jq '.workflow_runs[] | [.id, .path, (.head_repository.full_name // "-"),
+                         ([.pull_requests[]?.number] | map(tostring) | join(","))] | @tsv' \
+                   >> "$list"; then
+              echo "::warning::could not list $st runs; cancelling nothing"
+              exit 0
+            fi
+          done
+
+          todo="$RUNNER_TEMP/todo.txt"; : > "$todo"
+          while IFS=$'\t' read -r id path repo prs; do
+            [ -n "$id" ] || continue
+            [ "$id" = "$SELF_RUN" ] && continue
+            [ "$path" = "$self_path" ] && continue
+            if [ -n "$prs" ]; then
+              case ",$prs," in *",$PR,"*) ;; *) continue ;; esac
+            else
+              [ "$repo" = "$HEAD_REPO" ] && [ "$HEAD_REPO" != "-" ] && [ "$shared" = 0 ] || continue
+            fi
+            echo "$id" >> "$todo"
+          done < <(sort -u "$list")
+
+          total=$(wc -l < "$todo"); done_n=0; refused=0
+          while read -r id; do
+            if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" --silent < /dev/null 2>/dev/null; then
+              done_n=$(( done_n + 1 ))
+            else
+              refused=$(( refused + 1 ))
+            fi
+          done < "$todo"
+
+          echo "PR #$PR: $total leftover run(s), $done_n cancelled, $refused refused" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$refused" -gt 0 ] && [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "::notice::fork PR: the pull_request token is read-only, so its runs are left to finish or time out"
+          fi

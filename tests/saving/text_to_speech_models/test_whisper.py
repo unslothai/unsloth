@@ -19,8 +19,7 @@ try:
     from peft import PeftModel
     import requests
 except ImportError as exc:
-    # Imported at collection time, so an absent runtime dep (triton on the Windows CI runner) is a collection error that
-    # reports no results at all.
+    # Imported at collection time, so a missing runtime dep would otherwise be a collection error.
     pytest.skip(
         f"requires the full unsloth runtime: {exc}",
         allow_module_level = True,
@@ -66,16 +65,16 @@ model.generation_config.forced_decoder_ids = None
 
 model = FastModel.get_peft_model(
     model,
-    r = 64,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+    r = 64,
     target_modules = ["q_proj", "v_proj"],
     lora_alpha = 64,
-    lora_dropout = 0,  # Supports any, but = 0 is optimized
-    bias = "none",  # Supports any, but = "none" is optimized
-    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
+    lora_dropout = 0,
+    bias = "none",
+    use_gradient_checkpointing = "unsloth",
     random_state = 3407,
-    use_rslora = False,  # We support rank stabilized LoRA
-    loftq_config = None,  # And LoftQ
-    task_type = None,  # ** MUST set this for Whisper **
+    use_rslora = False,
+    loftq_config = None,
+    task_type = None,  # MUST be None for Whisper
 )
 
 print("✅ Model and LoRA adapters loaded successfully!")
@@ -116,7 +115,7 @@ print("🔍 SECTION 4: Saving and Merging Model")
 print(f"{'=' * 80}")
 
 with warnings.catch_warnings():
-    warnings.simplefilter("error")  # Treat warnings as errors
+    warnings.simplefilter("error")
     try:
         model.save_pretrained_merged("whisper", tokenizer)
         print("✅ Model saved and merged successfully without warnings!")
@@ -157,9 +156,7 @@ try:
         f.write(response.content)
     print("✅ Audio file downloaded successfully!")
 except Exception as e:
-    # Runs at import, so a failure here is a collection error and the whole file reports no results.
-    # Wikimedia rate-limits this URL (429 in a batch run) and a fixture we could not fetch says nothing about unsloth,
-    # so skip.
+    # Runs at import; Wikimedia rate-limits this URL and a failed fetch says nothing about unsloth.
     pytest.skip(
         f"could not download the test audio fixture from {audio_url}: {e}",
         allow_module_level = True,

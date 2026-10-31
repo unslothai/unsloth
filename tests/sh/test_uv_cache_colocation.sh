@@ -1,34 +1,17 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Guards the uv cache co-location in install.sh.
-#
-# uv's cache defaulted to $HOME/.cache/uv while STUDIO_HOME can be pointed anywhere with
-# UNSLOTH_STUDIO_HOME. uv hardlinks wheels out of its cache into the venv when both are on
-# one filesystem and COPIES when they are not, so every redirected install paid twice the
-# disk and left several GB on the drive the user had deliberately moved off (an SD card or
-# second disk being the usual reason to redirect at all).
-#
-# Measured with torch 2.11.0+cpu: co-located, a 749 MB cache and a 748 MB venv occupy 755 MB
-# between them (st_nlink 2 on the shared objects); across a boundary they are duplicated.
-#
-# The contract:
-#   * unset UV_CACHE_DIR  -> $STUDIO_HOME/cache/uv, exported, directory created
-#   * caller-set          -> left exactly as-is
-#   * follows STUDIO_HOME wherever UNSLOTH_STUDIO_HOME puts it
+# Guards uv cache co-location: uv hardlinks into the venv only on the same filesystem and copies
+# otherwise, so the cache follows STUDIO_HOME unless the caller set UV_CACHE_DIR.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-# Lift the block out of install.sh so the real code is what runs here.
 _FN_FILE=$(mktemp)
 _TMP=$(mktemp -d)
 trap 'rm -rf "$_FN_FILE" "$_TMP"' EXIT
-# The helper first: the block asks it whether the cache is usable, and leaving it out does not
-# fail loudly. `command not found` exits 127, `if !` reads that as "not writable", and every
-# case quietly reports an unset UV_CACHE_DIR.
+# The helper first: without it `if !` reads exit 127 as "not writable" and every case passes.
 awk '/^_uv_cache_root_is_writable\(\) \{$/,/^\}$/' "$INSTALL_SH" > "$_FN_FILE"
 awk '/^# Keep uv.s cache on the same filesystem as the venv it fills\.$/,/^fi$/' \
     "$INSTALL_SH" >> "$_FN_FILE"
@@ -43,7 +26,7 @@ if ! grep -q '^_uv_cache_root_is_writable() {' "$_FN_FILE"; then
 fi
 
 _SH="${BASH:-/bin/bash}"
-_run() {  # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset)
+_run() {
     "$_SH" -c "
         STUDIO_HOME='$1'
         if [ -n '$2' ]; then UV_CACHE_DIR='$2'; export UV_CACHE_DIR; else unset UV_CACHE_DIR; fi
@@ -54,7 +37,6 @@ _run() {  # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset)
 
 echo "=== unset: defaults under STUDIO_HOME ==="
 assert_eq "default home"    "$_TMP/studio/cache/uv" "$(_run "$_TMP/studio" '')"
-# The whole point: a redirected STUDIO_HOME takes the cache with it.
 assert_eq "redirected home" "$_TMP/sdcard/unsloth/cache/uv" "$(_run "$_TMP/sdcard/unsloth" '')"
 
 echo "=== the directory is actually created (uv would too, but not before we log) ==="
@@ -62,16 +44,12 @@ _run "$_TMP/mk" '' >/dev/null
 assert_eq "cache dir created" "yes" "$([ -d "$_TMP/mk/cache/uv" ] && echo yes || echo no)"
 
 echo "=== an uncreatable cache falls back to uv's default, it does not stay exported ==="
-# uv aborts with "Failed to initialize cache at ..." on a cache path it cannot create, so
-# keeping the export after a failed mkdir turns a disk optimisation into a hard install
-# failure on a host where uv's own default would have worked.
-: > "$_TMP/blocked"          # STUDIO_HOME is a FILE -> $STUDIO_HOME/cache/uv cannot exist
+# uv aborts on a cache path it cannot create, so a failed mkdir must drop the export.
+: > "$_TMP/blocked"
 assert_eq "uncreatable cache is dropped" "<unset>" "$(_run "$_TMP/blocked" '')"
-mkdir -p "$_TMP/rofile" && : > "$_TMP/rofile/cache"   # writable home, "cache" is a file
+mkdir -p "$_TMP/rofile" && : > "$_TMP/rofile/cache"
 assert_eq "cache-as-file is dropped"     "<unset>" "$(_run "$_TMP/rofile" '')"
-# mkdir -p exits 0 for a directory that ALREADY exists, so an unwritable leftover cache from
-# an earlier install under another account passed the mkdir and then failed uv exactly as an
-# uncreatable path does. Writability has to be probed, not inferred.
+# mkdir -p succeeds on an existing unwritable dir, so writability must be probed.
 mkdir -p "$_TMP/leftover/cache/uv" && chmod 500 "$_TMP/leftover/cache/uv"
 if [ "$(id -u)" = "0" ]; then
     echo "  SKIP: unwritable-cache case (root writes through the mode bits)"
@@ -79,10 +57,8 @@ else
     assert_eq "unwritable existing cache is dropped" "<unset>" "$(_run "$_TMP/leftover" '')"
 fi
 chmod 700 "$_TMP/leftover/cache/uv"
-# ...and the probe file it writes does not survive into the cache uv then fills.
 _run "$_TMP/probe" '' >/dev/null
 assert_eq "write probe cleaned up" "" "$(ls -A "$_TMP/probe/cache/uv")"
-# ... and the fallback really is usable, unlike the path we just refused.
 if command -v uv >/dev/null 2>&1; then
     _uv_rc=$("$_SH" -c "
         STUDIO_HOME='$_TMP/rofile'
@@ -111,11 +87,7 @@ _set_line=$(grep -n 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$INSTALL_SH" | head
 _uv_line=$(grep -n 'installing uv package manager' "$INSTALL_SH" | head -1 | cut -d: -f1)
 assert_eq "precedes uv bootstrap" "yes" \
     "$([ -n "$_set_line" ] && [ -n "$_uv_line" ] && [ "$_set_line" -lt "$_uv_line" ] && echo yes || echo no)"
-# Match the call that creates the venv, not the label it carries: the literal
-# 'run_install_cmd "create venv" uv venv' stopped existing when #8479 moved venv
-# creation behind _run_uv_venv, and a label this file cannot find reads as "the cache
-# is set too late" rather than "the grep is stale". Comment lines and case globs are
-# dropped so the prose above the helper, or a pattern matching the call, does not answer first.
+# Match the call that creates the venv, not its label; comment lines and case globs are dropped.
 _venv_line=$(grep -nE '(^|[^[:alnum:]_"`])uv venv([[:space:]]|$)' "$INSTALL_SH" \
     | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v '\*" uv venv "\*' | head -1 | cut -d: -f1)
 assert_eq "found the venv creation call" "yes" "$([ -n "$_venv_line" ] && echo yes || echo no)"
@@ -123,10 +95,7 @@ assert_eq "precedes venv creation" "yes" \
     "$([ -n "$_set_line" ] && [ -n "$_venv_line" ] && [ "$_set_line" -lt "$_venv_line" ] && echo yes || echo no)"
 
 echo "=== studio/setup.sh sets the SAME cache (it is the standalone update entry point) ==="
-# install.sh exports UV_CACHE_DIR for its own process only, and `unsloth studio update` runs
-# studio/setup.sh directly, so without the same block there a redirected STUDIO_HOME
-# downloads a second cache to $HOME/.cache/uv on the first update and copies every wheel
-# across the boundary. Same path, so the update also REUSES what the install fetched.
+# `unsloth studio update` runs studio/setup.sh directly, so it needs the same block.
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 _SETUP_FN=$(mktemp)
 trap 'rm -rf "$_FN_FILE" "$_TMP" "$_SETUP_FN"' EXIT
@@ -135,7 +104,7 @@ if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_SETUP_FN"; then
     echo "  FAIL: could not extract the UV_CACHE_DIR block from studio/setup.sh"
     FAIL=$((FAIL + 1))
 else
-    _run_setup() {  # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset)
+    _run_setup() {
         "$_SH" -c "
             STUDIO_HOME='$1'
             if [ -n '$2' ]; then UV_CACHE_DIR='$2'; export UV_CACHE_DIR; else unset UV_CACHE_DIR; fi
@@ -145,14 +114,10 @@ else
     }
     assert_eq "setup.sh defaults under STUDIO_HOME" \
         "$_TMP/upd/cache/uv" "$(_run_setup "$_TMP/upd" '')"
-    # The whole point: the update lands on the SAME path install.sh chose, so a redirected
-    # home does not grow a second cache on the original filesystem.
     assert_eq "setup.sh matches install.sh for a redirected home" \
         "$_TMP/sdcard/unsloth/cache/uv" "$(_run_setup "$_TMP/sdcard/unsloth" '')"
     assert_eq "setup.sh keeps a caller-set value" \
         "/custom/uvcache" "$(_run_setup "$_TMP/upd" '/custom/uvcache')"
-    # Same unwritable-path contract as install.sh, so an update cannot fail where the install
-    # succeeded.
     mkdir -p "$_TMP/updro" && : > "$_TMP/updro/cache"
     assert_eq "setup.sh drops an unusable cache" "<unset>" "$(_run_setup "$_TMP/updro" '')"
 fi

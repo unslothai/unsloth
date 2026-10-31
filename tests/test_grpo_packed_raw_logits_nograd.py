@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The GRPO packed (no-grad) path needs the width guard on both of its call sites.
-
-`_get_per_token_logps_and_entropies` sets UNSLOTH_RETURN_HIDDEN_STATES=1, but
-`.logits` only carries hidden states when the forward is Unsloth's generated
-one. Any other forward hands back a real [.., vocab] tensor, and sending that
-into the lm_head matmul helper raises on the reduction dim.
-
-Both packed call sites (the flattened forward and the first-use verifier below
-it) sit inside one `except Exception`, so the raise is swallowed: the batch is
-silently dropped back to the padded loop, `_unsloth_seq_packing_nograd_ok` is
-pinned False, and a whole packed forward is wasted every step for the rest of
-the run. The symptom is therefore not a crash but packing going away, so the
-real block is exec'd here against a stub forward that returns vocab logits and
-the assertions read the locals the block itself produced.
-
-The verifier runs on the first packed batch of every run, so without the guard
-on that second site the packed raw-logits branch would never be reachable at
-all. Runs on CPU with tiny shapes and never skips.
-"""
+"""Packed call sites need the width guard: a raise is swallowed and packing is silently disabled."""
 
 from __future__ import annotations
 
@@ -46,11 +28,7 @@ VOCAB, HIDDEN = 17, 8
 PAD_ID, SEQ_LEN, KEEP = 0, 8, 4
 
 
-# ---------------------------------------------------------------------------
-# Helpers: the real unsloth_zoo ones when importable, otherwise eager mirrors
-# with identical semantics so a runner without unsloth_zoo still exercises the
-# same arithmetic.
-# ---------------------------------------------------------------------------
+# The real unsloth_zoo helpers when importable, otherwise eager mirrors with identical semantics.
 
 
 def _fallback_chunked_selective_log_softmax(
@@ -154,17 +132,8 @@ _completion_mask_of = HELPERS["create_completion_attention_mask"]
 _left_pad_of = HELPERS["calculate_pad_tokens_in_prompt"]
 
 
-# ---------------------------------------------------------------------------
-
-
 class _Model(torch.nn.Module):
-    """`hidden_states = False` ignores UNSLOTH_RETURN_HIDDEN_STATES and returns
-    real [.., vocab] logits; True is Unsloth's generated forward.
-
-    Position-local, so the packed block-diagonal forward and the per-row
-    forward agree exactly and the verifier's own tolerance is not what is under
-    test. Every call is recorded so a test can pin which sites actually ran.
-    """
+    """hidden_states=False returns real vocab logits, ignoring UNSLOTH_RETURN_HIDDEN_STATES."""
 
     def __init__(
         self,
@@ -180,8 +149,7 @@ class _Model(torch.nn.Module):
         self.hidden_states = hidden_states
         self.calls = []
         if degraded:
-            # What _install_grpo_hidden_states_forward_wrapper in unsloth/models/rl.py leaves behind when it could
-            # not get hidden states out of the model.
+            # What rl.py's _install_grpo_hidden_states_forward_wrapper leaves when hidden states are unavailable.
             self._unsloth_grpo_hidden_states_forward_wrapped = True
             self._unsloth_grpo_hidden_states_warning_issued = True
 
@@ -202,11 +170,6 @@ class _Model(torch.nn.Module):
         )
         h = torch.tanh(self.emb(input_ids))
         return SimpleNamespace(logits = h if self.hidden_states else self.head(h))
-
-
-# ---------------------------------------------------------------------------
-# Structural extraction of the packed block
-# ---------------------------------------------------------------------------
 
 
 def _statement_lists(node):
@@ -248,13 +211,7 @@ def _guards_with_handler(stmt, handler_name):
 
 
 def _packed_block_source():
-    """Return the dedented source of the packed no-grad block.
-
-    Located structurally: the statement run inside
-    `_get_per_token_logps_and_entropies` that begins with `_pk_result = None`
-    and ends with the `if` holding the `except ... as _pk_err` handler. No text
-    search, so a comment that happens to quote the same code cannot match.
-    """
+    """Found by AST structure, not text search, so a comment quoting the same code cannot match."""
     text = _SOURCE.read_text(encoding = "utf-8")
     tree = ast.parse(text)
     factory = _named_function(tree, "grpo_trainer__get_per_token_logps_and_entropies")
@@ -281,9 +238,6 @@ def _packed_block_source():
     return textwrap.dedent("".join(lines))
 
 
-# ---------------------------------------------------------------------------
-
-
 def _batch():
     # already left-padded by the caller, uneven pad counts across rows
     return torch.tensor(
@@ -294,7 +248,11 @@ def _batch():
     )
 
 
-def _run_packed_block(hidden_states = False, model = None):
+def _run_packed_block(
+    hidden_states = False,
+    model = None,
+    **overrides,
+):
     """Exec the real packed + verify block and hand back its locals."""
     if model is None:
         model = _Model(hidden_states = hidden_states)
@@ -344,16 +302,13 @@ def _run_packed_block(hidden_states = False, model = None):
         "logit_softcapping": 0.0,
         "temperature": 1.0,
     }
+    namespace.update(overrides)
     exec(_packed_block_source(), namespace)
     return namespace, model, input_ids, max_left_pad
 
 
 def _reference_logprobs(model, input_ids, max_left_pad):
-    """Per-row logprobs straight from the model, no packing involved.
-
-    Pads are dropped first, so a row's leading token has no predecessor and
-    stays 0, exactly as both the packed scatter and the padded loop leave it.
-    """
+    """Pads are dropped first, so a row's leading token has no predecessor and stays 0."""
     width = KEEP + max_left_pad
     out = torch.zeros(input_ids.shape[0], input_ids.shape[1])
     for row in range(input_ids.shape[0]):
@@ -367,9 +322,6 @@ def _reference_logprobs(model, input_ids, max_left_pad):
         for j in range(1, real.shape[1]):
             out[row, cols[j]] = logps[j - 1, real[0, j]]
     return out[:, -width:]
-
-
-# ---------------------------------------------------------------------------
 
 
 def test_packed_path_survives_a_forward_that_returns_real_logits():
@@ -403,15 +355,7 @@ def test_packed_result_matches_the_per_row_logprobs(hidden_states):
 
 
 def test_square_lm_head_raw_logits_are_routed_by_the_explicit_signal():
-    """vocab_size == hidden_size: the width comparison cannot tell them apart.
-
-    Real logits are then hidden-width, so a width-only guard sends them through
-    the lm_head a second time. The packed matmul is square, so nothing raises,
-    and the per-row verifier misreads the width in exactly the same way, agrees
-    with the corrupted packed result and marks the shape trusted. Both call
-    sites therefore have to defer to the explicit
-    UNSLOTH_RETURN_HIDDEN_STATES signal instead.
-    """
+    """Square lm_head: width cannot tell logits from hidden states, so both sites defer to the signal."""
     model = _Model(hidden_states = False, vocab = VOCAB, hidden = VOCAB, degraded = True)
     namespace, model, input_ids, max_left_pad = _run_packed_block(model = model)
 

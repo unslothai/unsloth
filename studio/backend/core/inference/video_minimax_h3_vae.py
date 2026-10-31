@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Faster MiniMax-H3 video VAE encode and decode: Triton-fused GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU and
-tile batching around Diffusers' own matmuls and convolutions.
-
-Levers: fused_encoder, fp16_encoder, fused_decoder, tile_batch, fp16_accum, int8_decoder (opt-in,
-``UNSLOTH_H3_VAE_INT8=1``). ``UNSLOTH_H3_VAE_FAST=0`` disables all. NVIDIA CUDA with Triton only; else stock.
-"""
+"""Faster MiniMax-H3 video VAE encode/decode: Triton GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU fusions
+and tile batching around Diffusers' own matmuls/convs; UNSLOTH_H3_VAE_FAST=0 disables all;
+int8_decoder is opt-in via UNSLOTH_H3_VAE_INT8=1; CUDA+Triton only, else stock."""
 
 from __future__ import annotations
 
@@ -16,6 +13,7 @@ import types
 from contextlib import nullcontext
 from functools import lru_cache
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 H3_VAE_FAST_ENV = "UNSLOTH_H3_VAE_FAST"
 H3_VAE_INT8_ENV = "UNSLOTH_H3_VAE_INT8"
@@ -443,8 +441,7 @@ def _guarded(fast: Any, stock: Any, label: str) -> Any:
     return forward
 
 
-# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias, avoiding PyTorch's
-# separate strided bias pass. A 1x1 conv folds its input's pending bias through its weight exactly.
+# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias.
 
 
 def _bias_view(bias: Any) -> Any:
@@ -843,13 +840,25 @@ def _swiglu(x: Any) -> Any:
     return out
 
 
+def _residual_dtype(hidden_states: Any, blocks: Any) -> Any:
+    """Stock ``h + out * scale`` promotes to float32 ``scale1`` / ``scale2`` under diffusers' mixed load."""
+    import torch
+
+    dtype = hidden_states.dtype
+    for name in ("scale1", "scale2"):
+        scale = getattr(blocks[0], name, None)
+        if isinstance(scale, torch.Tensor):
+            dtype = torch.promote_types(dtype, scale.dtype)
+    return dtype
+
+
 def _fast_block_stack(decoder: Any, hidden_states: Any, cos: Any, sin: Any, gemm_dtype: Any) -> Any:
     """The transformer blocks; the kernels store normed activations in ``gemm_dtype``."""
     import torch.nn.functional as F
 
     blocks = decoder.transformer_blocks
     batch, seq, dim = hidden_states.shape
-    h = hidden_states.contiguous()
+    h = hidden_states.to(_residual_dtype(hidden_states, blocks)).contiguous()
     normed = _add_rmsnorm(h, None, None, blocks[0].norm1, gemm_dtype)
     cos2 = cos.reshape(-1, cos.shape[-1])
     sin2 = sin.reshape(-1, sin.shape[-1])
@@ -873,8 +882,16 @@ def _fast_block_stack(decoder: Any, hidden_states: Any, cos: Any, sin: Any, gemm
         if i + 1 < len(blocks):
             normed = _add_rmsnorm(h, out, block.scale2, blocks[i + 1].norm1, gemm_dtype)
         else:
-            h.addcmul_(out, block.scale2)
+            # not addcmul: stock rounds the product separately
+            h.add_(out * block.scale2)
     return h
+
+
+def _weight_dtype(module: Any, default: Any) -> Any:
+    """``default`` for an int8 Linear (weight dropped) or a missing weight."""
+    weight = getattr(module, "weight", None)
+    dtype = getattr(weight, "dtype", None)
+    return dtype if dtype is not None and dtype.is_floating_point else default
 
 
 def _fast_decoder_forward(self: Any, hidden_states: Any) -> Any:
@@ -893,7 +910,7 @@ def _fast_decoder_body(self: Any, hidden_states: Any) -> Any:
     )
     hidden_states = self.proj_in(hidden_states)
     num_patches = hidden_states.shape[1]
-    register_tokens = self.register_tokens.expand(batch_size, -1, -1)
+    register_tokens = self.register_tokens.expand(batch_size, -1, -1).to(hidden_states.dtype)
     cls_token = torch.zeros_like(hidden_states[:, :1, :])
     hidden_states = torch.cat([hidden_states, register_tokens, cls_token], dim = 1)
     grids = [
@@ -910,12 +927,15 @@ def _fast_decoder_body(self: Any, hidden_states: Any) -> Any:
     q_dtype = (
         torch.get_autocast_dtype("cuda")
         if torch.is_autocast_enabled("cuda")
-        else hidden_states.dtype
+        else _weight_dtype(self.transformer_blocks[0].attn.to_q, hidden_states.dtype)
     )
     cos = cos.to(q_dtype).contiguous()
     sin = sin.to(q_dtype).contiguous()
     hidden_states = _fast_block_stack(self, hidden_states, cos, sin, q_dtype)
-    hidden_states = self.norm_out(hidden_states)
+    # stock casts float32-pinned norm_out to proj_out's dtype
+    hidden_states = self.norm_out(hidden_states).to(
+        _weight_dtype(self.proj_out, hidden_states.dtype)
+    )
     hidden_states = self.proj_out(hidden_states)
     hidden_states = hidden_states[:, :num_patches, :]
     p, pt = self.patch_size, self.patch_size_t
@@ -965,7 +985,9 @@ def _tile_batch_size(z: Any) -> int:
     if env.isdigit() and int(env) > 0:
         return int(env)
     try:
-        free, _ = torch.cuda.mem_get_info(z.device)
+        from .diffusion_memory import user_budget_reserve_bytes
+        free, total = torch.cuda.mem_get_info(z.device)
+        free = max(0, int(free) - user_budget_reserve_bytes(z.device, total))
     except Exception:  # noqa: BLE001
         return 1
     return int(
@@ -1248,7 +1270,7 @@ def cuda_fast_path_available(vae: Any = None) -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    if not torch.cuda.is_available() or is_rocm_torch(torch):
         return False
     if vae is not None:
         try:

@@ -179,7 +179,9 @@ def test_text_only_model_answers_after_a_tool_returned_an_image(monkeypatch, str
         f"shot.png\n{TOOL_RESULT_IMAGE_OMITTED}",
     ]
     if stream:
-        assert [p["require_vision"] for p in seen["preflight"]] == [False]
+        # The stream may reach a non-GGUF target, which does need vision for the tool image.
+        [preflight] = seen["preflight"]
+        assert preflight["require_vision"] and preflight["tool_images_only"]
 
 
 @pytest.mark.parametrize("stream", [False, True])

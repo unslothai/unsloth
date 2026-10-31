@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""routes/llama.py: the source_build field is exposed and the handlers run the
-(now subprocess-touching) detection off the event loop via a worker thread.
-
-The route file is loaded standalone with a stubbed auth dependency so the test
-does not pull the whole routes package (matplotlib-heavy training router) and
-works in a minimal env.
-"""
+"""routes/llama.py tests: source_build is exposed, and blocking detection runs in a worker thread."""
 
 from __future__ import annotations
 
@@ -28,9 +22,7 @@ pytest.importorskip("fastapi")
 
 
 def _load_route():
-    # Prefer the real auth module; stub it only in minimal envs where its
-    # deps are absent. Stubs are popped after the load so they never leak
-    # into sys.modules for the rest of the suite.
+    # Stub auth only when its deps are absent; stubs are popped so they never leak.
     stubbed = []
     try:
         import auth.authentication  # noqa: F401
@@ -75,7 +67,6 @@ def test_status_response_exposes_source_build():
     model = rl.LlamaUpdateStatusResponse(**payload)
     assert model.model_dump()["source_build"] is True
     assert model.model_dump()["job"]["reload_required"] is False
-    # Extra/unknown keys must not crash the response model.
     rl.LlamaUpdateStatusResponse(**{**payload, "unexpected": 1})
 
 
@@ -95,7 +86,6 @@ def test_status_response_exposes_update_size_bytes():
     }
     model = rl.LlamaUpdateStatusResponse(**payload)
     assert model.model_dump()["update_size_bytes"] == 123_456_789
-    # Omitted -> defaults to None (the offline / no-matching-asset case).
     without = {k: v for k, v in payload.items() if k != "update_size_bytes"}
     assert rl.LlamaUpdateStatusResponse(**without).model_dump()["update_size_bytes"] is None
 
@@ -180,7 +170,6 @@ def test_status_handler_runs_off_event_loop(monkeypatch):
     monkeypatch.setattr(rl, "get_update_status", fake_status)
     out = asyncio.run(rl.llama_update_status(force_refresh = False, current_subject = "t"))
     assert out.source_build is True
-    # Detection ran in a worker thread, not the event-loop thread.
     assert seen["thread"] is not threading.main_thread()
 
 

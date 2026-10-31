@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""No test here may name a dtype kwarg on `from_pretrained`.
-
-Both spellings are traps across the declared window in opposite directions: `dtype =` is
-forwarded into the model constructor and raises TypeError at the 4.52.4 floor, `torch_dtype =`
-spans the window but is deprecated from 4.57.6. Load with neither and cast the result. Checking
-the call site rather than the version makes it fail on every platform and every transformers.
-"""
+"""Neither dtype= nor torch_dtype= is safe on from_pretrained across the window; load plain and cast."""
 
 from __future__ import annotations
 

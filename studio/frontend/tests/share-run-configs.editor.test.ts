@@ -360,9 +360,16 @@ test("local sharing keeps the recipient's quant unless the sender includes it", 
 test("share dialog defaults to Web only on loopback addresses", () => {
   const previous = window.location;
   try {
-    for (const address of ["http://localhost:8888", "http://192.168.1.20:8888"]) {
+    for (const address of [
+      "http://localhost:8888",
+      "http://192.168.1.20:8888",
+    ]) {
       Object.assign(window, { location: new URL(`${address}/chat`) });
-      assert.equal(new URL(shareDialog(D)().link).protocol, "unsloth:", address);
+      assert.equal(
+        new URL(shareDialog(D)().link).protocol,
+        "unsloth:",
+        address,
+      );
     }
     for (const [address, destination] of [
       ["http://localhost:8888", "browser"],
@@ -756,13 +763,23 @@ test("Load and Save refuse while a shared GGUF variant is unresolved", () => {
   const page = readSrc(
     "features/model-picker/components/model-config-page.tsx",
   ).replace(/\s+/g, " ");
-  for (const handler of ["handleRun", "handleSave"]) {
-    const body = page.slice(page.indexOf(`const ${handler} = () => {`));
-    assert.match(
-      body.slice(0, 80),
-      /^const \w+ = \(\) => \{ if \(sharedVariantUnresolved\) \{ return; \}/,
-    );
-    const button = page.slice(0, page.indexOf(`onClick={${handler}}`));
+  const save = page.slice(page.indexOf("const handleSave = ("));
+  assert.match(
+    save.slice(0, 200),
+    /=> \{ if \(sharedVariantUnresolved\) \{ return false; \}/,
+  );
+  for (const [handler, onClick] of [
+    ["handleRun", "handleRun"],
+    ["handleSave", "onSaveClick"],
+  ]) {
+    if (handler === "handleRun") {
+      const body = page.slice(page.indexOf("const handleRun = () => {"));
+      assert.match(
+        body.slice(0, 80),
+        /^const \w+ = \(\) => \{ if \(sharedVariantUnresolved\) \{ return; \}/,
+      );
+    }
+    const button = page.slice(0, page.indexOf(`onClick={${onClick}}`));
     assert.match(
       button.slice(button.lastIndexOf("disabled={")),
       /^disabled=\{ sharedVariantUnresolved \|\|/,

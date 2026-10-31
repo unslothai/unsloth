@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""No macOS workflow may run on every commit to main.
-
-GitHub caps macOS at **five concurrent jobs account-wide** -- across every repository,
-on Free, Pro and Team alike. That makes a macOS runner slot the scarcest resource in this
-repo's CI by a wide margin, and it is the reason macOS queue times dominate: measured over
-the last 20 main runs, `studio-mac-ui-smoke` waited a median of 245 minutes to execute for
-21, and `Unsloth Tauri CI :: Rust unit tests (macos)` waited a median of 270 minutes to run
-for 3.
-
-Four workflows used to declare `push: branches: [main]` with no `paths:` filter while their
-`pull_request` trigger was carefully scoped. The effect was invisible on a PR and only
-appeared after merge: commit 6371f46a changes README.md and nothing else, and it started
-`Mac Unsloth GGUF CI`, `Mac Unsloth UI + API + Update CI`, `Mac Unsloth Install Matrix CI` and
-`Unsloth Tauri CI` -- seven macOS legs, 40% over the entire account cap, for a
-documentation typo. Every one of those runs then queued behind the others.
-
-`clean-machine-install-ci.yml` and `mlx-ci.yml` already got this right and say why:
-"Same list as the PR filter: without it a direct push to main touching any of these skipped
-the workflow and the post-merge backstop never happened." This asserts the rest match.
-
-The failure is silent in both directions, which is why it is a test rather than a review
-note: an unfiltered push trigger costs nothing on the PR that introduces it, and the cost
-lands on unrelated commits weeks later as queue time nobody attributes to it.
-"""
+"""Account-wide cap of five concurrent macOS jobs: push triggers to main need a `paths:` filter."""
 
 import re
 from pathlib import Path
@@ -47,15 +24,7 @@ _SELECTED_MATRIX = re.compile(r"fromJSON\(\s*needs\.([\w-]+)\.outputs\.([\w-]+)\
 
 
 def _matrix(job, doc) -> dict:
-    """The matrix ``job`` expands, as a mapping, wherever its legs are written down.
-
-    A literal `strategy.matrix` is returned as is. The install workflows instead take
-    `matrix: ${{ fromJSON(needs.select.outputs.<job>) }}` from a `select` job that reads
-    `.github/ci/*-matrix.yml` (see .github/scripts/select_install_matrix.py), so the legs
-    are resolved from that file: the `MATRIX_FILE` env of the producing job's steps names
-    it, and the output name is the key. Every leg is returned, PR subset or not, because
-    this file asks which images a job CAN allocate.
-    """
+    """All legs are returned, PR subset or not, because this asks which images a job can allocate."""
     matrix = (job.get("strategy") or {}).get("matrix") or {}
     if isinstance(matrix, dict):
         return matrix
@@ -72,14 +41,7 @@ def _matrix(job, doc) -> dict:
 
 
 def _job_runs_on_macos(job, doc = None) -> bool:
-    """Whether ``job`` schedules a macOS runner.
-
-    Reads `runs-on` and, when that is a matrix expression, the matrix values it selects
-    from. Scanning the whole job instead was the first cut and it over-matched badly:
-    `workflow-trigger-lint.yml` and `studio-inference-smoke.yml` both have ubuntu-only jobs
-    that merely NAME macOS somewhere in a step, and both were reported as macOS workflows.
-    A guard about runner slots has to read what actually allocates a runner.
-    """
+    """Reads runs-on (through any matrix), not the whole job: a macOS name in a step allocates no runner."""
     runs_on = job.get("runs-on")
     values = runs_on if isinstance(runs_on, list) else [runs_on]
     for value in values:
@@ -87,7 +49,6 @@ def _job_runs_on_macos(job, doc = None) -> bool:
             continue
         if MACOS.search(value):
             return True
-        # `runs-on: ${{ matrix.os }}` -- resolve against the matrix it names.
         for key in re.findall(r"matrix\.([\w-]+)", value):
             matrix = _matrix(job, doc)
             candidates = list(matrix.get(key) or [])
@@ -128,7 +89,7 @@ def test_no_macos_workflow_runs_on_every_push_to_main():
     for name, doc, _ in _macos_workflows():
         push = (_on(doc) or {}).get("push")
         if not isinstance(push, dict):
-            continue  # no push trigger at all is the strongest form of this
+            continue
         if not push.get("paths") and not push.get("paths-ignore"):
             offenders.append(name)
     assert not offenders, (
@@ -151,13 +112,7 @@ def test_no_macos_workflow_runs_on_every_push_to_main():
     ],
 )
 def test_the_push_filter_matches_the_pull_request_filter(name):
-    """Narrower on push than on PR would drop the post-merge backstop.
-
-    The two lists are the same question asked twice -- "could this commit break this
-    workflow" -- so they drifting apart is always a bug, in whichever direction. A push
-    list that is a strict subset silently stops testing something after merge that was
-    tested before it, which is the more dangerous direction and the harder to notice.
-    """
+    """Push and pull_request paths must match: a narrower push list silently drops the post-merge check."""
     doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
     on = _on(doc) or {}
     pr_paths = (on.get("pull_request") or {}).get("paths")
@@ -192,19 +147,7 @@ def _covered(path: str, patterns) -> bool:
     ],
 )
 def test_every_helper_a_workflow_executes_is_in_its_trigger(name):
-    """A scoped trigger must list the checked-in files the workflow actually runs.
-
-    Scoping a trigger is only safe if the list is complete, and these lists were not: five
-    helper scripts and one auditor were executed by name and matched no pattern. While the
-    push trigger was unfiltered that gap was invisible, because every commit ran everything
-    after merge; narrowing the trigger is what turns it into a real hole, where editing
-    `assert-llama-loads.sh` stops running the workflow that asserts with it.
-
-    Matched by looking for the path in a `run:` body, which is how every one of these is
-    invoked. That deliberately says nothing about files a workflow depends on more
-    loosely -- `studio/package.json` reaches the Tauri build through
-    `npm install --prefix studio` and is listed by hand, not found here.
-    """
+    """Every file a `run:` step executes must be in the trigger, or editing it skips the workflow."""
     doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
     on = _on(doc) or {}
     runs = "\n".join(
@@ -241,18 +184,7 @@ def test_every_helper_a_workflow_executes_is_in_its_trigger(name):
     ],
 )
 def test_a_listed_python_input_brings_its_sibling_imports(name):
-    """Listing a script but not the module it imports leaves half a dependency in the filter.
-
-    `studio/install_llama_prebuilt.py` was listed; `studio/prebuilt_core.py`, which it
-    imports at line 55, was not. Editing only the latter changed exactly what the install
-    matrix asserts on and did not run it.
-
-    Scoped to same-directory imports on purpose. The full transitive closure of an
-    installer is most of the repo, and chasing it would put `pyproject.toml` and every
-    requirements file into a macOS trigger, which is how a filter stops saving anything.
-    Where a deeper dependency matters it is listed by hand with a comment saying why; this
-    covers the one case that is mechanical and therefore easy to forget.
-    """
+    """A listed script needs its same-directory imports too; a full closure is most of the repo."""
     import ast
 
     doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
@@ -274,7 +206,7 @@ def test_a_listed_python_input_brings_its_sibling_imports(name):
         for module in sorted(names):
             sibling = source.parent / f"{module}.py"
             if not sibling.is_file():
-                continue  # stdlib or third-party, not a checked-in sibling
+                continue
             rel = sibling.relative_to(REPO).as_posix()
             if not _covered(rel, patterns):
                 missing.append(f"{rel} (imported by {pattern})")
@@ -285,14 +217,7 @@ def test_a_listed_python_input_brings_its_sibling_imports(name):
 
 
 def test_a_commit_that_touches_nothing_relevant_starts_no_macos_job():
-    """The property the whole change exists for, checked against a concrete commit.
-
-    README-only is not a hypothetical: commit 6371f46a is exactly that, and it started
-    four macOS workflows. Matching is by the same prefix/glob rules Actions uses, kept
-    simple deliberately -- every filter in these files is either a literal, a `dir/**`
-    prefix or a single `*` glob, and this asserts that stays true so the simple matcher
-    cannot quietly become wrong.
-    """
+    """A README-only commit starts no macOS job; the matcher handles literals, dir/** and single * globs."""
     import fnmatch
 
     changed = ["README.md"]
@@ -317,10 +242,8 @@ def test_a_commit_that_touches_nothing_relevant_starts_no_macos_job():
     )
 
 
-# Images GitHub still schedules. macos-14 is absent deliberately: brownouts from 2026-10-05,
-# removal 2026-11-02. Add to this set when GitHub ships an image, and remove from it when GitHub
-# announces a retirement -- the removal is the point, because that is when this guard starts
-# naming the jobs that have to move.
+# Images GitHub still schedules. macos-14 is deliberately absent (being retired). Remove
+# an image when GitHub announces its retirement.
 LIVE_MACOS_IMAGES = {
     "macos-15",
     "macos-15-intel",
@@ -340,31 +263,17 @@ def _macos_labels():
         for jid, job in doc["jobs"].items():
             if not isinstance(job, dict):
                 continue
-            # runs-on plus the matrix it may select from: a retired image hides in an `include:`
-            # list just as easily as in a literal runs-on.
+            # A retired image can hide in a matrix `include:` too.
             blob = str(job.get("runs-on", ""))
             blob += str(_matrix(job, doc) if isinstance(job.get("strategy"), dict) else "")
-            # Only things shaped like a GitHub image name. The loose MACOS pattern used elsewhere
-            # in this file also matches build targets that merely contain "macos":
-            # release-desktop's matrix carries `macos-aarch64`, which is a Rust triple's nickname
-            # and never a runner label. Every real macOS image is macos-latest or
-            # macos-<version>[-intel].
+            # Only image names: release-desktop's `macos-aarch64` is a Rust target, not a runner.
             for label in re.findall(r"\bmacos-(?:latest|\d+(?:-intel)?)\b", blob, re.I):
                 found.append((path.name, jid, label.lower()))
     return found
 
 
 def test_no_job_targets_a_retired_macos_image() -> None:
-    """
-    macos-14's retirement is already written into three comments in this repo, each
-    explaining why some job moved off it. Comments do not fail, so the next
-    retirement will be discovered the same way this one was: by a job that stops
-    being scheduled, on a runner pool nobody is watching.
-
-    This is the cheap version of that discovery. It cannot know GitHub's roadmap,
-    but it does force the retirement to be recorded in one place, and it names
-    every job that has to move on the day someone records it.
-    """
+    """Retired macOS images must be recorded here, because a comment about a retirement never fails."""
     labels = _macos_labels()
     assert labels, "no macOS labels found at all; this guard would pass vacuously"
 

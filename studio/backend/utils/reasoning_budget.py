@@ -6,8 +6,7 @@
 from __future__ import annotations
 
 
-# Keep ample headroom below Windows' total command-line limit and Linux's
-# per-argument MAX_ARG_STRLEN. Budget-exhaustion messages should be short prose.
+# Headroom below the Windows command-line limit and Linux MAX_ARG_STRLEN.
 MAX_REASONING_BUDGET_MESSAGE_BYTES = 8_192
 
 

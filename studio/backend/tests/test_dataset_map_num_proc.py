@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for ``dataset_map_num_proc()``.
-
-``None``, not ``1``, is the disable sentinel: on ``datasets`` >= 4.1 (Unsloth pins
-4.3.0) ``map()`` takes the pool branch for any ``num_proc >= 1``, while 3.x runs
-``1`` in-process, so that split is asserted per installed release.
-
-There is deliberately no CUDA-initialized guard; see ``dataset_map_num_proc``'s
-docstring. The XPU guard is pre-existing and covered so it cannot regress.
-
-The device probes, the platform and torch itself are substituted, so this runs
-identically on a GPU box, a CPU-only Linux runner, and the macOS and Windows
-legs where the function short-circuits to None.
-"""
+"""None, not 1, disables workers: datasets >= 4.1 builds a pool for any num_proc >= 1."""
 
 from __future__ import annotations
 
@@ -25,9 +13,7 @@ import pytest
 import utils.hardware.hardware as hw
 
 try:
-    # Import before the fixture below spoofs sys.platform: multiprocess picks its
-    # contexts at import time, so a Windows runner would get POSIX fork contexts
-    # and the pool would then die reaching for os.WNOHANG.
+    # Before the fixture spoofs sys.platform: multiprocess picks its contexts at import time.
     import multiprocess  # noqa: F401
 except ImportError:
     pass
@@ -38,23 +24,13 @@ _HOST_PLATFORM = sys.platform
 
 @pytest.fixture(autouse = True)
 def _fork_platform(monkeypatch):
-    """Pin a platform where workers are possible.
-
-    ``dataset_map_num_proc`` returns None outright on win32 and darwin, so every
-    assertion expecting a count is really about Linux. The parametrised platform
-    test sets its own value after this, which wins.
-    """
+    """Pin Linux: dataset_map_num_proc returns None on win32 and darwin, so count assertions need it."""
     monkeypatch.setattr(sys, "platform", "linux")
 
 
 @pytest.fixture(autouse = True)
 def _memory_headroom(monkeypatch):
-    """Pin the memory ceiling the shared policy applies.
-
-    Every count these tests assert is bounded by free RAM, so on a small runner
-    ``dataset_map_num_proc(4) == 4`` quietly becomes a test of the clamp. The
-    cases that are about the clamp pin their own value afterwards, which wins.
-    """
+    """Pin the affordable-worker count, since free RAM would otherwise clamp every asserted count."""
     policy = hw._shared_policy()
     if policy is None:
         return
@@ -62,26 +38,13 @@ def _memory_headroom(monkeypatch):
 
 
 def _require_fork(multiprocess):
-    """Skip when this host cannot fork.
-
-    The two tests below build real workers to observe whether ``datasets`` takes
-    its pool branch -- a claim about the num_proc guard, not about any start
-    method, and under spawn inside pytest the pool fails for unrelated reasons
-    (WinError 10038, missing os.WNOHANG).
-    """
+    """Skip without fork: spawn pools fail for unrelated reasons (WinError 10038, missing os.WNOHANG)."""
     if _HOST_PLATFORM == "win32" or "fork" not in multiprocess.get_all_start_methods():
         pytest.skip("needs fork to build a real worker pool")
 
 
 def _policy_or_skip():
-    """The policy module the production code will actually consult.
-
-    Not `importorskip("unsloth_zoo.dataset_num_proc")`: that module only exists
-    in the companion zoo PR, so on CI -- which clones unsloth_zoo main -- every
-    case that reached the policy skipped, and the ones that stayed exercised the
-    pre-PR path. `_shared_policy` finds this repo's own fallback copy, and
-    returning the same object it uses is also what makes monkeypatching it bite.
-    """
+    """Use this repo's policy, not unsloth_zoo.dataset_num_proc: that import skipped every case on CI."""
     policy = hw._shared_policy()
     if policy is None:
         pytest.skip("no dataset_num_proc policy on this installation")
@@ -99,12 +62,7 @@ def _patch_device(
 
 
 def _torch_module(monkeypatch):
-    """The real torch, or a stand-in when the runner has none.
-
-    ``dataset_map_num_proc`` imports torch to read ``<device>.is_initialized()``
-    and reads an ImportError as "runtime not touched yet", which on a torch-less
-    runner would turn the XPU guard into a no-op.
-    """
+    """A stand-in torch is needed: ImportError would read as untouched runtime and no-op the XPU guard."""
     try:
         import torch
         return torch
@@ -115,11 +73,7 @@ def _torch_module(monkeypatch):
 
 
 def _patch_runtime(monkeypatch, name, *, is_initialized):
-    """Install a fake ``torch.<name>`` whose is_initialized() we control.
-
-    ``is_initialized`` may be a bool or a callable that raises, to model a probe
-    that fails rather than answering.
-    """
+    """Fake torch.<name>.is_initialized(): a bool, or a callable that raises to model a failing probe."""
     torch = _torch_module(monkeypatch)
 
     if callable(is_initialized):
@@ -130,31 +84,18 @@ def _patch_runtime(monkeypatch, name, *, is_initialized):
     monkeypatch.setattr(torch, name, types.SimpleNamespace(is_initialized = probe), raising = False)
 
 
-# ---------- CUDA: initialization must NOT disable workers ----------
-
-
 def test_dataset_map_num_proc_parallelizes_on_initialized_cuda(monkeypatch):
-    """An initialized CUDA context must not disable dataset workers.
-
-    The map child only runs the tokenizer, and 300 forced-fork map() runs on an
-    initialized context produced no failures. Since detect_hardware() always
-    initializes CUDA, a guard would serialize every CUDA run. Pinned so it is
-    not added back without new evidence.
-    """
+    """Initialized CUDA must not disable workers: 300 forked map() runs showed no failures."""
     _patch_device(monkeypatch, hw.DeviceType.CUDA)
     _patch_runtime(monkeypatch, "cuda", is_initialized = True)
     assert hw.dataset_map_num_proc(4) == 4
 
 
 def test_dataset_map_num_proc_cuda_respects_multi_gpu_cap(monkeypatch):
-    # CUDA still routes through safe_num_proc, which caps to 4 on multi-GPU.
     _patch_device(monkeypatch, hw.DeviceType.CUDA)
     _patch_runtime(monkeypatch, "cuda", is_initialized = True)
     monkeypatch.setattr(hw, "get_visible_gpu_count", lambda: 2)
     assert hw.dataset_map_num_proc(16) == 4
-
-
-# ---------- XPU (regression guard: the pre-existing behaviour must not move) ----------
 
 
 def test_dataset_map_num_proc_none_after_xpu_init(monkeypatch):
@@ -169,9 +110,6 @@ def test_dataset_map_num_proc_parallel_before_xpu_init(monkeypatch):
     assert hw.dataset_map_num_proc(4) == 4
 
 
-# ---------- platform ----------
-
-
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
 def test_dataset_map_num_proc_none_on_spawn_platforms(monkeypatch, platform):
     # Must be None and never 1: datasets >= 4.1 builds a Pool(1) for num_proc=1.
@@ -180,20 +118,12 @@ def test_dataset_map_num_proc_none_on_spawn_platforms(monkeypatch, platform):
 
 
 def test_dataset_map_num_proc_cpu_host_parallelizes(monkeypatch):
-    # No accelerator to corrupt, so preprocessing may use workers.
     _patch_device(monkeypatch, hw.DeviceType.CPU)
     assert hw.dataset_map_num_proc(4) == 4
 
 
-# ---------- the value actually reaches datasets as "no pool" ----------
-
-
 def test_none_builds_no_pool_but_a_count_does(monkeypatch):
-    """The disable sentinel must actually reach ``datasets`` as "no pool".
-
-    The property the whole module rests on, so assert it against the installed
-    ``datasets`` rather than trusting the docstring.
-    """
+    """None must mean no pool in the installed datasets, while a count builds one."""
     datasets = pytest.importorskip("datasets")
     multiprocess = pytest.importorskip("multiprocess")
     _require_fork(multiprocess)
@@ -215,28 +145,18 @@ def test_none_builds_no_pool_but_a_count_does(monkeypatch):
     assert len(mapped) == 8
     assert pools_built == [], f"Dataset.map built a worker pool: {pools_built}"
 
-    # Control: the spy is live, so the assertion above means something.
     dataset.map(_count, batched = True, num_proc = 2)
     assert len(pools_built) == 1, "Pool spy never fired; the no-pool check is vacuous"
 
 
 def test_num_proc_one_is_not_a_disable_sentinel():
-    """Pin the reason ``dataset_map_num_proc`` returns ``None`` and never ``1``.
-
-    ``datasets`` 3.x runs ``num_proc=1`` in-process; 4.x (Unsloth pins 4.3.0)
-    builds a ``Pool(1)``. Only ``None`` is in-process on both, so assert per
-    installed version rather than hard-coding one.
-    """
+    """Only None is in-process on both datasets 3.x and 4.x; num_proc=1 builds a Pool(1) on 4.x."""
     datasets = pytest.importorskip("datasets")
     multiprocess = pytest.importorskip("multiprocess")
     _require_fork(multiprocess)
     from packaging.version import Version
 
-    # Counted at the Pool class rather than at datasets.arrow_dataset.Pool:
-    # 3.x and 4.x do `from multiprocess import Pool`, but 5.x calls `mp.Pool()`
-    # and a spawn context instead, so the module attribute is simply absent
-    # there and patching it is an AttributeError. Every one of those routes
-    # constructs this class.
+    # Spy on the Pool class: datasets 5.x calls mp.Pool(), so arrow_dataset.Pool may not exist.
     import multiprocess.pool
 
     pools_built = []
@@ -268,15 +188,8 @@ def test_num_proc_one_is_not_a_disable_sentinel():
         assert built_for_one == 0
 
 
-# ---------- the value that reaches Dataset.map is bounded like any other ----------
-
-
 def test_a_low_memory_host_gets_no_workers(monkeypatch):
-    """format_conversion.py and chat_templates.py call this directly.
-
-    Without the shared policy a 2GB container with eight cores still handed eight
-    tokenizer workers to Dataset.map, which is the OOM the policy exists to stop.
-    """
+    """Direct callers need the shared policy: a 2GB container with 8 cores otherwise gets 8 workers."""
     _patch_device(monkeypatch, hw.DeviceType.CPU)
     policy = _policy_or_skip()
     monkeypatch.setattr(policy, "_affordable_workers", lambda: 0)
@@ -293,7 +206,6 @@ def test_the_memory_clamp_reduces_rather_than_refuses(monkeypatch):
 
 
 def test_the_env_override_reaches_these_callers(monkeypatch):
-    # The cap's log line used to advertise this on a path that never read it.
     _patch_device(monkeypatch, hw.DeviceType.CPU)
     policy = _policy_or_skip()
     monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
@@ -307,8 +219,7 @@ def test_the_env_override_reaches_these_callers(monkeypatch):
 
 
 def test_an_older_unsloth_zoo_keeps_the_previous_behaviour(monkeypatch):
-    # The policy is a lazy, guarded import: hardware detection must not start
-    # depending on the training package.
+    # Lazy, guarded import: hardware detection must not depend on the training package.
     import builtins
 
     real_import = builtins.__import__
@@ -324,10 +235,7 @@ def test_an_older_unsloth_zoo_keeps_the_previous_behaviour(monkeypatch):
 
 
 def test_the_cap_no_longer_advertises_an_override_it_cannot_honour():
-    """safe_num_proc returns an int >= 1, so it cannot express in-process.
-
-    Naming the variable there told users to set something that path never read.
-    """
+    """safe_num_proc cannot express in-process, so it must not advertise UNSLOTH_DATASET_NUM_PROC."""
     import ast
     import inspect
 
@@ -343,23 +251,11 @@ def test_the_cap_no_longer_advertises_an_override_it_cannot_honour():
     ), "safe_num_proc tells the user to set an override it never reads"
 
 
-# ---------- the config boundary spells "in-process" as 1, not None ----------
-#
-# trainer.py writes this value into SFTConfig.dataset_num_proc rather than
-# handing it to map(). Every downstream reader treats a config None as
-# "auto-size me", so a serial request stored as None comes back out as a full
-# worker set: dataset_map_num_proc(1) -> None -> SFTConfig -> 8.
-
-
 def test_a_serial_request_survives_the_config_round_trip(monkeypatch):
     """The audio paths ask for 1; the config layer must still see a request for 1."""
-    # The map-site half of this needs the policy: without it
-    # _bounded_by_the_shared_policy returns the count unchanged by design, so a
-    # runner with no unsloth_zoo reads 1 rather than None.
     _policy_or_skip()
     _patch_device(monkeypatch, hw.DeviceType.CPU)
     assert hw.dataset_map_num_proc(1, serial_as_none = False) == 1
-    # The map-site default is what turns it back into "no pool" at the call.
     assert hw.dataset_map_num_proc(1) is None
 
 
@@ -369,20 +265,13 @@ def test_the_config_value_is_still_in_process_after_the_layer_reads_it(monkeypat
     _patch_device(monkeypatch, hw.DeviceType.CPU)
 
     stored = hw.dataset_map_num_proc(1, serial_as_none = False)
-    # rl.py generates serial_as_none = False for sft_trainer, then the map-site
-    # rewrite converts the config value for the actual Dataset.map call.
     from_config = policy.get_dataset_num_proc(stored, serial_as_none = False)
     at_the_map_site = policy.get_dataset_num_proc(from_config)
     assert (stored, from_config, at_the_map_site) == (1, 1, None)
 
 
 def test_xpu_initialized_stays_serial_through_a_config(monkeypatch):
-    """The one guard where a config None is actively dangerous.
-
-    Unlike the spawn platforms, forking still works here, so an auto-sizer
-    reading a config None would fork the corrupted Level-Zero context this
-    guard exists to protect.
-    """
+    """Initialized XPU must stay serial via config: forking corrupts the Level-Zero context."""
     _patch_device(monkeypatch, hw.DeviceType.XPU)
     _patch_runtime(monkeypatch, "xpu", is_initialized = True)
     assert hw.dataset_map_num_proc(4, serial_as_none = False) == 1
@@ -391,13 +280,7 @@ def test_xpu_initialized_stays_serial_through_a_config(monkeypatch):
 
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
 def test_spawn_platforms_keep_none_at_either_layer(monkeypatch, platform):
-    """None is safe to store here: no reader can inflate it.
-
-    Workers are unusable on a spawn platform, so every auto-sizer vetoes. A 1
-    would be worse: only the SFT map site is rewritten, so DPO/KTO/CPO/ORPO and
-    friends would hand that 1 to Dataset.map and get a Pool(1) whose child
-    re-imports the user's __main__ (#3211 / #3397).
-    """
+    """Store None, not 1: a Pool(1) on spawn platforms re-imports the user's __main__ in its child."""
     monkeypatch.setattr(sys, "platform", platform)
     assert hw.dataset_map_num_proc(4, serial_as_none = False) is None
 
@@ -411,11 +294,7 @@ def test_every_other_caller_keeps_the_map_site_default(monkeypatch):
 
 
 def test_the_trainer_config_asks_for_the_config_sentinel():
-    """The call that builds SFTConfig must pass serial_as_none = False.
-
-    Dropping it is silent: the run still trains, just with a worker set where
-    the audio paths asked for none.
-    """
+    """SFTConfig must pass serial_as_none = False; dropping it silently gives audio paths workers."""
     import ast
     from pathlib import Path
 
@@ -444,9 +323,6 @@ def test_the_trainer_config_asks_for_the_config_sentinel():
         )
 
 
-# ---------- the request reaches the policy as the caller wrote it ----------
-
-
 def _unexpected_auto_sizing(desired = None):
     if desired is None:
         raise AssertionError("the auto request was materialized before the policy saw it")
@@ -454,12 +330,7 @@ def _unexpected_auto_sizing(desired = None):
 
 
 def test_an_auto_request_is_sized_by_the_policy_not_by_the_host_cpu_count(monkeypatch):
-    """``safe_num_proc(None)`` reads ``os.cpu_count()``; the policy reads this process.
-
-    Materializing the auto request before the policy saw it hid the affinity
-    mask and the cgroup quota, so a 2-core container on a 64-core box asked for
-    ``cpu_count // 3`` workers and was bounded only by memory.
-    """
+    """Leave auto requests to the policy: cpu_count ignores the affinity mask and cgroup quota."""
     policy = _policy_or_skip()
     _patch_device(monkeypatch, hw.DeviceType.CPU)
     monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
@@ -467,7 +338,6 @@ def test_an_auto_request_is_sized_by_the_policy_not_by_the_host_cpu_count(monkey
     monkeypatch.setattr(policy, "_affordable_workers", lambda: 64)
     monkeypatch.setattr(hw, "safe_num_proc", _unexpected_auto_sizing)
 
-    # min(max(2 // 2, 2), cap) = 2, against os.cpu_count() // 3 on the host.
     assert hw.dataset_map_num_proc() == 2
 
 
@@ -481,23 +351,15 @@ def test_studio_caps_still_apply_to_a_policy_chosen_count(monkeypatch):
     assert hw.dataset_map_num_proc() == 4
 
 
-# ---------- the escape hatch ----------
-
-
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
 def test_the_override_is_honoured_on_spawn_platforms(monkeypatch, platform):
-    """The policy calls it unvetoed, so the platform veto must not swallow it.
-
-    A user who has read the dead-worker message and set this has accepted spawn
-    workers; silently ignoring it makes the documented remedy a no-op.
-    """
+    """An explicit UNSLOTH_DATASET_NUM_PROC overrides the spawn-platform veto, or the remedy is a no-op."""
     policy = _policy_or_skip()
     policy.reset_warning_state()
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "2")
     assert hw.dataset_map_num_proc(8) == 2
 
-    # Unset, the veto stands.
     monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC")
     assert hw.dataset_map_num_proc(8) is None
 
@@ -511,15 +373,8 @@ def test_the_override_is_not_capped_by_the_studio_heuristics(monkeypatch):
     assert hw.dataset_map_num_proc(2) == 16
 
 
-# ---------- the local fallback copy ----------
-
-
 def test_an_older_zoo_falls_back_to_the_unsloth_copy(monkeypatch):
-    """unsloth.dataset_num_proc is the same policy; Unsloth should use it too.
-
-    Only when unsloth is already imported: importing it from here would make
-    hardware detection patch torch and pull in the model stack.
-    """
+    """Use unsloth's copy only if already imported; importing it here would patch torch."""
     import builtins
 
     calls = []
@@ -566,11 +421,7 @@ def test_no_policy_anywhere_keeps_the_previous_behaviour(monkeypatch):
 
 
 def test_the_override_is_honoured_after_xpu_init(monkeypatch):
-    """Same contract as the spawn platforms: the hatch is unvetoed.
-
-    The XPU guard exists because fork corrupts the Level-Zero context, but a
-    user who has read the dead-worker message and set this has accepted that.
-    """
+    """The override is honoured after XPU init too: the user has accepted the fork risk it names."""
     policy = _policy_or_skip()
     policy.reset_warning_state()
     _patch_device(monkeypatch, hw.DeviceType.XPU)
@@ -579,7 +430,6 @@ def test_the_override_is_honoured_after_xpu_init(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "2")
     assert hw.dataset_map_num_proc(8) == 2
 
-    # Unset, the veto stands at both layers.
     monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC")
     assert hw.dataset_map_num_proc(8) is None
     assert hw.dataset_map_num_proc(8, serial_as_none = False) == 1
@@ -587,11 +437,7 @@ def test_the_override_is_honoured_after_xpu_init(monkeypatch):
 
 @pytest.mark.parametrize("raw", ["-1", "not-a-number"])
 def test_an_ignored_override_does_not_skip_the_studio_caps(monkeypatch, raw):
-    """The policy warns and ignores these, so they are not the hatch.
-
-    Treating any non-empty value as an active override let a typo skip the
-    multi-GPU fork-deadlock cap while contributing nothing in its place.
-    """
+    """Ignored override values must not skip the multi-GPU fork-deadlock cap; only valid ones do."""
     policy = _policy_or_skip()
     policy.reset_warning_state()
     monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
@@ -603,13 +449,7 @@ def test_an_ignored_override_does_not_skip_the_studio_caps(monkeypatch, raw):
 
 
 def test_the_trainer_leaves_the_ordinary_case_to_the_policy():
-    """The non-audio branch must be None, not a host-derived count.
-
-    ``get_dataset_num_proc`` reads any integer as an explicit request and skips
-    its own auto path, which is the only one that consults this process's CPU
-    affinity and cgroup quota. A count computed from ``os.cpu_count()`` here
-    therefore hides the container from the policy.
-    """
+    """Pass None, not a cpu_count-derived number: any integer skips the policy's CPU affinity and quota."""
     import ast
     from pathlib import Path
 

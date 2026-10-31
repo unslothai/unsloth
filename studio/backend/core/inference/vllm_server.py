@@ -1,20 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Launches the pinned vLLM server with its API key guarding every route.
-
-Executed by the isolated engine Python. vLLM's middleware only guards /v1, /v2, /inference (and /cohere in 0.30),
-so /invocations (SageMaker) and /tokenize answer without the key; Studio sends the key on every
-request, /health included, so guarding "/" costs it nothing. The key arrives as VLLM_API_KEY,
-never on the command line.
-"""
+"""Launches the pinned vLLM server, run by the isolated engine Python, with the API key guarding '/'
+(every route): vLLM's middleware only covers /v1, /v2, /inference (and /cohere in 0.30), not
+/invocations or /tokenize; key comes from VLLM_API_KEY, never on the command line."""
 
 import importlib
 import runpy
 import sys
 
-# Where each locked vLLM keeps the prefix its middleware reads at request time: 0.26 in
-# serve/utils/server_utils, 0.30 in serve/middleware/authenticate.
+# vLLM 0.26 keeps the prefix in serve/utils/server_utils, 0.30 in serve/middleware/authenticate.
 for _name in (
     "vllm.entrypoints.serve.middleware.authenticate",
     "vllm.entrypoints.serve.utils.server_utils",

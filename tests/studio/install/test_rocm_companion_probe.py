@@ -1,8 +1,4 @@
-"""The setup.ps1 Windows ROCm companion probe, extracted and executed on real trees.
-
-The probe decides whether torchvision/torchaudio beside a ROCm torch are trustworthy
-enough to skip the trio reinstall, so it is run here rather than regex-matched.
-"""
+"""Executes setup.ps1's ROCm companion probe, which decides if torchvision/torchaudio can be kept."""
 
 import csv
 import re

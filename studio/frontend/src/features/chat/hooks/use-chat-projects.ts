@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { CHAT_PROJECTS_UPDATED_EVENT } from "../api/chat-api";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  CHAT_PROJECTS_UPDATED_EVENT,
+} from "../api/chat-api";
 import type { ProjectRecord } from "../types";
 import {
   createStoredChatProject,
@@ -14,6 +17,7 @@ import {
 } from "../utils/chat-history-storage";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import type { SidebarItem } from "./use-chat-sidebar-items";
+import { readFullListProjectActivity } from "./use-sidebar-row-pages";
 
 let cachedProjects: ProjectRecord[] = [];
 let projectsLoaded = false;
@@ -21,6 +25,19 @@ let projectsRequest: Promise<ProjectRecord[]> | null = null;
 let projectsRefreshPending = false;
 let lastProjectsUpdateEvent: Event | null = null;
 const projectSubscribers = new Set<() => void>();
+const ACTIVITY_REFRESH_DEBOUNCE_MS = 2000;
+// Mounts refetch only past this age: a gallery mounts a project menu per tile.
+const MOUNT_REVALIDATE_AFTER_MS = 5000;
+let projectsLoadedAt = 0;
+let activityRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onChatActivity(): void {
+  if (activityRefreshTimer !== null) clearTimeout(activityRefreshTimer);
+  activityRefreshTimer = setTimeout(() => {
+    activityRefreshTimer = null;
+    void loadProjects(true, true).catch(() => undefined);
+  }, ACTIVITY_REFRESH_DEBOUNCE_MS);
+}
 
 function subscribeToProjects(onStoreChange: () => void): () => void {
   projectSubscribers.add(onStoreChange);
@@ -32,9 +49,22 @@ function getProjectsSnapshot(): ProjectRecord[] {
 }
 
 function publishProjects(projects: ProjectRecord[]): void {
+  projectsLoadedAt = Date.now();
+  if (projectsLoaded && JSON.stringify(projects) === JSON.stringify(cachedProjects)) return;
   cachedProjects = projects;
   projectsLoaded = true;
   for (const onStoreChange of projectSubscribers) onStoreChange();
+}
+
+async function withChatActivity(projects: ProjectRecord[]): Promise<ProjectRecord[]> {
+  if (projects.every((project) => "lastActivityAt" in project)) return projects;
+  const activity = await readFullListProjectActivity().catch(() => null);
+  if (!activity) return projects;
+  return projects.map((project) =>
+    "lastActivityAt" in project
+      ? project
+      : { ...project, lastActivityAt: activity.get(project.id) ?? null },
+  );
 }
 
 function loadProjects(
@@ -55,7 +85,7 @@ function loadProjects(
       projectsRefreshPending = false;
       try {
         const next = await listStoredChatProjects({ includeArchived: false });
-        nextProjects = Array.isArray(next) ? next : [];
+        nextProjects = Array.isArray(next) ? await withChatActivity(next) : [];
       } catch (error) {
         if (!isExpectedBackgroundChatStorageError(error)) throw error;
         nextProjects = null;
@@ -108,19 +138,39 @@ export function useChatProjects(): {
     };
     // Cached rows render immediately, then one shared request reconciles changes made by another
     // browser tab or API client.
-    void refresh(projectsLoaded);
+    // one function per consumer: a shared reference is one DOM listener the first unmount would remove
+    const onActivity = () => onChatActivity();
+    void refresh(
+      projectsLoaded && Date.now() - projectsLoadedAt > MOUNT_REVALIDATE_AFTER_MS,
+    );
     window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onActivity);
     return () => {
       cancelled = true;
       window.removeEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onActivity);
     };
   }, []);
 
   return { projects, isLoading, hasLoaded };
 }
 
-export async function createChatProject(name: string): Promise<ProjectRecord> {
-  return createStoredChatProject(name);
+/** Newest chat or own last edit: `updatedAt` alone moves only on a rename or instructions change. */
+export function projectActivityAt(project: ProjectRecord): number {
+  return Math.max(project.lastActivityAt ?? 0, project.updatedAt);
+}
+
+/** Most recently used first, the order the sidebar shows. */
+export function sortProjectsByActivity(projects: readonly ProjectRecord[]): ProjectRecord[] {
+  return [...projects].sort((a, b) => projectActivityAt(b) - projectActivityAt(a));
+}
+
+export async function createChatProject(
+  name: string,
+  nativePathLease?: string,
+  id?: string,
+): Promise<ProjectRecord> {
+  return createStoredChatProject(name, nativePathLease, id);
 }
 
 export async function renameChatProject(
@@ -144,9 +194,7 @@ export async function deleteChatProject(
   args: { deleteFiles?: boolean } = {},
 ): Promise<void> {
   const kept = await deleteStoredChatProject(projectId, args);
-  // The member chats went with the project, so their own sandboxes are reachable from nothing: the
-  // same offer an ordinary chat delete makes, and a sandbox the backend could not remove is kept
-  // even when asked to go.
+  // Member chats went with the project, so offer to delete their kept sandboxes.
   offerToDeleteKeptSandboxes(kept);
 }
 

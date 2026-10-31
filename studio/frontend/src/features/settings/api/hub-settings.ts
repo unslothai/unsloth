@@ -3,9 +3,11 @@
 
 import { fetchDeviceType } from "@/config/env";
 import { authFetch } from "@/features/auth";
+import { clearDownloadTransportCapabilitiesCache } from "@/features/hub";
 import { markRemoteNetworkOnline } from "@/features/hub/lib/network";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type { HubSource } from "@/lib/hf-endpoint";
+import { loadDownloadTransportSettings } from "./download-transport";
 
 export type HubSettings = {
   hfEndpoint: string;
@@ -43,7 +45,7 @@ export async function loadHubSettings(): Promise<HubSettings> {
 
 async function followSavedEndpoints(): Promise<void> {
   await fetchDeviceType({ force: true }).catch(() => undefined);
-  // Backoffs were recorded against the old endpoints; the relay and ModelScope share one origin.
+  // Backoffs were recorded against the old endpoints.
   markRemoteNetworkOnline();
 }
 
@@ -59,18 +61,20 @@ export async function updateHubSource(source: HubSource): Promise<HubSettings> {
     throw new Error(await readFastApiError(res, "Failed to switch the model source"));
   }
   const saved = fromApi(await res.json());
+  clearDownloadTransportCapabilitiesCache();
+  // Its event also refreshes the hub's mounted transport toggle.
+  await loadDownloadTransportSettings({ refresh: true }).catch(() => undefined);
   await followSavedEndpoints();
   return saved;
 }
 
-/** Whether this client should tell the owner that ModelScope was chosen for them. Granted once
- * per install, and it saves that choice. Fails closed. */
+/** Granted once per install, and it saves the choice. Fails closed. */
 export async function claimHubSourceNotice(): Promise<boolean> {
   try {
     const res = await authFetch(
       "/api/settings/hub/source-notice",
       { method: "POST" },
-      // A retried claim whose first attempt landed would come back denied, hiding the notice.
+      // A retried claim whose first attempt landed would come back denied.
       { retryNetworkErrors: false },
     );
     if (!res.ok) return false;

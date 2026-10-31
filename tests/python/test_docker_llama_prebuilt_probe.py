@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""The llama-server sanity probe must not accept the loader's failure message.
-
-The probe asserts on the substring "version" in the binary's output, which is exactly
-the word the dynamic loader uses when it refuses to start one:
-
-    ./llama-server: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not
-    found (required by ./llama-server)
-
-The program never reaches main and exits nonzero, so the exit code is what separates
-the two cases. Driven end to end against the real probe with stub binaries on disk.
-"""
+"""The llama-server probe must check the exit code: the loader's GLIBC error also contains 'version'."""
 
 from __future__ import annotations
 
@@ -46,7 +36,7 @@ def fetch():
 
 
 def _stub(path: Path, output: str, rc: int) -> None:
-    # quoted heredoc: the message has a backtick an `echo` would run as a substitution
+    # Quoted heredoc: the message has a backtick echo would execute.
     path.write_text(
         "#!/usr/bin/env bash\n"
         "cat >&2 <<'UNSLOTH_EOF'\n"
@@ -98,5 +88,4 @@ def test_a_server_with_no_banner_at_all_still_fails(fetch, tmp_path):
 
 
 def test_the_loader_message_really_does_contain_the_substring():
-    # the premise: without it the exit-code check above is only belt and braces
     assert "version" in GLIBC_FAILURE

@@ -38,8 +38,7 @@ export function resolveComparePaneThreadIds(
   return { shape: null, first: undefined, second: undefined };
 }
 
-/** A persisted shape owns the renderer. Reclassifying it from the loaded checkpoint relabels
- *  existing histories and can write the other comparison mode into them. */
+/** Persisted shape owns the renderer; reclassifying from the checkpoint relabels histories. */
 export function compareVariantForPair(
   threads: ThreadRecord[],
   checkpointIsLora: boolean | null,
@@ -52,7 +51,6 @@ export function compareVariantForPair(
 
 export type CheckpointCompareClassInput = {
   checkpoint: string | null | undefined;
-  /** External providers have no local adapter, so they are never a LoRA compare. */
   isExternal: boolean;
   /** `residentCheckpoint === undefined`: no status read has landed yet. */
   residentUnknown: boolean;
@@ -61,9 +59,7 @@ export type CheckpointCompareClassInput = {
   inventorySettled: boolean;
 };
 
-/** Is the loaded checkpoint a LoRA, meaning a base-vs-fine-tuned compare on the fast simultaneous
- *  adapter-toggle path? `null` only while it is genuinely unclassified, since that blanks the
- *  compare view. */
+/** Whether the loaded checkpoint is a LoRA; `null` only while genuinely unclassified. */
 export function checkpointCompareClass(
   input: CheckpointCompareClassInput,
 ): boolean | null {
@@ -80,9 +76,7 @@ export function checkpointCompareClass(
     return true;
   }
   if (input.inventorySettled) return false;
-  // An explicit catalog row answers on its own. The deferred inventory could only add an adapter
-  // row, which this one rules out, and chat defers it by 1.2s, so waiting rendered a new pair
-  // blank for at least that long.
+  // An explicit catalog row answers alone; waiting on the deferred inventory blanked the pair.
   return row ? false : null;
 }
 
@@ -96,9 +90,7 @@ export type ComparePairReadState =
   | { status: "unreadable" }
   | { status: "ready"; variant: CompareVariant };
 
-/** Every outcome of the pair read reaches a rendered state. A failure retries once and then asks
- *  for a visible surface: leaving it unsettled renders nothing at all, and settling it as an
- *  empty pair picks a renderer for a pair whose shape is unknown. */
+/** Every outcome reaches a rendered state: a failure retries once, then shows a visible surface. */
 export function comparePairReadState(
   outcome: ComparePairReadOutcome,
   checkpointIsLora: boolean | null,

@@ -38,11 +38,7 @@ function serve(verdicts: string[]): { probes: string[]; polls: string[] } {
 }
 
 test("every Auto download start re-asks the backend, so admission sees live reservations", async () => {
-  // The free-RAM gate lives in the probe (get_download_transport_capabilities(probe=True)), and
-  // its verdict subtracts RAM already promised to running Xet workers. Serving the previous
-  // probe's answer from cache admits every download started inside the TTL on the SAME
-  // pre-reservation verdict: they all submit transport_mode="xet", and the start path honours an
-  // explicit "xet" without re-reading free RAM.
+  // The probe subtracts RAM promised to running Xet workers, so it must not be cached.
   const { probes } = serve(["xet", "http", "http"]);
 
   const first = await getDownloadTransportCapabilities({ probe: true });
@@ -56,7 +52,6 @@ test("every Auto download start re-asks the backend, so admission sees live rese
 });
 
 test("an ordinary render poll still answers from cache", async () => {
-  // The probe is per download start; the picker polls on render and must not connect per poll.
   const { probes, polls } = serve(["xet"]);
 
   await getDownloadTransportCapabilities({ probe: true });

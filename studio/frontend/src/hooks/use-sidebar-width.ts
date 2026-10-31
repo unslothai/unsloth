@@ -6,10 +6,9 @@ import { createPanelWidthStore } from "./use-panel-width.ts";
 
 /** The previous fixed 17.5rem, at a 16px root font size. */
 export const SIDEBAR_WIDTH_DEFAULT = 280;
-/** Web: fits the header (wordmark, BETA, search, collapse) without truncating the
- * wordmark, with room for Firefox's ~3px wider heading. */
+/** Fits the web header without truncating the wordmark, plus Firefox's ~3px wider heading. */
 export const SIDEBAR_WIDTH_MIN_WEB = 260;
-/** Desktop: the collapse button lives in the titlebar, so the header needs less. */
+/** The desktop collapse button lives in the titlebar. */
 export const SIDEBAR_WIDTH_MIN_DESKTOP = 224;
 export const SIDEBAR_WIDTH_MIN = isTauri
   ? SIDEBAR_WIDTH_MIN_DESKTOP

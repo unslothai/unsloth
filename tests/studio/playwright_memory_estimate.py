@@ -1,49 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-""" "Estimated Memory Usage" row Playwright regression test (GPU-free, no model load).
-
-The row lives in the model-picker's run-settings panel (MemoryEstimateRow in
-features/model-picker/components/model-config-page.tsx) and it renders ONLY when the
-selected target is a GGUF and POST /api/inference/estimate-memory answers
-`available: true`. When it cannot answer it returns `null` -- the row HIDES rather
-than erroring -- which is why a screenshot of this panel proves nothing on its own:
-an unavailable estimate, a 404 from a backend predating the route, and a row that
-was never implemented all look identical on screen.
-
-So this drives the row against a RECORDED API exchange. Every
-/api/inference/estimate-memory call is intercepted with `context.route`, its POST body
-is captured, and the response this test hands back is the one the row is then asserted
-to be displaying. What that buys, gate by gate:
-
-  - Request carries the settings: typing a distinctive Context Length must produce a
-    NEW estimate POST whose `n_ctx` is that number, and whose body still carries the
-    rest of the load settings the panel is supposed to price (model_path, cache_type_kv,
-    n_parallel, gpu_memory_mode). A row that re-renders without re-pricing, or one wired
-    to a stale request object, fails here (HARD).
-  - Response reaches the screen: the figures shown are the ones the stub returned, to
-    the byte -- `formatBytesGiB` of the stubbed totals, and, once the row is expanded,
-    the breakdown lines plus the KV note built from the echoed context and cache dtype
-    (HARD).
-  - The row hides rather than errors: `available: false` hides it, restoring the
-    available response brings it BACK -- without that half, "hidden" is satisfied by a
-    panel that simply died -- and an HTTP 404, the answer from a backend predating the
-    route, hides it too, with no page error (HARD).
-
-Stubbing is deliberate. The real endpoint needs a GGUF whose header is on this disk and
-answers with whatever that machine's memory happens to be, so a test asserting real
-figures would either assert nothing specific or be a hardware report. The request half
-is not stubbed: it is the panel's own, unmodified.
-
-Runs as a plain script (not via pytest), mirroring tests/studio/playwright_model_config.py:
-accumulate failures in `_failed`, exit non-zero if any HARD gate failed. With
-STUDIO_UI_STRICT=1 (as CI sets), soft_fail also gates; genuinely-optional checks use
-runtime_warn so they never flake the merge gate.
-
-Honours STUDIO_PLAYWRIGHT_BROWSER in {chromium, firefox, webkit}, like every sibling
-scene. The locale is pinned to en-US because one assertion reads a number the app
-formatted with `toLocaleString`.
-"""
+"""Estimated Memory Usage row against a stubbed estimate API; the row must hide when unavailable."""
 
 import json
 import re
@@ -54,7 +12,6 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-# Run as a plain script (not via pytest), so prepend the dir to sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
@@ -73,37 +30,22 @@ from _playwright_robust import (  # noqa: E402
 
 BASE = os.environ["BASE_URL"]
 NEW = os.environ.get("STUDIO_NEW_PW", "MemEst-NEW-2026!")
-# Attach mode: log into an already-provisioned Unsloth with an existing password instead of the first-boot
-# change-password dance. The CI step runs this after the model-config scene against the SAME server, whose bootstrap
-# password that scene has already rotated, so there is no change-password flow left to drive there.
+# Attach mode: the model-config scene already rotated the bootstrap password on this server.
 LOGIN_PW = os.environ.get("STUDIO_LOGIN_PW")
 LOGIN_USER = os.environ.get("STUDIO_LOGIN_USER", "unsloth")
 GGUF_REPO = os.environ.get("GGUF_REPO", "unsloth/gemma-3-270m-it-GGUF")
 GGUF_VARIANT = os.environ.get("GGUF_VARIANT", "UD-Q4_K_XL")
-# Substring of the picker row for the model whose run settings this drives.
-#
-# From GGUF_REPO rather than a bare family name, and not cosmetically: the row lookup
-# takes `.first`, so a hint matching a NON-GGUF sibling opens whichever the picker orders
-# first. On a cache holding both `gemma-3-270m-it-GGUF` and
-# `gemma-3-270m-it-unsloth-bnb-4bit`, "gemma-3-270m" opened the bnb-4bit safetensors
-# panel -- no Context Length control, no memory row, the row being GGUF-only -- and the
-# suite reported the feature missing. The repo's own name cannot collide that way.
+# From GGUF_REPO: a family-name hint can match a non-GGUF sibling first, which has no memory row.
 MODEL_HINT = os.environ.get("STUDIO_MODEL_HINT") or GGUF_REPO.rsplit("/", 1)[-1]
-# Context Lengths for the four re-prices. Each must be valid (>=128, a multiple of 128, under the model's ceiling) and
-# DIFFERENT from what the control is showing at the time. That last part is a property of the control, not a precaution:
-# the box reads "Auto" until focused and then reveals the context the load would fit to (8192 here), and typing the
-# number already displayed commits no onChange, so the request key never moves and no re-price happens. Measured: typing
-# 8192 into a box showing 8192 produced zero requests; every other value produced one. Hence chosen at the moment of
-# typing, against what the box says, rather than fixed per step.
+# Typing the value already displayed commits no onChange and no re-price, so choose a value that
+# differs from the box at typing time.
 CTX_CANDIDATES = [
     int(part)
     for part in os.environ.get("STUDIO_CTX_CANDIDATES", "6144,5120,4096,3072,2048,1536").split(",")
     if part.strip()
 ]
 ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_memory_estimate")
-# Settle window after run-settings opens, before staging an edit.
-# Same reason as playwright_model_config.py: an edit made in the panel's first moments is discarded when the panel
-# re-derives its baseline once mount-time work lands.
+# An edit in the panel's first moments is discarded when it re-derives its baseline.
 CONFIG_SETTLE_MS = int(os.environ.get("STUDIO_CONFIG_SETTLE_MS", "1000"))
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
@@ -111,45 +53,26 @@ STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "600"))
-# The hook debounces at 250ms and the fetch is intercepted in-process, so a re-price
-# lands in well under a second; this is the "it is never coming" bound.
+# The hook debounces at 250ms; this is the "never coming" bound.
 ESTIMATE_WAIT_MS = int(os.environ.get("STUDIO_UI_ESTIMATE_WAIT_MS", "20000"))
-# Per-step ceiling. A step that overruns it stops the run there, named, instead of every later
-# step waiting out its own timeouts; WALL_TIMEOUT_S stays the bound on the whole run. No step
-# here loads a model: the longest legitimate one is a re-price that retries three times at
-# ESTIMATE_WAIT_MS each, so the budget is sized from that and stretches with it and with
-# STUDIO_PW_STEP_BUDGET_SCALE.
 STEP_BUDGET_S = step_budget_s(max(180.0, 4 * ESTIMATE_WAIT_MS / 1000 + 60))
-# The setup step retries itself; it has no ceiling of its own beyond the run's.
 NO_STEP_CEILING = 0
 
 TRANSCRIPT_NAME = "memory-estimate-exchanges.json"
 
 GIB = 1024**3
-# Exact quarter-GiB figures on purpose: `formatBytesGiB` is `(bytes / 1024**3).toFixed(2)`, and a quarter of a GiB is
-# exactly representable, so the string the app renders is predictable to the last digit on every engine rather than a
-# rounding argument.
+# Quarter-GiB values are exact, so formatBytesGiB's toFixed(2) output is predictable.
 STUB_WEIGHTS_BYTES = int(3.25 * GIB)
 STUB_KV_BYTES = int(1.50 * GIB)
 STUB_COMPUTE_BYTES = int(0.75 * GIB)
-STUB_TOTAL_BYTES = STUB_WEIGHTS_BYTES + STUB_KV_BYTES + STUB_COMPUTE_BYTES  # 5.50 GiB
+STUB_TOTAL_BYTES = STUB_WEIGHTS_BYTES + STUB_KV_BYTES + STUB_COMPUTE_BYTES
 STUB_GPU_BYTES = int(4.75 * GIB)
 STUB_LAYER_COUNT = 27
 STUB_GPU_LAYERS = 12
 
 
 def _gib(num_bytes: int) -> str:
-    """Python-side mirror of `formatBytesGiB` in `lib/memory/format.ts`.
-
-    The label is GiB, not GB, and that is the assertion rather than a detail.
-    This mirror used to print "GB" because the panel did, so the test agreed
-    with the app about a divide by 1024**3 that both of them called a decimal
-    gigabyte. Consolidating the formatters corrected the app; correcting the
-    mirror to match is what keeps this test measuring the app rather than
-    re-stating whatever the app currently happens to do.
-
-    Only the unit moved. Every figure here is byte-for-byte what it was.
-    """
+    """Mirrors formatBytesGiB in lib/memory/format.ts; its label is GiB, not GB, and is asserted."""
     return f"{num_bytes / GIB:.2f} GiB"
 
 
@@ -187,12 +110,7 @@ def runtime_warn(m: str) -> None:
 
 
 def _count(loc) -> int:
-    """Number of matches, or 0.
-
-    A raise here is not the same as no match: a closed page or a lost execution context
-    also throws, and reporting that as "selector missing" sends the reader after the
-    markup instead of the crash. Say so, then still return 0.
-    """
+    """Returns 0 on no match; a raise is reported apart, since a closed page is not a missing selector."""
     try:
         return loc.count()
     except Exception as exc:
@@ -214,18 +132,12 @@ def _login_token_via_api(base: str, user: str, pw: str) -> str:
         return json.loads(r.read().decode())["access_token"]
 
 
-# ─────────────────────────────────────────────────────
-# The stubbed endpoint. `_mode` decides what the NEXT call answers; every call is
-# recorded, request and response, and the whole transcript is written to the artifact
-# directory so a failure can be read after the fact.
-# ─────────────────────────────────────────────────────
+# The stubbed endpoint: `_mode` decides what the NEXT call answers; every call is recorded.
 _mode = ["available"]
 exchanges: list[dict] = []
 
 UNAVAILABLE_BODY = {
     "available": False,
-    # The reason a real backend gives for a GGUF whose file is not on this disk, which is the commonest way a user meets
-    # the hidden row.
     "reason": "not_downloaded",
     "weights_bytes": 0,
     "kv_bytes": 0,
@@ -248,13 +160,7 @@ UNAVAILABLE_BODY = {
 
 
 def _available_body(request_payload: dict) -> dict:
-    """An available estimate whose context / cache dtype / slot count ECHO the request.
-
-    Echoing is what turns the KV note into a round-trip assertion: the note is built
-    from `nCtx` and `cacheTypeKv` off the RESPONSE, so seeing the context that was typed
-    into the control appear there proves the value travelled control -> request ->
-    response -> DOM, not merely that a number rendered.
-    """
+    """Echoes n_ctx, cache dtype and slot count from the request, so the KV note proves a round trip."""
     raw_ctx = request_payload.get("n_ctx")
     n_ctx = int(raw_ctx) if isinstance(raw_ctx, (int, float)) and raw_ctx else 0
     raw_parallel = request_payload.get("n_parallel")
@@ -350,13 +256,11 @@ def write_transcript() -> None:
 
 
 with sync_playwright() as p:
-    # WALL_TIMEOUT_S is also the total: this watchdog was never kicked, so it bounded the
-    # whole run, and named steps (which kick) must not turn that into a per-step bound.
     _watchdog = install_wall_clock_watchdog(
         WALL_TIMEOUT_S, label = "ui-memest", info = info, total_deadline_s = WALL_TIMEOUT_S
     )
     report_failing_step(_watchdog, label = "ui-memest")
-    # Health pre-flight: a bash-side health wait can pass before the auth DB migrates.
+    # A shell health wait can pass before the auth DB migrates.
     wait_for_health(BASE, timeout = 30.0, info = info)
     if PLAYWRIGHT_BROWSER not in ("chromium", "firefox", "webkit"):
         fail(f"unsupported STUDIO_PLAYWRIGHT_BROWSER={PLAYWRIGHT_BROWSER!r}")
@@ -374,15 +278,11 @@ with sync_playwright() as p:
     ctx = browser.new_context(
         viewport = {"width": 1280, "height": 900},
         reduced_motion = "reduce",
-        # One assertion reads a number the app formatted with `toLocaleString`, whose group separator is a property of
-        # the locale. Left to the engine's default, 8192 renders "8,192" on one runner and "8 192" on another, and the
-        # gate would be measuring the runner.
+        # Pin the locale: toLocaleString group separators vary by runner.
         locale = "en-US",
     )
     install_view_transition_killer(ctx)
-    # On the CONTEXT, not the page: a page replaced by the recovery helper below would otherwise lose the
-    # interception and reach the real endpoint, which on a runner with no GGUF answers unavailable, so the row would
-    # hide and this would read as the feature being broken.
+    # On the context, not the page, so a replaced page keeps the interception.
     ctx.route("**/api/inference/estimate-memory*", _handle_estimate)
     page = ctx.new_page()
     page.set_default_timeout(60_000)
@@ -431,7 +331,6 @@ with sync_playwright() as p:
             },
         )
 
-    # ─────────────────────────────────────────────────────
     if LOGIN_PW:
         step("setup: API login + token seed (attach to running Unsloth)", NO_STEP_CEILING)
         _tok = _login_token_via_api(BASE, LOGIN_USER, LOGIN_PW)
@@ -518,9 +417,6 @@ with sync_playwright() as p:
         raise last_err
     shoot("01-chat-loaded")
 
-    # ─────────────────────────────────────────────────────
-    # Picker helpers (same proven selectors as playwright_model_config.py).
-    # ─────────────────────────────────────────────────────
     POPOVER = '[data-tour="chat-model-selector-popover"]'
     TRIGGER = '[data-tour="chat-model-selector"]'
     SOLE_QUANT_SETTLE_MS = 30_000
@@ -531,7 +427,6 @@ with sync_playwright() as p:
         if _count(popover) == 0 or not popover.is_visible():
             page.locator(TRIGGER).first.click()
             popover = page.locator(POPOVER).first
-        # The visible wait is the condition the old 900 ms pause before it was padding.
         popover.wait_for(state = "visible", timeout = 30_000)
         return popover
 
@@ -540,7 +435,7 @@ with sync_playwright() as p:
             page.keyboard.press("Escape")
             page.locator(POPOVER).first.wait_for(state = "hidden", timeout = 10_000)
         except Exception:
-            pass  # best-effort, as the fixed pause was
+            pass
 
     def reveal_on_device_row(popover, hint):
         """Bring the row into view without clicking it: a single-quant row loads its
@@ -548,7 +443,6 @@ with sync_playwright() as p:
         od = page.get_by_role("tab", name = "On Device").first
         if _count(od):
             od.click()
-        # The row wait below is the condition; the 700 ms pause before it only padded it.
         try:
             popover.locator("[data-model-picker-option]").first.wait_for(
                 state = "attached", timeout = 20_000
@@ -561,7 +455,6 @@ with sync_playwright() as p:
             if _count(search):
                 search.click()
                 search.fill(hint)
-                # The filtered row itself, not 700 ms after typing.
                 wait_for_first(
                     popover.locator("[data-model-picker-option]", has_text = hint),
                     timeout_ms = 10_000,
@@ -574,8 +467,6 @@ with sync_playwright() as p:
         if row is None:
             return None
         row.click()
-        # The click either loads a collapsed sole-quant row (the picker closes) or expands a
-        # multi-quant one (its gears appear). Wait for whichever happens, not 800 ms.
         try:
             wait_until(
                 lambda: not popover.is_visible()
@@ -595,9 +486,7 @@ with sync_playwright() as p:
         quant = None,
         timeout_ms = SOLE_QUANT_SETTLE_MS,
     ):
-        # The gear is a sibling of the row, not inside [data-model-picker-option]. The
-        # quant is anchored to the end: every label is "<repo> <quant>", so an unanchored
-        # match lets F16 find BF16 and `.first` then opens a variant this test never named.
+        # The gear is a sibling of the row. Anchor the quant at the end, or F16 matches BF16.
         pattern = f"^Inference settings for .*{re.escape(hint)}"
         if quant:
             pattern += f".* {re.escape(quant)}$"
@@ -616,16 +505,12 @@ with sync_playwright() as p:
         if reveal_on_device_row(popover, hint) is None:
             diagnose("no-picker-row", f"[data-model-picker-option] has_text={hint!r}")
             return None
-        # The quant first: with "Expand quantizations" on, a repo-only lookup finds some gear straight away and which
-        # one is arbitrary. Repo-only stays as the fallback, for the collapsed sole-quant row whose label carries its
-        # own quant.
+        # Quant first: with "Expand quantizations" on, a repo-only lookup picks an arbitrary gear.
         gear = row_gear(popover, hint, quant = GGUF_VARIANT, timeout_ms = QUANT_GEAR_MS)
         if gear is None:
             gear = row_gear(popover, hint)
         if gear is None:
-            # A multi-quant repo shows gears only once the row is expanded, and clicking a collapsed sole-quant row
-            # loads it and closes the picker -- so reopen and look again rather than treating a closed picker as a
-            # missing gear.
+            # Clicking a collapsed sole-quant row loads it and closes the picker, so reopen and retry.
             if select_on_device_row(popover, hint) is None:
                 diagnose("no-row-gear", f"Inference settings for ...{hint}")
                 return None
@@ -647,8 +532,7 @@ with sync_playwright() as p:
             )
             is not None
         ):
-            # Kept: CONFIG_SETTLE_MS is a bounded wait because the panel exposes no readiness
-            # signal to poll (see playwright_model_config.py).
+            # The panel exposes no readiness signal to poll.
             page.wait_for_timeout(CONFIG_SETTLE_MS)
             return popover
         diagnose("config-not-open", 'button[name="Back to model list"]')
@@ -662,17 +546,9 @@ with sync_playwright() as p:
         loc = popover.locator('input[aria-label="Context Length"]').first
         return loc if _count(loc) else None
 
-    # ─────────────────────────────────────────────────────
-    # Row helpers. The toggle button is the anchor for everything: the header row is its
-    # parent, and the breakdown is whatever its aria-controls names -- both stated by the
-    # component itself, so neither depends on a class name that a restyle can move.
-    # ─────────────────────────────────────────────────────
+    # Row helpers anchor on the toggle button: its parent is the header, aria-controls names the breakdown.
     ESTIMATE_LABEL = re.compile(r"Estimated Memory Usage", re.I)
-    # The run-settings panel exists more than once in this document -- the picker keeps its own copy mounted behind the
-    # one on screen -- so a bare `.first` is a coin toss, and the copy it landed on in CI was one the user cannot see:
-    # the row was painted, screenshotted, and reported missing for twenty seconds. Take the first match that is actually
-    # on screen, and say which strategy found it, because "the row is not there" and "the row is there twice" are the
-    # same failure otherwise.
+    # The picker keeps a hidden copy of the panel mounted, so take the first match actually on screen.
     _match_note: list[str] = []
 
     def _first_visible(loc, label: str):
@@ -694,15 +570,8 @@ with sync_playwright() as p:
         return None
 
     def estimate_button():
-        """The visible toggle, by role first and by markup second.
-
-        The role query is the one that carries a claim worth making -- a row a screen
-        reader cannot announce is a row that is not there for some users -- so it is
-        tried first and its success is recorded. The structural fallback exists because
-        this scene must be able to tell "the panel never rendered the row" from "the
-        row is unreachable by role", and a single locator that answers no to both
-        cannot.
-        """
+        """Finds the toggle by role first, which proves a screen reader can reach it; markup is a
+        fallback."""
         found = _first_visible(page.get_by_role("button", name = ESTIMATE_LABEL), "role=button")
         if found is not None:
             return found
@@ -711,10 +580,7 @@ with sync_playwright() as p:
     def estimate_visible() -> bool:
         return estimate_button() is not None
 
-    # Set once the row has failed to render within ESTIMATE_WAIT_MS in step 1. After that,
-    # every later "wait for the row to show" would only spend the same 20 s again before
-    # reporting the same miss, so it answers at once instead; the failure is still recorded
-    # by each step that needed the row.
+    # After one miss, later waits answer at once instead of spending the same 20 s again.
     _row_never_rendered = [False]
 
     def wait_for_row(present: bool, timeout_ms: int = ESTIMATE_WAIT_MS) -> bool:
@@ -729,14 +595,7 @@ with sync_playwright() as p:
         return estimate_visible() == present
 
     def _readable(raw: str | None) -> str:
-        """`inner_text` with the row's layout glue normalised back to plain spaces.
-
-        The breakdown captions join their items with U+00A0 so a narrow panel breaks
-        between "262,144 tokens" and "4 slots" rather than inside either. That is a
-        line-breaking detail and not something a reader distinguishes, but it does
-        defeat a plain `"6,144 tokens" in text` check, so every assertion below reads
-        the caption the way it looks rather than the way it is encoded.
-        """
+        """Maps U+00A0 to plain spaces so each caption matches how it looks, not how it is encoded."""
         return (raw or "").replace(" ", " ").strip()
 
     def header_text() -> str:
@@ -758,7 +617,7 @@ with sync_playwright() as p:
             content_id = None
         if not content_id:
             return ""
-        # Attribute selector, not `#id`: React's useId mints ids containing ':', which is not a valid CSS id selector.
+        # Attribute selector: React useId ids contain ':', invalid in a CSS id selector.
         panel = page.locator(f'[id="{content_id}"]').first
         if _count(panel) == 0:
             return ""
@@ -773,11 +632,8 @@ with sync_playwright() as p:
         since: int,
         timeout_ms: int = ESTIMATE_WAIT_MS,
     ):
-        """The first recorded exchange at or after `since` matching `predicate`, or None.
-
-        Driven off the recorded transcript rather than `expect_request`, because these
-        gates are about WHAT was asked as well as that something was.
-        """
+        """Reads the recorded transcript rather than expect_request, since the gates check what was
+        asked."""
         deadline = time.monotonic() + timeout_ms / 1000
         while time.monotonic() < deadline:
             for record in exchanges[since:]:
@@ -792,16 +648,8 @@ with sync_playwright() as p:
     _used_contexts: set[int] = set()
 
     def reprice(popover, label: str):
-        """Move the Context Length and return `(value, record)` once it has been priced.
-
-        `value` is picked here rather than fixed per step, against what the box is showing
-        at this moment: typing the number already displayed is a no-op the panel does not
-        re-price (see the note on CTX_CANDIDATES), and the box reveals its number only once
-        it has focus, so the choice cannot be made before the click.
-
-        `record` is None when nothing was priced, which every caller reports as its own
-        failure rather than carrying on against a stale row.
-        """
+        """Picks a Context Length different from the shown one; the panel does not re-price the same
+        value."""
         box = context_input(popover)
         if box is None:
             fail(f"{label}: the Context Length control is not in the run-settings panel")
@@ -810,8 +658,6 @@ with sync_playwright() as p:
         for _try in range(3):
             try:
                 box.click()
-                # The focused box swaps "Auto" for the number it would edit; wait for the number
-                # instead of 200 ms. A box that never shows one falls through with its text, as before.
                 try:
                     wait_until(
                         lambda: re.fullmatch(r"[\d,\s]+", box.input_value() or "") is not None,
@@ -850,7 +696,7 @@ with sync_playwright() as p:
             before = len(exchanges)
             try:
                 box.fill(str(value))
-                # Commit the draft: a value left focused mid-edit has been seen to stay a draft on the slower engines.
+                # A value left focused mid-edit can stay a draft on slower engines.
                 box.press("Tab")
             except Exception as exc:
                 fail(f"{label}: could not type {value} into the Context Length control: {exc}")
@@ -873,9 +719,7 @@ with sync_playwright() as p:
         )
         return None, None
 
-    # ─────────────────────────────────────────────────────
-    # 1. Open the run-settings panel for the GGUF and prove the row is there (HARD).
-    # ─────────────────────────────────────────────────────
+    # 1. Open run-settings for the GGUF and prove the row is there (HARD).
     step("open run-settings for the GGUF target")
     popover = open_picker()
     shoot("02-picker-open")
@@ -901,9 +745,7 @@ with sync_playwright() as p:
     else:
         info("OK row: Estimated Memory Usage rendered for the GGUF target")
         if "role=button" not in _match_note:
-            # Only the structural locator found it, so the toggle is not reachable by role -- an ancestor is hiding it
-            # from the accessibility tree, or its accessible name is not what it reads as. Reported rather than gated
-            # while it is unproven which; the line above names the strategy that won.
+            # Found only by the structural locator: not reachable by role, hidden or misnamed; cause unproven.
             runtime_warn(
                 "the row was found only by markup, not by role=button: a screen "
                 "reader would not announce this toggle"
@@ -915,15 +757,12 @@ with sync_playwright() as p:
             "screen can be attributed to the estimate at all"
         )
 
-    # ─────────────────────────────────────────────────────
-    # 2. The request carries the load settings, and a changed control re-prices (HARD).
-    # ─────────────────────────────────────────────────────
+    # 2. The request carries the load settings and a changed control re-prices (HARD).
     step("the Context Length on screen reaches the estimate request")
     priced_ctx, priced = reprice(popover, "context reaches the request")
     if priced is not None:
         info(f"OK request: estimate re-priced at n_ctx={priced_ctx}")
         body = priced["request"]
-        # The rest of what the panel is supposed to price.
         required = ("model_path", "n_ctx", "cache_type_kv", "n_parallel", "gpu_memory_mode")
         missing = [key for key in required if key not in body]
         if missing:
@@ -949,25 +788,19 @@ with sync_playwright() as p:
                 f"may have collapsed onto a different variant"
             )
 
-    # ─────────────────────────────────────────────────────
-    # 3. The stubbed numbers are the ones on screen (HARD).
-    # ─────────────────────────────────────────────────────
+    # 3. The stubbed numbers are on screen (HARD).
     step("the row displays the numbers the endpoint returned")
     if not wait_for_row(True):
         fail("the row is gone after the re-price, so its figures cannot be read")
     else:
         head = header_text()
         info(f"row header text: {head!r}")
-        # Case-insensitively: the pill is written "Beta" in the source and rendered "BETA" by a CSS `uppercase`, so
-        # `inner_text` returns the transformed string and an exact-case check fails on a pill that is right there on
-        # screen.
+        # CSS `uppercase` renders "BETA" in inner_text, so match case-insensitively.
         if not re.search(r"\bbeta\b", head, re.I):
             soft_fail(f"the row lost its Beta pill (header text={head!r})")
         total_gib = _gib(STUB_TOTAL_BYTES)
         gpu_gib = _gib(STUB_GPU_BYTES)
-        # The total is shown in BOTH memory topologies: as the sole figure where the GPU and the host share one pool,
-        # and beside the GPU share where they do not. The GPU figure only exists in the second, so it is asserted
-        # only when its label is there; a CPU-only runner and an Apple machine legitimately show neither.
+        # The GPU figure only exists when GPU and host memory are separate pools.
         if total_gib not in head:
             fail(
                 f"the row does not show the returned total {total_gib!r} "
@@ -992,8 +825,6 @@ with sync_playwright() as p:
             if expander is None:
                 raise RuntimeError("the row is no longer on screen")
             expander.click()
-            # The breakdown panel's text, not 400 ms: breakdown_text() is what is asserted next,
-            # and an expand that never renders one still fails below exactly as before.
             try:
                 wait_until(breakdown_text, timeout_s = 5, what = "the breakdown panel", page = page)
             except TimeoutError as exc:
@@ -1022,7 +853,7 @@ with sync_playwright() as p:
                     )
                 else:
                     info(f"OK breakdown: {label} = {value}")
-            # The KV note is assembled from the RESPONSE's context and cache dtype, and the stub echoes the request's.
+            # The KV note is built from the response's context and cache dtype; the stub echoes the request.
             if priced is not None and priced_ctx is not None:
                 echoed = f"{priced_ctx:,} tokens"
                 if echoed not in detail:
@@ -1042,9 +873,7 @@ with sync_playwright() as p:
                 info(f"OK breakdown: placement note {layers_note!r}")
         shoot("05-row-expanded")
 
-    # ─────────────────────────────────────────────────────
-    # 4. An unavailable estimate HIDES the row (HARD).
-    # ─────────────────────────────────────────────────────
+    # 4. An unavailable estimate hides the row (HARD).
     step("available:false hides the row")
     _mode[0] = "unavailable"
     _unavailable_ctx, unavailable_record = reprice(popover, "available:false hides the row")
@@ -1062,10 +891,7 @@ with sync_playwright() as p:
         )
     shoot("06-unavailable")
 
-    # ─────────────────────────────────────────────────────
-    # 5. Restoring the available response brings the row BACK (HARD).
-    #    Without this the hide gate above is satisfied by a panel that simply died.
-    # ─────────────────────────────────────────────────────
+    # 5. Restoring the available response brings the row back (HARD).
     step("restoring an available estimate brings the row back")
     _mode[0] = "available"
     restored_ctx, restored = reprice(popover, "restoring brings the row back")
@@ -1094,21 +920,7 @@ with sync_playwright() as p:
         )
     shoot("07-restored")
 
-    # ─────────────────────────────────────────────────────
-    # 6. A 404 from a backend predating the route also HIDES it (HARD).
-    #
-    # LAST, and it has to be. A non-OK answer stops the panel re-pricing for the rest of
-    # its life: measured here, after one 404 the Context Length control keeps taking and
-    # committing values -- 3072, 2048, 1536 -- and no further POST is ever made.
-    # `available: false` does not do that, which is why the restore gate above sits with
-    # the unavailable case rather than this one.
-    #
-    # Harmless in the situation this gate is about, since a backend predating the route
-    # answers 404 to everything and the row is meant to stay hidden; it is only reachable
-    # by an endpoint that fails and then recovers. Ordered around rather than asserted:
-    # this suite is about the row, and pinning the freeze would pin behaviour nobody has
-    # decided on.
-    # ─────────────────────────────────────────────────────
+    # 6. A 404 also hides it (HARD). Must be last: after one non-OK answer the panel never re-prices again.
     step("HTTP 404 hides the row")
     _mode[0] = "http404"
     _not_found_ctx, not_found_record = reprice(popover, "404 hides the row")

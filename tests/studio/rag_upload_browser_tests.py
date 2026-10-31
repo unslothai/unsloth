@@ -27,7 +27,6 @@ def request(path, body = None):
 
 
 def wait_state(predicate):
-    # Same contention as the browser waits below: three engines on a two-core runner.
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         state = request("/__state")
@@ -38,11 +37,7 @@ def wait_state(predicate):
 
 
 def _snapshot(page):
-    """What the page and the fixture server held when a case failed.
-
-    A wait that expires reports only its own timeout, which says nothing about which side
-    stopped: the upload never posted, the stream never ended, or the rows were dropped.
-    """
+    """Capture page and fixture state on failure; a timed-out wait does not show which side stalled."""
     snapshot = {}
     try:
         snapshot["page"] = page.evaluate(
@@ -80,7 +75,7 @@ def run_case(browser, mode, action):
 
 
 def complete(page):
-    # Three engines share a 2-core runner, so this waits on scheduling, not on the app.
+    # Three engines share a 2-core runner, so this waits on scheduling, not the app.
     page.wait_for_function(
         "window.sim.documents.length>0 && window.sim.documents.every(d=>d.status==='completed') && !window.sim.uploading && !window.sim.hasIndexing",
         timeout = 30000,
@@ -132,7 +127,10 @@ def error(page):
         timeout = 30000,
     )
     assert not page.evaluate("window.sim.hasIndexing || window.sim.uploading")
-    assert page.evaluate("window.sim.documents") == []
+    # The failed row stays, with its reason, so it can be retried or removed.
+    documents = page.evaluate("window.sim.documents")
+    assert [(d["filename"], d["status"]) for d in documents] == [("report.pdf", "failed")]
+    assert documents[0]["error"].startswith("simulated ")
 
 
 def failed_scope(page):

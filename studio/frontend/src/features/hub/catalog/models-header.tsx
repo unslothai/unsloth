@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useSettingsDialogStore } from "@/features/settings";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 import {
-  ChipIcon,
   CpuIcon,
   Database02Icon,
   PackageIcon,
@@ -13,6 +13,7 @@ import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { HfTokenIndicator } from "../components/hf-token-indicator";
 import { PageHeading } from "../components/page-heading";
+import { DownloadLocationPicker } from "./download-location-picker";
 import { TransportToggle } from "./transport-toggle";
 
 function StatPill({
@@ -74,6 +75,7 @@ export function ModelsHeader({
       >
         <HfTokenIndicator onOpenSettings={() => openSettings("general")} />
         <TransportToggle />
+        {isDataset ? null : <DownloadLocationPicker />}
         <StatPill
           icon={PackageIcon}
           label="Cache"

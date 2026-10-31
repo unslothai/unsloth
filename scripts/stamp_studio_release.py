@@ -28,10 +28,7 @@ def _atomic_write_text(
     path.parent.mkdir(parents = True, exist_ok = True)
     fd, tmp_path = tempfile.mkstemp(prefix = ".stamp_studio.", dir = dirpath)
     try:
-        # newline = "\n": the target is studio/backend/utils/_studio_release_build.py, a TRACKED
-        # .py file that .gitattributes pins to `text eol=lf`, and `data` is a Python string
-        # literal carrying LF. The default newline translates each "\n" to os.linesep, so a
-        # release stamped on Windows landed CRLF and showed as a whole-file diff.
+        # newline="\n": the target is a tracked .py pinned to LF by .gitattributes.
         with os.fdopen(fd, "w", encoding = encoding, newline = "\n") as handle:
             handle.write(data)
             handle.flush()

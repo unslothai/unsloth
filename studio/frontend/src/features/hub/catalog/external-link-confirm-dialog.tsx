@@ -9,7 +9,6 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
-  AlertDialogMedia,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { openLink } from "@/lib/open-link";
@@ -37,23 +36,25 @@ export function ExternalLinkConfirmDialog() {
         if (!next) dismiss();
       }}
     >
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogMedia>
-            <HugeiconsIcon
-              icon={LinkSquare02Icon}
-              strokeWidth={1.75}
-              className="text-muted-foreground"
-            />
-          </AlertDialogMedia>
-          <AlertDialogTitle>Open external link</AlertDialogTitle>
+      <AlertDialogContent className="gap-5 sm:max-w-[calc(400px*var(--ui-space-scale,1))]">
+        <AlertDialogHeader className="place-items-stretch gap-2 text-left">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-muted">
+              <HugeiconsIcon
+                icon={LinkSquare02Icon}
+                strokeWidth={1.75}
+                className="size-4.5 text-muted-foreground"
+              />
+            </span>
+            <AlertDialogTitle>Open external link</AlertDialogTitle>
+          </div>
           <AlertDialogDescription>
             You are about to leave Unsloth and open this page in your browser.
             Only continue if you trust the destination.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {pendingUrl && (
-          <div className="min-w-0 rounded-[12px] bg-muted/50 px-3 py-2.5 text-left">
+          <div className="min-w-0 rounded-lg bg-muted/50 px-3.5 py-3 text-left">
             <p className="truncate text-ui-13 font-medium text-foreground">
               {hostOf(pendingUrl)}
             </p>

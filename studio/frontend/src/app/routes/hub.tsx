@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { CapabilityKey } from "@/features/hub";
+import { HUB_CAPABILITY_FILTERS, type HubCapabilityFilter } from "@/features/hub";
+import { hubAudioTaskSearch } from "@/lib/hub-audio-task";
+import type { PipelineType } from "@huggingface/hub";
 import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
@@ -11,14 +13,6 @@ const ModelsPage = lazyRouteComponent(
   "ModelsPage",
 );
 
-// Discover capability filters a link can preselect.
-const HUB_CAPABILITIES: readonly CapabilityKey[] = [
-  "reasoning",
-  "vision",
-  "audio",
-  "embedding",
-  "diffusion",
-];
 
 export interface ModelsSearch {
   tab?: "discover" | "downloaded";
@@ -28,7 +22,8 @@ export interface ModelsSearch {
   intent?: number;
   section?: "trending" | "latest" | "finetune";
   kind?: "models" | "datasets";
-  capability?: CapabilityKey;
+  capability?: HubCapabilityFilter;
+  audioTask?: PipelineType[];
 }
 
 export const Route = createRoute({
@@ -66,10 +61,13 @@ export const Route = createRoute({
     if (kind === "models" || kind === "datasets") {
       next.kind = kind;
     }
-    const capability = search.capability;
-    if (HUB_CAPABILITIES.includes(capability as CapabilityKey)) {
-      next.capability = capability as CapabilityKey;
+    // "diffusion" is the single image/video filter older links carry.
+    const capability = search.capability === "diffusion" ? "image-gen" : search.capability;
+    if (HUB_CAPABILITY_FILTERS.includes(capability as HubCapabilityFilter)) {
+      next.capability = capability as HubCapabilityFilter;
     }
+    const audioTask = hubAudioTaskSearch(search.audioTask, next.capability);
+    if (audioTask) next.audioTask = audioTask;
     return next;
   },
 });

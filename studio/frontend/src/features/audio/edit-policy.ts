@@ -16,17 +16,17 @@ import { countChanges } from "./edit-diff";
 export const EDIT_COPY = {
   recordingLabel: "Recording",
   recordingHint: "Up to 30 s of one voice.",
-  transcriptLabel: "① Check the transcript",
+  transcriptLabel: "1. Check the transcript",
   transcriptHint:
     "Fix any word the recognizer got wrong, so it matches the audio.",
-  changesLabel: "② Make your changes",
+  changesLabel: "2. Make your changes",
   changesHint: "Change, add or remove words. Each change is marked below.",
   resetLabel: "Reset to transcript",
   wordsTab: "Words",
   deliveryTab: "Delivery",
   speedLabel: "Speed",
   pitchLabel: "Raise pitch",
-  deliveryLabel: "② Change the delivery",
+  deliveryLabel: "2. Change the delivery",
   pitchHint:
     "Below 1× is slower, above is faster. FireRedAudio can raise pitch, not lower it, and makes one pass per change.",
   howItEditsTitle: "How edits apply",
@@ -42,8 +42,8 @@ export const EDIT_SOURCE_EXPIRED = "This recording expired. Add it again.";
 export const EDIT_SOURCE_TOO_LONG = `Edit works on recordings up to ${EDIT_SOURCE_MAX_SECONDS} s. Record or upload a shorter take.`;
 export const EDIT_TRANSCRIBING = "Checking the transcript…";
 export const EDIT_TRANSCRIPT_EMPTY = "Type what's said in the recording.";
-export const EDIT_NO_CHANGES = "Change at least one word in ②.";
-export const EDIT_CHANGES_EMPTY = "Keep at least one word in ②.";
+export const EDIT_NO_CHANGES = "Change at least one word in step 2.";
+export const EDIT_CHANGES_EMPTY = "Keep at least one word in step 2.";
 export const EDIT_DELIVERY_EMPTY = "Pick a speed or a pitch change.";
 
 export type EditBlockerActionId =
@@ -116,14 +116,14 @@ export function editBlocker(input: EditBlockerInput): EditBlocker | null {
     }
     if (!input.edited.trim()) {
       return blocker("changes-empty", EDIT_CHANGES_EMPTY, [
-        { id: "focus-changes", label: "Go to ②" },
+        { id: "focus-changes", label: "Go to step 2" },
       ]);
     }
     const changes = countChanges(input.transcript, input.edited);
     if (changes === null) return blocker("too-long", EDIT_TOO_LONG);
     if (changes === 0) {
       return blocker("changes", EDIT_NO_CHANGES, [
-        { id: "focus-changes", label: "Go to ②" },
+        { id: "focus-changes", label: "Go to step 2" },
       ]);
     }
   }

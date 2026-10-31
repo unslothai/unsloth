@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""``check_transformers_dependency_versions`` in ``unsloth/import_fixes.py``.
-
-A ``--no-deps`` install of transformers from git main leaves pip enforcing nothing,
-so the break lands at import with the wrong remedy (``pip install transformers -U``)
-for someone deliberately on main. These tests drive the real functions and pin: the
-requirement set comes from the installed distribution's metadata, only genuine
-violations are reported, the remedy names the DEPENDENCY, and nothing raises.
-
-Runs under the GPU-free ``tests/conftest.py``.
-"""
+"""Remedies must name the violating dependency, not transformers, since --no-deps leaves pip silent."""
 
 from __future__ import annotations
 
@@ -23,7 +14,6 @@ import pytest
 from unsloth import import_fixes as IF
 
 
-# Base (no-extras) requirements as declared by two real transformers releases.
 REQUIRES_4_57_6 = [
     "filelock",
     "huggingface-hub<1.0,>=0.34.0",
@@ -57,11 +47,7 @@ class _Missing(Exception):
 
 
 def _install_env(monkeypatch, requires, installed):
-    """Point the check at a synthetic environment.
-
-    ``requires`` is what transformers declares (or an exception to raise);
-    ``installed`` maps distribution name -> version, anything absent raises.
-    """
+    """Fakes transformers' requirements and installed versions; any name absent from installed raises."""
 
     def fake_requires(name):
         if name != "transformers":
@@ -134,9 +120,6 @@ def test_satisfied_requirements_are_silent(monkeypatch, caplog, requires, instal
     assert _run_check(caplog) == []
 
 
-# ----------------------------------------------------------------- violated
-
-
 def test_violated_floor_is_reported_and_names_the_dependency(monkeypatch, caplog):
     """The Kaggle LFM2 break: transformers main wants safetensors>=0.8.0, the
     image ships 0.7.0. The remedy must upgrade safetensors, not transformers."""
@@ -160,15 +143,11 @@ def test_violated_floor_is_reported_and_names_the_dependency(monkeypatch, caplog
     assert len(warnings) == 1
     message = warnings[0]
 
-    # Names the dependency, its floor and what is actually installed.
     assert "safetensors>=0.8.0 is required, but found safetensors==0.7.0" in message
-    # The remedy upgrades the DEPENDENCY.
     assert 'pip install --upgrade "safetensors>=0.8.0"' in message
     assert "Upgrade the dependencies, not transformers" in message
-    # And explicitly contradicts transformers' own misleading advice.
     assert "pip install transformers -U" in message
     assert "Ignore that" in message
-    # Nothing satisfied gets dragged in.
     for satisfied in ("tqdm", "typer", "numpy", "huggingface-hub"):
         assert f"{satisfied}==" not in message
 
@@ -212,9 +191,6 @@ def test_prerelease_dependency_satisfying_the_floor_is_not_reported(monkeypatch,
     assert _run_check(caplog) == []
 
 
-# ------------------------------------------------------- environment markers
-
-
 def test_inapplicable_environment_markers_are_skipped(monkeypatch, caplog):
     """Extras and python_version gates that do not apply must not be checked,
     even when a violating version of the named package is installed."""
@@ -251,16 +227,8 @@ def test_applicable_environment_marker_is_still_checked(monkeypatch, caplog):
     assert "safetensors" in _run_check(caplog)[0]
 
 
-# ------------------------------------------------------------ absent package
-
-
 def test_an_absent_base_requirement_is_reported_like_a_stale_one(monkeypatch, caplog):
-    """`--no-deps` leaves a dependency missing as often as it leaves it old.
-
-    transformers checks its base requirements at its own root import and raises
-    PackageNotFoundError carrying the same misleading `pip install transformers -U`
-    hint, so skipping the absent case left the user with only that message.
-    """
+    """Missing base dependencies must be reported like stale ones; transformers' own hint misleads."""
     _install_env(
         monkeypatch,
         ["safetensors>=0.8.0", "typer", "tqdm>=4.27", 'fugashi>=1.0; extra == "ja"'],
@@ -275,9 +243,7 @@ def test_an_absent_base_requirement_is_reported_like_a_stale_one(monkeypatch, ca
     assert "typer is required, but it is not installed" in warning
     assert 'pip install --upgrade "safetensors>=0.8.0" "typer"' in warning
     assert "Install or upgrade the dependencies, not transformers" in warning
-    # An extras-only requirement stays out of it: not having it is correct.
     assert "fugashi" not in warning
-    # Satisfied requirements stay out of it too.
     assert "tqdm" not in warning
 
 
@@ -308,13 +274,10 @@ def test_unreadable_metadata_is_still_silent(monkeypatch, caplog):
 @pytest.mark.parametrize(
     "requires, installed",
     [
-        # Unparseable requirement line.
         (["safetensors>=@@@not-a-specifier"], {"safetensors": "0.7.0"}),
         (["=== nonsense ==="], {"safetensors": "0.7.0"}),
         (["safetensors>=0.8.0; extra ==="], {"safetensors": "0.7.0"}),
-        # Parseable specifier, but the installed version is not PEP 440.
         (["safetensors>=0.8.0"], {"safetensors": "not-a-version"}),
-        # Undecidable marker.
         (['safetensors>=0.8.0; nonexistent_marker == "x"'], {"safetensors": "0.7.0"}),
     ],
     ids = ["bad-specifier", "garbage-line", "bad-marker", "bad-installed-version", "unknown-marker"],
@@ -362,9 +325,6 @@ def test_env_var_silences_the_check(monkeypatch, caplog):
     assert _run_check(caplog) == []
 
 
-# --------------------------------------------------------------- live + wiring
-
-
 def test_runs_against_the_real_environment_without_raising(caplog):
     """No monkeypatching: the real installed transformers, read from real metadata."""
     result = IF._unsatisfied_transformers_requirements()
@@ -391,15 +351,12 @@ def test_check_warns_rather_than_raises_on_a_violation(monkeypatch, caplog):
         ["safetensors>=0.8.0"],
         {"transformers": "5.15.0.dev0", "safetensors": "0.7.0"},
     )
-    IF.check_transformers_dependency_versions()  # must not raise
+    IF.check_transformers_dependency_versions()
     assert len(_run_check(caplog)) == 1
 
 
 def test_a_transformers_stub_in_sys_modules_does_not_break_the_import(monkeypatch, caplog):
-    """`find_spec` RAISES on a module in sys.modules whose `__spec__` is None or unset,
-    rather than returning None (documented behaviour, CPython Lib/importlib/util.py).
-    An unguarded probe there turns a warn-only check into a failed `import unsloth`.
-    """
+    """find_spec raises when a sys.modules entry has a None __spec__, so the probe must be guarded."""
     import sys
     import types
 
@@ -408,18 +365,12 @@ def test_a_transformers_stub_in_sys_modules_does_not_break_the_import(monkeypatc
         monkeypatch.setitem(sys.modules, "transformers", stub)
         with pytest.raises(ValueError):
             importlib.util.find_spec("transformers")  # __spec__ None / not set
-        IF.check_transformers_dependency_versions()  # must not raise
+        IF.check_transformers_dependency_versions()
         assert _warnings(caplog) == []
 
 
 def test_check_also_runs_on_the_mlx_branch():
-    """Apple Silicon never reaches `_gpu_init`.
-
-    `unsloth/__init__.py` splits on `_IS_MLX` and only the `else` arm imports
-    `_gpu_init`, while the MLX arm imports transformers itself, so registering on one
-    arm leaves MLX users with transformers' own wrong remedy. The call belongs in the
-    `if _IS_MLX:` body, next to the torchao fixes that are there for the same reason.
-    """
+    """Apple Silicon never reaches _gpu_init, so the check must also be called in the _IS_MLX branch."""
     import ast
     from pathlib import Path
 
@@ -431,5 +382,4 @@ def test_check_also_runs_on_the_mlx_branch():
     )
     body = ast.unparse(ast.Module(body = branch.body, type_ignores = []))
     assert "check_transformers_dependency_versions" in body, "not called on the MLX path"
-    # And the GPU arm still reaches it through _gpu_init.
     assert "_gpu_init" in ast.unparse(ast.Module(body = branch.orelse, type_ignores = []))

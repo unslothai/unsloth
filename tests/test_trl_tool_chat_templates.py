@@ -1,0 +1,270 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""TRL GRPO tools= / environment_factory= on Unsloth-edited chat templates.
+
+TRL matches chat templates by exact string, so an unsloth/* repo whose template carries fixes is
+rejected with "Unrecognized chat template". The patch must accept such a template only when it
+renders like a TRL-known one, reuse that family's parser / training template, and leave every
+other outcome of TRL unchanged.
+"""
+
+from __future__ import annotations
+
+import copy
+import pickle
+import importlib.util
+import pathlib
+import sys
+
+import pytest
+
+trl_utils = pytest.importorskip("trl.chat_template_utils")
+if not hasattr(trl_utils, "add_response_schema") or not hasattr(trl_utils, "qwen3_chat_template"):
+    pytest.skip("this TRL has no tool-call response parsing", allow_module_level = True)
+
+from tokenizers import Tokenizer, decoders, pre_tokenizers
+from tokenizers.models import BPE
+from transformers import PreTrainedTokenizerFast
+
+MODULE_PATH = (
+    pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_trl_tool_templates.py"
+)
+NAMES = ("add_response_schema", "get_training_chat_template")
+
+# What unsloth/Qwen3-* ships: same rendering, different source (here a comment and a None guard).
+UNSLOTH_QWEN3 = "{#- Chat template fixes by Unsloth #}\n" + trl_utils.qwen3_chat_template.replace(
+    "{%- if message.content is string %}",
+    "{%- if message.content is defined and message.content is string %}",
+    1,
+)
+PLAIN = "{% for m in messages %}{{ m['role'] }}: {{ m['content'] }}\n{% endfor %}"
+
+
+def _tokenizer(template):
+    # One token per byte, so token ids keep the text (TRL's prefix check compares ids).
+    alphabet = sorted(pre_tokenizers.ByteLevel.alphabet())
+    backend = Tokenizer(BPE({c: i for i, c in enumerate(alphabet)}, []))
+    backend.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space = False)
+    backend.decoder = decoders.ByteLevel()
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object = backend)
+    tokenizer.chat_template = template
+    return tokenizer
+
+
+def _parser(tokenizer):
+    return tuple(getattr(tokenizer, name, None) for name in ("response_template", "response_schema"))
+
+
+@pytest.fixture
+def patched():
+    saved = [
+        (module, name, module.__dict__[name])
+        for module in list(sys.modules.values())
+        for name in NAMES
+        if name in getattr(module, "__dict__", {})
+    ]
+    originals = {}
+    for name in NAMES:
+        # conftest may already have imported unsloth, which installs the patch.
+        function = getattr(trl_utils, name)
+        while getattr(function, "_unsloth_tool_template_patched", False):
+            function = function.__wrapped__
+        originals[name] = function
+    spec = importlib.util.spec_from_file_location("_unsloth_trl_tool_templates", MODULE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.patch_trl_tool_chat_templates()
+    yield module, originals
+    for owner, name, value in saved:
+        setattr(owner, name, value)
+
+
+def test_rejected_unsloth_qwen3_template_gets_the_qwen3_parser(patched):
+    _, originals = patched
+    tokenizer = _tokenizer(UNSLOTH_QWEN3)
+    with pytest.raises(ValueError, match = "Unrecognized chat template"):
+        originals["add_response_schema"](copy.copy(tokenizer))
+
+    reference = originals["add_response_schema"](_tokenizer(trl_utils.qwen3_chat_template))
+    assert trl_utils.add_response_schema(tokenizer) is tokenizer
+    assert _parser(tokenizer) == _parser(reference)
+    assert any(value is not None for value in _parser(tokenizer))
+    assert tokenizer.chat_template == UNSLOTH_QWEN3
+
+
+def test_training_template_follows_the_matching_family(patched):
+    _, originals = patched
+    tokenizer = _tokenizer(UNSLOTH_QWEN3)
+    assert not trl_utils.is_chat_template_prefix_preserving(tokenizer)
+    with pytest.raises(ValueError):
+        originals["get_training_chat_template"](tokenizer)
+
+    expected = originals["get_training_chat_template"](_tokenizer(trl_utils.qwen3_chat_template))
+    assert trl_utils.get_training_chat_template(tokenizer) == expected
+    assert tokenizer.chat_template == UNSLOTH_QWEN3
+
+
+def test_known_templates_and_unrelated_failures_are_untouched(patched):
+    _, originals = patched
+    known = _tokenizer(trl_utils.qwen3_chat_template)
+    expected = _parser(originals["add_response_schema"](_tokenizer(trl_utils.qwen3_chat_template)))
+    assert _parser(trl_utils.add_response_schema(known)) == expected
+
+    # Renders no tool calls, so it matches no family and TRL's own error must surface.
+    with pytest.raises(ValueError, match = "Unrecognized chat template"):
+        trl_utils.add_response_schema(_tokenizer(PLAIN))
+
+
+def test_edited_tool_call_rendering_is_not_matched(patched):
+    edited = UNSLOTH_QWEN3.replace("'<tool_call>\\n{\"name\": \"'", "'<tool_call>{\"name\": \"'")
+    assert edited != UNSLOTH_QWEN3
+    tokenizer = _tokenizer(edited)
+    with pytest.raises(ValueError, match = "Unrecognized chat template"):
+        trl_utils.add_response_schema(tokenizer)
+
+
+def test_legacy_response_schema_path(patched, monkeypatch):
+    if not hasattr(trl_utils, "_SUPPORTS_RESPONSE_TEMPLATE"):
+        pytest.skip("TRL predates response_template")
+    monkeypatch.setattr(trl_utils, "_SUPPORTS_RESPONSE_TEMPLATE", False)
+    tokenizer = _tokenizer(UNSLOTH_QWEN3)
+    trl_utils.add_response_schema(tokenizer)
+    assert tokenizer.response_schema == trl_utils.qwen3_schema
+
+
+def test_patch_is_idempotent_and_rebinds_trainer_imports(patched):
+    module, _ = patched
+    first = trl_utils.add_response_schema
+    assert module.patch_trl_tool_chat_templates()
+    assert trl_utils.add_response_schema is first
+    grpo = pytest.importorskip("trl.trainer.grpo_trainer")
+    for name in NAMES:
+        if name in grpo.__dict__:
+            assert getattr(grpo, name) is getattr(trl_utils, name)
+            assert getattr(trl_utils, name)._unsloth_tool_template_patched
+
+
+def test_template_refusing_parallel_tool_calls_still_matches(patched):
+    # Llama 3.1/3.2 raise on parallel tool calls; an edited copy must still match its family.
+    if "only supports single tool-calls" not in trl_utils.llama3_2_chat_template:
+        pytest.skip("this TRL's Llama 3.2 template accepts parallel tool calls")
+    _, originals = patched
+    edited = "{#- Chat template fixes by Unsloth #}\n" + trl_utils.llama3_2_chat_template
+    tokenizer = _tokenizer(edited)
+    tokenizer.bos_token = "<|begin_of_text|>"
+    with pytest.raises(ValueError, match = "Unrecognized chat template"):
+        originals["add_response_schema"](copy.copy(tokenizer))
+    reference = _tokenizer(trl_utils.llama3_2_chat_template)
+    reference.bos_token = "<|begin_of_text|>"
+    reference = originals["add_response_schema"](reference)
+    trl_utils.add_response_schema(tokenizer)
+    assert _parser(tokenizer) == _parser(reference)
+
+
+def test_template_ignoring_enable_thinking_does_not_borrow_qwen3(patched):
+    # Qwen3-4B-Instruct-2507 lacks qwen3's empty <think> for enable_thinking=False.
+    branch = "{%- if enable_thinking is defined and enable_thinking is false %}"
+    assert branch in UNSLOTH_QWEN3
+    ignores = UNSLOTH_QWEN3.replace(branch, "{%- if false %}", 1)
+    with pytest.raises(ValueError):
+        trl_utils.get_training_chat_template(_tokenizer(ignores))
+    with pytest.raises(ValueError, match = "Unrecognized chat template"):
+        trl_utils.add_response_schema(_tokenizer(ignores))
+
+
+def test_vision_template_keeps_its_own_training_family(patched):
+    if not hasattr(trl_utils, "qwen3_vl_chat_template"):
+        pytest.skip("this TRL has no Qwen3-VL template")
+    _, originals = patched
+    edited = "{#- Chat template fixes by Unsloth #}\n" + trl_utils.qwen3_vl_chat_template
+    try:
+        expected = originals["get_training_chat_template"](_tokenizer(trl_utils.qwen3_vl_chat_template))
+    except ValueError:
+        pytest.skip("this TRL has no Qwen3-VL training template")
+    got = trl_utils.get_training_chat_template(_tokenizer(edited))
+    assert got == (expected or trl_utils.qwen3_vl_chat_template)
+
+
+def test_named_template_sets_are_left_to_trl(patched):
+    tokenizer = _tokenizer(UNSLOTH_QWEN3)
+    tokenizer.chat_template = {"default": UNSLOTH_QWEN3, "tool_use": PLAIN}
+    with pytest.raises(ValueError, match = "Unrecognized chat template"):
+        trl_utils.add_response_schema(tokenizer)
+    # A lone entry is what transformers uses for every call, so it is matched like a plain template.
+    tokenizer.chat_template = {"tool_use": UNSLOTH_QWEN3}
+    trl_utils.add_response_schema(tokenizer)
+    assert any(value is not None for value in _parser(tokenizer))
+
+
+def test_typed_tool_arguments_pick_the_right_training_family(patched):
+    # Qwen3.6 writes JSON true / null, Qwen3.5 Python True / None; integer-only probes miss it.
+    if not (hasattr(trl_utils, "qwen3_6_chat_template") and hasattr(trl_utils, "qwen3_5_think_chat_template")):
+        pytest.skip("this TRL lacks the Qwen3.5 / 3.6 templates")
+    module, _ = patched
+    tokenizer = _tokenizer(PLAIN)
+    for name in ("qwen3_6_chat_template", "qwen3_5_think_chat_template"):
+        edited = "{#- Chat template fixes by Unsloth #}\n" + getattr(trl_utils, name)
+        found = [n for n, _ in module._matching_families(trl_utils, tokenizer, edited, "conversation")]
+        assert found == [name]
+
+
+def _child_accepts(processing_class, originals):
+    # What AsyncGRPO's rollout worker does without Unsloth: skip TRL's match only when a parser is already set.
+    processing_class = pickle.loads(pickle.dumps(processing_class))
+    if all(getattr(processing_class, name, None) is None for name in ("response_template", "response_schema")):
+        originals["add_response_schema"](processing_class)
+    return processing_class
+
+
+def test_rollout_copy_carries_the_resolved_parser(patched):
+    module, originals = patched
+    tokenizer = _tokenizer(UNSLOTH_QWEN3)
+    for uses_tools in (True, False):
+        handed = module.with_response_parser(tokenizer, uses_tools)
+        assert handed is not tokenizer and _parser(tokenizer) == (None, None)
+        reference = originals["add_response_schema"](_tokenizer(trl_utils.qwen3_chat_template))
+        assert _parser(_child_accepts(handed, originals)) == _parser(reference)
+        assert handed.chat_template == UNSLOTH_QWEN3
+
+
+def test_rollout_copy_without_tools_needs_no_family(patched):
+    module, originals = patched
+    tokenizer = _tokenizer(PLAIN)
+    assert module.with_response_parser(tokenizer, True) is tokenizer
+    with pytest.raises(ValueError, match = "Unrecognized chat template"):
+        _child_accepts(tokenizer, originals)
+    handed = module.with_response_parser(tokenizer, False)
+    child = _child_accepts(handed, originals)
+    assert child.chat_template == PLAIN
+    assert _parser(tokenizer) == (None, None)
+    if not hasattr(child, "parse_response"):
+        return  # transformers 4.x: TRL's worker cannot parse any completion, Unsloth or not
+    # The worker parses every completion, tools or not.
+    prompt = child.apply_chat_template(
+        [{"role": "user", "content": "hi"}], add_generation_prompt = True, return_dict = False
+    )
+    ids = child("The answer is 12.", add_special_tokens = False)["input_ids"]
+    assert trl_utils.parse_response(child, ids, prefix = prompt) == {
+        "role": "assistant",
+        "content": "The answer is 12.",
+    }
+
+
+def test_rollout_processor_gets_its_tokenizers_parser(patched):
+    module, originals = patched
+
+    from transformers import ProcessorMixin
+
+    class Processor(ProcessorMixin):
+        attributes = ["tokenizer"]
+
+    tokenizer = _tokenizer(UNSLOTH_QWEN3)
+    trl_utils.add_response_schema(tokenizer)
+    # A tokenizer that already carries a parser (Gemma 4 repos ship one), inside a processor that does not.
+    processor = Processor.__new__(Processor)
+    processor.tokenizer = tokenizer
+    processor.chat_template = UNSLOTH_QWEN3
+    handed = module.with_response_parser(processor, True)
+    assert handed is not processor and _parser(handed) == _parser(tokenizer)
+    assert _parser(processor) == (None, None)

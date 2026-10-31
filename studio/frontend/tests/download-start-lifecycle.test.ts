@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Exercise the real preflight -> accepted start -> terminal lifecycle. Helper-only
-// tests cannot prove that preflight waits for acceptance or that finalize owns the
-// same toast id.
-
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { register } from "node:module";

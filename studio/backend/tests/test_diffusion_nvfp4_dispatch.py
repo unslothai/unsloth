@@ -199,7 +199,6 @@ def test_the_transpose_cache_holds_the_view_and_revalidates_pointer_and_shape():
     weight = _Ptr(1024)
     view = dispatch.transposed(weight)
     assert dispatch.transposed(weight) is view
-    # A reallocated buffer at the same address with a new shape must not get the old view.
     other = _Ptr(1024, shape = (4, 8))
     assert dispatch.transposed(other) is not view
     weight._pointer = 2048

@@ -8,16 +8,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Access to unsloth_zoo.disk_utils that survives an older installed zoo.
-
-The disk sizing and Kaggle detection logic is owned by
-`unsloth_zoo.disk_utils` so the two packages cannot disagree about whether we
-are on Kaggle. unsloth pins a new enough unsloth_zoo, but a stale environment
-that satisfies `import unsloth_zoo` and not `unsloth_zoo.disk_utils` must
-still be able to save a model, so the fallbacks below keep the environment
-question answered correctly and turn the new disk guard into a no-op rather
-than an ImportError.
-"""
+"""Access to unsloth_zoo.disk_utils that survives an older zoo: the disk guard becomes a no-op, not
+an ImportError, and the Kaggle check still answers correctly."""
 
 import os
 
@@ -58,9 +50,7 @@ except ImportError:
     _TRUE = ("1", "true", "yes", "on")
 
     def is_kaggle_environment():
-        # Kept in step with unsloth_zoo.disk_utils: only a real kernel sets KAGGLE_KERNEL_RUN_TYPE and
-        # only the Kaggle image has /kaggle/working, whereas KAGGLE_USERNAME / KAGGLE_KEY /
-        # KAGGLE_CONFIG_DIR are what people export for the Kaggle CLI on their own machines.
+        # Kept in step with unsloth_zoo.disk_utils: KAGGLE_USERNAME etc. are also set by CLI users locally.
         override = os.environ.get("UNSLOTH_IS_KAGGLE", None)
         if override is not None:
             return str(override).strip().lower() in _TRUE
@@ -95,9 +85,7 @@ except ImportError:
             return None
 
     def logical_numel(param, name = ""):
-        # Packed storage cannot be unpacked without the zoo's knowledge of the packing schemes, so report
-        # what numel() says, exactly as the code did before it asked. Barely reachable: model_16bit_bytes
-        # is 0 here and every caller returns before sizing anything.
+        # Packed storage cannot be unpacked without the zoo, so report numel(); barely reachable.
         try:
             return int(param.numel())
         except Exception:
@@ -110,8 +98,7 @@ except ImportError:
         return 0
 
     def estimate_gguf_export_bytes(*args, **kwargs):
-        # 0 means "unmeasurable", and every caller treats that as "do not block", so an old unsloth_zoo
-        # behaves exactly as it did.
+        # 0 means unmeasurable, which callers treat as do not block.
         return 0
 
     def kaggle_tmp_redirect(save_directory, *args, **kwargs):

@@ -1,29 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""
-agent-guides-drive.sh must not blame the recipe for a failure that is not the
-recipe's.
-
-The whole value of this job is the sentence it prints when it goes red. It exists
-to catch "guide drift" -- the documented flow in `unsloth start` no longer works
--- and a red run that says "drift" costs whoever reads it a trip through
-start.py. So a wrong attribution is not cosmetic here, it is the entire output.
-
-Two of those were live on 2026-08-19, in one 13-minute failure:
-
-  ##[warning] ... judging the turn on its assertions instead of calling it guide drift.
-  ##[error]  [guide drift] agent=codex: the documented launch command exited
-             non-zero (rc=124) ... so the documented flow in start.py drifted.
-
-The warning promised something the next line contradicted, because run_timed
-spoke for callers that treat a cap as fatal on purpose. And the error blamed
-start.py for a turn whose transcript showed the CLI launching perfectly (correct
-provider, correct model) and then sitting on `ERROR: Reconnecting... 1/5` for the
-full 600s. Nothing had drifted; the model server never answered.
-
-These are static checks. The script needs five agent CLIs and a live model server
-to run, so what can be pinned without them is the shape of what it says.
-"""
+"""agent-guides-drive.sh must not blame the recipe for a failure that is not the recipe's."""
 
 from __future__ import annotations
 
@@ -55,28 +32,18 @@ def _block(name: str) -> str:
 
 
 def test_run_timed_does_not_speak_for_its_callers() -> None:
-    """
-    `connection`, `resume` and `attribution-ab` have no assertion that can rescue
-    a partial turn and treat a cap as fatal, deliberately. A blanket "judging the
-    turn on its assertions" from inside run_timed is therefore false for exactly
-    the callers most likely to hit it, and it is printed immediately above the
-    error that contradicts it.
-    """
+    """run_timed must not promise judgement on assertions, since three callers treat a cap as fatal."""
     body = _block("run_timed")
     assert "judging the turn on its assertions" not in body, (
         "run_timed still promises the caller will judge on assertions; three "
         "callers treat a timeout as fatal instead, and the reader sees both"
     )
-    # It must still say the cap was hit -- silence here is how a stall reads as an ordinary non-zero exit.
+    # It must still say the cap was hit, or a stall reads as an ordinary non-zero exit.
     assert "did not exit within" in body
 
 
 def test_a_timed_out_connection_is_not_reported_as_recipe_drift() -> None:
-    """
-    A cap means the launch command was fine and the turn never came back. The
-    recipe is the one thing that is NOT implicated, so `guide_fail` (which
-    asserts the documented flow drifted) is the wrong reporter for it.
-    """
+    """A timed-out turn means the launch command was fine, so guide_fail is the wrong reporter."""
     source = _source()
     connection = source[source.index("\n  connection)") :]
     connection = connection[: connection.index("\n  file-edit)")]
@@ -92,18 +59,12 @@ def test_a_timed_out_connection_is_not_reported_as_recipe_drift() -> None:
         "the documented flow drifted -- the one thing a cap does not show"
     )
     assert "not implicated" in branch, "the message does not clear the recipe it used to blame"
-    # Still fatal. Waiving a cap here would report "connection OK" for a recipe that printed a banner and then blocked
-    # on a headless prompt, which is the failure this job exists to catch.
+    # Still fatal: a recipe that printed a banner then blocked on a prompt must not pass.
     assert "exit 1" in branch, (
         "a timed-out connection must stay fatal; assert_reply cannot tell a "
         "finished reply from a startup banner"
     )
-    # The one thing that may narrow it. assert_reply still cannot tell a reply
-    # from a banner, so the cap is not waived; what excuses it is a line the
-    # agent prints only when a run ends, which a banner cannot produce. Openclaw
-    # answered `pong` and logged `ended with stopReason=stop`, then held its
-    # session write lock for the remaining 1200s, and this branch called that a
-    # turn that never came back.
+    # The only allowed narrowing is the agent's end-of-run marker, which a banner cannot print.
     assert condition.strip() in ("", '&& [ "${TURN_DONE:-0}" != 1 ]'), (
         "the connection cap may only be narrowed by TURN_DONE, which run_timed "
         f"sets solely on an end-of-run marker; found {condition.strip()!r}"
@@ -111,10 +72,7 @@ def test_a_timed_out_connection_is_not_reported_as_recipe_drift() -> None:
 
 
 def test_only_a_marker_can_excuse_a_connection_cap() -> None:
-    """
-    TURN_DONE must never be settable without the agent's own end-of-run line,
-    or the connection guard is waived by anything that hangs.
-    """
+    """TURN_DONE is set only by the agent's own end-of-run marker, or any hang would waive the guard."""
     body = _block("run_timed")
     assert body.count("TURN_DONE=1") == body.count(
         'grep -qF -- "$TURN_DONE_RE"'
@@ -127,10 +85,7 @@ def test_only_a_marker_can_excuse_a_connection_cap() -> None:
 
 
 def test_a_non_zero_exit_is_still_drift() -> None:
-    """
-    The narrowing must not swallow the case guide_fail is right about: a launch
-    command that exits non-zero on its own really is the documented flow failing.
-    """
+    """A launch command that exits non-zero on its own is real drift and must still be reported."""
     source = _source()
     connection = source[source.index("\n  connection)") :]
     connection = connection[: connection.index("\n  file-edit)")]

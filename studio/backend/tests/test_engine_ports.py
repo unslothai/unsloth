@@ -18,7 +18,9 @@ from core.inference import managed_engine
         ("sglang", [60000] * 100, None),
     ],
 )
-def test_only_sglang_reserves_space_for_its_derived_port(monkeypatch, name, ports, expected):
+def test_only_sglang_reserves_space_for_its_derived_port(
+    monkeypatch, real_engine_free_port, name, ports, expected
+):
     assigned = iter(ports)
 
     class Socket:
@@ -51,3 +53,11 @@ def test_only_sglang_reserves_space_for_its_derived_port(monkeypatch, name, port
     with pytest.raises(RuntimeError, match = message):
         engine.start("model", 2048, [0], {})
     assert selected == ([] if expected is None else [expected])
+
+
+def test_the_suite_hands_engines_ports_no_other_process_can_be_given():
+    """conftest keeps engine ports out of the ephemeral range: a port released there can be handed
+    to any bind(0) on the runner before the engine binds it, and that listener then answers /health."""
+    for _ in range(3):
+        port = managed_engine._free_port()
+        assert 21000 <= port < 31000, port

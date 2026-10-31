@@ -12,6 +12,7 @@ import { localPathCacheKey } from "@/features/hub/lib/local-path";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
+import { notifyModelDeleted } from "@/lib/model-lifecycle-events";
 import {
   discardDeletedInventoryHints,
   discardDeletedModelInventoryHints,
@@ -53,15 +54,16 @@ export interface CachedGgufRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
-  /** epoch seconds; inventory view models normalize this to milliseconds. */
+  /** Epoch seconds; inventory view models normalize this to milliseconds. */
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
-  /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
+  umbrella_folder?: boolean;
   tags?: string[];
   library_name?: string | null;
 }
@@ -77,11 +79,10 @@ export interface CachedModelRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
-  /** epoch seconds; inventory view models normalize this to milliseconds. */
+  /** Epoch seconds; inventory view models normalize this to milliseconds. */
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
-  /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
@@ -118,7 +119,6 @@ export interface LocalModelInfo {
   updated_at?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
-  /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
   /** Pipeline repo holding only a GGUF load's VAE / text encoder: not a download to continue. */
   companion_prefetch?: boolean;
@@ -152,13 +152,12 @@ export interface LocalModelListResponse {
 export interface CachedDatasetRepo {
   repo_id: string;
   size_bytes: number;
-  /** epoch seconds; absent when no cache path has a readable mtime. */
+  /** Epoch seconds; absent when no cache path has a readable mtime. */
   last_modified?: number | null;
   cache_path?: string;
   load_cache_path?: string;
   partial?: boolean;
   partial_transport?: string | null;
-  /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
 }
 
@@ -186,36 +185,32 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
-  /** Sub-folders are scanned too. Absent on older backends. */
   recursive?: boolean;
-  /** Result of the last scan. Absent on older backends, which means "ok". */
+  /** Absent on older backends, which means "ok". */
   status?: ScanFolderStatus;
 }
 
 export interface GgufVariantDetail {
   context_length?: number | null;
   cache_path?: string | null;
-  /** Opaque stand-in for `cache_path` under host-path redaction; the only name an
-   *  API-key caller has for one specific copy. */
+  /** Opaque stand-in for `cache_path` under host-path redaction. */
   cache_ref?: string | null;
   filename: string;
   quant: string;
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
-  /** The only missing artifact when the main GGUF is already cached. */
+  /** Streamed lookup-table bytes inside `size_bytes`; 0 when none or on an older backend. */
+  lookup_table_bytes?: number;
   pending_drafter_filename?: string | null;
   pending_drafter_size_bytes?: number;
-  /** Bytes a resume still has to fetch. Set only on a partial variant. */
   download_remaining_bytes?: number | null;
   downloaded?: boolean;
   update_available?: boolean;
   partial?: boolean;
   partial_transport?: string | null;
-  /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
-  /** Variants sharing this key share one companion download footprint, so a
-   *  footprint resolved for one of them is correct for all of them. */
+  /** Variants sharing this key share one companion download footprint. */
   dependency_key?: string | null;
 }
 
@@ -224,8 +219,9 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
-  /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
+  /** "mlx" for precision folders of an MLX repo. */
+  variant_format?: string | null;
 }
 
 async function parseJsonOrThrow<T>(
@@ -264,6 +260,13 @@ async function withHubTimeout<T>(
 export async function listLocalModels(): Promise<LocalModelListResponse> {
   const response = await withHubTimeout(INVENTORY_TIMEOUT_MS, (signal) =>
     authFetch("/api/hub/local", { signal }),
+  );
+  return parseJsonOrThrow<LocalModelListResponse>(response);
+}
+
+export async function listUnslothModels(): Promise<LocalModelListResponse> {
+  const response = await withHubTimeout(INVENTORY_TIMEOUT_MS, (signal) =>
+    authFetch("/api/hub/unsloth-models", { signal }),
   );
   return parseJsonOrThrow<LocalModelListResponse>(response);
 }
@@ -357,17 +360,17 @@ export interface DeleteImpact {
   blocked_by: string[];
 }
 
-/** What a delete would actually reclaim and leave behind. Never throws: the confirm dialog
- * still has to open if this preview is unavailable, it just falls back to the plain wording. */
+/** return the delete preview or `null` so confirmation still opens when unavailable. */
 export async function fetchDeleteImpact(
   repoId: string,
   variant?: string | null,
   cachePath?: string | null,
+  hfToken?: string | null,
 ): Promise<DeleteImpact | null> {
   try {
     const response = await authFetch("/api/hub/delete-impact", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...hubTokenHeader(hfToken) },
       body: JSON.stringify(
         variant
           ? { repo_id: repoId, variant, ...(cachePath ? { cache_path: cachePath } : {}) }
@@ -409,12 +412,10 @@ export async function deleteCachedModel(
   if (variant) {
     payload.variant = variant;
   }
-  // Scope the delete to this row's cache so copies in other caches survive.
   if (cachePath) {
     payload.cache_path = cachePath;
   }
-  // Free up space acts on a list that can be minutes old. The server re-derives the orphan
-  // condition just before unlinking and 409s if a download turned the row into a real model.
+  // The server re-checks the orphan condition before unlinking and 409s if it changed.
   if (onlyIfOrphan) {
     payload.only_if_orphan = true;
   }
@@ -427,15 +428,52 @@ export async function deleteCachedModel(
     await throwIfNotOk(response);
     discardDeletedModelInventoryHints(repoId, variant);
     bumpInventoryVersion();
+    notifyModelDeleted(repoId);
   } finally {
     invalidateGgufVariantsCache(repoId);
   }
 }
 
+export const DELETABLE_LOCAL_SOURCES: ReadonlySet<string> = new Set([
+  "models_dir",
+  "lmstudio",
+  "custom",
+  "ollama",
+  "hermes",
+  "omlx",
+]);
+
+/** `id` (the row's load id) picks between Ollama tags that share one blob path. */
+export async function revealLocalModel(path: string, id?: string): Promise<void> {
+  const response = await authFetch("/api/hub/local/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, id }),
+  });
+  await throwIfNotOk(response);
+}
+
+export async function deleteLocalModel(path: string, id?: string): Promise<void> {
+  const response = await authFetch("/api/hub/local/delete", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, id }),
+  });
+  try {
+    await throwIfNotOk(response);
+    bumpInventoryVersion();
+  } finally {
+    invalidateGgufVariantsCache(path);
+  }
+}
+
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {
   const response = await authFetch("/api/hub/scan-folders");
-  const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);
-  return data.folders;
+  const data = await parseJsonOrThrow<{ folders?: ScanFolderInfo[] }>(
+    response,
+  );
+  // Every surface iterates this list, so a body without it must not take the page down.
+  return Array.isArray(data?.folders) ? data.folders : [];
 }
 
 export async function addScanFolder(

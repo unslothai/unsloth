@@ -13,20 +13,7 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""flash-attn 4 installs the CuTe build as `flash_attn.cute` with no `flash_attn/__init__.py`,
-so `flash_attn` becomes an implicit namespace package with no `flash_attn_func`,
-no `flash_attn_varlen_func` and no `flash_attn.flash_attn_interface`.
-
-xFormers imports `flash_attn.flash_attn_interface` unconditionally once `find_spec("flash_attn")`
-hits, so that layout makes `import xformers.ops` raise, unsloth swallows it into
-`xformers = None`, `HAS_XFORMERS` goes False and every fast-path model silently degrades to
-plain SDPA (measured on a B200 at seq_len 8192 with Qwen3-0.6B + LoRA: 547 -> 2154 ms/step,
-2.69 -> 19.02 GB peak).
-
-These tests build the three module layouts on disk and check the classifier, because the
-whole fix hangs off getting the classification exactly right: a real flash-attn 2 install must
-not be touched, and neither must a machine with BOTH installed.
-"""
+"""flash-attn 4's bare flash_attn namespace breaks xformers, so classification must be exact."""
 
 import importlib.util
 import pathlib
@@ -40,12 +27,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def _load_import_fixes():
-    """The module by path, not `from unsloth import import_fixes`.
-
-    Importing the package runs unsloth/__init__.py, which refuses to import without an
-    accelerator, so the package form cannot be collected on the CPU-only CI job. This
-    module is stdlib plus packaging at import time, so it loads on its own.
-    """
+    """Loads the module by path: importing the package needs an accelerator that CPU CI lacks."""
     spec = importlib.util.spec_from_file_location(
         "unsloth_import_fixes_under_test", _REPO_ROOT / "unsloth" / "import_fixes.py"
     )
@@ -71,7 +53,6 @@ def _write_layout(tmp_path, layout):
     if layout in ("flash_attn_2", "both"):
         pkg.mkdir(parents = True, exist_ok = True)
         if layout == "flash_attn_2":
-            # A real flash-attn 2 wheel is a regular package.
             (pkg / "__init__.py").write_text(
                 "__version__ = '2.8.3'\n"
                 "def flash_attn_func(*a, **k): ...\n"
@@ -81,7 +62,6 @@ def _write_layout(tmp_path, layout):
     return root
 
 
-# The same by-path load as _load_import_fixes, for the subprocess cases.
 _LOAD_MODULE = """
     import importlib.util, pathlib, sys
     _path = pathlib.Path(sys.argv[2]) / "unsloth" / "import_fixes.py"
@@ -122,7 +102,7 @@ def test_layout_is_classified_correctly(tmp_path, layout, expected):
 
 
 _NO_EAGER_IMPORT = textwrap.dedent(
-    # Load the module BEFORE the layout is visible, so this measures the classifier only.
+    # Load the module before the layout is visible, so this measures the classifier only.
     _LOAD_MODULE
     + """
     sys.modules.pop("flash_attn", None)
@@ -141,13 +121,7 @@ _NO_EAGER_IMPORT = textwrap.dedent(
 
 @pytest.mark.parametrize("layout", ["absent", "flash_attn_2", "flash_attn_4_only", "both"])
 def test_classification_never_imports_flash_attn(tmp_path, layout):
-    """`import unsloth` must not drag in flash-attn.
-
-    `importlib.util.find_spec("flash_attn.flash_attn_interface")` resolves the dotted name by
-    IMPORTING the parent first, so classifying that way would execute `flash_attn/__init__.py`
-    (and its CUDA extension) on every machine that has flash-attn 2, for users who never asked
-    for it. The classifier probes the package's search locations on disk instead.
-    """
+    """Never import flash_attn: find_spec on a dotted name imports the parent, so probe disk instead."""
     root = _write_layout(tmp_path, layout)
     out = subprocess.run(
         [sys.executable, "-c", _NO_EAGER_IMPORT, str(root), str(_REPO_ROOT)],
@@ -184,10 +158,7 @@ def test_fix_is_a_noop_for_a_real_flash_attn_2(monkeypatch):
 
 
 def test_fix_is_a_noop_without_xformers(monkeypatch):
-    """With no xformers there is nothing to protect: this machine was on SDPA either way, and
-    the `attn_implementation=` delegation path never reaches flash-attn (transformers'
-    `is_flash_attn_2_available()` looks up metadata for `flash_attn`, which the `flash-attn-4`
-    distribution does not provide)."""
+    """No xformers means nothing to protect; transformers finds no flash_attn metadata."""
     monkeypatch.setattr(import_fixes, "_flash_attn_layout", lambda: "flash_attn_4_only")
     asked = []
     real_find_spec = import_fixes.importlib.util.find_spec
@@ -199,7 +170,6 @@ def test_fix_is_a_noop_without_xformers(monkeypatch):
     monkeypatch.setattr(import_fixes.importlib.util, "find_spec", _find_spec)
     import_fixes._FA4_NAMESPACE_WARNED[0] = False
     import_fixes.fix_flash_attn_4_namespace_shadow()
-    # Asked once, got nothing, stopped: no import, no warning, find_spec never left swapped.
     assert asked == ["xformers"]
     assert import_fixes.importlib.util.find_spec is _find_spec
     assert import_fixes._FA4_NAMESPACE_WARNED[0] is False

@@ -13,6 +13,7 @@ import {
   registerFindTarget,
   requestFind,
   subscribeFindTargets,
+  takeFindFocus,
 } from "../src/features/find-in-page/lib/find-targets.ts";
 
 const target = (id: string, available: () => boolean, holds: unknown = null): FindTarget => ({
@@ -63,4 +64,23 @@ test("requests reach the bar until it stops listening", () => {
   stop();
   requestFind("browser");
   assert.deepEqual(asked, ["browser", null]);
+});
+
+test("a target holding keys outside the document hands them back and is searched", () => {
+  let outside = false;
+  let taken = 0;
+  const unregister = registerFindTarget({
+    ...target("page", () => true),
+    takeFocus: () => {
+      if (outside) taken += 1;
+      return outside;
+    },
+  });
+  const chat = registerFindTarget(target("other", () => true));
+  assert.equal(takeFindFocus(), undefined);
+  outside = true;
+  assert.equal(takeFindFocus()?.id, "page");
+  assert.equal(taken, 1);
+  chat();
+  unregister();
 });

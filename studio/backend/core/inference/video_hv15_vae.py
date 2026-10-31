@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HunyuanVideo-1.5 VAE: build the causal attention mask with one masked_fill instead of a Python loop.
-
-The stock per-row loop unrolls under compile into a graph inductor cannot schedule (RecursionError in
-``reorder_for_peak_memory``). Same values, bit-identical decode.
-"""
+"""Causal mask via one masked_fill; the Python loop unrolls under compile into a RecursionError."""
 
 from __future__ import annotations
 
@@ -43,8 +39,7 @@ def install_vectorised_causal_mask(pipe: Any, logger: Any = None) -> int:
             cls = type(module)
             if cls.__name__ != _ATTN_BLOCK or not _stock_loop(cls):
                 continue
-            # A plain function on the instance is not bound, so ``self.prepare_causal_attention_mask(...)`` calls it
-            # with the staticmethod's own arguments.
+            # A plain function on the instance is unbound, so it gets the staticmethod's arguments.
             module.prepare_causal_attention_mask = causal_attention_mask
             patched += 1
     except Exception as exc:  # noqa: BLE001 - optimisation only

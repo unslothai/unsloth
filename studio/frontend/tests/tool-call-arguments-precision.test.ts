@@ -57,7 +57,6 @@ test("a merge adds metadata without rewriting the executed integer", () => {
 });
 
 test("an explicitly overwritten key uses the tool_end value", () => {
-  // The two encodings collide, so comparing them would keep text describing the old value.
   const collided = mergedToolCallArgumentsText(
     '{"id":9007199254740993}',
     { id: 9007199254740992 },
@@ -96,7 +95,6 @@ test("prompt replay prefers exact parsable argument text", () => {
   );
 });
 
-// Read as source: the helpers only hold the line if the adapter routes through them.
 const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 const PROMPT_STORAGE = readSrc("features/chat/prompt-storage/prompt-storage-dialog.tsx");
 
@@ -134,8 +132,7 @@ test("argument text that does not parse is not shown on an approval card", () =>
 });
 
 test("a Gemini native_part merge keeps the executed integer", () => {
-  // The adapter computes overwritten keys BEFORE folding native_part into args.google, so
-  // `google` takes the lexeme-preserving path.
+  // Overwritten keys are computed before native_part folds into args.google.
   const card = '{"google":{"executableCode":{"code":"print(1)"}},"id":9007199254740993}';
   const mergedArgs = {
     google: { executableCode: { code: "print(1)" }, native_part: { inlineData: "AAA" } },

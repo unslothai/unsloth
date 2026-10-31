@@ -1,11 +1,7 @@
-# Model defaults for unsloth/Magistral-Small-2509
-# Based on Magistral_(24B)-Reasoning-Conversational.ipynb
 # Also applies to: mistralai/Magistral-Small-2509, unsloth/Magistral-Small-2509-bnb-4bit
-# added inference parameters from unsloth guides
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

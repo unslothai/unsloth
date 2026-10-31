@@ -37,11 +37,9 @@ test("rejects data URIs without a payload separator", () => {
   );
 });
 
-// The expectations below were taken from Chromium, Firefox and WebKit, which
-// all agree: percent-decoding a data URI is byte-oriented, not UTF-8 text.
+// Expectations taken from Chromium, Firefox and WebKit: percent-decoding is byte-oriented.
 
 test("decodes percent escapes that are not valid UTF-8", () => {
-  // decodeURIComponent() throws URIError on these; a browser returns the octets.
   assert.deepEqual(
     Array.from(decodeDataUri("data:audio/wav,%FF%00%80").bytes),
     [255, 0, 128],
@@ -64,7 +62,6 @@ test("leaves malformed percent escapes as literal characters", () => {
 });
 
 test("does not treat a base64x parameter as base64", () => {
-  // The old `/;base64/i` matched inside `;base64x`; the anchored form must not.
   assert.deepEqual(
     Array.from(decodeDataUri("data:text/plain;base64x,QUJD").bytes),
     [81, 85, 74, 68],
@@ -72,7 +69,6 @@ test("does not treat a base64x parameter as base64", () => {
 });
 
 test("percent-decodes a base64 payload before decoding it", () => {
-  // atob() would throw InvalidCharacterError on the escapes.
   assert.deepEqual(
     Array.from(decodeDataUri("data:audio/wav;base64,SGVsbG8%3D").bytes),
     [72, 101, 108, 108, 111],
@@ -88,7 +84,6 @@ test("percent-decodes a base64 payload before decoding it", () => {
 });
 
 test("treats base64 as the marker only when it ends the metadata", () => {
-  // A mid-metadata `base64` segment is an ordinary parameter.
   assert.deepEqual(
     Array.from(
       decodeDataUri("data:text/plain;base64;charset=utf-8,SGVsbG8=").bytes,
@@ -116,7 +111,6 @@ test("ignores a URL fragment", () => {
     Array.from(decodeDataUri("data:text/plain;base64,SGVsbG8=#frag").bytes),
     [72, 101, 108, 108, 111],
   );
-  // An escaped hash is payload, not a fragment.
   assert.deepEqual(
     Array.from(decodeDataUri("data:text/plain,abc%23hash").bytes),
     [97, 98, 99, 35, 104, 97, 115, 104],
@@ -133,7 +127,6 @@ test("falls back to the default media type when there is no slash", () => {
 });
 
 test("decodes a large base64 payload without stalling", () => {
-  // The 20 MiB attachment cap must not take seconds of blocked UI.
   const payload = btoa("x".repeat(3 * 1024 * 1024));
   const started = Date.now();
   const decoded = decodeDataUri(`data:image/png;base64,${payload}`);
@@ -145,7 +138,6 @@ test("decodes a large base64 payload without stalling", () => {
 });
 
 test("treats the data scheme case-insensitively", () => {
-  // URL schemes are case-insensitive and all three engines render DATA:.
   assert.ok(isDataUri("DATA:image/png;base64,QUJD"));
   assert.ok(isDataUri("Data:image/png;base64,QUJD"));
   assert.ok(isDataUri("data:image/png;base64,QUJD"));
@@ -157,8 +149,6 @@ test("treats the data scheme case-insensitively", () => {
 });
 
 test("decodes an escape-heavy payload without stalling", () => {
-  // Encoded SVG text alternates literals and escapes, which used to allocate
-  // a separate array per run.
   const source = "a%20".repeat(400000);
   const started = Date.now();
   const decoded = decodeDataUri(`data:image/svg+xml,${source}`);
@@ -172,9 +162,7 @@ test("decodes an escape-heavy payload without stalling", () => {
 });
 
 test("removes URL tabs and newlines the way the URL parser does", () => {
-  // Firefox and WebKit strip these before parsing, per the URL standard.
-  // Chromium keeps them for a data: URL passed to fetch, so this follows the
-  // standard and the majority.
+  // Follows the URL standard (Firefox, WebKit); Chromium keeps these for fetch.
   assert.deepEqual(
     Array.from(decodeDataUri("data:text/plain;base64\n,SGVsbG8=").bytes),
     [72, 101, 108, 108, 111],
@@ -191,7 +179,6 @@ test("removes URL tabs and newlines the way the URL parser does", () => {
     Array.from(decodeDataUri("data:text/plain,ab\ncd").bytes),
     [97, 98, 99, 100],
   );
-  // An escaped newline is payload, not URL whitespace.
   assert.deepEqual(
     Array.from(decodeDataUri("data:text/plain,ab%0Acd").bytes),
     [97, 98, 10, 99, 100],
@@ -199,7 +186,6 @@ test("removes URL tabs and newlines the way the URL parser does", () => {
 });
 
 test("trims leading and trailing C0 controls and spaces", () => {
-  // All three engines render ` data:image/png;...` and decode these.
   assert.ok(isDataUri(" data:text/plain,abc"));
   assert.ok(isDataUri("\u0000data:text/plain,abc"));
   assert.ok(isDataUri("  DATA:text/plain,abc"));
@@ -212,7 +198,6 @@ test("trims leading and trailing C0 controls and spaces", () => {
   ]) {
     assert.deepEqual(Array.from(decodeDataUri(uri).bytes), [97, 98, 99], uri);
   }
-  // A space inside the payload is content, not URL whitespace.
   assert.deepEqual(
     Array.from(decodeDataUri("data:text/plain,a bc").bytes),
     [97, 32, 98, 99],
@@ -220,7 +205,6 @@ test("trims leading and trailing C0 controls and spaces", () => {
 });
 
 test("detects the scheme past any number of leading controls", () => {
-  // All three engines decode these; a fixed-size prefix window could not.
   const lead = [" ".repeat(30), "\u0000".repeat(40), "  \u0000 \t"];
   for (const prefix of lead) {
     assert.ok(
@@ -232,10 +216,8 @@ test("detects the scheme past any number of leading controls", () => {
       [97, 98, 99],
     );
   }
-  // Tabs and newlines are removed inside the scheme too.
   assert.ok(isDataUri("da\nta:text/plain,abc"));
   assert.ok(isDataUri("da\tta:text/plain,abc"));
-  // A space is not removed, so this is not a data URL in any engine.
   assert.ok(!isDataUri("da ta:text/plain,abc"));
   assert.ok(!isDataUri("https://example.com/a.png"));
   assert.ok(!isDataUri("dat"));

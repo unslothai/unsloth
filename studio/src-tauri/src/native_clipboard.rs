@@ -4,7 +4,7 @@
 use crate::native_path_policy::{
     has_transport_stream_extension, is_audio_only_3gp, is_binary_office_template,
     is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub, is_compiled_fortran_mod,
-    is_mpeg_transport_stream,
+    is_mpeg_transport_stream, office_template_mime_type,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
@@ -17,8 +17,7 @@ const MAX_CLIPBOARD_RGBA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CLIPBOARD_PNG_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_SOURCE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_AUDIO_BYTES: u64 = 25 * 1024 * 1024;
-// Mirrors MAX_NATIVE_VIDEO_BYTES in native_intents.rs: a pasted clip and a
-// dropped one are the same file, and the 20 MB source cap skipped most videos.
+// Mirrors MAX_NATIVE_VIDEO_BYTES in native_intents.rs.
 const MAX_CLIPBOARD_VIDEO_BYTES: u64 = 75_497_280;
 const MAX_CLIPBOARD_TOTAL_BYTES: u64 = MAX_CLIPBOARD_VIDEO_BYTES;
 const MAX_CLIPBOARD_FILES: usize = 8;
@@ -110,6 +109,9 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "odt" => "application/vnd.oasis.opendocument.text",
         "ods" => "application/vnd.oasis.opendocument.spreadsheet",
         "rtf" => "application/rtf",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xlsm" => "application/vnd.ms-excel.sheet.macroEnabled.12",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "mp3" | "mp2" => "audio/mpeg",
         "wav" => "audio/wav",
         "m4a" => "audio/mp4",
@@ -121,15 +123,20 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "caf" => "audio/x-caf",
         "wma" => "audio/x-ms-wma",
         "amr" => "audio/amr",
+        "m4b" => "audio/mp4",
+        "weba" => "audio/webm",
+        "mka" => "audio/x-matroska",
         // Provisional until the BMFF handlers can be inspected after reading.
         "3gp" => "video/3gpp",
+        "3g2" => "video/3gpp2",
         "vtt" => "text/vtt",
         "srt" => "application/x-subrip",
-        // .txt is a RAG type, so it is absent from TEXT_ATTACHMENT_EXTS and
-        // named here; the rest of the source and text formats come from the one
-        // list the composer and the drop path already share.
+        // .txt is a RAG type, so it is absent from TEXT_ATTACHMENT_EXTS and named here.
         "txt" => "text/plain",
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => "text/plain",
+        other if crate::native_path_policy::SERVER_DOCUMENT_ATTACHMENT_EXTS.contains(&other) => {
+            "application/octet-stream"
+        }
         other if crate::native_path_policy::TOOL_ONLY_ATTACHMENT_EXTS.contains(&other) => {
             "application/octet-stream"
         }
@@ -195,11 +202,8 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
             .extension()
             .and_then(|value| value.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("3gp"));
-        // A 3GP recording cannot use its final size limit until its BMFF
-        // handlers have been read and classified as audio-only or video. Read it
-        // under the larger of the two, as the drop path does; the audio cap is
-        // reapplied below once the track handlers say it is audio-only. A .ts or
-        // .mts path is likewise video or TypeScript only once its packets are read.
+        // 3GP and .ts/.mts are read under the larger limit until their bytes are classified;
+        // the audio cap is reapplied below.
         let provisional_limit = if is_3gp || has_transport_stream_extension(&path) {
             MAX_CLIPBOARD_VIDEO_BYTES
         } else {
@@ -220,11 +224,12 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
             || is_binary_vobsub(&path, &bytes)
             || is_binary_tracker_mod(&path, &bytes)
             || is_compiled_fortran_mod(&path, &bytes)
-            || is_binary_office_template(&path, &bytes)
         {
             continue;
         }
-        let mime_type = if is_3gp && is_audio_only_3gp(&bytes) {
+        let mime_type = if is_binary_office_template(&path, &bytes) {
+            office_template_mime_type(&path)
+        } else if is_3gp && is_audio_only_3gp(&bytes) {
             "audio/3gpp"
         } else if is_mpeg_transport_stream(&path, &bytes) {
             "video/mp2t"
@@ -479,10 +484,46 @@ mod tests {
 
     #[test]
     fn clipboard_file_mime_types_cover_composer_documents() {
-        assert_eq!(clipboard_file_mime_type(Path::new("notes.rtf")), Some("application/rtf"));
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("notes.rtf")),
+            Some("application/rtf")
+        );
         assert_eq!(
             clipboard_file_mime_type(Path::new("archive.tar.gz")),
             Some("application/octet-stream")
+        );
+        for name in [
+            "show.PPS",
+            "budget.xlt",
+            "letter.doc",
+            "mail.msg",
+            "page.mht",
+        ] {
+            assert_eq!(
+                clipboard_file_mime_type(Path::new(name)),
+                Some("application/octet-stream"),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("deck.pptx")),
+            Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        );
+    }
+
+    #[test]
+    fn office_templates_take_an_office_mime_and_text_dot_files_stay_text() {
+        assert_eq!(
+            office_template_mime_type(Path::new("letter.dot")),
+            "application/msword"
+        );
+        assert_eq!(
+            office_template_mime_type(Path::new("deck.POT")),
+            "application/vnd.ms-powerpoint"
+        );
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("graph.dot")),
+            Some("text/plain")
         );
     }
 
@@ -641,8 +682,6 @@ mod tests {
             clipboard_file_max_bytes("audio/mpeg"),
             MAX_CLIPBOARD_AUDIO_BYTES
         );
-        // A video gets the video budget, not the 20 MB source cap, which skipped
-        // most clips the picker and the drop path both accept.
         assert_eq!(
             clipboard_file_max_bytes("video/3gpp"),
             MAX_CLIPBOARD_VIDEO_BYTES
@@ -652,7 +691,6 @@ mod tests {
             MAX_CLIPBOARD_VIDEO_BYTES
         );
         assert!(MAX_CLIPBOARD_TOTAL_BYTES >= MAX_CLIPBOARD_VIDEO_BYTES);
-        // The pasted and dropped limits are the same file's limit.
         let intents = include_str!("native_intents.rs");
         let native = intents
             .split("const MAX_NATIVE_VIDEO_BYTES: u64 = ")

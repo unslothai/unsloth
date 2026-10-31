@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Private Lemonade process serving FastFlowLM on the AMD NPU.
-
-Uses authenticated loopback and owns the child process tree. Runtime, config and models
-stay under Studio's home; a separate FLM_MODEL_PATH prevents other FastFlowLM installs
-from deleting these models (lemonade-sdk/lemonade#3375). No torch or transformers imports.
-"""
+"""Private Lemonade serving FastFlowLM on AMD NPU over authenticated loopback; no torch or
+transformers imports; FLM_MODEL_PATH stops other FLM installs deleting models"""
 
 from __future__ import annotations
 
@@ -53,9 +49,7 @@ _CONFIG_OVERRIDES: dict[str, Any] = {
 }
 
 
-# _find_free_port releases the port before lemond binds it, so another process can take it in
-# between. Only an exit that names the collision is retried, on a fresh port; any other early exit
-# is a real failure and is reported at once.
+# The freed port can be taken before lemond binds it; only a collision exit is retried.
 _START_ATTEMPTS = 3
 _PORT_TAKEN = re.compile(
     r"address already in use|eaddrinuse|only one usage of each socket address|errno 98\b|errno 48\b"
@@ -70,10 +64,7 @@ class LemonadeUnavailable(RuntimeError):
 
 
 def _kill_with_the_parent() -> None:
-    """Override the Linux parent-death signal with SIGKILL.
-
-    With a loaded model, SIGTERM held the NPU for about 9 s; SIGKILL released it within 1 s.
-    """
+    """Use SIGKILL, not SIGTERM: under SIGTERM a loaded NPU model kept the device held for seconds."""
     import ctypes
     import signal
 

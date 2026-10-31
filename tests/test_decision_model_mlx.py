@@ -405,6 +405,136 @@ def test_predict_answers_at_the_calibrated_temperatures(checkpoint, monkeypatch)
         FastDecisionModel.predict(model, tokenizer, "s", {})
 
 
+def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
+    clef_checkpoint, checkpoint, monkeypatch, tmp_path
+):
+    import base64
+    import io
+
+    from PIL import Image
+
+    model, tokenizer = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 2048)
+    zoo = unsloth._decision_mlx._decision_zoo()
+    buffer = io.BytesIO()
+    Image.new("RGB", (5, 4)).save(buffer, "PNG")
+    url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
+    rows = [
+        {**_row(0), "images": [url, url]},
+        {**_row(1), "images": json.dumps([url])},
+        {**_row(2), "images": [None, {"bytes": None, "path": None}]},
+    ]
+    (tmp_path / "i.png").write_bytes(buffer.getvalue())
+    rows += [
+        {**_row(3), "images": {"bytes": buffer.getvalue()}},
+        {**_row(4), "images": [{"bytes": b"cut"}]},
+        {**_row(5), "images": [{"bytes": None, "path": str(tmp_path / "i.png")}]},
+    ]
+    # This decoder has no vision tower: a row with images is skipped, and says why.
+    items, report = FastDecisionModel.build_dataset(rows, tokenizer, model)
+    assert [item["row"] for item in items] == [2] and "does not support images" in report["reason"]
+
+    seen, real, keep = [], zoo.clef_training_item, [True]
+
+    def item(
+        pipeline,
+        state,
+        questions,
+        max_length,
+        images = None,
+        audio = None,
+    ):
+        seen.append([getattr(image, "size", image) for image in images] if images else audio)
+        return {
+            **real(pipeline, state, questions, max_length),
+            **({"images": images} if keep and images else {}),
+        }
+
+    monkeypatch.setattr(zoo, "clef_training_item", item)
+    items, report = FastDecisionModel.build_dataset(rows, tokenizer, model)
+    assert [item["row"] for item in items] == [0, 1, 2, 3, 5] and seen == [
+        [url, url],
+        [url],
+        None,
+        [(5, 4)],
+        [(5, 4)],
+    ]
+    assert items[0]["images"] == [url, url]
+    keep.clear()
+    assert "cannot identify image" in report["reason"]
+    bomb = io.BytesIO()
+    Image.new("1", (14000, 14000)).save(bomb, "PNG")
+    items, report = FastDecisionModel.build_dataset(
+        [_row(0), {**_row(1), "images": [{"bytes": bomb.getvalue()}]}], tokenizer, model
+    )
+    assert [item["row"] for item in items] == [0] and "decompression bomb" in report["reason"]
+    FastDecisionModel.predict(
+        model, tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = url
+    )
+    assert seen[-1] == [url]
+    # Audio rows: data URLs as they are, an undecoded column's bytes or file as one, a decoded clip with its rate.
+    (tmp_path / "a.wav").write_bytes(b"RIFF")
+    sound = "data:audio/wav;base64," + base64.b64encode(b"RIFF").decode()
+    clip = {"path": None, "array": [0.0, 1.0], "sampling_rate": 16000}
+
+    class Decoder:
+        # What datasets 4 decodes an audio column to.
+        get_all_samples = None
+
+        def __getitem__(self, key):
+            return clip[key]
+
+    class Corrupt(Decoder):
+        def __getitem__(self, key):
+            raise RuntimeError("invalid data found")
+
+    heard = [
+        {**_row(0), "audio": [sound, {"bytes": b"RIFF"}]},
+        {**_row(1), "audio": {"bytes": None, "path": str(tmp_path / "a.wav")}},
+        {**_row(2), "audio": [None, {"bytes": None, "path": None}, clip, Decoder()]},
+        {**_row(3), "audio": {"bytes": None, "path": str(tmp_path / "none.wav")}},
+    ]
+    items, report = FastDecisionModel.build_dataset(
+        [_row(0), {**_row(1), "audio": [Decoder(), Corrupt()]}], tokenizer, model
+    )
+    assert [item["row"] for item in items] == [0] and "could not be decoded" in report["reason"]
+    del seen[:]
+    items, report = FastDecisionModel.build_dataset(heard, tokenizer, model)
+    assert [item["row"] for item in items] == [0, 1, 2] and "none.wav" in report["reason"]
+    assert seen == [[sound, sound], [sound], [{"array": [0.0, 1.0], "sampling_rate": 16000}] * 2]
+    FastDecisionModel.predict(
+        model, tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, audio = sound
+    )
+    assert seen[-1] == [sound]
+    # An unsloth-zoo that takes no images says so, where skipping the rows would train without them.
+    monkeypatch.setattr(
+        zoo,
+        "clef_training_item",
+        lambda pipeline, state, questions, max_length = None: real(
+            pipeline, state, questions, max_length
+        ),
+    )
+    assert len(FastDecisionModel.build_dataset(rows[2:3], tokenizer, model)[0]) == 1
+    question = {"q": {"type": "noul", "instructions": "i"}}
+    for call in (
+        lambda: FastDecisionModel.build_dataset(rows, tokenizer, model),
+        lambda: FastDecisionModel.build_dataset(heard, tokenizer, model),
+        lambda: FastDecisionModel.predict(model, tokenizer, "s", question, images = url),
+        lambda: FastDecisionModel.predict(model, tokenizer, "s", question, audio = sound),
+    ):
+        with pytest.raises(ImportError, match = "newer unsloth-zoo"):
+            call()
+    laya, laya_tokenizer = FastDecisionModel.from_pretrained(str(checkpoint))
+    with pytest.raises(unsloth._decision_mlx.DecisionDataError, match = "Laya reads text only"):
+        FastDecisionModel.predict(
+            laya, laya_tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = [url]
+        )
+    with pytest.raises(unsloth._decision_mlx.DecisionDataError, match = "Laya reads text only"):
+        FastDecisionModel.predict(laya, laya_tokenizer, "s", question, audio = sound)
+    assert FastDecisionModel.predict(
+        laya, laya_tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = "[]"
+    )
+
+
 @pytest.mark.parametrize("four_bit", [False, True])
 def test_a_plain_language_model_trains_as_a_clef(clef_checkpoint, tmp_path, four_bit):
     for name in ("joint_head.safetensors", "joint_head_config.json"):

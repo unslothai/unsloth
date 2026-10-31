@@ -45,7 +45,6 @@ def test_the_sources_list_names_the_running_session(client):
     assert body["default_source_id"]
     assert any(s["label"] == path.name and s["is_current"] for s in body["sources"])
     assert any(s["realpath"] == str(path.resolve()) for s in body["sources"])
-    # the logs directory itself, not the logs/server folder the log sits in
     assert body["log_root"] == str(path.resolve().parent.parent)
 
 
@@ -163,20 +162,12 @@ def test_the_endpoints_stay_out_of_the_access_log():
     suppression each poll appends a line the next poll reads back."""
     from loggers.handlers import _is_quiet_success
 
-    # Behaviour, not membership: these go through _SELF_READ_PATHS rather than
-    # _QUIET_SUCCESS_PATHS because --verbose must not lift them.
-    # test_debug_log_self_feedback.py proves it over the real middleware.
     assert _is_quiet_success("GET", "/api/settings/debug/logs", 200, False) is True
     assert _is_quiet_success("GET", "/api/settings/debug/logs/sources", 200, False) is True
 
 
 def test_a_stale_session_is_flagged_when_file_logging_is_off(client, monkeypatch):
-    """An old file with logging now off must not read as a live view.
-
-    Reported on the PR: with UNSLOTH_STUDIO_NO_FILE_LOG=1 and a log left over
-    from a previous run, the read path answered a plain "ok" and the viewer sat
-    there looking live while nothing would ever be appended to it again.
-    """
+    """Leftover logs from a previous run must be flagged stale when file logging is off, not live."""
     _seed_server_log("a previous session\n")
     monkeypatch.setenv("UNSLOTH_STUDIO_NO_FILE_LOG", "1")
     body = client.get("/api/settings/debug/logs").json()
@@ -223,12 +214,7 @@ def _source_id(client, family: str) -> str:
 
 
 def test_a_runner_log_is_not_called_stale_when_only_the_server_tee_is_off(client, monkeypatch):
-    """UNSLOTH_STUDIO_NO_FILE_LOG only skips run.py's tee.
-
-    The llama and diffusion runners and the desktop shell keep writing, so
-    treating the setting as global told a user watching a live llama-server log
-    that it would not update while the failure was still being appended to it.
-    """
+    """UNSLOTH_STUDIO_NO_FILE_LOG=1 only skips run.py's tee; runner logs still append and are not stale."""
     _seed_llama_log()
     monkeypatch.setenv("UNSLOTH_STUDIO_NO_FILE_LOG", "1")
     source_id = _source_id(client, "llama-server")

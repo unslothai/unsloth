@@ -1,28 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The HTML constructs the thread's fast copy path is proven against, one per case.
-
-Split out from playwright_thread_fast_copy.py so the table can be read on its own: it is the
-list of things a message can contain that a clipboard might treat differently from
-``Selection.toString()``, and every claim in
-studio/frontend/src/components/assistant-ui/thread-fast-copy.ts about "what the clipboard does"
-was measured by copying these one at a time and pasting the result back.
-
-Grouped by what the driver expects of each:
-
-  ANSWERED   everything not named below. The serialiser must produce the clipboard's own string
-             byte for byte.
-  REFUSED    the form controls. Chromium emits a control's value AND wraps it in block breaks
-             whose shape depends on the control, so the fast path hands the copy back.
-  NO CLIPBOARD  content the engine copies nothing at all for, so there is no string to compare.
-
-Adding a case here widens the proof for free; the driver iterates this dict.
-"""
+"""HTML constructs the fast copy path is proven against, grouped as answered, refused or no-copy."""
 
 from __future__ import annotations
 
-# : A 1x1 transparent GIF, left unclosed so a caller appends its own `alt="..."` attribute.
+# A 1x1 GIF left unclosed so a caller appends its own `alt="..."`.
 IMG = '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" '
 
 CONSTRUCTS = {
@@ -34,9 +17,7 @@ CONSTRUCTS = {
     "img_alt_empty": f'<p>{IMG}alt=""></p>',
     "img_no_alt": f"<p>{IMG}></p>",
     "img_alt_inline": f'<p>before{IMG}alt="Tool result 1">after</p>',
-    # An image the native iterator SKIPS. Raised in review and confirmed against the real
-    # clipboard: inserting alt text for one of these ADDS text the clipboard never carried.
-    # The `invisible` case is Unsloth's own ImagePreview before the image has loaded.
+    # An image the native iterator skips: inserting its alt text would add text the clipboard lacks.
     "img_alt_display_none": f'<p>before {IMG}alt="SVG preview" style="display:none"> after</p>',
     "img_alt_hidden": f'<p>before {IMG}alt="SVG preview" style="visibility:hidden"> after</p>',
     "img_alt_unselectable": f'<p>before {IMG}alt="SVG preview" style="user-select:none"> after</p>',
@@ -71,14 +52,10 @@ CONSTRUCTS = {
 #: must be answered AND must match the clipboard byte for byte.
 MUST_REFUSE = frozenset({"input_text", "input_password", "input_checkbox", "textarea", "select"})
 
-#: Constructs where the engine copies nothing at all, so there is no clipboard to compare with.
+#: Constructs where the engine copies nothing, so there is no clipboard to compare.
 NO_COPY = frozenset({"user_select_none", "display_none", "visibility_hidden"})
 
-#: A SELECTION THAT LIES ENTIRELY INSIDE THE TRANSFORMED ELEMENT. Its common ancestor is the text
-#: node, so the scope is the transformed element ITSELF, which `querySelectorAll("*")` does not
-#: include. Raised in review against the earlier gate; it applies with more force to a serialiser
-#: that patches the scope's descendants, because the miss produces a wrong string rather than a
-#: slow copy. All three failed before the fix that added the root to the patched set.
+# A selection wholly inside a transformed element needs the element itself in scope.
 INSIDE_SCOPE = {
     "inside a transformed span": (
         '<p><span style="text-transform:uppercase" id="t">transformed heading</span></p>',

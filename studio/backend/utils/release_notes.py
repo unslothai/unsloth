@@ -779,8 +779,7 @@ def _next_fence_state(open_fence: str | None, marker: str, rest: str) -> str | N
 
 
 def _code_span_ranges(line: str) -> list[tuple[int, int]]:
-    """Code span bounds. A run of backticks closes only on a run of its length."""
-    # Collected once: rescanning per opener is quadratic on a line of distinct unmatched runs, and notes are reparsed on every request.
+    """Collected once: rescanning per opener is quadratic on a line of many distinct unmatched runs, and notes are reparsed on every request."""
     runs: list[tuple[int, int]] = []
     index = 0
     while index < len(line):

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Adversarial probes for keyless API access, from the review of PR #9102.
-
-Each targets a property the merged suite asserts only at the predicate layer,
-only in one direction, or not at all. Separate file so that suite is untouched.
-"""
+"""Probes keyless-access properties the merged suite checks only one way, or not at all."""
 
 from __future__ import annotations
 
@@ -91,9 +87,7 @@ def asgi_scope(
     server = ("127.0.0.1", 8000),
     client = ("127.0.0.1", 50000),
 ):
-    # `headers` is the convenient dict form; `raw_headers` is the ASGI list, which is the
-    # only way to express a repeated header. A dict cannot, which is why the duplicate
-    # rules went untested until now.
+    # raw_headers (ASGI list) is the only way to express a repeated header.
     encoded = [(name.lower().encode(), value.encode()) for name, value in (headers or {}).items()]
     encoded += list(raw_headers or [])
     return {
@@ -118,9 +112,6 @@ def resolve(request):
     return asyncio.run(security(request))
 
 
-# ── the headline invariant: off means off, through the dependency itself ──────
-
-
 def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate():
     """The merged suite asserts scope=off at `scope_covers` level. Assert it where it counts."""
     seed_user()
@@ -128,7 +119,6 @@ def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate(
     with pytest.raises(HTTPException) as caught:
         resolve(request_for())
     assert caught.value.status_code in (401, 403)
-    # ...and neither the dummy bearers nor an empty one may resurrect it.
     for header in (
         "Bearer not-needed",
         "Bearer lm-studio",
@@ -143,15 +133,8 @@ def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate(
             )
 
 
-# ── privilege escalation: can a keyless caller widen its own grant? ───────────
-
-
 def test_a_keyless_caller_cannot_widen_its_own_scope():
-    """`_require_ui_session_for_keyless` is the only thing stopping self-promotion.
-
-    Untested elsewhere, and it rests entirely on `authenticated_via_api_key`
-    reporting True for a keyless caller.
-    """
+    """_require_ui_session_for_keyless alone stops a keyless caller from widening its own scope."""
     from routes.settings import _require_ui_session_for_keyless
 
     seed_user()
@@ -163,7 +146,6 @@ def test_a_keyless_caller_cannot_widen_its_own_scope():
         _require_ui_session_for_keyless(via_api_key = True)
     assert caught.value.status_code == 403
 
-    # An sk-unsloth key is held back by the same guard.
     raw_key, _row = storage.create_api_key(
         username = storage.DEFAULT_ADMIN_USERNAME,
         name = "probe",
@@ -179,9 +161,6 @@ def test_a_keyless_caller_cannot_widen_its_own_scope():
     assert asyncio.run(authenticated_via_api_key(key_credentials)) is True
 
 
-# ── transport: the inference limb, isolated from the tunnel flag ──────────────
-
-
 def test_inference_is_refused_from_a_public_bind_and_a_public_peer():
     """Nothing exercises the inference limb with a genuinely public transport."""
     seed_user()
@@ -193,7 +172,6 @@ def test_inference_is_refused_from_a_public_bind_and_a_public_peer():
         )
         is False
     )
-    # CGNAT is not private either.
     assert (
         keyless_request_allowed(
             request_for(
@@ -204,7 +182,6 @@ def test_inference_is_refused_from_a_public_bind_and_a_public_peer():
         )
         is False
     )
-    # A private peer arriving on a loopback socket is still not LAN admission.
     assert (
         keyless_request_allowed(
             request_for(server = ("127.0.0.1", 8000), client = ("192.168.1.90", 51000))
@@ -214,14 +191,10 @@ def test_inference_is_refused_from_a_public_bind_and_a_public_peer():
 
 
 def test_full_scope_denials_survive_without_the_tunnel_flag():
-    """The merged wildcard/LAN denials pass even with `_full_scope_transport_allowed` gone.
-
-    `_remote_connector_active` is left True there, so `_public_tunnel_active`
-    short-circuits first. With it cleared, the loopback rule has to carry them.
-    """
+    """Full-scope wildcard and LAN denials must hold alone, since the tunnel flag short-circuits them."""
     seed_user()
     set_keyless_api_access("full")
-    assert keyless_request_allowed(request_for()) is True  # control: loopback works
+    assert keyless_request_allowed(request_for()) is True
 
     for bind in ("0.0.0.0", "::"):
         assert (
@@ -262,9 +235,6 @@ def test_every_hosted_mode_flag_closes_full_and_inference():
         ), f"active tunnel did not close scope={scope}"
 
 
-# ── route topology ───────────────────────────────────────────────────────────
-
-
 def test_management_routes_are_never_covered_by_inference_scope():
     """Only the positive `full` form is asserted for /api/* elsewhere."""
     for method, path in (
@@ -293,7 +263,6 @@ def test_root_path_and_trailing_slash_reach_the_same_verdict_end_to_end():
         )
         is False
     )
-    # prefix confusion: a sibling mount must not borrow the root's allowlist
     assert (
         keyless_request_allowed(
             request_for(path = "/studio-v2/v1/models", root_path = "/studio", method = "GET")
@@ -314,23 +283,11 @@ def test_traversal_shaped_paths_never_borrow_an_allowlisted_route():
 
 
 def test_no_v1_get_route_but_model_retrieval_matches_a_traversal_suffix():
-    """`scope_covers` admits every non-empty `GET /v1/models/...` suffix, not an exact pair.
-
-    Broader than the "exact HTTP method + normalized path allowlist" the PR describes, so the
-    safety argument rests on route topology: nothing but `openai_retrieve_model` can match
-    those paths. Pin the topology, because the day another `GET /models/...` route is
-    registered the allowlist silently grows with it.
-
-    Deliberately does NOT assert what `scope_covers` returns for a traversal string. An
-    earlier version did, making this the one test that failed when `scope_covers` was made
-    stricter -- a change detector pointing the wrong way, since the fix for a red build would
-    have been to loosen the code back.
-    """
+    """scope_covers admits any GET /v1/models suffix, so safety rests on no other GET route matching."""
     from starlette.routing import Match
 
     from main import app
 
-    # Enumerate the real app rather than one router, so a second `/v1` mount is caught.
     traversals = [
         "/v1/models/../../api/train/start",
         "/v1/models/../load",
@@ -352,15 +309,10 @@ def test_no_v1_get_route_but_model_retrieval_matches_a_traversal_suffix():
             )[0]
             is not Match.NONE
         ]
-        # the SPA catch-all always matches; the point is that no /v1 API route does
         api_matched = [p for p in matched if p and p.startswith("/v1")]
         assert api_matched in ([], ["/v1/models/{model_id:path}"]), f"{path} reached {api_matched}"
 
-    # and the benign shape the allowlist exists to serve still resolves
     assert scope_covers("inference", "GET", "/v1/models/unsloth/Llama-3.2-1B") is True
-
-
-# ── credential precedence ────────────────────────────────────────────────────
 
 
 def test_a_session_jwt_naming_an_unknown_subject_is_refused():
@@ -382,13 +334,7 @@ def test_a_session_jwt_naming_an_unknown_subject_is_refused():
 
 
 def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
-    """`asgi_request_is_keyless` is a second implementation of the credential rules.
-
-    The middleware reads it; every route reads `_BearerOrKeyless`. Two copies of the
-    duplicate-header and dummy-bearer rules that must not drift, so each shape is run
-    through BOTH and the verdicts compared -- asserting the twin against itself would
-    pass with the dependency deleted, which is what an earlier version of this test did.
-    """
+    """Both credential checks see each header shape and must agree, or the two copies have drifted."""
     seed_user()
     set_keyless_api_access("inference")
 
@@ -405,23 +351,16 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
         ({"Authorization": "Bearer not-needed"}, True),
         ({"Authorization": "Bearer lm-studio"}, True),
         ({"Authorization": "Bearer ollama"}, True),
-        # What hermes-agent sends with no key: the SDK refuses an empty one, so it
-        # substitutes this literal rather than the blank header above.
+        # hermes-agent substitutes this literal since the SDK refuses an empty key.
         ({"Authorization": "Bearer no-key-required"}, True),
-        # Still a credential we do not know, so still refused.
         ({"Authorization": "Bearer sk-no-key-required"}, False),
         ({"Authorization": "Bearer sk-unsloth-nope"}, False),
-        # What a harness that always sends the header emits with no key: the missing header.
         ({"Authorization": "Bearer"}, True),
         ({"Authorization": "Bearer "}, True),
         ({"Authorization": "bearer   "}, True),
         ({"Authorization": "Basic bm90LW5lZWRlZA=="}, False),
         ({"Authorization": "Basic"}, False),
-        # A doubled space after the scheme. This is the shape the two implementations
-        # used to disagree on: the dependency collapsed it and admitted the dummy while
-        # the twin did not, so the request was keyless to every route but not-keyless to
-        # the middleware that clamps the tool grant. Both now say keyless, which is the
-        # clamping answer.
+        # Doubled space after the scheme: both implementations must agree it is keyless.
         ({"Authorization": "bearer  not-needed"}, True),
         ({"Authorization": "Bearer not-needed-extra"}, False),
     ]
@@ -430,8 +369,7 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
         assert twin is expected, f"twin disagreed on {headers}"
         assert dependency_says_keyless(headers) is expected, f"dependency disagreed on {headers}"
 
-    # A repeated `Authorization` is the one shape where the two differ in form and agree
-    # in meaning: the twin returns False, the dependency raises. Both mean not-keyless.
+    # Repeated Authorization: twin returns False, dependency raises; both mean not-keyless.
     duplicated = [
         (b"authorization", b"Bearer not-needed"),
         (b"authorization", b"Bearer not-needed"),
@@ -442,17 +380,7 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
 
 
 def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
-    """`Origin` alone does not identify a browser.
-
-    No engine attaches it to a same-origin GET or a cross-site `no-cors` GET, and only
-    Chromium withholds such a fetch from `http://127.0.0.1:<port>` (Local Network Access,
-    Chrome 141/142). `Sec-Fetch-Site` is what says who initiated the request, and the `Sec-`
-    prefix makes it unforgeable. Verified on Chromium 151, Firefox 153 and WebKit 26.5: every
-    shape a page can emit at a loopback URL -- no-cors and cors `fetch`, POST, `<img>`,
-    `<script>`, `<link rel=prefetch>`, `<iframe>`, form GET and POST, `sendBeacon`,
-    `EventSource`, `WebSocket` -- arrived as `cross-site`, or `same-site` on WebKit, which is
-    why `same-site` is refused too.
-    """
+    """Origin is not enough; Sec-Fetch-Site says who initiated, and cross-site or same-site is refused."""
     seed_user()
     for scope_name in ("inference", "full"):
         set_keyless_api_access(scope_name)
@@ -461,11 +389,8 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
             "same-site",
             "CROSS-SITE",
             " cross-site ",
-            # `none` is set before the redirect chain is walked, so an attacker 302 from
-            # a navigation the user started arrives still saying `none`. Firefox 153 and
-            # WebKit 26.5 both deliver it. Nobody types an API route into an address bar.
+            # `none` is set before redirects, so an attacker 302 still says none (Firefox/WebKit).
             "none",
-            # an empty or unregistered token is not one of the four spelled values
             "",
             "same-partition",
             "same-origin\x00",
@@ -478,7 +403,6 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
                 is False
             ), f"{site!r} was admitted under {scope_name}"
 
-        # a page on Studio's own origin is not an attack
         for site in ("same-origin", "SAME-ORIGIN", " same-origin "):
             assert (
                 keyless_request_allowed(
@@ -487,13 +411,10 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
                 is True
             ), f"{site!r} was refused under {scope_name}"
 
-        # absence must stay admitted: curl, the OpenAI SDKs and Safari < 16.4 send
-        # no Sec-Fetch-* at all, and serving them is the entire point of the setting
+        # Absence stays admitted: curl, OpenAI SDKs and Safari < 16.4 send no Sec-Fetch-*.
         assert keyless_request_allowed(request_for(path = "/v1/models", method = "GET")) is True
 
-        # a repeated header is ambiguous, and `Headers.get()` would silently take the
-        # first. Neither h11 nor httptools rejects a repeated `Sec-Fetch-Site`, so this
-        # has to be refused here or not at all.
+        # A repeated header is ambiguous; neither h11 nor httptools rejects it, so refuse here.
         for pair in (("same-origin", "cross-site"), ("cross-site", "same-origin")):
             assert (
                 keyless_request_allowed(
@@ -511,21 +432,7 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
 
 
 def test_a_loopback_spelling_the_browser_will_not_vouch_for_is_refused():
-    """Absence of `Sec-Fetch-Site` only means "not a browser" for a trustworthy URL.
-
-    Fetch Metadata is attached only to a potentially trustworthy URL, which Secure Contexts
-    spells `127.0.0.0/8` and `::1/128`. Two families sit outside it while still reaching a
-    `127.0.0.1` listener, so a page can dial them and arrive with no Fetch Metadata, which
-    the absent-is-admitted rule would read as a non-browser client:
-
-    * IPv4-mapped IPv6. No `Sec-Fetch-*` in Chromium 151, Firefox 153 or WebKit 26.5; all
-      three normalise the authority to `[::ffff:7f00:1]`.
-    * the unspecified addresses, which reach loopback on Linux. Chromium sends
-      `Host: 0.0.0.0` with no Fetch Metadata; Firefox and WebKit refuse the fetch.
-
-    A general purpose normaliser undoes the distinction that matters here, so the authority
-    is matched as written.
-    """
+    """Mapped IPv6 and 0.0.0.0 reach loopback with no Fetch Metadata, so match the authority as written."""
     seed_user()
     for scope_name in ("inference", "full"):
         set_keyless_api_access(scope_name)
@@ -547,7 +454,6 @@ def test_a_loopback_spelling_the_browser_will_not_vouch_for_is_refused():
                 is False
             ), f"{spelling} was admitted under {scope_name}"
 
-        # the spellings the browser does vouch for keep working
         for spelling in ("127.0.0.1:8888", "127.0.0.2:8888", "[::1]:8888", "localhost:8888"):
             assert (
                 keyless_request_allowed(
@@ -558,15 +464,7 @@ def test_a_loopback_spelling_the_browser_will_not_vouch_for_is_refused():
 
 
 def test_what_the_ui_advertises_matches_what_admission_accepts():
-    """The LAN panel must not offer a keyless URL that admission answers 401 on.
-
-    `lan_access_settings._has_keyless_lan_url` decides whether the panel and the usage
-    examples print `Bearer not-needed`. It had its own copy of the authority test, and
-    the copy used `_normalized_ip`, which un-maps IPv4-mapped IPv6 -- so a launch on
-    `::ffff:192.168.1.24` was advertised as keyless-eligible while admission refused the
-    mapped authority. Both now answer through `keyless_authority_address_allowed`, so
-    this pins the two ends together rather than the mapped case alone.
-    """
+    """The LAN panel keyless URL advice must match admission, which refuses IPv4-mapped authorities."""
     from utils.keyless_api_access import keyless_authority_address_allowed
     from utils.lan_access_settings import _has_keyless_lan_url
 
@@ -586,7 +484,6 @@ def test_what_the_ui_advertises_matches_what_admission_accepts():
             is expected
         ), f"admission disagreed on {authority}"
 
-    # and the shared classifier refuses a mapped literal however it is spelled
     import ipaddress
 
     for mapped in ("::ffff:192.168.1.24", "::ffff:c0a8:118", "::ffff:127.0.0.1"):
@@ -596,19 +493,7 @@ def test_what_the_ui_advertises_matches_what_admission_accepts():
 
 
 def test_an_authority_the_scope_cannot_be_reached_at_is_refused():
-    """Being an address rather than a name is not enough; it has to be a local one.
-
-    The socket checks see only the hop that connected, so an SSH forward or reverse proxy in
-    front of a loopback bind makes both ASGI endpoints loopback while `Host` is the public
-    address the page was served from. Before this, `full` admitted `Host: 8.8.8.8` on a
-    loopback transport and served management responses to a page that could read them.
-
-    `full` is loopback-only by construction, so its authority must be loopback. `inference`
-    may also be reached across the private LAN, so it takes the networks
-    `lan_access_settings` admits and nothing wider -- CGNAT and the documentation ranges sit
-    outside them, which `is_private` would not have caught, meaning "not globally reachable"
-    rather than RFC 1918.
-    """
+    """full needs a loopback Host; inference takes only the lan_access_settings networks, not CGNAT."""
     seed_user()
     for scope_name, path in (("full", "/api/chat/threads"), ("inference", "/v1/models")):
         set_keyless_api_access(scope_name)
@@ -625,7 +510,6 @@ def test_an_authority_the_scope_cannot_be_reached_at_is_refused():
                 is False
             ), f"{public} was admitted under {scope_name}"
 
-    # a private LAN authority is right for inference and wrong for full
     for spelling in ("192.168.1.5:8888", "10.0.0.5:8888", "[fd00::1]:8888"):
         assert (
             _host_authority_is_direct(request_for(headers = {"Host": spelling}), "inference") is True
@@ -634,7 +518,6 @@ def test_an_authority_the_scope_cannot_be_reached_at_is_refused():
             _host_authority_is_direct(request_for(headers = {"Host": spelling}), "full") is False
         ), f"{spelling} admitted for full"
 
-    # loopback stays right for both, and so does an absent Host
     for spelling in ("127.0.0.1:8888", "127.0.0.2:8888", "localhost:8888", "[::1]:8888"):
         for scope_name in ("full", "inference"):
             assert (
@@ -646,14 +529,7 @@ def test_an_authority_the_scope_cannot_be_reached_at_is_refused():
 
 
 def test_an_authority_that_is_not_a_bare_host_and_port_is_refused():
-    """`Host` is a host plus an optional numeric port, and nothing else.
-
-    Everything below reached the app through both uvicorn parsers in a raw-socket run,
-    so the wire really can carry them. None is a DNS name, so none is a rebinding
-    vector on its own -- but each is a shape that only a broken or hostile intermediary
-    produces, and resolving them leniently is what let the same normaliser paper over
-    the IPv4-mapped case above.
-    """
+    """Host must be a host plus an optional numeric port; anything else is refused, not parsed leniently."""
     seed_user()
     for scope_name in ("inference", "full"):
         set_keyless_api_access(scope_name)
@@ -685,8 +561,7 @@ def test_an_authority_that_is_not_a_bare_host_and_port_is_refused():
                 is False
             ), f"{malformed!r} was admitted under {scope_name}"
 
-        # a repeated Host is ambiguous. h11 rejects it on the wire, httptools passes
-        # both through, and `Headers.get()` would take the first.
+        # Repeated Host: h11 rejects it, httptools passes both, Headers.get() takes the first.
         for pair in (
             (b"127.0.0.1:8888", b"evil.example:8888"),
             (b"evil.example:8888", b"127.0.0.1:8888"),
@@ -704,18 +579,7 @@ def test_an_authority_that_is_not_a_bare_host_and_port_is_refused():
 
 
 def test_a_plain_http_lan_browser_request_is_not_covered_by_fetch_metadata():
-    """Pins the documented residual, so a later reader does not assume coverage.
-
-    On the private-LAN limb the URL is plain-HTTP `http://192.168.x.y:<port>`, never
-    potentially trustworthy, so no engine sends `Sec-Fetch-*` and
-    `_browser_initiated_elsewhere` can never fire. A cross-site no-cors GET from a LAN
-    browser therefore still reaches keyless `inference`, as it did before this rule. `Origin`
-    remains the only browser signal there, and the rebinding guard still refuses the name a
-    rebound page would send.
-
-    Unchanged behaviour, not a regression: narrowing it would take away the private-LAN
-    inference the setting exists to provide. Asserted so a change either way is visible.
-    """
+    """Plain-HTTP LAN browsers send no Sec-Fetch-* metadata, so a cross-site GET still reaches inference."""
     seed_user()
     set_keyless_api_access("inference")
     lan = request_for(
@@ -725,11 +589,8 @@ def test_a_plain_http_lan_browser_request_is_not_covered_by_fetch_metadata():
         client = ("192.168.1.77", 51000),
         server = ("192.168.1.50", 8888),
     )
-    # no Sec-Fetch-Site is sent to a plain-HTTP LAN origin, so the predicate is inert
     assert _browser_initiated_elsewhere(lan) is False
-    # and the authority is a literal, so the rebinding guard is satisfied too
     assert _host_authority_is_direct(lan, "inference") is True
-    # a rebound page on the LAN is still refused, by the authority rule alone
     rebound = request_for(
         path = "/v1/models",
         method = "GET",
@@ -741,14 +602,7 @@ def test_a_plain_http_lan_browser_request_is_not_covered_by_fetch_metadata():
 
 
 def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeypatch):
-    """The setting adds an admission path. It must never take one away.
-
-    A working key or session has to keep authenticating exactly as before, on
-    every scope and on every transport -- including the ones keyless itself is
-    refused on, since a usable bearer is resolved before any scope or transport
-    check runs. It also has to authenticate *as itself*: a keyless scheme would
-    hand an existing API client the keyless tool restriction it never had.
-    """
+    """A real key must keep authenticating as itself under every scope and transport."""
     import lan_access
 
     seed_user()
@@ -811,8 +665,7 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
     for scope_name in ("off", "inference", "full"):
         set_keyless_api_access(scope_name)
         for label, transport in transports.items():
-            # via monkeypatch, so the stub cannot outlive this test: it is a module
-            # global, and test_lan_access_settings.py reads the real one
+            # monkeypatch so the stub cannot leak: test_lan_access_settings.py reads the real one
             monkeypatch.setattr(
                 lan_access,
                 "lan_listener_status",
@@ -841,7 +694,6 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
                     asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
                 ), f"{credential_name} stopped working on {label}/{scope_name}"
 
-    # and the credentials that must NOT work still do not, at the widest scope
     set_keyless_api_access("full")
     storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
     expired, _row = storage.create_api_key(
@@ -859,14 +711,7 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
 
 
 def test_a_rebound_hostname_cannot_pose_as_a_local_client():
-    """DNS rebinding produces every local signal the socket checks look at.
-
-    A page on `evil.example` whose record is re-pointed at 127.0.0.1 keeps its own
-    origin, so the fetch is same-origin: no `Origin`, `Sec-Fetch-Site: same-origin`,
-    loopback peer on a loopback socket. Unlike the `no-cors` case the response is
-    readable, so under `full` this reads local admin data. `Host` is the one header
-    that still names the page's own domain.
-    """
+    """A rebound page looks same-origin and local; only Host still names its domain, so refuse on it."""
     seed_user()
     for scope_name in ("inference", "full"):
         set_keyless_api_access(scope_name)
@@ -878,8 +723,7 @@ def test_a_rebound_hostname_cannot_pose_as_a_local_client():
             "127.0.0.1.evil.example:8888",
             "[::1]evil.example",
             "studio.internal:8888",
-            # WebKit sends no Sec-Fetch-* for a trailing-dot localhost, so the dotted
-            # spelling would be an absence-is-admitted gap on Safari alone.
+            # WebKit sends no Sec-Fetch-* for trailing-dot localhost.
             "localhost.:8888",
             "foo.localhost.:8888",
         ):
@@ -894,7 +738,6 @@ def test_a_rebound_hostname_cannot_pose_as_a_local_client():
                 is False
             ), f"{hostile} was admitted under {scope_name}"
 
-        # a client that addressed the socket directly is unaffected
         for direct in (
             "127.0.0.1:8888",
             "localhost:8888",
@@ -909,21 +752,11 @@ def test_a_rebound_hostname_cannot_pose_as_a_local_client():
                 is True
             ), f"{direct} was refused under {scope_name}"
 
-        # and no Host at all stays admitted: the merged suite sends none
         assert keyless_request_allowed(request_for(path = path, method = "GET")) is True
 
 
-# ── the reported race, pinned deterministically ──────────────────────────────
-
-
 def test_revoking_a_key_after_the_admission_snapshot_never_yields_the_admin():
-    """Regression for the PR #9102 race reported by @Imagineer99.
-
-    Reproduced on 99091aba7 and fixed by 10ecfe9d4; the reporter's own repro can
-    no longer run on head because it monkeypatches a function the classifier no
-    longer calls. This pins the interleaving directly instead: revoke between the
-    middleware snapshot and the credential check.
-    """
+    """Revoking a key between the admission snapshot and the credential check must never yield admin."""
     from state.tool_policy import (
         get_tool_policy_default,
         reset_tool_policy,
@@ -945,7 +778,6 @@ def test_revoking_a_key_after_the_admission_snapshot_never_yields_the_admin():
     async def downstream(asgi, receive, send):
         observed["snapshot"] = asgi.get("state", {}).get(KEYLESS_ADMISSION_STATE_KEY)
         observed["tools"] = get_tool_policy_default()
-        # the race: the key dies after the middleware classified the request
         storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
         credentials = await security(Request(asgi, receive))
         observed["scheme"] = credentials.scheme
@@ -971,6 +803,4 @@ def test_revoking_a_key_after_the_admission_snapshot_never_yields_the_admin():
     assert observed["scheme"] == "Bearer"
     assert observed.get("subject_resolved") is not True, "revoked key resolved to a subject"
     assert observed["status"] == 401
-    # tools stay at the caller's own policy: an API-key client is not keyless, so
-    # the grant it already had is not taken away. It never reaches a handler anyway.
     assert observed["tools"] is True

@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regressions for the second review pass on the local STT dictation feature:
-
-1. scripts/build_whisper_cpp.sh must not rm -rf a whisper.cpp/src tree under a
-   custom Unsloth home unless Unsloth itself created it (ownership marker), the
-   same policy studio/setup.sh applies before its destructive replacements.
-2. _snapshot_is_complete must reject pickle (pytorch_model.bin) checkpoints
-   outright; only safetensors weights count as a usable snapshot.
-3. _snapshot_is_complete must require tokenizer assets (tokenizer.json or
-   vocab.json + merges.txt); weights + config alone decode to blank text.
-4. Custom-repo downloads must pin the revision validated beforehand and
-   restrict snapshot_download to the model/tokenizer/config/preprocessor file
-   classes (TOCTOU + unbounded-download hardening).
-5. The GGML sidecar's readiness probe must not treat an arbitrary local HTTP
-   responder as whisper-server (mic audio would be posted to it), and the port
-   reservation must stay held until just before spawn.
-"""
+"""_snapshot_is_complete needs safetensors and tokenizer assets; readiness must prove whisper-server."""
 
 from __future__ import annotations
 
@@ -43,9 +28,6 @@ from core.inference.stt_ggml_sidecar import GgmlSttSidecar, SttEngineUnavailable
 from core.inference.stt_sidecar import validate_remote_model
 
 _BUILD_SCRIPT = _BACKEND_ROOT.parents[1] / "scripts" / "build_whisper_cpp.sh"
-
-
-# 1. build_whisper_cpp.sh ownership gate ----------------------------------------
 
 
 def _stub_tools(tmp_path: Path) -> dict:
@@ -84,7 +66,6 @@ def test_build_script_refuses_unowned_dir_in_custom_studio_home(tmp_path):
 
     assert result.returncode != 0
     assert "not marked as an Unsloth-owned" in result.stderr
-    # The unowned tree, and the user's file inside it, survived untouched.
     assert user_file.read_text() == "precious"
 
 
@@ -98,7 +79,6 @@ def test_build_script_proceeds_when_marker_present(tmp_path):
     env["UNSLOTH_STUDIO_HOME"] = str(home)
     result = _run_build_script(env)
 
-    # Past the guard: it fails later at the stubbed git clone, not the gate.
     assert "not marked as an Unsloth-owned" not in result.stderr
     assert "stub-git-invoked" in result.stderr
 
@@ -111,7 +91,6 @@ def test_build_script_marks_fresh_custom_install_dir(tmp_path):
     env["UNSLOTH_STUDIO_HOME"] = str(home)
     _run_build_script(env)
 
-    # A directory the script creates is marked so re-runs stay allowed.
     assert (home / "whisper.cpp" / ".unsloth-studio-owned").is_file()
 
 
@@ -126,12 +105,8 @@ def test_build_script_keeps_legacy_home_behavior(tmp_path):
     env["HOME"] = str(fake_home)
     result = _run_build_script(env)
 
-    # The legacy managed dir is always Unsloth-owned; no gate, straight to git.
     assert "not marked as an Unsloth-owned" not in result.stderr
     assert "stub-git-invoked" in result.stderr
-
-
-# 2 + 3. _snapshot_is_complete --------------------------------------------------
 
 
 def _base_snapshot(tmp_path: Path) -> Path:
@@ -144,9 +119,7 @@ def _base_snapshot(tmp_path: Path) -> Path:
 
 
 def test_pickle_checkpoint_snapshot_is_never_complete(tmp_path):
-    # A cached pytorch_model.bin is a pickle RCE load path; the snapshot must
-    # read as incomplete no matter how many shards are present, so update
-    # re-resolves and _select_snapshot_files fails it closed.
+    # A cached pytorch_model.bin is a pickle RCE path, so the snapshot reads incomplete.
     snap = _base_snapshot(tmp_path)
     index = {
         "weight_map": {
@@ -159,8 +132,6 @@ def test_pickle_checkpoint_snapshot_is_never_complete(tmp_path):
     (snap / "pytorch_model-00002-of-00002.bin").write_bytes(b"w" * 8)
     assert stt_sidecar_module._snapshot_is_complete(snap) is False
 
-    # A single-file pickle checkpoint is likewise rejected; the safetensors
-    # equivalent in the same dir makes it complete.
     (snap / "pytorch_model.bin").write_bytes(b"w" * 8)
     assert stt_sidecar_module._snapshot_is_complete(snap) is False
     (snap / "model.safetensors").write_bytes(b"w" * 8)
@@ -168,9 +139,7 @@ def test_pickle_checkpoint_snapshot_is_never_complete(tmp_path):
 
 
 def test_safe_index_naming_pickle_shards_is_not_complete(tmp_path):
-    # A safetensors index that references .bin shards would still pickle-load
-    # via Transformers' per-shard dispatch; the cached snapshot must read as
-    # incomplete so it re-resolves and fails closed at selection.
+    # An index naming .bin shards would still pickle-load per shard.
     snap = _base_snapshot(tmp_path)
     (snap / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {"a": "pytorch_model-00001-of-00001.bin"}})
@@ -193,9 +162,6 @@ def test_snapshot_without_tokenizer_assets_is_incomplete(tmp_path):
     assert stt_sidecar_module._snapshot_is_complete(snap) is False
     (snap / "merges.txt").write_text("")
     assert stt_sidecar_module._snapshot_is_complete(snap) is True
-
-
-# 4. Revision pinning and allow_patterns ----------------------------------------
 
 
 def test_validate_remote_model_returns_the_validated_revision(monkeypatch):
@@ -240,7 +206,6 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
         *,
         hub_cache = None,
     ):
-        # The transfer moved to a worker process; pinning is now in its argv.
         remaining = iter(args)
         patterns: list[str] = []
         for flag in remaining:
@@ -280,22 +245,16 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
     monkeypatch.setattr("core.inference.stt_download_worker.spawn_download", fake_spawn_download)
 
     state = stt_sidecar_module._SnapshotDownloadState()
-    # The revision resolved at validation time wins over the current head.
     state._run("someone/custom-whisper", None, revision = validated_revision)
     assert captured["revision"] == validated_revision
     patterns = captured["allow_patterns"]
     assert "model.safetensors" in patterns and "tokenizer.json" in patterns
-    # No wildcard that would admit arbitrary repo contents.
     assert "*" not in patterns
 
-    # Without a validated revision (curated repos), pin to the metadata head.
     captured.clear()
     state._run("someone/custom-whisper", None)
     assert captured["revision"] == head_revision
     assert captured["allow_patterns"]
-
-
-# 5. GGML readiness must identify whisper-server --------------------------------
 
 
 class _CannedHandler(http.server.BaseHTTPRequestHandler):

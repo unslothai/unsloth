@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for docker/unsloth_nb_pip_magic.py.
-
-The input transformer rewrites `!<python> -m pip|uv ...` to `!pip|uv ...` so it
-resolves to the PATH shim. Transformers see the RAW cell text (brace expansion
-happens later, in the system() path), so the braced and absolute-interpreter forms
-notebooks use to target the running kernel must be rewritten too.
-"""
+"""Transformers see raw cell text, so braced and absolute-interpreter pip/uv forms need rewriting too."""
 
 import importlib.util
 import pathlib

@@ -1,0 +1,328 @@
+{
+ "nvidia/Cosmos3-Edge-Policy-DROID@a7c7288f9b6ac1684e993007b0f9703dd26e58ef": {
+  "config": {
+   "architectures": [
+    "Cosmos3ForConditionalGeneration"
+   ],
+   "model_type": "cosmos3_omni"
+  },
+  "model_index": {
+   "_class_name": "Cosmos3OmniPipeline",
+   "_diffusers_version": "0.40.0.dev0",
+   "default_use_system_prompt": false,
+   "enable_safety_checker": false,
+   "safety_checker": [
+    null,
+    null
+   ],
+   "scheduler": [
+    "diffusers",
+    "UniPCMultistepScheduler"
+   ],
+   "sound_tokenizer": [
+    null,
+    null
+   ],
+   "text_tokenizer": [
+    "transformers",
+    "PreTrainedTokenizerFast"
+   ],
+   "transformer": [
+    "diffusers",
+    "Cosmos3OmniTransformer"
+   ],
+   "use_native_flow_schedule": true,
+   "vae": [
+    "diffusers",
+    "AutoencoderKLWan"
+   ]
+  },
+  "transformer_config": {
+   "_class_name": "Cosmos3OmniTransformer",
+   "action_gen": true,
+   "backbone_type": "cosmos3_edge_nemotron_dense",
+   "hidden_size": 2048,
+   "latent_patch_size": 2,
+   "num_hidden_layers": 28,
+   "sound_gen": false
+  }
+ },
+ "nvidia/Cosmos3-Edge@344d602b128d1bbdacb43b08d0a3626f46343e29": {
+  "config": {
+   "architectures": [
+    "Cosmos3EdgeForConditionalGeneration"
+   ],
+   "model_type": "cosmos3_edge"
+  },
+  "listing": [
+   ["chat_template.jinja", 12158],
+   ["config.json", 1679],
+   ["generation_config.json", 154],
+   ["model.safetensors.index.json", 68564],
+   ["model_index.json", 555],
+   ["modular_model_index.json", 1357],
+   ["preprocessor_config.json", 334],
+   ["processor_config.json", 875],
+   ["scheduler/scheduler_config.json", 889],
+   ["special_tokens_map.json", 563],
+   ["text_tokenizer/chat_template.jinja", 12158],
+   ["text_tokenizer/special_tokens_map.json", 563],
+   ["text_tokenizer/tokenizer.json", 17077500],
+   ["text_tokenizer/tokenizer_config.json", 393],
+   ["tokenizer.json", 17077500],
+   ["tokenizer_config.json", 177253],
+   ["transformer/config.json", 1075],
+   ["transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 5000040072],
+   ["transformer/diffusion_pytorch_model-00002-of-00002.safetensors", 1739335512],
+   ["transformer/diffusion_pytorch_model.safetensors.index.json", 53623],
+   ["vae/config.json", 1755],
+   ["vae/diffusion_pytorch_model.safetensors", 1409400600],
+   ["video_preprocessor_config.json", 367],
+   ["vision_encoder/model.safetensors", 978739880]
+  ],
+  "model_index": {
+   "_class_name": "Cosmos3OmniPipeline",
+   "_diffusers_version": "0.40.0.dev0",
+   "default_use_system_prompt": false,
+   "enable_safety_checker": false,
+   "safety_checker": [
+    null,
+    null
+   ],
+   "scheduler": [
+    "diffusers",
+    "UniPCMultistepScheduler"
+   ],
+   "sound_tokenizer": [
+    null,
+    null
+   ],
+   "text_tokenizer": [
+    "transformers",
+    "PreTrainedTokenizerFast"
+   ],
+   "transformer": [
+    "diffusers",
+    "Cosmos3OmniTransformer"
+   ],
+   "use_native_flow_schedule": true,
+   "vae": [
+    "diffusers",
+    "AutoencoderKLWan"
+   ]
+  },
+  "scheduler_config": {
+   "_class_name": "UniPCMultistepScheduler",
+   "_diffusers_version": "0.40.0.dev0",
+   "beta_end": 0.02,
+   "beta_schedule": "linear",
+   "beta_start": 0.0001,
+   "disable_corrector": [],
+   "dynamic_thresholding_ratio": 0.995,
+   "final_sigmas_type": "zero",
+   "flow_shift": 1.0,
+   "lower_order_final": true,
+   "num_train_timesteps": 1000,
+   "predict_x0": true,
+   "prediction_type": "flow_prediction",
+   "rescale_betas_zero_snr": false,
+   "sample_max_value": 1.0,
+   "shift_terminal": null,
+   "sigma_max": 200.0,
+   "sigma_min": 0.147,
+   "solver_order": 2,
+   "solver_p": null,
+   "solver_type": "bh2",
+   "steps_offset": 0,
+   "thresholding": false,
+   "time_shift_type": "exponential",
+   "timestep_spacing": "linspace",
+   "trained_betas": null,
+   "use_beta_sigmas": false,
+   "use_dynamic_shifting": false,
+   "use_exponential_sigmas": false,
+   "use_flow_sigmas": true,
+   "use_karras_sigmas": true
+  },
+  "transformer_config": {
+   "_class_name": "Cosmos3OmniTransformer",
+   "action_gen": true,
+   "backbone_type": "cosmos3_edge_nemotron_dense",
+   "hidden_size": 2048,
+   "latent_patch_size": 2,
+   "num_hidden_layers": 28,
+   "sound_gen": false
+  },
+  "vae_config": {
+   "_class_name": "AutoencoderKLWan",
+   "scale_factor_spatial": 16,
+   "scale_factor_temporal": 4,
+   "z_dim": 48
+  }
+ },
+ "nvidia/Cosmos3-Nano@e59a53c25979a090fa8706c9acc0c254a6e89b92": {
+  "config": {
+   "architectures": [
+    "Cosmos3ForConditionalGeneration"
+   ],
+   "model_type": "cosmos3_omni"
+  },
+  "listing": [
+   ["chat_template.json", 5499],
+   ["checkpoint.json", 2],
+   ["config.json", 8166],
+   ["generation_config.json", 269],
+   ["merges.txt", 1671839],
+   ["model.safetensors.index.json", 112969],
+   ["model_index.json", 502],
+   ["modular_model_index.json", 1667],
+   ["preprocessor_config.json", 390],
+   ["scheduler/scheduler_config.json", 884],
+   ["sound_tokenizer/config.json", 1310],
+   ["sound_tokenizer/diffusion_pytorch_model.safetensors", 1985176840],
+   ["text_tokenizer/added_tokens.json", 707],
+   ["text_tokenizer/chat_template.jinja", 5292],
+   ["text_tokenizer/merges.txt", 1671853],
+   ["text_tokenizer/special_tokens_map.json", 613],
+   ["text_tokenizer/tokenizer.json", 11422654],
+   ["text_tokenizer/tokenizer_config.json", 5404],
+   ["text_tokenizer/vocab.json", 2776833],
+   ["tokenizer.json", 7032403],
+   ["tokenizer_config.json", 10868],
+   ["transformer/config.json", 1383],
+   ["transformer/diffusion_pytorch_model-00001-of-00007.safetensors", 4902257280],
+   ["transformer/diffusion_pytorch_model-00002-of-00007.safetensors", 4999863656],
+   ["transformer/diffusion_pytorch_model-00003-of-00007.safetensors", 4932719448],
+   ["transformer/diffusion_pytorch_model-00004-of-00007.safetensors", 4983084656],
+   ["transformer/diffusion_pytorch_model-00005-of-00007.safetensors", 4949498576],
+   ["transformer/diffusion_pytorch_model-00006-of-00007.safetensors", 4261644464],
+   ["transformer/diffusion_pytorch_model-00007-of-00007.safetensors", 1318361208],
+   ["transformer/diffusion_pytorch_model.safetensors.index.json", 78854],
+   ["vae/config.json", 1750],
+   ["vae/diffusion_pytorch_model.safetensors", 1409400600],
+   ["video_preprocessor_config.json", 385],
+   ["vision_encoder/config.json", 509],
+   ["vision_encoder/model.safetensors", 1152811416],
+   ["vocab.json", 2776833]
+  ],
+  "model_index": {
+   "_class_name": "Cosmos3OmniDiffusersPipeline",
+   "_diffusers_version": "0.37.1",
+   "scheduler": [
+    "diffusers",
+    "UniPCMultistepScheduler"
+   ],
+   "sound_tokenizer": [
+    "diffusers",
+    "Cosmos3AVAEAudioTokenizer"
+   ],
+   "text_tokenizer": [
+    "transformers",
+    "Qwen2TokenizerFast"
+   ],
+   "transformer": [
+    "diffusers",
+    "Cosmos3OmniTransformer"
+   ],
+   "vae": [
+    "diffusers",
+    "AutoencoderKLWan"
+   ],
+   "vision_encoder": [
+    "transformers",
+    "Qwen3VLVisionModel"
+   ]
+  },
+  "scheduler_config": {
+   "_class_name": "UniPCMultistepScheduler",
+   "_diffusers_version": "0.37.1",
+   "beta_end": 0.02,
+   "beta_schedule": "linear",
+   "beta_start": 0.0001,
+   "disable_corrector": [],
+   "dynamic_thresholding_ratio": 0.995,
+   "final_sigmas_type": "zero",
+   "flow_shift": 1.0,
+   "lower_order_final": true,
+   "num_train_timesteps": 1000,
+   "predict_x0": true,
+   "prediction_type": "flow_prediction",
+   "rescale_betas_zero_snr": false,
+   "sample_max_value": 1.0,
+   "shift_terminal": null,
+   "sigma_max": 200.0,
+   "sigma_min": 0.147,
+   "solver_order": 2,
+   "solver_p": null,
+   "solver_type": "bh2",
+   "steps_offset": 0,
+   "thresholding": false,
+   "time_shift_type": "exponential",
+   "timestep_spacing": "linspace",
+   "trained_betas": null,
+   "use_beta_sigmas": false,
+   "use_dynamic_shifting": false,
+   "use_exponential_sigmas": false,
+   "use_flow_sigmas": true,
+   "use_karras_sigmas": true
+  },
+  "transformer_config": {
+   "_class_name": "Cosmos3OmniTransformer",
+   "action_gen": true,
+   "hidden_size": 4096,
+   "latent_patch_size": 2,
+   "num_hidden_layers": 36,
+   "sound_gen": true
+  },
+  "vae_config": {
+   "_class_name": "AutoencoderKLWan",
+   "scale_factor_spatial": 16,
+   "scale_factor_temporal": 4,
+   "z_dim": 48
+  }
+ },
+ "nvidia/Cosmos3-Super@f543c56225b2e04d0ad141e29655be3a45d9c455": {
+  "config": {
+   "architectures": [
+    "Cosmos3ForConditionalGeneration"
+   ],
+   "model_type": "cosmos3_omni"
+  },
+  "model_index": {
+   "_class_name": "Cosmos3OmniDiffusersPipeline",
+   "_diffusers_version": "0.37.1",
+   "scheduler": [
+    "diffusers",
+    "UniPCMultistepScheduler"
+   ],
+   "sound_tokenizer": [
+    "diffusers",
+    "Cosmos3AVAEAudioTokenizer"
+   ],
+   "text_tokenizer": [
+    "transformers",
+    "Qwen2TokenizerFast"
+   ],
+   "transformer": [
+    "diffusers",
+    "Cosmos3OmniTransformer"
+   ],
+   "vae": [
+    "diffusers",
+    "AutoencoderKLWan"
+   ],
+   "vision_encoder": [
+    "transformers",
+    "Qwen3VLVisionModel"
+   ]
+  },
+  "transformer_config": {
+   "_class_name": "Cosmos3OmniTransformer",
+   "action_gen": true,
+   "hidden_size": 5120,
+   "latent_patch_size": 2,
+   "num_hidden_layers": 64,
+   "sound_gen": true
+  }
+ }
+}

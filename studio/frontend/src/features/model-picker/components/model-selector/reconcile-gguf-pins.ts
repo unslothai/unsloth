@@ -16,11 +16,8 @@ export function isChatGgufTask(task: string | null | undefined): boolean {
   return !task || task === "text-generation" || task === "image-text-to-text";
 }
 
-/** Whether the cache still holds a runnable copy of *repoId* that is not a GGUF quant.
- *  A repo can cache its GGUF quants and a safetensors copy side by side, and the bare pin
- *  covers that whole repo, so deleting the last quant must not drop it while such a copy
- *  survives. The models listing is the only source for those copies: it reports their own
- *  readiness, and an unconfirmed scan is not evidence either way. */
+/** A non-GGUF copy can sit beside the quants under the same bare pin, so deleting the last quant
+  must not drop the pin while it survives. */
 async function hasRunnableNonGgufCopy(
   repoId: string,
   hfToken?: string,
@@ -29,8 +26,7 @@ async function hasRunnableNonGgufCopy(
   if (models.scan_confirmed === false) return true;
   return models.cached.some(
     (copy) =>
-      // An adapter holds no base weights, so /load has to fetch them from the Hub: it is not
-      // a runnable copy this pin could keep pointing at.
+      // An adapter holds no base weights, so it is not a runnable copy.
       copy.model_format !== "adapter" &&
       copy.capabilities?.can_chat !== false &&
       modelIdsMatchForPicker(copy.repo_id, repoId),
@@ -55,7 +51,6 @@ export async function reconcileGgufPinsAfterDelete(
             })
           ).variants
         : [];
-    // An anonymous Hub listing cannot disprove the complete copy found on disk.
     if (
       !hfToken &&
       copies.some((copy) => !copy.partial) &&
@@ -63,8 +58,6 @@ export async function reconcileGgufPinsAfterDelete(
     )
       return;
     const state = usePinnedModelsStore.getState();
-    // The bare pin stands for the repo as a whole -- its non-GGUF copies included -- so it
-    // goes only when no loadable copy of any format is left.
     if (
       !variants.some((v) => v.downloaded && !v.partial) &&
       !(await hasRunnableNonGgufCopy(repoId, hfToken))
@@ -87,6 +80,6 @@ export async function reconcileGgufPinsAfterDelete(
       }
     }
   } catch {
-    // An unavailable scan is not evidence that the last downloaded copy is gone.
+    // An unavailable scan is not evidence that the last copy is gone.
   }
 }

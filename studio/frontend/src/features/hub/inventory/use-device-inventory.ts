@@ -12,6 +12,7 @@ import {
   listCachedDatasets,
   listLocalDatasets,
   listLocalModels,
+  listUnslothModels,
 } from "./api";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { ensureHiddenModelMatchers } from "../lib/hidden-models";
@@ -30,6 +31,7 @@ export type DeviceInventorySource =
   | "cachedModels"
   | "cachedDatasets"
   | "localModels"
+  | "unslothModels"
   | "localDatasets";
 
 export type DeviceInventoryRows = {
@@ -37,6 +39,7 @@ export type DeviceInventoryRows = {
   cachedModels: CachedModelRepo[];
   cachedDatasets: CachedDatasetRepo[];
   localModels: LocalModelInfo[];
+  unslothModels: LocalModelInfo[];
   localDatasets: LocalDatasetInfo[];
 };
 
@@ -110,6 +113,7 @@ export const useDeviceInventoryStore = create<DeviceInventoryState>(() => ({
   cachedModels: emptySource<CachedModelRepo[]>(),
   cachedDatasets: emptySource<CachedDatasetRepo[]>(),
   localModels: emptySource<LocalModelInfo[]>(),
+  unslothModels: emptySource<LocalModelInfo[]>(),
   localDatasets: emptySource<LocalDatasetInfo[]>(),
 }));
 
@@ -140,6 +144,8 @@ function fetchErrorMessage(
       return "Couldn't scan cached datasets";
     case "localModels":
       return "Couldn't scan local models";
+    case "unslothModels":
+      return "Couldn't scan trained and exported models";
     case "localDatasets":
       return "Couldn't scan local datasets";
     default:
@@ -190,6 +196,11 @@ async function runSourceFetch<K extends DeviceInventorySource>(
         scanConfirmed: true,
       };
     }
+    case "unslothModels":
+      return {
+        rows: (await listUnslothModels()).models as DeviceInventoryRows[K],
+        scanConfirmed: true,
+      };
     case "localDatasets":
       return {
         rows: (await listLocalDatasets()).datasets as DeviceInventoryRows[K],
@@ -259,8 +270,7 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
     return Promise.resolve(current.rows);
   }
 
-  // Carry `ready` across refetches so a stale-but-known state doesn't flip to "loading" and
-  // flash a spinner; keep showing prior rows until the success path lands fresh data.
+  // Carry `ready` across refetches so known state does not flash a spinner.
   updateSourceState(source, {
     loading: true,
     ready: current.ready,
@@ -303,8 +313,6 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
     })
     .catch((error) => {
       if (useDeviceInventoryStore.getState()[source].key === key) {
-        // Preserve prior `ready` on failure so a transient background-refetch
-        // error doesn't blank consumers that already hold good rows.
         updateSourceState(source, {
           loading: false,
           ready: current.ready,

@@ -103,8 +103,6 @@ test("a bin-only dtype variant is still counted", async () => {
 });
 
 test("an indexless variant does not authorise dropping its bins", async () => {
-  // Sharded fp16 safetensors with no fp16 index are not loadable, so the fp16 bin family
-  // is still the only usable copy and must stay counted.
   stubSiblings({
     "config.json": 2,
     "model.safetensors": 500,
@@ -138,8 +136,6 @@ test("both variant shard layouts are recognised", async () => {
 });
 
 test("a variant index never outlives its shards", async () => {
-  // whisper-large-v3's real shape: the fp32 variant ships as safetensors, so the bin shards
-  // and their index both go.
   stubSiblings({
     "config.json": 2,
     "model.safetensors": 3_090,
@@ -151,8 +147,7 @@ test("a variant index never outlives its shards", async () => {
     "pytorch_model.fp32-00002-of-00002.bin": 3_000,
     "pytorch_model.bin.index.fp32.json": 1,
   });
-  // A repoId of its own: the module-level LRU is keyed on it, and reusing
-  // "acme/whisper-shaped" from the earlier test served that test's cached answer here.
+  // A unique repoId: the module-level LRU is keyed on it.
   assert.deepEqual(await fetchModelSize("acme/whisper-fp32-variant"), {
     totalBytes: 2 + 3_090 + 3_000 + 3_000 + 1,
     weightsBytes: 3_090 + 3_000 + 3_000,
@@ -160,8 +155,6 @@ test("a variant index never outlives its shards", async () => {
 });
 
 test("indexless shards do not open the gate", async () => {
-  // Numbered shards are resolved through model.safetensors.index.json; with no index the
-  // bin copy is the only loadable checkpoint, so it must still be counted.
   stubSiblings({
     "config.json": 2,
     "model-00001-of-00002.safetensors": 500,
@@ -189,10 +182,7 @@ test("the same repo with an index does skip the bin copy", async () => {
 });
 
 test("a non-ascii shard number does not open the gate", async () => {
-  // The backend's ROOT_SAFETENSORS_RE is the authority on what gets downloaded. Python's
-  // \d matches these digits and JavaScript's does not, so spelling either side \d would
-  // size this repo here while the backend dropped its .bin copy. Both use [0-9]; neither
-  // treats this as a root checkpoint, so nothing is skipped.
+  // Python's \d matches these digits and JavaScript's does not; both sides use [0-9].
   stubSiblings({
     "config.json": 2,
     "model-٠١-of-٠٢.safetensors": 500,

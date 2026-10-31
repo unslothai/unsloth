@@ -552,7 +552,6 @@ test("leaves a comment inside a fence literal", () => {
 });
 
 test("closes a list-nested fence inside the list, not at column zero", () => {
-  // A closer at column zero ends the list first, opening a top-level fence instead.
   assert.equal(
     renderText("Steps:\n\n- run the install\n\n  ```sh\n  npm ci"),
     "Steps:\n\n- run the install\n\n  ```sh\n  npm ci\n  ```",
@@ -561,13 +560,11 @@ test("closes a list-nested fence inside the list, not at column zero", () => {
 });
 
 test("closes a raw html block a blank line cannot end", () => {
-  // CommonMark start condition 1: only its own end tag ends the block.
   assert.equal(renderText("<pre>\nhello"), "<pre>\nhello\n</pre>");
   assert.equal(
     renderText('<SCRIPT src="a.js">\nvar x = 1;'),
     '<SCRIPT src="a.js">\nvar x = 1;\n</script>',
   );
-  // Conditions 3, 4 and 5 run to the end of the document just the same.
   assert.equal(renderText("<?php\necho 1;"), "<?php\necho 1;\n?>");
   assert.equal(renderText("<![CDATA[\nraw"), "<![CDATA[\nraw\n]]>");
 });
@@ -575,15 +572,12 @@ test("closes a raw html block a blank line cannot end", () => {
 test("leaves a raw html block that closes itself alone", () => {
   assert.equal(renderText("<pre>\nhello\n</pre>"), "<pre>\nhello\n</pre>");
   assert.equal(renderText("<pre>hello</pre>"), "<pre>hello</pre>");
-  // A blank line ends start conditions 6 and 7, and every turn is followed by one.
   assert.equal(renderText("<div>\nhello"), "<div>\nhello");
-  // Indented four spaces it is a code block, not a raw html block.
   assert.equal(renderText("    <pre>\n    hello"), "    <pre>\n    hello");
 });
 
 test("keeps a raw html start inside a fence literal", () => {
   assert.equal(renderText("```\n<pre>\nhello\n```"), "```\n<pre>\nhello\n```");
-  // And the other way round: a fence inside a raw html block is not a fence.
   assert.equal(
     renderText("<pre>\n```js\nvar a = 1;"),
     "<pre>\n```js\nvar a = 1;\n</pre>",
@@ -648,7 +642,6 @@ test("closes an unmatched details element a later turn would fall inside", () =>
     renderText("<details>\n<summary>Steps</summary>\n\nfirst"),
     "<details>\n<summary>Steps</summary>\n\nfirst\n\n</details>",
   );
-  // Mid-line, in the case shape the tokenizer accepts but a <details ...> does not.
   assert.equal(
     renderText("hello <DETAILS/>"),
     "hello <DETAILS/>\n\n</details>",
@@ -680,8 +673,6 @@ test("keeps a details tag inside a fence, a code span or a comment literal", () 
 });
 
 test("keeps a citation destination from decoding into another host", () => {
-  // &commat; is an entity reference in a destination: a viewer resolves this to
-  // docs.unsloth.ai@evil.test, which is credentials on evil.test.
   assert.equal(
     renderSource("Docs", "https://docs.unsloth.ai&commat;evil.test/"),
     "**source:** [Docs](<https://docs.unsloth.ai&amp;commat;evil.test/>)",
@@ -707,25 +698,17 @@ test("leaves an ordinary query separator in a citation readable", () => {
 });
 
 test("neutralises an opener the message never finished writing", () => {
-  // A synthesized </script> after a bare <script> is read as that tag's attributes,
-  // so the element stays open; escaping the < opens nothing at all.
   assert.equal(renderText("<script"), "&lt;script");
-  // Any tag: an unterminated attribute value runs to the first > in the document.
   assert.equal(renderText('<div class="x'), '&lt;div class="x');
-  // Handing back what an unfinished tag swallowed can reveal an opener, so repeat.
   assert.equal(renderText("<details\n<script"), "&lt;details\n&lt;script");
-  // plaintext has no end tag in any parser, so it can only be neutralised.
   assert.equal(renderText("<plaintext>"), "&lt;plaintext>");
 });
 
 test("closes the element that was opened, not the one markdown ended on", () => {
-  // CommonMark 4.6 condition 1 ends the block at any of the four end tags, "it need
-  // not match the start tag"; the tokenizer needs this element's own (WHATWG 13.2.5).
   assert.equal(
     renderText("<script>\nvar x = 1;\n</pre>"),
     "<script>\nvar x = 1;\n</pre>\n</script>",
   );
-  // A </script> in a code span renders as escaped <code>: never a closer.
   assert.equal(
     renderText("hello <script> world `</script>`"),
     "hello <script> world `</script>`\n</script>",
@@ -733,15 +716,12 @@ test("closes the element that was opened, not the one markdown ended on", () => 
 });
 
 test("closes a persistent element opened part way through a line", () => {
-  // CommonMark starts no block here, but the browser is in script data to EOF.
   assert.equal(renderText("hello <script>"), "hello <script>\n</script>");
-  // The tokenizer's raw text set is wider than condition 1: iframe and xmp too.
   assert.equal(renderText("<iframe>"), "<iframe>\n</iframe>");
   assert.equal(renderText("see <xmp>"), "see <xmp>\n</xmp>");
 });
 
 test("leaves an indented code block exactly as the message wrote it", () => {
-  // Four spaces is code, so the delimiter opens nothing and a repair would alter it.
   assert.equal(
     renderText("Template:\n\n    <!-- TODO fill this in"),
     "Template:\n\n    <!-- TODO fill this in",
@@ -750,19 +730,16 @@ test("leaves an indented code block exactly as the message wrote it", () => {
     renderText("Example:\n\n    <details>"),
     "Example:\n\n    <details>",
   );
-  // It cannot interrupt a paragraph, so this one really is prose.
   assert.equal(renderText("note\n    <!-- x"), "note\n    <!-- x-->");
 });
 
 test("reads a fence opener whose info string carries a line separator", () => {
-  // U+2028 is ordinary to markdown but a line terminator to a JavaScript dot.
   assert.equal(renderText("```js x\nvar a = 1;"), "```js x\nvar a = 1;\n```");
   assert.equal(renderText("~~~a b\nsketch"), "~~~a b\nsketch\n~~~");
 });
 
 test("does not read a block quote marker as the end of a tag", () => {
-  // The renderer strips the marker, so its > is not one the tokenizer sees: the start
-  // tag runs on and swallows the message's own </script> as attributes.
+  // The renderer strips the quote marker, so the tokenizer never sees that > and the tag runs on.
   assert.equal(
     renderText("> <script\n> </script>"),
     "> <script\n> </script>\n</script>",
@@ -774,36 +751,29 @@ test("does not read a block quote marker as the end of a tag", () => {
 });
 
 test("waits for the terminator the raw block is actually waiting for", () => {
-  // The tokenizer ends a bogus comment at the first >, but CommonMark conditions 3
-  // and 5 end at ?> and ]]>: stopping at the > in the php comparison loses the rest.
+  // CommonMark conditions 3 and 5 end at ?> and ]]>, not at the first >.
   assert.equal(
     renderText("<?php\nif ($a > $b) { echo 1; }"),
     "<?php\nif ($a > $b) { echo 1; }\n?>",
   );
   assert.equal(renderText("<![CDATA[\na > b"), "<![CDATA[\na > b\n]]>");
-  // Condition 4 really does end at a >, and a self-closed block needs nothing.
   assert.equal(renderText("<!DOCTYPE html>\nhi"), "<!DOCTYPE html>\nhi");
   assert.equal(renderText("<?php echo 1; ?>\nhi"), "<?php echo 1; ?>\nhi");
 });
 
 test("leaves a backslash-escaped tag out of the repair scan", () => {
-  // CommonMark 2.4: \< is a literal <, so it opens nothing and needs no closer.
   assert.equal(renderText("\\<script>"), "\\<script>");
   assert.equal(renderText("\\<!-- note"), "\\<!-- note");
-  // And the element it hid is found again: reading the escape as live markup
-  // swallowed the details opener as raw text.
   assert.equal(
     renderText("\\<script>\n\n<details>\n\nhi"),
     "\\<script>\n\n<details>\n\nhi\n\n</details>",
   );
-  // A doubled backslash escapes itself, so the < after it is live.
   assert.equal(renderText("\\\\<script>"), "\\\\<script>\n</script>");
-  // The escape is markdown's, so it does not apply where inlines are not read.
   assert.equal(renderText("```\n\\<script>"), "```\n\\<script>\n```");
 });
 
 test("closes a template element before emitting the next turn", () => {
-  // Children land in a DocumentFragment that is never rendered, so later turns go too.
+  // Children land in a DocumentFragment that is never rendered.
   assert.equal(renderText("<template>"), "<template>\n</template>");
   assert.equal(
     renderText("SFC:\n\n<template>\n  <div>{{ msg }}</div>"),
@@ -816,7 +786,6 @@ test("closes a template element before emitting the next turn", () => {
 });
 
 test("keeps scanning the line a literal block ended part way through", () => {
-  // The terminator ends the block, not the line: a details opened after it is live.
   assert.equal(
     renderText("<!--\n--> <details>"),
     "<!--\n--> <details>\n\n</details>",
@@ -825,7 +794,6 @@ test("keeps scanning the line a literal block ended part way through", () => {
 });
 
 test("reduces an imported role to one line of plain text", () => {
-  // Imported role strings land in a heading closeOpenBlocks never sees.
   assert.equal(
     buildConversationMarkdown([{ role: "user\n\n<details>", content: "hi" }]),
     "## User details\n\nhi\n",
@@ -834,7 +802,6 @@ test("reduces an imported role to one line of plain text", () => {
     buildConversationMarkdown([{ role: "   ", content: "hi" }]),
     "## Message\n\nhi\n",
   );
-  // The ordinary roles are untouched.
   assert.equal(
     buildConversationMarkdown([{ role: "reviewer", content: "hi" }]),
     "## Reviewer\n\nhi\n",
@@ -842,7 +809,6 @@ test("reduces an imported role to one line of plain text", () => {
 });
 
 test("keeps every line of an indented code block literal", () => {
-  // Only the first line follows a blank one, so without state the rest is scanned live.
   assert.equal(
     renderText("look:\n\n    first\n    <script>"),
     "look:\n\n    first\n    <script>",
@@ -851,7 +817,6 @@ test("keeps every line of an indented code block literal", () => {
     renderText("look:\n\n    first\n    <div class=\"x"),
     "look:\n\n    first\n    <div class=\"x",
   );
-  // A closer in there must not spend the closer of a real open element.
   assert.equal(
     renderText("<details>\nreal\n\ntext\n\n    a\n    </details>"),
     "<details>\nreal\n\ntext\n\n    a\n    </details>\n\n</details>",
@@ -859,25 +824,21 @@ test("keeps every line of an indented code block literal", () => {
 });
 
 test("reads a fence against its block quote rather than the raw line", () => {
-  // The marker keeps FENCE_LINE_PATTERN from matching, so quoted code was scanned live.
+  // The quote marker keeps FENCE_LINE_PATTERN from matching.
   assert.equal(
     renderText("> ```\n> <script>\n> ```"),
     "> ```\n> <script>\n> ```",
   );
-  // The quote ending ends the fence, so nothing is appended for it.
   assert.equal(renderText("> ```js\n> var a = 1;"), "> ```js\n> var a = 1;");
 });
 
 test("treats a backtick run as one delimiter at both ends", () => {
-  // ```x`` has no matching run, so it is live text carrying an opener.
   assert.equal(renderText("```<script>``"), "```<script>``\n</script>");
-  // A real span still masks.
   assert.equal(renderText("`<script>`"), "`<script>`");
 });
 
 test("reads an angle bracket link destination as a url", () => {
   assert.equal(renderText("[x](<details>)"), "[x](<details>)");
-  // And it must not spend the closer of a real open element either.
   assert.equal(
     renderText("<details>\nreal\n\n[x](</details>)"),
     "<details>\nreal\n\n[x](</details>)\n\n</details>",
@@ -885,7 +846,6 @@ test("reads an angle bracket link destination as a url", () => {
 });
 
 test("reads a closing tag inside a raw text element as text", () => {
-  // </details> there is script data, so it must not spend a real details closer.
   assert.equal(
     renderText("<details>\n<script>\n</details>"),
     "<details>\n<script>\n</details>\n</script>\n\n</details>",
@@ -893,14 +853,12 @@ test("reads a closing tag inside a raw text element as text", () => {
 });
 
 test("keeps the edge spaces of a code span value", () => {
-  // CommonMark 6.1 strips one space from each end of a span padded at both.
   assert.equal(
     renderConversationBlocks([
       { kind: "tool-call", name: "t", args: { k: " padded " } },
     ]),
     "**tool call:** `t`\n\n**k:** `  padded  `",
   );
-  // All spaces is exempt from the rule, and needs no extra pair.
   assert.equal(
     renderConversationBlocks([{ kind: "tool-call", name: "t", args: { k: "  " } }]),
     "**tool call:** `t`\n\n**k:** `  `",
@@ -908,12 +866,10 @@ test("keeps the edge spaces of a code span value", () => {
 });
 
 test("follows a code span across a soft line break", () => {
-  // The span is one inline, so the tag inside it is literal on both lines.
   assert.equal(
     renderText("<details>\nreal\n\nuse `foo\nbar </details>` here"),
     "<details>\nreal\n\nuse `foo\nbar </details>` here\n\n</details>",
   );
-  // A run with no match is live text, not an unterminated span.
   assert.equal(
     renderText("`foo\nbar <details> here"),
     "`foo\nbar <details> here\n\n</details>",

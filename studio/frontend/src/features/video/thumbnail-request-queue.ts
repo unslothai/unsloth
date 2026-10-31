@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Backend poster generation opens and decodes a video, so visible cards must not fan out into an
- * unbounded burst. This queue is shared by the active and archived galleries. */
+/** Poster generation decodes a video, so cap fan-out; shared by both galleries. */
 export const VIDEO_THUMBNAIL_CONCURRENCY = 3;
 
 interface WaitingTask {
@@ -58,14 +57,11 @@ export class ThumbnailRequestQueue {
 
 export const videoThumbnailQueue = new ThumbnailRequestQueue();
 
-// Same policy the archived view applies to its rows: a backend that blinked must not leave a
-// perfectly decodable clip on the undecodable marker for the rest of the session, and a clip that
-// really cannot be decoded must stop asking.
+// Like the archived view: retry a blip, but stop on a clip that truly cannot decode.
 export const VIDEO_THUMBNAIL_RETRY_LIMIT = 2;
 export const VIDEO_THUMBNAIL_RETRY_DELAY_MS = 750;
 
-/** Run ``attempt`` until it resolves, retrying a rejection with a linear backoff. Rethrows the last
- * error once the retries are spent, which is the only outcome the caller may treat as permanent. */
+/** Only the final rethrow may be treated as permanent. */
 export async function withThumbnailRetries<T>(
   attempt: () => Promise<T>,
   limit = VIDEO_THUMBNAIL_RETRY_LIMIT,

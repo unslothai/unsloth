@@ -318,8 +318,7 @@ if __name__ == "__main__":
         end_time = time.time()
         print(f"Total time: {end_time - start_time:.4f} seconds")
 
-    # Prefer the autotuner: the MoE block needs 2 forward configs (gate_up_proj, down_proj) and 4
-    # backward (dW + dX each), and this benchmark supports only 1 config at a time.
+    # The MoE block needs 6 kernel configs but this benchmark supports one, so prefer autotune.
     else:
         assert False, "Use autotune for now"
         kernel_configs = create_kernel_configs(args, args.permute_x, args.permute_y)

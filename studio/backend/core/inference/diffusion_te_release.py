@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Release the text encoders during denoise on unified memory, where offloading frees nothing.
-
-The first release snapshots the encoders' large tensors to local disk; a forward pre-hook reloads them bit-exact before
-an encoder runs again. ``UNSLOTH_DIFFUSION_RELEASE_TEXT_ENCODER=1`` / ``=0`` forces it on / off.
-"""
+"""Releases text encoders during denoise on unified memory (disk snapshot, bit-exact reload)."""
 
 from __future__ import annotations
 

@@ -22,7 +22,6 @@ test("mac titlebar navigation shifts buttons with centered glyphs", async () => 
     /mt-\[var\(--studio-titlebar-navigation-margin-top,0px\)\]/,
   );
 
-  // macOS keeps the one-step-up icon; the custom titlebar's are a fixed 18px.
   assert.match(
     titlebar,
     /const iconClass = customTitlebar\s*\?\s*"size-\[18px\]"\s*:\s*"size-icon !size-\[calc\(var\(--icon-size\)\+1px\)\]";/,
@@ -48,9 +47,7 @@ test("mac chat and media headers share the lowered control row", async () => {
   }
 });
 
-// The runtime divides these by the zoom and provider.tsx uses them as CSS fallbacks. Two
-// copies of 34 would agree at 100% and silently disagree everywhere else, so assert the
-// fallback string is built from the same constant rather than retyped.
+// Assert the fallback is built from the same constant; retyped values diverge at other zooms.
 test("mac native chrome clearance stays fixed across interface scales", async () => {
   const [provider, runtime] = await Promise.all([
     atDefaultUiScale(readSrc("app/provider.tsx")),
@@ -72,7 +69,6 @@ test("mac native chrome clearance stays fixed across interface scales", async ()
     runtime,
     /NATIVE_MAC_TRAFFIC_LIGHT_INSET_PX \/ zoom/,
   );
-  // No literal 34px or 78px left in provider.tsx to drift out from under the runtime.
   assert.doesNotMatch(provider, /--studio-native-titlebar-height, 34px/);
   assert.doesNotMatch(provider, /--studio-native-traffic-light-inset, 78px/);
   assert.match(provider, PORTALLED_NATIVE_TITLEBAR_PATTERN);

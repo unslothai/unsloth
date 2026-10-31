@@ -74,7 +74,6 @@ export function ModelProviderDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
 
-      {/* Model source toggle */}
       <div className="grid gap-1.5">
         <p className="text-sm font-semibold text-foreground">Model source</p>
         <div className="grid grid-cols-2 gap-2">
@@ -82,7 +81,7 @@ export function ModelProviderDialog({
             type="button"
             className={`rounded-xl border px-4 py-3 text-left transition-colors ${
               isLocal
-                ? "border-ring-strong bg-primary/5"
+                ? "border-ring-strong bg-wash-5"
                 : "border-border/60 bg-muted/10 hover:border-border"
             }`}
             onClick={() =>
@@ -105,7 +104,7 @@ export function ModelProviderDialog({
             type="button"
             className={`rounded-xl border px-4 py-3 text-left transition-colors ${
               !isLocal
-                ? "border-ring-strong bg-primary/5"
+                ? "border-ring-strong bg-wash-5"
                 : "border-border/60 bg-muted/10 hover:border-border"
             }`}
             onClick={() => onUpdate({ is_local: false })}
@@ -120,7 +119,7 @@ export function ModelProviderDialog({
         </div>
       </div>
       {isLocal ? (
-        <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
+        <div className="rounded-lg border border-border/60 bg-muted/10 px-4 py-3">
           <p className="text-sm font-semibold text-foreground">Ready to go</p>
           <p className="mt-1 text-xs text-muted-foreground">
             Recipes will use whatever model is loaded in the Chat tab when you
@@ -129,7 +128,7 @@ export function ModelProviderDialog({
         </div>
       ) : (
         <>
-          <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
+          <div className="rounded-lg border border-border/60 bg-muted/10 px-4 py-3">
             <p className="text-sm font-semibold text-foreground">
               Start with the endpoint you want this model to use
             </p>

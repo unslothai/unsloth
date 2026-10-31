@@ -152,8 +152,7 @@ export function useAudioSource({
     loadAbort.current?.abort();
     const controller = new AbortController();
     loadAbort.current = controller;
-    // Not aborted by this effect's cleanup: load-start changes its deps. A new selection or
-    // unmount aborts it instead.
+    // Not aborted by this effect's cleanup (load-start changes its deps); a new selection or unmount does.
     dispatch({ type: "load-start", key: valueKey });
     fetchAudioBlob(sourceFileUrl(value), controller.signal)
       .then(async (blob) => {

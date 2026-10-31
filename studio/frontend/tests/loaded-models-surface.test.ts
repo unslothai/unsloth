@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The card wore menu-soft-surface's inset edge ring, which the update banners
-// do not. Read from the source: the node suite has no DOM to compute styles in.
+// Read from source: the node suite has no DOM to compute styles.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -19,7 +18,6 @@ function surface(source: string, anchor: string): string {
   return source.slice(at, source.indexOf('"', at));
 }
 
-/** The CSS rule opened by `selector`, up to its closing brace. */
 function rule(selector: string): string {
   const at = CSS.indexOf(selector);
   assert.notEqual(at, -1, `${selector} not found`);
@@ -29,7 +27,6 @@ function rule(selector: string): string {
 test("both card states drop the edge ring", () => {
   const pill = surface(INDICATOR, "menu-soft-surface menu-soft-edgeless");
   assert.match(pill, /menu-soft-edgeless/);
-  // Two: the collapsed pill and the expanded card.
   assert.equal(
     INDICATOR.split("menu-soft-edgeless").length - 1,
     2,
@@ -42,8 +39,6 @@ test("both card states drop the edge ring", () => {
   );
 });
 
-// The modifier keeps the drop shadow. Dropping both would flatten the card
-// into the page.
 test("the modifier removes only the inset, not the shadow", () => {
   const modifier = rule(".menu-soft-surface.menu-soft-edgeless");
   assert.doesNotMatch(modifier, /inset/);
@@ -53,16 +48,12 @@ test("the modifier removes only the inset, not the shadow", () => {
   assert.match(modifier, /var\(--menu-soft-shadow\)/);
 });
 
-// Written against the vars rather than literals, so the dark override at
-// .dark .menu-soft-surface still reaches it.
+// Uses vars so the .dark .menu-soft-surface override still applies.
 test("the modifier hardcodes neither theme", () => {
   const modifier = rule(".menu-soft-surface.menu-soft-edgeless");
   assert.doesNotMatch(modifier, /rgba|#[0-9a-f]{3}/i);
 });
 
-// The point of the change: the card and the banners are the same surface.
-// menu-soft-surface's vars already carry the banner's geometry, so once the
-// inset is gone the two agree. If the banner is restyled, this fails.
 test("the shared vars still match the update banner's shadow", () => {
   assert.match(BANNER, /shadow-\[0_2px_8px_-2px_rgba\(0,0,0,0\.16\)\]/);
   assert.match(BANNER, /dark:shadow-\[0_8px_28px_-6px_var\(--background\)\]/);
@@ -78,11 +69,8 @@ test("the shared vars still match the update banner's shadow", () => {
   assert.match(dark, /--menu-soft-spread: -6px/);
 });
 
-// The banner paints bg-white/dark:bg-card, the card bg-popover. Same colour in
-// every theme, so the surfaces match; this pins that they stay equal.
 test("popover and card resolve to the same colour in every theme", () => {
-  // Both are authored as -base and derived together through the contrast
-  // slider (index.css), so comparing the authored values compares the result.
+  // Both derive from -base values through the contrast slider (index.css).
   const popover = [...CSS.matchAll(/^\t*--popover-base:\s*([^;]+);/gm)].map(
     (m) => m[1].trim(),
   );

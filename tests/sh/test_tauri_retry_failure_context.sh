@@ -19,11 +19,8 @@ _FUNC_FILE=$(mktemp)
     sed -n '/^tauri_log()/,/^}/p' "$INSTALL_SH"
     sed -n '/^tauri_stream_log()/,/^}/p' "$INSTALL_SH"
     sed -n '/^tauri_clear_install_error()/,/^}/p' "$INSTALL_SH"
-    # #8805 put _uv_download_markers in the middle of run_install_cmd's pipeline.
-    # Taken from install.sh rather than stubbed, so this still exercises the real
-    # pipe the installer runs. Without it the last stage of that pipeline is
-    # "command not found", every wrapped command looks like it exited 127, and
-    # `set -e` ends this file with no output at all.
+    # Taken from install.sh rather than stubbed: without it the wrapped pipeline ends in
+    # "command not found" and `set -e` ends this file with no output.
     sed -n '/^_uv_download_markers()/,/^}/p' "$INSTALL_SH"
 } > "$_FUNC_FILE"
 # shellcheck disable=SC1090
@@ -53,11 +50,7 @@ _redact_install_output() {
 echo "=== run_install_cmd_retry Tauri failure context ==="
 
 TAURI_MODE=true
-# The attempt counter lives in a file, not a shell variable. #8805 put the wrapped
-# command inside `{ ...; } | _uv_download_markers ...`, so it now runs in a subshell
-# and an assignment to a parent variable is discarded. That made this command fail on
-# every attempt instead of succeeding on the second, which is the retry path this
-# whole block is here to check.
+# Counter in a file: the wrapped command runs in a pipeline subshell, so variables are lost.
 _test_attempt_file=$(mktemp)
 printf '0\n' > "$_test_attempt_file"
 _test_command() {
@@ -75,8 +68,7 @@ if ! run_install_cmd_retry "install PyTorch" _test_command >"$_stdout_file" 2>"$
     echo "  FAIL: recovered retry returned non-zero; it never recovered"
     exit 1
 fi
-# `|| true`: grep -c reports 0 with status 1, and under set -e that aborts here with
-# no output, which is how a missing helper in the block above reads as silence.
+# `|| true`: grep -c returns status 1 on zero matches, which aborts under set -e.
 _stdout_clear_count=$(grep -c '^\[TAURI:ERROR_CLEAR\] install PyTorch recovered$' "$_stdout_file" || true)
 _stderr_clear_count=$(grep -c '^\[TAURI:ERROR_CLEAR\] install PyTorch recovered$' "$_stderr_file" || true)
 if [ "$_stdout_clear_count" -ne 1 ] || [ "$_stderr_clear_count" -ne 1 ]; then
@@ -249,12 +241,8 @@ if [ "$_setup_mode_count" -ne 2 ]; then
     exit 1
 fi
 
-# setup.sh has exactly two exits. setup_fail is the only failure exit: every failure path goes
-# through it so the desktop gets a [TAURI:ERROR] line, not a bare exit code. The pinned-uv signal
-# handler is not a failure, it re-raises as 128+signal like install.sh's _on_install_signal,
-# because install.rs cancels an install by SIGTERMing the process group with intentional_stop and
-# a cancel must not raise a failure banner. A third exit, or a second inside either, is unrouted.
-# `|| true`: grep -c reports 0 with status 1, which under set -e would abort with no explanation.
+# setup.sh has exactly two exits: setup_fail (every failure, so Tauri gets [TAURI:ERROR]) and
+# the pinned-uv signal handler re-raising 128+signal, so a cancel shows no failure banner.
 _setup_fail_exits=$(sed -n '/^setup_fail()/,/^}/p' "$SETUP_SH" |
     grep -Ec '^[[:space:]]*exit[[:space:]]+' || true)
 _setup_signal_exits=$(sed -n '/^_setup_uv_on_signal()/,/^}/p' "$SETUP_SH" |
@@ -268,7 +256,7 @@ if [ "$_setup_fail_exits" -ne 1 ] ||
     echo "  FAIL: Unix setup has explicit exits outside setup_fail"
     exit 1
 fi
-# Trap-only: called from ordinary control flow the handler is the unrouted failure exit again.
+# Trap-only: called from normal flow the handler would be an unrouted failure exit.
 _setup_signal_refs=$(grep -c '_setup_uv_on_signal' "$SETUP_SH" || true)
 if [ "$_setup_signal_refs" -ne 4 ] ||
     ! grep -qF "trap '_setup_uv_on_signal 129' HUP" "$SETUP_SH" ||
@@ -279,8 +267,6 @@ if [ "$_setup_signal_refs" -ne 4 ] ||
 fi
 echo "  PASS: Unix setup routes explicit exits through setup_fail"
 
-# Prove the exception behaves as claimed: a stubbed pinned-uv install, interrupted for real in
-# Tauri mode, must report 128+signal, leave no temporaries behind, and print no cancel failure.
 _signal_dir=$(mktemp -d)
 trap 'rm -f "$_stdout_file" "$_stderr_file" "$_test_attempt_file"; rm -rf "$_signal_dir"' EXIT
 {
@@ -380,9 +366,7 @@ if ! grep -q '\$env:UNSLOTH_TAURI_MODE = if (\$TauriMode)' "$INSTALL_PS1"; then
     exit 1
 fi
 
-# The code view, not the raw file: setup.ps1 emits a probe script through a
-# here-string, and that probe ends in `exit 1`. Counting it made this assertion
-# read the emitted script's control flow as the installer's own.
+# Code view, not raw file: setup.ps1 emits a probe here-string that ends in `exit 1`.
 _ps_setup_code=$(ps1_code "$SETUP_PS1")
 _ps_setup_exit_count=$(printf '%s\n' "$_ps_setup_code" |
     grep -Ec '^[[:space:]]*exit[[:space:]]+' || true)

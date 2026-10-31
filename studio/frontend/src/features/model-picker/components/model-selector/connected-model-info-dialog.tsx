@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What the app knows about one connected model. A local row answers "what is this" with its size,
-// quant and path; a connected row has none of those, so everything comes from the provider
-// registry and the connection's cached catalogue.
-//
-// Each figure is read through the same resolver the rest of the app uses for it, so this cannot
-// disagree with the composer's own chips.
-//
-// What the model is, not what it is set to: the gear beside this opens the three settings it
-// keeps of its own and shows what each holds, so printing them here was that dialog again.
+// What the app knows about one connected model, read via the same resolvers as the composer chips.
 
 import {
   Dialog,
@@ -73,7 +65,6 @@ export function ConnectedModelInfoDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** The provider's own id, which is what every lookup here keys on. */
   modelId: string;
   displayName: string;
   providerName: string;
@@ -84,7 +75,7 @@ export function ConnectedModelInfoDialog({
   isReasoningProvider?: boolean;
   reasoningConfig?: CustomReasoningConfig;
 }) {
-  // Every figure below is read from the catalogue, which can land after this renders.
+  // The catalogue can land after this renders.
   useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const entry = resolveModelCatalogEntry(providerType, modelId);
   const marks = connectedModelMarks({
@@ -93,16 +84,13 @@ export function ConnectedModelInfoDialog({
     baseUrl,
     apiType,
   });
-  // The resolver behind the composer's Thinking chip, not the catalogue alone.
   const reasoning = getExternalReasoningCapabilities(providerType, modelId, {
     isReasoningProvider,
     reasoningConfig,
     baseUrl,
     apiType,
   });
-  // "none" is the off switch, not a rung. Only where a level is sent at all: the default ladder
-  // is there even for a style that carries a bare thinking on/off, and listing it read as a
-  // choice this model takes.
+  // "none" is the off switch, not a rung; list levels only where a level is sent.
   const takesEffort = externalReasoningTakesEffort(reasoning);
   const effortLevels = takesEffort
     ? reasoning.reasoningEffortLevels.filter((level) => level !== "none")

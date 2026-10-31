@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The vendored truststore and laya stay byte-identical to the releases they came from,
-except patches the manifest records with their upstream hash.
-
-They are static copies: nothing refreshes them, so any change to these bytes is
-either a deliberate version bump that must update the manifest with it, or an
-accident. For truststore the accident is the dangerous one, since it means
-Unsloth verifies certificates with code no upstream release ever shipped.
-"""
+"""Vendored truststore and laya stay byte-identical to upstream except manifest-recorded patches."""
 
 from __future__ import annotations
 
@@ -28,7 +21,6 @@ _MANIFESTS = {
 _MANIFEST = _MANIFESTS["truststore"]
 _PACKAGES = {"truststore", "laya"}
 
-# Everything the vendor directory is allowed to hold, beyond the packages themselves.
 _SIDECARS = {
     "LICENSE",
     "LICENSE.laya",
@@ -105,12 +97,7 @@ def test_vendor_holds_nothing_but_the_vendored_packages():
 
 
 def test_vendor_is_not_a_package():
-    """No __init__.py: a dotted import would load these files under a second name.
-
-    `import truststore` and `import studio.backend.vendor.truststore` are two
-    sys.modules entries, each with its own _original_SSLContext, so injecting
-    from both wraps ssl twice.
-    """
+    """No __init__.py: a dotted import loads the files twice, and each copy wraps ssl."""
     assert not (_VENDOR / "__init__.py").exists(), (
         "studio/backend/vendor must not be a package; it ships via the "
         "backend/vendor/**/* package-data glob instead"

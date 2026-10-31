@@ -40,9 +40,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   // Args still streaming = the model is WRITING the command, not running it yet.
   const { propStatus } = useToolArgsStatus();
   const isWritingCommand = isRunning && propStatus.command === "streaming";
-  // A command that wrote files arrives as the python tool's structured shape; a plain string means
-  // it wrote none. The same test the adapter applies: a foreign result that merely has text would
-  // otherwise be rendered as that field alone.
+  // Same test the adapter applies; a foreign result with only text would otherwise render alone.
   const structured = isSandboxToolResult(result)
     ? (result as unknown as { text: string; sessionId?: string; files?: SandboxFile[] })
     : null;
@@ -55,27 +53,21 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         ? ""
         : toolResultText(result);
 
-  // Show the fuller live stream over a truncated result, keeping its exit
-  // status. Session-transient: after a reload only the result remains.
+  // Prefer the fuller live stream over a truncated result; after a reload only the result remains.
   const paneScope = useToolPaneScope();
   const fullOutput = useToolOutputFor(
     useChatRuntimeStore((s) => s.toolFullOutput),
     paneScope,
     toolCallId,
   );
-  // Compare the same plain-text representation on both sides. Otherwise a raw
-  // SGR-prefixed stream cannot match its cleaned truncated result and the
-  // reconciliation helper appends a duplicate prefix.
+  // Compare sanitized text on both sides or the reconciliation appends a duplicate prefix.
   const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
-  // The gate only opens once the call parsed, so a pending approval means the command is
-  // written even while the args status still reads as streaming.
+  // The gate opens only once the call parsed, so pending approval means the command is written.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const isWriting = isWritingCommand && !awaitingApproval;
 
   return (
-    // Open mid-run so command and live output show, collapsed from history.
-    // awaitingApproval overrides the preference: the command lives inside the
-    // content, Allow/Deny outside it, and the trigger shows only 60 characters.
+    // awaitingApproval overrides the preference: the trigger shows only 60 characters.
     <ToolFallbackRoot
       defaultOpen={isRunning}
       awaitingApproval={awaitingApproval}
@@ -108,7 +100,6 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
                       : "Running…"}
                 </span>
               </div>
-              {/* Live stdout streamed via tool_output SSE events. */}
               <ToolLiveOutput toolCallId={toolCallId} />
             </>
           ) : displayOutput ? (

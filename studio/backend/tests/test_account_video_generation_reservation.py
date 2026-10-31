@@ -87,7 +87,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
     monkeypatch.setattr(video, "_generation_account", None, raising = False)
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.VIDEO)
-    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda: ALICE.account_id)
+    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda *_a, **_k: ALICE.account_id)
     monkeypatch.setattr(account_access, "repo_is_public", lambda *args, **kwargs: True)
     yield
 

@@ -72,7 +72,6 @@ test("the old Music description shows only for a loaded music model without stud
         musicNeedsDescription: false,
       }),
     );
-  // Nothing loaded: the studio preview has its own description field.
   assert.equal(described(null), false);
   assert.equal(described({ audio_type: "audiocpp_tts" }), false);
   assert.equal(described({ audio_type: "minimax_music3" }), true);
@@ -154,6 +153,19 @@ test("Stable Audio's sampler sends pingpong or euler and whole steps", () => {
       { name: "num_inference_steps", type: "int", min: 1, max: 50, default: 8 },
     ]),
     { min: 1, max: 50, default: 8 },
+  );
+});
+
+test("the steps range follows the declared range and recommended default", () => {
+  assert.deepEqual(
+    stepsRange([
+      { name: "num_inference_steps", type: "int", min: 1, max: 200, default: 32 },
+    ]),
+    { min: 1, max: 200, default: 32 },
+  );
+  assert.deepEqual(
+    stepsRange([{ name: "num_inference_steps", type: "int", min: 1, max: 8, default: 8 }]),
+    { min: 1, max: 8, default: 8 },
   );
 });
 

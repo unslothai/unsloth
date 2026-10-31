@@ -22,18 +22,33 @@ def _lm_head_assignment():
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.FunctionDef) and node.name == "_get_per_token_logps_and_entropies"
     ]
-    (assign,) = [
-        node
-        for node in ast.walk(function)
-        if isinstance(node, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "lm_head" for t in node.targets)
-    ]
-    return compile(textwrap.dedent(ast.get_source_segment(source, assign)), "<lm_head>", "exec")
+    segments = {}
+    for node in ast.walk(function):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in (
+                    "output_embeddings",
+                    "lm_head",
+                    "lm_head_bias",
+                ):
+                    segments.setdefault(
+                        (node.lineno, target.id), ast.get_source_segment(source, node)
+                    )
+    # First binding of each name, in source order: the head lookup, before any fallback rebinding.
+    first = {}
+    for (_, name), segment in sorted(segments.items()):
+        first.setdefault(name, segment)
+    code = "\n".join(
+        textwrap.dedent(first[name])
+        for name in ("output_embeddings", "lm_head", "lm_head_bias")
+        if name in first
+    )
+    return compile(code, "<lm_head>", "exec")
 
 
-def _causal_lm(seed):
+def _causal_lm(seed, bias = False):
     torch.manual_seed(seed)
-    head = torch.nn.Linear(8, 16, bias = False)
+    head = torch.nn.Linear(8, 16, bias = bias)
     return SimpleNamespace(get_output_embeddings = lambda: head)
 
 
@@ -42,3 +57,11 @@ def test_reference_model_scored_with_its_own_head():
     namespace = {"self": SimpleNamespace(model = policy), "unwrapped_model": ref}
     exec(_lm_head_assignment(), namespace)
     assert namespace["lm_head"] is ref.get_output_embeddings().weight
+
+
+def test_reference_model_scored_with_its_own_head_bias():
+    policy, ref = _causal_lm(0, bias = True), _causal_lm(1, bias = True)
+    namespace = {"self": SimpleNamespace(model = policy), "unwrapped_model": ref}
+    exec(_lm_head_assignment(), namespace)
+    assert namespace["lm_head"] is ref.get_output_embeddings().weight
+    assert namespace["lm_head_bias"] is ref.get_output_embeddings().bias

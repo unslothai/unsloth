@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Clef training step benchmark and head parity check, one JSON line on stdout.
-
-python scripts/clef_train_bench.py --model Cloudflare/clef-flash --load-in-4bit --seq-len 8192
-python scripts/clef_train_bench.py --model tiny --fast off --dtype fp16
-
---fast on|off sets UNSLOTH_CLEF_FAST (Unsloth's batched, chunked and checkpointed head, compiled
-too under UNSLOTH_CLEF_COMPILE=1, vs the per-record head). Whatever the arm, the first batch's head is also run both ways on the same
-hidden states, so `parity` compares the two heads' logits and gradients in this process.
-"""
+"""Clef benchmark; --fast sets UNSLOTH_CLEF_FAST; parity compares batched vs per-record head logits."""
 
 import argparse
 import json
@@ -40,7 +32,7 @@ from unsloth.models import clef, decision  # noqa: E402
 if args.log_recompiles:
     torch._logging.set_logs(recompiles = True, graph_breaks = True)
 
-TINY = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration"
+TINY = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
 TINY_HEAD = dict(hidden_size = 8, width = 32, routing_layers = 2, layers = 2, heads = 4, feedforward = 64)
 
 

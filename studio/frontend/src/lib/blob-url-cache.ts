@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A byte-budgeted LRU of object URLs for auth-protected gallery media. The endpoints need an auth header, so each item is fetched into a blob
-// wrapped in an object URL, which pins it until revoked. The galleries stay mounted after the first visit, so an unbounded map grows for the
-// whole session and scrolling a few pages could pin gigabytes. Budgeting by BYTES matters because clip sizes vary by two orders of magnitude.
-// Recency is driven by the caller (``touch``), and ``prune`` never evicts a protected id, so on-screen media stays resident.
+// Byte-budgeted LRU of object URLs for auth-protected gallery media, which would otherwise be pinned
+// all session. The caller drives recency; prune never evicts a protected id.
 
 export interface CachedBlobUrl {
   url: string;
@@ -12,10 +10,10 @@ export interface CachedBlobUrl {
 }
 
 export class BlobUrlCache {
-  // Insertion order IS the LRU order: touch() re-inserts, so the oldest use is always first.
+  // Insertion order IS the LRU order: touch() re-inserts.
   private readonly entries = new Map<string, CachedBlobUrl>();
   private totalBytes = 0;
-  // Declared as a field, not a constructor parameter property: tsconfig sets erasableSyntaxOnly, so that form is a build error.
+  // A field, not a parameter property: erasableSyntaxOnly forbids that form.
   private readonly budgetBytes: number;
 
   constructor(budgetBytes: number) {
@@ -38,19 +36,16 @@ export class BlobUrlCache {
     return this.totalBytes;
   }
 
-  /** All cached ids, least recently used first. */
   ids(): string[] {
     return [...this.entries.keys()];
   }
 
-  /** ``{id: url}``, for seeding a component's render state on mount. */
   toRecord(): Record<string, string> {
     const out: Record<string, string> = {};
     for (const [id, entry] of this.entries) out[id] = entry.url;
     return out;
   }
 
-  /** Mark ``id`` as most recently used. No-op for an id that is not cached. */
   touch(id: string): void {
     const entry = this.entries.get(id);
     if (entry === undefined) return;
@@ -58,14 +53,13 @@ export class BlobUrlCache {
     this.entries.set(id, entry);
   }
 
-  /** Cache ``url`` for ``id``. Replacing an id revokes the URL it had. */
+  /** Replacing an id revokes the URL it had. */
   set(id: string, url: string, bytes: number): void {
     this.delete(id);
     this.entries.set(id, { url, bytes });
     this.totalBytes += bytes;
   }
 
-  /** Drop ``id`` and revoke its URL. Returns whether anything was cached. */
   delete(id: string): boolean {
     const entry = this.entries.get(id);
     if (entry === undefined) return false;
@@ -75,14 +69,13 @@ export class BlobUrlCache {
     return true;
   }
 
-  /** Drop and revoke everything. */
   clear(): void {
     for (const entry of this.entries.values()) URL.revokeObjectURL(entry.url);
     this.entries.clear();
     this.totalBytes = 0;
   }
 
-  /** Evict least-recently-used entries until the total is within budget, skipping ``protectedIds``. Returns the evicted ids so the caller can drop them from render state; those cards re-fetch if they come back into view. */
+  /** Returns evicted ids so callers drop them from render state. */
   prune(protectedIds: Iterable<string> = []): string[] {
     const keep = protectedIds instanceof Set ? protectedIds : new Set(protectedIds);
     const evicted: string[] = [];

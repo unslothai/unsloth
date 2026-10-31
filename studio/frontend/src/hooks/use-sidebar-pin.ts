@@ -15,23 +15,21 @@ function readStored(): boolean | null {
   }
 }
 
-// Null where there is no matchMedia to ask (a test's partial window, or a host that lacks it).
-// This module reads it at import time, so a throw here fails every importer, not one call.
+// Read at import time, so a throw would fail every importer.
 function wideQuery(): MediaQueryList | null {
   return typeof window.matchMedia === "function" ? window.matchMedia(WIDE_QUERY) : null;
 }
 
 function loadPinned(): boolean {
   if (typeof window === "undefined") return true;
-  // Default to unpinned below lg, also when storage is unavailable. With no width to read,
-  // keep the desktop default, as when there is no window at all.
+  // Unpinned below lg; with no width to read, keep the desktop default.
   return readStored() ?? wideQuery()?.matches ?? true;
 }
 
 let pinnedValue = loadPinned();
-// Set once the user toggles, so a width change never overrides it.
+// Once the user toggles, width changes never override it.
 let chosen = false;
-// A tour override: shown, but never persisted or counted as a choice.
+// A tour override: never persisted or counted as a choice.
 let held = false;
 let beforeHold = pinnedValue;
 const listeners = new Set<() => void>();
@@ -43,15 +41,13 @@ function subscribe(cb: () => void) {
   }
   const onStorage = (e: StorageEvent) => {
     if (e.key === PINNED_KEY || e.key === null) {
-      // Another tab set or cleared it (Reset all local preferences), so follow what is stored.
+      // Another tab set or cleared it (Reset all local preferences).
       chosen = readStored() !== null;
-      // During a tour hold, stay open and apply it on release.
       if (held) beforeHold = loadPinned();
       else pinnedValue = loadPinned();
       cb();
     }
   };
-  // Re-derive the width default across lg unless the user has chosen.
   const wide = wideQuery();
   const onWidth = () => {
     if (chosen || held) return;
@@ -77,7 +73,6 @@ function setPinnedGlobal(next: boolean) {
   listeners.forEach((cb) => cb());
 }
 
-/** Pin for a tour without touching the stored preference. */
 export function holdSidebarPinned() {
   if (!held) beforeHold = pinnedValue;
   held = true;
@@ -85,7 +80,6 @@ export function holdSidebarPinned() {
   listeners.forEach((cb) => cb());
 }
 
-/** End the hold: the user's choice if any, else the default for the current width. */
 export function releaseSidebarPinned() {
   if (!held) return;
   held = false;

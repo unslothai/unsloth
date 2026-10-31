@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A download request caught mid-flight by retirement must not reach spawn.
-
-Retirement scans the download registries for jobs to cancel. A request that is still inside a
-pre-claim await owns no registry entry yet, so the scan reports clean retirement and the request
-then claims a key and launches a worker holding the deleted account's captured token."""
+"""Pre-claim downloads have no registry entry for retirement to cancel, so they must not reach spawn."""
 
 from __future__ import annotations
 
@@ -150,7 +146,6 @@ def test_dataset_retirement_cancels_a_job_claimed_but_not_yet_launched(monkeypat
     monkeypatch.setattr(access, "authorize_download", lambda *a, **k: None)
 
     def blocking_clear(*args, **kwargs):
-        # Between the claim and launch_worker: the route clears the cancel marker here.
         blocked.set()
         release.wait(timeout = 30)
 

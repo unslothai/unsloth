@@ -18,7 +18,6 @@ const { pinDropAnchor, usePinnedModelsStore } = await import(
 
 type Edge = "top" | "bottom";
 
-/** Lands `from` on `edge` of `target` the way the picker's drop does. */
 function drop(pinned: string[], from: string, target: string, edge: Edge) {
   usePinnedModelsStore.setState({ pinned });
   const store = usePinnedModelsStore.getState();
@@ -51,7 +50,6 @@ test("a drop into the slot a row already holds is a no-op", () => {
 });
 
 test("pins that are not drawn keep their place relative to the target", () => {
-  // "h" is pinned but filtered out of view; dropping "c" above "a" still lands it right above "a".
   assert.deepEqual(drop(["a", "h", "b", "c"], "c", "a", "top"), [
     "c",
     "a",

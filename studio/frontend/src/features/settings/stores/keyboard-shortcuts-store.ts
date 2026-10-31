@@ -13,40 +13,27 @@ import {
   isShortcutId,
   matchesBinding,
   parseBinding,
-  // Explicit extension: this module is imported directly by the node test
-  // runner, which does not do bundler-style resolution.
+  // Explicit extension: imported directly by the node test runner.
 } from "../lib/keyboard-shortcuts.ts";
 
-/**
- * Exported so "Reset all local preferences" in General can clear it by
- * reference rather than by a second copy of the literal.
- */
 export const KEYBOARD_SHORTCUTS_STORAGE_KEY = "unsloth_keyboard_shortcuts";
 const STORAGE_KEY = KEYBOARD_SHORTCUTS_STORAGE_KEY;
 
-/** Per-slot delta. An absent slot means "use the shipped default". */
+/** Per-slot delta. An absent slot means "use the shipped default"; `disabled` keeps the chords but fires none. */
 export type ShortcutOverrideEntry = Partial<
   Record<ShortcutSlot, string | null>
->;
+> & { disabled?: true };
 
-/**
- * Deltas only, so a changed default still reaches rows the user never touched.
- * `null` means "unassigned"; an absent key means "use the default".
- */
+/** Deltas only, so changed defaults reach untouched rows. `null` = unassigned. */
 export type ShortcutOverrides = Partial<
   Record<ShortcutId, ShortcutOverrideEntry>
 >;
 
-/** Builds before alternates stored `id -> string | null`. Read that as the
- *  primary slot, or every existing customization reverts to defaults. */
+/** Older builds stored `id -> string | null`; read that as the primary slot. */
 function normalizeEntry(value: unknown): ShortcutOverrideEntry | null {
-  // A null back then cleared the action, which had one chord, so it has to clear both now. Left to
-  // the primary alone it would pick up whatever alternate has shipped since and start answering
-  // again, which is the opposite of what the user asked for.
+  // An old null cleared the single chord, so clear both, or a newly shipped alternate would fire.
   if (value === null) return { primary: null, alternate: null };
-  // A rebind is different: the user chose a primary and never saw an
-  // alternate, so that slot is untouched and takes the shipped default, the
-  // same as it does for someone who never opened the tab.
+  // An old rebind never saw an alternate, so that slot takes the shipped default.
   if (typeof value === "string") return { primary: value };
   if (!value || typeof value !== "object") return null;
   const entry: ShortcutOverrideEntry = {};
@@ -56,10 +43,12 @@ function normalizeEntry(value: unknown): ShortcutOverrideEntry | null {
       entry[slot] = slotValue;
     }
   }
+  if ((value as Record<string, unknown>).disabled === true) {
+    entry.disabled = true;
+  }
   return Object.keys(entry).length > 0 ? entry : null;
 }
 
-/** Parsed JSON to overrides, tolerating both the current and the older shape. */
 export function migrateStoredOverrides(parsed: unknown): ShortcutOverrides {
   if (!parsed || typeof parsed !== "object") return {};
   const out: ShortcutOverrides = {};
@@ -96,7 +85,6 @@ function persist(overrides: ShortcutOverrides): void {
   }
 }
 
-/** Write one slot, dropping the whole entry once nothing is overridden. */
 function withSlot(
   overrides: ShortcutOverrides,
   id: ShortcutId,
@@ -106,14 +94,21 @@ function withSlot(
   const entry: ShortcutOverrideEntry = { ...overrides[id] };
   if (value === undefined) delete entry[slot];
   else entry[slot] = value;
+  return withEntry(overrides, id, entry);
+}
+
+function withEntry(
+  overrides: ShortcutOverrides,
+  id: ShortcutId,
+  entry: ShortcutOverrideEntry,
+): ShortcutOverrides {
   const next = { ...overrides };
   if (Object.keys(entry).length === 0) delete next[id];
   else next[id] = entry;
   return next;
 }
 
-/** The binding actually in force for one slot of `id`. */
-export function resolveBinding(
+export function assignedBinding(
   overrides: ShortcutOverrides,
   id: ShortcutId,
   slot: ShortcutSlot = "primary",
@@ -121,6 +116,23 @@ export function resolveBinding(
   const entry = overrides[id];
   if (entry && Object.hasOwn(entry, slot)) return entry[slot] ?? null;
   return defaultBindingFor(SHORTCUT_DEF_BY_ID[id], slot);
+}
+
+export function isShortcutEnabled(
+  overrides: ShortcutOverrides,
+  id: ShortcutId,
+): boolean {
+  return overrides[id]?.disabled !== true;
+}
+
+/** The binding actually in force for one slot of `id`: none while the action is switched off. */
+export function resolveBinding(
+  overrides: ShortcutOverrides,
+  id: ShortcutId,
+  slot: ShortcutSlot = "primary",
+): string | null {
+  if (!isShortcutEnabled(overrides, id)) return null;
+  return assignedBinding(overrides, id, slot);
 }
 
 /** Both chords in force for `id`, in slot order. */
@@ -134,7 +146,6 @@ export function resolveBindings(
   };
 }
 
-/** True when this slot carries a user edit rather than the shipped default. */
 export function isSlotOverridden(
   overrides: ShortcutOverrides,
   id: ShortcutId,
@@ -152,12 +163,7 @@ export function resolveAllBindings(
   ) as Record<ShortcutId, Record<ShortcutSlot, string | null>>;
 }
 
-/**
- * Which action a chord runs when more than one claims it. The first window
- * listener consumes the event, so without a rule the winner would be whichever
- * component mounted first, and that varies by route. Registry order decides,
- * and an action's own two slots count as one claim.
- */
+/** Registry order decides a contested chord, not mount order; an action's two slots are one claim. */
 export function shortcutOwningBinding(
   overrides: ShortcutOverrides,
   value: string | null,
@@ -171,11 +177,7 @@ export function shortcutOwningBinding(
   return null;
 }
 
-/**
- * Ids sharing a chord with at least one other action, counting either slot on
- * either side. Only the owner above runs, so the tab flags the clash rather
- * than silently refusing the edit.
- */
+/** The tab flags clashes rather than refusing the edit. */
 export function findConflicts(overrides: ShortcutOverrides): Set<ShortcutId> {
   const byValue = new Map<string, Set<ShortcutId>>();
   for (const d of SHORTCUT_DEFS) {
@@ -194,13 +196,8 @@ export function findConflicts(overrides: ShortcutOverrides): Set<ShortcutId> {
   return out;
 }
 
-/**
- * The first of `ids` this event fires, or null. For a handler that runs before
- * the window listener and would otherwise consume the chord: an Enter chord
- * reaches the composer's own keydown first, and preventDefault there stops
- * useShortcut. Ownership is checked the same way useShortcut checks it, so a
- * slot another action owns does not count.
- */
+/** For handlers running before the window listener (the composer's Enter), using the same
+ * ownership rule as useShortcut. */
 export function shortcutMatchingEvent<Id extends ShortcutId>(
   overrides: ShortcutOverrides,
   ids: readonly Id[],
@@ -220,13 +217,12 @@ export function shortcutMatchingEvent<Id extends ShortcutId>(
 
 interface KeyboardShortcutsState {
   overrides: ShortcutOverrides;
-  /** Assign a serialized binding, e.g. "Mod+Shift+KeyO". */
+  /** Assign a serialized binding, e.g. "Mod+Shift+KeyO"; also switches the action back on. */
   setBinding: (id: ShortcutId, slot: ShortcutSlot, value: string) => void;
+  setEnabled: (id: ShortcutId, enabled: boolean) => void;
   /** Leave the slot with no binding at all. */
   clearBinding: (id: ShortcutId, slot: ShortcutSlot) => void;
-  /** Drop the override so the shipped default applies again. */
   resetBinding: (id: ShortcutId, slot: ShortcutSlot) => void;
-  /** Drop both of an action's slots. */
   resetAction: (id: ShortcutId) => void;
   resetAll: () => void;
 }
@@ -236,7 +232,23 @@ export const useKeyboardShortcutsStore = create<KeyboardShortcutsState>(
     overrides: loadOverrides(),
     setBinding: (id, slot, value) =>
       set((state) => {
-        const overrides = withSlot(state.overrides, id, slot, value);
+        const { disabled: _, ...entry } = state.overrides[id] ?? {};
+        const overrides = withEntry(state.overrides, id, {
+          ...entry,
+          [slot]: value,
+        });
+        persist(overrides);
+        return { overrides };
+      }),
+    setEnabled: (id, enabled) =>
+      set((state) => {
+        if (isShortcutEnabled(state.overrides, id) === enabled) return state;
+        const { disabled: _, ...entry } = state.overrides[id] ?? {};
+        const overrides = withEntry(
+          state.overrides,
+          id,
+          enabled ? entry : { ...entry, disabled: true },
+        );
         persist(overrides);
         return { overrides };
       }),
@@ -268,6 +280,15 @@ export const useKeyboardShortcutsStore = create<KeyboardShortcutsState>(
       }),
   }),
 );
+
+// Else this tab's next edit writes its stale copy over another tab's. A null key is localStorage.clear().
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === STORAGE_KEY || event.key === null) {
+      useKeyboardShortcutsStore.setState({ overrides: loadOverrides() });
+    }
+  });
+}
 
 /** Binding in force right now, for non-React callers (keydown handlers). */
 export function currentBinding(

@@ -58,7 +58,6 @@ def test_lora_gguf_conversion_does_not_use_shell() -> None:
         if isinstance(argv, ast.List):
             elts = argv.elts
         else:
-            # argv is built as a list variable (cmd = [...]) and passed positionally.
             assert isinstance(argv, ast.Name), "argv must be a list or a list-built variable"
             assigned = _list_assignments(helper, argv.id)
             assert assigned, f"argv variable '{argv.id}' must be assigned a list literal"

@@ -11,7 +11,6 @@ import { type FC, type ReactNode, useEffect, useLayoutEffect, useState } from "r
 // Larger files keep the icon: a visible card parses its whole file.
 const MAX_PREVIEW_BYTES = 10 * 1024 * 1024;
 const TEXT_PREVIEW_CHARS = 8 * 1024;
-// Width the first page lays out at before it is scaled to the card.
 const PAGE_WIDTH: Record<DocumentKind, number> = { pdf: 400, docx: 816, sheet: 640, slides: 640 };
 const TEXT_WIDTH = 480;
 
@@ -25,7 +24,6 @@ export function attachmentPreview(
   kind: AttachmentFileKind,
 ): AttachmentPreview | null {
   if (!file || file.size === 0 || file.size > MAX_PREVIEW_BYTES) return null;
-  // The resolved kind is MIME first; only preview when the extension agrees with it.
   const document = documentKind(file.name, file.type);
   // The text adapter runs first: a text/plain "notes.pdf" is sent, so previewed, as text.
   const binary = document !== null && (document !== "sheet" || !sheetDelimiter(file.name, file.type));
@@ -43,7 +41,6 @@ const DOCUMENT_KINDS: Record<DocumentKind, AttachmentFileKind> = {
   slides: "presentation",
 };
 
-/** Whether the element is on screen now; the strip clips offscreen cards. */
 function useVisible(element: HTMLElement | null): boolean {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
@@ -71,8 +68,7 @@ function useSize(element: HTMLElement | null): { width: number; height: number }
   return size;
 }
 
-// Same decoder as the attachment itself, so a declared charset reads correctly.
-// Queued like Office parses: a charset-declaring file is read whole.
+// Same decoder as the attachment, so a declared charset reads correctly.
 function useLeadingText(file: File, enabled: boolean): { text: string } | "failed" | null {
   const [state, setState] = useState<{ file: File; text: string | null } | null>(null);
   const done = state?.file === file;
@@ -95,17 +91,14 @@ function useLeadingText(file: File, enabled: boolean): { text: string } | "faile
 export const AttachmentCardPreview: FC<{
   file: File;
   preview: AttachmentPreview;
-  /** Shown when the text cannot be decoded. */
   fallback: ReactNode;
 }> = ({ file, preview, fallback }) => {
   const [frame, setFrame] = useState<HTMLDivElement | null>(null);
   const size = useSize(frame);
-  // Reads start only while visible. Documents unmount offscreen; read text stays.
   const visible = useVisible(frame);
   const text = useLeadingText(file, visible && preview.kind !== "document");
   const pageWidth = preview.kind === "document" ? PAGE_WIDTH[preview.document] : TEXT_WIDTH;
   const scale = size.width / pageWidth;
-  // PDF, Word and slide pages are white paper; sheets and text follow the theme.
   const paper = preview.kind === "document" && preview.document !== "sheet";
 
   if (text === "failed") return fallback;

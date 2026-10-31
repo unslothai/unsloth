@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""/inference/cancel only sets a threading.Event, so the transport has to watch it.
-
-Every provider re-yields through ``stream_chat_completion``, which parks in an
-await for the whole of prefill and streaming. Without a watcher a Stop is
-invisible until the provider emits again: billed tokens keep arriving and a
-model load blocks behind the stalled request.
-"""
+"""/inference/cancel sets only a threading.Event, so the transport needs a watcher."""
 
 import asyncio
 import threading
@@ -30,7 +24,7 @@ class _StallingClient:
             await self.released.wait()
             yield "data: [DONE]"
         finally:
-            # Where the real client awaits response.aclose().
+            # where the real client awaits response.aclose()
             self.torn_down = True
 
 

@@ -1,50 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The symbol bridge: recover react-dom function names without measuring a dev build.
-
-THE PROBLEM, stated exactly. React ships `cjs/react-dom-client.production.js`
-and `cjs/react-dom-profiling.profiling.js` ALREADY MINIFIED. Vite never sees the
-original identifiers, so `keep_fnames` has nothing to keep and a source map maps
-`Zk` to the character offset in react-dom's own pre-minified file where `Zk` is
-also what it is called. Source maps and `keep_fnames` recover OUR component
-names beautifully and recover nothing at all inside react-dom. The original name
-really is `Zk`. This is not a build misconfiguration and no build flag fixes it.
-
-THE SOLUTION. React's DEVELOPMENT build has real names. Use it strictly as a
-DICTIONARY and never as a measurement, because a dev build has different code,
-different fast paths, extra warnings and different allocation behaviour: a
-millisecond measured there describes a program nobody ships.
-
-The join key is the EXACT CALL-COUNT VECTOR. Run the identical fixture at two or
-three small rungs against both builds under precise coverage, and for each
-function record `(count at rung 1, count at rung 2, ...)`. Invocation counts are
-a semantic invariant across build modes: `cloneChildFibers` is called the same
-number of times whichever bundle you loaded, because it is called once per
-sibling per render either way, and that is a property of the algorithm rather
-than of the minifier. So a function with vector `(340, 3400, 34000)` in dev and
-a function with the same vector in prod are the same function.
-
-THE THREE WAYS THIS GOES WRONG, each closed by a rule below:
-
-1. **Collisions.** Many trivial functions share a vector, especially small
-   integers like `(1, 1, 1)`. A vector that is not UNIQUE WITHIN ITS OWN BUILD
-   is unusable, so it is recorded as ambiguous and never guessed. This is the
-   rule that keeps the bridge honest, and it discards a lot.
-2. **A bridge that is confidently wrong.** Validated against ANCHORS: our own
-   app components are independently named on BOTH sides through source maps, so
-   they must map to themselves. If any anchor maps to something else, the whole
-   bridge is discarded and the run degrades to unnamed frames with
-   `symbol_bridge: failed`. Not the bad anchor, the WHOLE bridge, because a
-   bridge that mislabels one function it can check will mislabel others it
-   cannot.
-3. **Dev timings leaking.** `assert_no_measurements` refuses any float in the
-   persisted artefact, and the artefact schema carries no duration fields at all.
-
-The result is persisted as `symbols/react-dom@<version>-<bundle-sha>.json`. The
-bundle SHA is part of the key because a bridge is only valid for the exact bytes
-it was built against; a new build renames everything.
-"""
+"""React ships pre-minified, so dev build names are joined to prod by exact call-count vectors."""
 
 from __future__ import annotations
 
@@ -60,22 +17,14 @@ FAILED = "failed"
 OK = "ok"
 NOT_BUILT = "not_built"
 
-# A function whose counts are all this small carries almost no information and collides with
-# everything. Excluded from matching, and the exclusion is reported so the bridge's coverage is
-# visible.
+# Low-count functions collide with everything; excluded and reported.
 MIN_INFORMATIVE_COUNT = 2
 
-# Above this share of resolved mappings being name-identical (`push` -> `push`), the two arms are
-# almost certainly the same build. Some identity is EXPECTED: React's release minifier leaves
-# scheduler entry points alone and `keepNames` preserves others, so a genuine bridge on a real
-# React 19.2.4 pair came in at roughly 0.1 against exactly 1.0 for a same-build pair.
-# Untouched: `push`, `peek` and `performWorkUntilDeadline`.
+# Some identity is expected (React leaves scheduler entry points unminified): ~0.1 for a real
+# pair against 1.0 for a same-build pair.
 MAX_IDENTITY_MAPPING_FRACTION = 0.5
 
-# NOTE FOR THE NEXT PERSON: you cannot detect 'is this the development build?' from function-name
-# length. Measured on the real pair, the development bundle had a median react-dom name length of
-# 19 with 97.6% of names four characters or more, and the PRODUCTION bundle a median of 19 with
-# 95.4%. The checks below are structural instead.
+# Function-name length cannot detect a development build (medians were equal); checks are structural.
 
 
 @dataclass(frozen = True)
@@ -112,13 +61,11 @@ class Bridge:
     rungs: tuple[str, ...] = ()
     # prod function key -> dev function name
     mapping: dict[str, str] = field(default_factory = dict)
-    # prod function key -> the count vector that matched it, for auditing
     evidence: dict[str, list[int]] = field(default_factory = dict)
     ambiguous_prod: list[str] = field(default_factory = list)
     ambiguous_dev: list[str] = field(default_factory = list)
     unmatched_prod: int = 0
-    # Resolved functions whose dev name equals their prod name. Expected to be small and non-zero;
-    # near 100% means both arms were the same build.
+    # Near 100% means both arms were the same build.
     identity_mappings: int = 0
     anchors_checked: int = 0
     anchor_failures: list[str] = field(default_factory = list)
@@ -126,8 +73,7 @@ class Bridge:
 
     @staticmethod
     def prod_key(url: str, start_offset: int, end_offset: int) -> str:
-        # The URL is reduced to its basename because an Unsloth install serves the same bundle from a
-        # hashed path that changes per install, while the offsets inside it do not.
+        # Basename only: the bundle's hashed path changes per install, its offsets do not.
         return f"{os.path.basename(url)}:{start_offset}:{end_offset}"
 
     def resolve(self, url: str, start_offset: int, end_offset: int) -> str | None:
@@ -212,12 +158,7 @@ class Bridge:
 
 
 def assert_no_measurements(payload: Any, path: str = "bridge") -> None:
-    """Refuse any float anywhere in a bridge artefact.
-
-    The dev build is a dictionary, never a measurement. This is the mechanical
-    guarantee behind that sentence: the artefact can hold names and integers and
-    nothing else, so there is no field a duration could sit in even by accident.
-    """
+    """Dev timings must not persist: the artefact holds only names and integers, so no float can enter."""
     if isinstance(payload, bool):
         return
     if isinstance(payload, float):
@@ -245,16 +186,7 @@ def vectors_from_snapshots(
     *,
     url_filter: str | None = None,
 ) -> list[FunctionVector]:
-    """Turn one build's per-rung coverage snapshots into count vectors.
-
-    `snapshots` are `instruments.coverage.CoverageSnapshot` objects in RUNG
-    ORDER, and the order must be identical for both builds or the vectors
-    describe different experiments and every match is spurious.
-
-    A function missing from a rung contributes a 0 at that position rather than
-    being dropped, because "never called at the small rung" is itself part of
-    the signature.
-    """
+    """Snapshots must share rung order across both builds; a function missing at a rung contributes 0."""
     if not snapshots:
         return []
     per_rung: list[dict[tuple[str, int, int], Any]] = []
@@ -320,14 +252,7 @@ def build_bridge(
     react_url_filter: str | None = None,
     anchor_url_filter: str | None = None,
 ) -> Bridge:
-    """Match prod functions to dev names by exact call-count vector equality.
-
-    `anchor_names` are functions that are independently named on BOTH sides,
-    which in practice means our own app components: source maps and `keep_fnames`
-    recover those in the production build, and the development build has them
-    too. They are the control. If an anchor does not map to itself the bridge is
-    discarded whole.
-    """
+    """Anchors are named on both sides, so each must map to itself or the whole bridge is discarded."""
     if len(dev_snapshots) != len(prod_snapshots):
         return Bridge(
             status = FAILED,
@@ -359,7 +284,6 @@ def build_bridge(
         rungs = tuple(rungs),
     )
 
-    # ---- anchor validation, on our own app code, both sides named ----------
     dev_all = vectors_from_snapshots(dev_snapshots, "dev", url_filter = anchor_url_filter)
     prod_all = vectors_from_snapshots(prod_snapshots, "prod", url_filter = anchor_url_filter)
     dev_by_name: dict[str, list[FunctionVector]] = {}
@@ -401,12 +325,7 @@ def build_bridge(
         )
         return bridge
 
-    # The two arms must actually be two different builds. THE FAILURE THIS CLOSES: if both arms are
-    # pointed at the same server, every count vector matches trivially, EVERY ANCHOR PASSES because
-    # an anchor genuinely does map to itself, and the bridge reports `ok` with a mapping of `Zk` to
-    # `Zk`. The anchor check cannot catch it: anchors test invariance and same-build is perfectly
-    # invariant.
-    # ---- the two arms must actually be two different builds -----------------
+    # The arms must be different builds: same-build arms pass every anchor trivially.
     dev_all_keys = {v.key for v in dev_all if v.informative}
     prod_all_keys = {v.key for v in prod_all if v.informative}
     if dev_all_keys and dev_all_keys == prod_all_keys:
@@ -419,7 +338,6 @@ def build_bridge(
         )
         return bridge
 
-    # ---- the actual matching, restricted to react-dom ----------------------
     dev_react = vectors_from_snapshots(dev_snapshots, "dev", url_filter = react_url_filter)
     prod_react = vectors_from_snapshots(prod_snapshots, "prod", url_filter = react_url_filter)
     dev_index, dev_ambiguous = _index_unique(dev_react)
@@ -450,8 +368,7 @@ def build_bridge(
         )
         return bridge
 
-    # Second guard on the same failure, for arms that differ in offsets but are still the same code:
-    # if nearly every resolved name maps to itself, no minification was undone.
+    # Second guard: same code at different offsets maps nearly every name to itself.
     fraction = identical_names / matched
     if fraction > MAX_IDENTITY_MAPPING_FRACTION:
         bridge.status = FAILED

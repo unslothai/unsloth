@@ -167,7 +167,6 @@ def test_cached_decode_preserves_prefix_and_projections(monkeypatch):
     target = torch.randn(1, 1050, 16)
     cache = module.QwenImage21KVLayerCache()
     with torch.inference_mode():
-        # Text and condition-image prefix segments retain the stock causal rules.
         joined = torch.cat([prefix, target], dim = 1)
         before = stock(
             attn,

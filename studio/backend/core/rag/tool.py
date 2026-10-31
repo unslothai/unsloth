@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``search_knowledge_base`` LLM tool: scope resolution + hit formatting.
-
-KB scope wins; otherwise project and thread scopes combine so project chats also
-see their own attachments. Hits render as ``<chunk>`` blocks for the model,
-plus a parallel citation source-map for clickable sources. Each call opens and
-closes its own ``rag_db`` connection.
-"""
+"""search_knowledge_base LLM tool: KB scope wins, else project and thread scopes combine."""
 
 from __future__ import annotations
 
@@ -56,20 +50,19 @@ def _resolve_scope(
     scope_project_id: str | None = None,
     scope_conversation_id: str | None = None,
 ) -> str | list[str] | None:
-    """KB (an explicit pick) is exclusive; project and thread scopes combine so a
-    project chat also retrieves from its own attached documents.
+    """A KB pick replaces the thread scope but keeps the project's (#9485).
 
     The conversation archive is exclusive too, and takes precedence: it is a different
     corpus (this chat's evicted turns), so sharing a top-K would have old turns and
     document passages crowd each other out."""
     if scope_conversation_id:
         return conversation_archive_scope(scope_conversation_id)
-    if scope_kb_id:
-        return kb_scope(scope_kb_id)
     scopes = []
+    if scope_kb_id:
+        scopes.append(kb_scope(scope_kb_id))
     if scope_project_id:
         scopes.append(project_scope(scope_project_id))
-    if scope_thread_id:
+    if scope_thread_id and not scope_kb_id:
         scopes.append(thread_scope(scope_thread_id))
     if not scopes:
         return None
@@ -113,20 +106,7 @@ CONVERSATION_RECALL_HEADER = (
 
 
 def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
-    """`_format`, plus what a recalled conversation needs and a knowledge base does not.
-
-    Two additions, both presentation only:
-
-    * each block carries ``turn``, the position of that turn in the conversation, so the
-      passages can be told apart in time. Omitted where the archive predates the column,
-      because a missing ordinal is not a position of zero.
-    * a one-line header, emitted only when there are at least two passages, stating that
-      they are oldest first and that a later turn supersedes an earlier one. It says
-      SUPERSEDES rather than "is the answer", so a question about what was originally
-      said still reads the first block as the original. With a single passage the header
-      would be an ordering claim about nothing, and it would spend tokens on the rung the
-      over-budget backoff falls to when there is least room.
-    """
+    """Blocks carry their turn; with 2+ passages a header says a later turn supersedes an earlier one."""
     if not hits:
         return "No matching turns were found in this conversation.", []
     blocks: list[str] = []
@@ -147,12 +127,10 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
                 "page": None,
                 "text": text,
                 "turn": int(ordinal) + 1 if ordinal is not None else None,
-                # createdAt is the tie-breaker _conversation_order needs: pre-ordinal rows have turn None and
-                # ordinals are not UNIQUE.
+                # createdAt breaks _conversation_order ties: pre-ordinal rows have turn None; ordinals aren't UNIQUE.
                 "chunkIndex": _row_value(r, "chunk_index"),
                 "createdAt": _row_value(r, "created_at"),
-                # And insertion order under that, for archives whose rows share a timestamp
-                # the clock was too coarse to separate; without it the merge key runs out.
+                # Insertion order is the final tie-breaker: coarse clocks give archive rows equal timestamps.
                 "documentRowid": _row_value(r, "document_rowid"),
                 "score": round(float(h.score), 4) if h.score is not None else None,
             }
@@ -164,11 +142,7 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
 
 
 def render_conversation_sources(sources: list[dict]) -> str:
-    """`render_sources` for recalled conversation: keeps ``turn`` and the header.
-
-    Used when two searches are merged into one block, where the sources are already built
-    and there are no rows left to read them from.
-    """
+    """Renders already-built recalled sources, keeping turn and header; no rows remain to rebuild them."""
     blocks: list[str] = []
     for i, s in enumerate(sources, 1):
         s["citationId"] = i
@@ -193,10 +167,7 @@ def _row_value(row, key: str):
 
 
 def render_sources(sources: list[dict]) -> str:
-    """Render a citation-source list to sequentially-numbered ``<chunk>`` blocks,
-    rewriting each source's ``citationId`` to match its 1-based position. Lets
-    independently-built source lists (a whole-document thread attachment plus
-    retrieved project passages) be merged under one citation numbering."""
+    """Renumbers citationId by position so separately built source lists merge under one numbering."""
     blocks: list[str] = []
     for i, s in enumerate(sources, 1):
         s["citationId"] = i
@@ -214,6 +185,11 @@ def _row_token_count(row) -> int:
     if tc:
         return int(tc)
     return max(1, len(row["text"] or "") // 4)
+
+
+def _whole_document_token_count(row) -> int:
+    token_count = _row_value(row, "whole_document_token_count")
+    return max(0, int(token_count)) if token_count is not None else _row_token_count(row)
 
 
 def search_knowledge_base_with_sources(
@@ -269,13 +245,7 @@ def search_for_autoinject(
     model_name: str | None = None,
     mode: str = "hybrid",
 ) -> tuple[str, list[dict]] | None:
-    """Forced-retrieval variant for auto-injection.
-
-    Returns ``(rendered_text, sources)`` only if some hit's cosine clears
-    ``min_dense_score``, else ``None`` (inject nothing). ``None`` keeps the
-    retrieved top-K without the optional-auto relevance gate. In ``lexical``
-    mode gated hits fall back to a dense 1-NN probe.
-    """
+    """Returns None, meaning inject nothing, unless some hit's cosine clears min_dense_score."""
     if not query or not query.strip():
         return None
     scope = _resolve_scope(scope_kb_id, scope_thread_id, scope_project_id)
@@ -316,26 +286,25 @@ def search_for_autoinject(
     return (text, sources) if sources else None
 
 
+def _drop_chunk_overlap(text: str, start: int | None, prev_end: int | None) -> str:
+    if not isinstance(start, int) or not isinstance(prev_end, int) or start >= prev_end:
+        return text
+    return text[min(prev_end - start, len(text)) :].lstrip("\r\n")
+
+
 def whole_document_context(
     *, scope_thread_id: str | None = None, max_tokens: int
 ) -> tuple[str, list[dict]] | None:
-    """Render EVERY chunk of the THREAD's attached documents (in order) as the same
-    ``<chunk>`` blocks + citation source-map as retrieval, so the model reads the whole
-    file rather than top-K passages. Thread-attached files only: KB and project corpora
-    are search corpora, never whole-document, so this resolves the thread scope alone.
-    ``None`` (caller falls back to retrieval) when there is no thread scope, no completed
-    chunks, or the total exceeds ``max_tokens``."""
+    """render ordered thread attachment chunks with citation blocks; KB and project corpora stay search-only; return None when absent or over max_tokens."""
     if not scope_thread_id:
         return None
-    # A non-positive budget means "never inject" (disable whole-doc via RAG_THREAD_WHOLE_DOC=0), not
-    # "inject the whole corpus unbounded".
+    # a non-positive budget disables whole-document injection rather than removing the limit
     if max_tokens <= 0:
         return None
     scope = thread_scope(scope_thread_id)
     conn = rag_db.get_connection()
     try:
-        # Cheap SUM pre-check so an oversized attachment is rejected before the whole corpus is hydrated;
-        # all_chunks_for_scope runs only once it fits.
+        # reject oversized attachments before all_chunks_for_scope hydrates the corpus
         if scope_token_estimate(conn, scope) > max_tokens:
             return None
         rows = all_chunks_for_scope(conn, scope)
@@ -343,22 +312,30 @@ def whole_document_context(
         conn.close()
     if not rows:
         return None
-    total = sum(_row_token_count(r) for r in rows)
+    total = sum(_whole_document_token_count(r) for r in rows)
     if total > max_tokens:
         return None
 
-    sources: list[dict] = [
-        {
-            "citationId": i,
-            "chunkId": r["id"],
-            "documentId": r["document_id"],
-            "filename": r["filename"] or "unknown",
-            "page": r["page_number"],
-            "text": r["text"] or "",
-            "score": None,
-        }
-        for i, r in enumerate(rows, 1)
-    ]
+    sources: list[dict] = []
+    prev_page, prev_end = None, None
+    for i, r in enumerate(rows, 1):
+        page = (r["document_id"], r["source_page_index"])
+        text = r["text"] or ""
+        trimmed = (
+            _drop_chunk_overlap(text, r["page_char_start"], prev_end) if page == prev_page else text
+        )
+        sources.append(
+            {
+                "citationId": i,
+                "chunkId": r["id"],
+                "documentId": r["document_id"],
+                "filename": r["filename"] or "unknown",
+                "page": r["page_number"],
+                "text": trimmed,
+                "score": None,
+            }
+        )
+        prev_page, prev_end = page, r["page_char_end"]
     rendered = render_sources(sources)
     if max(1, len(rendered) // 4) > max_tokens:
         return None

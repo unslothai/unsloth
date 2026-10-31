@@ -14,13 +14,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Load Mistral-format checkpoints (params.json + consolidated*.safetensors, no config.json,
-e.g. Mistral-Large-3) as transformers `mistral4` via a translated view of the same shards.
-
-Mistral-Small-4 ships in both formats with byte-identical tensors, which fixes the name
-mapping. Conversions are registered for one load only so `save_pretrained` writes
-transformers names. Only the text decoder loads; unrecognised checkpoints return None.
-"""
+"""Loads Mistral-format checkpoints as transformers mistral4 (text decoder only); conversions apply
+to one load only; unrecognised checkpoints return None."""
 
 import contextlib
 import functools

@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Qwen-Image-2.1 editing on the Images page: the size the form shows is the size the backend
-// renders, the request keeps image order and drops nothing silently, and a restored edit reopens
-// Edit with its inputs requested again instead of replaying as text-to-image.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -45,7 +41,7 @@ const QWEN21: DiffusionConditioning = {
 const LIMITS = sizeLimitsFrom(QWEN21);
 
 test("match-source sizes agree with the backend's match_source_size", () => {
-  // Same pairs the backend tests pin, so the form never shows a size the engine does not render.
+  // Same pairs the backend tests pin.
   assert.deepEqual(matchSourceSize(300, 200, 1024, LIMITS), {
     width: 1248,
     height: 832,
@@ -96,7 +92,6 @@ test("the grid and bounds follow the loaded model, and default to the historical
   const fitted = fitSize(2752, 2752, LIMITS);
   assert.ok(fitted.width * fitted.height <= LIMITS.maxPixels);
   assert.equal(fitted.width, fitted.height);
-  // A 2K recipe restores whole on this model and scaled on another.
   assert.deepEqual(restorableSize(2752, 1536, "txt2img", LIMITS), {
     width: 2752,
     height: 1536,
@@ -231,8 +226,7 @@ test("a restored edit names every input it needs again", () => {
 });
 
 test("restoreSettings reopens Edit and Reference instead of Create", () => {
-  // Structural: the page component is not renderable under node:test. The workflow decision and
-  // the cleared uploads are what keep a restored edit from generating as text-to-image.
+  // Structural: the page component is not renderable under node:test.
   const src = readSrc("features/images/images-page.tsx");
   const body = src.slice(src.indexOf("const restoreSettings = useCallback"));
   assert.match(
@@ -241,7 +235,6 @@ test("restoreSettings reopens Edit and Reference instead of Create", () => {
   );
   assert.match(body, /setInitImage\(null\)/);
   assert.match(body, /setReferenceImages\(/);
-  // Generation stays blocked until the source and every restored slot are supplied again.
   assert.match(src, /usesInit && !initImage/);
   assert.match(src, /is empty\. Add it, or remove that slot\./);
 });

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// `etaSeconds` is a new required field on ManagedDownload, so an install that
-// upgrades into it has records without one, and one that downgrades away must
-// still read what this version wrote. It is injected on the way in and omitted
-// on the way out, leaving the persisted shape unchanged in both directions.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -25,7 +20,6 @@ Object.assign(globalThis.window, {
   },
 });
 
-/** Exactly what an Unsloth from before this change wrote: no `etaSeconds` key. */
 function legacyJob(repoId: string, extra: Record<string, unknown> = {}) {
   return {
     key: `model:${repoId}`,
@@ -49,7 +43,6 @@ store.set(
     state: {
       jobs: {
         legacy: legacyJob("org/legacy"),
-        // A record whose eta survived some other route, or was hand-edited.
         poisoned: legacyJob("org/poisoned", { etaSeconds: "not a number" }),
         infinite: legacyJob("org/infinite", {
           etaSeconds: Number.POSITIVE_INFINITY,
@@ -100,9 +93,7 @@ test("what this version writes back carries no etaSeconds, so an older Unsloth r
     !("etaSeconds" in job),
     `persisted record leaked etaSeconds: ${JSON.stringify(job)}`,
   );
-  // The rate has never been persisted either; the ETA follows the same rule.
   assert.ok(!("bytesPerSec" in job), "persisted record leaked bytesPerSec");
-  // Everything an older Unsloth does read is still there and unchanged.
   assert.equal(job.downloadedBytes, 4_000_000_000);
   assert.equal(job.expectedBytes, 8_000_000_000);
   assert.equal(job.state, "running");

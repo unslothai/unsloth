@@ -25,11 +25,7 @@ def isolated_studio_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def no_hub(monkeypatch):
-    """Fail every Hub lookup in-process, recording what was asked for.
-
-    HF_HUB_OFFLINE is read into huggingface_hub.constants at import time, so
-    setting it from a test is a no-op and the lookups still dial out.
-    """
+    """Fail Hub lookups in-process: HF_HUB_OFFLINE is read at import, so setting it in a test is a no-op."""
     import huggingface_hub
 
     attempts: list[str] = []

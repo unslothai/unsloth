@@ -10,14 +10,12 @@ const VRAM_BUDGET_EVENT = "unsloth-vram-budget-change";
 const VRAM_BUDGET_LOCK_EVENT = "unsloth-vram-budget-lock";
 
 export type VramBudgetSettings = {
-  /** Fraction of each GPU a load may claim, e.g. 0.97. */
   fraction: number;
-  /** False when inherited from UNSLOTH_VRAM_FRACTION or the built-in default. */
+  /** False when inherited from UNSLOTH_VRAM_FRACTION or the default. */
   isStored: boolean;
   defaultFraction: number;
   minFraction: number;
   maxFraction: number;
-  /** A model is loaded that was sized against a different budget. */
   reloadRequired: boolean;
 };
 
@@ -37,62 +35,42 @@ type ApiVramBudgetSettings = {
 
 let inFlightVramBudget: Promise<VramBudgetSettings> | null = null;
 
-// Held here, not in the row: the row unmounts on Run and on the Advanced toggle,
-// and the load must still be able to flush that edit.
+// Held here because the row unmounts on Run and on the Advanced toggle.
 let stagedVramBudgetFraction: number | null = null;
 
-// Bumped on every stage, so a retry put back by a failed write can be told apart
-// from a newer edit the user staged over it.
+// Tells a re-staged failed retry apart from a newer edit.
 let stagedVramBudgetSequence = 0;
 let retryVramBudgetSequence = -1;
 
-/** Record a fraction a debounced save has not sent yet. */
 export function stageVramBudgetSave(fraction: number | null) {
   stagedVramBudgetFraction = fraction;
   stagedVramBudgetSequence += 1;
 }
 
-/**
- * Drop a retry a failed write put back, unless something newer is staged over it.
- * For a caller that is about to start a load: the retry would otherwise be flushed
- * by the teardown and race the load request.
- */
+/** Drop a re-staged retry before a load, or teardown would flush it and race the load. */
 export function dropVramBudgetRetry() {
   if (stagedVramBudgetSequence === retryVramBudgetSequence) {
     stagedVramBudgetFraction = null;
   }
 }
 
-/**
- * Send a staged fraction now. Returns null when nothing is staged, so callers keep
- * their synchronous path in the common case.
- */
+/** Null when nothing is staged, so callers keep their synchronous path. */
 export function flushVramBudgetSave(): Promise<VramBudgetSettings> | null {
   const fraction = stagedVramBudgetFraction;
   stagedVramBudgetFraction = null;
   return fraction === null ? null : updateVramBudgetSettings(fraction);
 }
 
-/**
- * Everything the next load must wait for: a staged fraction, or a debounced save
- * still in flight. A user who pauses past the 400 ms debounce and clicks Load has
- * nothing staged but an open PUT, and the load would otherwise use the fraction
- * that request replaces. The chain swallows rejections the debounced save reported.
- */
+/** A staged fraction or a debounced PUT still in flight; the chain swallows rejections. */
 export function settleVramBudgetSave(): Promise<unknown> | null {
-  // The newest write, not the chain: the chain swallows rejections so one failed save cannot strand
-  // those behind it, and a caller waiting on it would be told the save succeeded. Only the newest
-  // can have re-staged a retry, and writes settle in order, so it still covers every open write.
+  // The newest write, not the swallowing chain; writes settle in order, so it covers all of them.
   return (
     flushVramBudgetSave() ??
     (vramBudgetWritesOpen > 0 ? vramBudgetNewestWrite : null)
   );
 }
 
-// A load waits on the budget it is about to launch against, so an edit made in that window is
-// flushed by the teardown alongside the load request and either fraction could size the child.
-// Settling in a loop only shrinks that window; closing the control closes it. Held here because the
-// row unmounts and the load does not.
+// Locks the control while a load waits on the budget, so an edit cannot race the load request.
 let vramBudgetLocked = false;
 
 export function setVramBudgetLocked(locked: boolean) {
@@ -135,8 +113,7 @@ function fromApi(settings: ApiVramBudgetSettings): VramBudgetSettings {
   };
 }
 
-// No read-through cache: reloadRequired describes the running process and goes
-// stale on any load or swap. This only fans the latest value out to subscribers.
+// No cache: reloadRequired goes stale on any load or swap.
 function publishVramBudget(settings: VramBudgetSettings) {
   window.dispatchEvent(
     new CustomEvent(VRAM_BUDGET_EVENT, { detail: settings }),
@@ -155,39 +132,24 @@ async function fetchVramBudgetSettings(): Promise<VramBudgetSettings> {
   return fromApi(await res.json());
 }
 
-/**
- * Always refetches, since `reloadRequired` describes the loaded process;
- * concurrent calls share one request. Returns null rather than throwing when the
- * endpoint is absent, so a newer UI on an older backend hides the control.
- */
+/** Always refetches with shared concurrent calls; null when the endpoint is absent. */
 export async function loadVramBudgetSettings(
   options: { force?: boolean; rethrow?: boolean } = {},
 ): Promise<VramBudgetSettings | null> {
-  // Read behind any open write: a row remounting right after a flushed drag can otherwise GET the
-  // old fraction before the PUT commits and answer after it, repainting the control with the value
-  // the server just replaced. The subscription cannot untangle that, since only the order is wrong.
+  // Read behind open writes, or a remount could GET the old fraction before the PUT commits.
   const pendingWrites =
     vramBudgetWritesOpen > 0 ? vramBudgetWriteChain : Promise.resolve();
-  // Waiting behind the writes open now says nothing about a save issued while the
-  // GET is in the air: that PUT can publish first, and this answer would repaint
-  // the slider, and the Reload state, with what the server held before it. The
-  // post-load refresh is the way in, since the control is live while the load runs.
+  // A save issued while this GET is in the air can publish first; this answer must not repaint it.
   const generationAtRead = vramBudgetWriteGeneration;
   if (options.force) {
-    // reloadRequired describes the running child, so a read that started before a
-    // load finished answers about the child being replaced. Sharing it would
-    // republish that stale answer as if it described the new one.
+    // A read started before a load finished describes the replaced child, so do not share it.
     inFlightVramBudget = null;
   }
   if (!inFlightVramBudget) {
     const read: Promise<VramBudgetSettings> = pendingWrites
       .then(fetchVramBudgetSettings)
       .then((settings) => {
-        // Answer only while this is still the current read and nothing newer has
-        // been written. A displaced read describes the child being replaced, an
-        // overtaken one the fraction a save replaced; either restores state the
-        // newer answer just corrected. Refused, not merely unpublished: the caller
-        // applies the return value by hand and would put the same answer back.
+        // Refuse a displaced or overtaken answer; the caller applies the return value by hand.
         if (
           inFlightVramBudget !== read ||
           generationAtRead !== vramBudgetWriteGeneration
@@ -197,8 +159,7 @@ export async function loadVramBudgetSettings(
         return publishVramBudget(settings);
       })
       .finally(() => {
-        // Identity-checked: a forced read displaces this one, and clearing blindly
-        // would drop the newer request's handle and leave it unshared.
+        // Identity-checked so a forced read's handle is not dropped.
         if (inFlightVramBudget === read) {
           inFlightVramBudget = null;
         }
@@ -208,10 +169,7 @@ export async function loadVramBudgetSettings(
   try {
     return await inFlightVramBudget;
   } catch (error) {
-    // Null is already the "no usable answer" contract here: an older backend with
-    // no such route reads the same way, and every caller keeps what it has. `rethrow`
-    // is for the one caller that must tell those apart, since it decides whether a
-    // save may be skipped rather than what to paint.
+    // Null means "no usable answer"; `rethrow` is for the caller deciding whether to skip a save.
     if (options.rethrow) {
       throw error;
     }
@@ -235,18 +193,13 @@ async function putVramBudget(
   return fromApi(await res.json());
 }
 
-// One drag can outrun its own saves: on a slow link a second PUT starts while the
-// first is open, and either order of apply or response could let the older edit win
-// the database row and the published value. Chaining serialises the writes; the
-// generation lets only the newest publish, so a late response cannot repaint.
+// Chain writes and let only the newest generation publish, so an older edit cannot win.
 let vramBudgetWriteChain: Promise<unknown> = Promise.resolve();
-// The same write, unswallowed, for callers that need to hear about a failure.
 let vramBudgetNewestWrite: Promise<unknown> = Promise.resolve();
 let vramBudgetWriteGeneration = 0;
-// Issued but unsettled writes, so a load can tell whether to wait.
 let vramBudgetWritesOpen = 0;
 
-/** `null` clears the stored budget so the env var or the default applies again. */
+/** `null` clears the stored budget so the env var or the default applies. */
 export function updateVramBudgetSettings(
   fraction: number | null,
 ): Promise<VramBudgetSettings> {
@@ -270,9 +223,7 @@ export function updateVramBudgetSettings(
         ? publishVramBudget(settings)
         : settings,
     (error: unknown) => {
-      // Put a failed edit back for the next flush or Run, but only while it is
-      // still the newest intent: a later edit may already be staged, or already
-      // sent past this one, and resending would undo it.
+      // Re-stage a failed edit only while it is still the newest intent.
       if (
         generation === vramBudgetWriteGeneration &&
         stagedVramBudgetFraction === null

@@ -195,5 +195,4 @@ def test_probe_failures_return_the_original_error(helper, monkeypatch, kwargs):
 
     assert excinfo.value is original
     assert excinfo.value.__cause__ is None
-    # Do not show the probe failure before the original error.
     assert excinfo.value.__context__ is None

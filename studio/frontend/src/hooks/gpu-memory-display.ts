@@ -3,9 +3,23 @@
 
 import type { GpuDevice, SystemGpuInfo } from "./use-system";
 
-/** Vulkan shared devices report allocation headroom, not a fixed VRAM pool. */
 export function hasSharedMemoryHeadroom(device: GpuDevice): boolean {
   return device.index_kind === "vulkan" && device.shared_memory === true;
+}
+
+/** A usage device whose whole budget is host RAM (Apple unified memory, CUDA integrated): its free reading is headroom. */
+export function hasUnifiedPoolHeadroom(device: GpuDevice): boolean {
+  const total = device.memory_total_gb ?? 0;
+  const hostBacked = device.shared_memory_host_backed_gb;
+  return (
+    !hasSharedMemoryHeadroom(device) &&
+    device.shared_memory === true &&
+    total > 0 &&
+    Number.isFinite(hostBacked) &&
+    (hostBacked as number) >= total &&
+    Number.isFinite(device.vram_free_gb) &&
+    (device.vram_free_gb as number) >= 0
+  );
 }
 
 export function sharedMemoryAvailableGb(devices: GpuDevice[]): number | null {
@@ -34,6 +48,9 @@ export function gpuMemoryDisplay(gpu: SystemGpuInfo | null | undefined) {
     usageDevices,
     sharedOnly: sharedDevices.length > 0 && usageDevices.length === 0,
     sharedAvailableGb: sharedMemoryAvailableGb(sharedDevices),
+    unifiedAvailableGb: sharedMemoryAvailableGb(
+      usageDevices.filter(hasUnifiedPoolHeadroom),
+    ),
     usageGpu: gpu
       ? {
           ...gpu,

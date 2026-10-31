@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Re-costing a live lease as its tool loop grows.
-
-#9392 admitted generations against the KV cache instead of the slot count, after two chats
-killed each other on a 2048-token cache (565 + 1485, neither too long alone). It could not
-know a tool loop's final size, since each round appends its results and re-sends the
-conversation, so it reserved the WHOLE cache: airtight, and it made every tool chat run
-alone (any lit pill sets ``enable_tools``). Measured on a 262144 cache, four tool chats
-reached first token at 0.1s, 2.8s, 4.6s and 8.8s, one after another.
-
-Re-costing is the alternative that PR named and skipped. These pin the properties that
-make it safe to call from inside a running generator.
-"""
+"""Re-costing a live lease as the loop grows instead of reserving the whole KV cache up front."""
 
 from __future__ import annotations
 
@@ -97,7 +86,6 @@ class TestTheLeaseSide:
         lease = _lease(queue, tokens = 1000, budget = 8192)
         assert lease.recost(2500) is True
         assert queue.snapshot().committed == 2500
-        # Release must hand back the NEW figure, not the one it was admitted on.
         lease.release()
         assert queue.snapshot().committed == 0
 
@@ -168,22 +156,13 @@ class TestFourToolChatsTogether:
         share = budget // 4
         leases = [_lease(queue, tokens = share, budget = budget) for _ in range(4)]
         assert queue.snapshot().committed == budget, "all four tool chats admitted at once"
-        # The cache is exactly full, so nobody may grow at anyone else's expense.
         assert leases[0].recost(share + 1000) is False
-        # ... until someone finishes.
         leases[3].release()
         assert leases[0].recost(share + 1000) is True
 
 
 class TestWaitingForRoomInsteadOfRunningOverIt:
-    """``recost`` alone accounts for growth without enforcing it.
-
-    A refused recost leaves the run at its old figure and it sends the bigger prompt
-    anyway. Four loops opening at a share each and growing together is then the measured
-    failure: llama.cpp halves the batch to 1, gives up, and ``Context size has been
-    exceeded`` clears EVERY decoding slot, not just the one that overflowed.
-    ``recost_waiting`` is what makes the accounting binding.
-    """
+    """``recost`` alone only accounts for growth; ``recost_waiting`` is what makes it binding."""
 
     @pytest.mark.asyncio
     async def test_growth_that_fits_never_touches_the_wait_line(self):
@@ -206,10 +185,8 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
 
         thread = threading.Thread(target = grow, daemon = True)
         thread.start()
-        # It cannot proceed: 2000 is still held by `first` and 3500 does not fit beside it.
         thread.join(0.2)
         assert thread.is_alive(), "expected the growth to wait, not to be refused"
-        # Yielding first is what makes this resolvable at all.
         assert queue.snapshot().committed == 2000
         first.release()
         thread.join(5)
@@ -234,7 +211,6 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
             ok = lease.recost_waiting(budget // 2, poll_s = 0.01)
             with lock:
                 results.append(ok)
-            # Finishing is what lets the next one in.
             lease.release()
 
         threads = [threading.Thread(target = grow, args = (lease,), daemon = True) for lease in leases]
@@ -320,8 +296,6 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
         thread.start()
         thread.join(0.2)
         assert thread.is_alive()
-        # A newcomer arrives while the reparker waits, and must not be granted the room
-        # the reparker just gave up.
         newcomer = queue.reserve(
             capacity = 4, config = LlamaAdmissionConfig(), tokens = 1000, budget = 4096
         )
@@ -329,10 +303,7 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
         first.release()
         thread.join(5)
         assert not thread.is_alive()
-        # Behind the reparker, not instead of it. The reclaim brings the barrier down and
-        # is the last thing to touch the queue, so if it does not run admission itself a
-        # request that fits in the room left over waits out the whole grown run -- and
-        # since a queued waiter shuts reserve()'s fast path, so does every later arrival.
+        # the reclaim must run admission itself, else the newcomer waits out the grown run
         for _ in range(100):
             await asyncio.sleep(0.01)
             if newcomer.lease_nowait() is not None:
@@ -344,13 +315,7 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
 
 
 class TestGivingUpTheWait:
-    """What a reparker owes the pool when its wait ends without the bigger commitment.
-
-    ``yield_commitment`` has already taken the old figure off ``_committed``, but the
-    lease still occupies that KV at llama-server. Handing it back is a CORRECTION, not a
-    request, and a full cache must not be able to refuse it: a lease that records a
-    commitment it never restored subtracts it again on release, leaving phantom room.
-    """
+    """Giving up a wait restores the old commitment as a correction a full cache must never refuse."""
 
     @pytest.mark.asyncio
     async def test_a_full_cache_cannot_refuse_the_restore(self):
@@ -369,8 +334,6 @@ class TestGivingUpTheWait:
         thread.start()
         while queue.snapshot().committed != 1024:
             await asyncio.sleep(0.005)
-        # The other run takes the whole cache while this one is parked, leaving no room
-        # for the restore to ask for.
         assert winner.recost(4096) is True
         assert queue.snapshot().committed == 4096
 
@@ -378,8 +341,7 @@ class TestGivingUpTheWait:
         thread.join(5)
         assert out == [False]
         assert queue._reparking == 0
-        # Both leases really hold their figures at llama-server, so the pool says so even
-        # over the budget: that is what is genuinely resident.
+        # both figures are really resident at llama-server, so record them even over budget
         assert (
             queue.snapshot().committed == 4096 + 1024
         ), "a restore the cache could not fit was dropped instead of recorded"
@@ -388,7 +350,6 @@ class TestGivingUpTheWait:
         assert (
             queue.snapshot().committed == 4096
         ), "release subtracted a commitment that was never restored"
-        # And the phantom room that leak created must not admit anyone.
         newcomer = queue.reserve(
             capacity = 4, config = LlamaAdmissionConfig(), tokens = 1000, budget = 4096
         )
@@ -422,13 +383,7 @@ class TestGivingUpTheWait:
 
 
 class TestYieldingIsGatedOnTheServerActuallyClearing:
-    """A slot being idle is not the same as its KV cells being reclaimed.
-
-    Under ``--kv-unified`` a finished round's cells stay resident until ``prompt_clear()``,
-    which llama-server runs only under ``--cache-idle-slots``. ``--cache-ram 0``
-    force-disables that, and Studio emits it on Windows under full GPU offload (#5692)
-    next to ``--kv-unified``. Yielding there hands a second caller occupied room.
-    """
+    """Idle slots keep KV cells under --kv-unified until prompt_clear(), which --cache-ram 0 disables."""
 
     @pytest.mark.asyncio
     async def test_growth_that_fits_does_not_care(self):

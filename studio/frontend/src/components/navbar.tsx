@@ -28,8 +28,6 @@ export function Navbar() {
           )}
         </header>
 
-        {/* A held-out sidebar brings its own copy of this cluster, in the same
-            place. */}
         {usesNativeMacTitlebar && !pinned && !peeking && (
           <DesktopTitlebarNavigation
             expanded={false}
@@ -40,8 +38,7 @@ export function Navbar() {
       </>
     );
   }
-  // Desktop windows can land here under Windows text scaling, so sit inside the
-  // custom titlebar band instead of under its z-[70].
+  // Under Windows text scaling, sit inside the custom titlebar band rather than under its z-[70].
   return (
     <header
       className={cn(
@@ -61,7 +58,6 @@ export function Navbar() {
               : "items-start pt-[calc(11px*var(--ui-space-scale,1))] pl-2",
         )}
       >
-        {/* Scales with the header, except in the fixed titlebar band. */}
         <SidebarTrigger
           className={cn(
             "pointer-events-auto",

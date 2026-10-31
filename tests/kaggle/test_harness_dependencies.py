@@ -1,32 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The CI step that runs these tests must be able to import what they import.
-
-The failure this exists against is quiet by construction. `Test the harness`
-runs `pytest tests/kaggle -q` against a hand-written pip line, and a module
-missing from that line does not stop the step: pytest reports the collection or
-call error, the step goes red with everything else green, and the two tests that
-could not import are indistinguishable in a summary from tests that never
-existed. Measured on run 32925226213, which ran **803 of 805** because
-`datasets` was not installed -- and the two it lost are the pair proving
-`with_transform` keeps PIL images while `Dataset.from_list` corrupts them, which
-is the finding the vision leg was built on.
-
-`pillow` and `pyyaml` were in the same position and passing only because
-`transformers` and friends happened to pull them. A transitive dependency is not
-a dependency; it is a coincidence that holds until an upstream drops it.
-
-So the rule is an agreement between two things that are edited months apart: the
-modules `tests/kaggle/test_*.py` import without a `pytest.importorskip` guard,
-and the distributions the workflow installs.
-
-Scope is deliberately the TEST modules, not the payloads under `t4_smoke/` and
-`studio_gpu/`. Those import trl, unsloth, unsloth_zoo and vllm, and they do it
-lazily inside functions because they run on a Kaggle GPU session rather than on
-this runner. Demanding them here would install a CUDA stack on an
-`ubuntu-latest` box to run a pure-AST test suite.
-"""
+"""Modules the test files import must be in the CI pip line, or their tests vanish from the summary."""
 
 from __future__ import annotations
 
@@ -39,15 +14,13 @@ ROOT = Path(__file__).resolve().parents[2]
 TESTS = ROOT / "tests" / "kaggle"
 WORKFLOW = ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml"
 
-# Import name -> the distribution that provides it, for the ones that differ.
-# Anything not listed is assumed to install under its own name.
+# Import name -> distribution name, only where they differ.
 DISTRIBUTION = {
     "PIL": "pillow",
     "yaml": "pyyaml",
 }
 
-# Directories whose module names are importable because the suite puts them on
-# sys.path, so they are not third-party however they are spelled.
+# Directories the suite puts on sys.path, so their modules are not third-party.
 LOCAL_DIRS = (
     TESTS,
     TESTS / "t4_smoke",
@@ -68,18 +41,12 @@ def _local_names() -> set[str]:
 
 
 def _imported_third_party() -> dict[str, set[str]]:
-    """Every third-party module the test modules import, and where.
-
-    Any depth, not just module level: a `from datasets import Dataset` inside a
-    test function fails when that test RUNS, which is exactly the case run
-    32925226213 hit, and a module-level-only scan would have missed it.
-    """
+    """Includes imports inside functions, not just module level; those fail only when their test runs."""
     local = _local_names()
     found: dict[str, set[str]] = {}
     for path in sorted(TESTS.glob("test_*.py")):
         tree = ast.parse(path.read_text(encoding = "utf-8"))
-        # `pytest.importorskip("x")` is the suite's own way of saying a module
-        # is optional, so it is not a claim on the install line.
+        # importorskip marks a module optional, so it is not an install requirement.
         guarded = {
             node.args[0].value.split(".")[0]
             for node in ast.walk(tree)
@@ -137,10 +104,7 @@ def test_the_import_scan_finds_something_at_all():
 
 
 def test_the_scan_looks_inside_functions_and_not_only_at_module_level():
-    """The measured failure was a function-level import. `test_vision_run.py`
-    imports `datasets` inside two test bodies and nowhere else, so a
-    module-level-only scan reports a clean tree and the step still loses two
-    tests."""
+    """A module-level scan would miss datasets, which test_vision_run.py imports only inside test bodies."""
     source = (TESTS / "test_vision_run.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     module_level = {

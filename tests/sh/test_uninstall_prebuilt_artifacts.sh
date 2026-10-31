@@ -1,19 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# scripts/uninstall.sh must remove the prebuilt siblings of ~/.unsloth/studio,
-# then prune ~/.unsloth itself.
-#
-# Each prebuilt serializes on <parent>/.<name>.install.lock (prebuilt_core.py
-# install_lock_path), so llama.cpp, node, whisper.cpp and audio.cpp each leave one behind.
-# A stray lock is a zero-byte file that looks harmless, but the final
-# `rmdir "$HOME/.unsloth"` refuses a non-empty directory, so one missed lock
-# keeps the whole tree on disk. whisper.cpp only installs when a prebuilt
-# matching the pinned llama.cpp build exists, so a live install often skips it
-# and never exercises that path; the fixture below always creates it.
-#
-# The uninstaller runs for real against a fixture HOME, so this asserts the
-# removal OUTCOME rather than the presence of a line in the script.
+# uninstall.sh must remove the prebuilt siblings and their .install.lock files, since one stray
+# lock makes the final `rmdir ~/.unsloth` fail. Runs the real uninstaller on a fixture HOME.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -21,12 +10,7 @@ UNINSTALL_SH="$SCRIPT_DIR/../../scripts/uninstall.sh"
 PASS=0
 FAIL=0
 
-# This suite runs the REAL uninstaller, and overriding HOME does not contain it
-# on WSL: the body detects WSL from /proc/version and then reaches host state
-# outside the fixture -- powershell.exe deletes Windows-side "Unsloth Studio*.lnk"
-# shortcuts and the shared unsloth.ico (uninstall.sh WSL branch), the interop-off
-# fallback scans /mnt/{c,d,e}/Users, and `sudo rm -f /etc/profile.d/unsloth-rocm-wsl.sh`
-# touches the system. Skip there, exactly like tests/sh/test_uninstall_arg_guard.sh.
+# Skip on WSL: the real uninstaller reaches host state outside the fixture HOME there.
 if grep -qi microsoft /proc/version 2>/dev/null; then
     echo "  SKIP: WSL -- the uninstall body reaches Windows-side state outside the fixture"
     exit 0
@@ -35,11 +19,9 @@ fi
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
-# Isolate every environment-controlled removal path.
 unset UNSLOTH_STUDIO_HOME STUDIO_HOME UNSLOTH_UNINSTALL_ROCM
 # audio.cpp's link farm sits beside the HF hub cache these name; the default is under HOME.
 unset HF_HUB_CACHE HUGGINGFACE_HUB_CACHE HF_HOME XDG_CACHE_HOME
-# ...and its fallback scratch home under the temp dir, one per uid.
 TMPDIR="$_TMP_ROOT/tmp"
 export TMPDIR
 mkdir -p "$TMPDIR"
@@ -63,9 +45,7 @@ assert_kept() {
     fi
 }
 
-# A default-mode install plus every sibling artifact the prebuilt installers
-# can leave under ~/.unsloth. Explicit mktemp template: BSD mktemp with no
-# template implies -t and would land outside _TMP_ROOT on macOS.
+# Explicit mktemp template: BSD mktemp without one implies -t and lands outside _TMP_ROOT.
 make_home() {
     FIXTURE_HOME=$(mktemp -d "$_TMP_ROOT/home.XXXXXX")
     mkdir -p "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin" \
@@ -95,8 +75,7 @@ make_home() {
     : > "$FIXTURE_HOME/.unsloth/.whisper.cpp.install.lock"
     : > "$FIXTURE_HOME/.unsloth/.audio.cpp.install.lock"
     : > "$FIXTURE_HOME/.unsloth/.audio.cpp.install.lock.stale.4242"
-    # Taking over an abandoned lock renames it rather than deleting it
-    # (install_node_prebuilt.py), so these accumulate across interrupted runs.
+    # Abandoned locks are renamed, not deleted, so they accumulate across interrupted runs.
     : > "$FIXTURE_HOME/.unsloth/.node.install.lock.stale.12345"
     : > "$FIXTURE_HOME/.unsloth/.llama.cpp.install.lock.stale.6789"
     ln -s "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin/unsloth" \

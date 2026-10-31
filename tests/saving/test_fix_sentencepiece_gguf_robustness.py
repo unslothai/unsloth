@@ -4,10 +4,7 @@ import os
 
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
-# Same accessor unsloth.tokenizer_utils uses.
-# The legacy `transformers.utils.sentencepiece_model_pb2` is generated against protobuf 3.x and raises on protobuf >= 4
-# ("Descriptors cannot be created directly"), or collides with sentencepiece's own copy ("duplicate file name
-# sentencepiece_model.proto") once that one is loaded first.
+# Same accessor as unsloth.tokenizer_utils: the legacy sentencepiece_model_pb2 breaks on protobuf >= 4.
 from transformers.convert_slow_tokenizer import import_protobuf
 
 sentencepiece_model_pb2 = import_protobuf()

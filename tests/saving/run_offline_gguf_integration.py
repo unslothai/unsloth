@@ -2,16 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Download real Gemma weights and run offline integration tests for #7481.
-
-Sets ``UNSLOTH_INTEGRATION_IMPORT=1`` for the pytest subprocess so the
-real-cache suite is not silently skipped. Requires a host that can import
-unsloth (typically GPU).
-
-Example:
-  python tests/saving/run_offline_gguf_integration.py
-  python tests/saving/run_offline_gguf_integration.py --download-only
-"""
+"""Sets UNSLOTH_INTEGRATION_IMPORT=1 for pytest so the real-cache suite is not silently skipped."""
 
 from __future__ import annotations
 
@@ -37,8 +28,7 @@ def download():
 
 def run_tests():
     os.environ.setdefault("HF_HOME", str(CACHE_ROOT))
-    # Real-cache suite is gated on this; without it every integration test skips
-    # and the runner reports success after only the fake-cache unit file ran.
+    # Without this every real-cache test skips and the runner reports success anyway.
     env = os.environ.copy()
     env["UNSLOTH_INTEGRATION_IMPORT"] = "1"
     cmd = [

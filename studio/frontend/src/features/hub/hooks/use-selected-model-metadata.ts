@@ -34,9 +34,7 @@ export function useSelectedModelMetadata(
       return;
     }
 
-    // No AbortController: cachedModelInfo shares one in-flight request per repo
-    // across callers (hf-cache.ts), so aborting would cancel it for everyone.
-    // The `cancelled` flag plus the state.repoId guard prevent stale writes.
+    // No AbortController: cachedModelInfo shares one in-flight request per repo across callers.
     let cancelled = false;
 
     cachedModelInfo({

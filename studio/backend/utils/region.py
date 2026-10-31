@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whether this host is in a region where Hugging Face is restricted, decided as install.sh /
-install.ps1 decide it: no network call. Mainland China is the one such region today."""
+"""Host region check (Mainland China today), same rule as install.sh/install.ps1; no network call."""
 
 from __future__ import annotations
 

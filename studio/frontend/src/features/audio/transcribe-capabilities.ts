@@ -9,7 +9,12 @@ export interface SttCapabilities {
   /** on_request: only when asked (Qwen3-ASR with its aligner); always: every run has them. */
   timestamps: "on_request" | "always" | "unsupported";
   speakers: boolean;
-  aligner: { downloaded: boolean; size_bytes: number } | null;
+  aligner: {
+    downloaded: boolean;
+    size_bytes: number;
+    id?: string;
+    variant?: string;
+  } | null;
   cpu_only: boolean;
 }
 
@@ -30,9 +35,103 @@ export interface TranscribeSwitches {
 
 export const SPEAKERS_MODEL_NAME = "MOSS-Transcribe-Diarize";
 
+/** The aligner download a timestamped run needs first, staged like any other quant so it shows in
+ *  the Downloads panel; null when the run can start now. */
+export function alignerDownloadEntry(
+  caps: SttCapabilities | null,
+  timestamps: boolean,
+): {
+  repoId: string;
+  files: string[];
+  bytes: number;
+  ggufVariant: string;
+} | null {
+  const aligner = caps?.aligner;
+  if (!timestamps || !aligner || aligner.downloaded) return null;
+  if (!aligner.id || !aligner.variant) return null;
+  return {
+    repoId: aligner.id,
+    files: [],
+    bytes: aligner.size_bytes,
+    ggufVariant: aligner.variant,
+  };
+}
+
 function formatSize(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
   return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+}
+
+const TRANSCRIBE_MODEL_ID =
+  /whisper|transcri|parakeet|voxtral-mini|(?:^|[\W_])(?:asr|stt)(?:[\W_]|$)/i;
+// OpenAI's catalog in Studio keeps only chat models.
+const OPENAI_TRANSCRIBE_MODELS = [
+  "whisper-1",
+  "gpt-4o-transcribe",
+  "gpt-4o-mini-transcribe",
+];
+
+// Azure and other OpenAI-typed endpoints name models by deployment (as speak-connection-models.ts).
+function isOpenAIApi(connection: { providerType: string; baseUrl?: string }): boolean {
+  if (connection.providerType !== "openai") return false;
+  if (!connection.baseUrl) return true;
+  try {
+    return new URL(connection.baseUrl).hostname.toLowerCase() === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
+
+export function connectionTranscribeModels(
+  connection: {
+    providerType: string;
+    baseUrl?: string;
+    models: readonly string[];
+    availableModels?: readonly string[];
+    sharedByOwner?: boolean;
+  },
+  dictationModel?: string,
+): string[] {
+  const ids = [
+    ...(isOpenAIApi(connection) ? OPENAI_TRANSCRIBE_MODELS : []),
+    ...connection.models,
+    ...(connection.availableModels ?? []),
+  ].filter((id) => TRANSCRIBE_MODEL_ID.test(id) && !/tts/i.test(id));
+  if (dictationModel) ids.push(dictationModel);
+  // An owner-shared connection refuses any model outside the list the owner allowed (403).
+  const allowed = connection.sharedByOwner ? new Set(connection.models) : null;
+  return [...new Set(ids)].filter((id) => !allowed || allowed.has(id));
+}
+
+// OpenAI takes timestamp_granularities from whisper-1 only, so every GPT transcription model is untimed:
+// the aliases, their dated snapshots (gpt-4o-mini-transcribe-2025-12-15), gpt-transcribe and -diarize.
+const OPENAI_UNTIMED_MODEL = /^gpt-(?:[\w.]+-)*transcribe(?:-[\w-]+)?$/i;
+
+export function connectionTranscribeSwitches(
+  prefs: { timestamps: boolean },
+  model: string,
+): TranscribeSwitches {
+  const untimed = OPENAI_UNTIMED_MODEL.test(model);
+  return {
+    timestamps: untimed
+      ? {
+          checked: false,
+          disabled: true,
+          hint: "This model returns text only. Use whisper-1 for timestamps.",
+        }
+      : {
+          checked: prefs.timestamps,
+          disabled: false,
+          hint: "Asks the connection for the time of each line. Not every model returns them.",
+        },
+    speakers: {
+      checked: false,
+      disabled: true,
+      hint: "A connection returns no speaker labels.",
+    },
+    notice: null,
+    request: { timestamps: !untimed && prefs.timestamps, speakers: false },
+  };
 }
 
 export function transcribeSwitches(

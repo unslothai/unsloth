@@ -19,7 +19,7 @@ _REAL_ARCHITECTURE = mxc_runtime._expected_architecture
 
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
-    # The runtime is x86-64 only; an arm64 test host (Apple Silicon CI) is not the host under test.
+    # Pinned to x64 so an arm64 test host (Apple Silicon CI) checks the same pins.
     monkeypatch.setattr(mxc_runtime, "_expected_architecture", lambda: "x86_64")
     root = tmp_path / "managed" / "windows-x86_64"
     root.mkdir(parents = True)
@@ -64,11 +64,47 @@ def test_missing_wxc_is_rejected(runtime):
         mxc_runtime.selected_runtime(package_root = runtime)
 
 
-def test_wrong_architecture_is_rejected(runtime, monkeypatch):
+def test_unsupported_architecture_is_rejected(runtime, monkeypatch):
+    from core.inference import wsl_host
+
     monkeypatch.setattr(mxc_runtime, "_expected_architecture", _REAL_ARCHITECTURE)
-    monkeypatch.setattr(mxc_runtime.platform, "machine", lambda: "ARM64")
-    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "x86-64"):
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86")
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "x64 and ARM64"):
         mxc_runtime.selected_runtime(package_root = runtime)
+
+
+def test_arm64_pc_selects_only_the_arm64_build(runtime, monkeypatch, tmp_path):
+    from core.inference import wsl_host
+
+    arm64 = b"official-wxc-arm64-payload"
+    monkeypatch.setattr(mxc_runtime, "_expected_architecture", _REAL_ARCHITECTURE)
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "arm64")
+    monkeypatch.setattr(mxc_runtime, "ARM64_WXC_EXEC_SIZE", len(arm64))
+    monkeypatch.setattr(mxc_runtime, "ARM64_WXC_EXEC_SHA256", hashlib.sha256(arm64).hexdigest())
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    assert mxc_runtime._installed_package_root().name == "windows-arm64"
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "size|digest"):
+        mxc_runtime.selected_runtime(package_root = runtime)
+    (runtime / "wxc-exec.exe").write_bytes(arm64)
+    info = mxc_runtime.selected_runtime(package_root = runtime)
+    assert info.architecture == "arm64"
+    assert mxc_runtime.artifact("exec")[0] == "package/bin/arm64/wxc-exec.exe"
+
+
+def test_x64_identity_and_folder_are_unchanged(runtime, monkeypatch, tmp_path):
+    # Existing installs and probe caches key on these; an x64 PC must see no difference.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    assert mxc_runtime._installed_package_root().name == "windows-x86_64"
+    info = mxc_runtime.selected_runtime(package_root = runtime)
+    material = {
+        "architecture": "x86_64",
+        "mxcRevision": mxc_runtime.MXC_REVISION,
+        "releaseTag": mxc_runtime.RELEASE_TAG,
+        "sha256": hashlib.sha256(_WXC).hexdigest(),
+        "size": len(_WXC),
+    }
+    encoded = json.dumps(material, sort_keys = True, separators = (",", ":")).encode()
+    assert info.identity == hashlib.sha256(encoded).hexdigest()
 
 
 def test_runtime_lease_holds_and_revalidates_the_wxc_file(runtime, monkeypatch):
@@ -101,7 +137,6 @@ def test_reparse_runtime_directory_is_rejected(runtime, tmp_path):
 
 
 def test_release_identity_is_fixed_to_microsoft_v080():
-    # The npm package ships the v0.8.0 release's x64 binaries byte for byte, without symbols.
     assert mxc_runtime.RELEASE_URL == (
         "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-0.8.0.tgz"
     )

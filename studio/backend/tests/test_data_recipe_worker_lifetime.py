@@ -24,8 +24,6 @@ def test_recipe_survives_its_starting_thread(tmp_path, monkeypatch, cancel):
     if not process_lifetime._pdeathsig_available():
         pytest.skip("PR_SET_PDEATHSIG unavailable")
 
-    # Keep the real manager, spawn context and secret-scrubbing/lifetime wrapper.
-    # Only the expensive Data Designer target is replaced with a cooperative worker.
     module_name = "recipe_lifetime_probe"
     (tmp_path / f"{module_name}.py").write_text(
         "def run(event_queue, recipe, run):\n"
@@ -44,7 +42,6 @@ def test_recipe_survives_its_starting_thread(tmp_path, monkeypatch, cancel):
         "account_process_spec",
         lambda module, target, env, kwargs: ((module_name, "run", env), kwargs),
     )
-    # The test consumes the worker's ready event itself. No progress pump is needed.
     monkeypatch.setattr(manager_mod.JobManager, "_pump_loop", lambda self: None)
     monkeypatch.setattr(process_lifetime, "adopt_pid", lambda pid: None)
     manager = manager_mod.JobManager()

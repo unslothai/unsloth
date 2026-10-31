@@ -92,7 +92,7 @@ export function DataTable<TData, TValue>({
                   idx % 2 === 0
                     ? "bg-background"
                     : "bg-muted/20",
-                  "hover:bg-primary/[0.03]",
+                  "hover:bg-wash-3",
                   getRowClassName?.(row.original, idx, row.id),
                 )}
                 onClick={() => onRowClick?.(row.original, idx, row.id)}

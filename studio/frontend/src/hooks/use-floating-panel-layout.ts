@@ -3,6 +3,19 @@
 
 import { useMonitorFrameStore } from "@/features/settings";
 import {
+  type FrameBox,
+  type PanelIntent,
+  clearPanelIntent,
+  isDegenerateBox,
+  liftAboveObstacle,
+  nudgeDelta,
+  placeAxis,
+  readPanelIntent,
+  snapsToAnchor,
+  storePanelIntent,
+} from "@/hooks/floating-panel-position";
+import {
+  type KeyboardEvent,
   type PointerEvent,
   useLayoutEffect,
   useMemo,
@@ -29,18 +42,14 @@ interface DragSession {
   maxTop: number;
   constraintsWidth: number;
   constraintsHeight: number;
-  // Committed left/top the drag transform offsets from.
   baseLeft: number;
   baseTop: number;
 }
 
+const OBSTACLE_GAP_PX = 8;
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-// Anchored to the far edge until the user drags, then clamped where they left it.
-function place(dragged: boolean, current: number, max: number): number {
-  return dragged ? clamp(current, 0, max) : max;
 }
 
 function sameLayout(a: MonitorLayout, b: MonitorLayout): boolean {
@@ -84,30 +93,31 @@ export function useFloatingPanelLayout(
     size: { width: number; height: number },
     bounds: DOMRect,
   ) => { left: number; top: number },
+  storageKey?: string,
+  restingObstacle?: FrameBox | null,
 ) {
-  // Per-instance frame owner: a panel unmounting mid-exit clears only its own frame.
+  // Per instance: a panel unmounting mid-exit clears only its own frame.
   const publisher = useMemo(() => ({}), []);
   const monitorRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const dragSessionRef = useRef<DragSession | null>(null);
   const dragFrameRef = useRef(0);
-  const hasDraggedLeftRef = useRef(false);
-  const hasDraggedTopRef = useRef(false);
+  // User's spot, never rewritten by a clamp.
+  const [storedIntent] = useState(() => readPanelIntent(storageKey));
+  const intentRef = useRef<PanelIntent>(storedIntent ?? { left: null, top: null });
   const preferredWidthRef = useRef<number | null>(null);
   const preferredHeightRef = useRef<number | null>(null);
   const surfaceWidthRef = useRef(0);
   const narrowedRef = useRef(narrowed);
   const hiddenRef = useRef(hidden);
-  // User's full-width placement; cleared by a drag while narrowed.
-  const chosenLeftRef = useRef<number | null>(null);
-  const restoreLeftRef = useRef<number | null>(null);
   const remeasureRef = useRef(0);
   const [layout, setLayout] = useState<MonitorLayout | null>(null);
-  // For transitions that fire no observer (suppressed to undocked).
   const reconcileRef = useRef<(() => void) | null>(null);
   const initialPlacementRef = useRef(initialPlacement);
   const initializedRef = useRef(false);
+  const obstacleRef = useRef(restingObstacle ?? null);
+  const restRef = useRef({ left: 0, top: 0, maxLeft: 0, maxTop: 0 });
 
   useLayoutEffect(() => {
     const monitor = monitorRef.current;
@@ -133,6 +143,9 @@ export function useFloatingPanelLayout(
 
     const reconcileGeometry = () => {
       const constraintsBox = constraints.getBoundingClientRect();
+      if (isDegenerateBox(constraintsBox)) {
+        return;
+      }
       const monitorBox = monitor.getBoundingClientRect();
       const desiredHeight = desiredPanelHeight(
         monitorBox.height,
@@ -151,39 +164,61 @@ export function useFloatingPanelLayout(
       }
 
       const width = Math.min(desiredWidth, constraintsBox.width);
-      // A hand-resized panel keeps its height and scrolls instead of moving up.
       const height = Math.min(
         monitor.style.height ? monitorBox.height : desiredHeight,
         constraintsBox.height,
       );
       const maxLeft = Math.max(0, constraintsBox.width - width);
       const maxTop = Math.max(0, constraintsBox.height - height);
-      const currentLeft = monitorBox.left - constraintsBox.left;
-      const currentTop = monitorBox.top - constraintsBox.top;
-      const restoreTo = restoreLeftRef.current;
-      let left =
-        restoreTo === null
-          ? place(hasDraggedLeftRef.current, currentLeft, maxLeft)
-          : clamp(restoreTo, 0, maxLeft);
-      restoreLeftRef.current = null;
-      if (!narrowedRef.current && hasDraggedLeftRef.current) {
-        chosenLeftRef.current = left;
-      }
-      let top = place(hasDraggedTopRef.current, currentTop, maxTop);
-      // Obstacle avoidance applies to the first placement only.
-      if (!initializedRef.current && initialPlacementRef.current) {
+      const session = dragSessionRef.current;
+      // Mid-drag the measured box (transform included) is where the pointer has it.
+      let left = session
+        ? clamp(monitorBox.left - constraintsBox.left, 0, maxLeft)
+        : placeAxis(intentRef.current.left, maxLeft);
+      let top = session
+        ? clamp(monitorBox.top - constraintsBox.top, 0, maxTop)
+        : placeAxis(intentRef.current.top, maxTop);
+      // Obstacle avoidance applies to the first placement only, and a remembered spot wins.
+      if (
+        !initializedRef.current &&
+        initialPlacementRef.current &&
+        storedIntent === null
+      ) {
         const initial = initialPlacementRef.current(
           { width, height },
           constraintsBox,
         );
         left = clamp(initial.left, 0, maxLeft);
         top = clamp(initial.top, 0, maxTop);
-        hasDraggedLeftRef.current = true;
-        hasDraggedTopRef.current = true;
+        intentRef.current = { left, top };
       }
       initializedRef.current = true;
 
-      const session = dragSessionRef.current;
+      const bottomTop = (atLeft: number) => {
+        const lifted = liftAboveObstacle(
+          {
+            left: constraintsBox.left + atLeft,
+            top: constraintsBox.top + maxTop,
+            width,
+            height,
+          },
+          obstacleRef.current,
+          OBSTACLE_GAP_PX,
+        );
+        return lifted === null
+          ? maxTop
+          : clamp(lifted - constraintsBox.top, 0, maxTop);
+      };
+      restRef.current = {
+        left: maxLeft,
+        top: bottomTop(maxLeft),
+        maxLeft,
+        maxTop,
+      };
+      if (!session && intentRef.current.top === null) {
+        top = bottomTop(left);
+      }
+
       if (session) {
         session.left = left;
         session.top = top;
@@ -240,7 +275,7 @@ export function useFloatingPanelLayout(
         dragFrameRef.current = 0;
       }
     };
-  }, [constraintsElement, publisher]);
+  }, [constraintsElement, publisher, storedIntent]);
 
   // A hidden panel must not publish a frame others dodge.
   useLayoutEffect(() => {
@@ -251,17 +286,23 @@ export function useFloatingPanelLayout(
   }, [hidden, publisher]);
 
   useLayoutEffect(() => {
+    obstacleRef.current = restingObstacle ?? null;
+    if (!dragSessionRef.current) {
+      reconcileRef.current?.();
+    }
+  }, [restingObstacle]);
+
+  useLayoutEffect(() => {
     if (narrowedRef.current === narrowed) {
       return;
     }
     narrowedRef.current = narrowed;
     if (!narrowed) {
-      restoreLeftRef.current = chosenLeftRef.current;
       reconcileRef.current?.();
     }
   }, [narrowed]);
 
-  // Position-only changes fire no ResizeObserver, so republish per committed layout (not per drag frame).
+  // Position-only changes fire no ResizeObserver, so republish per committed layout.
   useLayoutEffect(() => {
     void layout;
     const monitor = monitorRef.current;
@@ -289,7 +330,7 @@ export function useFloatingPanelLayout(
     const left = monitorBox.left - constraintsBox.left;
     const top = monitorBox.top - constraintsBox.top;
 
-    // Sync inline size to the rendered box where max-width/height clipped a native resize.
+    // Sync inline size where max-width/height clipped a native resize.
     const inlineWidth = Number.parseFloat(monitor.style.width);
     const inlineHeight = Number.parseFloat(monitor.style.height);
     if (
@@ -340,7 +381,6 @@ export function useFloatingPanelLayout(
       return;
     }
 
-    const previousTop = session.top;
     const left = clamp(
       session.left + event.clientX - session.startX,
       0,
@@ -351,9 +391,6 @@ export function useFloatingPanelLayout(
       0,
       session.maxTop,
     );
-    if (top !== previousTop) {
-      hasDraggedTopRef.current = true;
-    }
     session.startX = event.clientX;
     session.startY = event.clientY;
     session.left = left;
@@ -372,12 +409,36 @@ export function useFloatingPanelLayout(
       cancelAnimationFrame(dragFrameRef.current);
       dragFrameRef.current = 0;
     }
-    const { left, top, baseLeft, constraintsWidth, constraintsHeight } =
-      session;
+    const {
+      left,
+      top,
+      baseLeft,
+      baseTop,
+      constraintsWidth,
+      constraintsHeight,
+    } = session;
     dragSessionRef.current = null;
-    if (left !== baseLeft) {
-      hasDraggedLeftRef.current = true;
-      chosenLeftRef.current = narrowedRef.current ? null : left;
+    const rest = restRef.current;
+    if (
+      (left !== baseLeft || top !== baseTop) &&
+      snapsToAnchor(
+        { left, top },
+        rest,
+        { left: rest.maxLeft, top: rest.maxTop },
+      )
+    ) {
+      const monitor = monitorRef.current;
+      if (monitor) monitor.style.transform = "";
+      resetPosition();
+      return;
+    }
+    if (left !== baseLeft || top !== baseTop) {
+      const intent = intentRef.current;
+      intentRef.current = {
+        left: left !== baseLeft ? left : intent.left,
+        top: top !== baseTop ? top : intent.top,
+      };
+      storePanelIntent(storageKey, intentRef.current);
     }
     // Write the node before state so the handoff never flashes the start position.
     const monitor = monitorRef.current;
@@ -399,6 +460,61 @@ export function useFloatingPanelLayout(
     );
   }
 
+  function commitPosition(left: number, top: number, constraints: DOMRect) {
+    const monitor = monitorRef.current;
+    if (monitor) {
+      monitor.style.left = `${left}px`;
+      monitor.style.top = `${top}px`;
+    }
+    setLayout((current) =>
+      !current || (current.left === left && current.top === top)
+        ? current
+        : {
+            ...current,
+            left,
+            top,
+            maxWidth: constraints.width - left,
+            maxHeight: constraints.height - top,
+          },
+    );
+  }
+
+  function resetPosition() {
+    intentRef.current = { left: null, top: null };
+    clearPanelIntent(storageKey);
+    reconcileRef.current?.();
+  }
+
+  function nudge(event: KeyboardEvent<HTMLElement>): boolean {
+    const delta = nudgeDelta(event.key, event.shiftKey);
+    const monitor = monitorRef.current;
+    if (!(delta && monitor && constraintsElement) || dragSessionRef.current) {
+      return false;
+    }
+    event.preventDefault();
+    const constraintsBox = constraintsElement.getBoundingClientRect();
+    const monitorBox = monitor.getBoundingClientRect();
+    const left = clamp(
+      monitorBox.left - constraintsBox.left + delta.dx,
+      0,
+      Math.max(0, constraintsBox.width - monitorBox.width),
+    );
+    const top = clamp(
+      monitorBox.top - constraintsBox.top + delta.dy,
+      0,
+      Math.max(0, constraintsBox.height - monitorBox.height),
+    );
+    // Only the moved axis becomes absolute: a null axis stays anchored to the far edge, as after a drag.
+    const previous = intentRef.current;
+    intentRef.current = {
+      left: delta.dx !== 0 ? left : previous.left,
+      top: delta.dy !== 0 ? top : previous.top,
+    };
+    storePanelIntent(storageKey, intentRef.current);
+    commitPosition(left, top, constraintsBox);
+    return true;
+  }
+
   return {
     publisher,
     monitorRef,
@@ -408,5 +524,7 @@ export function useFloatingPanelLayout(
     startDrag,
     updateDrag,
     finishDrag,
+    resetPosition,
+    nudge,
   };
 }

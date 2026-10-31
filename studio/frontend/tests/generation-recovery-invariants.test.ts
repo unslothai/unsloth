@@ -33,7 +33,7 @@ function rng(seed: number) {
   };
 }
 
-// Astral pairs, since offsets are UTF-16 code units. No angle brackets: a think tag is a parser question.
+// Astral pairs, since offsets are UTF-16 code units. No angle brackets: think tags are parser cases.
 const ALPHABET = [
   "a",
   "b",
@@ -172,7 +172,6 @@ test("restoring onto parsed parts keeps the same properties", () => {
 
 type Event = Record<string, unknown>;
 
-/** `cards` counts what the adapter would draw: a start on an already-open id reuses its card. */
 function randomEvents(next: () => number): { events: Event[]; cards: number } {
   const rounds = 1 + Math.floor(next() * 5);
   const events: Event[] = [];
@@ -214,7 +213,6 @@ test("replay opens one card per call and lands each result once", () => {
       .filter((value) => value !== undefined);
     assert.equal(new Set(results).size, results.length, `twice ${where()}`);
 
-    // The follow stream can deliver an update more than once.
     const doubled: CarriedPart[] = [];
     const again = createGenerationToolRecovery(doubled, "run", 0).apply;
     events.forEach((event, i) => {
@@ -261,9 +259,6 @@ test("an import that is not the view keeps the recovered body whole", () => {
   }
 });
 
-// A think tag can arrive split across two chunks, so a card offset -- the raw length at a
-// chunk boundary -- can land inside one. The generator above keeps angle brackets out, so
-// these two are spelled out.
 test("a card offset inside a split think tag lands past the tag, not in it", () => {
   const raw = "<think>\n\nreasoned";
   const card: Part = {
@@ -304,7 +299,5 @@ test("cards on both sides of a split think tag do not duplicate it", () => {
     out.map((part) => part.type),
     ["source", "tool-call", "reasoning"],
   );
-  // The tag survives exactly once: projecting the reply back has to give the raw it came from,
-  // or the next publish compares the reply against a body it never streamed.
   assert.equal(generationRawContent(out).raw, raw);
 });

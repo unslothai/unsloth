@@ -1,32 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A batch: the unit that is planned, run, calibrated and then either quoted or not.
-
-A batch is every cell needed to answer one question at one rung: both ladder routes, their shared
-floor, the control, and the non-droppable calibration arms. It is the unit because calibration is
-the unit: the noise floor and the detection floor are properties of a machine at a moment, and
-carrying them across batches is how a number measured on a cold laptop gets quoted against one
-measured while a build was running.
-
-WHAT THIS MODULE ENFORCES, BEFORE ANYTHING RUNS:
-
-  * calibration arms are present. `assert_batch_includes_calibration` refuses a plan without them,
-    because "we will check afterwards whether that batch was resolvable" is not a thing that can
-    be done afterwards.
-  * every rung both declared routes need has a cell. A route with a hole cannot telescope, and
-    discovering that after an hour of measurement wastes the hour.
-  * the scene is the SAME LENGTH in every arm. This is the quiet one. The scene is a film on a
-    wall clock, so if one arm's film is 40 seconds and another's is 44, the two arms saw different
-    amounts of streaming and their difference includes that. Layer 1's contract allows an arm to
-    supply its own slot list; this check is what stops that freedom from silently breaking
-    additivity.
-
-WHAT IT DOES AFTER:
-  judges each arm against its manifest, computes both routes' adjacent differences, computes the
-  interaction terms between them, and hands the whole thing to the report layer. It does not
-  decide what is quotable; `CalibrationVerdict` does, and `BatchResult.quotable` just reads it.
-"""
+"""Calibration is per batch because noise and detection floors belong to a machine at one moment."""
 
 from __future__ import annotations
 
@@ -96,13 +71,7 @@ def plan_batch(
 def assert_equal_scene_duration(
     scene_durations_ms: Mapping[str, float], *, tolerance_ms: float = 1.0
 ) -> None:
-    """Every arm in a batch must run a scene of the same length.
-
-    The scene is slot-scheduled on the wall clock, so its duration sets how much streaming each
-    arm saw. Two arms with different scene lengths differ by the treatment AND by the workload,
-    and no amount of care in the ladder recovers that. Layer 1 permits per-arm slot lists; this
-    is the check that keeps the permission from quietly breaking additivity.
-    """
+    """Unequal scene durations confound the treatment with how much streaming each arm saw."""
 
     if not scene_durations_ms:
         raise BatchPlanError("no scene durations were supplied, so equality was never checked")
@@ -175,12 +144,7 @@ def judge_batch(
     dose: DoseFit | None = None,
     recovery: RecoveryResult | None = None,
 ) -> BatchResult:
-    """Turn a batch's raw arm outcomes into route differences and interaction terms.
-
-    The detection floor comes from the calibration arms of THIS batch and is threaded into every
-    difference, so a step below what this machine could resolve prints as a bound rather than as
-    a small number. That is the whole reason calibration is per batch.
-    """
+    """Threads this batch's detection floor into every difference, so a step below it prints as a bound."""
 
     result = BatchResult(
         rung_tokens = int(rung_tokens),

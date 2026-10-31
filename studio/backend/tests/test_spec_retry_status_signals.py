@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The status fields a client reads before declining the resident-model shortcut.
-
-``spec_binary_fallback_can_retry`` needs a different llama-server installed before an
-identical /load can repair a binary stand-down. The chat UI cannot see that, so it
-reloaded (and prompted to stop running chats) for every re-pick of a model whose drafter
-stood down, for a load the backend would have deduplicated.
-
-``_spec_fallback_binary_changed`` publishes it. It is answered ONLY for the two binary
-reasons: /api/inference/status is polled from first paint, and neither the binary lookup
-nor the capability probe has business running on every poll of a healthy runtime.
-
-Two more arms of ``_runtime_matches_intent`` reject an identical load while leaving
-``spec_fallback_reason`` null entirely, so a client reading only the reason adopts a
-degraded runtime and nothing ever retries it: a retryable DFlash sidecar fetch, and a
-capability probe that has started answering since a launch it degraded.
-``_spec_dflash_retry_pending`` and ``_spec_probe_retry_pending`` publish those.
-
-The ``drafter_not_found`` arm excludes the kinds whose absence is not transient, so
-``_spec_dspark_sidecar_absent`` publishes that too: retrying a DSpark drafter no repo but
-one publishes would relaunch an identical server forever.
-
-``_arch_gate_dropped_tensor_parallel`` is here for the same reason: the gate rewrites a
-tensor-parallel request to layer mode, so status reports the launched mode rather than
-the requested one, and the backend accepts the same request back against it.
-
-The helper is extracted from the route module's source rather than imported, so the test
-costs nothing and does not drag FastAPI in behind it.
-"""
+"""Status fields that tell a client an identical /load can repair a degraded speculative runtime."""
 
 from __future__ import annotations
 
@@ -95,14 +68,11 @@ def test_answers_only_for_the_two_binary_reasons():
     ):
         backend = _Backend(reason)
         assert helper(backend) is None
-        # The point of the gate: no binary lookup on a poll that cannot need one.
         assert backend.calls == 0
 
 
 def test_reports_the_whole_retry_predicate():
-    # The predicate, not just its revision half: binary_no_mtp also asks whether the
-    # replacement advertises what the drafter kind needs, and a replacement that still
-    # lacks it never repairs, so a half answer would prompt on every later re-pick.
+    # Test the whole predicate: binary_no_mtp also checks the replacement supports the drafter kind.
     helper = _load_helper()
     for reason in ("binary_no_mtp", "binary_outdated"):
         assert helper(_Backend(reason, changed = False)) is False
@@ -145,11 +115,8 @@ def test_the_probe_arm_only_probes_once_a_launch_was_degraded():
     helper = _load_helper("_spec_probe_retry_pending")
     settled = _SpecBackend(inconclusive = False)
     assert helper(settled) is False
-    # The status is polled from first paint; a healthy runtime must not pay for this.
     assert settled.probes == 0
-    # Still inconclusive: nothing has changed, so an identical load would dedupe.
     assert helper(_SpecBackend(inconclusive = True, probe = True)) is False
-    # Answering now: the degraded runtime is re-derived once.
     assert helper(_SpecBackend(inconclusive = True, probe = False)) is True
 
 
@@ -214,8 +181,7 @@ def test_the_arch_gate_drop_is_reported():
 
 
 def test_the_paravirtual_pin_follows_the_detector(monkeypatch):
-    # The helper reads the detector rather than deciding anything itself, so drive the
-    # detector. It is lru_cached, which is what keeps this free on the status poll.
+    # The detector is lru_cached, which keeps the status poll free.
     helper = _load_helper("_gpu_placement_paravirtual")
     from core.inference import llama_cpp
 
@@ -257,8 +223,6 @@ def test_a_pending_audio_probe_is_reported():
 
 
 def test_the_diffusion_split_support_is_reported_for_diffusion_only():
-    # Off a diffusion runner there is no split to apply, and answering False there would
-    # tell a client the recheck does not apply when the question never arose.
     helper = _load_helper("_diffusion_split_supported")
 
     class _Runner:

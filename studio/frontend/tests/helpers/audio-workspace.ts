@@ -3,7 +3,6 @@
 
 import { readSrc } from "./kit.ts";
 
-/** Host first, then hooks in call order, so a spanning pattern reads in source order. */
 export const AUDIO_WORKSPACE_FILES = [
   "features/audio/audio-page.tsx",
   "features/audio/hooks/use-stt-sidecar.ts",

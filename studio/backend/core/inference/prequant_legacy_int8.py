@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read hosted INT8 ``.pt`` pre-quants on torchao >= 0.18, which deleted the v1 int8 classes they pickle.
-
-Still ``weights_only = True``: inert stand-ins (dispatch raises) are registered under the deleted names
-only for that load, and each weight is validated as symmetric per-row int8, then rebuilt bit-identical
-as the installed torchao's ``Int8Tensor``. A torchao that still ships the classes loads as before.
-"""
+"""Loads INT8 .pt on torchao >= 0.18 via inert stand-ins for deleted classes; weights_only kept on."""
 
 from __future__ import annotations
 

@@ -37,9 +37,7 @@ def test_openai_models_returns_clean_id_without_path(monkeypatch):
 
     assert len(objs) == 1
     assert objs[0]["id"] == "Qwen3-30B-A3B-Q4_K_M"
-    # The serialized payload must not leak the absolute path or the .gguf suffix.
     blob = json.dumps(objs)
     assert "/srv/models" not in blob
     assert ".gguf" not in blob
-    # Context fields still flow through.
     assert objs[0]["context_length"] == 4096

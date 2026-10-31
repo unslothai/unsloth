@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What the UI says about a host whose GPUs PyTorch cannot use.
-//
-// A Windows in-app update that resolved torch from PyPI left a 2.11.0+cpu wheel beside two
-// working RTX A4000s (#8473). The backend now reports those cards in gpu.physical_devices
-// with a gpu.mismatch reason, and three places have to stop saying the opposite: the System
-// tab's VRAM tile and GPU section, the sidebar's Train hint, and videoNavHint.
-//
-// The derivations live in .tsx files that pull in the whole app, so they are lifted by
-// regex and evaluated, as system-status-verdict.test.ts does beside them.
+// Derivations live in .tsx files, so they are lifted by regex and evaluated.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -43,8 +35,6 @@ const NO_USABLE_GPU = "settings.resources.gpu.noUsableGpu";
 const NO_GPU = "settings.resources.gpu.noGpu";
 const UNKNOWN = "settings.resources.environment.unknown";
 
-// gpuInventory carries a TS cast, so it is asserted on as source below and supplied here
-// as an input instead.
 const derivation = [
   lift(
     tabSrc,
@@ -60,14 +50,25 @@ const derivation = [
   ),
   lift(
     tabSrc,
-    /const gpuMismatchMessage = [\s\S]*?;/,
+    /const gpuPermissionHint = [\s\S]*?;/,
+    "gpuPermissionHint",
+    "resources-tab.tsx",
+  ),
+  lift(
+    tabSrc,
+    /const gpuMismatchMessage =\s*[\s\S]*?;/,
     "gpuMismatchMessage",
     "resources-tab.tsx",
   ),
 ].join("\n");
 
 interface Inventory {
-  mismatch?: { reason?: string; torch_version?: string | null } | null;
+  mismatch?: {
+    reason?: string;
+    torch_version?: string | null;
+    permission_hint?: string | null;
+    permission_hint_only?: boolean;
+  } | null;
   physical_devices?: { name?: string }[];
 }
 
@@ -77,14 +78,59 @@ function mismatchFor(gpuInventory: Inventory | null) {
     "t",
     "unknownLabel",
     `${derivation}
-     return { gpuMismatch, physicalDevices, gpuMismatchMessage };`,
+     return { gpuMismatch, physicalDevices, gpuMismatchMessage, gpuPermissionHint };`,
   );
   return run(gpuInventory, t, UNKNOWN) as {
     gpuMismatch: { reason?: string } | null;
     physicalDevices: { name?: string }[];
     gpuMismatchMessage: string | null;
+    gpuPermissionHint: string | null;
   };
 }
+
+// #14067: an account outside the render group. Repair installation cannot add it to one.
+const HINT =
+  "This account cannot open /dev/kfd, so ROCm cannot use the AMD card even though the driver is loaded. Add the account to the render and video groups and then log out and back in: sudo usermod -a -G render,video ada";
+
+test("a closed AMD device node is named instead of the repair advice", () => {
+  const rocm = mismatchFor({
+    mismatch: {
+      reason: "torch_cuda_unavailable",
+      torch_version: "2.11.0+rocm7.0",
+      permission_hint: HINT,
+      permission_hint_only: true,
+    },
+    physical_devices: [{ name: "Radeon RX 7900 XTX" }],
+  });
+  assert.equal(rocm.gpuPermissionHint, HINT);
+  assert.equal(rocm.gpuMismatchMessage, null);
+
+  // A CPU wheel still needs the reinstall, so both lines show.
+  const cpu = mismatchFor({
+    mismatch: {
+      reason: "torch_cpu_build",
+      torch_version: "2.11.0+cpu",
+      permission_hint: HINT,
+      permission_hint_only: false,
+    },
+    physical_devices: [{ name: "Radeon RX 7900 XTX" }],
+  });
+  assert.equal(cpu.gpuPermissionHint, HINT);
+  assert.equal(cpu.gpuMismatchMessage, CPU_BUILD);
+
+  // permission_hint_only without a hint never blanks the banner.
+  const noHint = mismatchFor({
+    mismatch: {
+      reason: "torch_cuda_unavailable",
+      torch_version: "2.11.0+rocm7.0",
+      permission_hint: null,
+      permission_hint_only: true,
+    },
+    physical_devices: [{ name: "Radeon RX 7900 XTX" }],
+  });
+  assert.equal(noHint.gpuPermissionHint, null);
+  assert.equal(noHint.gpuMismatchMessage, UNAVAILABLE);
+});
 
 test("a CPU-only wheel and a dead accelerator wheel get different sentences", () => {
   const cpuBuild = mismatchFor({
@@ -97,8 +143,6 @@ test("a CPU-only wheel and a dead accelerator wheel get different sentences", ()
   assert.equal(cpuBuild.gpuMismatchMessage, CPU_BUILD);
   assert.equal(cpuBuild.physicalDevices.length, 2);
 
-  // Reinstalling torch is the wrong advice for a healthy wheel whose runtime will not
-  // start, so the two reasons must not collapse into one string.
   const dead = mismatchFor({
     mismatch: {
       reason: "torch_cuda_unavailable",
@@ -127,8 +171,6 @@ test("a healthy host, and one that really has no GPU, get no banner at all", () 
 });
 
 test("the verdict is taken from a settled read only, and from the training view", () => {
-  // The placeholder useSystemInfo starts from is shaped like a CPU-only host, so a banner
-  // derived from it would accuse a host nobody has measured yet.
   const inventory = lift(
     tabSrc,
     /const gpuInventory = [\s\S]*?;\n/,
@@ -140,8 +182,7 @@ test("the verdict is taken from a settled read only, and from the training view"
     /hostUnread\s*\n?\s*\?\s*null/,
     "gated on the read having settled",
   );
-  // systemInfo.gpu, NOT displayedGpu: a Vulkan llama.cpp makes displayedGpu fall back to the
-  // inference inventory, and that host is exactly the second report in #8473.
+  // systemInfo.gpu, NOT displayedGpu: Vulkan llama.cpp makes displayedGpu fall back.
   assert.match(inventory, /systemInfo\.gpu/);
   assert.doesNotMatch(inventory, /displayedGpu/);
 });
@@ -171,8 +212,6 @@ test("the VRAM tile stops reading as a CPU-only host", () => {
 });
 
 test("the physically detected cards are shown, and never offered as devices", () => {
-  // The banner renders physicalDevices and the selectable rows metrics.devices. If the
-  // banner ever read metrics.devices the two would merge, which the field split prevents.
   const banner = lift(
     tabSrc,
     /\{gpuMismatch \? \(\n[\s\S]*?\n\s*\) : null\}/,
@@ -197,7 +236,6 @@ test("videoNavHint stops telling a two-GPU host to get a GPU", () => {
     assert.match(hint, /PyTorch/, `${reason} names what is actually wrong`);
     assert.equal(videoNavHint(false, reason), undefined);
   }
-  // And the genuine no-GPU host keeps the sentence that is true for it.
   assert.equal(
     videoNavHint(true, "no_gpu"),
     "Video generation needs an NVIDIA or AMD GPU.",
@@ -211,19 +249,28 @@ test("the sidebar's Train hint stops doing the same", () => {
     "trainDisabledHint",
     "app-sidebar.tsx",
   );
-  const forReason = (chatOnlyReason: string, chatOnlyDetail: string | null) =>
+  const forReason = (
+    chatOnlyReason: string,
+    chatOnlyDetail: string | null,
+    chatOnlyHint: string | null = null,
+  ) =>
     new Function(
       "chatOnlyMeasured",
       "chatOnlyReason",
       "chatOnlyDetail",
+      "chatOnlyHint",
       `${hint.replace(": string | undefined", "")}\nreturn trainDisabledHint;`,
-    )(true, chatOnlyReason, chatOnlyDetail) as string | undefined;
+    )(true, chatOnlyReason, chatOnlyDetail, chatOnlyHint) as string | undefined;
+
+  // #14067: a closed AMD node replaces the reinstall advice.
+  const closed = forReason("torch_cuda_unavailable", "2.11.0+rocm7.0", HINT);
+  assert.ok(closed?.includes("sudo usermod -a -G render,video ada"));
+  assert.doesNotMatch(closed ?? "", /repair the installation/);
 
   for (const reason of ["torch_cpu_build", "torch_cuda_unavailable"]) {
     const withDetail = forReason(reason, "2.11.0+cpu");
     assert.ok(withDetail);
     assert.doesNotMatch(withDetail, /needs an NVIDIA or AMD GPU/);
-    // The installed build is what makes this actionable to someone whose update already ran.
     assert.match(withDetail, /2\.11\.0\+cpu/);
     const withoutDetail = forReason(reason, null);
     assert.ok(withoutDetail);
@@ -258,20 +305,13 @@ test("every string the banner reaches for exists", () => {
       `settings.resources.liveMonitor.${key}`,
     );
   }
-  // The version is what a user can check against their own install, so both sentences
-  // have to carry it.
   assert.match(gpu.mismatchCpuBuild, /\{version\}/);
   assert.match(gpu.mismatchUnavailable, /\{version\}/);
-  // And the CPU-only host's line is still the one it always was.
   assert.equal(t(NO_GPU), NO_GPU);
   assert.match(gpu.noGpu, /No visible GPU detected/);
 });
 
-// The repair row must not be offered for a backend the desktop does not manage.
-//
-// start_managed_repair rejects that mutation, but only after startRepair has cleared
-// isExternalServer, stopped the external-server poll and swapped the shell to the repairing
-// screen, so a connected user lands on the repair-error screen instead of on their server.
+// start_managed_repair rejects external backends only after the shell already swapped screens.
 test("the repair row hides itself for an externally started backend", async () => {
   const source = await readSrcAsync("features/settings/components/desktop-repair-control.tsx");
   assert.match(
@@ -301,11 +341,6 @@ test("the repair row hides itself for an externally started backend", async () =
   );
 });
 
-// The verdict can change without a restart, so the sidebar has to keep asking.
-//
-// The backend refreshes its physical inventory on a 60s TTL: attach an eGPU to a CPU-torch
-// machine and no_gpu becomes torch_cpu_build. The polling effect stopped at the first
-// settled verdict, so the new hint was unreachable for the rest of the session.
 test("the sidebar keeps polling while the inventory can still change the verdict", async () => {
   const source = await readSrcAsync("components/app-sidebar.tsx");
 
@@ -325,9 +360,6 @@ test("the sidebar keeps polling while the inventory can still change the verdict
       `${settled} cannot change on a probe and must not keep polling`,
     );
   }
-  // detection_failed IS listed. current_chat_only_verdict() can replace it once the
-  // inventory recovers, for the host whose torch will not import but whose wheel was
-  // classified from disk, so treating it as settled froze the sidebar on the failure.
   assert.ok(listed.includes("detection_failed"));
 
   assert.match(
@@ -343,12 +375,6 @@ test("the sidebar keeps polling while the inventory can still change the verdict
   );
 });
 
-// The poll decision itself, evaluated rather than pattern-matched.
-//
-// The test above pins the shape of the early return; this one runs it. A regression that
-// keeps the guard's text but inverts its sense would give every working install a forced
-// /api/system read a minute for the life of the session, which is the opposite of what
-// this change is for.
 test("only a host the inventory can still reclassify keeps polling", () => {
   const guard = lift(
     sidebarSrc,
@@ -378,12 +404,10 @@ test("only a host the inventory can still reclassify keeps polling", () => {
        return true;`,
     )(chatOnly, chatOnlyReason, selfHealSettled, capabilitiesUnknown) === true;
 
-  // The hosts this change exists for. Their verdict moves on the next inventory refresh.
   assert.ok(polls(true, "torch_cpu_build"));
   assert.ok(polls(true, "torch_cuda_unavailable"));
   assert.ok(polls(true, "no_gpu"), "an eGPU can arrive on a CPU-only box");
 
-  // And the hosts that were working before this PR and must keep working the same way.
   assert.ok(
     !polls(false, null),
     "a healthy GPU host must not gain a forced read a minute",
@@ -393,25 +417,17 @@ test("only a host the inventory can still reclassify keeps polling", () => {
     !polls(true, "no_torch"),
     "a --no-torch install declined the training stack; nothing is coming to change it",
   );
-  // detection_failed is NOT settled when torch is the thing that failed: the backend
-  // classifies the wheel from disk and swaps in the mismatch once the inventory recovers,
-  // so stopping the poll froze the sidebar on the failure for the session.
   assert.ok(
     polls(true, "detection_failed"),
     "the backend can still replace this one, so the read has to keep happening",
   );
 
-  // The two pre-existing polls are untouched.
   assert.ok(polls(true, "mlx_unavailable", false), "the MLX self-heal poll");
   assert.ok(polls(false, null, true, true), "the unknown-verdict poll");
 });
 
 test("a settled inventory poll collects the refresh it triggered", () => {
-  // The backend's caches carry their own 60 second TTL and the health path reads them
-  // non-blocking, so the read that finds them expired only SCHEDULES the refresh and
-  // returns the stale entry. Polling on the TTL alone puts the read that collects the
-  // new answer a whole interval later, leaving an attached eGPU invisible for close to
-  // two minutes.
+  // The backend's 60s-TTL read only schedules the refresh, so a follow-up read is needed.
   assert.match(sidebarSrc, /const INVENTORY_FOLLOW_UP_MS = (\d+);/);
   const followUp = Number(
     /const INVENTORY_FOLLOW_UP_MS = (\d+);/.exec(sidebarSrc)![1],
@@ -422,10 +438,7 @@ test("a settled inventory poll collects the refresh it triggered", () => {
     `the follow-up (${followUp}ms) has to land inside the interval (${interval}ms)`,
   );
 
-  // Scoped to the settled inventory case: the unknown poll is already fast, and the
-  // self-heal poll is not waiting on a TTL.
   assert.match(sidebarSrc, /if \(!selfHealSettled \|\| capabilitiesUnknown\) return;/);
-  // And torn down with the interval, or it would outlive the verdict it was scheduled for.
   assert.match(
     sidebarSrc,
     /window\.clearInterval\(id\);\s*\n\s*if \(followUp\) window\.clearTimeout\(followUp\);/,

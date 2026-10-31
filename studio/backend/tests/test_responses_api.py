@@ -9,7 +9,6 @@ import os
 import json
 import re
 
-# Ensure backend is on path.
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
@@ -30,32 +29,27 @@ from models.inference import (
 )
 
 
-# Copied from routes/inference.py: can't import it directly because
-# routes/__init__.py pulls in heavy deps (structlog/twisted/torch).
+# Copied from routes/inference.py: importing it pulls heavy deps via routes/__init__.py.
 
 
 def _normalise_responses_input(payload: ResponsesRequest) -> list:
     """Convert a ResponsesRequest into ChatMessages for the completions backend."""
     messages = []
 
-    # System / developer instructions.
     if payload.instructions:
         messages.append(ChatMessage(role = "system", content = payload.instructions))
 
-    # Simple string input.
     if isinstance(payload.input, str):
         if payload.input:
             messages.append(ChatMessage(role = "user", content = payload.input))
         return messages
 
-    # List of ResponsesInputMessage.
     for msg in payload.input:
         role = "system" if msg.role == "developer" else msg.role
 
         if isinstance(msg.content, str):
             messages.append(ChatMessage(role = role, content = msg.content))
         else:
-            # Convert Responses content parts -> Chat content parts.
             parts = []
             for part in msg.content:
                 if isinstance(part, ResponsesInputTextPart):
@@ -70,11 +64,6 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list:
             messages.append(ChatMessage(role = role, content = parts if parts else ""))
 
     return messages
-
-
-# =====================================================================
-# Schema validation tests
-# =====================================================================
 
 
 class TestResponsesRequest:
@@ -156,11 +145,6 @@ class TestResponsesRequest:
         assert req.input[0].role == "developer"
 
 
-# =====================================================================
-# Response model tests
-# =====================================================================
-
-
 class TestResponsesResponse:
     """Response models serialise correctly."""
 
@@ -181,7 +165,6 @@ class TestResponsesResponse:
         assert d["usage"]["input_tokens"] == 10
         assert d["usage"]["output_tokens"] == 5
         assert d["usage"]["total_tokens"] == 15
-        # Must NOT have prompt_tokens / completion_tokens
         assert "prompt_tokens" not in d["usage"]
         assert "completion_tokens" not in d["usage"]
 
@@ -211,11 +194,6 @@ class TestResponsesResponse:
         assert j["object"] == "response"
         assert j["output"][0]["role"] == "assistant"
         assert j["output"][0]["status"] == "completed"
-
-
-# =====================================================================
-# Input normalisation tests
-# =====================================================================
 
 
 class TestNormaliseResponsesInput:

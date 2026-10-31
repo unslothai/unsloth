@@ -9,6 +9,8 @@ const LABELS: Readonly<Record<string, string>> = {
   "flux.1": "FLUX.1",
   "flux.2-klein": "FLUX.2 Klein",
   "flux.2-dev": "FLUX.2 Dev",
+  "flux.3-klein": "FLUX.3 Klein",
+  "flux.3-klein-base": "FLUX.3 Klein Base",
   "flux.1-kontext": "FLUX.1 Kontext",
   "qwen-image": "Qwen Image",
   "qwen-image-2.1": "Qwen Image 2.1",
@@ -20,19 +22,24 @@ const LABELS: Readonly<Record<string, string>> = {
   "hunyuanimage-2.1": "HunyuanImage 2.1",
   "hidream-i1": "HiDream-I1",
   "ideogram-4": "Ideogram 4",
+  "moss-image": "MOSS-Image",
   sdxl: "SDXL",
   "minimax-h3": "MiniMax-H3",
   "ltx-2": "LTX-2",
+  "ltx-2.5": "LTX-2.5",
   "wan2.2-ti2v-5b": "Wan2.2 TI2V 5B",
   "wan2.2-t2v-a14b": "Wan2.2 T2V A14B",
+  "wan2.1-t2v-1.3b": "Wan2.1 T2V 1.3B",
+  "wan2.1-t2v-14b": "Wan2.1 T2V 14B",
   "hunyuanvideo-1.5": "HunyuanVideo 1.5 (480p)",
   "hunyuanvideo-1.5-720p": "HunyuanVideo 1.5 (720p)",
+  "cosmos3-nano": "Cosmos3-Nano",
+  "cosmos3-edge": "Cosmos3-Edge",
 };
 
 export const FAMILY_OVERRIDE_HINT =
   "Architecture family. Auto detects it from the repository or pipeline metadata. Choose one only for a custom Diffusers pipeline whose metadata does not identify a supported family.";
 
-/** Options come from the backend registry, so a new family cannot leave the UI stale. */
 export function familyOverrideOptions(supported: readonly string[] | null | undefined): [string, string][] {
   const names = [...new Set(supported ?? [])].filter(Boolean);
   return [["auto", "Auto (detect)"], ...names.map((n): [string, string] => [n, LABELS[n] ?? n])];

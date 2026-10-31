@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the /v1/containers CRUD client methods.
-
-Covers:
-- list / create / delete all send ``OpenAI-Beta: containers=v1``. Without
-  it, OpenAI silently no-ops the DELETE but still returns 200
-  ``{"deleted": true}``.
-- ``delete_openai_container`` raises when the body omits
-  ``{"deleted": true}``, even on a 2xx response.
-"""
+"""Tests for /v1/containers CRUD: every call must send OpenAI-Beta: containers=v1, or DELETE no-ops."""
 
 from __future__ import annotations
 
@@ -35,10 +27,7 @@ def _drive(coro):
 
 
 def _mock_http_client(monkeypatch, handler):
-    """Wire `handler` for the shared `_http_client` AND any per-call
-    `httpx.AsyncClient(...)`. delete_openai_container creates a fresh
-    AsyncClient (see external_provider.delete_openai_container), so we
-    must also intercept that constructor."""
+    """Mock the shared _http_client and AsyncClient, since delete_openai_container builds its own client."""
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
     real_async_client = httpx.AsyncClient
@@ -115,13 +104,9 @@ def test_delete_sends_openai_beta_header_and_accepts_confirmation(monkeypatch):
 
 
 def test_delete_raises_when_response_lacks_deleted_true(monkeypatch):
-    """OpenAI returns 200 ``{"deleted": true}`` even when the request is
-    silently rejected (e.g. before we sent OpenAI-Beta). Guard: when the
-    body omits ``deleted: true``, surface an error so the UI reports the
-    failure instead of false success."""
+    """A 200 without deleted: true must raise, since OpenAI returns 200 even when a DELETE is rejected."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        # 200 but no deleted flag — unexpected payload shape.
         return httpx.Response(200, json = {"id": "cntr_x", "object": "container"})
 
     _mock_http_client(monkeypatch, handler)
@@ -425,5 +410,5 @@ def test_list_route_filters_expired_containers(monkeypatch):
     response = _drive(inf_mod.list_openai_containers(body, request, current_subject = "u"))
     ids = [c.id for c in response.containers]
     assert "cntr_active" in ids
-    assert "cntr_unknown" in ids  # missing status is treated as usable
+    assert "cntr_unknown" in ids
     assert "cntr_dead" not in ids

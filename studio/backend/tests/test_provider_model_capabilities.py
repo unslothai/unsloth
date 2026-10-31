@@ -298,9 +298,7 @@ def test_models_dev_catalog_is_trimmed_and_remapped():
     assert catalog["gemini"]["gemini-9-flash"] == {"reasoning": True, "input": ["text", "image"]}
 
 
-#: `limit` shapes that must and must not yield a context window. The frontend merges this payload
-#: over its bundled snapshot per model, so emitting a junk value is worse than emitting none: it
-#: displaces a good bundled window rather than falling back to it.
+# The frontend merges this over its bundled snapshot, so a junk value is worse than none.
 _CONTEXT_CASES = [
     ({"context": 1_050_000, "output": 100_000}, 1_050_000),
     ({"context": 480}, 480),
@@ -310,8 +308,7 @@ _CONTEXT_CASES = [
     ({"context": None}, None),
     ({"context": 0}, None),
     ({"context": -1}, None),
-    # bool is an int in Python, and True > 0, so without the explicit bool check this would
-    # emit `"context": True` for any provider that sends a flag here.
+    # bool is an int and True > 0: check bool explicitly or a flag emits context=True.
     ({"context": True}, None),
     ({"context": False}, None),
     ({"context": 1000.5}, None),

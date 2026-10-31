@@ -21,7 +21,6 @@ test("HTML pages count toward the byte budget, and one over the per-page limit i
   const cache = make();
   const keys = Array.from({ length: 12 }, () => ({}));
   for (const key of keys) cache.set(key, html(6 * MB));
-  // Twelve 6 MB pages would be 72 MB; only the newest five fit in 32 MB.
   assert.equal(cache.size, 5);
   assert.ok(cache.bytes <= 32 * MB);
   assert.equal(cache.get(keys[0]), undefined);

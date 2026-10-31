@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""install_llm_compressor() must not pip-reinstall an llm-compressor that only THIS process fails to import.
-
-The probe is real: a fresh interpreter imports a fake llmcompressor placed on PYTHONPATH. Only the
-in-process import is blocked, and only pip is stubbed.
-"""
+"""Must not pip-reinstall llm-compressor when only this process fails to import it."""
 
 import importlib.abc
 import subprocess

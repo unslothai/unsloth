@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A row that is downloading says "N left", so N has to follow the transfer. The live overlay
-// only carried the expected size, leaving the label on whatever the one-time variant fetch had
-// measured -- or on the full total for a download that started after it, which reads as no
-// progress at all.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -56,7 +51,6 @@ test("a running download prices the remainder from its own progress", () => {
 });
 
 test("progress replaces the remainder the one-time fetch measured", () => {
-  // The fetch saw 3.5 GB outstanding; 3 GB have since arrived.
   const [row] = applyLiveGgufVariantStates(
     [variant({ partial: true, download_remaining_bytes: 3.5 * GB })],
     live() as never,
@@ -95,10 +89,7 @@ test("a completed download is left alone, so no row reads as partial", () => {
 });
 
 test("a cancelled job keeps the remainder the backend measured", () => {
-  // Progress is not reusable bytes: from huggingface_hub 1.18 the partial is
-  // process-unique and unlinked in a finally, so an interrupted in-file transfer
-  // is refetched whole. Subtracting the dead job's 17 GB reported "1.0 GB left"
-  // for a resume that still has all 18 GB to fetch.
+  // From huggingface_hub 1.18 the partial is process-unique and unlinked, so it is refetched whole.
   for (const state of ["cancelled", "error"]) {
     const [row] = applyLiveGgufVariantStates(
       [
@@ -123,10 +114,7 @@ test("a cancelled job keeps the remainder the backend measured", () => {
 });
 
 test("an XET fallback does not price the retry against the dead run's bytes", () => {
-  // The XET attempt finalized 3 GB of a 3.5 GB quant, then fell back to HTTP.
-  // The reclaim recomputes completed_baseline_bytes from disk, so the retry
-  // reports a 0.5 GB total with 0.1 GB moved and completed_bytes 0. Taking the
-  // max against the held 3 GB read "0 B left" with 0.4 GB still to fetch.
+  // After an XET-to-HTTP fallback the reclaim recomputes the baseline from disk.
   const select = createLiveGgufVariantStatesSelector("unsloth/model-GGUF");
   const states = select({
     jobs: {
@@ -159,10 +147,6 @@ test("an XET fallback does not price the retry against the dead run's bytes", ()
 });
 
 test("a retry that has not measured a byte yet keeps the backend remainder", () => {
-  // The reading right after the reclaim, before the HTTP run moves anything: a
-  // real downloaded_bytes 0 against a 0.5 GB total, behind which
-  // resolveProgressUpdate holds the dead run's 3 GB. Pricing the remainder off
-  // that held figure read "0 B left" with all 0.5 GB still to fetch.
   const select = createLiveGgufVariantStatesSelector("unsloth/model-GGUF");
   const states = select({
     jobs: {
@@ -237,14 +221,11 @@ test("a variant with no live job is returned untouched", () => {
 });
 
 test("a reused mmproj does not come back as bytes still to fetch", () => {
-  // snapshot_progress nets the baseline out of both of the job's counters, so
-  // 5 GB plan - 1 GB already on disk = a 4 GB job, 1 GB of which has arrived.
   const [row] = applyLiveGgufVariantStates(
     [variant({ size_bytes: 5 * GB, download_size_bytes: 5 * GB })],
     live({ expectedBytes: 4 * GB, transferredBytes: 1 * GB }) as never,
   );
 
   assert.equal(row.download_remaining_bytes, 3 * GB);
-  // The catalog total still drives the size the row reports, untouched.
   assert.equal(row.download_size_bytes, 5 * GB);
 });

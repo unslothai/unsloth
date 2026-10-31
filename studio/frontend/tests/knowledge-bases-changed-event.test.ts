@@ -5,9 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-// Every reader of the knowledge base list keeps its own copy: the composer's source menu,
-// whose fallback drops a deleted KB from the chat, and the source chip, which shows the
-// name. They stay right only if every create, rename and delete announces itself.
+// Every KB list reader keeps its own copy, so every create, rename and delete must announce itself.
 
 type RagApi = {
   createKnowledgeBase: (payload: { name: string }) => Promise<unknown>;

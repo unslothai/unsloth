@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Saved voices: ``{id}.wav`` (24 kHz mono, at most 30 s) plus ``{id}.json`` under the account's
-``<gallery_dir>/voices``, kept until deleted. As in the gallery the sidecar is written last and is
-what makes a pair a voice, so a lone WAV is never listed, served or deleted."""
+"""Saved voices: {id}.wav (24 kHz mono, at most 30 s) plus {id}.json under <gallery_dir>/voices,
+kept until deleted; the sidecar is written last and is what makes a pair a voice, so a lone WAV
+is never listed, served or deleted."""
 
 from __future__ import annotations
 

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A managed recipe must not be able to name a host environment secret.
-
-Data Designer 0.5.4 resolves ModelProvider.api_key through
-CompositeResolver([EnvironmentResolver(), PlaintextResolver()]), so a bare env var
-name in api_key is replaced by that variable's value before it goes out as a bearer
-token to the provider endpoint the same recipe supplies.
-"""
+"""Managed recipes must not name a host env var as api_key; Data Designer would substitute its value."""
 
 from __future__ import annotations
 

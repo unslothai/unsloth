@@ -8,7 +8,6 @@ export interface ModelCatalogSnapshotEntry {
   efforts?: readonly string[];
   toggle?: true;
   input?: readonly string[];
-  /** Published context window in tokens. */
   context?: number;
 }
 

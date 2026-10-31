@@ -4,11 +4,7 @@
 import { useEffect } from "react";
 import { useSettingsDialogStore } from "@/features/settings";
 
-/**
- * A printable keystroke with nothing editable focused moves focus to the
- * screen's primary input (settings search, composer, or media prompt). Focusing
- * during keydown lets the browser's default action insert the character there.
- */
+/** Focusing during keydown lets the default action insert the character there. */
 export function useTypeToActivate(): void {
   const settingsOpen = useSettingsDialogStore((s) => s.open);
 
@@ -41,8 +37,7 @@ export function useTypeToActivate(): void {
       if (isEditable(document.activeElement)) return;
       if (hasOpenOverlay(settingsOpen)) return;
 
-      // Radix keeps the settings dialog mounted while it animates closed, so its
-      // search is excluded then or it would win and swallow the keystroke.
+      // Radix keeps the settings dialog mounted while closing, so exclude its search then.
       const target = firstVisible(
         settingsOpen
           ? '[data-type-to-activate="settings-search"]'
@@ -92,7 +87,7 @@ function isEditable(el: Element | null): boolean {
   return false;
 }
 
-/** Popovers, menus, the lightbox, blocking screens, and any dialog but settings own the keystroke. */
+/** Any dialog except settings owns the keystroke. */
 function hasOpenOverlay(settingsOpen: boolean): boolean {
   const notSettings = settingsOpen ? ":not([data-settings-dialog])" : "";
   const overlaySelector = [

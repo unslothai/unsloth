@@ -144,14 +144,12 @@ class TestDetectedRuntimeDllsOnlyOrderTheLines:
 
 class TestTheFastPathAgreesWithTheOrdering:
     def test_every_driver_compatible_windows_line_is_selectable(self, monkeypatch):
-        # torch prefers CUDA 12 while only CUDA 13 DLLs are detected: the selector now moves the
-        # cuda12 bundle to the front, so the fast path must call that line selectable too.
+        # torch prefers CUDA 12 with only CUDA 13 DLLs seen, so the fast path must accept cuda12.
         monkeypatch.setattr(m, "detected_windows_runtime_lines", lambda: (["cuda13"], {}))
         win = host(caps = ("89",))
         assert m._runtime_line_selectable(win, "cuda12") is True
         assert m._runtime_line_selectable(win, "cuda13") is True
         assert m._runtime_line_selectable(host(caps = ("89",), driver = (12, 8)), "cuda13") is False
-        # Linux still needs the runtime on disk.
         monkeypatch.setattr(m, "detected_linux_runtime_lines", lambda: (["cuda13"], {}))
         assert m._runtime_line_selectable(host("Linux", caps = ("89",)), "cuda12") is False
 
@@ -241,8 +239,7 @@ class TestTheKeepPathsRequireSmCoverage:
     def test_a_card_swapped_under_a_mask_is_not_kept_by_the_fast_path(
         self, monkeypatch, tmp_path, system, healthy_payload
     ):
-        # An empty CUDA_VISIBLE_DEVICES hides the caps from the profile; the physical caps
-        # are the only record that an sm_89 card became an sm_120 one.
+        # An empty CUDA_VISIBLE_DEVICES hides the caps; only physical caps record the card swap.
         masked = host(
             system,
             (),

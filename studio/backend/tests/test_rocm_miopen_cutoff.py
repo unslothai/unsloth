@@ -82,7 +82,6 @@ def test_detection_configures_only_rocm(monkeypatch, hip, version, enabled):
     monkeypatch.delenv("UNSLOTH_FORCE_XPU", raising = False)
     monkeypatch.delenv("ZE_AFFINITY_MASK", raising = False)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-    # Run the real body with isolated globals, including any future state fields.
     detect = FunctionType(hw._detect_hardware_locked.__code__, vars(hw).copy())
     assert detect() == hw.DeviceType.CUDA
     assert configure.call_count == int(enabled)

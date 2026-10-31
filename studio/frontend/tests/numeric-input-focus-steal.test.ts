@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// NumericValueInput selects its contents a frame after it takes focus. In Chrome
-// HTMLInputElement.select() FOCUSES a blurred input, taking focus off whatever holds it, so
-// an unguarded select steals focus back from the field the user moved to. Two of these
-// focused in one task -- tab, or a click straight from one field to the next -- then steal
-// from each other every frame for as long as the page stays open, because each steal fires
-// focus on the other input, whose handler queues the next one.
-//
-// The behaviour is pinned in the browser by tests/studio/playwright_image_download_cancel_retry.py.
-// This is the cheap half: it fails in unit CI, with no browser, if the guard is dropped.
+// In Chrome select() focuses a blurred input, so an unguarded deferred select steals focus.
+// Browser coverage: tests/studio/playwright_image_download_cancel_retry.py.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -36,8 +29,6 @@ test("the queued select is guarded on the input still having focus", () => {
 });
 
 test("nothing else selects an input without checking focus first", () => {
-  // DRIFT: a second deferred select added later would reintroduce the loop while the guard
-  // above still reads as present.
   const source = readSrc(SOURCE);
   const selects = [...source.matchAll(/\.select\(\)/g)];
   assert.equal(

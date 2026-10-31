@@ -6,10 +6,7 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// The permission shield sits right after the composer plus. While the plus spun open or closed,
-// WebKit gave the shield's positioned slot its own layer and snapped it a device pixel up, then
-// dropped the layer and let it fall back. Stacking the icon and X in a grid cell keeps the slot
-// unpositioned, so it always paints with the pill.
+// A positioned slot got its own WebKit layer and snapped a pixel during the plus animation.
 
 const CSS = readSrc("index.css");
 

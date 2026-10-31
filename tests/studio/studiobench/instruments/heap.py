@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Sampling heap profiler, configured to see TRANSIENT garbage.
-
-`HeapProfiler.startSampling` with `includeObjectsCollectedByMajorGC: true`. That
-flag is load-bearing, not a nicety. Without it the returned profile contains
-only objects that SURVIVED, and the hypothesis under test is the opposite: that
-one work-in-progress fiber is cloned per sibling per render, allocated in a
-burst and collected almost entirely at the next major GC. A survivors-only
-profile of that mechanism is empty, and an empty profile reads as "no allocation
-here", which is the exact wrong conclusion.
-
-So the flag is REQUIRED. If the browser rejects it, this module raises rather
-than retrying without it, because a quiet fallback would turn a missing
-capability into a false negative and nothing downstream could tell.
-
-The shape that confirms M1 is: allocation total proportional to sibling count,
-attributed to a react-dom frame, with near-zero survival past a forced major GC.
-`survival_ratio()` measures exactly that by taking a second profile after
-`HeapProfiler.collectGarbage`.
-"""
+"""Needs includeObjectsCollectedByMajorGC; without it, survivors-only profiles hide transient garbage."""
 
 from __future__ import annotations
 
@@ -28,12 +10,10 @@ from typing import Any, Iterable
 
 from ..analysis import CellFailure
 
-# 4096 bytes between samples. Small enough to resolve a per-sibling allocation at a few hundred
-# siblings, large enough not to perturb the allocation path.
+# Bytes between samples: resolves per-sibling allocations without perturbing the allocator.
 DEFAULT_SAMPLING_INTERVAL = 4096
 
-# `includeObjectsCollectedByMajorGC` / `MinorGC` landed in V8 10.8, which shipped in Chrome 108.
-# Below that the parameter is accepted and ignored.
+# includeObjectsCollectedBy*GC needs V8 10.8 (Chrome 108); older builds silently ignore it.
 MIN_CHROME_FOR_GC_FLAGS = 108
 
 
@@ -120,16 +100,7 @@ class SamplingHeapProfiler:
         self._running = False
 
     def assert_gc_flags_supported(self) -> int:
-        """Check the browser is new enough for the GC-inclusion flags.
-
-        THIS CANNOT BE FEATURE-DETECTED BY CATCHING AN ERROR. V8's inspector
-        silently ignores unknown parameters to `HeapProfiler.startSampling`, so
-        an old browser accepts `includeObjectsCollectedByMajorGC` with a cheerful
-        empty success result and then hands back a survivors-only profile. The
-        flag would appear to work and the answer would be wrong in the exact
-        direction that hides the hypothesis. So the check is on the version:
-        the flags landed in V8 10.8, which shipped in Chrome 108.
-        """
+        """Checked by version (V8 10.8 / Chrome 108), since older browsers silently ignore the GC flags."""
         version = self.cdp.send("Browser.getVersion") or {}
         product = str(version.get("product", ""))
         major = 0
@@ -182,11 +153,8 @@ class SamplingHeapProfiler:
         return profile
 
     def peek(self) -> HeapProfile:
-        """Read the profile without stopping the profiler.
-
-        Used to take the survivors arm: force a major GC, then peek. The
-        profiler keeps accumulating afterwards, so this is non-destructive.
-        """
+        """Reads the profile without stopping; the profiler keeps accumulating, so this is non-
+        destructive."""
         if not self._running:
             raise RuntimeError("SamplingHeapProfiler.peek without start")
         return self._parse(self.cdp.send("HeapProfiler.getSamplingProfile"))
@@ -209,22 +177,7 @@ class SamplingHeapProfiler:
 def survival_ratio(
     allocated: HeapProfile, survivors: HeapProfile, needles: Iterable[str]
 ) -> dict[str, Any]:
-    """How much of what a site allocated is still alive after a major GC.
-
-    Takes TWO profiles from TWO arms of the identical workload, because one
-    session cannot produce both. A sampling profiler only records allocations
-    made after it starts, so you cannot start a second profiler after a GC and
-    learn anything about objects allocated before it. The two arms are:
-
-    * `allocated`: `include_major_gc=True`. Everything the workload allocated,
-      collected or not.
-    * `survivors`: `include_major_gc=False`, with a forced
-      `HeapProfiler.collectGarbage` before `stop()`. The profiler drops
-      collected objects, so what remains is what outlived the GC.
-
-    A ratio near zero is the signature of per-render churn; a ratio near one is
-    retention, which is a different bug with a different fix.
-    """
+    """Two arms, since one session cannot see both allocation and survival; near zero means churn."""
     needles = tuple(needles)
     if not allocated.included_major_gc:
         raise CellFailure(
@@ -253,13 +206,8 @@ def survival_ratio(
     }
 
 
-# Harness adapter (INTERFACES.md section 3)
-# Level 3. One sampling session per window, started with `includeObjectsCollectedByMajorGC` so
-# transient garbage is visible: the hypothesis is per-render churn, and a survivors-only profile
-# of that is empty.
-# The survivors arm is NOT taken here. It needs a second run of the identical workload with the
-# flag off, which is an ablation arm belonging to Layer 3. This emits the allocation side plus the
-# site breakdown, so `analysis.heap.survival_ratio` can be applied across two arms afterwards.
+# Level 3: samples include GC-collected objects so per-render churn is visible.
+# The survivors arm is a separate Layer 3 ablation run.
 
 import time  # noqa: E402
 
@@ -306,8 +254,7 @@ class HeapInstrument:
         try:
             self.profiler.start()
         except CellFailure as exc:
-            # The version gate. Refusing is correct: an older browser ignores the flag silently and hands back
-            # survivors only, which for a transient-allocation hypothesis reads as "no allocation here".
+            # Refuse: an older browser silently returns survivors only, reading as no allocation.
             self._reason = f"{exc.gate}: {exc.detail}"
             self.profiler = None
         except Exception as exc:  # noqa: BLE001
@@ -354,8 +301,7 @@ class HeapInstrument:
         return payload
 
     def end_cell(self, cell: Any) -> dict | None:
-        # A prose key is OMITTED when there is nothing to say, never set to None. `None` is reserved for a
-        # QUANTITY that could not be measured.
+        # Prose keys are omitted when empty; None is reserved for unmeasured quantities.
         out = merge(
             measured("overhead_ms", round(self._overhead_ms, 3)),
             measured("windows_sampled", self._windows),

@@ -6,9 +6,11 @@ import test from "node:test";
 import {
   ACCOUNT_CHROME_KEYS,
   ACCOUNT_DATABASES,
+  ACCOUNT_KEYED_PREFIXES,
   BROWSER_ACCOUNT_FENCE_KEY,
   BROWSER_ACCOUNT_KEY,
   accountDatabaseName,
+  browserAccountKey,
   accountTransitionPending,
   browserAccountMarker,
   installAccountTransitionListener,
@@ -17,6 +19,7 @@ import {
   transitionBrowserAccount,
 } from "../src/lib/account-transition.ts";
 import { RUNTIME_REPAIR_KEY } from "../src/hooks/runtime-repair-history.ts";
+import { SEEN_KEY_PREFIX, UNSEEN_KEY_PREFIX } from "../src/features/scheduled-tasks/results.ts";
 
 function browserWith(
   values: Record<string, string> = {},
@@ -148,6 +151,8 @@ test("switch removes every content prefix and preserves only listed chrome and u
     ...Object.fromEntries(content.map((key) => [key, "private"])),
     unrelated: "keep",
     "unsloth_web_update_dismissed:pip:1": "keep",
+    [`${SEEN_KEY_PREFIX}unsloth`]: "keep",
+    [`${UNSEEN_KEY_PREFIX}unsloth`]: "keep",
     [BROWSER_ACCOUNT_KEY]: "unsloth",
   });
   const changed = await transitionBrowserAccount(
@@ -161,12 +166,15 @@ test("switch removes every content prefix and preserves only listed chrome and u
     b.browser,
   );
   assert.equal(changed, true);
-  // The fence is written before the tokens and lifted after the marker.
   assert.deepEqual(b.removed.sort(), [...content, BROWSER_ACCOUNT_FENCE_KEY].sort());
   for (const key of ACCOUNT_CHROME_KEYS)
     assert.equal(b.data.get(key), "chrome");
   assert.equal(b.data.get("unrelated"), "keep");
   assert.equal(b.data.get("unsloth_web_update_dismissed:pip:1"), "keep");
+  for (const prefix of [SEEN_KEY_PREFIX, UNSEEN_KEY_PREFIX]) {
+    assert.equal(b.data.get(`${prefix}unsloth`), "keep");
+    assert.ok(ACCOUNT_KEYED_PREFIXES.some((kept) => prefix.startsWith(kept)));
+  }
   assert.equal(b.data.get("unsloth_auth_token"), "alice-token");
   assert.equal(b.data.get(BROWSER_ACCOUNT_KEY), "alice");
   assert.deepEqual(b.replaced, ["/change-password"]);
@@ -188,7 +196,6 @@ test("only a switch clears the desktop browser's site data, before the new sessi
     ),
   );
   assert.equal(events.includes("carol"), false);
-  // The clear runs first, so a failed one leaves the signed-in account's data whole.
   assert.equal(failing.browser.localStorage.getItem("unsloth-draft"), "kept");
 });
 
@@ -529,7 +536,7 @@ test("switching accounts clears session content and keeps neutral session flags"
     }),
     "unsloth.reload-snapshot.v1": "<div>alice</div>",
     "data-recipes:open-learning-recipes": "1",
-    // USER_STOPPED_KEY: neutral, and clearing it would restart a server the user stopped.
+    // USER_STOPPED_KEY is neutral: clearing it would restart a server the user stopped.
     unsloth_server_user_stopped: "1",
   });
   assert.equal(
@@ -600,6 +607,16 @@ test("saved recipes live in a per-account store and are never purged", () => {
   );
 });
 
+test("an account's key is its id where the marker has one, so a reused username starts afresh", () => {
+  const stored = (marker: string | null) => ({ getItem: () => marker });
+  assert.equal(browserAccountKey(stored(null)), "owner");
+  assert.equal(browserAccountKey(stored("unsloth")), "owner");
+  assert.equal(browserAccountKey(stored("account:owner:unsloth")), "owner");
+  assert.equal(browserAccountKey(stored("account:a1:alice")), "a1");
+  assert.equal(browserAccountKey(stored("account:a2:alice")), "a2");
+  assert.equal(browserAccountKey(stored("alice")), "alice");
+});
+
 test("transcript recovery survives reauthentication but is cleared on account changes", async () => {
   const { readTranscriptDraft, transcriptDraftKey, writeTranscriptDraft } =
     await import("../src/features/audio/transcript-draft.ts");
@@ -632,4 +649,121 @@ test("transcript recovery survives reauthentication but is cleared on account ch
       else Reflect.deleteProperty(globalThis, name);
     }
   }
+});
+
+test("chat preferences survive account switches without being shared", async () => {
+  const alice = { username: "alice", accountId: "alice-id" };
+  const bob = { username: "bob", accountId: "bob-id" };
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: browserAccountMarker(alice) });
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { configurable: true, value: b.browser });
+  const load = async (name: string) => {
+    const { useChatPreferencesStore } = await import(
+      `../src/features/chat/stores/chat-preferences-store.ts?account-test=${name}`
+    );
+    return useChatPreferencesStore;
+  };
+  const choices = (store: Awaited<ReturnType<typeof load>>) => {
+    const state = store.getState();
+    return [state.sendShortcut, state.autoScrollWhileGenerating, state.thinkingVisibility];
+  };
+  try {
+    const a = await load("alice");
+    a.getState().setSendShortcut("mod-enter");
+    a.getState().setAutoScrollWhileGenerating(false);
+    a.getState().setThinkingVisibility("collapsed");
+    assert.deepEqual(choices(await load("alice-reload")), ["mod-enter", false, "collapsed"]);
+    await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+    const other = await load("bob");
+    assert.deepEqual(choices(other), ["enter", true, "auto"]);
+    other.getState().setThinkingVisibility("expanded");
+    await transitionBrowserAccount(alice, "/chat", () => {}, b.browser);
+    assert.deepEqual(choices(await load("alice-return")), ["mod-enter", false, "collapsed"]);
+    await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+    assert.deepEqual(choices(await load("bob-return")), ["enter", true, "expanded"]);
+    // Reset preferences removes the active entry; the old snapshot must not resurrect it.
+    b.data.delete("unsloth_chat_preferences");
+    await transitionBrowserAccount(alice, "/chat", () => {}, b.browser);
+    await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+    assert.deepEqual(choices(await load("bob-reset")), ["enter", true, "auto"]);
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+test("chat preference snapshots follow account IDs, including rename and recreation", async () => {
+  const saved = JSON.stringify({ state: { sendShortcut: "mod-enter" }, version: 1 });
+  const alice = { username: "alice", accountId: "alice-id" };
+  const bob = { username: "bob", accountId: "bob-id" };
+  const b = browserWith({
+    [BROWSER_ACCOUNT_KEY]: browserAccountMarker(alice),
+    unsloth_chat_preferences: saved,
+  });
+  await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+  await transitionBrowserAccount({ username: "renamed", accountId: "alice-id" }, "/chat", () => {}, b.browser);
+  assert.equal(b.data.get("unsloth_chat_preferences"), saved);
+  await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+  await transitionBrowserAccount({ username: "alice", accountId: "new-alice-id" }, "/chat", () => {}, b.browser);
+  assert.equal(b.data.has("unsloth_chat_preferences"), false);
+});
+
+test("owner preferences survive the legacy marker upgrade", async () => {
+  const saved = JSON.stringify({ state: { thinkingVisibility: "collapsed" }, version: 1 });
+  const b = browserWith({ unsloth_chat_preferences: saved });
+  await transitionBrowserAccount("alice", "/chat", () => {}, b.browser);
+  await transitionBrowserAccount({ username: "unsloth", accountId: "owner" }, "/chat", () => {}, b.browser);
+  assert.equal(b.data.get("unsloth_chat_preferences"), saved);
+});
+
+test("failed account cleanup leaves chat preferences available for a retry", async () => {
+  const saved = JSON.stringify({ state: { sendShortcut: "mod-enter" }, version: 1 });
+  const b = browserWith({
+    [BROWSER_ACCOUNT_KEY]: "account:alice-id:alice",
+    unsloth_chat_preferences: saved,
+  }, "blocked");
+  await assert.rejects(transitionBrowserAccount(
+    { username: "bob", accountId: "bob-id" }, "/chat", () => {}, b.browser,
+  ));
+  assert.equal(b.data.get("unsloth_chat_preferences"), saved);
+});
+
+test("a failed session publication keeps each account's chat preferences its own", async () => {
+  const alicePrefs = JSON.stringify({ state: { sendShortcut: "mod-enter" }, version: 1 });
+  const bobPrefs = JSON.stringify({ state: { sendShortcut: "mod-enter-multiline" }, version: 1 });
+  const alice = { username: "alice", accountId: "alice-id" };
+  const bob = { username: "bob", accountId: "bob-id" };
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: browserAccountMarker(alice) });
+  await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+  b.data.set("unsloth_chat_preferences", bobPrefs);
+  await transitionBrowserAccount(alice, "/chat", () => {}, b.browser);
+  b.data.set("unsloth_chat_preferences", alicePrefs);
+  await assert.rejects(transitionBrowserAccount(bob, "/chat", () => {
+    throw new Error("token storage failed");
+  }, b.browser));
+  assert.equal(b.data.get("unsloth_chat_preferences"), alicePrefs);
+  await transitionBrowserAccount(bob, "/chat", () => {}, b.browser);
+  assert.equal(b.data.get("unsloth_chat_preferences"), bobPrefs);
+  await transitionBrowserAccount(alice, "/chat", () => {}, b.browser);
+  assert.equal(b.data.get("unsloth_chat_preferences"), alicePrefs);
+});
+
+test("a full storage never blocks an account switch or leaks preferences", async () => {
+  const alicePrefs = JSON.stringify({ state: { sendShortcut: "mod-enter" }, version: 1 });
+  const b = browserWith({
+    [BROWSER_ACCOUNT_KEY]: "account:alice-id:alice",
+    unsloth_chat_preferences: alicePrefs,
+  });
+  const setItem = b.browser.localStorage.setItem;
+  b.browser.localStorage.setItem = (key: string, value: string) => {
+    if (key.startsWith("unsloth.account-chat-preferences.v1:"))
+      throw new DOMException("full", "QuotaExceededError");
+    setItem(key, value);
+  };
+  assert.equal(
+    await transitionBrowserAccount({ username: "bob", accountId: "bob-id" }, "/chat", () => {}, b.browser),
+    true,
+  );
+  assert.equal(b.data.get(BROWSER_ACCOUNT_KEY), "account:bob-id:bob");
+  assert.equal(b.data.has("unsloth_chat_preferences"), false);
 });

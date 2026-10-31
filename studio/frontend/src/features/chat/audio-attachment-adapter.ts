@@ -29,10 +29,7 @@ const AUDIO_ADD_TOAST_ID = "audio-attachment-limit";
 
 // A loaded model without audio rejects at add(); with none loaded, the send path checks it later.
 export class AudioAttachmentAdapter implements AttachmentAdapter {
-  // MIME is unreliable for some containers (m4a), so also match by extension. No .webm extension:
-  // it would claim video/webm files; real audio webm (MediaRecorder) always reports the audio/webm
-  // MIME. .mp4 and .m4v stay off for the same reason; only .m4a is audio-only. Not the picker list:
-  // this decides routing, and .3gp is in that list only so a dialog can offer a recording.
+  // MIME is unreliable for m4a, so also match by extension; no .webm/.mp4/.m4v, which would claim video.
   accept = AUDIO_ATTACHMENT_ACCEPT;
   // Pending clip sizes by id; caps cover all clips in a message.
   private readonly attachmentSizes = new Map<string, number>();
@@ -44,8 +41,7 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
     const modelLoaded = !!checkpoint && !state.modelLoading;
     let unavailableReason: string | null = null;
     if (modelLoaded && !activeModel?.hasAudioInput) {
-      // A connected provider's model has no row in `models`, so without the parse this named it by its
-      // raw `external::` id (#8405).
+      // Provider models have no `models` row, so parse the id instead of showing external:: raw.
       const label =
         activeModel?.name ||
         externalModelLabel(checkpoint) ||

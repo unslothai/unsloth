@@ -92,7 +92,6 @@ def test_restrided_pair_is_the_later_blocks_layout_with_the_same_values():
     assert pair is not None
     h2, e2 = pair
     assert torch.equal(h2, hidden) and torch.equal(e2, encoder)
-    # What diffusers' single block returns: two slices of one [B, text + image, D] tensor.
     later_e, later_h = FluxSingleTransformerBlock()(hidden, encoder)
     assert h2.stride() == later_h.stride() and e2.stride() == later_e.stride()
     assert h2.untyped_storage().data_ptr() == e2.untyped_storage().data_ptr()
@@ -123,11 +122,11 @@ def test_outputs_identical_with_and_without_restride(monkeypatch):
     hidden, encoder = _inputs(batch = 2)
     with torch.no_grad():
         ref = model(hidden, encoder)
-    assert restride.install(model) is False  # nothing compiled: nothing to wrap
+    assert restride.install(model) is False
     for block in model.single_transformer_blocks:
         block.compile(backend = "eager", fullgraph = True)
     assert restride.install(model) is True
-    assert restride.install(model) is True  # idempotent
+    assert restride.install(model) is True
     with torch.no_grad():
         out = model(hidden, encoder)
     assert torch.equal(ref, out)

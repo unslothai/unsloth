@@ -153,7 +153,7 @@ pub struct FrontendSupportSnapshot {
     pub last_ui_log_lines: Option<Vec<String>>,
     pub flow: Option<String>,
     pub update_phase: Option<String>,
-    /// Frontend update progress can be numeric today; keep this tolerant of strings/numbers.
+    /// Accepts strings or numbers from the frontend.
     pub update_progress: Option<serde_json::Value>,
 }
 

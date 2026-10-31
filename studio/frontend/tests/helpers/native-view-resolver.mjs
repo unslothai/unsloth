@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // register after browser-store-resolver.mjs and route Tauri calls through globalThis.nativeViewCall;
-// events reach globalThis.nativeViewListener, toasts and recorded downloads land in globalThis.nativeViewSeen, visits in globalThis.nativeViewVisits
+// events reach globalThis.nativeViewListener, nativeViewGranted answers local grants and nativeViewCloseLocal is the views' closer, toasts and recorded downloads land in globalThis.nativeViewSeen, visits in globalThis.nativeViewVisits
 const stub = (source) => `data:text/javascript,${encodeURIComponent(source)}`;
 
 const STUBS = {
@@ -13,6 +13,11 @@ const STUBS = {
     "export const getLocale = () => 'en'; export const translate = (key) => key;",
   ),
   "@/lib/open-link": stub("export const openExternalLink = () => {};"),
+  // globalThis.nativeViewZoom is the applied interface zoom; nativeViewZoomChanged announces a change.
+  "@/features/settings/lib/interface-scale-runtime": stub(
+    "export const getAppliedInterfaceZoom = () => globalThis.nativeViewZoom ?? 1;" +
+      " export const subscribeAppliedInterfaceZoom = (listener) => { globalThis.nativeViewZoomChanged = listener; return () => {}; };",
+  ),
   "@/lib/toast": stub(`
     const seen = (level) => (message) => void (globalThis.nativeViewSeen ??= []).push({ level, message });
     export const toast = Object.assign(seen("info"), { success: seen("success"), error: seen("error"), warning: seen("warning") });
@@ -23,6 +28,8 @@ const STUBS = {
     export const nativeClearing = () => false;
     export const onNativeViewsClosed = (callback) => { globalThis.nativeViewsClosed = callback; return () => {}; };
     export const clearNativeBrowsingData = async () => {};
+    export const localOriginGranted = (tabId, url) => Boolean(globalThis.nativeViewGranted?.(tabId, url));
+    export const setLocalViewCloser = (close) => { globalThis.nativeViewCloseLocal = close; };
   `),
   "./favicon": stub("export const proxiedFavicon = async () => null;"),
   // globalThis.nativeViewDownloadsButton puts a Downloads button on screen; calls land in nativeViewActivity.

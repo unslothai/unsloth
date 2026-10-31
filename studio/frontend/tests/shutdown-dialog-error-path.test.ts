@@ -2,11 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Radix closes an `AlertDialogPrimitive.Action` dialog on click unless the handler
- * defaults the event, and SYNCHRONOUSLY, so the close races the in-flight
- * `/api/shutdown`: the error path then re-enables a dialog already unmounted.
- * The harness models that contract rather than grepping for `preventDefault`, so
- * it still fails if the call survives and the behaviour breaks another way.
+ * Radix closes an Action dialog synchronously on click unless the event is defaulted,
+ * racing the in-flight /api/shutdown. The harness models that contract.
  */
 
 import assert from "node:assert/strict";
@@ -19,7 +16,6 @@ import {
 
 type Outcome = { ok: boolean } | { throws: true };
 
-/** Depth-first search for the first element whose stub type matches. */
 function findByType(node: unknown, type: string): StubElement | null {
   if (Array.isArray(node)) {
     for (const child of node) {
@@ -113,7 +109,7 @@ async function clickStopServer(outcome: Outcome) {
     assert.equal(typeof onClick, "function", "Stop server has no onClick");
     onClick(event);
 
-    // Radix's close, applied before the request settles. Main fails here.
+    // Radix's close, applied before the request settles.
     if (!defaultPrevented) open = false;
 
     await new Promise((resolve) => setImmediate(resolve));

@@ -39,8 +39,7 @@ export async function withAttachmentOriginal(
   epoch: number,
   forPythonTool: boolean,
 ): Promise<CompleteAttachment> {
-  // Any other document is kept only for the python tool, which gets a copy in its sandbox: an
-  // upload no one reads would only delay the send.
+  // Other documents are uploaded only for the python tool's sandbox.
   const upload =
     complete.type === "document" && !attachmentOriginal(complete)
       ? (originalUpload(pending.file) ?? (forPythonTool ? pending.file : null))
@@ -78,8 +77,7 @@ export async function persistAttachmentOriginals(
   );
 }
 
-// Originals no message names yet are swept an hour after upload; sending one staged half that long
-// uploads it again, which restarts its clock.
+// Unreferenced originals are swept after an hour; re-upload at half that to restart the clock.
 const STAGED_UPLOAD_MAX_AGE_MS = 30 * 60 * 1000;
 
 export function reuseStagedUpload(stagedAt: number | undefined, now = Date.now()): boolean {

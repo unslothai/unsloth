@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for prompt-cache request shaping on the Anthropic and OpenRouter paths.
-
-Anthropic's ``cache_control`` marker takes an optional ``ttl``: default 5m
-pool, ``ttl:"1h"`` the 1h pool. These tests pin the outbound body shape:
-"1h" puts ``ttl:"1h"`` on both markers; default omits the field; garbage
-values are silently dropped. OpenRouter carries one top-level marker for
-Claude models and a ``session_id`` that keeps a thread on its cached provider.
-"""
+"""Pins the cache_control ttl body shape: 1h on both markers, omitted by default, garbage dropped."""
 
 import asyncio
 import json
@@ -89,9 +82,6 @@ def _cache_controls(body: dict) -> list[dict]:
     return out
 
 
-# ── default (omitted) writes into the 5m pool ──────────────────────
-
-
 def test_omitted_ttl_uses_default_5m_pool(monkeypatch):
     captured = _capture(monkeypatch, ttl = None)
     ccs = _cache_controls(captured["body"])
@@ -100,18 +90,12 @@ def test_omitted_ttl_uses_default_5m_pool(monkeypatch):
         assert cc == {"type": "ephemeral"}, cc
 
 
-# ── explicit 5m round-trips as-is ─────────────────────────────────
-
-
 def test_explicit_5m_ttl_round_trips(monkeypatch):
     captured = _capture(monkeypatch, ttl = "5m")
     ccs = _cache_controls(captured["body"])
     assert len(ccs) == 2, ccs
     for cc in ccs:
         assert cc == {"type": "ephemeral", "ttl": "5m"}, cc
-
-
-# ── 1h writes the new pool field on every marker ───────────────────
 
 
 def test_1h_ttl_writes_into_1h_pool(monkeypatch):
@@ -123,9 +107,7 @@ def test_1h_ttl_writes_into_1h_pool(monkeypatch):
 
 
 def test_1h_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
-    # The extended-cache-ttl-2025-04-11 beta header is now GA (verified live
-    # 2026-05-22); 1h TTL works with no beta header. Pin so a regression that
-    # re-adds the header surfaces here.
+    # The 1h TTL beta header is GA; fail if it is re-added.
     captured = _capture(monkeypatch, ttl = "1h")
     beta = captured["headers"].get("anthropic-beta", "")
     assert "extended-cache-ttl-2025-04-11" not in beta, beta
@@ -137,20 +119,13 @@ def test_5m_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
     assert "extended-cache-ttl-2025-04-11" not in beta, beta
 
 
-# ── unknown values are dropped, not forwarded ──────────────────────
-
-
 @pytest.mark.parametrize("bogus", ["6m", "2h", "", "forever", "1d", "0", "1"])
 def test_unknown_ttl_silently_dropped(monkeypatch, bogus):
     captured = _capture(monkeypatch, ttl = bogus)
     ccs = _cache_controls(captured["body"])
     assert len(ccs) == 2, ccs
     for cc in ccs:
-        # Bogus TTLs must not round-trip; marker stays at default (no ttl = 5m).
         assert cc == {"type": "ephemeral"}, cc
-
-
-# ── opt-out still skips cache_control entirely ─────────────────────
 
 
 def test_opt_out_skips_cache_control(monkeypatch):
@@ -182,16 +157,13 @@ def test_opt_out_skips_cache_control(monkeypatch):
             top_p = 0.95,
             max_tokens = 32,
             enable_prompt_caching = False,
-            prompt_cache_ttl = "1h",  # ignored when caching is off
+            prompt_cache_ttl = "1h",
         ):
             pass
         await client.close()
 
     _drive(run())
     assert _cache_controls(captured["body"]) == []
-
-
-# ── OpenRouter: top-level cache_control on Claude, sticky session per thread ──
 
 
 def _oai_compat_body(

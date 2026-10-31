@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Disk-backed persistence for generated videos.
-
-Each video is a pair under ``workspace_root()/videos``: ``{id}.mp4`` holds the bytes, ``{id}.json``
-holds the recipe (an MP4 has no portable text-chunk like a PNG). The pair travels together; a lone
-file is not a valid record. Dumb storage: the route owns the schema; this only reads/writes/sorts.
-"""
+"""Video pairs {id}.mp4 + {id}.json (recipe) in workspace_root()/videos; a lone file is invalid."""
 
 from __future__ import annotations
 
@@ -16,6 +11,7 @@ import re
 import threading
 import uuid
 from collections.abc import Callable
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, BinaryIO, Optional, Union
 
@@ -33,6 +29,8 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _JOB_OUTCOME_KEY = "_worker_outcome"
 _job_lock = threading.Lock()
 _THUMBNAIL_WIDTH = 192
+# A frame PNG is decoded and encoded whole, so refuse anything past 8K square.
+_FRAME_MAX_PIXELS = 8192 * 8192
 
 
 def gallery_dir() -> Path:
@@ -159,17 +157,21 @@ def save(
             except OSError:
                 pass
         raise
-    return _record(video_id, meta)
+    return _record(video_id, meta, directory = directory)
 
 
 def _record(
     video_id: str,
     meta: dict[str, Any],
     flags: Optional[dict[str, dict[str, Any]]] = None,
+    *,
+    directory: Optional[Path] = None,
 ) -> dict[str, Any]:
+    if directory is None:
+        directory = gallery_dir()
     # flags are library state, not recipe: they come from the .flags.json store, never the sidecar
     if flags is None:
-        flags = gallery_flags.read(gallery_dir())
+        flags = gallery_flags.read(directory)
     return {
         **meta,
         "id": video_id,
@@ -177,18 +179,20 @@ def _record(
         **gallery_flags.flags_for(flags, video_id),
         # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
         "order_at": gallery_flags.order_rank(
-            flags, video_id, _mtime(path) if (path := video_path(video_id)) else 0.0
+            flags, video_id, _mtime(path) if (path := video_path(video_id, directory)) else 0.0
         ),
     }
 
 
-def video_path(video_id: str) -> Optional[Path]:
+def video_path(video_id: str, directory: Optional[Path] = None) -> Optional[Path]:
     """Resolve an id to its on-disk MP4, or None if missing / unsafe."""
     if not _ID_RE.match(video_id):
         return None
-    path = gallery_dir() / f"{video_id}.mp4"
+    if directory is None:
+        directory = gallery_dir()
+    path = directory / f"{video_id}.mp4"
     try:
-        path.resolve().relative_to(gallery_dir().resolve())
+        path.resolve().relative_to(directory.resolve())
     except ValueError:
         return None
     return path if path.is_file() else None
@@ -210,12 +214,7 @@ def first_frame_webp(
     max_pixels: Optional[int] = None,
     max_height: Optional[int] = None,
 ) -> bytes:
-    """The first frame of a clip (a file or an open binary stream), at most `width` wide and
-    `max_height` tall (four widths unless given), as WebP.
-
-    ``container`` forces the demuxer instead of probing for one, and then nothing but the stream
-    itself is read: a probed HLS or concat playlist names other files to open. ``max_pixels``
-    refuses a frame larger than that before it is decoded."""
+    """First frame as WebP; forced container reads only the stream. max_pixels refuses before decode."""
     import io
 
     try:
@@ -256,16 +255,85 @@ def first_frame_webp(
         raise RuntimeError(f"Thumbnail generation failed to decode the clip: {exc}") from exc
 
 
-def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
-    """Re-encode a stored MP4 for the Download menu into a TEMP FILE and return its path, or None
-    when the id doesn't resolve. Raises RuntimeError on missing codec/deps (route 501s). The caller
-    owns the file and must delete it after serving.
+def _frame_time(frame) -> float:
+    return float(frame.time) if frame.time is not None else 0.0
 
-    A file rather than a buffer because the request caps allow 2048x2048 x 1024 frames: a VP9
-    export of a clip that size runs to hundreds of MB, and holding it as one ``bytes`` (then again
-    in the response) let a couple of concurrent export clicks exhaust the process. The MP4 route
-    already streams from disk; this makes the transcodes behave the same way."""
-    # only transcode an Unsloth-owned clip, so a guessed stem for a foreign MP4 cannot be re-encoded out
+
+def frame_png(
+    source: Path,
+    at: str = "first",
+    max_px: Optional[int] = None,
+) -> bytes:
+    """One frame of a clip as PNG: ``first``, ``last`` or the frame shown at ``at`` seconds,
+    scaled to fit ``max_px`` when given. ValueError for a bad or past-end ``at`` or a clip PyAV
+    cannot decode; FileNotFoundError when the file is gone."""
+    import io
+    import math
+
+    text = str(at).strip().lower()
+    seconds: Optional[float] = None
+    if text not in ("first", "last"):
+        try:
+            seconds = float(text)
+        except ValueError:
+            seconds = None
+        if seconds is None or not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("at must be 'first', 'last' or a time in seconds.")
+    try:
+        import av
+        from PIL import Image
+    except Exception as exc:  # noqa: BLE001 -- a missing decoder dependency
+        raise RuntimeError("Frame extraction needs the 'av' and 'Pillow' packages.") from exc
+    try:
+        with av.open(str(source)) as src:
+            if not src.streams.video:
+                raise ValueError("This clip has no video stream.")
+            stream = src.streams.video[0]
+            if stream.width * stream.height > _FRAME_MAX_PIXELS:
+                raise ValueError(f"{stream.width}x{stream.height} is too large to extract.")
+            duration = (src.duration or 0) / 1_000_000
+            if not duration and stream.duration is not None and stream.time_base:
+                duration = float(stream.duration * stream.time_base)
+            # Frame times and seeks are absolute; ``at`` counts from the stream's first timestamp.
+            origin = float(stream.start_time * stream.time_base) if stream.start_time else 0.0
+            frame = None
+            if text == "first":
+                frame = next(src.decode(stream), None)
+            elif seconds is not None:
+                if duration and seconds > duration:
+                    raise ValueError(
+                        f"at={seconds:g} is past the end of the clip ({duration:.2f} s)."
+                    )
+                src.seek(int((origin + seconds) / stream.time_base), stream = stream, backward = True)
+                for candidate in src.decode(stream):
+                    if frame is not None and _frame_time(candidate) > origin + seconds + 1e-6:
+                        break
+                    frame = candidate
+            else:
+                # Seek close to the end and keep the final frame; a failed seek falls back to a full decode.
+                for start in (max(0.0, duration - 2.0), 0.0):
+                    src.seek(int((origin + start) / stream.time_base), stream = stream, backward = True)
+                    for candidate in src.decode(stream):
+                        frame = candidate
+                    if frame is not None or start == 0.0:
+                        break
+            if frame is None:
+                raise ValueError("This clip has no decodable frame there.")
+            image = frame.to_image()
+    except FileNotFoundError:
+        raise
+    except av.error.FFmpegError:
+        raise ValueError("This clip could not be decoded.") from None
+    if max_px:
+        image.thumbnail((max_px, max_px), Image.LANCZOS)
+    buf = io.BytesIO()
+    # Pillow's default level on purpose: MCP callers gate on these bytes (INLINE_CAP, MAX_IMAGE_BYTES).
+    image.save(buf, format = "PNG")
+    return buf.getvalue()
+
+
+def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
+    """Re-encodes to a temp file, not memory (concurrent exports exhaust RAM); caller deletes after serving; None if id unresolved; RuntimeError without codec"""
     path = owned_video_path(video_id)
     if path is None:
         return None
@@ -281,7 +349,6 @@ def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
         if normalized == "webm":
             _transcode_webm(path, dest)
         else:
-            # GIF is already bounded by _GIF_MAX_FRAMES / _GIF_MAX_EDGE, so it is built in memory and written out.
             dest.write_bytes(_transcode_gif(path))
     except BaseException:
         dest.unlink(missing_ok = True)
@@ -317,12 +384,9 @@ def _transcode_webm(path: Path, dest: Path) -> None:
             out_v.width = in_v.codec_context.width
             out_v.height = in_v.codec_context.height
             out_v.pix_fmt = "yuv420p"
-            # Realtime settings: VP9's default "good" profile is slow; cpu-used 8 + row-mt is much faster at a small
-            # quality cost.
+            # VP9 realtime: cpu-used 8 + row-mt is much faster at a small quality cost.
             out_v.options = {"deadline": "realtime", "cpu-used": "8", "row-mt": "1"}
-            # An LTX-2 clip carries a synchronized audio track and WebM is the web-embed format, so dropping it would
-            # hand back half the result. Opus is WebM's audio codec: resample to its 48 kHz grid and feed whole frames
-            # through a FIFO (960 samples per frame).
+            # Keep LTX-2 audio (dropping it halves the WebM result); Opus needs 48 kHz and whole 960-sample frames via a FIFO
             in_a = src.streams.audio[0] if src.streams.audio else None
             out_a = fifo = resampler = None
             if in_a is not None:
@@ -358,8 +422,7 @@ def _transcode_webm(path: Path, dest: Path) -> None:
                     continue
                 for frame in packet.decode():
                     for resampled in resampler.resample(frame):
-                        # let the FIFO time the output: the resampler's frames do not line up with Opus' fixed frame
-                        # size
+                        # FIFO times output: resampler frames do not match Opus' frame size.
                         resampled.pts = None
                         fifo.write(resampled)
                     _drain_audio()
@@ -375,56 +438,174 @@ def _transcode_webm(path: Path, dest: Path) -> None:
         raise RuntimeError(f"WebM export failed (libvpx-vp9 unavailable?): {exc}") from exc
 
 
-# Ceilings for a GIF export, which must hold every kept frame in memory before encoding. 720 px and 300 frames (25s at
-# the 12 fps target) bound that at roughly 150 MB for the widest clip a generate request allows.
 _GIF_MAX_EDGE = 720
 _GIF_MAX_FRAMES = 300
+_GIF_PALETTEGEN_ARGS = "reserve_transparent=on:transparency_color=ffffff"
+_GIF_PALETTEUSE_ARGS = "dither=sierra2_4a"
+# palettegen needs every frame before paletteuse; above this budget decode twice instead of holding frames.
+_GIF_HOLD_BYTES = 160 * 1024 * 1024
 
 
-def _transcode_gif(path: Path) -> bytes:
-    import io
+def _gif_plan(in_v) -> tuple[Fraction, int, int, int]:
+    """(source fps, frame step, output width, output height) for a GIF of ``in_v``."""
+    rate = Fraction(in_v.average_rate or 24)
+    step = max(1, round(float(rate) / 12))
+    total = in_v.frames or 0
+    kept = (total + step - 1) // step if total else 0
+    if kept > _GIF_MAX_FRAMES:
+        step = -(-total // _GIF_MAX_FRAMES)
+    width, height = in_v.codec_context.width, in_v.codec_context.height
+    if max(width, height) > _GIF_MAX_EDGE:
+        scale = _GIF_MAX_EDGE / max(width, height)
+        width, height = max(1, round(width * scale)), max(1, round(height * scale))
+    return rate, step, width, height
 
+
+def _gif_scaled_frames(path: Path, step: int, width: int, height: int):
+    import av
+    with av.open(str(path)) as src:
+        in_v = src.streams.video[0]
+        in_v.thread_type = "AUTO"
+        kept = 0
+        for i, frame in enumerate(src.decode(in_v)):
+            if i % step:
+                continue
+            if kept >= _GIF_MAX_FRAMES:
+                break
+            kept += 1
+            yield frame.reformat(
+                width = width, height = height, format = "rgb24", interpolation = "LANCZOS"
+            )
+
+
+def _gif_palette_supported() -> bool:
     try:
         import av
-        from PIL import Image
-    except Exception as exc:  # noqa: BLE001 -- missing deps -> no transcode
-        raise RuntimeError("GIF export needs the 'av' and 'Pillow' packages.") from exc
-    frames: list[Any] = []
-    try:
-        with av.open(str(path)) as src:
-            if not src.streams.video:
-                raise RuntimeError("GIF export failed: the clip has no video stream.")
-            in_v = src.streams.video[0]
-            rate = float(in_v.average_rate or 24)
-            # Full-rate GIFs are huge and stutter; ~12 fps (skipping source frames) is the sweet spot.
-            step = max(1, round(rate / 12))
-            # Every kept frame is held as a paletted image until the encoder runs, so an unbounded walk is a memory bomb
-            # (a 2048x2048 clip of 1024 frames is >4 GB). Bound both axes: downscale past _GIF_MAX_EDGE and widen the
-            # step to at most _GIF_MAX_FRAMES. MP4 keeps the full clip.
-            total = in_v.frames or 0
-            kept = (total + step - 1) // step if total else 0
-            if kept > _GIF_MAX_FRAMES:
-                step = -(-total // _GIF_MAX_FRAMES)
-            for i, frame in enumerate(src.decode(in_v)):
-                if i % step:
-                    continue
-                if len(frames) >= _GIF_MAX_FRAMES:
-                    break
-                image = frame.to_image()
-                if max(image.size) > _GIF_MAX_EDGE:
-                    scale = _GIF_MAX_EDGE / max(image.size)
-                    image = image.resize(
-                        (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
-                        Image.Resampling.LANCZOS,
-                    )
-                frames.append(image.convert("P", palette = Image.Palette.ADAPTIVE))
-    except RuntimeError:
-        raise
-    except Exception as exc:  # noqa: BLE001 -- surface as "decoder unavailable"
-        raise RuntimeError(f"GIF export failed to decode the clip: {exc}") from exc
+        import av.filter
+
+        filters = av.filter.filters_available
+        if "palettegen" not in filters or "paletteuse" not in filters:
+            return False
+        # codecs_available lists a codec usable in either direction; only an encoder writes the GIF
+        av.codec.Codec("gif", "w")
+        return True
+    except Exception:  # noqa: BLE001 -- an old or partial build: use the Pillow path
+        return False
+
+
+def _drain_sink(sink) -> list[Any]:
+    import av
+    out = []
+    while True:
+        try:
+            out.append(sink.pull())
+        except (av.error.BlockingIOError, av.error.EOFError):
+            return out
+
+
+def _transcode_gif_palette(
+    path: Path, rate: Fraction, step: int, width: int, height: int, kept: int
+) -> bytes:
+    """GIF via one clip-wide palette (palettegen + paletteuse); per-frame quantizing was slow and flickered."""
+    import io
+
+    import av
+    import av.filter
+
+    hold = kept > 0 and kept * width * height * 3 <= _GIF_HOLD_BYTES
+    held: Optional[list[Any]] = [] if hold else None
+    time_base = Fraction(1, 100)
+
+    graph = av.filter.Graph()
+    buffer = graph.add_buffer(width = width, height = height, format = "rgb24", time_base = time_base)
+    palettegen = graph.add("palettegen", _GIF_PALETTEGEN_ARGS)
+    sink = graph.add("buffersink")
+    buffer.link_to(palettegen)
+    palettegen.link_to(sink)
+    graph.configure()
+    count = 0
+    for frame in _gif_scaled_frames(path, step, width, height):
+        frame.pts = count
+        frame.time_base = time_base
+        buffer.push(frame)
+        # palettegen emits only at EOF, but pulling lets FFmpeg consume each frame instead of queueing the whole clip
+        _drain_sink(sink)
+        if held is not None:
+            held.append(frame)
+        count += 1
+    if not count:
+        raise RuntimeError("GIF export decoded no frames.")
+    buffer.push(None)
+    palettes = _drain_sink(sink)
+    if not palettes:
+        raise RuntimeError("GIF export failed: palettegen produced no palette.")
+    palette = palettes[-1]
+
+    graph = av.filter.Graph()
+    frames_in = graph.add_buffer(width = width, height = height, format = "rgb24", time_base = time_base)
+    palette_in = graph.add_buffer(
+        width = palette.width, height = palette.height, format = palette.format.name, time_base = time_base
+    )
+    paletteuse = graph.add("paletteuse", _GIF_PALETTEUSE_ARGS)
+    sink = graph.add("buffersink")
+    frames_in.link_to(paletteuse, 0, 0)
+    palette_in.link_to(paletteuse, 0, 1)
+    paletteuse.link_to(sink)
+    graph.configure()
+    palette.pts = 0
+    palette.time_base = time_base
+    palette_in.push(palette)
+    palette_in.push(None)
+
+    # Frame k at pts k on the rate/step clock; the muxer derives centisecond delays from pts gaps (no drift).
+    out_rate = rate / step
+    buf = io.BytesIO()
+    with av.open(buf, "w", format = "gif", options = {"loop": "0"}) as dst:
+        stream = dst.add_stream("gif", rate = out_rate)
+        stream.width = width
+        stream.height = height
+        stream.pix_fmt = "pal8"
+        written = 0
+
+        def _emit(frames: list[Any]) -> None:
+            nonlocal written
+            for out in frames:
+                out.pts = written
+                out.time_base = 1 / out_rate
+                written += 1
+                for packet in stream.encode(out):
+                    packet.duration = 1
+                    dst.mux(packet)
+
+        source = held if held is not None else _gif_scaled_frames(path, step, width, height)
+        for k, frame in enumerate(source):
+            if k >= count:
+                break
+            frame.pts = k
+            frame.time_base = time_base
+            frames_in.push(frame)
+            _emit(_drain_sink(sink))
+        frames_in.push(None)
+        _emit(_drain_sink(sink))
+        for packet in stream.encode():
+            packet.duration = 1
+            dst.mux(packet)
+    return buf.getvalue()
+
+
+def _transcode_gif_pillow(path: Path, rate: Fraction, step: int, width: int, height: int) -> bytes:
+    """Fallback for a PyAV build without palettegen / paletteuse / the GIF encoder: Pillow, one palette per frame."""
+    import io
+
+    from PIL import Image
+
+    frames = [
+        frame.to_image().convert("P", palette = Image.Palette.ADAPTIVE)
+        for frame in _gif_scaled_frames(path, step, width, height)
+    ]
     if not frames:
         raise RuntimeError("GIF export decoded no frames.")
-    duration_ms = max(20, int(1000 * step / rate))
+    duration_ms = max(20, int(1000 * step / float(rate)))
     buf = io.BytesIO()
     frames[0].save(
         buf,
@@ -437,12 +618,34 @@ def _transcode_gif(path: Path) -> bytes:
     return buf.getvalue()
 
 
-def _sidecar_path(video_id: str) -> Path:
-    return gallery_dir() / f"{video_id}.json"
+def _transcode_gif(path: Path) -> bytes:
+    try:
+        import av
+        from PIL import Image  # noqa: F401 -- the fallback encoder; checked up front so the error names it
+    except Exception as exc:  # noqa: BLE001 -- missing deps -> no transcode
+        raise RuntimeError("GIF export needs the 'av' and 'Pillow' packages.") from exc
+    try:
+        with av.open(str(path)) as src:
+            if not src.streams.video:
+                raise RuntimeError("GIF export failed: the clip has no video stream.")
+            in_v = src.streams.video[0]
+            rate, step, width, height = _gif_plan(in_v)
+            total = in_v.frames or 0
+        kept = min(_GIF_MAX_FRAMES, (total + step - 1) // step) if total else 0
+        if _gif_palette_supported():
+            return _transcode_gif_palette(path, rate, step, width, height, kept)
+        return _transcode_gif_pillow(path, rate, step, width, height)
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- surface as "decoder unavailable"
+        raise RuntimeError(f"GIF export failed to decode the clip: {exc}") from exc
 
 
-# Sidecar keys every genuine Unsloth record carries. delete()/clear() own a pair only when its sidecar has all of
-# these, so a hand-dropped MP4 with a partial sidecar is neither counted as ours nor destroyed. Key-presence only.
+def _sidecar_path(video_id: str, directory: Optional[Path] = None) -> Path:
+    return (gallery_dir() if directory is None else directory) / f"{video_id}.json"
+
+
+# Keys every genuine Unsloth sidecar carries; delete()/clear() own only pairs with all, so a partial hand-dropped MP4 is never destroyed. Key-presence only.
 _REQUIRED_META = (
     "prompt",
     "width",
@@ -466,8 +669,7 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
         meta = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    # A parseable dict is not enough: a foreign ("{}") or different-schema sidecar lacks these keys, and
-    # delete()/clear() must never destroy a clip the gallery never surfaced.
+    # A foreign or other-schema sidecar lacks these keys and must never be deleted.
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
         return None
     return meta
@@ -483,10 +685,7 @@ def get_record(video_id: str) -> Optional[dict[str, Any]]:
 
 
 def owned_video_path(video_id: str) -> Optional[Path]:
-    """Resolve an id to its MP4 only when it is an Unsloth-owned clip (a readable sidecar), else
-    None. The serve and export routes use this instead of video_path() so a guessed stem for a
-    hand-dropped/orphan MP4 -- which list_videos/delete/clear already treat as not ours -- can't
-    be streamed or transcoded out. Mirrors the delete/clear ownership guard."""
+    """Owned clips only (readable sidecar); a guessed stem for a hand-dropped MP4 must not be streamed."""
     path = video_path(video_id)
     if path is None or _read_meta(_sidecar_path(video_id)) is None:
         return None
@@ -507,26 +706,14 @@ def list_videos(
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
     archived: bool = False,
 ) -> list[dict[str, Any]]:
-    """A window of videos for infinite scroll: pinned first (most recently pinned leading), then
-    newest-first by MP4 mtime (or the manual key once dragged).
-
-    mtime is a cheap stat ~= generation order; only the window's sidecars are read. limit=None
-    returns everything from ``offset`` on. A file without its pair is skipped.
-
-    ``archived`` selects WHICH shelf to page over, it does not widen one: False lists only active
-    clips, True lists only archived ones. The archived section needs its own scrollable page.
-
-    ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and has_more
-    all count over the accepted-record domain. Pass the route's schema validator: a sidecar that
-    parses as JSON but fails the response schema would otherwise be counted here yet dropped after
-    slicing, stalling infinite scroll."""
+    """Pinned then newest-first; archived selects one shelf, does not widen it; valid filters run before slicing so has_more counts accepted clips"""
     try:
-        paths = list(gallery_dir().glob("*.mp4"))
+        directory = gallery_dir()
+        paths = list(directory.glob("*.mp4"))
     except OSError:
         return []
-    flags = gallery_flags.read(gallery_dir())
-    # Shelf split and pin sort run on file stems, BEFORE any sidecar is read, so they cost one dict lookup per file
-    # and leave the early break below intact.
+    flags = gallery_flags.read(directory)
+    # Shelf split and pin sort use stems only, before any sidecar read, keeping the early break.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
     paths.sort(
         key = lambda p: (
@@ -535,15 +722,14 @@ def list_videos(
         ),
         reverse = True,
     )
-    # Page over READABLE records, not raw files: filtering an orphan MP4 out of an already-sliced window would drop
-    # valid videos and make has_more wrong.
+    # Page over READABLE records, else orphans skew the window and has_more.
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
-        meta = _read_meta(_sidecar_path(path.stem))
+        meta = _read_meta(_sidecar_path(path.stem, directory))
         if meta is None:
             continue
-        record = _record(path.stem, meta, flags)
+        record = _record(path.stem, meta, flags, directory = directory)
         if valid is not None and not valid(record):
             continue
         records.append(record)
@@ -558,11 +744,7 @@ def set_flags(
     pinned: Optional[bool] = None,
     archived: Optional[bool] = None,
 ) -> Optional[dict[str, Any]]:
-    """Patch one clip's pin/archive flags and return its updated record, or None when the id is
-    not an Unsloth-owned clip. Ownership-gated like delete: a guessed stem for a hand-dropped or
-    orphan MP4 must not become flaggable."""
-    # Ownership check and write under one lock, so a concurrent clear cannot delete the pair between them and leave this
-    # reporting success for a clip that is already gone.
+    """Ownership check and write under one lock so a concurrent clear cannot delete the pair and leave this reporting success for a gone clip."""
     with gallery_flags.exclusive(gallery_dir()):
         if owned_video_path(video_id) is None:
             return None
@@ -612,12 +794,10 @@ def delete(video_id: str) -> bool:
     path = video_path(video_id)
     if path is None:
         return False
-    # Only delete a pair we own (a readable sidecar); a foreign/orphan MP4 is invisible to list_videos, so a guessed
-    # id must not destroy it.
+    # Only delete pairs we own; a guessed id must not destroy a foreign MP4.
     if _read_meta(_sidecar_path(video_id)) is None:
         return False
-    # delete the MP4 FIRST: sidecar-first plus a failed unlink leaves a clip that vanished from the gallery with no
-    # retry
+    # Delete the MP4 FIRST: sidecar-first plus a failed unlink leaves an unretryable orphan.
     try:
         path.unlink()
     except OSError as exc:
@@ -633,21 +813,10 @@ def delete(video_id: str) -> bool:
 
 
 def clear(include_archived: bool = False, *, return_ids: bool = False) -> int | list[str]:
-    """Delete owned gallery pairs and return their count, or their ids when requested.
-
-    Archived clips are SPARED by default: archiving is how a user sets something aside, so a
-    "clear the gallery" action that destroyed the archive would defeat it. Pass
-    include_archived=True to remove those too.
-
-    Raises FlagsUnavailable when the archive has to be spared but the flag store cannot be read.
-    Fail CLOSED: read() answers "nothing is archived" for an unreadable store, which here would
-    quietly delete the very archive this promises to keep.
-
-    Foreign/orphan MP4s are preserved: list_videos already hides them, so clear must not destroy them."""
+    """Delete owned clips; archived spared unless include_archived=True; raises FlagsUnavailable when archive must be spared but flags unreadable (fail closed)."""
     removed = 0
     directory = gallery_dir()
-    # Hold the flag lock across the whole read-then-delete: an archive landing mid-loop would otherwise be judged active
-    # from the stale snapshot and deleted, after its PATCH had already reported success.
+    # Hold the flag lock across read-then-delete or a mid-loop archive is deleted after success.
     with gallery_flags.exclusive(directory):
         # read flags BEFORE listing: nothing is unlinked if the store turns out to be untrusted
         flags = {} if include_archived else gallery_flags.read_trusted(directory)
@@ -657,7 +826,7 @@ def clear(include_archived: bool = False, *, return_ids: bool = False) -> int | 
             return [] if return_ids else 0
         cleared: list[str] = []
         for path in paths:
-            if _read_meta(_sidecar_path(path.stem)) is None:
+            if _read_meta(_sidecar_path(path.stem, directory)) is None:
                 continue
             if not include_archived and gallery_flags.is_archived(flags, path.stem):
                 continue
@@ -668,11 +837,10 @@ def clear(include_archived: bool = False, *, return_ids: bool = False) -> int | 
             removed += 1
             cleared.append(path.stem)
             try:
-                _sidecar_path(path.stem).unlink()
+                _sidecar_path(path.stem, directory).unlink()
             except OSError:
                 pass
-        # Nothing left for an unreadable store to protect once every clip we own is gone, so this is where the escape
-        # hatch escapes: replace it, or every later default clear still refuses.
+        # Once every owned clip is gone nothing is left to protect, so replace an unreadable store now or every later default clear still refuses.
         if include_archived and not gallery_flags.is_trusted(directory):
             gallery_flags.reset_locked(directory)
         else:

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { readSrc } from "./helpers/kit.ts";
 import {
   composerKeyEventForImeSubmit,
@@ -153,11 +153,9 @@ test("idle IME Enter sends, the WebKit candidate-confirming Enter does not (#121
     nativeEvent: { isComposing: false },
     preventDefault: () => undefined,
   });
-  // Chromium: keydown inside the session.
   imeSessionOpenRef.current = true;
   onKey({ ...imeEnter(1000), nativeEvent: { isComposing: true } });
   assert.equal(submits, 0);
-  // WebKit: compositionend, then the committing keydown.
   imeSessionOpenRef.current = false;
   composingRef.current = false;
   compositionEndedAtRef.current = 1995;
@@ -343,5 +341,8 @@ test("main, edit and comparison composers use the setting and expose settings ac
   );
   assert.match(compare, /scrollTarget: "chat-composer"/);
   const page = readSrc("features/chat/chat-page.tsx");
-  assert.match(page, /showContextWindowUsage &&\s*view.mode === "single"/);
+  assert.match(
+    page,
+    /showContextWindowUsage &&[\s\S]{0,100}view\.mode === "project" && activeThreadId != null/,
+  );
 });

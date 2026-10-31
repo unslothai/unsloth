@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Deep Research inference must not be attributed to a third-party API caller.
-
-The supervisor reaches the local chat-completions endpoint with a minted sk-unsloth key,
-so without the internal-key check every research step opened the API monitor overlay.
-"""
+"""Research's internal calls use a minted sk-unsloth key, which must not open the API monitor overlay."""
 
 from __future__ import annotations
 

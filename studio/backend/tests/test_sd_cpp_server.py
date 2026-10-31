@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the persistent sd-server process manager (SdCppServer).
-
-Hermetic: subprocess.Popen and the httpx client are faked, so nothing spawns a real
-binary or opens a socket beyond the free-port probe."""
+"""Persistent sd-server manager tests with faked Popen and httpx."""
 
 from __future__ import annotations
 
@@ -41,7 +38,7 @@ class _FakePopen:
     ):
         self.pid = 4242
         self._lines = list(lines)
-        self._exit = exit_code  # None == alive
+        self._exit = exit_code
         self.returncode = exit_code
         self.terminated = False
         self.killed = False
@@ -54,7 +51,7 @@ class _FakePopen:
         def _gen():
             for ln in self._lines:
                 yield ln
-            self._done.wait()  # hold the pipe open until the process ends
+            self._done.wait()
 
         return _gen()
 
@@ -110,15 +107,18 @@ class _FakeClient:
         self._get = get or (lambda url: _Resp(200, {}))
         self._post = post or (lambda url, json: _Resp(202, {"id": "job1"}))
         self.get_urls = []
+        self.get_headers = []
         self.post_calls = []
         self.closed = False
 
     def get(
         self,
         url,
+        headers = None,
         timeout = None,
     ):
         self.get_urls.append(url)
+        self.get_headers.append(headers)
         return self._get(url)
 
     def post(
@@ -147,13 +147,9 @@ def patched(monkeypatch):
 def _server_with(popen, client):
     s = SdCppServer("/x/sd-server")
     s._client = client
-    # Attach the fake process + port so generation tests can run without start().
     s._process = popen
     s.port = 1234
     return s
-
-
-# ── start / readiness ──────────────────────────────────────────────────────────
 
 
 def test_start_becomes_ready_when_capabilities_200(patched, caplog):
@@ -161,11 +157,12 @@ def test_start_becomes_ready_when_capabilities_200(patched, caplog):
     caplog.set_level("INFO", logger = srv.__name__)
     popen = _FakePopen(lines = ["loading model", "listening on: http://127.0.0.1:1"])
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
-    s = _server_with(
-        popen, _FakeClient(get = lambda url: _Resp(200, {"model": {"path": "/m/z.gguf"}}))
-    )
+    client = _FakeClient(get = lambda url: _Resp(200, {"model": {"path": "/m/z.gguf"}}))
+    s = _server_with(popen, client)
     s.start(_FILES, startup_timeout = 5.0)
     assert s.is_alive() is True
+    # Readiness probes must not leave a pooled connection for generation to reuse.
+    assert client.get_headers and all(h == {"Connection": "close"} for h in client.get_headers)
     assert s.port is not None
     messages = [record.getMessage() for record in caplog.records if record.name == srv.__name__]
     start = next(message for message in messages if message.startswith("starting sd-server:"))
@@ -174,18 +171,13 @@ def test_start_becomes_ready_when_capabilities_200(patched, caplog):
 
 
 def test_start_fails_fast_when_process_exits(patched):
-    # Model load failed, so the process exits before listening; start must raise with the tail.
     popen = _FakePopen(lines = ["error: bad model"], exit_code = 1)
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
-    # Capabilities never answers (connection refused), so readiness relies on exit detection.
     s = _server_with(
         popen, _FakeClient(get = lambda url: (_ for _ in ()).throw(srv.httpx.ConnectError("refused")))
     )
     with pytest.raises(RuntimeError, match = "failed to become ready"):
         s.start(_FILES, startup_timeout = 2.0)
-
-
-# ── generation ───────────────────────────────────────────────────────────────
 
 
 def _completed_job(images_b64):
@@ -204,7 +196,6 @@ def test_img_gen_returns_image_bytes_in_index_order(patched):
         popen,
         _FakeClient(
             post = lambda url, json: _Resp(202, {"id": "jobA"}),
-            # result images deliberately out of order -> manager must sort by index.
             get = lambda url: _Resp(
                 200,
                 {
@@ -222,7 +213,7 @@ def test_img_gen_returns_image_bytes_in_index_order(patched):
     blobs = s.img_gen({"prompt": "x", "batch_count": 2, "sample_params": {"sample_steps": 4}})
     assert len(blobs) == 2
     first = Image.open(io.BytesIO(blobs[0])).convert("RGB").getpixel((0, 0))
-    assert first == (50, 50, 50)  # index 0 first
+    assert first == (50, 50, 50)
 
 
 def test_img_gen_failed_job_raises(patched):
@@ -250,7 +241,7 @@ def test_img_gen_queue_full_raises(patched):
 def test_img_gen_cancel_posts_cancel_and_raises(patched):
     popen = _FakePopen()
     cancel = threading.Event()
-    cancel.set()  # already cancelled before the first poll
+    cancel.set()
     client = _FakeClient(
         post = lambda url, json: _Resp(202, {"id": "jobC"}),
         get = lambda url: _Resp(
@@ -267,7 +258,7 @@ def test_img_gen_detects_server_death(patched):
     popen = _FakePopen()
 
     def _die_get(url):
-        popen._exit = 137  # the process died between submit and poll
+        popen._exit = 137
         return _Resp(200, {"status": "generating"})
 
     s = _server_with(
@@ -277,17 +268,13 @@ def test_img_gen_detects_server_death(patched):
         s.img_gen({"prompt": "x"})
 
 
-# ── stdout routing + stop ──────────────────────────────────────────────────────
-
-
 def test_drain_routes_lines_to_step_listener_and_tail(patched):
     s = SdCppServer("/x/sd-server")
     seen = []
     s._step_listener = seen.append
-    # exit_code set so stdout ends after the scripted lines (a live fake would block).
     s._drain_stdout(_FakePopen(lines = ["sampling 1/8", "", "sampling 8/8", "done"], exit_code = 0))
     assert "sampling 1/8" in seen and "sampling 8/8" in seen
-    assert "" not in seen  # blank lines skipped
+    assert "" not in seen
     assert s._tail[-1] == "done"
 
 
@@ -300,8 +287,8 @@ def test_stop_is_idempotent_and_terminates(patched):
     s.stop()
     assert popen.terminated is True
     assert s.is_alive() is False
-    assert client.closed is True  # stop() releases the pooled HTTP client
-    s.stop()  # second call must not raise
+    assert client.closed is True
+    s.stop()
 
 
 def test_img_gen_submit_error_raises(patched):
@@ -341,11 +328,7 @@ def test_img_gen_rejected_after_stop(patched):
         s.img_gen({"prompt": "x"})
 
 
-# ── cancellation + defensive parsing (review follow-ups) ───────────────────────
-
-
 def test_img_gen_cancelled_before_submit_reports_cancellation(patched):
-    # The server was stopped for a cancel/unload before submit; with the cancel event set this is a cancellation (409), not a "not running" 500.
     popen = _FakePopen()
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
     s = _server_with(popen, _FakeClient(get = lambda url: _Resp(200, {})))
@@ -358,20 +341,18 @@ def test_img_gen_cancelled_before_submit_reports_cancellation(patched):
 
 
 def test_img_gen_abandons_when_cancel_not_honored(patched):
-    # A best-effort cancel the server ignores must not pin this call (and the generate lock) until natural completion: it raises after the grace window.
     patched.setattr(srv, "_CANCEL_GRACE_S", 0.0)
     popen = _FakePopen()
     cancel = threading.Event()
     cancel.set()
     client = _FakeClient(
         post = lambda url, json: _Resp(202, {"id": "jobG"}),
-        get = lambda url: _Resp(200, {"status": "generating"}),  # never terminal
+        get = lambda url: _Resp(200, {"status": "generating"}),
     )
     s = _server_with(popen, client)
     with pytest.raises(SdCppCancelled):
         s.img_gen({"prompt": "x"}, cancel_event = cancel, poll_interval = 0.01)
-    # And the process is stopped, not left running the abandoned job: sd-server does not interrupt an in-flight job, so a server
-    # that ignored the cancel would burn a core (or the GPU) to completion and hold its job slot against the next request.
+    # sd-server does not interrupt an in-flight job, so an ignored cancel must stop the process.
     assert not s.is_alive()
 
 
@@ -396,14 +377,12 @@ def test_img_gen_non_dict_status_json_raises(patched):
 
 
 def test_decode_images_tolerates_unexpected_shapes():
-    # A misbehaving/older server can return non-dict result/images/items, so _decode_images must raise a clean "no images" rather than an AttributeError.
     for job in ({"result": ["x"]}, {"result": {"images": "nope"}}, {"result": {"images": [1, 2]}}):
         with pytest.raises(RuntimeError, match = "no images"):
             SdCppServer._decode_images(job)
 
 
 def test_start_aborted_by_concurrent_stop(patched):
-    # A stop() during the readiness wait must abort start() promptly, without waiting out the startup timeout, and surface as a cancellation.
     popen = _FakePopen(lines = ["loading model"])
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
 
@@ -437,7 +416,6 @@ def test_diagnostic_tail_keeps_the_reason_not_just_the_backtrace():
 
     assert "unsupported op 'SOME_OP'" in tail
     assert "fatal error" in tail
-    # Still ends with recent context, so a failure with no marked line is not left empty.
     assert "ggml_print_backtrace" in tail
 
 
@@ -454,8 +432,7 @@ def test_diagnostic_tail_is_bounded():
 
 
 def test_readiness_refuses_a_port_held_by_another_process(patched):
-    # _find_free_port picks an ephemeral port, closes the socket, and sd-server binds it only after loading the model, which takes minutes.
-    # Another process can take it in that window, and llama.cpp's server also answers /v1/models 200, so readiness would pass on a stranger.
+    # The free port can be taken before sd-server binds it, and llama.cpp also answers /v1/models 200.
     import types
 
     popen = _FakePopen(lines = ["loading model"])
@@ -468,7 +445,7 @@ def test_readiness_refuses_a_port_held_by_another_process(patched):
             types.SimpleNamespace(
                 laddr = types.SimpleNamespace(port = s.port),
                 status = "LISTEN",
-                pid = popen.pid + 1000,  # somebody else
+                pid = popen.pid + 1000,
             )
         ],
         Process = lambda pid: types.SimpleNamespace(parent = lambda: None),
@@ -490,7 +467,6 @@ def test_readiness_accepts_our_own_child_and_its_descendants(patched):
             )
         ]
 
-    # The spawned pid itself.
     patched.setitem(
         __import__("sys").modules,
         "psutil",
@@ -502,7 +478,6 @@ def test_readiness_accepts_our_own_child_and_its_descendants(patched):
     )
     assert s._port_is_ours() is True
 
-    # A grandchild (wrapper script / shell) still counts as ours.
     child_pid = popen.pid + 7
 
     def _process(pid):
@@ -558,3 +533,121 @@ def test_readiness_check_is_best_effort(patched):
         ),
     )
     assert s._port_is_ours() is True
+
+
+def test_readiness_refuses_a_hidden_owner_when_our_child_is_not_listening(monkeypatch):
+    # The Linux/macOS case: another user's socket shows no pid.
+    monkeypatch.setattr(srv, "_socket_owner_is_always_named", lambda: False)
+    import http.server
+    import subprocess
+    import sys
+    import threading
+
+    psutil = pytest.importorskip("psutil")
+
+    class _Ok(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    squatter = http.server.HTTPServer(("127.0.0.1", 0), _Ok)
+    threading.Thread(target = squatter.serve_forever, daemon = True).start()
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        s = srv.SdCppServer.__new__(srv.SdCppServer)
+        s._process = child
+        s.port = squatter.server_address[1]
+        real = psutil.net_connections
+        psutil.net_connections = lambda kind = "inet": [c._replace(pid = None) for c in real(kind = kind)]
+        try:
+            assert s._port_is_ours() is False
+        finally:
+            psutil.net_connections = real
+    finally:
+        child.kill()
+        child.wait()
+        squatter.shutdown()
+        squatter.server_close()
+
+
+def test_readiness_refuses_a_child_that_already_exited():
+    # The child died (e.g. it could not bind) while a squatter answered the probe.
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    s = srv.SdCppServer.__new__(srv.SdCppServer)
+    s._process = child
+    s.port = 1234
+    assert s._port_is_ours() is False
+
+
+# ── Windows: psutil can misdescribe our own live listener (#15022) ──
+
+
+@pytest.fixture
+def idle_child():
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    yield child
+    child.kill()
+    child.wait()
+
+
+_PORT = 50855
+
+
+def _row(
+    status,
+    pid,
+    raddr = (),
+):
+    import types
+    return types.SimpleNamespace(
+        laddr = types.SimpleNamespace(ip = "127.0.0.1", port = _PORT),
+        raddr = raddr,
+        status = status,
+        pid = pid,
+    )
+
+
+def _owner_check(monkeypatch, child, *, own, everyone, windows):
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.setattr(srv, "_socket_owner_is_always_named", lambda: windows)
+    monkeypatch.setattr(
+        psutil.Process, "net_connections", lambda self, kind = "inet": own, raising = False
+    )
+    monkeypatch.setattr(psutil, "net_connections", lambda kind = "inet": everyone)
+    s = srv.SdCppServer.__new__(srv.SdCppServer)
+    s._process = child
+    s.port = _PORT
+    return s._port_is_ours()
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_our_child_reported_with_status_none_is_ours_on_windows(idle_child, monkeypatch, windows):
+    none = _row("NONE", idle_child.pid)
+    ours = _owner_check(monkeypatch, idle_child, own = [none], everyone = [none], windows = windows)
+    assert ours is windows
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_a_listener_owned_by_pid_0_is_unknown_on_windows(idle_child, monkeypatch, windows):
+    everyone = [_row("LISTEN", 0)]
+    ours = _owner_check(monkeypatch, idle_child, own = [], everyone = everyone, windows = windows)
+    assert ours is windows
+
+
+def test_a_named_foreign_listener_still_refuses_on_windows(idle_child, monkeypatch):
+    import types
+
+    accepted = _row("NONE", idle_child.pid, types.SimpleNamespace(ip = "127.0.0.1", port = 60000))
+    foreign = [_row("LISTEN", 0), _row("LISTEN", idle_child.pid + 100000)]
+    ours = _owner_check(monkeypatch, idle_child, own = [accepted], everyone = foreign, windows = True)
+    assert ours is False

@@ -11,16 +11,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
-"""The CUDA-mismatch hint used to hand-build a wheel filename as
-``vllm-{v}+cu{system_cuda}-cp38-abi3-manylinux_2_35_{arch}.whl``. No vLLM release
-has ever published a ``+cu128`` asset and the manylinux tag moved
-manylinux1 -> 2_31 -> 2_35 -> 2_34 -> 2_24 -> 2_28, so on a CUDA 12.8 box the hint
-was a 404 (the same broken pattern as vllm-project/vllm#37847).
-
-Every URL the hint prints is checked against ``_RELEASE_ASSETS`` below, a snapshot of
-the real GitHub release assets (``gh api repos/vllm-project/vllm/releases/tags/vX -q
-'.assets[].name'``) that is independent of the table in ``import_fixes.py``. GPU-free.
-"""
+"""Every URL the CUDA-mismatch hint prints is checked against _RELEASE_ASSETS, GitHub release assets."""
 
 from __future__ import annotations
 
@@ -135,9 +126,7 @@ _RELEASE_ASSETS = {
     ),
 }
 
-# Which CUDA major each snapshot asset is built for.
-# the unsuffixed default wheel is CUDA 13 from 0.20.0 on ("CUDA 13.0 default" in the v0.20.0 release notes) and CUDA 12
-# before that.
+# Unsuffixed default wheel is CUDA 13 from vLLM 0.20.0 on, CUDA 12 before.
 _LOCAL_TAG_RE = re.compile(r"^vllm-[0-9.]+\+cu(\d\d)\d")
 
 _ARCHES = ("x86_64", "aarch64")
@@ -256,7 +245,7 @@ def test_unmapped_newer_release_points_at_the_release_page(monkeypatch):
     message = _mismatch_message(monkeypatch, vllm = "0.99.0")
     assert ".whl" not in message, message
     assert "https://github.com/vllm-project/vllm/releases/tag/v0.99.0" in message
-    assert "+cu129" in message  # still says which variant to pick
+    assert "+cu129" in message
 
 
 def test_non_release_version_never_fabricates_a_filename(monkeypatch):

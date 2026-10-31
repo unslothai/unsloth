@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The FlashInfer NVFP4 Linear, and the conversion that puts a hosted checkpoint onto it.
-
-ONE artifact, two backends. Nothing here requantizes: torchao's payload IS FlashInfer's, byte for
-byte. The activation global scale is BAKED, never calibrated (not capture-safe, and the cause of the
-flux black-frame latch), so a layer without one is NOT converted.
-"""
+"""FlashInfer NVFP4 Linear conversion (no requantize); layers without a baked act scale are skipped."""
 
 from __future__ import annotations
 
@@ -328,7 +323,9 @@ def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
                     x = torch.zeros(m, module.in_features, device = device, dtype = torch.bfloat16)
                     with flashinfer.autotune(True):
                         module(x)
-                    torch.cuda.synchronize(device)
+                    from .diffusion_cuda_graph import synchronize_outside_capture
+
+                    synchronize_outside_capture(device)
             except Exception as exc:  # noqa: BLE001 - a shape that will not tune still runs
                 _log(logger, "debug", f"[nvfp4] prewarm {key} failed ({type(exc).__name__}: {exc})")
                 continue

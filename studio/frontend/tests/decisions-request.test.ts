@@ -165,7 +165,7 @@ test("every type starts from its first preset and every preset is a valid reques
   }
 });
 
-test("a score lands on the nearest level of its legend", () => {
+test("a score with no probabilities lands on the nearest level of its legend", () => {
   const answer = {
     type: "score" as const,
     score: 2.6,
@@ -175,10 +175,32 @@ test("a score lands on the nearest level of its legend", () => {
   };
   assert.deepEqual(scoreLevels(answer), {
     keys: ["0", "1", "2", "10"],
-    nearest: "2",
+    top: "2",
     max: 10,
   });
-  assert.equal(scoreLevels({ ...answer, score: -1 }).nearest, "0");
+  assert.equal(scoreLevels({ ...answer, score: -1 }).top, "0");
+});
+
+test("a split score heads with its most likely level, not the one nearest the expectation", () => {
+  // Measured in Unsloth Desktop 0.1.905: the 429 grading example came back like this.
+  const answer = {
+    type: "score" as const,
+    score: 0.5032,
+    confidence: 0.6559,
+    legend: { "0": "wrong", "1": "touches", "2": "partial", "3": "correct" },
+    probabilities: { "0": 0.8303, "1": 0.0021, "2": 0.0018, "3": 0.1658 },
+  };
+  assert.equal(scoreLevels(answer).top, "0");
+  const mirrored = { "0": 0.1658, "1": 0.0018, "2": 0.0021, "3": 0.8303 };
+  assert.equal(
+    scoreLevels({ ...answer, score: 2.4968, probabilities: mirrored }).top,
+    "3",
+  );
+  const flat = { "0": 0.25, "1": 0.25, "2": 0.25, "3": 0.25 };
+  assert.equal(
+    scoreLevels({ ...answer, score: 1.5, probabilities: flat }).top,
+    "1",
+  );
 });
 
 test("Try it in Settings > API opens the decision playground", () => {

@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Contract: every video resolution the UI offers is a real family preset, and vice versa.
-
-The Video tab's Resolution select is populated from ``status.defaults.resolution_presets``,
-which is ``VideoFamily.resolution_presets`` copied straight through
-``video.py::status()`` -> ``VideoGenerationDefaults``. Before a model is loaded it falls back
-to ``FALLBACK_RESOLUTION_PRESETS`` in ``video-page.tsx``. Two things have to hold:
-
-  * the offline fallback names only sizes some family actually declares, so the first paint
-    cannot offer a shape no checkpoint was trained at;
-  * every family declares at least one preset, because ``video.py``'s generate path indexes
-    ``fam.resolution_presets[0]`` unguarded when width/height are omitted -- an empty tuple
-    there is an IndexError on the very first generate of that family.
-
-Pure-module: no torch, no network, no browser. The frontend half reads the TSX source, the
-same way the other cross-language contract checks in this suite do.
-"""
+"""UI resolutions must be real family presets, and each family needs one (generate indexes [0])."""
 
 from __future__ import annotations
 
@@ -49,11 +34,7 @@ def _all_presets() -> set[tuple[int, int]]:
     return {tuple(p) for name in _FAMILY_NAMES for p in _family(name).resolution_presets}
 
 
-# ── the family registry ───────────────────────────────────────────────────────
-
-
 def test_the_registry_is_not_empty():
-    # Guards the parametrised cases below from silently covering nothing.
     assert len(_FAMILY_NAMES) >= 5
 
 
@@ -67,7 +48,6 @@ def test_every_family_declares_at_least_one_resolution_preset(name):
         "unguarded when the request omits width/height, so this is an IndexError, and the "
         "UI's Resolution select would render empty"
     )
-    # The unguarded index itself, exactly as the generate path performs it.
     assert fam.resolution_presets[0][0] > 0 and fam.resolution_presets[0][1] > 0
 
 
@@ -87,12 +67,7 @@ def test_every_preset_survives_the_family_snap_unchanged(name):
 
 @pytest.mark.parametrize("name", _FAMILY_NAMES)
 def test_presets_are_unique_and_land_in_the_status_payload(name):
-    """Through the real ``VideoBackend.status()``, not a hand-built VideoGenerationDefaults.
-
-    Constructing the model here would assert only that Pydantic round-trips a list, and would
-    stay green if status() ever hardcoded a preset list or stopped emitting the key at all --
-    which is the loaded UI offering shapes the checkpoint was never trained at.
-    """
+    """Read presets through the real VideoBackend.status(), so a hardcoded preset list cannot pass."""
     import core.inference.video as video_module
 
     fam = _family(name)
@@ -109,9 +84,6 @@ def test_presets_are_unique_and_land_in_the_status_payload(name):
         dtype = "bfloat16",
         kind = "pipeline",
     )
-    # Through VideoStatusResponse, the model GET /video/status actually declares, not just the
-    # inner VideoGenerationDefaults: the outer model dropping or renaming `defaults` leaves the
-    # inner assertion perfectly happy while the browser receives no presets at all.
     wire = VideoStatusResponse(**backend.status()).model_dump()
     defaults_payload = wire.get("defaults")
     assert defaults_payload is not None, "the status response model no longer carries defaults"
@@ -122,9 +94,6 @@ def test_presets_are_unique_and_land_in_the_status_payload(name):
     ), f"{name}: status() serves {defaults.resolution_presets} but the family declares {presets}"
     assert defaults.frame_step == fam.frame_step
     assert defaults.resolution_multiple == fam.resolution_multiple
-
-
-# ── the frontend fallback ─────────────────────────────────────────────────────
 
 
 def _fallback_presets() -> list[tuple[int, int]]:
@@ -153,7 +122,6 @@ def test_the_frontend_fallback_is_a_usable_default_for_the_family_it_mirrors():
     plans against -- not an arbitrary member of the union."""
     fallback = _fallback_presets()
     assert len(fallback) >= 1
-    # An empty tuple is its own test above; skip it here so that failure is not double-reported.
     firsts = {
         tuple(fam.resolution_presets[0])
         for fam in (_family(name) for name in _FAMILY_NAMES)
@@ -164,16 +132,16 @@ def test_the_frontend_fallback_is_a_usable_default_for_the_family_it_mirrors():
     ), f"the fallback leads with {fallback[0]}, which is not the default preset of any family"
 
 
-def test_the_resolution_select_renders_the_backend_presets_not_a_hardcoded_list():
-    """The select must map over the memo fed by ``status.defaults.resolution_presets``;
-    if it were rebound to the fallback the backend's per-family list would never show."""
+def test_the_size_controls_follow_the_backend_presets_not_a_hardcoded_list():
+    """The trained-size select and the size limits must read the memo fed by
+    ``status.defaults.resolution_presets``; if they were rebound to the fallback the backend's
+    per-family list would never show."""
     src = _VIDEO_PAGE.read_text(encoding = "utf-8")
     memo = src[src.index("const resolutionPresets = useMemo<") :]
     memo = memo[: memo.index("\n  }, [")]
     assert "status?.defaults?.resolution_presets" in memo
     assert "FALLBACK_RESOLUTION_PRESETS" in memo
-    # Only the empty/absent case falls back.
     assert "presets && presets.length > 0" in memo
-    assert "{resolutionPresets.map(([w, h], i) => (" in src
-    # And the generate call sends the SELECTED preset, so the offered pair is the one rendered.
-    assert "const preset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];" in src
+    assert "{resolutionPresets.map(([w, h]) => (" in src
+    assert "videoSizeLimits(status?.defaults, resolutionPresets)" in src
+    assert "width: sourceSized ? undefined : videoSize[0]," in src

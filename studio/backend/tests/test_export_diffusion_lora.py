@@ -1,0 +1,230 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Image-generation LoRAs can be exported from the Images catalog to a folder."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from pathlib import Path
+
+import pytest
+from fastapi import HTTPException
+
+from core.inference import diffusion_lora as dl
+from models import ExportDiffusionLoRARequest
+from routes import export as export_routes
+
+
+@pytest.fixture
+def loras(tmp_path, monkeypatch):
+    d = tmp_path / "loras"
+    d.mkdir()
+    (d / "mystyle.safetensors").write_bytes(b"weights")
+    (d / "mystyle.json").write_text(json.dumps({"family": "sdxl", "source": "studio-trained"}))
+    (d / "bare.safetensors").write_bytes(b"bare")
+    monkeypatch.setattr(dl, "loras_dir", lambda: d)
+    return d
+
+
+def test_export_copies_weights_and_a_marked_sidecar(loras, tmp_path):
+    out = dl.export_local_lora("mystyle", tmp_path / "out")
+    assert out == tmp_path / "out" / "mystyle.safetensors"
+    assert out.read_bytes() == b"weights"
+    meta = json.loads(out.with_suffix(".json").read_text())
+    assert meta == {"family": "sdxl", "source": "studio-trained", "kind": "diffusion-lora"}
+    assert dl.is_image_lora_file(out)
+    assert (loras / "mystyle.safetensors").is_file()
+
+
+def test_export_without_sidecar_still_writes_the_marker(loras, tmp_path):
+    out = dl.export_local_lora("bare", tmp_path / "out")
+    assert out.read_bytes() == b"bare"
+    assert json.loads(out.with_suffix(".json").read_text()) == {"kind": "diffusion-lora"}
+
+
+def test_export_into_the_catalog_itself_keeps_the_file(loras):
+    out = dl.export_local_lora("mystyle", loras)
+    assert out.read_bytes() == b"weights"
+    assert json.loads(out.with_suffix(".json").read_text())["family"] == "sdxl"
+
+
+def test_export_never_overwrites_other_files(loras, tmp_path):
+    out_dir = tmp_path / "shared"
+    out_dir.mkdir()
+    (out_dir / "mystyle.safetensors").write_bytes(b"another install")
+    (out_dir / "mystyle.json").write_text(json.dumps({"kind": "diffusion-lora"}))
+    (out_dir / "bare.json").write_text('{"model_type": "llama"}')
+    assert dl.export_local_lora("mystyle", out_dir) == out_dir / "mystyle-2.safetensors"
+    assert (out_dir / "mystyle.safetensors").read_bytes() == b"another install"
+    assert dl.export_local_lora("bare", out_dir) == out_dir / "bare-2.safetensors"
+    assert json.loads((out_dir / "bare.json").read_text()) == {"model_type": "llama"}
+    # Re-exporting the same bytes reuses its slot instead of piling up copies.
+    assert dl.export_local_lora("mystyle", out_dir) == out_dir / "mystyle-2.safetensors"
+
+
+def test_export_never_shares_a_sidecar_with_another_format(loras, tmp_path):
+    out_dir = tmp_path / "shared"
+    out_dir.mkdir()
+    (out_dir / "mystyle.gguf").write_bytes(b"gguf")
+    (out_dir / "mystyle.json").write_text(json.dumps({"family": "flux", "kind": "diffusion-lora"}))
+    assert dl.export_local_lora("mystyle", out_dir) == out_dir / "mystyle-2.safetensors"
+    assert json.loads((out_dir / "mystyle.json").read_text())["family"] == "flux"
+
+
+def test_a_failed_copy_leaves_nothing_behind(loras, tmp_path, monkeypatch):
+    import shutil
+
+    def boom(fsrc, fdst, *_):
+        fdst.write(b"half")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shutil, "copyfileobj", boom)
+    with pytest.raises(OSError):
+        dl.export_local_lora("mystyle", tmp_path / "out")
+    assert list((tmp_path / "out").iterdir()) == []
+
+
+def test_a_failed_sidecar_write_leaves_nothing_behind(loras, tmp_path, monkeypatch):
+    real_replace = os.replace
+
+    def boom(src, dst):
+        if str(dst).endswith(".json"):
+            raise OSError("disk full")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        dl.export_local_lora("mystyle", tmp_path / "out")
+    assert list((tmp_path / "out").iterdir()) == []
+
+
+def test_the_marker_is_published_before_the_weight(loras, tmp_path, monkeypatch):
+    real_replace = os.replace
+
+    def checked(src, dst):
+        if str(dst).endswith(".safetensors"):
+            assert Path(dst).with_suffix(".json").is_file()
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", checked)
+    out = dl.export_local_lora("mystyle", tmp_path / "out")
+    assert dl.is_image_lora_file(out)
+
+
+def test_export_never_writes_a_model_sentinel_json(loras, tmp_path):
+    (loras / "config.safetensors").write_bytes(b"w")
+    out = dl.export_local_lora("config", tmp_path / "out")
+    assert out.name == "config-2.safetensors"
+    assert not (tmp_path / "out" / "config.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "POSIX modes")
+def test_the_marker_gets_the_umask_mode(loras, tmp_path):
+    old = os.umask(0o022)
+    try:
+        out = dl.export_local_lora("mystyle", tmp_path / "out")
+    finally:
+        os.umask(old)
+    assert out.with_suffix(".json").stat().st_mode & 0o777 == 0o644
+
+
+def test_a_sentinel_stem_is_suffixed_even_in_its_own_folder(loras):
+    (loras / "config.safetensors").write_bytes(b"w")
+    assert dl.export_local_lora("config", loras).name == "config-2.safetensors"
+    assert not (loras / "config.json").exists()
+
+
+def test_a_case_variant_sibling_keeps_its_stem(loras, tmp_path):
+    out_dir = tmp_path / "shared"
+    out_dir.mkdir()
+    (out_dir / "mystyle.GGUF").write_bytes(b"model")
+    assert dl.export_local_lora("mystyle", out_dir).name == "mystyle-2.safetensors"
+    assert not (out_dir / "mystyle.json").exists()
+
+
+def test_a_source_swapped_after_the_scan_is_refused(loras, tmp_path, monkeypatch):
+    other = tmp_path / "other.safetensors"
+    other.write_bytes(b"someone else")
+    real_realpath = os.path.realpath
+    # The handle is opened on the catalog file, then the path resolves elsewhere: identities differ.
+    monkeypatch.setattr(
+        os.path,
+        "realpath",
+        lambda p, *a, **k: str(other)
+        if str(p).endswith("mystyle.safetensors") and "out" not in str(p)
+        else real_realpath(p, *a, **k),
+    )
+    with pytest.raises(FileNotFoundError):
+        dl.export_local_lora("mystyle", tmp_path / "out")
+    assert not (tmp_path / "out" / "mystyle.safetensors").exists()
+
+
+def test_the_copy_keeps_the_source_mode_and_mtime(loras, tmp_path):
+    src = loras / "mystyle.safetensors"
+    os.utime(src, (1_000_000, 1_000_000))
+    out = dl.export_local_lora("mystyle", tmp_path / "out")
+    assert out.stat().st_mtime == 1_000_000
+    assert out.stat().st_mode & 0o777 == src.stat().st_mode & 0o777
+
+
+def test_an_exported_gguf_lora_is_not_an_exported_chat_model(loras, tmp_path):
+    from utils.models.model_config import scan_exported_models
+    from utils.paths.storage_roots import exports_root
+
+    run = exports_root() / "image-loras"
+    run.mkdir(parents = True, exist_ok = True)
+    (run / "style.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    (run / "style.json").write_text(json.dumps({"kind": "diffusion-lora"}))
+    assert "image-loras" not in [r[0] for r in scan_exported_models()]
+    (run / "style.json").unlink()
+    assert "image-loras" in [r[0] for r in scan_exported_models()]
+
+    nested = exports_root() / "run" / "image-loras"
+    nested.mkdir(parents = True, exist_ok = True)
+    (nested / "style.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    (nested / "style.json").write_text(json.dumps({"kind": "diffusion-lora"}))
+    assert str(nested / "style.gguf") not in [r[1] for r in scan_exported_models()]
+
+
+def test_a_sibling_differing_only_in_case_keeps_its_stem(loras, tmp_path):
+    out_dir = tmp_path / "shared"
+    out_dir.mkdir()
+    (out_dir / "MYSTYLE.gguf").write_bytes(b"model")
+    assert dl.export_local_lora("mystyle", out_dir).name == "mystyle-2.safetensors"
+
+
+def test_a_long_stem_still_exports(loras, tmp_path):
+    stem = "a" * 233
+    (loras / f"{stem}.safetensors").write_bytes(b"w")
+    assert dl.export_local_lora(stem, tmp_path / "out").name == f"{stem}.safetensors"
+
+
+def test_export_refuses_ids_outside_the_local_catalog(loras, tmp_path):
+    secret = tmp_path / "secret.safetensors"
+    secret.write_bytes(b"secret")
+    for lora_id in ("missing", str(secret), "../secret", "krea/Krea-2-LoRA-retroanime"):
+        with pytest.raises(FileNotFoundError):
+            dl.export_local_lora(lora_id, tmp_path / "out")
+    assert not (tmp_path / "out" / "secret.safetensors").exists()
+
+
+def _export(lora_id, save_directory):
+    request = ExportDiffusionLoRARequest(lora_id = lora_id, save_directory = str(save_directory))
+    return asyncio.run(export_routes.export_diffusion_lora(request, "subject"))
+
+
+def test_route_returns_the_saved_path(loras, tmp_path):
+    response = _export("mystyle", tmp_path / "exported")
+    assert response.success
+    saved = tmp_path / "exported" / "mystyle.safetensors"
+    assert saved.read_bytes() == b"weights"
+    assert response.details == {"output_path": str(saved.resolve())}
+
+
+def test_route_maps_an_unknown_lora_to_404(loras, tmp_path):
+    with pytest.raises(HTTPException) as exc:
+        _export("missing", tmp_path / "exported")
+    assert exc.value.status_code == 404

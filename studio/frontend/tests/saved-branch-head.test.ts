@@ -91,6 +91,7 @@ type DeleteModule = {
 function sidebar(deleteResult: () => Promise<string[]>) {
   const cleared: string[] = [];
   const restored: string[][] = [];
+  const notified: string[][] = [];
   const module = loadWithStubs<DeleteModule>(
     new URL("../src/features/chat/hooks/use-chat-sidebar-items.ts", import.meta.url),
     {
@@ -109,23 +110,25 @@ function sidebar(deleteResult: () => Promise<string[]>) {
       "../utils/stop-chat-thread": { stopChatThread: () => {} },
       "../utils/chat-thread-tombstones": {
         markChatThreadsDeleted: () => {},
+        notifyChatThreadsDeleted: (ids: string[]) => notified.push(ids),
         removeChatThreadTombstones: (ids: string[]) => restored.push(ids),
       },
       "../utils/prompt-queue-boundary": { requestPromptQueueStop: () => {} },
       "../utils/repair-legacy-chat-titles": { repairLegacyChatTitles: () => {} },
     },
   );
-  return { ...module, cleared, restored };
+  return { ...module, cleared, restored, notified };
 }
 
 test("deleting a chat clears its saved branch once the delete holds", async () => {
-  const { deleteChatItems, cleared } = sidebar(async () => []);
+  const { deleteChatItems, cleared, notified } = sidebar(async () => []);
   await deleteChatItems([{ type: "single", id: "t" }], undefined, () => {});
   assert.deepEqual(cleared, ["t"]);
+  assert.deepEqual(notified, [["t"]]);
 });
 
 test("a rejected delete keeps the saved branch of the chat it brings back", async () => {
-  const { deleteChatItems, cleared, restored } = sidebar(async () => {
+  const { deleteChatItems, cleared, restored, notified } = sidebar(async () => {
     throw new Error("delete failed");
   });
   await assert.rejects(
@@ -134,4 +137,6 @@ test("a rejected delete keeps the saved branch of the chat it brings back", asyn
   );
   assert.deepEqual(restored, [["t"]]);
   assert.deepEqual(cleared, []);
+  // State kept per chat elsewhere (its browser tabs) is told only once the delete holds.
+  assert.deepEqual(notified, []);
 });

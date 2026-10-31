@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A purge names caches by key. The client must never be able to send a path, and a
-// bulk clear must never sweep up the caches whose deletion re-downloads models.
+// Purges name caches by key: never a path, and bulk clear skips caches that re-download models.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -11,6 +10,15 @@ import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type CachesApi = {
+  loadCacheBreakdown: (key: string) => Promise<
+    {
+      path: string;
+      repoId?: string;
+      repoType?: string;
+      cachePath?: string;
+      deleteAllowed?: boolean;
+    }[]
+  >;
   loadCacheInventory: () => Promise<unknown>;
   purgeCaches: (keys: readonly string[]) => Promise<unknown>;
   inventoryFromApi: (value: unknown) => {
@@ -53,6 +61,65 @@ function json(body: unknown): Response {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+test("breakdown preserves each model copy's action identity and requires an explicit permission boolean", async () => {
+  const first = "/active/hub/models--Org--Model";
+  const second = "/previous/hub/models--Org--Model";
+  const { api, requests } = loadApi(() =>
+    json({
+      entries: [
+        {
+          name: "models--Org--Model",
+          path: first,
+          size_bytes: 30,
+          repo_id: "Org/Model",
+          repo_type: "model",
+          cache_path: first,
+          delete_allowed: true,
+        },
+        {
+          name: "models--Org--Model",
+          path: second,
+          size_bytes: 50,
+          repo_id: "Org/Model",
+          repo_type: "model",
+          cache_path: second,
+          delete_allowed: true,
+        },
+        {
+          name: ".locks",
+          path: "/locks",
+          size_bytes: 1,
+          delete_allowed: false,
+        },
+        {
+          name: "unverified",
+          path: "/unverified",
+          size_bytes: 1,
+          delete_allowed: "true",
+        },
+      ],
+    }),
+  );
+  const rows = await api.loadCacheBreakdown("hf_hub");
+  assert.equal(requests[0].url, "/api/settings/caches/hf_hub/breakdown");
+  assert.deepEqual(
+    rows
+      .slice(0, 2)
+      .map((row) => [
+        row.repoId,
+        row.repoType,
+        row.cachePath,
+        row.deleteAllowed,
+      ]),
+    [
+      ["Org/Model", "model", first, true],
+      ["Org/Model", "model", second, true],
+    ],
+  );
+  assert.equal(rows[2].deleteAllowed, false);
+  assert.equal(rows[3].deleteAllowed, false);
+});
 
 const apiEntry = (
   key: string,
@@ -122,7 +189,6 @@ test("the client offers no way to name a directory", () => {
     new URL("../src/features/settings/api/caches.ts", import.meta.url),
     "utf8",
   );
-  // The request body is built from keys alone: no path, dir or root field.
   assert.match(source, /JSON\.stringify\(\{ keys \}\)/);
   assert.doesNotMatch(source, /path:\s*[^;]*JSON\.stringify/);
 });
@@ -156,7 +222,6 @@ test("a bulk clear leaves out the model cache, the blocked and the empty", () =>
   const inventory = api.inventoryFromApi(
     apiInventory([
       apiEntry("uv"),
-      // Clearing this one re-downloads models, so it is asked for on its own.
       // biome-ignore lint/style/useNamingConvention: API schema
       apiEntry("hf_hub", { opt_in: true }),
       // biome-ignore lint/style/useNamingConvention: API schema
@@ -168,7 +233,6 @@ test("a bulk clear leaves out the model cache, the blocked and the empty", () =>
       }),
       // biome-ignore lint/style/useNamingConvention: API schema
       apiEntry("numba", { present: false, size_bytes: 0, entry_count: 0 }),
-      // Nothing in it, so there is nothing for a clear to do.
       // biome-ignore lint/style/useNamingConvention: API schema
       apiEntry("vllm", { size_bytes: 0, entry_count: 0 }),
     ]),
@@ -177,12 +241,27 @@ test("a bulk clear leaves out the model cache, the blocked and the empty", () =>
 });
 
 test("a cache that measures zero bytes but holds entries is still cleared", () => {
-  // An empty-directory tree costs inodes, the backend can empty it, and it is
-  // the one cache a user cannot easily clear by hand.
   const { api } = loadApi(() => json({}));
   const inventory = api.inventoryFromApi(
     // biome-ignore lint/style/useNamingConvention: API schema
     apiInventory([apiEntry("triton", { size_bytes: 0, entry_count: 40000 })]),
   );
   assert.deepEqual(api.bulkPurgeKeys(inventory), ["triton"]);
+});
+
+test("historical cache occupancy never enables a clear of an empty active cache", () => {
+  const { api } = loadApi(() => json({}));
+  const inventory = api.inventoryFromApi(
+    apiInventory([
+      apiEntry("hf_xet", {
+        size_bytes: 10000,
+        entry_count: 100,
+        clear_size_bytes: 0,
+        clear_entry_count: 0,
+        measured_paths: ["/old/xet"],
+        system_disk_bytes: 10000,
+      }),
+    ]),
+  );
+  assert.deepEqual(api.bulkPurgeKeys(inventory), []);
 });

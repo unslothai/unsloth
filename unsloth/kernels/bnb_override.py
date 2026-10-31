@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""bitsandbytes NF4 ``Linear4bit.forward`` on Unsloth's NF4 kernels: Triton dequantize + F.linear
-(bit-exact to bitsandbytes' dequantize) and ``fast_gemv`` for one decode row; dX recomputes the
-weight as bitsandbytes does. From bitsandbytes 0.50, shapes its fused 4-bit GEMM takes stay with it.
-Default on before bitsandbytes 0.50, and from 0.50 only on sm100 / sm120 (A100 / T4 batched decode
-measured 2-3% slower). UNSLOTH_BNB_NF4_LINEAR=1/0 forces it; UNSLOTH_BNB_TRITON=0 disables it."""
+"""Replaces bitsandbytes NF4 Linear4bit.forward with Unsloth's Triton dequant + F.linear and
+fast_gemv; from bnb 0.50 fused 4-bit GEMM shapes stay with bnb. On before 0.50, and from 0.50
+only on sm100/sm120; UNSLOTH_BNB_NF4_LINEAR=1/0 forces it, UNSLOTH_BNB_TRITON=0 disables it."""
 
 import os
 
@@ -54,12 +52,12 @@ class _NF4Linear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, quant_state, bias):
         ctx.unsloth_nf4 = (weight, quant_state)
-        return F.linear(x, _U.fast_dequantize(weight, quant_state), bias)
+        return F.linear(x, _U.fast_dequantize(weight, quant_state, dtype = x.dtype), bias)
 
     @staticmethod
     def backward(ctx, dY):
         weight, quant_state = ctx.unsloth_nf4
-        W = _U.fast_dequantize(weight, quant_state)
+        W = _U.fast_dequantize(weight, quant_state, dtype = dY.dtype)
         # bitsandbytes MatMul4Bit.backward: matmul(dY, dequantize_4bit(B).to(dY.dtype)).
         return torch.matmul(dY, W.to(dY.dtype)), None, None, None
 
@@ -74,7 +72,7 @@ def _linear(x, weight, quant_state, bias):
         if bias is not None:
             out = out + bias
         return out.reshape(*x.shape[:-1], N)
-    return F.linear(x, _U.fast_dequantize(weight, quant_state), bias)
+    return F.linear(x, _U.fast_dequantize(weight, quant_state, dtype = x.dtype), bias)
 
 
 def _bnb_ops_traceable():
@@ -205,9 +203,30 @@ def _bnb_fused_takes(self, x, quant_state):
     return take
 
 
+def _float_packed_as_uint8(weight):
+    """FSDP2 QLoRA stores the packed NF4 bytes as the compute dtype (`bnb_4bit_quant_storage`) so they
+    can be sharded; the all-gathered weight is those bytes as a contiguous (N, 1) float buffer. Return
+    the uint8 view the kernels read, else the weight unchanged (bitsandbytes then handles it)."""
+    if (
+        weight.dtype in _FLOAT_PACKED
+        and weight.dim() == 2
+        and weight.shape[-1] == 1
+        and weight.is_contiguous()
+    ):
+        return weight.view(torch.uint8)
+    return weight
+
+
+_FLOAT_PACKED = (torch.float16, torch.bfloat16, torch.float32)
+
+
 def _forward(self, x):
     weight = self.weight
     quant_state = getattr(weight, "quant_state", None)
+    if weight.dtype is not torch.uint8:
+        # FSDP2 QLoRA packs NF4 bytes as floats; gated on the weight itself (a process-global flag would
+        # become a Dynamo guard). A uint8 weight, the default, never reaches the check.
+        weight = _float_packed_as_uint8(weight)
     if (
         _BNB_FUSED
         and quant_state is not None

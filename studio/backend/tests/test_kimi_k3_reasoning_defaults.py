@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Kimi-K3 loads with thinking on, and with Moonshot's sampling.
-
-Kimi-K3's template branches ``reasoning_effort`` on ``'none'`` as its disable
-sentinel, so the literal scan used to surface ``none`` as the weakest level.
-The chat store ships ``medium``, which the ladder does not offer, so the clamp
-fell back to ``levels[0] == 'none'`` -- which ``_request_reasoning_kwargs``
-turns into ``enable_thinking=false``. A reasoning model therefore loaded with
-reasoning off, via a level the Think menu hides and no one can pick. Dropping
-the sentinel leaves ``low`` as the floor, so the same fallback now lands on a
-real level; the Think menu still offers high and max, and the pick persists.
-
-The sampling defaults live in ``inference_defaults.json`` rather than a
-``model_defaults`` YAML: those are matched by family substring, so every id
-shape resolves (bare repo, ``repo:variant``, cache snapshot path, ``.gguf``
-path), and the training form still resets from ``default.yaml``.
-"""
+"""none is the Kimi-K3 template thinking-off sentinel, so it must not be the effort floor."""
 
 from __future__ import annotations
 
@@ -30,9 +15,7 @@ if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
 
-# Faithful slice of the Kimi-K3 template: the reasoning_effort pre-pass that
-# maps 'none' to off and 'low'/'high'/'max' to a level, plus the enable_thinking
-# gate layered over it.
+# Slice of the Kimi-K3 template: reasoning_effort pre-pass plus enable_thinking gate.
 KIMI_K3_TEMPLATE = """
 {%- set rens = namespace(off = false, effort = none) -%}
 {%- if reasoning_effort is defined and reasoning_effort is not none -%}
@@ -68,15 +51,12 @@ def test_none_is_not_offered_as_an_effort_level():
 
 
 def test_a_template_offering_only_none_is_not_an_effort_ladder():
-    # Dropping the sentinel leaves nothing, so this is a plain on/off model.
     flags = _detect("{% if reasoning_effort == 'none' %}{{ enable_thinking }}{% endif %}")
     assert flags["reasoning_style"] == "enable_thinking"
     assert flags["reasoning_effort_levels"] == []
 
 
 def test_disabling_still_reaches_the_template():
-    # The off switch is enable_thinking=false, so removing the level costs
-    # nothing: a raw caller sending reasoning_effort="none" still disables.
     from core.inference.llama_cpp import LlamaCppBackend
 
     backend = LlamaCppBackend()
@@ -113,9 +93,7 @@ def test_kimi_k2_keeps_its_own_defaults():
 
 @pytest.mark.parametrize("model_id", ["unsloth/Kimi-K3", "moonshotai/Kimi-K3"])
 def test_training_defaults_still_come_from_default_yaml(model_id):
-    # load_model_defaults replaces default.yaml rather than merging with it, so
-    # an inference-only YAML would leave the previous model's hyperparameters
-    # in the training form.
+    # load_model_defaults replaces default.yaml rather than merging.
     from utils.models.model_config import load_model_defaults
     assert "training" in load_model_defaults(model_id)
 

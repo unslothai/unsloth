@@ -53,7 +53,6 @@ const RETRY_DELAYS_MS = [1000, 2000, 4000];
 
 function isTransient(error: unknown): boolean {
   const status = (error as { status?: number }).status;
-  // No status = the request never got an answer (network, server restart).
   return (
     status === undefined || status === 408 || status === 429 || status >= 500
   );
@@ -82,8 +81,7 @@ async function drain(id: string, queue: Queue): Promise<void> {
       attempt = 0;
       for (const waiter of waiters) waiter.resolve();
     } catch (error) {
-      // The final snapshot of a finished run is never sent again, so a transient failure retries
-      // it unless a newer snapshot has arrived meanwhile.
+      // The final snapshot is never sent again, so retry it unless a newer one arrived.
       if (isTransient(error) && attempt < RETRY_DELAYS_MS.length) {
         await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
         attempt += 1;
@@ -101,9 +99,7 @@ async function drain(id: string, queue: Queue): Promise<void> {
   queues.delete(id);
 }
 
-// Progress events save the same run many times a second: keep one write per run in flight and
-// send only the newest record after it, so a slow older PUT can never land last. Each caller
-// settles with the PUT that carried its record (or a newer one).
+// One write per run in flight, sending only the newest record after it, so an older PUT never lands last.
 export function saveRecipeExecution(
   execution: RecipeExecutionRecord,
 ): Promise<void> {

@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The RAG embedder load must not write raw transformers output to the server log.
-
-transformers >= 5 prints a multi-line, ANSI-coloured "<Model> LOAD REPORT" table
-through logger.warning plus a "Loading weights" tqdm bar. bge-small-en-v1.5 always
-trips it (legacy embeddings.position_ids key), so every Unsloth boot emitted ~7
-unstructured lines into an otherwise JSON log. They are captured and re-emitted on
-our own logger instead: debug when benign, warning when the report mentions
-anything that could change the model.
-"""
+"""Re-log transformers' load report: debug when benign, warning if it could change the model."""
 
 from __future__ import annotations
 
@@ -47,11 +39,7 @@ _RESTORE: list = []
 
 
 def _attach_sink(name: str = _REPORT_LOGGER):
-    """Attach a sink to a process-global logger, remembering what to put back.
-
-    getLogger() is process-global, so leaving propagate = False behind would make
-    later tests in the same worker silently drop real records.
-    """
+    """Logger is process-global: restore propagate and level, or later tests silently lose records."""
     log = logging.getLogger(name)
     sink = _Sink()
     _RESTORE.append((log, sink, log.propagate, log.level))
@@ -120,7 +108,7 @@ def test_progress_bar_state_is_restored(_progress_bar_state):
 
     enabled_probe = getattr(hf_logging, "is_progress_bar_enabled", None)
     if enabled_probe is None:
-        return  # nothing to assert on this transformers build
+        return
 
     hf_logging.enable_progress_bar()
     with _quiet_transformers_load():
@@ -142,8 +130,7 @@ def test_a_caller_that_already_disabled_bars_stays_disabled(_progress_bar_state)
 
 
 def test_a_concurrent_thread_is_not_captured():
-    # The filters sit on process-global loggers; another in-process load must keep
-    # its own report rather than have it swallowed and attributed to the embedder.
+    # the filters sit on process-global loggers, so concurrent loads must keep their own reports
     import threading
     log, sink = _attach_sink()
     try:
@@ -159,8 +146,6 @@ def test_a_concurrent_thread_is_not_captured():
 
 
 def test_reports_are_re_emitted_when_the_load_fails():
-    # A load that raises after transformers wrote its report is exactly when a
-    # MISSING line matters, so it must not be lost with the exception.
     from core.rag import embeddings as emb
 
     log, sink = _attach_sink()
@@ -186,11 +171,7 @@ def test_reports_are_re_emitted_when_the_load_fails():
 
 @pytest.fixture
 def _progress_bar_state():
-    """Snapshot and restore the two process-global progress-bar switches.
-
-    Both are global, so a test that leaves them enabled makes later tests in the same
-    worker order-dependent and can undo an environment-specific workaround.
-    """
+    """Restore the progress-bar switches, which are process-global and make tests order-dependent."""
     from huggingface_hub.utils import (
         are_progress_bars_disabled,
         disable_progress_bars,
@@ -214,12 +195,11 @@ def _progress_bar_state():
 
 
 def test_a_hub_only_progress_disable_survives(_progress_bar_state):
-    # transformers' enable_progress_bar() also enables the Hub's bars, which would
-    # undo unsloth's patch_ipykernel_hf_xet disable.
+    # transformers' enable_progress_bar() also enables Hub bars, undoing unsloth's xet disable
     from huggingface_hub.utils import are_progress_bars_disabled, disable_progress_bars
     from transformers.utils import logging as hf_logging
 
-    hf_logging.enable_progress_bar()  # transformers on, Hub-only disable after it
+    hf_logging.enable_progress_bar()
     disable_progress_bars()
     with _quiet_transformers_load():
         pass
@@ -227,8 +207,7 @@ def test_a_hub_only_progress_disable_survives(_progress_bar_state):
 
 
 def test_an_unexpected_key_other_than_the_legacy_one_stays_a_warning():
-    # A discarded encoder weight can genuinely degrade retrieval, so only the
-    # bge-style embeddings.position_ids report is quiet enough for debug.
+    # a discarded encoder weight can degrade retrieval; only bge position_ids is quiet
     log, sink = _attach_sink()
     try:
         with _quiet_transformers_load() as report:
@@ -251,8 +230,7 @@ def test_the_legacy_position_ids_report_is_still_benign():
 
 
 def test_the_peft_integration_logger_is_covered():
-    # An adapter-backed embedding model reports through transformers.integrations.peft,
-    # which is not a descendant of the other two loggers.
+    # transformers.integrations.peft is not a descendant of the other two loggers
     log, sink = _attach_sink("transformers.integrations.peft")
     try:
         with _quiet_transformers_load() as report:
@@ -265,8 +243,6 @@ def test_the_peft_integration_logger_is_covered():
 
 
 def test_a_mixed_report_is_serious():
-    # The legacy key and a discarded encoder weight in the same table: the second row
-    # is what matters, so the whole report must stay a warning.
     log, sink = _attach_sink()
     mixed = (
         "BertModel LOAD REPORT from: x\n"
@@ -283,9 +259,7 @@ def test_a_mixed_report_is_serious():
 
 
 def test_the_notes_section_is_not_read_as_a_key_row():
-    # transformers appends "Notes:\n- UNEXPECTED: can be ignored ..." to every report
-    # that has unexpected keys; treating that as a row would make the benign bge
-    # report serious and defeat the whole change.
+    # transformers appends a "Notes:" footer to reports with unexpected keys; not a row
     log, sink = _attach_sink()
     with_notes = (
         "BertModel LOAD REPORT from: unsloth/bge-small-en-v1.5\n"
@@ -299,8 +273,6 @@ def test_the_notes_section_is_not_read_as_a_key_row():
 
 
 def test_a_serious_report_is_flattened_to_one_plain_line():
-    # This module logs through the stdlib logger, so re-emitting the captured table
-    # verbatim would put its ANSI escapes and newlines straight back in the log.
     from core.rag import embeddings as emb
 
     emitted = []
@@ -320,8 +292,7 @@ def test_a_serious_report_is_flattened_to_one_plain_line():
 
 
 def test_a_key_merely_containing_position_ids_is_serious():
-    # "encoder.position_ids_projection.weight" is a real discarded weight, not the
-    # legacy buffer, so a substring match would have hidden it.
+    # a real discarded weight, not the legacy buffer: a substring match would hide it
     log, sink = _attach_sink()
     with _quiet_transformers_load() as report:
         log.warning(

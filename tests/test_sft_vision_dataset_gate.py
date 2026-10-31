@@ -1,15 +1,4 @@
-"""Tests _backport_vision_dataset_gate in rl.py against REAL TRL sources.
-
-TRL 0.22.x keys "skip dataset preparation" and "use the vision collator" off
-`_is_vlm` (the model) alone, so a VLM fine-tuned on text-only data reaches
-transformers with no tokenized columns ("No columns in the dataset match the
-model's forward method signature"). Magistral_(24B)-Reasoning-Conversational
-hits this; it pins trl==0.22.2. TRL 0.24.0+ keys off `_is_vision_dataset`,
-back-ported here.
-
-The patch is textual, so the tests run it over the installed sft_trainer.py plus
-a checked-in 0.22.2 excerpt and require the result to still parse. No GPU.
-"""
+"""Backports TRL 0.24's _is_vision_dataset gate, since TRL 0.22 keys dataset prep off _is_vlm alone."""
 
 import ast
 import importlib.util
@@ -36,7 +25,7 @@ def _load_backport():
 
 backport = _load_backport()
 
-# The three decision points, verbatim from trl 0.22.2 sft_trainer.py.
+# Verbatim from trl 0.22.2 sft_trainer.py.
 TRL_022_EXCERPT = textwrap.dedent("""\
     class SFTTrainer:
         def __init__(self, train_dataset, args, data_collator, model):
@@ -73,7 +62,6 @@ def test_patches_all_three_decision_points_on_022():
     assert "if data_collator is None and not (self._is_vlm and self._is_vision_dataset):" in out
     assert "elif data_collator is None and self._is_vlm and self._is_vision_dataset:" in out
     assert "or (self._is_vlm and self._is_vision_dataset)" in out
-    # Every bare `or self._is_vlm` gate must be gone.
     assert 'skip_prepare_dataset", False) or self._is_vlm\n' not in out
 
 

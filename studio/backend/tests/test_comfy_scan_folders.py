@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI models folders in the local inventory.
-
-A ComfyUI ``models/diffusion_models`` holds many loose ``.safetensors`` side by side with no
-``config.json``; each denoiser must list as its own row (text encoders, VAEs, LoRAs and shards
-not), a pick of one file must load that file, and registering a ComfyUI root (or its
-``models/``) must reach those folders, plus what ``extra_model_paths.yaml`` adds.
-
-The header classifier is stubbed by name here, so these pin the listing contract, not the
-classifier. No GPU, no network.
-"""
+"""Loose denoisers in ComfyUI models/diffusion_models each list as their own row; no config.json."""
 
 from __future__ import annotations
 
@@ -366,7 +357,7 @@ def test_split_local_checkpoint_path(tmp_path):
 
 
 def test_media_pick_of_one_file_in_a_multi_file_folder(tmp_path):
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.media_locality import normalized_pick
     from core.inference.media_model_index import MediaModelPick
 

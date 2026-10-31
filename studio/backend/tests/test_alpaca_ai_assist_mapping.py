@@ -140,3 +140,49 @@ def test_chatml_advisor_mapping_renders_list_cells_as_text():
 
     assert result["final_format"] == "chatml_conversations", result["warnings"]
     assert [convo[-1]["content"] for convo in result["dataset"]["conversations"]] == ["0", "1, 2"]
+
+
+def test_chatml_advisor_mapping_keeps_a_system_column():
+    result = format_dataset(
+        Dataset.from_dict({"persona": ["Be a pirate.", ""], "text": ["hi", "yo"], "label": [1, 0]}),
+        format_type = "chatml",
+        batch_size = 2,
+        custom_format_mapping = {
+            "persona": "system",
+            "text": "user",
+            "label": "assistant",
+            "__label_mapping": LABEL_MAPPING,
+        },
+    )
+
+    assert result["final_format"] == "chatml_conversations", result["warnings"]
+    assert list(result["dataset"]["conversations"]) == [
+        [
+            {"role": "system", "content": "Be a pirate."},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "pos"},
+        ],
+        [
+            {"role": "user", "content": "yo"},
+            {"role": "assistant", "content": "neg"},
+        ],
+    ]
+
+
+def test_chatml_advisor_mapping_puts_the_system_prompt_before_a_system_column():
+    result = format_dataset(
+        Dataset.from_dict({"persona": ["Be a pirate."], "text": ["hi"], "label": [1]}),
+        format_type = "chatml",
+        batch_size = 1,
+        custom_format_mapping = {
+            "persona": "system",
+            "text": "user",
+            "label": "assistant",
+            "__system_prompt": PROMPT,
+        },
+    )
+
+    assert result["dataset"]["conversations"][0][0] == {
+        "role": "system",
+        "content": f"{PROMPT}\n\nBe a pirate.",
+    }

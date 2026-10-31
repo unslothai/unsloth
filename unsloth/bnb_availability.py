@@ -9,21 +9,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Can bitsandbytes actually run a 4bit kernel here? A successful import does not say.
-
-From 0.46 a wheel whose native library never loaded still imports and hands back a
-`throw_on_call` closure for every symbol, so attribute reads alone see a healthy wheel,
-`ALLOW_BITSANDBYTES` stays true and 4bit dies inside a kernel instead of falling back to
-16bit up front. A real handle is a ctypes function pointer and carries `restype`; a
-deferred failure is a plain Python function and does not. That is the whole test, applied
-to every probed handle: the same verdict gates the module-scope binds in kernels/utils.py,
-where one bad symbol is the crash this exists to prevent.
-
-Decides the capability flags only, never importability - a CPU-only install is exactly
-this shape and its Python side works. A leaf module: imports nothing from unsloth
-(device_type.py imports it very early, so anything else is a cycle) and takes the
-device type as an argument.
-"""
+"""A bitsandbytes import can succeed with a dead native library (throw_on_call stubs, bnb 0.46+); a
+real ctypes handle has restype, a stub does not. Leaf module: imports nothing from unsloth,
+decides capability flags, never importability."""
 
 __all__ = [
     "bitsandbytes_symbols",

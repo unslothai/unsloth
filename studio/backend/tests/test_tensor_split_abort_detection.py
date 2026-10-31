@@ -33,7 +33,7 @@ _placement = _load("_placement_harness_split_abort", "test_llama_cpp_placement.p
 _REAL_POPEN = subprocess.Popen
 _TWO_GPUS = [(0, 20_000, 24_000), (1, 20_000, 24_000)]
 
-# Reproduce #11308: gdb output pushes the assert beyond the last 50 lines.
+# gdb output pushes the assert beyond the last 50 lines.
 _GDB_ABORT = (
     [
         "common_speculative_impl_draft_dflash: - n_max=3, n_min=0, p_min=0.00\n",
@@ -57,7 +57,6 @@ def crashing(tmp_path, monkeypatch):
     backend, gguf = _placement._backend(tmp_path, vulkan = False, memory = list(_TWO_GPUS))
 
     def crashed(timeout, **_kw):
-        # Drain output on exit, as the real health wait does.
         if backend._stdout_thread is not None:
             backend._stdout_thread.join(timeout = 2)
         return False
@@ -132,7 +131,6 @@ def test_abort_with_a_separate_drafter_is_not_latched_for_the_model(crashing, mo
     drafter.write_bytes(b"GGUF")
 
     if source == "auto_sidecar":
-        # Let Auto select DFlash with the fake binary.
         probe = backend.probe_server_capabilities
         backend.probe_server_capabilities = lambda *a, **kw: {
             **probe(*a, **kw),
@@ -142,7 +140,6 @@ def test_abort_with_a_separate_drafter_is_not_latched_for_the_model(crashing, mo
     elif source == "extra_args":
         message = load(["--model-draft", str(drafter), "--spec-type", "draft-dflash"])
     else:
-        # Explicit --spec-type preserves the drafter environment variable.
         monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", str(drafter))
         message = load(["--spec-type", "draft-dflash"])
 

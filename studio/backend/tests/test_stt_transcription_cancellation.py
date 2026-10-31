@@ -180,12 +180,7 @@ def test_disconnected_raw_transcription_cancels_its_sidecar(monkeypatch):
         _request_cancel_event,
         device = None,
     ):
-        # Stubbed for the same reason the sibling test above stubs it: the real
-        # implicit load goes through the registry, which refuses with
-        # SttModelNotDownloadedError (409) unless a snapshot happens to be on disk.
-        # Without this the disconnect below is never reached and the assert reads
-        # `409 == 499`, which is what this test does on a machine that has never
-        # downloaded an STT model. Cancellation, not download state, is the subject.
+        # Stub the load: the registry 409s without a downloaded snapshot, masking the cancellation.
         loaded.append(model)
         return None
 
@@ -212,9 +207,7 @@ def test_disconnected_raw_transcription_cancels_its_sidecar(monkeypatch):
 
     assert raised.value.status_code == 499
     assert sidecar.cancelled is True
-    # The stub has to stay load-bearing. If the route stops loading through the
-    # registry, this records nothing and the stub quietly becomes dead code that
-    # keeps the test green for a path it no longer covers.
+    # The stub must stay load-bearing, or it silently covers a path no longer taken.
     assert loaded == ["small"], f"the transcribe path did not load through the registry: {loaded}"
 
 

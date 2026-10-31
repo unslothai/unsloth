@@ -1,9 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Regression coverage for uv's unconditional macOS install_name_tool patch. A consumer
-# Mac without CLT must never execute Apple's developer-tool shim, while a selected CLT
-# or full Xcode installation must retain uv's real libpython patch.
+# A Mac without CLT must never execute Apple's install_name_tool shim, while a selected CLT
+# or Xcode must keep uv's real libpython patch.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -67,8 +66,6 @@ exit "${FAKE_UV_RC:-0}"
 UV_EOF
 chmod +x "$_BIN/xcode-select" "$_BIN/install_name_tool" "$_BIN/uv"
 
-# Each named layout owns its expected uv status and real-tool count; callers pass only
-# the shell and scenario rather than a positional clump of correlated expectations.
 run_case() {
     _shell="$1"; _layout="$2"
     _uv_rc=0; _expected_rc=0; _expected_tool=0; _developer_override=""; _dev=""

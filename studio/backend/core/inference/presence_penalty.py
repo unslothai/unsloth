@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Presence-penalty logits helpers for the safetensors/MLX inference paths.
-
-Kept in a dependency-light leaf module (torch + transformers only, no unsloth /
-peft) so the pure logic can be imported and unit-tested without pulling in the
-full inference backend. ``core.inference.inference`` re-exports these for the
-runtime generate paths.
-"""
+"""Presence-penalty logits helpers; torch and transformers only, so they import without the backend."""
 
 import torch
 
@@ -24,10 +18,7 @@ def apply_presence_penalty(input_ids, scores, penalty: float, prompt_len: int):
         if generated.numel() == 0:
             continue
         seen = torch.unique(generated)
-        # Bound generated ids to the valid range [0, vocab_size). Real completion tokens are always in range, so this
-        # is a zero-regression safety net that drops any stray out-of-range or negative id before indexing (mirrors
-        # the MLX path's bound). Filtering both ends avoids indexing scores with a negative id, which would silently
-        # wrap to the wrong row.
+        # Drop out-of-range ids: a negative index would silently wrap (mirrors the MLX path).
         seen = seen[(seen >= 0) & (seen < vocab_size)]
         if seen.numel():
             scores[b, seen] = scores[b, seen] - penalty

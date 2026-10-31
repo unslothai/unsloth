@@ -89,12 +89,7 @@ def test_every_hf_xet_pin_is_declared_once_and_marked(path: pathlib.Path):
 
 @pytest.mark.parametrize("path", ALL_FILES + (PYPROJECT,), ids = lambda p: p.name)
 def test_hf_xet_pins_are_python_310_plus_only(path: pathlib.Path):
-    """Python < 3.10 stays on huggingface-hub 0.36.2, the same split the hub pins above use.
-
-    Not a wheel question: hf-xet ships cp38-abi3 wheels and declares Requires-Python >= 3.8, so 3.9
-    could install it. No Desktop or Studio path selects 3.9 (install.sh defaults 3.13/3.12,
-    install.ps1 ranks 3.13/3.12/3.11), so the pre-Xet branch is left exactly as it was.
-    """
+    """hf-xet is gated to 3.10+ though 3.9 has wheels; no install path picks 3.9, so the old pin stays."""
     marker = _hf_xet_requirements(path)[0].marker
     assert marker.evaluate(_env("3.9", "x86_64")) is False
     assert marker.evaluate(_env("3.10", "x86_64")) is True

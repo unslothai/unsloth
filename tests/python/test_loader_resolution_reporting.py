@@ -28,8 +28,6 @@ def test_reports_actual_repo_after_mapping_and_capability_normalization(cls, exa
     start = next(
         i for i, n in enumerate(function.body) if ast.unparse(n) == "old_model_name = model_name"
     )
-    # Stop before provider downloads/config probes. This executes the production
-    # mapping and reporting statements, not a second implementation of the mapper.
     end = next(
         i
         for i in range(start, len(function.body))
@@ -81,8 +79,6 @@ def test_adapter_base_resolution_updates_report_before_base_config_load(cls):
     block = next(
         n for n in function.body if isinstance(n, ast.If) and ast.unparse(n.test) == "is_peft"
     )
-    # The first three statements select, map and normalize the adapter's base.
-    # Include the notification that must follow, stopping before precision setup.
     end = next(
         i
         for i, n in enumerate(block.body)
@@ -139,7 +135,7 @@ def test_training_forwards_observer_through_each_loader_and_retry():
             "self.load_model",
         )
     ]
-    assert len(calls) == 9
+    assert len(calls) == 10
     for call in calls:
         assert any(
             k.arg == "on_model_resolved" and ast.unparse(k.value) == "on_model_resolved"

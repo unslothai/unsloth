@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The autosave used to re-send on the next chunk after a 409, turning one 43s generation
-// into 54 rejected PUTs. The stop is scoped to the refused payload, not the message id: a
-// 409 is not proof of ownership, so only a resend of the same bytes is dropped.
+// The stop is scoped to the refused payload, not the message id: a 409 is not proof of ownership.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -234,8 +232,6 @@ test("the cache is bounded, so a long session cannot grow without limit", async 
   }
   assert.equal(attempts.length, 40, "each is refused once");
 
-  // Per id, not by re-walking: a bounded cache walked in insertion order misses every
-  // lookup by construction, measuring the walk rather than the bound.
   await module.saveStoredChatMessage(message("m39"));
   assert.equal(attempts.length, 40, "the newest entry is still suppressed");
 

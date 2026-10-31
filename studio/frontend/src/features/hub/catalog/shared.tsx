@@ -6,35 +6,48 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { BulbIcon } from "@/lib/bulb-icon";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
+import { WrenchIcon } from "@/lib/wrench-icon";
 import {
-  BrainIcon,
   Chat01Icon,
   CodeIcon,
+  FlimSlateIcon,
   GlobeIcon,
-  HeadphonesIcon,
   ImageIcon,
+  LayoutTable02Icon,
   LockIcon,
   LockKeyIcon,
-  SparklesIcon,
   ViewIcon,
-  Wrench01Icon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Capability, CapabilityKey } from "../lib/model-capabilities";
 
-const CAPABILITY_ICON: Record<CapabilityKey, IconSvgElement> = {
+// Reasoning draws the composer's thinking bulb instead (CapabilityGlyph).
+const CAPABILITY_ICON: Record<
+  Exclude<CapabilityKey, "reasoning">,
+  IconSvgElement
+> = {
   vision: ViewIcon,
-  audio: HeadphonesIcon,
-  tools: Wrench01Icon,
-  reasoning: BrainIcon,
+  audio: AiSpeechIcon,
+  tools: WrenchIcon,
   code: CodeIcon,
-  embedding: SparklesIcon,
+  embedding: LayoutTable02Icon,
   diffusion: ImageIcon,
   multilingual: GlobeIcon,
   conversational: Chat01Icon,
 };
+
+// Video gen shares the diffusion key, so it takes the sidebar's Video icon by label.
+function capabilityIcon(
+  key: Exclude<CapabilityKey, "reasoning">,
+  label: string,
+): IconSvgElement {
+  if (key === "diffusion" && label === "Video gen") return FlimSlateIcon;
+  return CAPABILITY_ICON[key];
+}
 
 const CAPABILITY_TONE: Record<CapabilityKey, string> = {
   vision:
@@ -149,11 +162,15 @@ export function CapabilityPill({
         CAPABILITY_TONE[capability.key],
       )}
     >
-      <HugeiconsIcon
-        icon={CAPABILITY_ICON[capability.key]}
-        strokeWidth={1.75}
-        className="size-3"
-      />
+      {capability.key === "reasoning" ? (
+        <BulbIcon className="size-3 shrink-0" />
+      ) : (
+        <HugeiconsIcon
+          icon={capabilityIcon(capability.key, capability.label)}
+          strokeWidth={1.75}
+          className="size-3"
+        />
+      )}
       {!iconOnly && capability.label}
     </span>
   );

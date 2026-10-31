@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The run store is keyed by run id and a re-pointed run keeps its id, so the reply it left
-// behind would otherwise render the new question's card -- and then its report -- twice.
+// A re-pointed run keeps its id, so the old reply would otherwise render the new card twice.
 
 import assert from "node:assert/strict";
 import test from "node:test";

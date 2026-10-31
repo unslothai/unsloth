@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``run_tools_locally`` resolves the one request shape names cannot.
-
-On a provider shipping hosted builtins of the same name, ``enabled_tools:
-["web_search"]`` is byte-identical whether an older bundle means the PROVIDER's
-search or the current composer means the local Search pill. The backend guessed
-hosted, so the newer client silently got hosted search. The flag lets the caller
-say; absent, the hosted reading still wins and old clients are unaffected.
-"""
+"""A flag resolves enabled_tools names shared by hosted and local tools; absent, hosted wins."""
 
 from __future__ import annotations
 
@@ -39,9 +32,6 @@ def _payload(**overrides):
     return ChatCompletionRequest(**base)
 
 
-# ── the ambiguous shape, both readings ───────────────────────────────
-
-
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_search_only_without_the_flag_stays_hosted(provider_type):
     """An old cached bundle sends exactly this and means the provider's search."""
@@ -70,9 +60,6 @@ def test_an_explicit_false_is_not_read_as_a_local_request(provider_type):
     assert _selects_only_provider_hosted_tools(payload, provider_type) is True
 
 
-# ── everything the flag must not change ──────────────────────────────
-
-
 @pytest.mark.parametrize("provider_type", SELF_HOSTED_PROVIDERS)
 def test_self_hosted_providers_are_unaffected(provider_type):
     """They declare no hosted tools, so this was never ambiguous for them."""
@@ -98,7 +85,6 @@ def test_a_hosted_only_name_with_no_local_stand_in_stays_hosted(provider_type):
     from core.inference.tools import ALL_TOOLS
     from routes.inference import _selects_only_provider_hosted_tools
 
-    # The premise: Unsloth has nothing to substitute.
     assert "image_generation" not in {tool["function"]["name"] for tool in ALL_TOOLS}
 
     payload = _payload(enabled_tools = ["image_generation"])
@@ -107,12 +93,7 @@ def test_a_hosted_only_name_with_no_local_stand_in_stays_hosted(provider_type):
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_the_flag_cannot_route_a_hosted_only_selection_into_the_loop(provider_type):
-    """The flag decides ambiguous names, it does not override the whole rule.
-
-    Honouring it for image_generation would enter the loop, find nothing to
-    execute, fall back to the same passthrough, and skip the confirmation
-    rejection on the way, since that guard keys on not having taken the loop.
-    """
+    """The flag decides ambiguous names only; a hosted-only selection must never enter the tool loop."""
     from routes.inference import _selects_only_provider_hosted_tools
 
     payload = _payload(
@@ -125,19 +106,11 @@ def test_the_flag_cannot_route_a_hosted_only_selection_into_the_loop(provider_ty
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(provider_type):
-    """code_execution has a stand-in mapping, but this request selects neither half.
-
-    Unsloth ships no code_execution, so the loop has nothing to execute. Reading
-    the flag off the mere existence of the mapping enters the loop, finds an
-    empty catalog, falls back to the same passthrough, and skips the
-    confirmation rejection on the way.
-    """
+    """A code_execution stand-in mapping alone must not select the loop, which would skip confirmation."""
     from core.inference.providers import LOCAL_STANDINS_FOR_HOSTED_TOOLS
     from core.inference.tools import ALL_TOOLS
     from routes.inference import _select_request_tools, _selects_only_provider_hosted_tools
 
-    # The premise, derived rather than asserted: a mapping exists, nothing it
-    # points at was selected, and Unsloth has no code_execution of its own.
     assert LOCAL_STANDINS_FOR_HOSTED_TOOLS["code_execution"] == frozenset({"python", "terminal"})
     assert "code_execution" not in {tool["function"]["name"] for tool in ALL_TOOLS}
 
@@ -146,7 +119,6 @@ def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(
         run_tools_locally = True,
         confirm_tool_calls = True,
     )
-    # The local catalog this request would take into the loop: empty.
     assert _drive(_select_request_tools(payload, tools_on = True, mcp_allowed = False)) == []
     assert _selects_only_provider_hosted_tools(payload, provider_type) is True
 
@@ -194,11 +166,7 @@ def test_the_field_defaults_to_absent_not_false():
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_armed_research_is_never_a_purely_hosted_selection(provider_type):
-    """deep_research is Unsloth's own and rides past enabled_tools, so it is not in the names.
-
-    Read by name alone, an armed turn with only hosted pills lit looks like a hosted request,
-    the turn proxies through, the tool is never offered and arming Deep Research does nothing.
-    """
+    """deep_research is Unsloth's own and bypasses enabled_tools; armed turns must not look hosted-only."""
     from routes.inference import _selects_only_provider_hosted_tools
 
     payload = _payload(enabled_tools = ["web_search"], deep_research_armed = True)

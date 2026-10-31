@@ -1,17 +1,4 @@
-"""TRL below 0.24.0 re-prepares a model Unsloth already prepared.
-
-``prepare_peft_model`` calls PEFT's ``prepare_model_for_kbit_training``, which
-upcasts every non-``Params4bit`` parameter to float32. The one that matters is
-the dense, frozen ``lm_head``: 4.74 GiB on Qwen3.8, 5.01 GiB on Muse Glimmer,
-enough to OOM a T4 that is already holding the weights. TRL added
-``and not isinstance(model, PeftModel)`` in 0.24.0; these tests pin that we
-apply the same clause below that version, and that we touch nothing at or above
-it.
-
-The fixture is TRL 0.22.2's real function body, not a paraphrase, so a change in
-how the branch is spelled shows up as a failure here rather than as a silent
-no-op in the field.
-"""
+"""Below TRL 0.24.0, re-preparing an Unsloth model upcasts the frozen lm_head to fp32, risking OOM."""
 
 import linecache
 import sys
@@ -83,10 +70,8 @@ def trl_modules(monkeypatch):
     utils.PeftModel = FakePeftModel
     utils.prepare_model_for_kbit_training = lambda m, **kw: m
     utils.CALLS = calls
-    # inspect.getsource reads through linecache, and an installed TRL has a real
-    # file behind it. Seed the cache so the fixture is readable the same way,
-    # otherwise the guard bails for a reason that never occurs in the field and
-    # every assertion below passes vacuously.
+    # inspect.getsource reads through linecache; seed it or the guard bails and every
+    # assertion below passes vacuously.
     _seed_linecache(utils.__file__, TRL_0_22_2_SOURCE)
     exec(compile(TRL_0_22_2_SOURCE, utils.__file__, "exec"), vars(utils))
 
@@ -97,7 +82,6 @@ def trl_modules(monkeypatch):
     models.prepare_peft_model = utils.prepare_peft_model
     trl.models = models
 
-    # Every trainer module that does `from ..models import prepare_peft_model`.
     trainers = {}
     for name in (
         "sft_trainer",

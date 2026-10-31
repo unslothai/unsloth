@@ -88,8 +88,6 @@ def test_registry_groups_duplicate_process_unique_writers_by_blob(monkeypatch, t
     )
 
     assert download_registry.incomplete_blob_hashes("model", "Org/Model") == {_BLOB_HASH}
-    # Nonce partials are refetched rather than resumed, so none of those bytes are bytes the next
-    # attempt skips; their grouping is still asserted, one blob not two.
     assert (
         download_registry.existing_blob_bytes(
             "model",
@@ -99,7 +97,6 @@ def test_registry_groups_duplicate_process_unique_writers_by_blob(monkeypatch, t
         == 0
     )
 
-    # The same grouping where the bytes DO count: a legacy partial under a writer that appends.
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: True)
     assert (
         download_registry.existing_blob_bytes(
@@ -207,11 +204,7 @@ def test_progress_groups_duplicate_process_unique_writers(monkeypatch, tmp_path)
 
 
 def test_progress_ignores_stale_revision_in_copy_layout(monkeypatch, tmp_path):
-    """A copy-layout snapshot from another commit is not this download's bytes.
-
-    Written the way production writes it: model, GGUF and scoped manifests all go through
-    ``write_manifest`` without a commit, so ``refs/main`` is the only marker available.
-    """
+    """A copy-layout snapshot from another commit is not this download; refs/main is the only marker."""
     commit, entry = _shared_setup_4(tmp_path)
     stale = entry / "snapshots" / ("c" * 40)
     stale.mkdir(parents = True)
@@ -318,7 +311,6 @@ def test_finalized_blob_supersedes_an_orphaned_partial(monkeypatch, tmp_path):
         variant_file_matcher = lambda path, **_kwargs: path == "model-Q4_K_M.gguf",
     )
 
-    # 160 of 100 bytes before, and completion refused for as long as the orphan survived.
     assert result["downloaded_bytes"] == 100
     assert result["complete_on_disk"] is True
     assert result["progress"] == 1.0
@@ -350,6 +342,5 @@ def test_progress_is_stable_across_which_racer_wrote_last(monkeypatch, tmp_path)
 
     now = time.time()
     for newest in (leader, straggler):
-        # Whichever of them happened to write last, the answer has to be the same one.
         os.utime(newest, (now, now))
         assert _read()["downloaded_bytes"] == 80

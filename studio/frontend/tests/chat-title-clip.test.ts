@@ -10,7 +10,6 @@ import {
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
-// The runner cannot resolve the providers store / encryptor specifiers alone.
 registerBundlerResolver();
 const { store } = installLocalStorageFake();
 Object.assign((globalThis.window as { location: object }).location, {
@@ -56,7 +55,6 @@ function userMessage(threadId: string, text: string): MessageRecord {
   } as MessageRecord;
 }
 
-/** A high surrogate with no low after it, or a low with no high before it. */
 const UNPAIRED_SURROGATE =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -70,14 +68,12 @@ test("a title the sidebar can clip keeps the whole first line", () => {
 test("only a pasted wall of text is cut, and with a real ellipsis", () => {
   const wall = "x".repeat(200);
   const title = fallbackTitleFromUserText(wall);
-  // 120 UTF-16 units including the ellipsis, which is what the input accepts.
   assert.equal(title.length, 120);
   assert.ok(title.endsWith("…"));
   assert.ok(!title.includes("..."));
 });
 
 test("an emoji wall is capped by the same budget the input counts", () => {
-  // maxLength counts UTF-16 units, so 120 astral code points would be 240.
   const title = fallbackTitleFromUserText("\u{1F600}".repeat(200));
   assert.ok(title.length <= 120);
   assert.equal(UNPAIRED_SURROGATE.test(title), false);
@@ -92,27 +88,21 @@ test("a line already inside the budget is stored whole", () => {
 test("the cap never splits an emoji into a lone surrogate", () => {
   // A lone surrogate survives JSON.stringify but 500s the backend's SQLite bind.
   const line = "x".repeat(119) + "\u{1F600} tail";
-  // A raw cut at the budget lands mid-pair.
   assert.equal(UNPAIRED_SURROGATE.test(line.slice(0, 120)), true);
   const title = fallbackTitleFromUserText(line);
   assert.equal(UNPAIRED_SURROGATE.test(title), false);
-  // The emoji needs two units and only one is left, so it is left out whole.
   assert.equal(title, "x".repeat(119) + "…");
   assert.equal(title.length, 120);
 });
 
 test("a lone surrogate is dropped even when the line is under the cap", () => {
-  // The cut sanitises what it walks, so under-cap lines used to be stored as
-  // they came, and one unpaired surrogate 500s the backend's title write.
   const line = "x".repeat(60) + "\uD83D";
   assert.ok(line.length <= 120);
   assert.equal(UNPAIRED_SURROGATE.test(line), true);
   const title = fallbackTitleFromUserText(line);
   assert.equal(UNPAIRED_SURROGATE.test(title), false);
   assert.equal(title, "x".repeat(60));
-  // A trailing low surrogate with no high before it goes the same way.
   assert.equal(fallbackTitleFromUserText("hi \uDE00"), "hi");
-  // A valid pair under the cap is untouched.
   assert.equal(fallbackTitleFromUserText("hi \u{1F600}"), "hi \u{1F600}");
 });
 
@@ -123,7 +113,6 @@ test("a legacy title is recognised only against the text it was cut from", () =>
     isLegacyClippedTitle(legacy, "a different first message"),
     false,
   );
-  // A rename that merely ends in "..." is left alone.
   assert.equal(isLegacyClippedTitle("Wait for it...", LONG), false);
   assert.equal(isLegacyClippedTitle(LONG, LONG), false);
 });
@@ -138,7 +127,6 @@ test("repair rewrites legacy rows and leaves every other row untouched", () => {
   const messages = new Map<string, MessageRecord[]>([
     ["a", [userMessage("a", LONG)]],
     ["b", [userMessage("b", LONG)]],
-    // No stored messages: nothing to rewrite the title from.
     ["c", []],
   ]);
 
@@ -148,8 +136,6 @@ test("repair rewrites legacy rows and leaves every other row untouched", () => {
 });
 
 test("a drain advances even when a whole page failed and was unmarked", () => {
-  // Failures get unmarked for a later refresh. Selecting the next page off the
-  // same list would draw them straight back in and never reach the rest.
   const legacy = LONG.slice(0, 48) + "...";
   const threads = ["a", "b", "c", "d"].map((id) => thread(id, legacy));
 
@@ -158,7 +144,6 @@ test("a drain advances even when a whole page failed and was unmarked", () => {
     first.candidates.map((t) => t.id),
     ["a", "b"],
   );
-  // Every write failed, so nothing stayed marked.
   const second = selectLegacyRepairPage(first.rest, new Set(), 2);
   assert.deepEqual(
     second.candidates.map((t) => t.id),
@@ -169,7 +154,6 @@ test("a drain advances even when a whole page failed and was unmarked", () => {
 });
 
 test("the opening message is the earliest one, not the first row returned", () => {
-  // A local read comes back in index order, so it can start on a later turn.
   const later: MessageRecord = {
     ...userMessage("a", "a later question entirely"),
     id: "a-m9",
@@ -187,13 +171,11 @@ test("the opening message is the earliest one, not the first row returned", () =
       [thread("a", legacy)],
       new Map([["a", [later, opening]]]),
     ),
-    // Guarded on the opening message, not the row the array happens to start on.
     [{ threadId: "a", previousTitle: legacy, openingMessageId: "a-m1", title: LONG }],
   );
 });
 
 test("two prompts sharing a timestamp break on id, as the backend does", () => {
-  // The write is guarded on this id, so both orders must pick the same message.
   const legacy = LONG.slice(0, 48) + "...";
   const first: MessageRecord = { ...userMessage("a", LONG), id: "a-m1" };
   const second: MessageRecord = {
@@ -233,7 +215,6 @@ test("a page skips rows already tried and reports the leftovers", () => {
     first.candidates.map((t) => t.id),
     ["a", "c"],
   );
-  // Without this the rest of a long history waits on an unrelated refresh.
   assert.equal(first.hasMore, true);
 
   const second = selectLegacyRepairPage(threads, new Set(["a", "c"]), 2);
@@ -249,7 +230,6 @@ test("a page skips rows already tried and reports the leftovers", () => {
 });
 
 test("a thread the backend has nothing for still gets a local read", () => {
-  // A not-yet-imported chat reads empty; an unknown id is missing from the map.
   const messages = new Map<string, MessageRecord[]>([
     ["a", [userMessage("a", LONG)]],
     ["b", []],
@@ -263,7 +243,6 @@ test("a thread the backend has nothing for still gets a local read", () => {
 
 
 test("a chat with nothing stored is left for a later refresh", () => {
-  // Its messages may not be imported yet, so a later pass rewrites the title.
   const legacy = LONG.slice(0, 48) + "...";
   const candidates = [thread("a", legacy)];
   const messages = new Map<string, MessageRecord[]>();
@@ -279,9 +258,6 @@ test("a chat with nothing stored is left for a later refresh", () => {
 });
 
 test("a chat whose opening prompt is gone is decided, not retried forever", () => {
-  // A chat that does have messages is a complete answer: the opening prompt was
-  // deleted or edited, so no later pass can prove the title. Unmarking it would
-  // re-select it on every refresh, since its title stays clipped.
   const legacy = LONG.slice(0, 48) + "...";
   const candidates = [thread("a", legacy)];
   const messages = new Map<string, MessageRecord[]>([
@@ -290,7 +266,6 @@ test("a chat whose opening prompt is gone is decided, not retried forever", () =
 
   assert.deepEqual(planLegacyTitleRepairs(candidates, messages), []);
   assert.deepEqual(threadsMissingMessages(["a"], messages), []);
-  // So it stays marked, and the next page passes over it.
   assert.deepEqual(
     selectLegacyRepairPage(candidates, new Set(["a"]), 100).candidates,
     [],
@@ -298,8 +273,6 @@ test("a chat whose opening prompt is gone is decided, not retried forever", () =
 });
 
 test("an emptied chat is decided, one still importing is not", () => {
-  // Both read back as zero messages. The ledger tells them apart: one it knows
-  // was imported is simply empty, one it has never seen may still be on its way.
   const ids = ["emptied", "importing", "fine"];
   const messages = new Map<string, MessageRecord[]>([
     ["emptied", []],
@@ -315,7 +288,6 @@ test("an emptied chat is decided, one still importing is not", () => {
     threadsAwaitingImport(ids, messages, new Set(["emptied"])),
     ["importing"],
   );
-  // An unreadable ledger decides nothing, so both stay retryable.
   assert.deepEqual(threadsAwaitingImport(ids, messages, new Set()), [
     "emptied",
     "importing",
@@ -353,7 +325,7 @@ async function* iterate(chunks: Chunk[]): AsyncGenerator<Chunk> {
 }
 const title = (chunks: Chunk[]) => titleFromStream(iterate(chunks));
 
-// A throwaway 1024-bit RSA public key; only the encrypt path is under test.
+// Throwaway 1024-bit RSA public key; only the encrypt path is under test.
 const PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC1n8QOqkDXkFEOC62kiqZcBCN3
 l/DmD+0BGvjg8h1fFJD2Fla1ibcnmKb9Vok+PmR6jm1JX0yu8JHXPw1om01RwQWe
@@ -417,7 +389,6 @@ test("a title on a saved connection is routed to it, and streamed", async () => 
   );
   const held = await buildTitleRequest("external::conn-1::gpt-5.4", "x");
   assert.notEqual(held?.encrypted_api_key, "sk-browser-held");
-  // Envelope: version.wrappedKey.nonce.ciphertext; the RSA-1024 wrap is 128 bytes.
   assert.equal(atob((held?.encrypted_api_key ?? "").split(".")[1] ?? "").length, 128);
   const local = await buildTitleRequest(
     "unsloth/gemma-4-E2B-it-GGUF",
@@ -491,12 +462,11 @@ test("reasoning is asked off only where the connection's model allows it", async
     ["openai", "gpt-5", "minimal"],
     ["openai", "o3", "low"],
     ["openai_codex", "gpt-5", "minimal"],
-    // No reasoning at all: either field would reach OpenAI as reasoning.effort, a 400.
+    // Either field would reach OpenAI as reasoning.effort, which 400s.
     ["openai", "gpt-4o", undefined],
     ["openai", "gpt-5-chat-latest", undefined],
     ["gemini", "gemini-2.5-pro", "none"],
     ["llama_cpp", "qwen3-30b", "none"],
-    // Its own levels would floor "none" at "medium" if clamped like OpenAI.
     ["mistral", "magistral-medium-latest", "none"],
   ] as const) {
     assert.equal(
@@ -633,7 +603,6 @@ test("the title is assembled from the deltas, unless it was cut short or reasone
     ]),
     null,
   );
-  // A closed reasoning summary (a model that cannot turn reasoning off) is dropped, the title kept.
   assert.equal(
     await title(deltas("<think>The user asks about gardens.</think>Spring Garden Plan")),
     "Spring Garden Plan",
@@ -698,7 +667,6 @@ test("a forced refresh re-fetches the public key instead of reusing the cached o
   assert.equal(fetched, cached + 1, "a forced one refetches");
 });
 
-// Pinned as source text (JSX); gaps exclude braces so they cannot match past the block.
 test("the title is wired to what answered, and built inside the fallback boundary", () => {
   const provider = readFileSync(
     new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
@@ -714,8 +682,7 @@ test("the title is wired to what answered, and built inside the fallback boundar
   }
 });
 
-// The backend forwards these verbatim, so a strict chat-completions endpoint 400s on
-// any the provider does not take, and the title is lost.
+// The backend forwards these verbatim, so unsupported fields 400 on strict endpoints.
 test("title sampling fields follow the provider's capabilities", async () => {
   const fields = (r: Awaited<ReturnType<typeof buildTitleRequest>>) =>
     ["temperature", "top_p", "top_k", "repetition_penalty"].filter(
@@ -753,7 +720,6 @@ test("the title budget is floored at the provider's minimum output", async () =>
   stageConnection({ providerType: "kimi", hasApiKey: true });
   const kimi = await buildTitleRequest("external::conn-1::kimi-k2-thinking", "x");
   assert.equal(kimi?.max_tokens, 16000);
-  // Thinking that cannot be turned off counts toward the cap, so it gets headroom.
   for (const [providerType, model, expected] of [
     ["gemini", "gemini-2.5-pro", 1024],
     ["gemini", "gemini-2.5-flash", 64],

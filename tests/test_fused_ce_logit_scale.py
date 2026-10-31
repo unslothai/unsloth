@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Every loss branch must apply the logit transforms the reference implementation does.
-
-Cohere multiplies by logit_scale, Granite divides by logits_scaling; dropping either
-optimizes a different loss. Pure torch, so it runs on CPU.
-"""
+"""Each fused loss must apply its model's logit scale: Cohere multiplies, Granite divides."""
 
 from __future__ import annotations
 
@@ -23,8 +19,7 @@ from transformers import (
 try:
     from transformers import FalconH1Config
 except ImportError:
-    # Absent before transformers 4.53, and the declared floor is 4.51.3. A module-scope
-    # import would cost the whole file, not just the Falcon-H1 cases.
+    # Absent before transformers 4.53 (floor is 4.51.3), so not imported at module scope.
     FalconH1Config = None
 from transformers.modeling_outputs import BaseModelOutputWithPast
 
@@ -74,8 +69,7 @@ class _FakeModel:
 
 
 class _FakeCausalLM:
-    # mistral.py reads self.training before either loss branch; without this the tests
-    # pass or error depending on which attention backend a previous test selected.
+    # mistral.py reads self.training before either loss branch, so pin it.
     training = False
 
     def __init__(self, config):
@@ -104,10 +98,7 @@ def _fused_loss(
 
 
 def _reference_loss(scale, softcapping = 0.0):
-    """Transformers' own order: scale the logits, soft cap, shift, then cross entropy.
-
-    Computed in float64 so the expected value is the arithmetic, not the float32 path.
-    """
+    """Transformers' order: scale, soft cap, shift, cross entropy; computed in float64."""
     logits = F.linear(_hidden_states().double(), _lm_head_weight().double())
     logits = logits * scale
     if softcapping:
@@ -157,7 +148,6 @@ def test_fused_ce_applies_the_configured_logit_scale(config, scale, monkeypatch)
     expected = _reference_loss(scale)
     assert abs(expected - unscaled) > 1.0, "the fixture no longer separates the two losses"
 
-    # float32 accumulation over 8 logits, so well inside the default float32 tolerance.
     assert _fused_loss(config, monkeypatch) == pytest.approx(expected, rel = 1e-6), (
         f"fused CE dropped {config.model_type}'s logit scale: it returns the unscaled "
         f"{unscaled:.6f} instead of {expected:.6f}"
@@ -202,8 +192,7 @@ def test_transforms_resolve_without_unsloth_zoo(config, expected, monkeypatch):
     config = config()
     """The fallback arm runs whenever unsloth_zoo predates detect_logit_transforms."""
     monkeypatch.setattr(llama_module, "detect_logit_transforms", None)
-    # Both arms agree on these configs, so without this the coverage could evaporate
-    # silently if the patch stopped reaching the code under test.
+    # Both arms agree on these configs, so prove the patch actually reached the code.
     assert llama_module.detect_logit_transforms is None
     assert resolve_logit_transforms(config) == pytest.approx(expected)
 
@@ -227,11 +216,7 @@ def test_transforms_resolve_without_unsloth_zoo(config, expected, monkeypatch):
     ],
 )
 def test_both_resolver_arms_agree(model_type, fields, monkeypatch):
-    """An old unsloth_zoo must not train a different loss than a new one.
-
-    The fallback arm is only reached when the installed unsloth_zoo predates
-    detect_logit_transforms, which is exactly when nobody would notice it disagreeing.
-    """
+    """Old unsloth_zoo versions take the fallback resolver, which must match the detected transforms."""
 
     def build():
         config = MistralConfig(
@@ -312,7 +297,7 @@ def test_inference_logits_carry_the_same_transforms(config, scale, softcapping, 
         expected = softcapping * torch.tanh(expected / softcapping)
     model = _FakeCausalLM(config)
     assert torch.allclose(_inference_logits(model, forward), expected, atol = 1e-5)
-    # Applied in place, so a second call on the SAME model must not compound them.
+    # Applied in place, so a second call on the same model must not compound them.
     assert torch.allclose(_inference_logits(model, forward), expected, atol = 1e-5)
 
 
@@ -347,6 +332,44 @@ def test_materialized_branch_is_handed_the_same_transforms(
     assert len(calls) == 1, "the eager branch did not run"
     assert calls[0]["logit_scaling"] == pytest.approx(scale if scale != 1.0 else 0)
     assert calls[0]["logit_softcapping"] == pytest.approx(softcapping)
+
+
+@pytest.mark.parametrize("grad", [True, False], ids = ["grad", "no_grad"])
+@pytest.mark.parametrize(
+    "module,forward",
+    [(llama_module, None), (mistral_module, MistralForCausalLM_fast_forward)],
+    ids = ["llama", "mistral"],
+)
+@pytest.mark.parametrize("config,scale,softcapping", _SCALE_CASES, ids = _SCALE_IDS)
+def test_labeled_call_returns_the_transformed_logits(
+    config, scale, softcapping, module, forward, grad, monkeypatch
+):
+    """The kernel transforms the raw logits itself, so the returned ones are transformed
+    separately, and only after the kernel has read them: without grad that is in place."""
+    raw = F.linear(_hidden_states(), _lm_head_weight())
+    expected = raw * scale
+    if softcapping:
+        expected = softcapping * torch.tanh(expected / softcapping)
+    seen = []
+
+    def spy(**kwargs):
+        seen.append(kwargs["logits"].detach().clone())
+        return torch.zeros((), requires_grad = True)
+
+    monkeypatch.setattr(module, "fast_cross_entropy_loss", spy)
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
+    extra = {"input_ids": torch.zeros(BSZ, Q_LEN, dtype = torch.long)} if forward else {}
+    with torch.set_grad_enabled(grad):
+        output = (forward or CausalLM_fast_forward(None))(
+            _FakeCausalLM(config()),
+            labels = LABELS.clone(),
+            return_dict = True,
+            **extra,
+        )
+
+    assert torch.allclose(seen[0], raw, atol = 1e-5), "the kernel would transform these twice"
+    assert torch.allclose(output.logits, expected, atol = 1e-5)
+    assert output.logits.requires_grad == grad
 
 
 def test_transforms_are_applied_scale_first_then_soft_cap():

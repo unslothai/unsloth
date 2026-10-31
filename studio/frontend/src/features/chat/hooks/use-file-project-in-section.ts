@@ -7,7 +7,7 @@ import { useCallback } from "react";
 import { usePinnedProjectsStore } from "../stores/pinned-projects-store";
 import { useSidebarOrganizationStore } from "../stores/sidebar-organization-store";
 
-/** Files a project in a section (null unfiles). Filing unpins, since Pinned would still show it. */
+/** Files a project in a section (null unfiles). Filing unpins it. */
 export function useFileProjectInSection(): (
   project: { id: string; name: string },
   sectionId: string | null,

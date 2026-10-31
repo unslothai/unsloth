@@ -3,14 +3,12 @@
 
 import { type ComponentProps, useState } from "react";
 
-// Bundled as a data URI so the fallback ships inside the JS bundle and can
-// never 404, unlike the public-folder originals.
+// Inline data URI so the fallback can never 404, unlike public-folder originals.
 import fallbackMascot from "@/assets/mascot-fallback.webp?inline";
 
 const LEADING_SLASH = /^\//;
 
-// Resolve a public-folder asset against the deploy base (subpath mounts) and
-// encode the spaced sloth filenames.
+// Resolve against the deploy base (subpath mounts) and encode spaced filenames.
 export function publicAssetUrl(path: string): string {
   return encodeURI(import.meta.env.BASE_URL + path.replace(LEADING_SLASH, ""));
 }
@@ -20,17 +18,14 @@ type MascotImgProps = { src: string } & Omit<
   "src" | "onError"
 >;
 
-// Keying on src remounts the inner component, so the retry state resets
-// whenever the source changes (greeting sloths rotate).
+// Keying on src remounts the inner component, resetting retry state per source.
 export function MascotImg(props: MascotImgProps) {
   return <MascotImgInner key={props.src} {...props} />;
 }
 
 type Stage = "primary" | "retry" | "fallback";
 
-// Decorative mascot that degrades gracefully: a failed load retries once with
-// a cache-buster (transient blips, stale caches), then swaps to the bundled
-// fallback sloth. Empty alt by default so a broken image never paints text.
+// Retries once with a cache-buster, then swaps to the bundled fallback; empty alt by default.
 function MascotImgInner({ src, alt = "", ...rest }: MascotImgProps) {
   const [stage, setStage] = useState<Stage>("primary");
 

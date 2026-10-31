@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Unregistered towers got flash_attention_2: "Apertus1p5VisionTokenizerModel does not support Flash Attention 2 yet".
+# Unregistered vision towers must not get flash_attention_2.
 import sys
 import types
 

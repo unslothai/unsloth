@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Production chrome/overlay regression scene, with Tauri IPC stubbed.
-
-Runs its own Vite server, or uses SMOKE_URL when supplied.
-Set SMOKE_EVIDENCE_DIR to keep screenshots and measured facts.
-SMOKE_EXPECT_BLUR=0 captures the same scene against the unmodified base.
-No backend, inference, or real native window actions are used.
-"""
+"""Chrome/overlay scene with Tauri IPC stubbed; SMOKE_EXPECT_BLUR=0 captures the unmodified base."""
 
 import json
 import os
@@ -17,7 +11,13 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _playwright_robust import chromium_launch_args, start_vite, stop_process, wait_for_smoke_page
+from _playwright_robust import (
+    chromium_launch_args,
+    is_vite_outdated_dep,
+    start_vite,
+    stop_process,
+    wait_for_smoke_page,
+)
 
 PORT = int(os.environ.get("SMOKE_PORT", "5491"))
 URL = os.environ.get("SMOKE_URL", f"http://127.0.0.1:{PORT}/smoke-titlebar-blur.html")
@@ -66,6 +66,7 @@ def run():
             lambda response: errors.append(f"{response.status}: {response.url}")
             if response.status >= 400
             and response.request.resource_type in ("script", "stylesheet", "font")
+            and not is_vite_outdated_dep(response)
             else None,
         )
         page.goto(URL)
@@ -86,7 +87,6 @@ def run():
             }}""")
 
         def blurred(want):
-            # Wait for the transition rather than assuming a fixed frame budget.
             # Compositors can report an epsilon near zero on the final frame.
             if not EXPECTED:
                 page.wait_for_timeout(180)
@@ -104,7 +104,8 @@ def run():
         blurred(True)
         media_facts = facts()
         if EXPECTED:
-            assert media_facts["blur"] == "blur(2px)", media_facts
+            # #13577: the titlebar backdrop dims like every popup backdrop, without a blur.
+            assert media_facts["blur"] == "none", media_facts
             assert media_facts["pointerEvents"] == "none", media_facts
             assert int(media_facts["controlsZ"]) > int(media_facts["backdropZ"]), media_facts
         else:
@@ -138,7 +139,7 @@ def run():
             elif kind == "tour":
                 tour_facts = facts()
                 if EXPECTED:
-                    assert tour_facts["blur"] == "blur(2px)", tour_facts
+                    assert tour_facts["blur"] == "none", tour_facts
                     assert tour_facts["opacity"] == "1", tour_facts
                 else:
                     assert tour_facts["content"] == "none", tour_facts
@@ -161,7 +162,7 @@ def run():
         ]:
             page.get_by_role("button", name = "Open media", exact = True).click()
             blurred(True)
-            # Native controls are intentionally pointer-accessible even while Radix hides the background from AT.
+            # Native controls stay pointer-accessible while Radix hides the background from AT.
             page.locator(f'button[aria-label="{label}"]').click()
             page.wait_for_function(
                 "c => window.__windowActions.some(a => a.cmd === 'plugin:window|' + c)", arg = command
@@ -184,7 +185,6 @@ def run():
         page.get_by_role("button", name = "Open media", exact = True).click()
         blurred(True)
         page.screenshot(path = str(OUT / "media-narrow.png"))
-        # Web and native macOS chrome do not acquire the custom titlebar effect.
         for platform in ("web", "macOS"):
             other = browser.new_context()
             if platform == "macOS":
@@ -235,8 +235,7 @@ if __name__ == "__main__":
     server = None if os.environ.get("SMOKE_URL") else start_vite(PORT)
     try:
         if server is not None:
-            # start_vite returns as soon as npm is spawned; navigating before vite listens is a
-            # connection refused (#12475's run), so wait for the page that names this scene's entry.
+            # start_vite returns once npm is spawned; navigating before vite listens is connection refused.
             wait_for_smoke_page(URL, "smoke-titlebar-blur-main.tsx", proc = server)
         run()
     finally:

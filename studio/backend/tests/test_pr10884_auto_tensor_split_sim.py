@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Simulation matrix for the auto tensor-parallel split fallback (PR #10884).
-
-The PR makes an AUTO-mode tensor-parallel load fall back to the user's
-``tensor_split`` when the planner decides an even share fits and returns
-``None``, and records the emitted ratio in ``_auto_tensor_split`` so a later
-request with a different ratio reloads.
-
-This file simulates the hardware the change can meet, on a CPU-only host, by
-driving the real ``LlamaCppBackend`` against faked GPU inventories: the vendor
-(CUDA / Vulkan, which is how AMD and Intel arrive), the card count, asymmetric
-cards, cards whose driver reports no total, and the paravirtualised Metal
-device macOS hands a VM. The reload-deduplication half is driven through the
-real ``adopt_load_intent_if_matched``, because that is the method a second
-``/api/inference/load`` actually reaches.
-"""
+"""Auto tensor-split fallback driven through LlamaCppBackend against faked GPU inventories."""
 
 from __future__ import annotations
 
@@ -44,12 +30,7 @@ def _tp_backend(
     vulkan: bool = False,
     reserve_mib: int = 256,
 ):
-    """A backend whose placement inputs are fully determined.
-
-    KV and the context-linear compute buffer are zeroed so the only thing the
-    planner and the new budget check weigh is the model size against the cards.
-    That is what makes each case below a statement about ONE variable.
-    """
+    """KV and context compute buffers are zeroed, so only model size against the cards is weighed."""
     backend, gguf = _backend(tmp_path, vulkan = vulkan, memory = memory)
     backend._can_estimate_kv = lambda: True
     backend._estimate_kv_cache_bytes = lambda *a, **k: 0
@@ -91,28 +72,16 @@ def _normalized(values):
     return tuple(round(v / total, 9) for v in values)
 
 
-# --------------------------------------------------------------------------
-# 1. The fix itself, across card counts, vendors and ratios.
-# --------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("vulkan", [False, True], ids = ["cuda", "vulkan"])
 @pytest.mark.parametrize(
     "memory, ratio",
     [
-        # Two 24GB cards, the ordinary desktop pair.
         ([(0, 24_000, 24_000), (1, 24_000, 24_000)], [3, 1]),
-        # Two T4s, which is what a Kaggle session is.
         ([(0, 15_360, 15_360), (1, 15_360, 15_360)], [3, 1]),
-        # Reversed, so an off-by-order bug cannot pass both.
         ([(0, 24_000, 24_000), (1, 24_000, 24_000)], [1, 3]),
-        # An even ratio, explicitly asked for rather than defaulted.
         ([(0, 24_000, 24_000), (1, 24_000, 24_000)], [1, 1]),
-        # Three and four cards.
         ([(i, 24_000, 24_000) for i in range(3)], [2, 1, 1]),
         ([(i, 24_000, 24_000) for i in range(4)], [4, 3, 2, 1]),
-        # Mismatched cards, the #10355 complaint exactly: a slow small card
-        # that the user wants to carry less.
         ([(0, 11_000, 11_000), (1, 24_000, 24_000)], [1, 3]),
     ],
 )
@@ -176,11 +145,6 @@ def test_an_extreme_ratio_survives_formatting(tmp_path, ratio):
     ), f"{raw!r} is not the proportion that was asked for"
 
 
-# --------------------------------------------------------------------------
-# 2. Ratios that must NOT be forwarded.
-# --------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "ratio, why",
     [
@@ -218,16 +182,7 @@ def test_a_ratio_that_overshoots_one_card_is_dropped(tmp_path):
 
 
 def test_the_budget_check_agrees_with_the_planner_on_an_even_share(tmp_path):
-    """The check's whole claim is that it applies "the same per-device budget
-    the planner uses". Then an EVEN ratio must be accepted exactly when the
-    planner's own even-share rule says the load fits -- otherwise a user who
-    types 1,1 is told their ratio does not fit a machine the planner just
-    decided to split evenly, which is #10355 wearing a different hat.
-
-    Sized to sit in the gap: the context compute buffer is real here, and
-    charging it once (the planner's rule) accepts while charging it twice
-    rejects.
-    """
+    """An even user ratio must be accepted exactly when the planner's even-share rule says the load fits."""
     backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
     mib = 1024 * 1024
     cc_per_device_mib = 1024
@@ -257,21 +212,13 @@ def test_the_budget_check_agrees_with_the_planner_on_an_even_share(tmp_path):
 
 
 def test_the_context_buffer_is_charged_flat_not_by_the_ratio(tmp_path):
-    """The context-linear compute buffer is REPLICATED on every device: each one
-    allocates the whole thing whatever weight it carries. Distributing the
-    aggregate by the ratio instead is the same arithmetic only at an even share,
-    and away from it the high-weight card is charged nearly twice the buffer --
-    so a ratio the planner's own rule accepts is refused, which for a user who
-    typed one is #10355 again. Sized to sit exactly in that gap: the planner
-    accepts 1:9 here, the aggregate form does not.
-    """
+    """The context compute buffer is replicated on every device, so it is charged flat, not by ratio."""
     backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
     mib = 1024 * 1024
     cc_per_device_mib = 6 * 1024
     backend._compute_buffer_ctx_bytes = lambda *a, **k: cc_per_device_mib * mib
     model_mib = 14 * 1024
 
-    # usable - reserve = 23024 MiB a card, as in the even-share cell above.
     ceiling_mib = 23_024
     assert model_mib / 2 + cc_per_device_mib < ceiling_mib, "the planner would not have"
     assert 0.9 * model_mib < ceiling_mib - cc_per_device_mib, "charged flat, 1:9 fits"
@@ -351,11 +298,6 @@ def test_manual_mode_is_untouched_by_the_new_branch(tmp_path):
     assert backend._auto_tensor_split is None, "manual mode must not record an auto ratio"
 
 
-# --------------------------------------------------------------------------
-# 3. Hardware shapes where tensor parallelism is not available at all.
-# --------------------------------------------------------------------------
-
-
 def test_a_single_gpu_never_gets_a_split(tmp_path):
     backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000)])
     cmd = _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0])
@@ -394,16 +336,8 @@ def test_paravirtual_metal_never_launches_a_tensor_split(tmp_path, monkeypatch):
     assert _flag(cmd, "--tensor-split") is None
 
 
-# --------------------------------------------------------------------------
-# 3b. The placement planner's own recovery arm.
-#
-# `load_model` prices the load inside one long `try`, and its `except` arm is a
-# designed degradation: it drops the plan, sets `--fit on` and launches anyway.
-# It resets `tp_tensor_split` to None but deliberately NOT `tensor_parallel` --
-# which is exactly the state the new fallback fires in, with `gpu_indices`
-# rebuilt from a WIDER set than the `tp_gpus` the planner had filtered, or not
-# rebuilt at all. Three shapes, all of which launched cleanly before the PR.
-# --------------------------------------------------------------------------
+# load_model's except arm drops the plan and sets --fit on but keeps tensor_parallel,
+# so the fallback fires with gpu_indices wider than tp_gpus (or not rebuilt).
 
 
 def _planner_raises(backend):
@@ -450,11 +384,6 @@ def test_a_plan_that_fails_before_the_gpu_survey_still_launches(tmp_path):
     assert cmd
 
 
-# --------------------------------------------------------------------------
-# 4. Reload deduplication -- the half that can regress an already-working path.
-# --------------------------------------------------------------------------
-
-
 def _intent(gguf, **kwargs):
     params = dict(
         gguf_path = str(gguf),
@@ -492,15 +421,7 @@ def test_an_identical_auto_request_with_no_ratio_reuses_the_server(tmp_path):
 
 
 def test_a_planner_weighted_split_still_reuses_the_server(tmp_path):
-    """THE REGRESSION THIS FILE EXISTS FOR.
-
-    When the model does not fit evenly the planner returns its OWN weighted
-    split, in MiB, and no user ratio is involved. If the recorded auto ratio is
-    the planner's output while the comparison is against the user's request,
-    every repeat of an identical request mismatches and reloads a
-    multi-gigabyte model -- forever, because the next launch records the same
-    planner output again. This is an ordinary, already-working, pre-PR path.
-    """
+    """A planner-weighted split must reuse the server; comparing it to the user's ratio reloads forever."""
     backend, gguf = _tp_backend(
         tmp_path,
         memory = [(0, 24_000, 24_000), (1, 16_000, 16_000)],
@@ -558,11 +479,6 @@ def test_a_layer_split_load_clears_the_recorded_ratio(tmp_path):
     assert backend._auto_tensor_split is None
 
 
-# --------------------------------------------------------------------------
-# 6. What /status reports after a recovery rewrites the argv.
-# --------------------------------------------------------------------------
-
-
 def _crash_once_with_an_arch_error(backend):
     """Make the first spawn die the way a binary with no kernels for the pinned
     card does, so the arch-crash retry runs and the second spawn succeeds."""
@@ -578,15 +494,7 @@ def _crash_once_with_an_arch_error(backend):
 
 
 def test_the_arch_crash_retry_stops_reporting_the_ratio_it_dropped(tmp_path):
-    """The emitted ratio is not just a record, it is what `tensor_split` reports.
-
-    The retry re-masks the child onto a narrowed device set, so a split sized for
-    the crashed one weights the wrong cards and `_without_tensor_split` takes it
-    off the argv. Left recorded, /status answers with a ratio the live child does
-    not have, and here the narrowing leaves ONE device, so it would answer with a
-    ratio beside `tensor_parallel: false`. The third card is below the reserve, so
-    the planner pins two of three and the retry has somewhere to go.
-    """
+    """After an arch-crash retry narrows devices, the recorded tensor_split ratio must be dropped too."""
     backend, gguf = _tp_backend(
         tmp_path,
         memory = [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 400, 24_000)],

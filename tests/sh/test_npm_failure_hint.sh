@@ -3,9 +3,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 # See /studio/LICENSE.AGPL-3.0
 #
-# _suggest_npm_registry in studio/setup.sh: a local npm errno gets a local hint, not
-# "registry.npmjs.org looks blocked". #8725's EACCES came from the HTTP socket
-# (FetchError), so it gets the "OS refused node's connection" variant.
+# A local npm errno gets a local hint, not "registry blocked"; an EACCES on the HTTP socket
+# (FetchError) gets the "OS refused node's connection" variant.
 
 set -euo pipefail
 
@@ -40,7 +39,7 @@ _EPERM_LOG="npm ERR! code EPERM
 npm ERR! syscall rename
 npm ERR! Error: EPERM: operation not permitted, rename 'C:\\npm-cache\\_cacache\\tmp\\x'"
 
-# Real npm 10.9 output for a cache dir with a deny-write ACL: FetchError, but with a path.
+# Real npm 10.9 output for a deny-write cache ACL: FetchError, but with a path.
 _CACHE_ACL_LOG="npm error code EPERM
 npm error syscall mkdir
 npm error path D:\\a\\_temp\\x\\cache\\_cacache

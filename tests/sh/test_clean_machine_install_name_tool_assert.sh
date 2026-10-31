@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Keep the clean-machine allow-list narrow: uv may self-ID one managed libpython on a
-# CLT-present control leg, while CLT-absent legs must not reach install_name_tool at all.
+# CLT-present legs may let uv self-ID one managed libpython; CLT-absent legs must never
+# reach install_name_tool.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

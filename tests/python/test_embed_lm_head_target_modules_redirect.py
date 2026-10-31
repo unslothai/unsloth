@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Regression test for unslothai/unsloth#9326.
-
-When `embed_tokens` and/or `lm_head` are listed in `target_modules`, Unsloth's
-fast regex path would silently drop them because they do not sit under an
-attention/MLP ancestor.  The fix auto-moves them to `modules_to_save` and
-warns once, which also makes `embedding_learning_rate` work.
-"""
+"""embed_tokens and lm_head in target_modules are auto-moved to modules_to_save, not dropped."""
 
 import os
 import pytest
@@ -78,13 +72,12 @@ def _run_redirect_check(new_model_path: bool, target_modules):
 
         assert any("layers.0.self_attn.q_proj.lora_A" in k for k in state)
 
-        # embed_tokens/lm_head must be trainable via ModulesToSave, not LoRA
         assert any(
             "embed_tokens.modules_to_save.default.weight" in k and v.requires_grad
             for k, v in state.items()
         )
         if tied:
-            # Tying keeps ONE trainable matrix instead of a second, divergent copy.
+            # Tying keeps one trainable matrix instead of a second, divergent copy.
             assert "lm_head" not in saved_modules, saved_modules
             assert model.get_output_embeddings().weight.requires_grad
         else:
@@ -128,8 +121,6 @@ def test_a_repeat_call_with_the_same_targets_still_passes_through():
             model.peft_config["default"], "modules_to_tie", None
         ), "tied model did not redirect lm_head; this guard would check nothing"
         model = FastLanguageModel.get_peft_model(model, **kwargs)
-        # Same configuration, written the other way round: the embeddings named directly in modules_to_save rather than
-        # reached through the redirect.
         model = FastLanguageModel.get_peft_model(
             model,
             r = 8,

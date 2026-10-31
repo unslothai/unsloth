@@ -69,8 +69,7 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
 
-# Only a UI session may define a local command; API keys keep http(s) MCP. Annotated, not a Depends default:
-# these routes are also called directly by the tests, where a Depends object is truthy and would read as "API key".
+# Local commands need a UI session; API keys keep http(s). Not a default: tests call it directly
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 WithoutCredential = Annotated[bool, Depends(request_admitted_without_credential)]
 
@@ -87,8 +86,7 @@ def _normalize_stdio_command(url: str) -> str:
     trimmed = raw.strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "command must not be empty")
-    # Leading whitespace is executable-field padding. At the other end, only
-    # space/tab delimit arguments on Windows. POSIX quoting protects whitespace.
+    # Trailing whitespace is stripped only on Windows; POSIX quoting protects whitespace
     normalized = raw.lstrip().rstrip(" \t") if sys.platform == "win32" else trimmed
     try:
         parts = parse_stdio_command(normalized)
@@ -121,8 +119,7 @@ def _validate_url(url: str) -> str:
     trimmed = raw.strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
-    # Non-HTTP values reuse the URL field for local commands. Syntax validation
-    # is policy-free, but persistence and execution stay behind the stdio gate.
+    # Syntax only: persisting and running a command stay behind the stdio gate.
     if stdio_mcp_enabled() and is_stdio(trimmed):
         return _normalize_stdio_command(raw)
     parsed = urlparse(trimmed)
@@ -378,8 +375,7 @@ async def create_mcp_server(
     if is_stdio(url):
         require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)
-    # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
-    # push the probe onto the 305s OAuth timeout. Backend enforces this.
+    # OAuth is HTTP-only; a stale flag would push stdio probes onto the 305s OAuth timeout.
     use_oauth = payload.use_oauth and not is_stdio(url)
     client_id, client_secret = (
         _oauth_client(payload.oauth_client_id, payload.oauth_client_secret)
@@ -471,13 +467,10 @@ async def update_mcp_server(
     _oauth_client(client_id, changes.get("oauth_client_secret", old.get("oauth_client_secret")))
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
-    # Both directions, so an API key can neither repoint an http row at a command nor edit a stdio row's
-    # env/name/enabled flag. Before every side effect, so a refusal leaves the row, its OAuth tokens, cache and
-    # sessions untouched.
+    # Check both directions before any side effect; API keys must not repoint http rows or edit stdio env
     if is_stdio(old["url"]) or is_stdio(changes.get("url", old["url"])):
         require_ui_session_for_local_commands(via_api_key)
-    # headers == HTTP headers (remote) or env vars (stdio). On a transport-type switch with no new headers, drop
-    # the old ones so env secrets aren't re-sent as HTTP headers (or vice versa).
+    # On transport switch with no new headers, drop old ones so env secrets are not sent as HTTP headers
     if (
         "url" in changes
         and is_stdio(changes["url"]) != is_stdio(old["url"])
@@ -508,8 +501,7 @@ async def update_mcp_server(
     if invalidates_tools:
         invalidate_tool_cache(server_id)
     if invalidates_tools:
-        # Narrow to this row's env: another server row sharing the command but
-        # with a different env keeps its live sessions.
+        # Narrowed by env: another row sharing the command with a different env keeps its sessions.
         await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
     return _row_to_response(mcp_servers_db.get_server(server_id), include_headers = not no_credential)
 
@@ -603,9 +595,7 @@ async def refresh_mcp_server_tools(
         if current is not None and not any(
             current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
         ):
-            # Start the cool-off so the next chat send does not re-hang on this server's timeout. If the row changed
-            # while the probe was awaiting, the FAILURE belongs to the old config and must not park the newly edited
-            # server.
+            # Start the cool-off so the next send does not re-hang; a row changed mid-probe must not be parked
             record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
@@ -637,8 +627,7 @@ async def import_mcp_servers(
     for entry in entries:
         try:
             url = _validate_url(entry.url)
-            # Per entry, so an API-key import of a mixed config still creates its
-            # http entries and reports the stdio ones.
+            # Checked per entry: an API-key import of a mixed config still creates http entries, reports stdio.
             if is_stdio(url):
                 require_ui_session_for_local_commands(via_api_key)
             headers = _normalize_headers(entry.headers)
@@ -669,11 +658,9 @@ async def test_mcp_server(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
 ):
-    # URL/header validation must surface as 400 like create/update so the frontend's create-form pre-flight gets the
-    # same error semantics as the save call. Only catch transport/timeout errors below.
+    # Validation must surface as 400, like save; only transport and timeout errors are caught below
     url = _validate_url(payload.url)
-    # Caller-supplied and unstored, so the gate has to land before
-    # list_tools_async -- after it the process has already started.
+    # Gate before list_tools_async: after it the process has already started.
     if is_stdio(url):
         require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)

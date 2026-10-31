@@ -158,7 +158,6 @@ def test_fast_inference_guard_ignores_empty_and_inactive_engines():
     class InactiveModel:
         vllm_engine = None
 
-    # An empty list names no trainable module, and vllm_engine = None is not fast inference.
     _raise_if_fast_inference_modules_to_save(FastInferenceModel(), [])
     _raise_if_fast_inference_modules_to_save(FastInferenceModel(), None)
     _raise_if_fast_inference_modules_to_save(InactiveModel(), ["embed_tokens"])
@@ -223,11 +222,8 @@ def test_tying_leaves_the_output_module_for_peft_to_reconstruct():
     both = ["embed_tokens", "lm_head"]
     assert _drop_tied_output_module(tied, both, True) == ["embed_tokens"]
     assert _drop_tied_output_module(tied, both, False) == both
-    # An untied model has no counterpart for PEFT to rebuild, so dropping lm_head there would leave the head the caller
-    # asked to train frozen.
+    # An untied model has no counterpart for PEFT to rebuild, so lm_head must stay.
     assert _drop_tied_output_module(untied, both, True) == both
-    # Only a real pair is split: tying can be requested with no pair to tie, and dropping
-    # the lone head would train nothing (or crash on None).
     assert _drop_tied_output_module(tied, ["embed_tokens", "score"], True) == [
         "embed_tokens",
         "score",
@@ -293,7 +289,6 @@ def test_fast_inference_leaves_lm_head_alone():
     assert saved is None, "an empty modules_to_save is what keeps the guard quiet"
     assert moved == ()
 
-    # embed_tokens still redirects, so fast inference still refuses it exactly as before.
     targets, saved, moved = _redirect_embedding_targets(
         CORE + ["embed_tokens", "lm_head"],
         None,
@@ -310,7 +305,6 @@ def test_without_fast_inference_nothing_is_skipped():
         pass
 
     assert _vllm_unmovable_embedding_modules(Plain(), CORE + ["lm_head"]) == ()
-    # A regex/None target list must not crash the lm_head membership test.
     assert _vllm_unmovable_embedding_modules(_VllmModel(), None) == ("lm_head",)
     assert _vllm_unmovable_embedding_modules(_VllmModel(), "all-linear") == ("lm_head",)
 
@@ -333,9 +327,8 @@ def test_qualified_embedding_names_are_redirected_too():
     assert saved == ["model.embed_tokens", "language_model.lm_head"]
     assert moved == ("model.embed_tokens", "language_model.lm_head")
 
-    # A qualified pair is still recognised as a tied pair.
     assert _resolve_ensure_weight_tying(_Model(tie = True), saved, None) is True
-    # Normalized to the bare name so peft 0.18 recognises it as the embedding to retie.
+    # peft 0.18 needs the bare name to recognise the embedding to retie.
     assert _drop_tied_output_module(_Model(tie = True), saved, True) == ["embed_tokens"]
 
 
@@ -365,13 +358,11 @@ def test_tying_normalizes_the_saved_embedding_to_its_bare_name():
         True,
     ) == ["embed_tokens"]
     assert _drop_tied_output_module(tied, ["embed_tokens", "lm_head"], True) == ["embed_tokens"]
-    # Untouched when tying does not apply.
     assert _drop_tied_output_module(
         tied,
         ["model.embed_tokens", "lm_head"],
         False,
     ) == ["model.embed_tokens", "lm_head"]
-    # Non-embedding names keep their full path.
     assert _drop_tied_output_module(
         tied,
         ["model.embed_tokens", "lm_head", "custom.score"],
@@ -392,7 +383,6 @@ def test_tying_needs_the_input_embedding_saved():
     assert _effective_weight_tying(tied, None, True) is False
     assert _effective_weight_tying(tied, ["score"], True) is False
     assert _effective_weight_tying(untied, ["embed_tokens", "lm_head"], True) is False
-    # An explicit False always wins.
     assert _effective_weight_tying(tied, ["embed_tokens", "lm_head"], False) is False
 
 
@@ -414,7 +404,5 @@ def test_a_qualified_name_is_not_widened_on_a_composite_model():
     from unsloth.models._utils import _drop_tied_output_module
 
     pair = ["language_model.embed_tokens", "lm_head"]
-    # Two candidates: keep the caller's scope, and keep the head trainable with it.
     assert _drop_tied_output_module(_Composite(True), list(pair), True) == pair
-    # One candidate: rewriting is safe and peft 0.18 needs the bare name to retie.
     assert _drop_tied_output_module(_Composite(False), list(pair), True) == ["embed_tokens"]

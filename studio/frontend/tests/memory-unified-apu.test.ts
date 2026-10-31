@@ -1,20 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A ROCm APU shares one memory pool between the GPU and the rest of the system,
-// exactly as Apple Silicon does. The Load Model panel decided that question from
-// `usePlatformStore(s => s.appleSilicon)`, so on an APU it charged the pool as
-// discrete VRAM PLUS host RAM: the same bytes counted twice, and a verdict of
-// "fits" for a load that cannot open.
-//
-// The signal was already there. `use-gpu-info.ts` derives `unifiedMemory` from
-// the backend's per-device `unified_memory` flag, which the ROCm probe sets, and
-// the Hub memory bar already abstains on it. Only the panel was reading the
-// platform instead of the hardware.
-//
-// These tests are on `resolveMemoryCapacityGb` rather than on the component,
-// because that is where the double count happens and it is reachable from the
-// test runner. The component's part is one line: which flag it passes.
+// A ROCm APU shares one pool like Apple Silicon; the panel must read the device flag.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -31,8 +18,6 @@ const PANEL = new URL(
   import.meta.url,
 );
 
-// A Strix Halo style APU: one 96 GiB pool, reported as GPU-visible memory and as
-// system RAM, because it is the same silicon.
 const APU = { memoryTotalGb: 48, sharedMemory: true };
 const APU_HOST = {
   hostGpuTotalGb: 48,
@@ -45,8 +30,6 @@ const APU_HOST = {
 test("an APU's pool is counted once, not as VRAM plus RAM", () => {
   const unified = resolveMemoryCapacityGb({ ...APU_HOST, unifiedMemory: true });
   assert.equal(unified.singleMemoryPool, true);
-  // The ceiling is the machine's memory, not the machine's memory plus a copy of
-  // the part of it the GPU can see.
   assert.ok(
     unified.totalCapacityGb <= 96,
     `one pool cannot exceed the machine's 96 GiB, got ${unified.totalCapacityGb}`,
@@ -54,9 +37,6 @@ test("an APU's pool is counted once, not as VRAM plus RAM", () => {
 });
 
 test("reading the platform instead of the hardware double counts the pool", () => {
-  // The state the panel was in on an APU: unifiedMemory false, because the host
-  // is not Apple. This is the bug, pinned as a contrast so the assertion above
-  // is measuring something rather than restating a default.
   const asDiscrete = resolveMemoryCapacityGb({ ...APU_HOST, unifiedMemory: false });
   const unified = resolveMemoryCapacityGb({ ...APU_HOST, unifiedMemory: true });
   assert.notEqual(
@@ -73,10 +53,7 @@ test("reading the platform instead of the hardware double counts the pool", () =
 });
 
 test("the panel passes the hardware signal, not the platform one", () => {
-  // The fix itself is one line in a 3,400-line .tsx that this runner cannot
-  // render, so it is asserted on the source. Without this the two tests above
-  // pass on a panel that still reads appleSilicon: they pin what
-  // resolveMemoryCapacityGb does with each flag, not which flag it is handed.
+  // The fix is in a .tsx this runner cannot render, so it is asserted on source.
   const source = readFileSync(PANEL, "utf8");
   const call = source.match(/resolveMemoryCapacityGb\(\{[\s\S]*?\n\s*\}\)/);
   assert.ok(call, "resolveMemoryCapacityGb is no longer called here");
@@ -86,9 +63,6 @@ test("the panel passes the hardware signal, not the platform one", () => {
     "the capacity call must take the general unified-memory signal. Passing the " +
       "Apple-only one charges a ROCm APU's single pool as VRAM plus host RAM.",
   );
-  // And the general signal must come from the probed DEVICES rather than being
-  // aliased back to the platform check. WHICH devices, and with which quantifier,
-  // are asserted separately below.
   assert.match(
     source,
     /const hasUnifiedMemory[\s\S]{0,900}?device\.unifiedMemory === true/,
@@ -97,12 +71,7 @@ test("the panel passes the hardware signal, not the platform one", () => {
 });
 
 test("an old backend that never sends unified_memory keeps the old behaviour", () => {
-  // Backwards compatibility for an existing install whose backend predates the
-  // per-device flag. use-gpu-info derives unifiedMemory with
-  // `devices.some(d => d.unified_memory === true)`, so a missing key is false,
-  // and the panel's `inferenceGpu.unifiedMemory || isAppleUnifiedMemory` then
-  // collapses to exactly the appleSilicon check it replaced. Neither better nor
-  // worse than before, which is the requirement.
+  // An older backend lacks unified_memory, so this collapses to the old appleSilicon check.
   const legacyDevices: { memory_total_gb: number; unified_memory?: boolean }[] = [
     { memory_total_gb: 24 },
   ];
@@ -118,8 +87,6 @@ test("an old backend that never sends unified_memory keeps the old behaviour", (
 });
 
 test("a real discrete card is unaffected by the change", () => {
-  // The fix must not turn an ordinary NVIDIA host into a shared-pool one. Its
-  // devices do not report unified_memory, so nothing here moves.
   const discrete = resolveMemoryCapacityGb({
     pinnedDevices: [],
     hostDevices: [{ memoryTotalGb: 24, sharedMemory: false }],
@@ -130,20 +97,11 @@ test("a real discrete card is unaffected by the change", () => {
   });
   assert.equal(discrete.singleMemoryPool, false);
   assert.equal(discrete.gpuCapacityGb, 24);
-  // VRAM beside RAM, which is what a discrete card actually offers.
   assert.equal(discrete.totalCapacityGb, 88);
 });
 
-// ---------------------------------------------------------------------------
-// Scoping the flag to the pin (Codex P2 on 9830)
-
 test("a discrete pin on a mixed APU host keeps system RAM as a pool beside it", () => {
-  // The regression the first version of this fix introduced. A ROCm APU beside a
-  // discrete card makes a HOST-WIDE `devices.some(...)` true, and passing that
-  // for a pin naming only the discrete card told resolveMemoryCapacityGb the two
-  // are one pool. Measured: totalCapacityGb collapsed 143.52 -> 15.52 GiB,
-  // discarding 128 GiB of RAM the load can really spill into, and the panel then
-  // warned "more than this machine holds" for a load that fits comfortably.
+  // A host-wide some() would treat a discrete pin on a mixed host as one pool.
   const APU = { memoryTotalGb: 48, sharedMemory: true };
   const DGPU = { memoryTotalGb: 16, sharedMemory: false };
   const base = {
@@ -168,9 +126,6 @@ test("a discrete pin on a mixed APU host keeps system RAM as a pool beside it", 
 });
 
 test("the panel scopes the unified flag to the pinned devices", () => {
-  // The fix is in a .tsx this runner cannot render, so it is asserted on source.
-  // Without this, the capacity test above passes on a panel that still hands the
-  // host-wide flag over: it pins what the resolver does, not what it is given.
   const source = readFileSync(PANEL, "utf8");
   const decl = source.match(/const hasUnifiedMemory = useMemo\(\(\) => \{[\s\S]*?\}, \[[^\]]*\]\);/);
   assert.ok(decl, "hasUnifiedMemory is no longer a scoped useMemo");
@@ -187,11 +142,7 @@ test("the panel scopes the unified flag to the pinned devices", () => {
 });
 
 test("a mixed governing set is not unified, pinned or unpinned", () => {
-  // The second half of the same bug. Narrowing to the pin fixed the discrete-only
-  // case but `.some()` still marked a MIXED set unified: an unpinned load, or a
-  // pin naming both an APU and a discrete card, reported 62.08 GiB instead of
-  // 143.52 GiB. One independent-memory device in the set means there is real VRAM
-  // beside system RAM, so the two are not one pool.
+  // One independent-memory device in the set means VRAM beside RAM, so not one pool.
   const APU = { memoryTotalGb: 48, sharedMemory: true, unifiedMemory: true };
   const DGPU = { memoryTotalGb: 16, sharedMemory: false, unifiedMemory: false };
   const mixed = [APU, DGPU];
@@ -206,7 +157,6 @@ test("a mixed governing set is not unified, pinned or unpinned", () => {
   // a unified-memory machine.
   assert.equal(unified([]), false, "the empty set must not read as unified");
 
-  // And the capacity that follows from it.
   const cap = resolveMemoryCapacityGb({
     pinnedDevices: mixed,
     hostDevices: mixed,
@@ -239,26 +189,9 @@ test("the panel asks whether EVERY governing device is unified", () => {
   );
 });
 
-// ---------------------------------------------------------------------------
-// The pool's SIZE, which is a different question from whether it is one pool
-// (Codex P2 on 9830)
-
 test("a ROCm APU's ceiling is system RAM, not its GPU-visible window", () => {
-  // Classifying the APU as one pool was right. Taking the GPU figure as the size
-  // of that pool was not: Apple's memory_total_gb IS the machine's unified
-  // memory, while a ROCm APU's is a BIOS-carved window onto system RAM. On a
-  // 96 GiB machine carving 48 GiB, the ceiling came out at 46.56 GiB, so the
-  // panel warned that a 60 GiB load exceeds a machine that holds 96.
-  //
-  // The backend already says which one is real, in
-  // llama_cpp.py::_available_system_memory_mib: "On a unified-memory APU this,
-  // not the ROCm-reported VRAM, is the real ceiling: the weights load into
-  // shared system RAM."
-  //
-  // Driven with sharedMemory false, which is what a ROCm APU reports on Linux
-  // (hardware.py sets shared_memory only on Windows). That matters: it is the
-  // case where the unified flag is the ONLY thing classifying the pool, so the
-  // capacity comes entirely from this branch.
+  // A ROCm APU's memory_total_gb is a BIOS window; system RAM is the real ceiling.
+  // sharedMemory false is what Linux reports, so the unified flag alone classifies it.
   const APU = { memoryTotalGb: 48, sharedMemory: false };
   const base = {
     pinnedDevices: [],
@@ -279,15 +212,11 @@ test("a ROCm APU's ceiling is system RAM, not its GPU-visible window", () => {
     96,
     "the pool is the machine's RAM, not the window the BIOS carved out of it",
   );
-  // The GPU figure is still the budgeted window: what may sit on the GPU and how
-  // much the machine holds are different numbers even when they share silicon.
   assert.equal(rocm.gpuCapacityGb, 46.56);
 });
 
 test("Apple is unchanged, since its GPU figure already is the whole pool", () => {
-  // The guard on the fix. Apple must keep the budgeted GPU figure as its ceiling;
-  // routing it through the RAM branch would hand back the raw 96 and quietly drop
-  // the VRAM Budget the user set.
+  // Apple must keep the budgeted GPU figure, or the user's VRAM Budget is dropped.
   const MAC = { memoryTotalGb: 96, sharedMemory: false };
   const base = {
     pinnedDevices: [],
@@ -302,8 +231,6 @@ test("Apple is unchanged, since its GPU figure already is the whole pool", () =>
     ...base,
     unifiedPoolReportedAsGpuMemory: true,
   });
-  // Absent must behave as Apple, so every caller written before the ROCm case
-  // keeps its answer without being updated.
   const byDefault = resolveMemoryCapacityGb(base);
   assert.equal(explicit.totalCapacityGb, 93.12);
   assert.equal(
@@ -319,9 +246,6 @@ test("Apple is unchanged, since its GPU figure already is the whole pool", () =>
 });
 
 test("the panel tells the resolver which kind of unified memory it has", () => {
-  // Source-level, like the sibling assertions: the fix is one argument in a .tsx
-  // this runner cannot render, and without this the two tests above pass on a
-  // panel that never passes the flag.
   const source = readFileSync(PANEL, "utf8");
   const call = source.match(/resolveMemoryCapacityGb\(\{[\s\S]*?\n\s*\}\)/);
   assert.ok(call, "resolveMemoryCapacityGb is no longer called here");
@@ -334,14 +258,7 @@ test("the panel tells the resolver which kind of unified memory it has", () => {
 });
 
 test("a Linux APU beside a discrete card is not independent VRAM", () => {
-  // The third and last face of the same reporting split. `.every()` correctly
-  // made a mixed set non-unified, so the ceiling became `dedicated + RAM` -- and
-  // `dedicated` was computed from `sharedMemory` ALONE, which a Linux ROCm APU
-  // reports as false. Its 48 GiB window was therefore added to the 128 GiB of RAM
-  // that already contains it.
-  //
-  // Measured: 190.08 GiB on a machine holding 128, i.e. 46.56 GiB of capacity
-  // that does not exist, in the direction that admits a load.
+  // A Linux ROCm APU reports sharedMemory false, so its window was double counted with RAM.
   const APU = { memoryTotalGb: 48, sharedMemory: false, unifiedMemory: true };
   const DGPU = { memoryTotalGb: 16, sharedMemory: false, unifiedMemory: false };
   const mixed = [APU, DGPU];
@@ -364,10 +281,7 @@ test("a Linux APU beside a discrete card is not independent VRAM", () => {
 });
 
 test("the unified flag is read from the device, not just shared_memory", () => {
-  // The two flags must be interchangeable for capacity, since the backend picks
-  // between them by platform: Windows sends shared_memory, Linux sends
-  // unified_memory, for the same silicon. If these two ever disagree, one
-  // platform is being charged differently from the other for identical hardware.
+  // Windows sends shared_memory and Linux unified_memory for the same silicon.
   const base = {
     pinnedDevices: [] as never[],
     hostGpuTotalGb: 48,
@@ -392,43 +306,22 @@ test("the unified flag is read from the device, not just shared_memory", () => {
 });
 
 test("a Linux APU's FREE memory is the pool's, not the window's", () => {
-  // The free side of the same split, and a regression this PR introduced rather
-  // than inherited. resolveMemoryFit asks the WHOLE-LOAD question of
-  // freeGpuCapacityGb as soon as the pool is single, and marking a ROCm APU
-  // single-pool (correctly) pointed that question at the free space inside a
-  // BIOS-carved window. A 60 GiB load on a 96 GiB machine with 60+ GiB free was
-  // then warned as not fitting, purely because 60 > the 48 GiB window.
+  // Free capacity on a ROCm APU must be measured against host RAM, not the carved window.
   const APU = { memoryFreeGb: 44, memoryTotalGb: 48, sharedMemory: false, unifiedMemory: true };
   const freeVram = aggregateUsableFreeVramGb([APU], 0.97);
   const usableSystemRamGb = 62; // 64 GiB available, less the loader's 2 GiB headroom
 
-  // What the panel now hands resolveMemoryFit for a non-Apple unified pool.
   const pooledFree = Math.max(freeVram, usableSystemRamGb);
   assert.ok(
     pooledFree >= usableSystemRamGb,
     `the pool's free memory cannot be smaller than the host's; got ${pooledFree}`,
   );
-  // And the 60 GiB load the old figure refused now fits the one it should be
-  // measured against.
   assert.ok(freeVram < 60, `the window must be the smaller figure; got ${freeVram}`);
   assert.ok(pooledFree > 60, `the pool must hold the load; got ${pooledFree}`);
 });
 
 test("two views of one host pool are not counted as two pools", () => {
-  // What folding unifiedMemory into the FREE path actually buys, measured rather
-  // than asserted. A ROCm APU (Linux: unifiedMemory) beside a Vulkan iGPU
-  // (sharedMemory) are two reported views of the SAME host memory. Gating on
-  // sharedMemory alone made the APU an independent addend:
-  //
-  //   unfixed  77.12 GiB     fixed  38.56 GiB
-  //
-  // The pool counted twice, on the figure the fit verdict is measured against.
-  //
-  // Worth recording what this does NOT buy, because the first version of this
-  // test claimed it and was vacuous: for an APU beside a DISCRETE card the
-  // aggregate is 52.08 either way. A fully shared device already contributes its
-  // own free exactly once, so there is nothing to dedupe until a SECOND view of
-  // the same pool shows up. That case is this one.
+  // An APU and a Vulkan iGPU are two views of the same memory; count it once.
   const APU = { memoryFreeGb: 40, memoryTotalGb: 48, sharedMemory: false, unifiedMemory: true };
   const IGPU = { memoryFreeGb: 40, memoryTotalGb: 48, sharedMemory: true };
   const folded = aggregateUsableFreeVramGb([APU, IGPU], 0.97);
@@ -442,16 +335,10 @@ test("two views of one host pool are not counted as two pools", () => {
     "treating the APU as its own memory must be the larger, wrong answer, " +
       `or this test is measuring nothing; got ${asDedicated} vs ${folded}`,
   );
-  // One view's worth, not two.
   assert.ok(folded < asDedicated / 1.5);
 });
 
-// The free-capacity rule the panel applies, run rather than read back as text. The
-// first version of this pinned the branch's exact spelling with a bounded gap between
-// two anchors, and #10627 broke it by rewriting the branch to return a record: the rule
-// it asserts survived the rewrite intact and got stricter, but the text did not, so the
-// test failed a change it should have passed. The rule now lives in gpu-vram.ts, which
-// this runner can import, so the panel's part is one call and the rule is measured.
+// Run the rule from gpu-vram.ts rather than matching panel text, which broke on rewrites.
 const APU_POOL = {
   devices: [
     {
@@ -479,11 +366,8 @@ const PANEL_FREE_CAPACITY_CALL =
 const PANEL_UNIFIED_FLAG = /unifiedMemory:\s*hasUnifiedMemory/;
 const PANEL_APPLE_FLAG =
   /unifiedPoolReportedAsGpuMemory:\s*isAppleUnifiedMemory/;
-// The panel's own name for the host reading carries no meaning, so only the fact
-// that it reaches the rule is pinned.
 const PANEL_HOST_VIEW = /usableSystemRamGb:\s*\w/;
 
-/** The carved window on its own, which is what this pool must NOT be measured by. */
 function carvedWindowGb(): number {
   return aggregateUsableFreeVramGb(APU_POOL.devices, APU_POOL.budgetFraction);
 }
@@ -502,8 +386,6 @@ test("a non-Apple unified pool is measured against the host, not the window", ()
       "carved window cannot answer a whole-load question",
   );
   assert.equal(pooled.known, true);
-  // And the 60 GiB load the window refused now fits the figure it is measured
-  // against.
   assert.ok(pooled.gb > 60, `the pool must hold the load; got ${pooled.gb}`);
 });
 
@@ -528,8 +410,6 @@ test("an unread host RAM figure is reported unread, not replaced by the window",
 });
 
 test("Apple and discrete hosts still answer from their own free VRAM", () => {
-  // Apple's GPU figure already IS the pool, so it stays on the ordinary path,
-  // and a discrete card never reaches the unified branch at all.
   const apple = resolveFreeGpuCapacityGb({
     ...APU_POOL,
     unifiedPoolReportedAsGpuMemory: true,
@@ -545,8 +425,6 @@ test("Apple and discrete hosts still answer from their own free VRAM", () => {
 });
 
 test("the panel hands the free-capacity rule its own inputs", () => {
-  // One line of the panel is still unreachable from here: which flags it passes.
-  // The rule itself is exercised above, so this only has to pin the wiring.
   const source = readFileSync(PANEL, "utf8");
   const call = source.match(PANEL_FREE_CAPACITY_CALL);
   assert.ok(

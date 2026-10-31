@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""gpt-oss MXFP4 LoRA without load_in_16bit must take unsloth_zoo's packed experts path.
-
-Native matmul_ogs has no backward. Source-level (the real branch needs a checkpoint); no GPU.
-"""
+"""Without load_in_16bit, MXFP4 LoRA must take the packed experts path; matmul_ogs has no backward."""
 
 import ast
 import inspect
@@ -46,6 +43,33 @@ def _dequantize_branch():
     return found[0]
 
 
+def _locals_read_by(branch):
+    """`name = ...` statements ahead of `branch` in each block enclosing it within its function,
+    outermost first, whose name the branch reads (e.g. `_fp8_full_finetune` from #15367)."""
+    parents = {child: node for node in ast.walk(TREE) for child in ast.iter_child_nodes(node)}
+    read = {
+        n.id for n in ast.walk(branch) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+    }
+    levels, node = [], branch
+    while node in parents and not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        parent = parents[node]
+        for _, value in ast.iter_fields(parent):
+            if isinstance(value, list) and any(stmt is node for stmt in value):
+                ahead = value[: next(i for i, stmt in enumerate(value) if stmt is node)]
+                levels.append(
+                    [
+                        stmt
+                        for stmt in ahead
+                        if isinstance(stmt, ast.Assign)
+                        and len(stmt.targets) == 1
+                        and isinstance(stmt.targets[0], ast.Name)
+                        and stmt.targets[0].id in read
+                    ]
+                )
+        node = parent
+    return [stmt for level in reversed(levels) for stmt in level]
+
+
 class _Mxfp4Config:
     def __init__(
         self,
@@ -71,7 +95,6 @@ SHARD = re.compile(
 
 
 def _index_name(shard):
-    # transformers' _add_variant naming.
     m = SHARD.fullmatch(shard)
     if m is None:
         return None
@@ -201,7 +224,9 @@ def _run_branch(
         "auto_config": types.SimpleNamespace(num_hidden_layers = 24),
     }
     node = _dequantize_branch()
-    code = ast.Module(body = [node], type_ignores = [])
+    # The branch's own locals, computed from the inputs above; a stub given here wins.
+    lifted = [stmt for stmt in _locals_read_by(node) if stmt.targets[0].id not in ns]
+    code = ast.Module(body = [*lifted, node], type_ignores = [])
     ast.fix_missing_locations(code)
     exec(compile(code, str(VISION), "exec"), ns)
     return ns["quantizer_kwargs"].get("dequantize", False)
@@ -232,7 +257,6 @@ def test_helper_off_without_the_zoo_packed_path(monkeypatch):
 
 
 def test_native_mxfp4_lora_load_dequantizes_through_packed_path(zoo):
-    # load_in_4bit = False without load_in_16bit: previously native Mxfp4GptOssExperts.
     assert _run_branch(False, "mxfp4", False) is True
 
 
@@ -325,7 +349,6 @@ def test_named_cpu_device_map_keeps_native_load(zoo, sizes):
 
 
 def test_only_the_loaded_weight_files_are_counted(zoo, sizes):
-    # gpt-oss-120b's original/ copy (61 GiB) is never loaded.
     sizes["checkpoint"], sizes["free"] = 61, [80]
     sizes["extra"] = [("original/model--00001-of-00007.safetensors", 61)]
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is True
@@ -557,7 +580,7 @@ def test_an_explicit_max_memory_budget_is_used_whole(zoo, sizes):
 
 
 def test_balanced_low_0_still_counts_the_first_card(zoo, sizes):
-    # get_balanced_memory(low_zero = True) still spills overflow onto GPU 0 before CPU.
+    # get_balanced_memory(low_zero=True) still spills overflow onto GPU 0 before CPU.
     sizes["checkpoint"], sizes["free"] = 60, [80, 40]
     assert _helper()("mxfp4", False, "balanced_low_0", "openai/gpt-oss-120b") is True
     sizes["free"] = [30, 30]
@@ -565,7 +588,6 @@ def test_balanced_low_0_still_counts_the_first_card(zoo, sizes):
 
 
 def test_offline_sizing_ignores_repo_files_a_load_never_fetches(zoo, tmp_path, monkeypatch):
-    # Cache listing names undownloaded metal/, original/ files: snapshot_download(local_files_only) raised.
     import huggingface_hub
     import torch
 
@@ -608,7 +630,7 @@ def test_offline_sizing_ignores_repo_files_a_load_never_fetches(zoo, tmp_path, m
 
 
 def test_balanced_placement_caps_earlier_cards_like_get_balanced_memory(zoo, sizes):
-    # 80 + 4 GiB free sums past 60 GiB, but "auto" caps card 0 near 30 GiB, so the rest would offload.
+    # 80 + 4 GiB sums past 60, but "auto" caps card 0 near 30 GiB, so the rest would offload.
     sizes["checkpoint"], sizes["free"] = 60, [80, 4]
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is False
     assert _helper()("mxfp4", False, "balanced", "openai/gpt-oss-120b") is False
@@ -619,7 +641,7 @@ def test_balanced_placement_caps_earlier_cards_like_get_balanced_memory(zoo, siz
 
 
 def test_multi_card_budget_leaves_room_for_a_whole_layer_per_card(zoo, sizes):
-    # 0.9 x (35 + 25) = 54 GiB sums past 50, but 4 whole layers of 12.5 GiB strand card 0's tail.
+    # 0.9 x (35 + 25) = 54 GiB sums past 50, but 12.5 GiB layers strand card 0's tail.
     sizes["checkpoint"], sizes["free"] = 50, [35, 25]
     helper = _helper()
     assert helper("mxfp4", False, "sequential", "openai/gpt-oss-120b") is True
@@ -632,13 +654,12 @@ def test_multi_card_budget_leaves_room_for_a_whole_layer_per_card(zoo, sizes):
     ["lm_head", "model.embed_tokens", "model.layers.3.self_attn", "model.layers.3.mlp.experts", ""],
 )
 def test_any_offload_in_an_explicit_map_unpacks_like_the_zoo_guard(zoo, sizes, key):
-    # zoo's _get_device_map guard flags any cpu / disk entry, then every expert is dequantized.
     device_map = {"": 0, key: "cpu"} if key else {"": "cpu"}
     assert _helper()("mxfp4", False, device_map, "openai/gpt-oss-20b") is False
 
 
 def test_a_previous_load_offload_flag_does_not_decide_this_load(zoo, sizes):
-    # zoo only clears _LOAD_OFFLOADS once the next load validates, after this pre-load decision.
+    # zoo clears _LOAD_OFFLOADS only after the next load validates, after this decision.
     module = sys.modules[ZOO_MXFP4]
     module._LOAD_OFFLOADS = [True]
     module.keep_mxfp4_experts_packed = lambda: not module._LOAD_OFFLOADS[0]

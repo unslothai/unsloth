@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-# Assert Unsloth installed a llama.cpp that loads and runs on THIS macOS. Tests
-# the contract that matters (binaries load and their minimum-OS is <= this host)
-# instead of the old "did install.sh fall back to a source build?" grep, since a
-# source build with a correct deployment target is a valid outcome.
+# Assert the installed llama.cpp loads and runs on this macOS (min-OS <= host).
 set -uo pipefail
 
 UNSLOTH_HOME="${STUDIO_HOME:-$HOME/.unsloth}"
@@ -28,9 +25,7 @@ QUANT="$(find "$LLAMA_DIR" -type f -name 'llama-quantize' 2>/dev/null | head -1)
 HOST_VER="$(sw_vers -productVersion 2>/dev/null || echo '0')"
 HOST_MAJOR="${HOST_VER%%.*}"
 
-# Static minimum-OS check on every Mach-O we ship. vtool ships with the Xcode
-# command line tools, which GitHub macOS runners always have; if it is somehow
-# missing we skip the static check and rely on the runtime launch below.
+# vtool comes with the CLT; skip the static check if missing.
 if command -v vtool >/dev/null 2>&1; then
   while IFS= read -r macho; do
     [ -n "$macho" ] || continue
@@ -43,26 +38,15 @@ if command -v vtool >/dev/null 2>&1; then
   done < <(find "$BIN_DIR" -type f \( -name '*.dylib' -o -name 'llama-server' -o -name 'llama-quantize' \) 2>/dev/null)
 fi
 
-# Runtime launch: --version forces dyld to load every linked dylib (including
-# libggml-metal.dylib). A missing Metal symbol or too-new binary fails here.
+# --version forces dyld to load every linked dylib.
 if ! "$SERVER" --version >/tmp/llama-server-version.txt 2>&1; then
   echo "---- llama-server --version output ----"
   cat /tmp/llama-server-version.txt || true
   fail "llama-server failed to launch on macOS $HOST_VER (dyld load / symbol error)"
 fi
 
-# The launch above uses this shell's environment, not the one Unsloth builds for
-# its child. That one was Linux-shaped on macOS (LD_LIBRARY_PATH, which dyld
-# ignores) while the installer's own validation set DYLD_LIBRARY_PATH, so the
-# defect could not show up at install time (#8566). A unit test with a
-# monkeypatched sys.platform cannot prove the real thing; this can.
-# Resolve the interpreter from STUDIO_HOME first, not from PATH. The
-# clean-machine lane scrubs PATH down to system directories and puts the shim
-# under its own UNSLOTH_STUDIO_HOME, so `command -v unsloth` is empty there and
-# a PATH-only lookup would skip this assertion in the one lane whose whole
-# point is a clean install, while CI still reported success. The tauri delivery
-# nests its venv one level deeper (clean-machine-install-ci.yml checks
-# $HOME_DIR/studio/unsloth_studio), so both layouts are candidates.
+# Also check the env Unsloth builds for its child (it must use DYLD_LIBRARY_PATH).
+# Resolve the interpreter from STUDIO_HOME first; the clean-machine lane scrubs PATH.
 STUDIO_PY=""
 for candidate in \
   "$UNSLOTH_HOME/unsloth_studio/bin/python" \
@@ -78,9 +62,7 @@ if [ -z "$STUDIO_PY" ]; then
     [ -n "$candidate" ] && [ -x "$candidate" ] && { STUDIO_PY="$candidate"; break; }
   done
 fi
-# Fail rather than skip: an install that produced a llama-server but no
-# reachable interpreter is itself a broken install, and a skip here is
-# indistinguishable from a pass.
+# Fail rather than skip: a skip is indistinguishable from a pass.
 [ -n "$STUDIO_PY" ] || fail "no Unsloth interpreter found under $UNSLOTH_HOME or on PATH; cannot check the launch environment"
 if [ -n "$STUDIO_PY" ]; then
   if ! PYTHONPATH=studio/backend "$STUDIO_PY" - "$SERVER" <<'PY'

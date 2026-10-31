@@ -134,9 +134,7 @@ function Get-StudioTempSubtree {
         [Parameter(Mandatory = $true)][string]$Root,
         [Parameter(Mandatory = $true)][string[]]$Patterns
     )
-    # Generic lists, not PowerShell arrays. += on an array allocates a new one and
-    # copies, so a large temp tree costs quadratic time in the number of entries on
-    # a path that runs twice per measured action.
+    # Generic lists: += on arrays is quadratic.
     $found = New-Object 'System.Collections.Generic.List[string]'
     $unread = New-Object 'System.Collections.Generic.List[string]'
     $pending = New-Object 'System.Collections.Generic.List[string]'
@@ -145,10 +143,7 @@ function Get-StudioTempSubtree {
     while ($pending.Count -gt 0) {
         $visited++
         if ($visited -gt 200000) {
-            # Not a break. A truncated snapshot is indistinguishable from a clean one
-            # to the caller, and this listing is exactly what stands in when the
-            # watcher cannot attach, so a silent stop turns a missed artifact into a
-            # clean verdict. Better to declare the measurement void.
+            # Throw, not break: a truncated snapshot would look clean.
             throw ("the temp scan of $Root passed $visited directories without finishing. " +
                    "A partial snapshot would be read as a complete one, so this run cannot " +
                    "say whether a compiler ran.")
@@ -158,27 +153,11 @@ function Get-StudioTempSubtree {
         $entries = @()
         try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
         catch {
-            # Recorded, not just skipped. The caller subtracts the baseline listing from the
-            # final one, so a directory that fails HERE and succeeds in the other snapshot
-            # silently changes the answer: files that were there all along show up as new and
-            # an innocent action is reported as having compiled. The reverse hides a real
-            # artifact. Which directory went unread has to survive to the comparison.
-            #
-            # A directory that no longer exists is not a gap. It cannot contribute a file to
-            # a later listing of itself, and re-reading a path that raised for any other
-            # reason is how a transient lock gets a second chance.
-            #
-            # Classified from the error, never by probing the path. Test-Path answers $false
-            # for a missing directory but THROWS on an ACL-denied one, so probing would both
-            # call an unreadable directory deleted - dropping it silently, which is the exact
-            # defect this file exists to prevent - and raise from inside the catch meant to
-            # contain the failure.
+            # Record unread dirs so the before/after diff can withhold them. Classify from the error,
+            # not Test-Path, which throws on ACL-denied dirs.
             if (Test-StudioPathIsGone -ErrorRecord $_) { continue }
             try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
             catch {
-                # Re-classified rather than assumed: the deletion race can land in the window
-                # between the two reads, and recording that as unread would void a run for the
-                # ordinary temp deletion this change exists to tolerate.
                 if (-not (Test-StudioPathIsGone -ErrorRecord $_)) { $unread.Add($dir) }
                 continue
             }
@@ -215,15 +194,12 @@ function Get-StudioTempArtifacts {
     $found = New-Object 'System.Collections.Generic.List[string]'
     $unread = New-Object 'System.Collections.Generic.List[string]'
     foreach ($root in (Get-StudioTempRoots)) {
-        # The whole subtree: PowerShell compiles into a per-invocation subdirectory,
-        # not into the root, so a non-recursive listing sees none of this.
+        # Recursive: PowerShell compiles into a per-invocation subdirectory.
         $scan = Get-StudioTempSubtree -Root $root -Patterns $patterns
         $found.AddRange([string[]]$scan.Files)
         $unread.AddRange([string[]]$scan.Unread)
     }
-    # Arrays cast explicitly: PowerShell unrolls an empty array to nothing, and the
-    # caller casts Files into a HashSet whose two-argument constructor rejects null.
-    # On a clean runner that killed the watcher before the positive control ran.
+    # Cast explicitly: an empty array unrolls to null, which the caller's HashSet rejects.
     return [pscustomobject]@{
         Files  = [string[]]$found.ToArray()
         Unread = [string[]]$unread.ToArray()
@@ -273,10 +249,7 @@ function Test-StudioPathUnder {
 }
 
 $script:ArtifactPattern = '\.(dll|cmdline|rsp|cs|err|out)$'
-# A compiler's own files, wherever they appear. Nothing else writes a .cmdline.
 $script:CompilerFilePattern = '\.(cmdline|rsp)$'
-# What csc leaves beside the assembly it produced: the response file, the generated
-# source, and the captured streams.
 $script:CompilerSiblingPattern = '\.(cmdline|rsp|cs|err|out)$'
 
 function Get-StudioParentPath {
@@ -337,9 +310,7 @@ function Select-StudioCompilerLibraries {
             $libraries += $path
         }
     }
-    # Returned plain, not comma-wrapped like the functions above: the caller normalises
-    # with @(), and wrapping an empty array there yields a one-element array holding an
-    # empty array, which reads downstream as one unnamed temporary library.
+    # Not comma-wrapped: the caller normalises with @(), and wrapping would nest an empty array.
     return $libraries
 }
 
@@ -364,18 +335,12 @@ function Start-StudioTempWatch {
             $watcher.Path = $root
             $watcher.IncludeSubdirectories = $true
             $watcher.NotifyFilter = [System.IO.NotifyFilters]::FileName
-            # The default 8 KB buffer overflows on a busy temp directory, and an
-            # overflow drops events silently, which here reads as a clean run.
+            # The default 8 KB buffer overflows and silently drops events.
             $watcher.InternalBufferSize = 65536
             $identifier = "StudioTempWatch-" + [guid]::NewGuid().ToString('N')
             $null = Register-ObjectEvent -InputObject $watcher -EventName Created `
                 -SourceIdentifier $identifier
-            # The Error event, subscribed for the same reason the buffer was enlarged above. An
-            # overflow raises Error and drops the events it could not queue, silently, and a
-            # watcher that dropped events is one the caller must not count as covering its root:
-            # an artifact can then be missing from the live stream AND from the listing, which
-            # reads as a clean run. Without this subscription the failure is not observable at
-            # all, so the handle would stay in $watchedRoots looking healthy.
+            # Subscribe to Error so an overflowed watcher is not counted as covering its root.
             $errorIdentifier = $identifier + "-error"
             $null = Register-ObjectEvent -InputObject $watcher -EventName Error `
                 -SourceIdentifier $errorIdentifier
@@ -403,9 +368,7 @@ function Stop-StudioTempWatch {
     #>
     param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Handle)
 
-    # Delivery is asynchronous, so the last few creations before the action returned may
-    # still be in flight. Settle first, then stop raising: draining immediately dropped
-    # exactly the events that matter, the ones from the end of a compile.
+    # Delivery is async; settle before draining or the last events are lost.
     Start-Sleep -Milliseconds 750
 
     $seen = @()
@@ -421,10 +384,6 @@ function Stop-StudioTempWatch {
                 Remove-Event -EventIdentifier $record.EventIdentifier -ErrorAction SilentlyContinue
             }
         } catch { }
-        # Any Error at all condemns the root. There is no partial credit available here: the
-        # event carries the exception, not the list of creations it dropped, so a watcher that
-        # raised once cannot say what it missed and the caller cannot treat it as covering
-        # anything.
         if ($entry.PSObject.Properties['ErrorSourceIdentifier']) {
             try {
                 $errors = @(Get-Event -SourceIdentifier $entry.ErrorSourceIdentifier `
@@ -488,10 +447,7 @@ function Test-StudioCompilerImage {
     param([string]$Image)
 
     if ([string]::IsNullOrEmpty($Image)) { return $false }
-    # Split explicitly, not via [System.IO.Path]::GetFileName, which splits on the HOST's
-    # separators: under the Linux pwsh where this is tested a backslash is an ordinary
-    # character and the whole path came back as the leaf. The records are always Windows
-    # paths whatever reads them.
+    # Split explicitly: GetFileName uses the host's separators, wrong under Linux pwsh.
     $leaf = ($Image -split '[\\/]')[-1]
     foreach ($name in $script:CompilerNames) {
         if ($leaf -eq $name) { return $true }
@@ -513,20 +469,7 @@ function Select-StudioCompilerHits {
     foreach ($record in $Events) {
         $image = Get-StudioProcessImageName -Event $record
         if (-not (Test-StudioCompilerImage -Image $image)) { continue }
-        # A compiler started BY a compiler is a step of a compile that is already being
-        # scored, not a new one. csc.exe shells out to cvtres.exe to build its resource
-        # blob, and counting that as a second hit says the action compiled twice.
-        #
-        # It also decides the cross-step bleed the $prior subtraction could not, because
-        # the Security log is written with latency: the positive control's csc.exe started
-        # before the installer's window, its cvtres.exe child landed inside, and neither
-        # was in the log yet when the baseline was taken. The child is the only part that
-        # was ever in range.
-        #
-        # Detection is unchanged for a compile the action really starts, because its ROOT
-        # compiler is spawned by the installer's shell, not by another compiler, and the
-        # window opens before the action does. What this drops is only ever the second
-        # process of a chain whose first was already seen or was never in range at all.
+        # Skip compilers spawned by compilers (csc -> cvtres): part of an already-counted compile.
         if (Test-StudioCompilerImage -Image (Get-StudioEventField -Event $record -Name 'ParentProcessName')) {
             continue
         }
@@ -562,14 +505,7 @@ function Get-StudioCompilerEvents {
 
     $events = @()
     try {
-        # Bounded at both ends. Open-ended, a compiler started by something else during
-        # the recursive temp scan counted against the action that had already finished.
-        #
-        # Padded a second each way, then filtered exactly below: the hashtable's bounds do
-        # not hold to the precision they are given. A csc.exe at 17:51:57.107 came back from
-        # a window whose floor was 17:51:57.58, and failed a step that had not printed its
-        # first line until 17:51:58.58. TimeCreated is the instant the claim is about. The
-        # far pad covers the other end, where rounding could drop a real compile.
+        # Pad a second each way, then filter exactly: the hashtable bounds are imprecise.
         $events = Get-WinEvent -FilterHashtable @{
             LogName   = 'Security'
             Id        = 4688
@@ -580,16 +516,8 @@ function Get-StudioCompilerEvents {
             $_.TimeCreated -ge $Since -and $_.TimeCreated -le $Until
         })
     } catch [System.Exception] {
-        # No matching events is an exception from Get-WinEvent, not an empty set, and on
-        # a clean run that is expected. A log this cannot READ throws the same way, so
-        # swallowing both would print "no compiler" having seen nothing at all. The
-        # positive control runs in an earlier step and says nothing about whether the log
-        # was readable during the measurements.
-        #
-        # Separate them structurally rather than by the localised message text: ask the
-        # log for any one record. If that succeeds the filter genuinely matched nothing;
-        # if it fails too, this measurement is void, not clean.
-        # Bound before the probe below, whose own catch rebinds $_.
+        # Get-WinEvent throws both on no matches and on an unreadable log; probe the log to tell them apart.
+        # Bind $_ before the probe, whose catch rebinds it.
         $reason = $_.Exception.Message
         $readable = $false
         try {
@@ -623,60 +551,32 @@ function Invoke-WithCompilerWatch {
 
     New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
 
-    # Baseline first, THEN open the window. The sweep walks every temp root
-    # recursively and can take seconds, and a csc.exe the machine started during that
-    # walk predates the action, so counting it fails a measurement for something it
-    # did not do. Same reasoning as the $until below.
+    # Baseline first, then open the window, so compiles during the sweep are not counted.
     $beforeScan = Get-StudioTempArtifacts
     $before = New-Object 'System.Collections.Generic.HashSet[string]' (
         [string[]]$beforeScan.Files, [StringComparer]::OrdinalIgnoreCase)
-    # A second back, so a process created in the same tick as the timestamp survives
-    # Get-WinEvent's strictly-later comparison. That reaches one second into the tail
-    # of the sweep above, so a compiler started in that second is counted: a deliberate
-    # trade towards a loud false alarm rather than a dropped real compile.
+    # Back one second so a same-tick process survives Get-WinEvent's strictly-later comparison.
     $since = (Get-Date).AddSeconds(-1)
-    # That second reaches backwards, so it can reach into whatever ran BEFORE this action.
-    # It did: the positive control compiles a type one step earlier, and its
-    # csc.exe -> cvtres.exe landed inside the installer measurement's lookback and was
-    # reported as "the installer spawned 1 compiler process(es)".
-    #
-    # Recorded and subtracted below, rather than moving the floor forward: a hit already in
-    # the window before the action starts cannot be the action's, while moving the floor to
-    # "now" would give up the same-tick protection the second is there to provide.
+    # That lookback can catch the previous step's compile, so record it and subtract below.
     $prior = @(Get-StudioCompilerEvents -Since $since -Until (Get-Date))
-    # Opened here, with the 4688 window, and not before the baseline: a file the
-    # machine creates during that recursive sweep predates the action.
     $watch = Start-StudioTempWatch
 
     $failure = $null
     $live = @()
     $watchFailedRoots = @()
     try {
-        # Out-Host, not the success stream. The installer action tees its log, and those
-        # lines would be emitted as function output ahead of the result hashtable, making
-        # the caller's $seen an object array whose $seen.Compilers fails under
-        # Set-StrictMode instead of reporting the measurement.
+        # Out-Host so action output does not pollute the function's return value.
         & $Action | Out-Host
     } catch {
-        # Recorded and re-thrown below. The detectors still report, because "the
-        # installer died AND spawned a compiler" beats either half alone.
         $failure = $_
     } finally {
-        # In the finally, so an action that threw still closes its subscriptions.
         $drained = Stop-StudioTempWatch -Handle $watch
         $live = @($drained.Paths)
-        # Roots whose watcher raised. Carried out of the finally so the coverage check
-        # below can refuse to count them, and initialised above so an action that threw
-        # before the watch started still leaves the variable defined.
         $watchFailedRoots = @($drained.FailedRoots)
     }
 
-    # Closed before the temp sweep, which can take seconds: anything the machine
-    # starts during that walk belongs to nobody's measurement.
+    # Closed before the temp sweep, which can take seconds.
     $until = Get-Date
-    # Each hit string carries its own round-trip timestamp, image and message, so it
-    # identifies the record. Anything that was already there before the action ran is
-    # dropped by identity.
     $compilers = @(
         Get-StudioCompilerEvents -Since $since -Until $until |
             Where-Object { $prior -notcontains $_ }
@@ -685,40 +585,16 @@ function Invoke-WithCompilerWatch {
     $afterScan = Get-StudioTempArtifacts
     $after = $afterScan.Files
 
-    # A directory that could not be read in EITHER sweep is a hole in the comparison, not an
-    # empty directory. $left below is "in the final listing and not in the baseline", so a
-    # directory unread at baseline and readable afterwards hands every file that was already
-    # sitting in it to $left, and the action is reported as having compiled something it did
-    # not. Unread afterwards hides the opposite: a real artifact that never reaches $left.
-    #
-    # So paths under an unread directory are not evidence either way and are withheld from
-    # $left, and which directories those were is recorded in the evidence rather than
-    # dropped silently.
+    # Paths under a dir unread in either sweep are withheld from $left: they are not evidence either way.
     $unread = @($beforeScan.Unread + $afterScan.Unread | Sort-Object -Unique)
-    # Only the roots whose watcher stayed healthy. A FileSystemWatcher that overflowed its
-    # buffer raises Error and drops the creations it could not queue, and its handle is still
-    # in $watch looking exactly like a working one. Counting it as coverage is what would let
-    # an artifact go missing from the live stream AND from the listing at once, which is the
-    # only combination that reports a compile as a clean run.
+    # Only roots whose watcher stayed healthy count as covered.
     $watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' (
         [string[]]@(
             $watch | ForEach-Object { $_.Root } | Where-Object {
                 $watchFailedRoots -notcontains $_
             }
         ), [StringComparer]::OrdinalIgnoreCase)
-    # Collected, not thrown on. Withholding is only safe while the watcher is covering that
-    # root: it reports creations live, so a compile inside an unread directory still lands in
-    # $transient. With no watcher on the root the listing is the only evidence there is, and
-    # withholding part of it would report a hole as a clean result. That is the same call as
-    # the traversal cap in Get-StudioTempSubtree, for the same reason, so it is the same
-    # answer: declare the measurement void.
-    #
-    # Raised at the END of this function rather than here. The action may already have thrown,
-    # and that failure is held in $failure to be written to <name>-error.txt and rethrown
-    # below. Voiding from this point would run before either, so an installer that genuinely
-    # died would be reported as a scanner problem and its promised evidence file would never
-    # be written. The scan being incomplete is worth failing on; it is not worth failing on
-    # INSTEAD of what the caller was actually measuring.
+    # Unread dirs on unwatched roots void the run, but only at the end so an action failure wins.
     $uncovered = @()
     foreach ($dir in $unread) {
         $covered = @($watchedRoots | Where-Object { Test-StudioPathUnder -Path $dir -Directory $_ })
@@ -735,8 +611,6 @@ function Invoke-WithCompilerWatch {
             return $true
         }
     )
-    # Only the names the compiler writes, because the watcher reports every creation
-    # under temp and most of them are nobody's business.
     $transient = @($live | Where-Object { $_ -match $script:ArtifactPattern })
     $union = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $newArtifacts = @()
@@ -748,31 +622,18 @@ function Invoke-WithCompilerWatch {
     $stem = Join-Path $EvidenceRoot $Name
     $compilers | Out-File -FilePath "$stem-compilers.txt" -Encoding utf8
     $newArtifacts | Out-File -FilePath "$stem-temp-artifacts.txt" -Encoding utf8
-    # Written even when empty, so "the sweep read everything" is a statement the evidence
-    # makes rather than the absence of a file, which is also what a crash looks like.
+    # Written even when empty, so absence of the file means a crash.
     $unread | Out-File -FilePath "$stem-unread-dirs.txt" -Encoding utf8
-    # Written even when empty, for the same reason as the unread list: "every watcher stayed
-    # healthy" should be a statement the evidence makes, not the absence of a file.
     $watchFailedRoots | Out-File -FilePath "$stem-watch-failures.txt" -Encoding utf8
     if ($failure) {
         $failure | Out-String | Out-File -FilePath "$stem-error.txt" -Encoding utf8
     }
 
-    # The action's own failure first, always. It is the thing under measurement, it is already
-    # on disk as <name>-error.txt, and an incomplete sweep is the lesser report of the two.
     if ($failure) { throw $failure }
 
-    # Only once the action itself succeeded and all the evidence is written does an incomplete
-    # measurement void the run. Both reasons are reported together rather than racing each
-    # other, so the caller is told everything that was wrong with the sweep at once.
     $incomplete = @()
     if ($watchFailedRoots.Count -gt 0) {
-        # A watcher that raised is not merely "not covering unread directories". This half of
-        # the detector exists for artifacts that never reach the listing at all: CodeDom
-        # deletes its intermediate directory once the assembly is loaded, so a compile can be
-        # invisible to the before/after diff and visible only as live events. An overflow drops
-        # those events silently, so two clean scans plus a failed watcher is exactly the shape
-        # of a missed compile, with nothing in $uncovered to notice it.
+        # A failed watcher alone voids the run: CodeDom deletes its temp dir, so live events are the only evidence.
         $incomplete += ("the file watcher on " + ($watchFailedRoots -join ', ') + " raised an " +
                         "error, so creations under it may have been dropped. A compile whose " +
                         "intermediates were deleted before the final sweep is visible only in " +
@@ -784,8 +645,6 @@ function Invoke-WithCompilerWatch {
                         "the only evidence here and it is incomplete")
     }
     if ($incomplete.Count -gt 0) {
-        # $uncovered and $watchFailedRoots are in the evidence either way, through
-        # <name>-unread-dirs.txt and <name>-watch-failures.txt.
         throw (($incomplete -join '; ') + ". This run cannot say whether a compiler ran.")
     }
 

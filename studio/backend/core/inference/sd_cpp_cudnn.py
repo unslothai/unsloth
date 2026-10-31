@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A CUDA 12 cuDNN for sd.cpp fork builds with cuDNN attention (sm80+ Linux), named to the child via GGML_CUDA_CUDNN_LIB.
-
-torch cu130's cuDNN (CUDA 13) loads in a CUDA 12 binary but builds no plan. Installed with ``--target`` outside the venv:
-the cu12 and cu13 wheels both write ``nvidia/cudnn/lib/libcudnn.so.9``. Never loaded into this process.
-"""
+"""CUDA 12 cuDNN for sd.cpp, named via GGML_CUDA_CUDNN_LIB, installed with --target outside the
+venv; never loaded into this process"""
 
 from __future__ import annotations
 
@@ -380,7 +377,7 @@ def ensure_library(
                     if cancel_event is not None and cancel_event.is_set():
                         return None, _CANCELLED
                     if time.monotonic() >= deadline:
-                        return None, "another Studio process is installing cuDNN"
+                        return None, "another Unsloth process is installing cuDNN"
         try:
             found = _verified_library(dest, runtime)
             if found:
@@ -418,7 +415,7 @@ def _install_locked(
         free = None
     if free is not None and free < _MIN_FREE_BYTES:
         return _Refused(
-            f"needs {_MIN_FREE_BYTES >> 30} GiB free beside the Studio home, {free / 2**30:.1f} GiB free"
+            f"needs {_MIN_FREE_BYTES >> 30} GiB free beside the Unsloth home, {free / 2**30:.1f} GiB free"
         )
     uv = _uv_executable()
     config = _installer_config(uv)
@@ -471,7 +468,6 @@ def _install_locked(
 
 
 # The fork prints these once per process / shape.
-
 _LOADED_RE = re.compile(r"cuDNN (\d+) loaded from \S+ for attention")
 _PLAN_RE = re.compile(r"cuDNN SDPA plan b=\d+ hq=\d+ hk=\d+ sq=(\d+) skv=(\d+) d=(\d+)")
 _NO_PLAN_RE = re.compile(r"no cuDNN SDPA plan for")

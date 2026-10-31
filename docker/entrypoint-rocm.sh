@@ -13,9 +13,7 @@
 #   docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
-# Studio image: relink its code into the home (maybe an earlier image's volume) before
-# anything reads the venv, as entrypoint.sh does on the CUDA image. Fatal on failure
-# (a half-linked home); no-op on the base image, which has no linker.
+# Relink the Studio code into the home before anything reads the venv; fatal on failure.
 if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
     /usr/local/bin/unsloth-studio-home || {
         echo "ERROR: could not link Unsloth Studio's code into ${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}; see the messages above" >&2
@@ -35,10 +33,8 @@ err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
 warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
 note() { printf "\033[1;36mNOTE:\033[0m %s\n"  "$*" >&2; }
 
-# UNSLOTH_DEV_ROOT prefixes the /dev probes (DESTDIR idiom) so the regression
-# tests can stage a device tree; leave it unset in normal use.
+# UNSLOTH_DEV_ROOT prefixes /dev probes for the regression tests; unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
-# What the image was built with; written by Dockerfile.rocm.
 BUILD_INFO="${UNSLOTH_ROCM_BUILD_INFO:-/etc/unsloth-rocm-build}"
 IMAGE_ROCM=""
 IMAGE_GFX=""
@@ -46,9 +42,8 @@ if [[ -r "$BUILD_INFO" ]]; then
     IMAGE_ROCM="$(sed -n 's/^ROCM_VERSION=//p' "$BUILD_INFO")"
     IMAGE_GFX="$(sed -n 's/^ROCM_GFX=//p' "$BUILD_INFO")"
 fi
-# A per-arch image has native kernels for its gfx; a leftover
-# HSA_OVERRIDE_GFX_VERSION (the generic-wheel workaround) would make ROCr present
-# an arch this image has no kernels for. install.sh clears it the same way.
+# A per-arch image has native kernels; a leftover HSA_OVERRIDE_GFX_VERSION would present
+# an arch the image lacks.
 case "$IMAGE_GFX" in
     gfx1150|gfx1151|gfx1152|gfx1200|gfx1201)
         if [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]]; then
@@ -57,28 +52,18 @@ case "$IMAGE_GFX" in
         fi ;;
 esac
 
-# The skip flag bypasses the diagnostics only; the override cleanup above
-# still applies, since it changes what the command sees.
+# The skip flag bypasses diagnostics only; the override cleanup above still applies.
 if [[ "${UNSLOTH_SKIP_GPU_CHECK:-0}" == "1" ]]; then
     sync_notebooks
     exec "$@"
 fi
 
-# --- Check 1: a device node the HSA runtime can open ------------------------
-# Two ways in, and only one of them is /dev/kfd:
-#   KFD  the AMD Kernel Fusion Driver node, from the Linux amdgpu driver. Must
-#        exist AND be readable before any HIP call can succeed.
-#   DXG  WSL2, where amdgpu is not loaded and there is no /dev/kfd at all. The
-#        standard hsa-rocr runtime reaches the card through librocdxg over
-#        /dev/dxg when HSA_ENABLE_DXG_DETECTION=1. Same evidence install.sh
-#        gates a WSL host on (_infer_linux_amd_gfx_arch).
-# The DXG path takes the rest of the checks unchanged: check 3 asks torch, which
-# is the only gate that has ever mattered.
+# Check 1: /dev/kfd (amdgpu), or /dev/dxg on WSL2 via librocdxg with
+# HSA_ENABLE_DXG_DETECTION=1. Check 3 (torch) is the real gate.
 UNSLOTH_ROCM_DEV_PATH=kfd
 if [[ ! -e "$DEV_ROOT/dev/kfd" && -e "$DEV_ROOT/dev/dxg" ]]; then
     _dxg_lib=""
-    # UNSLOTH_ROCM_DXG_LIBDIRS pins the search for the regression tests, which must
-    # not answer for whatever ROCm the machine running them happens to have.
+    # Pins the search for the regression tests.
     for _d in ${UNSLOTH_ROCM_DXG_LIBDIRS:-/opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib \
               /opt/rocm-*/lib64 /usr/lib/x86_64-linux-gnu}; do
         if [[ -e "$_d/librocdxg.so" || -e "$_d/librocdxg.so.1" ]]; then
@@ -88,8 +73,7 @@ if [[ ! -e "$DEV_ROOT/dev/kfd" && -e "$DEV_ROOT/dev/dxg" ]]; then
     done
     if [[ -n "$_dxg_lib" ]]; then
         UNSLOTH_ROCM_DEV_PATH=dxg
-        # Only the runtime reads this, and only when asked; exporting it here means
-        # a plain `docker run --device /dev/dxg` works without the caller knowing.
+        # Exported so a plain `docker run --device /dev/dxg` works.
         export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
         note "no /dev/kfd, but /dev/dxg and librocdxg are present: using the WSL2 DXG bridge."
     else
@@ -153,12 +137,7 @@ MSG
     exit 1
 fi
 
-# --- Check 2: what rocm-smi sees (advisory) --------------------------------
-# rocm-smi does not list every APU (measured on gfx1151: no GPU[..] line inside
-# the container), so it cannot be the gate; check 3 asks torch itself. It reads
-# the amdgpu sysfs, which the DXG bridge has no equivalent of (measured: "Driver
-# not initialized"), and its advice below is about /dev/dri and group ids, which
-# do not exist on WSL: skip it there.
+# Check 2 (advisory): rocm-smi misses some APUs and has nothing to read under DXG.
 if [[ "$UNSLOTH_ROCM_DEV_PATH" == "dxg" ]]; then
     note "skipping rocm-smi: it reads the amdgpu sysfs, which the DXG bridge does not expose."
 elif ! command -v rocm-smi >/dev/null 2>&1; then
@@ -172,9 +151,7 @@ else
     rocm-smi --showid 2>/dev/null | grep 'GPU\[' | head -4 >&2
 fi
 
-# --- Check 3: a HIP torch that can see the device ---------------------------
-# ROCm maps the CUDA Python API, so torch.cuda.is_available() is the test;
-# torch.version.hip first, so a CUDA or CPU torch is named, not the host driver.
+# Check 3: torch.cuda.is_available() on a HIP build; check torch.version.hip first.
 IMAGE_ROCM="$IMAGE_ROCM" UNSLOTH_ROCM_DEV_PATH="$UNSLOTH_ROCM_DEV_PATH" python - >&2 <<'PY' || exit 1
 import os
 import sys
@@ -239,9 +216,7 @@ print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
 sys.exit(1)
 PY
 
-# --- Check 4: the card's gfx arch against this image's wheels ---------------
-# gcnArchName carries the gfx code (e.g. "gfx1100:sramecc+"). Not a gate (ROCm
-# often runs unlisted arches), but where the user learns which build to use.
+# Check 4 (not a gate): the card's gfx arch vs this image's wheels.
 IMAGE_ROCM="$IMAGE_ROCM" IMAGE_GFX="$IMAGE_GFX" python - >&2 <<'PY' || exit 1
 import os
 import sys

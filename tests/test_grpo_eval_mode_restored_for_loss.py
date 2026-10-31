@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The divisor helper is only correct while eval mode survives GRPO generation.
-
-`_unsloth_grpo_accumulation_steps` decides between 1 and the accumulation window by reading
-`model.training`, the way TRL does. In unsloth that flag is not left alone across a GRPO step:
-`grpo_trainer__generate_and_score_completions` injects an unconditional
-
-    self.model.for_training(use_gradient_checkpointing = _use_gc)
-
-into the generated `_generate_and_score_completions`, so an eval batch is flipped into training
-mode partway through, and the only thing that puts it back is the `finally` in
-`_wrap_grpo_generate_and_score`, which restores inference mode solely when it entered in it.
-
-`test_grpo_eval_accumulation.py` covers the helper's own truth table. This file covers the
-assumption underneath it: that by the time `compute_loss` runs, an eval pass still reports
-`model.training == False`, so the helper returns 1 rather than the stale training window. If that
-restore ever regresses, the helper silently starts dividing eval_loss again and the truth-table
-tests stay green, so the property is asserted here directly.
-
-Both pieces are lifted with `ast` from the shipped source, so the test tracks the real code
-without importing unsloth and stays CPU-only.
-"""
+"""Asserts model.training is still False at compute_loss, since generation flips eval batches."""
 
 from __future__ import annotations
 

@@ -76,7 +76,6 @@ def profile_imports(python: str, top: int = 15) -> dict:
     if not rows:
         return {"ok": False, "error": (proc.stderr or proc.stdout)[-2000:]}
     if proc.returncode != 0:
-        # Rows survive up to the failure, so any total from a partial graph is wrong.
         return {
             "ok": False,
             "error": (proc.stderr or proc.stdout)[-2000:],
@@ -84,7 +83,7 @@ def profile_imports(python: str, top: int = 15) -> dict:
         }
 
     by_cum = sorted(rows, key = lambda r: -r[1])
-    # Total comes from the `main` row, not by_cum[0]: -X importtime also prints the interpreter's own startup graph (`site`), which can outrank a trivial main.
+    # Total from the `main` row: -X importtime also prints the interpreter's own `site` graph.
     main_row = next((r for r in reversed(rows) if r[2] == "main"), None)
     if main_row is None:
         return {
@@ -124,9 +123,7 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
             if killed.returncode == 0:
                 return
         except Exception:
-            # taskkill missing or timed out; fall through so the stub still dies.
             pass
-        # check=False: a nonzero taskkill does not raise, so fall through as well.
     proc.terminate()
 
 
@@ -149,7 +146,7 @@ def profile_launch(
     )
 
     def _drain() -> None:
-        # Runs alongside the health polling: the first read timestamps the spawn phase, and an undrained pipe blocks the backend before it binds.
+        # Drain concurrently: an undrained pipe blocks the backend before it binds.
         for line in proc.stdout:
             if not first_byte:
                 first_byte.append(time.perf_counter() - t0)
@@ -182,7 +179,6 @@ def profile_launch(
     finally:
         _terminate_tree(proc)
         try:
-            # Safe: the reader drains the pipe, so the child cannot block on write().
             proc.wait(timeout = 30)
         except subprocess.TimeoutExpired:
             proc.kill()
@@ -262,13 +258,11 @@ def main(argv: list[str]) -> int:
     )
     ap.add_argument("--json", help = "write the full report here")
     a = ap.parse_args(argv)
-    # range(0) launches nothing, leaving the budget check with nothing to fail on.
     if a.repeats < 1:
         ap.error("--repeats must be at least 1")
-    # Same reason: --import-only never launches anything.
     if a.import_only and a.max_healthz_seconds is not None:
         ap.error("--max-healthz-seconds cannot be combined with --import-only")
-    # nan and inf parse fine as floats but `med > budget` is then always False, so the gate would report success without ever bounding anything.
+    # nan/inf parse as floats but make `med > budget` always False.
     if a.max_healthz_seconds is not None and not math.isfinite(a.max_healthz_seconds):
         ap.error("--max-healthz-seconds must be a finite number")
 
@@ -331,14 +325,12 @@ def main(argv: list[str]) -> int:
         med = launch.get("healthz_median_seconds")
         failed = launch.get("failed_runs") or 0
         if failed:
-            # Failed launches fail the budget; dropping them would keep only the fast ones.
             print(
                 f"::error::startup regression: {failed} of {len(launch.get('runs') or [])} "
                 f"launches never became healthy within the timeout"
             )
             return 1
         if med is None:
-            # Nothing measured: exiting 0 would pass a requested budget without a single health request, so fail closed.
             print(
                 "::error::startup regression: no healthz measurement, so the "
                 f"{a.max_healthz_seconds}s budget was never checked "

@@ -13,7 +13,6 @@ from types import ModuleType
 
 import pytest
 
-# <repo-root>/studio  →  makes `backend` importable as a package
 _STUDIO_DIR = Path(__file__).resolve().parents[3] / "studio"
 if str(_STUDIO_DIR) not in sys.path:
     sys.path.insert(0, str(_STUDIO_DIR))
@@ -21,8 +20,7 @@ if str(_STUDIO_DIR) not in sys.path:
 
 _STACK_FILE = _STUDIO_DIR / "install_python_stack.py"
 
-# What install_python_stack() resets at the top of every pass: the module is loaded once per test
-# FILE, so without this each test measures the previous one.
+# The module is loaded once per test file, so per-pass state must be reset.
 _PASS_STATE_DEFAULTS = {
     "_INSTALL_ACTIONS": 0,
     "_PASS_EVIDENCE": None,
@@ -41,16 +39,7 @@ def _realpath(path: str) -> str:
 
 
 def _loaded_stacks(test_module):
-    """Every live copy of install_python_stack, sys.modules or not.
-
-    Three test files load it into sys.modules under the same name
-    ("studio_install_python_stack"), so the last one imported owns that key and the
-    others keep a module object nothing in sys.modules points at any more. Resetting
-    only sys.modules leaves those copies carrying the previous test's pass state, which
-    is invisible when the file runs alone and decides the answer when the directory
-    runs together. So the module under test is looked up through the test file that
-    holds it as well.
-    """
+    """Finds every loaded install_python_stack copy, not just the one sys.modules still points at."""
     target = _realpath(str(_STACK_FILE))
     found = {}
     candidates = list(sys.modules.values())
@@ -68,7 +57,7 @@ def _loaded_stacks(test_module):
         except OSError:
             continue
         except TypeError:
-            continue  # an unhashable __file__ cannot be cached, and is not a path either
+            continue
         found[id(module)] = module
     return found.values()
 
@@ -85,12 +74,7 @@ def _reset_pass_state(test_module) -> None:
 
 @pytest.fixture(autouse = True)
 def reset_install_pass_state(request):
-    """Start and end every test with the state a fresh dependency pass would have.
-
-    Here rather than in each file because the state belongs to install_python_stack, not
-    to any one suite, and a file that forgets it fails in a way that only shows up when
-    the whole directory runs in one process.
-    """
+    """Resets install_python_stack pass state around each test, so it cannot leak between files."""
     _reset_pass_state(request.module)
     yield
     _reset_pass_state(request.module)
@@ -100,8 +84,7 @@ def reset_install_pass_state(request):
 def pin_installer_torch_vendor(request, monkeypatch):
     """Pin the installer's torch-vendor probe so a ROCm-torch dev box answers like CI."""
     monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
-    # A file's own copy outlives a later file re-registering the sys.modules key.
     for module in [*sys.modules.values(), *vars(request.module).values()]:
-        # __dict__: hasattr would trip a lazy __getattr__. _torchao_stub has its own probe.
+        # __dict__: hasattr would trip a lazy __getattr__.
         if "_rocm_torch_preferred" in (getattr(module, "__dict__", None) or {}):
             monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)

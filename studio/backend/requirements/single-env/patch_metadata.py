@@ -2,15 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Relax strict metadata pins so pip check passes on the single-env stack.
-
-Why:
-- data-designer pins huggingface-hub>=1.0.1 and pyarrow<20.
-- unsloth/transformers pins huggingface-hub<1.
-- studio datasets pins pyarrow>=21.
-
-Runtime works with hub 0.36.x + pyarrow 23.x; only the metadata conflicts.
-"""
+"""Relaxes strict pins so pip check passes; runtime works with hub 0.36.x and pyarrow 23.x."""
 
 from __future__ import annotations
 

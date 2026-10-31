@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Fast-kernel provenance, and the three ways this check goes vacuous.
-
-Every rule here is calibrated against what was MEASURED on a real 2xT4
-(`unsloth-probe-vision-recon-c76ea3`), not against what the brief assumed:
-
-* `fla` resolves to `unsloth_zoo/_vendored/fla`, version 0.5.1, importable from
-  `import unsloth` onward (unsloth_zoo injects it), so it is read after the load;
-* attention resolves to `sdpa`, and `flash_attn` is not importable at all;
-* `causal_conv1d` and `mamba_ssm` are NOT installed on this path, before or
-  after the load.
-
-The last one is why two obvious assertions are absent: asserting them present
-would be red on correct behaviour.
-"""
+"""causal_conv1d and mamba_ssm are not installed on this path, so asserting them present would fail."""
 
 from __future__ import annotations
 
@@ -104,13 +91,7 @@ def test_no_provenance_at_all_is_a_failure():
 
 
 def test_both_capability_spellings_reach_the_turing_rule():
-    """The bug this catches was mine, and it was live for a few minutes.
-
-    `environment_fingerprint()` records `"sm_75"`, while the recon probe and
-    `torch.cuda.get_device_capability` give `"7.5"`. A `startswith("7.")` check
-    against `"sm_75"` matches nothing, so the FA2 rule would never fire and the
-    leg would report a clean pass while checking nothing at all.
-    """
+    """The Turing rule must accept sm_75 as well as 7.5, since startswith('7.') silently misses sm_75."""
     for spelling in ("7.5", "sm_75", "75"):
         broken = vision_kernel_failures(
             {"fla": VENDORED}, {"config": "flash_attention_2"}, capability = spelling
@@ -133,44 +114,20 @@ def test_the_payload_passes_the_capability_the_fingerprint_records():
 
 
 def test_the_payload_never_calls_a_tokenizer_positionally():
-    """A vision model's tokenizer IS a processor.
-
-    `ProcessorMixin.__call__` is `(self, images=None, text=None, videos=None,
-    ...)`, so a positional list of prompts is taken as IMAGES and transformers
-    tries to fetch each string as an image URL. That is not hypothetical: it
-    killed the Latest_compile leg on gemma-4-E2B-it after the model had already
-    loaded and trained, on kernel unsloth-probe-latestcompile-r2-62b54d.
-
-    `text` is also the first parameter of a plain tokenizer, so the keyword is
-    correct everywhere and this is not a vision special case.
-    """
+    """A vision processor takes a positional list as images, so prompts must go in the `text` keyword."""
     import re
 
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     offenders = []
     for match in re.finditer(r"tokenizer\(\s*(?!text\s*=)(?!\))([^)\n]*)", src):
         arg = match.group(1).strip()
-        # Keyword-only calls are fine; a bare `tokenizer(` opening a keyword
-        # list is what the negative lookahead already allowed through.
         if arg and not arg.split(",")[0].strip().endswith("=") and "=" not in arg.split(",")[0]:
             offenders.append(match.group(0))
     assert offenders == [], f"positional tokenizer calls: {offenders}"
 
 
 def test_prompt_token_lengths_index_past_the_batch_dimension():
-    """The missing `[0]` made the whole padding check vacuous.
-
-    A processor returns `input_ids` with a BATCH dimension, so `len(...)` on it
-    is the number of sequences -- 1 -- for every prompt. Measured on kernel
-    unsloth-probe-latestcompile-r3-cb1125, where gemma-4 reported
-    `[1, 1, 1, 1, 1, 1, 1, 1]` and the run's own vacuity guard caught it:
-
-        every batched prompt tokenised to the same length, so nothing was ever
-        padded and the left-padding check proved nothing
-
-    A plain tokenizer given one string returns a flat list, which is why this
-    read correctly on every text model and broke on the first vision one.
-    """
+    """A processor returns input_ids with a batch dimension, so [0] is needed before len()."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert 'len(tokenizer(text = [p])["input_ids"][0]) for p in prompts' in src
     assert 'len(tokenizer(text = p)["input_ids"]) for p in prompts' not in src

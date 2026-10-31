@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Web update status helpers for browser-served Unsloth Studio.
-
-Side-effect light: no network work at import time or from /api/health.
-The PyPI check is lazy, cached, and only for PyPI-managed installs.
-"""
+"""Update status for browser-served Studio: no network at import or from /api/health; the PyPI check
+is lazy, cached, and only for PyPI-managed installs."""
 
 from __future__ import annotations
 
@@ -64,12 +61,7 @@ def reset_update_status_cache() -> None:
 
 
 def detect_install_source() -> str:
-    """Return a coarse install source without exposing local paths.
-
-    Conservative: PEP 610 local/vcs metadata wins. Legacy source
-    installs count as local only when package files resolve outside
-    site-packages/dist-packages and under a Git checkout.
-    """
+    """Coarse source, no local paths; PEP 610 local/vcs metadata wins; legacy installs are local only outside site-packages/dist-packages and in a Git checkout."""
     try:
         dist = distribution(PACKAGE_NAME)
     except PackageNotFoundError:
@@ -125,8 +117,7 @@ def get_studio_update_status(current_version: str) -> dict[str, Any]:
     install_source = detect_install_source()
     disabled = update_checks_disabled()
 
-    # Dev-only: the popup is PyPI-install-only, so fake a version to review it
-    # from a checkout. The documented opt-out still wins.
+    # Dev-only: fakes a version so the PyPI-only popup can be reviewed from a checkout.
     forced_version = os.environ.get(FAKE_UPDATE_ENV_VAR, "").strip()
     if forced_version and not disabled and _is_version(forced_version):
         return _status_response(

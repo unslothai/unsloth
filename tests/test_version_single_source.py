@@ -12,17 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pure-CPU, no-network tests pinning unsloth/_version.py as the one source of the version.
-
-Three consumers read that literal by different means and each breaks differently when it
-moves: pyproject resolves it with a static AST parse (a non-literal makes setuptools import
-torch inside the build env), Unsloth's version fallback scans the file line by line for
-``__version__ = `` (a re-export line silently reports "dev"), and the MLX branch of
-unsloth/__init__.py imports the module directly (anything with imports defeats its
-torch-free boot, which is what drove it to borrow unsloth_zoo's number instead -- unsloth#8171).
-
-None of that is visible from `unsloth.__version__` on a GPU host, so it is pinned here.
-"""
+"""_version.py must keep a literal __version__ line; three readers rely on its exact shape."""
 
 import ast
 import re
@@ -82,7 +72,6 @@ def test_importing_the_version_alone_pulls_in_no_heavy_dependency():
 
 
 def test_models_utils_still_re_exports_the_same_version():
-    # Every banner, every saved config's unsloth_version, and unsloth.__version__ on the GPU path come through here.
     from unsloth.models._utils import __version__ as via_utils
     assert via_utils == _load_version_module_standalone().__version__
 
@@ -109,12 +98,7 @@ def test_setuptools_resolves_the_version_without_importing_torch():
 
 
 def _get_unsloth_version_with_metadata_missing(main_py_path):
-    """Run studio/backend/main.py::get_unsloth_version with the distribution metadata
-    forced absent, which is the source-checkout case its file scan exists for.
-
-    The function body is exec'd rather than imported because importing main.py starts the
-    whole FastAPI backend.
-    """
+    """Body of get_unsloth_version is exec'd, not imported, because importing main.py starts FastAPI."""
     src = _Path_read(main_py_path)
     start = src.index("def get_unsloth_version()")
     body = src[start : src.index("\n\n\n", start)]
@@ -133,7 +117,6 @@ def _Path_read(p):
 
 
 def test_studio_version_fallback_reports_the_real_version_on_a_source_checkout():
-    # get_unsloth_version falls back to scanning the source when distribution metadata is missing.
     reported = _get_unsloth_version_with_metadata_missing(
         _REPO_ROOT / "studio" / "backend" / "main.py"
     )
@@ -144,10 +127,7 @@ def test_studio_version_fallback_reports_the_real_version_on_a_source_checkout()
 
 
 def test_the_studio_fallback_survives_a_half_updated_tree(tmp_path):
-    # The fallback is what a source checkout relies on, and a checkout can be half
-    # updated: `unsloth studio update` pulls a repo, and a stale tree can carry a new
-    # main.py beside an old models/_utils.py or the reverse. Either file alone must still
-    # yield a real version rather than "dev".
+    # A half-updated checkout may pair new and old files; either alone must yield a version.
     import re as _re
 
     main_py = (_REPO_ROOT / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
@@ -169,7 +149,6 @@ def test_the_studio_fallback_survives_a_half_updated_tree(tmp_path):
         namespace = {
             "_Path": Path,
             "PackageNotFoundError": _PackageNotFoundError,
-            # Force the metadata lookup to miss, which is the source-checkout case.
             "package_version": _raise_not_found,
             "__file__": str(root / "studio" / "backend" / "main.py"),
         }
@@ -179,13 +158,10 @@ def test_the_studio_fallback_survives_a_half_updated_tree(tmp_path):
     assert _version_for("current") == "9.9.9"
     assert _version_for("only_version") == "9.9.9"
     assert _version_for("only_utils") == "9.9.9"
-    # Neither file carries a literal: reporting "dev" is correct, not a silent wrong number.
     assert _version_for("neither") == "dev"
 
 
 def test_the_mlx_branch_no_longer_borrows_the_zoo_version():
-    # unsloth#8171: the MLX path reported unsloth_zoo's number, which is a different package pinned with >=, so it
-    # was neither the installed core nor the latest zoo.
     init_py = (_REPO_ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")
     assert "__version__ = unsloth_zoo.__version__" not in init_py
     assert "from ._version import __version__" in init_py

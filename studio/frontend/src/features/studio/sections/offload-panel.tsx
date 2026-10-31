@@ -100,7 +100,7 @@ const CELL = {
 
 function Stat({ label, value }: { label: string; value: string }): ReactElement {
   return (
-    <div className="flex flex-col gap-0.5 rounded-xl bg-muted/50 px-3 py-2">
+    <div className="flex flex-col gap-0.5 rounded-lg bg-muted/50 px-3 py-2">
       <span className="text-ui-11 text-muted-foreground">{label}</span>
       <span className="font-mono text-sm">{value}</span>
     </div>

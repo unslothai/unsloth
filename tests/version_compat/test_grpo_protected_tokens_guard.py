@@ -1,21 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""The injected GRPO prompt-trim block must only replace a block that can host it.
-
-`grpo_trainer__generate_and_score_completions` in `unsloth/models/rl_replacements.py`
-substitutes a TRL 0.20.0+ block -- it calls `truncate_with_protected_tokens` and reads
-`self.pad_token`, `self.image_token` and three vision token ids -- into TRL's
-`_generate_and_score_completions`. Driving the real substitution against each release's
-actual source, the selecting regex matches 0.18.2 through 0.23.1 and stops matching at
-0.24.0, while all four symbols exist only from 0.20.0, so on 0.18.2 and 0.19.1 (both inside
-the declared window `trl>=0.18.2,!=0.19.0,<=0.24.0`) it replaced working native slicing with
-names that do not resolve. TRL's own call to the helper inside the block being replaced is
-the discriminator, so the substitution is gated on it; `getattr(..., None)` for the three ids
-covers a fork or subclass that does not set one.
-
-Reads the substitution's OUTPUT and executes the statements it emits, so it needs neither the
-affected TRL nor a GPU.
-"""
+"""Gated on TRL's own truncate_with_protected_tokens call, since its names only exist from 0.20.0."""
 
 from __future__ import annotations
 
@@ -42,8 +27,6 @@ import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
 _spoof.apply()
 
 
-# Fixtures, not the installed TRL, so both groups are covered on a runner that has neither.
-# Both satisfy the selecting regex and the two-statement rule; they differ only in the helper.
 _TRL_0_18_BLOCK = """
     def _generate_and_score_completions(self, inputs):
         device = self.accelerator.device

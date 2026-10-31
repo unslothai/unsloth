@@ -177,7 +177,6 @@ def _run_manifest(
         f'echo "$*" >> {probes}\n'
         'case "$*" in\n'
         + "".join(f"  */tags/{e}) printf '200' ;;\n" for e in existing)
-        # curl prints 000 and exits 7 when the connection fails
         + (
             "  *) printf '000'; exit 7 ;;\n"
             if probe_code == "000"

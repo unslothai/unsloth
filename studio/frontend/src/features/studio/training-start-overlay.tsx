@@ -36,6 +36,7 @@ import {
 } from "@/features/studio/download-state";
 import {
   classifyPreparation,
+  hasTrainingLoopStarted,
   parsePreparationProgress,
   shouldShowPreparationStatus,
   type PreparationProgress,
@@ -52,9 +53,7 @@ import { useT } from "@/i18n";
 
 const HF_REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
-// Tracks which jobs have already played the terminal intro animation. The
-// overlay unmounts on navigation away, so without this its typing/fade-in would
-// replay on every return mid-run. Module-level so it survives remounts.
+// Module-level so the intro animation plays once per job across remounts.
 const animatedJobs = new Set<string>();
 
 function formatCachePath(path: string): string {
@@ -65,11 +64,7 @@ function formatCachePath(path: string): string {
 
 type Fetcher = (repoId: string) => Promise<DownloadProgressResponse>;
 
-/**
- * Polls a HF repo's download progress on a 1.5s tick. Serves both model weights
- * and dataset blobs by swapping the fetcher. Stops once `progress >= 1.0`; the
- * bar freezes at the final value rather than disappearing, matching chat flow.
- */
+/** Stops at `progress >= 1.0`; the bar freezes rather than disappearing, as in chat. */
 function useHfDownloadProgress(
   repoId: string | null,
   fetcher: Fetcher,
@@ -98,12 +93,9 @@ function useHfDownloadProgress(
     let cancelled = false;
     let finished = false;
     let interval: ReturnType<typeof setInterval> | null = null;
-    // settling compares against the previous reading, so the poll carries it rather than reading it back out of React.
     let latest = EMPTY_DOWNLOAD_STATE;
-    // the tick does not wait for the request, so a slow response can land after a newer
-    // one. settling compares byte counts for equality, so a stale reading both revokes a
-    // correct settle and becomes the baseline the next poll settles against -- reporting
-    // the stale total as the row's size. discard anything older than what we already have.
+    // The tick does not wait for the request, so discard readings older than the latest; a stale one
+    // would revoke a settle and become the next baseline.
     let issued = 0;
     let applied = 0;
 
@@ -117,7 +109,7 @@ function useHfDownloadProgress(
         const next = downloadStateFromProgress(prog, latest);
         latest = next;
         setState({ ...next, repoId });
-        // only a verified snapshot stops the tick; a settled row can still be waiting on files.
+        // Only a verified snapshot stops the tick; a settled row can still be waiting on files.
         if (next.completeOnDisk) {
           finished = true;
           if (interval) {
@@ -139,7 +131,7 @@ function useHfDownloadProgress(
     };
   }, [repoId, shouldPoll, fetcher]);
 
-  // Never show the old repo's Ready state while the resolved repo starts polling.
+  // Never show the old repo's Ready state while the new repo starts polling.
   return state.repoId === repoId ? state : EMPTY_DOWNLOAD_STATE;
 }
 
@@ -170,14 +162,12 @@ const PROGRESS_INDICATOR_CLASS =
 
 type ResourceRowProps = {
   label: string;
+  resourceName?: string | null;
   state: DownloadState;
   preparation: PreparationProgress | null;
 };
 
-// Whether the row would draw anything. The caller needs the same answer: the row is
-// mounted unconditionally now, and its `AnimatedSpan` wrapper still lays out a line even
-// when the row itself renders null, which left a blank gap in the terminal for a run whose
-// dataset never produces a transfer.
+// The caller needs this too: the AnimatedSpan wrapper lays out a line even when the row is null.
 export function resourceRowHasContent(
   state: DownloadState,
   preparation: PreparationProgress | null,
@@ -185,24 +175,20 @@ export function resourceRowHasContent(
   return Boolean(preparation) || state.downloadedBytes > 0 || Boolean(state.cachePath);
 }
 
-// one row per resource for its whole setup: the transfer while bytes move, then that
-// resource's preparation step once they stop.
+// One row per resource: the transfer, then its preparation step once bytes stop.
 function ResourceRow({
   label,
+  resourceName,
   state,
   preparation,
 }: ResourceRowProps): ReactElement | null {
   const t = useT();
-  // Rolling-window rate + ETA from the cumulative-byte series the poll hook
-  // produces, so we show "5.2 GB / 21 GB • 85 MB/s • 3m 12s left", not just the pair.
   const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
 
   if (!resourceRowHasContent(state, preparation)) return null;
-  // the coerced state: `coerceCachedStateReady` declines to rewrite a reading with no cache
-  // path, so `settled` alone put a green Ready next to a percent below 100.
+  // `settled` alone can sit below 100% when coerceCachedStateReady declined to rewrite.
   const isComplete = state.settled && state.percent >= 100;
-  // gated on bytes actually moving, not on `!settled`: an orphaned `.incomplete` blob keeps
-  // `downloaded !== completed` forever, which kept a processed-cache load labelled Downloading.
+  // Gated on moving bytes, not `!settled`, since an orphaned `.incomplete` blob never settles.
   const preparing = state.moving ? null : preparation;
   const statusLabel = preparing
     ? preparing.title
@@ -219,8 +205,7 @@ function ResourceRow({
     showRate && state.totalBytes > 0 ? formatEta(stats.etaSeconds) : "--";
   const etaSuffix =
     etaStr !== "--" ? ` • ${t("studio.trainingStart.left", { eta: etaStr })}` : "";
-  // an unsettled transfer keeps its byte line under the preparation title: a stall and an
-  // orphaned blob look alike from byte counts, so a stalled download must not lose them.
+  // A stall and an orphaned blob look alike, so keep the byte line under the preparation title.
   const sizeLabel = preparing
     ? (preparing.detail ??
       (state.settled || state.totalBytes <= 0
@@ -258,6 +243,9 @@ function ResourceRow({
           {percentLabel}
         </span>
       </div>
+      {resourceName ? (
+        <div className="break-all text-ui-11 text-foreground/90">{resourceName}</div>
+      ) : null}
       {sizeLabel ? (
         <div className="text-ui-11 tabular-nums text-muted-foreground">
           {sizeLabel}
@@ -277,7 +265,7 @@ function ResourceRow({
       ) : null}
       {state.cachePath ? (
         <div
-          className="truncate rounded bg-muted/50 px-2 py-1 text-ui-10 text-muted-foreground/70"
+          className="truncate rounded-full bg-muted/50 px-2 py-1 text-ui-10 text-muted-foreground/70"
           title={state.cachePath}
         >
           {formatCachePath(state.cachePath)}
@@ -312,12 +300,9 @@ export function TrainingStartOverlay({
   const configuredHfToken = useHfTokenStore((s) => s.token);
   const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
   const dataset = useTrainingConfigStore((s) => s.dataset);
-  // Streaming runs never fully download the dataset (only small metadata lands
-  // in the HF cache), so the cache-watching download bar would sit near 0%
-  // forever and read as "stuck downloading". Show a streaming note instead.
+  // Streaming runs never fully download the dataset, so the bar would look stuck.
   const datasetStreaming = useTrainingConfigStore((s) => s.datasetStreaming);
-  // Only HF datasets have a download phase to track; uploaded files are already
-  // on disk by the time the overlay shows up.
+  // Uploaded files are already on disk.
   const hfDatasetName = datasetSource === "huggingface" ? dataset : null;
   const hasStartResources = startModelName !== null;
   const useConfiguredResources = !isStarting && !hasStartResources;
@@ -338,16 +323,24 @@ export function TrainingStartOverlay({
     startFromResume && /^download/i.test(message)
       ? t("studio.trainingStart.resumingTraining")
       : message || t("studio.trainingStart.startingTraining");
-  const rawModelDownload = useModelDownloadProgress(modelName, hfToken);
-  const rawDatasetDownload = useDatasetDownloadProgress(datasetName, hfToken);
+  // Resources are loaded once the loop runs; the cache scan's file subset would fake a download.
+  const trainingLoopStarted = hasTrainingLoopStarted(message);
+  const rawModelDownload = useModelDownloadProgress(
+    trainingLoopStarted ? null : modelName,
+    hfToken,
+  );
+  const rawDatasetDownload = useDatasetDownloadProgress(
+    trainingLoopStarted ? null : datasetName,
+    hfToken,
+  );
   const modelDownload = coerceCachedStateReady(rawModelDownload);
   const datasetDownload = coerceCachedStateReady(rawDatasetDownload);
-  // the raw message, not displayMessage: a resumed run rewrites its download statuses to
-  // "resuming training", which names no resource for the classifier to route on.
+  // The raw message: a resumed run rewrites statuses to "resuming training".
   const preparationProgress = shouldShowPreparationStatus(
     phase,
     currentStep,
     isStarting,
+    message,
   )
     ? parsePreparationProgress(message, t("studio.trainingStart.preparing"))
     : null;
@@ -367,8 +360,6 @@ export function TrainingStartOverlay({
     }
   }, [isStarting]);
 
-  // Play the intro animation only on the first mount per job. On later remounts
-  // the terminal renders its final state instantly so the logs don't restart.
   const alreadyAnimated = jobId != null && animatedJobs.has(jobId);
   useEffect(() => {
     if (jobId != null) {
@@ -376,9 +367,7 @@ export function TrainingStartOverlay({
     }
   }, [jobId]);
 
-  // my-auto, not items-center: a column taller than the overlay starts at its
-  // top and runs down into the page's scroll, instead of spilling above it
-  // where the cancel button cannot be reached.
+  // my-auto, not items-center, so a tall column never spills above the cancel button.
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
       <div className="pointer-events-auto relative my-auto flex w-[calc(860px*var(--ui-space-scale,1))] max-w-[calc(100%-2rem)] flex-col items-center">
@@ -394,7 +383,7 @@ export function TrainingStartOverlay({
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
             </Button>
-            <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+            <AlertDialogContent overlayClassName="bg-background/40">
               <AlertDialogHeader>
                 <AlertDialogTitle>{t("studio.training.cancelTitle")}</AlertDialogTitle>
                 <AlertDialogDescription>
@@ -440,19 +429,21 @@ export function TrainingStartOverlay({
           <AnimatedSpan className="my-2">
             <pre className="whitespace-pre text-muted-foreground inline-block">{`==((====))==\n   \\\\   /|\nO^O/ \\_/ \\\n\\        /\n "-____-"`}</pre>
           </AnimatedSpan>
-          <TypingAnimation duration={44}>
-            {t("studio.trainingStart.preparingResources")}
-          </TypingAnimation>
-          <TypingAnimation duration={44}>
-            {t("studio.trainingStart.gettingReady")}
-          </TypingAnimation>
+          {/* Direct children: Terminal sequences by child and a Fragment never reports done. */}
+          {!trainingLoopStarted && (
+            <TypingAnimation duration={44}>
+              {t("studio.trainingStart.preparingResources")}
+            </TypingAnimation>
+          )}
+          {!trainingLoopStarted && (
+            <TypingAnimation duration={44}>
+              {t("studio.trainingStart.gettingReady")}
+            </TypingAnimation>
+          )}
           <AnimatedSpan className="mt-2 text-muted-foreground">
-            {t("studio.trainingStart.waitingForFirstStep", {
-              message: displayMessage,
-              step: currentStep,
-            })}
+            &gt; {displayMessage}
           </AnimatedSpan>
-          {datasetStreaming ? (
+          {!trainingLoopStarted && (datasetStreaming ? (
             <>
               <AnimatedSpan className="mt-3 text-muted-foreground">
                 {t("studio.trainingStart.datasetStreaming")}
@@ -478,11 +469,12 @@ export function TrainingStartOverlay({
                 preparation={datasetPreparation}
               />
             </AnimatedSpan>
-          ) : null}
-          {resourceRowHasContent(modelDownload, modelPreparation) ? (
+          ) : null)}
+          {!trainingLoopStarted && resourceRowHasContent(modelDownload, modelPreparation) ? (
             <AnimatedSpan className="mt-3">
               <ResourceRow
                 label={t("studio.trainingStart.modelWeights")}
+                resourceName={modelName}
                 state={modelDownload}
                 preparation={modelPreparation}
               />

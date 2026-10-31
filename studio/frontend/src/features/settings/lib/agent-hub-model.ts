@@ -7,9 +7,7 @@ type HubModelTaskMetadata = {
   tags?: readonly string[] | null;
 };
 
-// Coding agents require a chat-completions model. When the Hub declares a
-// primary pipeline, admit only pipelines that can consume conversational text;
-// a missing pipeline remains eligible because many valid GGUF repos omit it.
+// Admit only conversational pipelines; a missing pipeline stays eligible since many GGUF repos omit it.
 const CHAT_GENERATION_TASKS: ReadonlySet<string> = new Set([
   "text-generation",
   "conversational",
@@ -18,9 +16,7 @@ const CHAT_GENERATION_TASKS: ReadonlySet<string> = new Set([
   "any-to-any",
 ]);
 
-// These generation tasks belong to the Audio page and cannot serve coding-agent
-// chat completions. Keep this narrower than generic audio tags so audio-capable
-// chat and vision-language models remain available.
+// Narrower than generic audio tags so audio-capable chat and VLM models stay available.
 const SPEECH_ONLY_TAGS: ReadonlySet<string> = new Set([
   "text-to-speech",
   "automatic-speech-recognition",

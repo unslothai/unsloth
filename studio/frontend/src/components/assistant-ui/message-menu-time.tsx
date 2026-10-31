@@ -14,8 +14,7 @@ import { formatMessageDate } from "@/lib/format-message-date";
 import { messageTimestamp } from "@/lib/message-timestamp";
 import type { FC } from "react";
 
-/** When the message was written, heading the More menu, with the details button beside it.
- *  The menu renders only while open, so no timer. */
+/** The menu renders only while open, so no timer. */
 export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
   onShowDetails,
 }) => {
@@ -28,13 +27,12 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
       : null;
 
   return (
-    // One item, so the time opens the details as the button beside it does.
     <Tooltip>
       <TooltipTrigger asChild={true}>
         <ActionBarMorePrimitive.Item
           onSelect={onShowDetails}
           aria-label="See response details"
-          className="group/menu-time flex w-fit max-w-full cursor-pointer items-center rounded-[11px] text-muted-foreground outline-none"
+          className="group/menu-time flex w-fit max-w-full cursor-pointer items-center rounded-md text-muted-foreground outline-none"
         >
           {date && (
             <time
@@ -47,13 +45,14 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
               })}
             </time>
           )}
-          {/* Right after the time. Shown while this row is hovered, or when reached by keyboard. */}
-          <span className="flex size-7 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity group-hover/menu-time:bg-accent group-hover/menu-time:text-accent-foreground group-hover/menu-time:opacity-100 group-focus/menu-time:bg-accent group-focus/menu-time:text-accent-foreground group-focus/menu-time:opacity-100">
+          {/* Right after the time. Shown while this row is hovered, or when reached by keyboard.
+              Visibility, not an opacity fade: the fade's compositing layer, clipped by the menu's
+              rounded scroller, was left on screen in the desktop app's WebKit after the pointer left. */}
+          <span className="invisible flex size-7 shrink-0 items-center justify-center rounded-full group-hover/menu-time:visible group-hover/menu-time:bg-accent group-hover/menu-time:text-accent-foreground group-focus/menu-time:visible group-focus/menu-time:bg-accent group-focus/menu-time:text-accent-foreground">
             <HugeiconsIcon icon={InformationCircleIcon} strokeWidth={1.75} className="size-icon" />
           </span>
         </ActionBarMorePrimitive.Item>
       </TooltipTrigger>
-      {/* Above, so it never covers the time. The full date leads, where the time's title gave it. */}
       <TooltipContent side="top" className="tooltip-compact">
         {date
           ? `${date.toLocaleString(locale, { dateStyle: "full", timeStyle: "short" })} · See response details`

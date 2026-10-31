@@ -1,15 +1,4 @@
-"""Unsloth and Studio both open the ROCm AOTriton SDPA gate, whatever loaded first.
-
-Torch fixes TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL at the first ROCm SDPA probe, not at
-extension load (function-local `static const bool` in the `check_*_hardware_support` helpers
-of `aten/src/ATen/native/transformers/cuda/sdp_utils.cpp`, unchanged 2.8 through main), so
-`import torch` first, the order `studio/backend/core/training/trainer.py` uses, is still in
-time; skipping the write leaves the quadratic MATH path #8819 measured.
-
-The write is a bare `os.environ.setdefault` in both files, asserted below: any version or
-architecture policy would have to import torch and would shadow AOTriton's experimental
-matrix, which ships inside the wheel and moves between releases and builds.
-"""
+"""Set `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL` by bare setdefault before the first ROCm SDPA probe."""
 
 import ast
 import functools
@@ -147,7 +136,6 @@ def _run(code, **env):
     path = [str(_ROOT)]
     if os.environ.get("PYTHONPATH"):
         path.append(os.environ["PYTHONPATH"])
-    # Importing Unsloth sets the gate; each case supplies its own starting value.
     clean = {k: v for k, v in os.environ.items() if k != _GATE}
     return subprocess.run(
         [sys.executable, "-c", code],

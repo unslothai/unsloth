@@ -150,7 +150,7 @@ function ResourceNoticeList({
   }
   return (
     <section className="flex flex-col gap-2">
-      <p className="text-ui-10p5 font-medium uppercase tracking-[0.05em] text-muted-foreground/60">
+      <p className="text-ui-11 font-medium tracking-nav text-muted-foreground">
         {t("studio.preview.files")}
       </p>
       {notices.map((notice) => (
@@ -169,13 +169,8 @@ function ResourceNoticeList({
   );
 }
 
-/** What the run will really do about transformers and precision.
- *
- * The method row above is what the user picked, not what the backend will run: a model
- * routed to the latest-transformers sidecar always loads 16-bit, so "QLoRA · 4-bit" for
- * one of those is a VRAM promise the run cannot keep. Stated here, before Start. When
- * the model also ships its own code the dialog offers both ways in and only one keeps
- * 4-bit, so the precision line names the action rather than asserting one answer. */
+/** The method row is what the user picked: a model routed to the latest-transformers sidecar
+ * always loads 16-bit, and with custom code only one dialog path keeps 4-bit. */
 function TransformersUpgradeNotice(): ReactElement | null {
   const t = useT();
   const { installVersion, fourBitUnavailable, installSwitchesTo16Bit } =
@@ -250,7 +245,7 @@ function PreviewResource({
   return (
     <div className="flex flex-col gap-1">
       {owner && (
-        <p className="font-mono text-ui-10p5 uppercase tracking-[0.04em] text-muted-foreground/70">
+        <p className="font-mono text-ui-10p5 text-muted-foreground/70">
           {owner}
         </p>
       )}

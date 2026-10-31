@@ -148,11 +148,8 @@ if ! flock -n 9; then
     exit 1
 fi
 
-# Leftovers of a run killed outright (no trap ran): .src-prev.* and .src-update.* beside
-# src. The kept package record is the one marker of an uncommitted update: with it, a
-# previous tree goes back over the unverified one and the packages are reinstalled;
-# without it a previous tree is scratch. No src at all means the kill landed between
-# the two moves, and the lone previous tree goes back either way.
+# Leftovers of a killed run: with the kept record, restore the previous tree and
+# packages; without it, previous trees are scratch. No src means restore either way.
 shopt -s nullglob
 _prev=("$SRC_DIR"/.src-prev.*)
 if [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then
@@ -499,6 +496,22 @@ if ! studio_tree_ok; then
     log "If a new dependency is missing, re-run with --with-deps."
     exit 1
 fi
+# Move the image's managed Node (never a user's) to the new pin; failure keeps the old Node.
+refresh_managed_node() {
+    local node_dir="$STUDIO_HOME/node" installer out
+    [ "${UNSLOTH_SKIP_NODE_INSTALL:-0}" = "1" ] && return 0
+    [ -f "$node_dir/UNSLOTH_NODE_PREBUILT_INFO.json" ] || return 0
+    installer="$( (cd / && "$PY" -c 'import os, studio; print(os.path.join(os.path.dirname(studio.__file__), "install_node_prebuilt.py"))') 2>/dev/null)" || return 0
+    [ -f "$installer" ] || return 0
+    # The installer exits 0 when it keeps a usable old Node after a failed download (as setup.sh reads it).
+    if out="$( (cd / && "$PY" "$installer" --install-dir "$node_dir") 2>&1)" \
+        && ! printf '%s\n' "$out" | grep -Fq "keeping existing isolated Node"; then
+        log "managed Node matches the new pin"
+    else
+        log "WARNING: could not move the managed Node to the new pin; keeping the current one"
+    fi
+}
+refresh_managed_node
 # The previous tree stays until the restarted service proves it can serve. The record
 # is unlinked first: a kill before that leaves a full recovery for the next run, after
 # it only scratch. Signals held off, so the exit trap cannot restore over the commit.

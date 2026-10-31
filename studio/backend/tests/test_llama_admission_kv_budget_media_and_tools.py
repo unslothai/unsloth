@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Media and tool-loop cases that the KV reservation has to charge for.
-
-Media: Unsloth's composer sends the current image in both a message-level
-``image_url`` part and the legacy top-level ``image_base64`` field. The generation
-path splices legacy media into the prompt AFTER admission is decided. Admission must
-charge the resulting image once, without treating base64 bytes as prompt text.
-
-Tool loop: the server-side loop opens on ``enable_tools`` / ``mcp_enabled`` / the CLI
-policy / a checkpoint repair, none of which require a client ``tools`` array, so a
-predicate keyed on ``payload.tools`` charged Unsloth's own tool traffic the opening
-estimate for a lease that runs up to 25 growing rounds.
-"""
+"""Charge a media image once, and key the tool loop on its server-side triggers, not payload.tools."""
 
 import base64
 import copy
@@ -52,9 +41,7 @@ def _image_b64(kib: int = 200) -> str:
     return base64.b64encode(b"\x89PNG" + b"x" * (kib * 1024)).decode()
 
 
-# Two real, decodable, DIFFERENT PNGs. The builders decode and re-encode, unlike the
-# estimator, so the synthetic fixture above cannot reach them; and the pair has to
-# differ for a distinct-legacy-image case to be distinct at all.
+# real, decodable, different PNGs: the builders decode and re-encode, the estimator does not
 _TINY_PNG = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC"
 )
@@ -87,14 +74,10 @@ class TestMediaIsCharged:
             ],
             max_tokens = 128,
         )
-        # Clear of the clamp: at 4096 `max(1, min(budget, ...))` pinned both sides to the
-        # budget, so they agreed whatever the estimator did and this proved nothing.
+        # clear of the clamp, else both sides pin to the budget and agree regardless
         legacy_cost = _openai_llama_admission_tokens(legacy, budget = 1_000_000, capacity = 4)
         inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
-        # The wire spelling must not change the commitment. Not to the token: inline
-        # really does send a content-part wrapper legacy does not, and the marker is
-        # itself a little JSON. What must not survive is the 30x gap between pricing an
-        # image at its base64 length and at its text.
+        # Wire spelling must not change the commitment (not to the token); the 30x gap must not survive
         assert abs(legacy_cost - inline_cost) <= 64, (legacy_cost, inline_cost)
         assert max(legacy_cost, inline_cost) < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
 
@@ -119,8 +102,6 @@ class TestMediaIsCharged:
         )
         inline = _Payload(messages = inline_messages, max_tokens = 128)
 
-        # Clear of the clamp: at 65536 a 1 MiB image priced as prompt text pinned both
-        # sides to the budget, so `dual == inline` held on the unfixed estimator too.
         dual_cost = _openai_llama_admission_tokens(dual, budget = 1_000_000, capacity = 4)
         inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
 
@@ -133,17 +114,8 @@ class TestMediaIsCharged:
         ), "image bytes must be bounded but still charged"
 
     def test_every_builder_forwards_exactly_what_admission_charged(self):
-        """The reservation is only a bound if it counts the images actually sent.
-
-        Studio echoes one image into both spellings. The GGUF builder always dropped the
-        echo; `_openai_messages_for_passthrough` (taken when a client sends ``tools`` or
-        a ``response_format``) spliced it in regardless, sending two copies against a
-        reservation for one: 4417 reserved against 8466 charged on llama-server b10639.
-
-        The echo is the only thing that may be dropped. A legacy image the thread does
-        not already hold is a real attachment, so both builders send it and admission
-        charges for it -- keyed on the same predicate, or the two answers drift again.
-        """
+        """Every builder must send exactly what admission charged; only the echo of an image may be
+        dropped."""
         from models.inference import ChatCompletionRequest
         from routes.inference import (
             _openai_llama_admission_media_tokens,
@@ -185,8 +157,6 @@ class TestMediaIsCharged:
                 messages = [{"role": "user", "content": "what is this?"}],
                 image_base64 = image,
             ),
-            # An older image in history plus a genuinely different one attached to this
-            # turn through the legacy field: two images, and both must be charged.
             "history image plus a distinct legacy attachment": ChatCompletionRequest(
                 model = "m",
                 max_tokens = 128,
@@ -227,13 +197,7 @@ class TestMediaIsCharged:
                 )
 
     def test_the_allowance_bounds_a_real_projector(self):
-        """The per-image charge is an upper bound, not an estimate.
-
-        Measured on llama-server b10639: 4098 KV positions for a 2048x2048 image on
-        Qwen3-VL-4B (the 4096-embedding cap plus two mtmd delimiters) and 258 on Gemma 3
-        4B, at every resolution and encoded size. A flat 4096 sat below the Qwen figure,
-        and reserving less than a request costs is what lets two collide in one cache.
-        """
+        """The per-image allowance must bound the measured worst case, 4098 KV positions for Qwen3-VL-4B."""
         measured_worst_case = {"qwen3-vl-4b": 4098, "gemma-3-4b": 258}
         for model, tokens in measured_worst_case.items():
             assert (
@@ -241,13 +205,7 @@ class TestMediaIsCharged:
             ), f"per-image allowance under-reserves {model}"
 
     def test_the_allowance_follows_a_raised_image_token_cap(self):
-        """A load can raise the projector ceiling, and the reservation has to follow it.
-
-        ``--image-max-tokens`` is not Unsloth-managed, so ``llama_extra_args`` forwards
-        it verbatim. Measured on b10639 with ``--image-max-tokens 8192``: a 4096x4096
-        Qwen3-VL image costs 8102, against 4098 at the default. Reserving the default
-        against that backend admits concurrent requests the cache cannot hold.
-        """
+        """A raised --image-max-tokens via llama_extra_args must raise the per-image reservation too."""
         from routes.inference import (
             _MMPROJ_IMAGE_TOKEN_MAX,
             _openai_llama_admission_image_tokens,
@@ -269,26 +227,20 @@ class TestMediaIsCharged:
             allowance = _openai_llama_admission_image_tokens(_Backend(spelling))
             assert allowance > _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
             assert allowance >= 8102, f"{spelling} under-reserves the measured cost"
-        # Junk must not be mistaken for a cap, and must not raise.
         for junk in (["--image-max-tokens"], ["--image-max-tokens", "abc"], ["-c", "40000"]):
             assert _openai_llama_admission_image_tokens(_Backend(junk)) == (
                 _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
             )
 
-        # Every family llama.cpp gives its own ceiling must be bounded, including the
-        # ones far above the default: youtuvl is 62500 and hunyuanvl 16384, so a flat
-        # default would have reserved a fraction of what one image really costs.
+        # youtuvl is 62500 and hunyuanvl 16384, far above the default
         for projector, ceiling in _MMPROJ_IMAGE_TOKEN_MAX.items():
             assert _openai_llama_admission_image_tokens(_Backend(projector = projector)) >= ceiling
         assert _openai_llama_admission_image_tokens(_Backend(projector = "youtuvl")) >= 62500
-        # A projector with a small ceiling reserves near it rather than the default.
         assert _openai_llama_admission_image_tokens(_Backend(projector = "lfm2")) < 1024
-        # An unknown family keeps the default rather than inventing a number.
         assert _openai_llama_admission_image_tokens(_Backend(projector = "nope")) == (
             _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
-        # The flag is only honoured by dynamic-resolution projectors, so a LOW cap must
-        # not talk the reservation below what a fixed-resolution one really costs.
+        # only dynamic-resolution projectors honour the flag, so a low cap can't undercut these
         assert (
             _openai_llama_admission_image_tokens(
                 _Backend(["--image-max-tokens", "16"], projector = "qwen3vl_merger")
@@ -361,8 +313,6 @@ class TestMediaIsCharged:
 
         first, second = asyncio.run(scenario())
         assert first is not None, "the first image chat owns the cache"
-        # The conservative per-image allowance alone is larger than this tiny cache,
-        # so the second request must still queue rather than overcommit it.
         assert second is None
 
     def test_audio_and_video_are_charged_too(self):
@@ -388,7 +338,7 @@ def _wav_b64(seconds: float, rate: int = 16000) -> str:
 
 
 def _mp3_b64(frames: int) -> str:
-    # MPEG-1 Layer III, 128 kbps, 44.1 kHz: 417-byte frames of 1152 samples.
+    # MPEG-1 Layer III, 128 kbps, 44.1 kHz: 417-byte frames of 1152 samples
     frame = b"\xff\xfb\x90\x00" + b"\x00" * 413
     return base64.b64encode(frame * frames).decode()
 
@@ -455,7 +405,7 @@ class TestAnAudioTurnIsChargedByItsDuration:
     )
     def test_the_charge_bounds_every_audio_projector(self, audio, seconds):
         cost = _openai_llama_admission_media_tokens(_Payload(audio_base64 = audio))
-        # 25 embeddings a second, and a Whisper encoder pads each clip to a whole 30 s window.
+        # 25 embeddings a second; a Whisper encoder pads each clip to a whole 30 s window
         whisper_windows = int(seconds // 30) + 1
         assert cost >= max(25 * seconds, 750 * whisper_windows)
         assert cost <= 25 * (seconds + 30) + 256
@@ -495,7 +445,6 @@ class TestAnAudioTurnIsChargedByItsDuration:
             enable_tools = True,
             max_tokens = 256,
         )
-        # What _inject_audio_part hands the tool loop.
         conversation = [
             {
                 "role": "user",
@@ -559,7 +508,7 @@ class TestAnAudioTurnIsChargedByItsDuration:
         asyncio.run(run())
         assert on_loop == [False]
 
-    # An ogg header states no length, so only the WAV it is transcoded to can be measured.
+    # an ogg header states no length, so only the WAV it is transcoded to can be measured
     @pytest.mark.parametrize(
         "raw",
         [inference_route._mono_f32_to_wav_bytes(np.zeros(320_000), 16000), b"OggS" * 4**8],
@@ -603,16 +552,12 @@ class TestAnAudioTurnIsChargedByItsDuration:
         response = TestClient(app).post("/v1/chat/completions", json = body)
 
         assert response.status_code == 200, response.text
-        # 25/s over the clip and a trailing 30 s window, the wrapper, output, and the prompt.
+        # 25/s over the clip plus a trailing 30 s window, the wrapper, output, and the prompt
         assert 0 <= charged[0] - (25 * (20 + 30) + 128 + 256) < 32, charged
 
 
 class TestAnAnthropicImageIsChargedLikeAnyOtherImage:
-    """/v1/messages reserves from the RAW Anthropic request, so its own image block has to
-    be compacted too. #9842 fixed this for /v1/chat/completions and left this surface
-    pricing a screenshot at its base64 length, which clamps the reservation to the whole
-    cache and makes the shared queue serve that one request alone.
-    """
+    """/v1/messages prices from the raw request, so its own image block must be compacted too."""
 
     def _request(self, data: str):
         return AnthropicMessagesRequest(
@@ -637,8 +582,6 @@ class TestAnAnthropicImageIsChargedLikeAnyOtherImage:
         )
 
     def test_a_big_anthropic_image_costs_what_a_tiny_one_costs(self):
-        # Clear of the clamp, as the image_url cases above are, so the estimator is what
-        # is being compared rather than `min(budget, ...)`.
         big = _openai_llama_admission_tokens(
             self._request(_image_b64(1024)), budget = 1_000_000, capacity = 4
         )
@@ -671,11 +614,7 @@ class TestAnAnthropicImageIsChargedLikeAnyOtherImage:
 
 
 class TestAToolResultScreenshotIsNotPricedByItsBase64:
-    """The shape an agent actually sends: the image arrives nested in a `tool_result`,
-    not as a top-level block. A 150 KiB screenshot returned by a tool was charged 51,433
-    tokens against a 32768-token cache -- the whole of it -- so the chat that took the
-    screenshot then ran alone.
-    """
+    """A nested tool_result screenshot was charged its base64, filling the whole 32768-token cache."""
 
     def _request(self, data: str):
         return AnthropicMessagesRequest(
@@ -791,11 +730,7 @@ class TestAToolResultScreenshotIsNotPricedByItsBase64:
 
 
 class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
-    """`tool_result` content is an untyped list, so an image is only one of the block types
-    that reach it. A PDF document, a malformed search result and a nested `tool_result` send
-    at most a short note, and each was charged its base64 as prompt text -- the
-    whole of a 32768-token cache for a request that sends a couple of hundred characters.
-    """
+    """Dropped blocks must be priced by the short note they send, not by their base64 length."""
 
     def _blocks(self, data: str):
         return {
@@ -842,7 +777,7 @@ class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
     def test_none_of_them_reserve_the_whole_cache(self):
         budget = 32768
         data = _image_b64(150)
-        # Both orders: a filter that stops at the first block would pass one of them.
+        # both orders: a filter that stops at the first block would pass one of them
         for text_first in (True, False):
             for name, block in self._blocks(data).items():
                 payload = self._request(block, text_first = text_first)
@@ -853,11 +788,8 @@ class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
                 )
 
     def test_the_charge_matches_what_the_translation_actually_sends(self):
-        """Tied to the translation, not to a number, so it fails on whichever side moves.
-
-        The text beside these blocks IS sent, which is what stops a filter that simply
-        drops the whole `tool_result` from passing.
-        """
+        """The charge tracks what the translation actually sends, so dropping whole tool_result
+        blocks fails."""
         data = _image_b64(64)
         for text_first in (True, False):
             for name, block in self._blocks(data).items():
@@ -916,10 +848,7 @@ class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
                 assert cost > len(rendered) // 8
 
     def test_a_tool_result_the_translation_does_forward_is_still_charged(self):
-        """The other side of the boundary: string `tool_result` content is forwarded
-        verbatim, base64-looking text included, so it keeps costing what its length costs
-        and the filter cannot pay for itself by dropping what IS sent.
-        """
+        """Forwarded string tool_result content is charged by length, even when it looks like base64."""
         data = _image_b64(150)
         payload = AnthropicMessagesRequest(
             model = "default",
@@ -960,18 +889,11 @@ class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
 
 
 class TestTheToolLoopOpensAtAnEqualShare:
-    """#9392 reserved the WHOLE cache for any tool loop, making every tool chat run alone
-    (any lit pill sets enable_tools). The loop now opens at an equal share and re-costs
-    per round (llama_cpp.generate_chat_completion_with_tools -> on_conversation_grew ->
-    LlamaAdmissionLease.recost), the alternative #9392 named and skipped.
-    """
+    """A tool loop opens at an equal share and re-costs each round, so the whole cache is not reserved."""
 
     def test_a_server_side_loop_without_client_tools_is_still_a_tool_loop(self):
-        """enable_tools / mcp_enabled / CLI policy open the loop with no `tools` array.
-
-        The amount changed, not the recognition: keying on payload.tools would still
-        undercharge Unsloth's own tool traffic.
-        """
+        """A loop with no client tools array is still a tool loop; keying on payload.tools
+        undercharges it."""
         payload = _Payload(
             messages = [{"role": "user", "content": "search my notes"}],
             enable_tools = True,
@@ -1021,25 +943,18 @@ class TestTheToolLoopOpensAtAnEqualShare:
 
 
 class TestTheBudgetIsTheWholeCacheNotOneSlot:
-    """``context_length`` stops being the total once the server has been read back.
-
-    ``_reconcile_effective_ctx_with_server`` adopts the per-slot ``n_ctx`` into
-    ``context_length`` and puts the aggregate in ``_kv_cache_context_total``. Without
-    ``--kv-unified`` those differ by ``n_parallel``, and budgeting one private cache
-    for the whole pool collapses concurrency to a single generation.
-    """
+    """Budget the whole pool total, not one slot: without --kv-unified, context_length is only per-slot."""
 
     def test_the_partitioned_total_wins_over_one_slot(self):
         backend = _Payload(context_length = 4096, _kv_cache_context_total = 16384)
         assert _openai_llama_admission_budget(backend) == 16384
 
     def test_a_unified_cache_is_unchanged(self):
-        # slots == 1 under --kv-unified, so the total IS the per-request window.
+        # slots == 1 under --kv-unified, so the total IS the per-request window
         backend = _Payload(context_length = 8192, _kv_cache_context_total = 8192)
         assert _openai_llama_admission_budget(backend) == 8192
 
     def test_an_unread_backend_falls_back_to_context_length(self):
-        # Nothing read back yet: the two agree, so the fallback is not a guess.
         backend = _Payload(context_length = 8192, _kv_cache_context_total = None)
         assert _openai_llama_admission_budget(backend) == 8192
 
@@ -1048,14 +963,7 @@ class TestTheBudgetIsTheWholeCacheNotOneSlot:
 
 
 class TestARoundIsCostedTheSameWayTheReservationWas:
-    """The re-cost REPLACES the opening reservation, so it has to count the same things.
-
-    ``_openai_llama_admission_recost`` fires at the top of every round including round
-    zero, before a tool loop has grown at all. Counting fewer terms than the reservation
-    therefore shrinks a correctly sized lease and hands the difference to the next
-    arrival as room llama-server is already using -- the multi-slot ``Context size has
-    been exceeded`` this accounting exists to prevent.
-    """
+    """A re-cost must count the same terms as the reservation, or it frees room still in use."""
 
     class _Backend:
         base_url = "http://llama"
@@ -1125,8 +1033,6 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
             max_tokens = 128,
         )
         opened, committed, _ = self._round_zero(payload, output_tokens = 128)
-        # One image alone is 4224 against this 4096 budget, so the reservation clamps to
-        # the whole cache: four times the 1024 share the re-cost used to drop it to.
         assert _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS > 4096 and opened == 4096, opened
         assert committed == opened, (
             f"round zero shrank a correct lease from {opened} to {committed}, "
@@ -1134,13 +1040,7 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         )
 
     def test_round_zero_keeps_an_uncapped_loop_s_output_allowance(self):
-        """No max_tokens and no max_completion_tokens.
-
-        The invariant: the round-zero re-cost must not SHRINK the opening lease, because it
-        fires before the conversation has grown, so anything given back is room
-        llama-server is already using. The allowance SIZE is a separate question and it
-        changed, so this asserts the two sides agree rather than asserting a number.
-        """
+        """Round-zero re-cost must not shrink the opening lease; llama-server is already using that room."""
         from routes.inference import (
             _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
             _effective_openai_max_tokens,
@@ -1178,10 +1078,7 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
 
 
 class TestARoundStopsPayingForAnEvictedClip:
-    """truncate_oldest can drop the turn that carried a clip. The re-cost reads the CURRENT
-    conversation for text and images, so reading the opening payload for video kept every later
-    round reserved at the full budget for media llama-server is no longer sent.
-    """
+    """Re-cost reads the current conversation, since truncate_oldest can evict the turn that held a clip."""
 
     class _Backend:
         base_url = "http://llama"

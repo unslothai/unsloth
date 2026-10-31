@@ -95,7 +95,6 @@ export async function saveRecipe(
         learningRecipeId: input.learningRecipeId ?? existing?.learningRecipeId,
         learningRecipeTitle:
           input.learningRecipeTitle ?? existing?.learningRecipeTitle,
-        // Another window may have saved since this copy was read: the server refuses with 409.
         baseUpdatedAt: input.baseUpdatedAt ?? existing?.updatedAt,
       }),
     });

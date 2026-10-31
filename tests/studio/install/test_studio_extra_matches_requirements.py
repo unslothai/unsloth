@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The studio extra must mirror studio/backend/requirements/studio.txt.
-
-Nothing else keeps them in sync, and drift reintroduces #4701 / #5260 / #7147.
-"""
+"""Nothing else keeps the studio extra in sync with studio/backend/requirements/studio.txt."""
 
 from __future__ import annotations
 
@@ -17,8 +14,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 STUDIO_TXT = REPO_ROOT / "studio" / "backend" / "requirements" / "studio.txt"
 
-# Imported at module scope by the chain every CLI command walks: structlog via
-# studio.backend, click via unsloth_cli/commands/start.py.
+# Imported at module scope by every CLI command: structlog via studio.backend, click via start.py.
 CORE_RUNTIME_PACKAGES = ("structlog", "click")
 
 
@@ -54,6 +50,21 @@ def test_studio_extra_exists():
     assert "studio" in extras, (
         "pyproject.toml has no `studio` extra. The wheel ships studio/ and "
         "studio.backend*, so their dependencies need a pip-installable home."
+    )
+
+
+def test_s3_sdk_is_only_in_the_s3_extra():
+    from packaging.requirements import Requirement
+
+    project = _load_pyproject()["project"]
+    extras = project["optional-dependencies"]
+    assert extras["s3"] == ["boto3>=1.34.0"]
+    aws_packages = {"boto3", "botocore", "s3transfer", "jmespath"}
+    default_requirements = (
+        project["dependencies"] + extras["studio"] + _requirement_lines(STUDIO_TXT)
+    )
+    assert not aws_packages.intersection(
+        Requirement(entry).name.lower() for entry in default_requirements
     )
 
 
@@ -107,13 +118,7 @@ def _specs(entries: list[str]) -> set[tuple[str, str, str]]:
 
 
 def test_studio_extra_matches_requirement_versions():
-    """Names matching is not enough: the versions and markers have to match too.
-
-    Comparing normalised names alone let the extra keep bare requirements while
-    studio.txt carried exact pins, so `pip install "unsloth[studio]"` resolved a
-    different stack than the managed installer produced (pandas 3.x against the
-    installer's 2.3.3, which is a copy-on-write and str-dtype migration apart).
-    """
+    """Compare versions and markers, not just names: bare extras let pip resolve a different stack."""
     extras = _load_pyproject()["project"]["optional-dependencies"]
     extra = _specs(extras["studio"])
     required = _specs(_requirement_lines(STUDIO_TXT))

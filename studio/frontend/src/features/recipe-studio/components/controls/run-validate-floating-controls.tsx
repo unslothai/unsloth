@@ -31,8 +31,9 @@ export function RunValidateFloatingControls({
         className="pointer-events-auto flex items-center gap-2"
       >
         <Button
+          variant="dark"
           type="button"
-          className="corner-squircle h-11 px-5"
+          className="corner-squircle"
           onClick={() => onOpenRunDialog(runDialogKind)}
           disabled={runBusy}
         >
@@ -42,7 +43,7 @@ export function RunValidateFloatingControls({
         <Button
           type="button"
           variant="outline"
-          className="corner-squircle h-11 px-5"
+          className="corner-squircle"
           onClick={onValidate}
           disabled={validateLoading || executionLocked}
         >

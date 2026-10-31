@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GPU verification for the diffusion performance pass (Phase 7).
-
-Drives the real ``DiffusionBackend`` through several loads in one process and
-checks, at a fixed seed:
-
-  1. speed: ``default`` (compile + cudnn.benchmark + channels_last) vs ``off``
-     -- expect a large denoise speedup at high PSNR (near-lossless).
-  2. the TF32-leak fix: load ``max`` (flips global TF32 / cudnn.benchmark), unload,
-     then load ``off`` -- the ``off`` image must be byte-identical (PSNR inf) to a
-     fresh ``off`` baseline, proving the globals were restored on unload.
-  3. ``balanced`` is now bit-identical: with VAE tiling restricted to the low tiers,
-     streamed (group) offload should match the resident image (PSNR inf).
-
-Run on one CUDA GPU with the GGUF + base repo cached.
-"""
+"""Verifies TF32 leak fix (off after max is byte-identical), default speedup and balanced parity."""
 
 from __future__ import annotations
 
@@ -133,7 +119,7 @@ def main(argv = None) -> int:
     )
 
     print("== 2. TF32-leak fix: max then off must be byte-identical ==", flush = True)
-    timed("max", warmup = 0, iters = 1, tag = "max")  # flips + should restore globals
+    timed("max", warmup = 0, iters = 1, tag = "max")
     off2_img, _ = timed("off", warmup = 0, iters = 1, tag = "off2")
     leak_psnr = _psnr(off_img, off2_img)
     print(
@@ -153,7 +139,7 @@ def main(argv = None) -> int:
 
     ok = (
         (leak_psnr == float("inf"))
-        and (bal_psnr == float("inf"))  # check 3: balanced must be bit-identical to off
+        and (bal_psnr == float("inf"))
         and (def_t < off_t)
         and (_psnr(off_img, def_img) >= 30)
     )

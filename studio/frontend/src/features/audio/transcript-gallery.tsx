@@ -12,11 +12,21 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Archive02Icon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   MoreVerticalIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -135,6 +145,7 @@ export function TranscriptGallery({
   const [archived, setArchived] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [confirmingClear, setConfirmingClear] = useState(false);
   const generation = useRef(0);
   const loadingRef = useRef(false);
   const currentIdRef = useRef(currentId);
@@ -161,8 +172,7 @@ export function TranscriptGallery({
       })
       .catch((error: unknown) => {
         if (ticket !== generation.current) return;
-        // Rows and cursor belong to the view we just left: keeping them renders History
-        // entries under the Archived heading and pages the wrong cursor onto them.
+        // Rows and cursor belong to the view just left; keeping them mislabels and mispages.
         setRecords([]);
         setCursor(null);
         toast.error(
@@ -258,14 +268,7 @@ export function TranscriptGallery({
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => {
-              if (
-                window.confirm(
-                  "Delete all transcripts in history? Archived transcripts will be kept.",
-                )
-              )
-                void mutate(() => deleteTranscript(), null);
-            }}
+            onClick={() => setConfirmingClear(true)}
           >
             Clear all
           </Button>
@@ -297,7 +300,7 @@ export function TranscriptGallery({
             >
               <span className="min-w-0 flex-1 truncate">{record.title}</span>
               {recordBadge(record) ? (
-                <span className="shrink-0 rounded-4xl bg-muted px-1.5 text-ui-11 text-muted-foreground">
+                <span className="shrink-0 rounded-full bg-muted px-1.5 text-ui-11 text-muted-foreground">
                   {recordBadge(record)}
                 </span>
               ) : null}
@@ -390,6 +393,26 @@ export function TranscriptGallery({
           </Button>
         )}
       </div>
+      <AlertDialog open={confirmingClear} onOpenChange={setConfirmingClear}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear transcript history</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete all transcripts in history? Archived transcripts will be
+              kept. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => void mutate(() => deleteTranscript(), null)}
+            >
+              Clear all
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

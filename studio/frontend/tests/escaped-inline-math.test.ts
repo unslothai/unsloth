@@ -10,6 +10,7 @@ import { Streamdown } from "streamdown";
 import { parseMarkdownIntoRenderableBlocks } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import {
   looksLikeEscapedInlineMath,
+  mayHoldEscapedInlineMath,
   normalizeEscapedInlineMath,
 } from "../src/lib/escaped-inline-math.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
@@ -282,4 +283,37 @@ test("incomplete code spans preserve escaped dollars while streaming", () => {
       assert.ok(completedHtml.includes(String.raw`formula \$x\$`));
     }
   }
+});
+
+test("escaped currency with no math pair skips the parse, every rewrite still runs it", () => {
+  const currency = String.raw`Revenue grew from \$5.2M to \$7.9M, about \$1,200 a unit and \$3 more.`;
+  for (let end = 0; end <= currency.length; end += 1) {
+    const prefix = currency.slice(0, end);
+    assert.equal(mayHoldEscapedInlineMath(prefix), false, prefix);
+    assert.equal(normalizeEscapedInlineMath(prefix), prefix);
+  }
+  for (const markdown of [
+    String.raw`- \$v_s\$ and \$f(r_s)\$`,
+    String.raw`cost \$5 and \$x + y\$`,
+    String.raw`\${a \$ b}\$`,
+    String.raw`\$5 then \$v_s\$ and \$f(x)\$`,
+  ]) {
+    assert.notEqual(normalizeEscapedInlineMath(markdown), markdown, markdown);
+    assert.equal(mayHoldEscapedInlineMath(markdown), true, markdown);
+  }
+  assert.equal(mayHoldEscapedInlineMath(`\\$${"x_".repeat(101)}\\$`), false);
+  assert.equal(mayHoldEscapedInlineMath("\\$x\n\\$"), false);
+});
+
+test("escaped currency in a long streamed reply stays within the streaming budget", () => {
+  const section =
+    "## Pricing\n\nThe plan has **two** tiers, a [docs](https://example.com) link and `code`.\n\n- first item\n- second item\n\n```python\nprint(1)\n```\n\n";
+  const reply = `The plan costs \\$20 per month, or \\$200 per year.\n\n${section.repeat(200)}`;
+  const started = performance.now();
+  for (let end = 500; end <= reply.length; end += 500) {
+    const chunk = reply.slice(0, end);
+    assert.equal(normalizeEscapedInlineMath(chunk), chunk);
+  }
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 500, `streaming took ${elapsed.toFixed(1)}ms`);
 });

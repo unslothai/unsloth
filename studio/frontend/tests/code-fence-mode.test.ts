@@ -20,16 +20,30 @@ import { readSrc } from "./helpers/kit.ts";
  * working in BOTH directions. A truth table nobody executes is not evidence of that.
  */
 
-test("an install that has never set the flag gets the ship default", () => {
-  assert.equal(SHIP_DEFAULT, "defer", "the ship default is deferral");
+test("the default defers highlighting without moving line windows during scroll", () => {
+  assert.equal(SHIP_DEFAULT, "defer");
   assert.equal(resolveFenceMode(undefined, ""), "defer");
 });
 
+test("explicit deferral and windowing overrides remain available", () => {
+  assert.equal(resolveFenceMode(undefined, "defer"), "defer");
+  assert.equal(resolveFenceMode("defer", ""), "defer");
+  assert.equal(resolveFenceMode(true, ""), "defer");
+  assert.equal(resolveFenceMode(undefined, "window"), "window");
+  assert.equal(resolveFenceMode("window", ""), "window");
+});
+
+test("every answer fence takes its line window from the mode, streaming or not", () => {
+  assert.deepEqual(
+    readSrc("components/assistant-ui/markdown-text.tsx").match(/windowing=\{[^}]*\}/g),
+    ['windowing={fenceMode() === "window"}', 'windowing={fenceMode() === "window"}', 'windowing={mode === "window"}'],
+    "a streaming fence that windowed whatever the mode kept \"off\" from restoring the old rendering",
+  );
+});
+
 test("the build flag overrides the default in both directions", () => {
-  // DOWN: an install that wants exactly the old rendering says so and gets it.
   assert.equal(resolveFenceMode(undefined, "off"), "off");
   assert.equal(resolveFenceMode(undefined, "0"), "off");
-  // UP: still selects deferral explicitly, which is what every measurement arm passes.
   assert.equal(resolveFenceMode(undefined, "defer"), "defer");
   assert.equal(resolveFenceMode(undefined, "1"), "defer");
 });
@@ -37,8 +51,6 @@ test("the build flag overrides the default in both directions", () => {
 test("the runtime global overrides the default in both directions", () => {
   assert.equal(resolveFenceMode("off", ""), "off");
   assert.equal(resolveFenceMode("defer", ""), "defer");
-  // The boolean forms a devtools console types. `false` must turn it OFF against a now-ON default,
-  // the direction that did not previously have to work.
   assert.equal(resolveFenceMode(false, ""), "off");
   assert.equal(resolveFenceMode(true, ""), "defer");
 });
@@ -56,11 +68,12 @@ test("the runtime global beats the build flag, both ways round", () => {
     "global on beats a build that said off",
   );
   assert.equal(resolveFenceMode("defer", "off"), "defer");
+  assert.equal(resolveFenceMode("defer", "window"), "defer");
+  assert.equal(resolveFenceMode("window", "defer"), "window");
 });
 
 test("a typo degrades to the old behaviour, never to the new default", () => {
-  // Falling through to the DEFAULT would silently ignore the attempt. `off` highlights every fence
-  // at mount, which is never wrong-looking, and is what this flag did before the default moved.
+  // Unknown values fall back to `off`, never to the default.
   for (const typo of [
     "defr",
     "DEFER",
@@ -87,8 +100,6 @@ test("tokenize is measurement only and no default or boolean can reach it", () =
     "explicit string only",
   );
   assert.equal(resolveFenceMode("tokenize", ""), "tokenize");
-  // Nothing else may land there, least of all the shapes carrying no opinion: absent global, unset
-  // build flag.
   assert.notEqual(resolveFenceMode(undefined, ""), "tokenize");
   assert.notEqual(resolveFenceMode(true, ""), "tokenize");
   assert.notEqual(resolveFenceMode(false, ""), "tokenize");
@@ -97,15 +108,13 @@ test("tokenize is measurement only and no default or boolean can reach it", () =
 });
 
 test("a non-string non-boolean global is ignored rather than coerced", () => {
-  // `__UNSLOTH_DEFER_FENCE_HIGHLIGHT__ = 1` is a plausible console typo. Coercing it would add two
-  // more undocumented spellings, so it falls through to the build flag instead.
+  // Numeric 1 is not coerced; it falls through to the build flag.
   assert.equal(resolveFenceMode(1 as unknown, "off"), "off");
   assert.equal(resolveFenceMode(0 as unknown, "defer"), "defer");
   assert.equal(resolveFenceMode(null, ""), SHIP_DEFAULT);
   assert.equal(resolveFenceMode({} as unknown, ""), SHIP_DEFAULT);
 });
 
-/** JSX in the mode module makes this file unloadable and every assertion above a comment. */
 test("the mode module is plain TypeScript", () => {
   const source = readSrc("components/assistant-ui/code-fence-mode.ts");
   assert.ok(

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Stands in for "@/lib/toast", which pulls in sonner and a react component. A test
-// that only cares which toasts were raised and dropped reads `calls` instead.
+// Stands in for "@/lib/toast" (sonner + react); tests read `calls` instead.
 export const calls = [];
 
 export const toast = Object.assign(

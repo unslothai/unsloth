@@ -85,7 +85,7 @@ def test_a_published_cell_names_our_matching_wheel(monkeypatch, fixes, package, 
 
 
 def test_the_wheel_names_are_the_published_ones(fixes):
-    # Kept in step with the release the prebuilt workflow publishes (studio/backend/utils/wheel_utils.py).
+    # Kept in step with the release the prebuilt workflow publishes (wheel_utils.py).
     source = (_REPO_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py").read_text(
         encoding = "utf-8"
     )

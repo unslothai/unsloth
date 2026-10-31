@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Route policy for /api/settings/managed-provider-urls.
-
-Writing it is owner-only and UI-session-only: an sk-unsloth key must not be able
-to widen the installation's egress policy. Reading it is deliberately shared, so
-a managed account can tell "ask your owner" from "this is not allowed here".
-"""
+"""Only the owner's UI session may write the managed provider URL policy; any account may read it."""
 
 from pathlib import Path
 import sys

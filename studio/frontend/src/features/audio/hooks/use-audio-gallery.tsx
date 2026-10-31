@@ -4,7 +4,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
-import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import {
@@ -26,14 +25,14 @@ import {
   deleteAudioClip,
   deleteAudioGroup,
   fetchClipBlob,
-  fetchClipObjectUrl,
+  fetchGalleryAudioSignedUrl,
   listAudioGallery,
   moveAudioClip,
   setAudioClipFlags,
 } from "../api";
 import { fetchGalleryWindow, mergeGalleryPage } from "../audio-page-policy";
+import { AudioPlaybackLinks } from "../audio-playback-links";
 import {
-  CLIP_BLOB_BUDGET_BYTES,
   MAX_PAGE_SIZE,
   PAGE_SIZE,
 } from "../audio-workspace-constants";
@@ -49,14 +48,14 @@ export const galleryCache: {
   hasMore: boolean;
   nextCursor: AudioGalleryCursor | null;
   selectedId: string | null;
-  srcById: BlobUrlCache;
+  srcById: AudioPlaybackLinks;
   peaksById: Map<string, number[] | null>;
 } = {
   clips: [],
   hasMore: false,
   nextCursor: null,
   selectedId: null,
-  srcById: new BlobUrlCache(CLIP_BLOB_BUDGET_BYTES),
+  srcById: new AudioPlaybackLinks(),
   peaksById: new Map(),
 };
 
@@ -90,34 +89,49 @@ export function useAudioGallery({
     ReadonlyMap<string, number[] | null>
   >(galleryCache.peaksById);
   const clipSrcLoads = useRef<Map<string, Promise<void>>>(new Map());
+  const clipPeaksLoads = useRef<Map<string, Promise<void>>>(new Map());
+
+  const ensureClipPeaks = useCallback(async (clip: AudioGalleryClip) => {
+    if (galleryCache.peaksById.has(clip.id)) return;
+    const pending = clipPeaksLoads.current.get(clip.id);
+    if (pending) return pending;
+    const load = (async () => {
+      try {
+        const blob = await fetchClipBlob(clip.url);
+        if (!galleryCache.clips.some((candidate) => candidate.id === clip.id)) return;
+        const { peaks } = await decodePeaks(blob);
+        if (!galleryCache.clips.some((candidate) => candidate.id === clip.id)) return;
+        galleryCache.peaksById.set(clip.id, peaks);
+        setPeaksById(new Map(galleryCache.peaksById));
+      } catch {
+        // Optional decoration.
+      }
+    })();
+    clipPeaksLoads.current.set(clip.id, load);
+    try {
+      await load;
+    } finally {
+      if (clipPeaksLoads.current.get(clip.id) === load) {
+        clipPeaksLoads.current.delete(clip.id);
+      }
+    }
+  }, []);
 
   const ensureClipSrc = useCallback(async (clip: AudioGalleryClip) => {
     const cached = galleryCache.srcById.get(clip.id);
     if (cached) {
-      galleryCache.srcById.touch(clip.id);
+      void ensureClipPeaks(clip);
       return;
     }
     const pending = clipSrcLoads.current.get(clip.id);
     if (pending) return pending;
     const load = (async () => {
       try {
-        const fetched = await fetchClipObjectUrl(clip.url);
-        // A delete can finish mid-fetch: do not revive its cache entry.
-        if (!galleryCache.clips.some((candidate) => candidate.id === clip.id)) {
-          URL.revokeObjectURL(fetched.url);
-          return;
-        }
-        galleryCache.srcById.set(clip.id, fetched.url, fetched.bytes);
-        galleryCache.srcById.prune(
-          galleryCache.selectedId ? [galleryCache.selectedId] : [],
-        );
+        const url = await fetchGalleryAudioSignedUrl(clip.id);
+        if (!galleryCache.clips.some((candidate) => candidate.id === clip.id)) return;
+        galleryCache.srcById.set(clip.id, url);
         setSrcById(galleryCache.srcById.toRecord());
-        if (!galleryCache.peaksById.has(clip.id)) {
-          void decodePeaks(fetched.blob).then(({ peaks }) => {
-            galleryCache.peaksById.set(clip.id, peaks);
-            setPeaksById(new Map(galleryCache.peaksById));
-          });
-        }
+        void ensureClipPeaks(clip);
       } catch {
         toast.error("Could not load this audio clip. Try selecting it again.");
       }
@@ -130,7 +144,17 @@ export function useAudioGallery({
         clipSrcLoads.current.delete(clip.id);
       }
     }
-  }, []);
+  }, [ensureClipPeaks]);
+
+  const retryClipSrc = useCallback(
+    (clip: AudioGalleryClip, failedUrl: string) => {
+      if (!galleryCache.srcById.retry(clip.id, failedUrl)) return;
+      // Unmount first: a same-second remint returns the same URL, which would not reload.
+      setSrcById(galleryCache.srcById.toRecord());
+      void ensureClipSrc(clip);
+    },
+    [ensureClipSrc],
+  );
 
   const refreshGallery = useCallback(
     async (
@@ -253,6 +277,11 @@ export function useAudioGallery({
 
   const selectClip = useCallback(
     (id: string, keepFallback = false) => {
+      // Only a new selection renews a near-expiry link: refreshes never swap a playing source.
+      if (galleryCache.selectedId !== id && !galleryCache.srcById.isFresh(id)) {
+        galleryCache.srcById.delete(id);
+        setSrcById(galleryCache.srcById.toRecord());
+      }
       galleryCache.selectedId = id;
       setSelectedId(id);
       const clip = galleryCache.clips.find((candidate) => candidate.id === id);
@@ -269,8 +298,10 @@ export function useAudioGallery({
 
   const dropClip = useCallback((id: string) => {
     galleryCache.srcById.delete(id);
+    galleryCache.peaksById.delete(id);
     setSrcById(galleryCache.srcById.toRecord());
-    // Drop the row now: refreshGallery swallows a failed GET without setClips, leaving it on a revoked URL.
+    setPeaksById(new Map(galleryCache.peaksById));
+    // Drop the row now: a failed gallery refresh must not leave the deleted clip visible.
     galleryCache.clips = galleryCache.clips.filter((clip) => clip.id !== id);
     setClips(galleryCache.clips);
     if (galleryCache.selectedId === id) {
@@ -456,7 +487,10 @@ export function useAudioGallery({
             .filter((clip) => clipWorkflow(clip) === workflow)
             .map((clip) => clip.id),
         );
-        for (const id of cleared) galleryCache.srcById.delete(id);
+        for (const id of cleared) {
+          galleryCache.srcById.delete(id);
+          galleryCache.peaksById.delete(id);
+        }
         if (galleryCache.selectedId && cleared.has(galleryCache.selectedId)) {
           galleryCache.selectedId = null;
         }
@@ -465,16 +499,19 @@ export function useAudioGallery({
         );
         setClips(galleryCache.clips);
         setSrcById(galleryCache.srcById.toRecord());
+        setPeaksById(new Map(galleryCache.peaksById));
         setSelectedId(galleryCache.selectedId);
         await refreshGallery();
         return;
       }
       galleryCache.srcById.clear();
+      galleryCache.peaksById.clear();
       galleryCache.selectedId = null;
       // Drop the cached list and state first: refreshGallery merges into the cache and swallows a failed GET.
       galleryCache.clips = [];
       setClips([]);
       setSrcById({});
+      setPeaksById(new Map());
       setSelectedId(null);
       await refreshGallery();
     } catch (error) {
@@ -486,11 +523,10 @@ export function useAudioGallery({
 
   const handleDownloadClip = useCallback(
     (clip: AudioGalleryClip) => {
-      const src = srcById[clip.id];
-      if (!src) return;
-      void saveAudio(clipFileName(clip), src, () => fetchClipBlob(clip.url));
+      // Saving must keep working after a playback link expires.
+      void saveAudio(clipFileName(clip), null, () => fetchClipBlob(clip.url));
     },
-    [srcById],
+    [],
   );
 
   const handleDownloadFallbackClip = useCallback(() => {
@@ -507,7 +543,7 @@ export function useAudioGallery({
     (clip: AudioGalleryClip) =>
       saveAudio(
         clipFileName(clip),
-        galleryCache.srcById.get(clip.id) ?? null,
+        null,
         () => fetchClipBlob(clip.url),
       ),
     [],
@@ -532,6 +568,7 @@ export function useAudioGallery({
     srcById,
     peaksById,
     ensureClipSrc,
+    retryClipSrc,
     refreshGallery,
     loadMore,
     selectClip,

@@ -164,3 +164,70 @@ def test_mlx_lora_on_a_model_with_its_own_template_keeps_it(monkeypatch, adapter
     assert ok, message
 
     assert backend.current_tokenizer is own
+
+
+class TokenizerWrapper:
+    def __init__(self, tokenizer):
+        self._tokenizer = tokenizer
+
+    @property
+    def chat_template(self):
+        return self._tokenizer.chat_template
+
+
+def _base_processor(base_tokenizer):
+    base_tokenizer._unsloth_modality_model_type = "qwen3_5"
+    base_tokenizer.stopping_criteria = "mlx-vlm criteria"
+    return SimpleNamespace(tokenizer = base_tokenizer, chat_template = None)
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_mlx_processor_of_a_multimodal_base_gets_the_trained_tokenizer(
+    monkeypatch, adapter_dir, base_tokenizer, wrapped
+):
+    if wrapped:
+        load = sys.modules["mlx_lm.utils"].load_tokenizer
+        monkeypatch.setattr(
+            sys.modules["mlx_lm.utils"],
+            "load_tokenizer",
+            lambda path, eos_token_ids = None: TokenizerWrapper(load(path)),
+        )
+    processor = _base_processor(base_tokenizer)
+
+    assert model_config.load_mlx_adapter_processor(processor, str(adapter_dir)) is processor
+
+    _assert_trained_tokenizer(processor.tokenizer)
+    assert processor.chat_template == CHATML
+    assert processor.tokenizer._unsloth_modality_model_type == "qwen3_5"
+    assert processor.tokenizer.stopping_criteria == "mlx-vlm criteria"
+
+
+def test_mlx_processor_with_its_own_template_is_left_alone(adapter_dir, base_tokenizer):
+    processor = _base_processor(base_tokenizer)
+    processor.chat_template = "{{ messages[0]['content'] }}"
+
+    model_config.load_mlx_adapter_processor(processor, str(adapter_dir))
+
+    assert processor.tokenizer is base_tokenizer
+
+
+def test_mlx_vision_export_saves_the_template_a_base_model_lora_was_trained_with(
+    monkeypatch, adapter_dir, base_tokenizer
+):
+    _install_export_backend_stubs(monkeypatch)
+    backend = _export_backend(monkeypatch, base_tokenizer)
+    mod = sys.modules[type(backend).__module__]
+    processor = _base_processor(base_tokenizer)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: True)
+    monkeypatch.setattr(
+        mod,
+        "FastVisionModel",
+        SimpleNamespace(from_pretrained = lambda **k: (SimpleNamespace(), processor)),
+    )
+
+    ok, message = backend.load_checkpoint(str(adapter_dir))
+    assert ok, message
+
+    assert backend.current_tokenizer is processor
+    assert processor.chat_template == CHATML
+    _assert_trained_tokenizer(processor.tokenizer)

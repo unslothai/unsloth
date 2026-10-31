@@ -28,17 +28,9 @@ const TEXT_ONLY = /text-only mode/;
 const OFFLOAD_WARNING_CALL = /offloadWarning\(offloadCounts/;
 const FORWARDS_COUNTS = /offloadCountsFrom\(loadResp\)/;
 
-// Asserted against the source like the other chat-adapter tests: importing the
-// module would drag in the stores and the toast layer for one closure.
 const source = readSrc("features/chat/api/chat-adapter.ts");
 
-// The wording and the warn-vs-success choice used to be written inline in
-// showAutoLoadSuccess, and this file matched them there by substring. Both now
-// live in loadFallbackNotice, which is the one definition the explicit-load path
-// shares, so the behaviour is asserted by calling it and the call site is
-// asserted only to delegate. Matching the inline form again would go red on a
-// refactor that changed nothing a user can see, and -- worse -- stay green if
-// only the explicit-load path kept the behaviour.
+// The wording lives in loadFallbackNotice, shared with explicit loads; the call site only delegates.
 test("an auto-load that fell back to CPU warns instead of claiming plain success", () => {
   const notice = loadFallbackNotice(
     "Loaded Qwen3 (Q4_K_M)",

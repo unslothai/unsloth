@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from core.inference import os_sandbox
+from core.inference import os_sandbox, sandbox_linux
 
 _INSTALL_SH = Path(__file__).resolve().parents[3] / "install.sh"
 
@@ -36,7 +36,6 @@ def test_missing_bwrap_names_the_command_for_this_package_manager(monkeypatch, m
     monkeypatch.setattr(os_sandbox, "_linux_userns_blocked_by_apparmor", lambda: False)
     remediation = os_sandbox.linux_unavailable_remediation()
     assert f"`{command}`" in remediation
-    # Setup never installed bwrap for an ordinary user, so the text must not send them there.
     assert "re-run Studio setup" not in remediation
 
 
@@ -76,3 +75,11 @@ def test_installer_and_backend_give_the_same_commands():
     body = body[: body.index("\n}\n")]
     shell = re.findall(r'command -v (\S+) >/dev/null 2>&1; then echo "([^"]+)"', body)
     assert shell == list(os_sandbox._BWRAP_INSTALL_COMMANDS)
+
+
+def test_a_pinned_bwrap_off_path_is_not_reported_missing(monkeypatch):
+    _which_only(monkeypatch, {"apt-get"})
+    monkeypatch.setenv(sandbox_linux.BWRAP_PATH_ENV, "/opt/bubblewrap/bin/bwrap")
+    monkeypatch.setattr(sandbox_linux, "_trusted_bwrap_path", lambda: "/opt/bubblewrap/bin/bwrap")
+    monkeypatch.setattr(os_sandbox, "_linux_userns_blocked_by_apparmor", lambda: False)
+    assert "not installed" not in os_sandbox.linux_unavailable_remediation()

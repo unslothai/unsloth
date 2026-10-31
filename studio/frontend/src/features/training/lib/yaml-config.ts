@@ -4,13 +4,10 @@
 import * as yaml from "js-yaml";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState } from "../types/config";
+import { drafterRequestFrom } from "./drafter-config";
 
 const EXPECTED_TOP_KEYS = new Set(["training", "lora", "logging", "inference"]);
 
-/**
- * Parse a YAML string into a BackendModelConfig suitable for
- * `mapBackendModelConfigToTrainingPatch`. Throws on invalid input.
- */
 export function parseYamlConfig(text: string): BackendModelConfig {
   const parsed = yaml.load(text);
   if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -27,9 +24,7 @@ export function parseYamlConfig(text: string): BackendModelConfig {
     console.warn("Ignored unknown YAML keys:", unknownKeys.join(", "));
   }
 
-  // File import is authoritative: force vision_image_size = null when the training section is
-  // missing/malformed/lacks the key, so a stale store value can't survive an import. (Same-model
-  // defaults reloads preserve user choice via Object.hasOwn in model-defaults.ts.)
+  // Import is authoritative: a missing key forces vision_image_size = null.
   const rawTraining = raw.training;
   const isPlainTrainingObject =
     rawTraining != null &&
@@ -52,10 +47,6 @@ export function parseYamlConfig(text: string): BackendModelConfig {
   };
 }
 
-/**
- * Serialize the current training config state to a YAML string matching the
- * backend model-defaults schema.
- */
 export function serializeConfigToYaml(
   state: TrainingConfigState,
   includeVisionFields: boolean,
@@ -89,6 +80,7 @@ export function serializeConfigToYaml(
     max_steps: state.maxSteps,
     save_steps: state.saveSteps,
     eval_steps: state.evalSteps,
+    early_stopping_patience: state.earlyStoppingPatience,
     weight_decay: state.weightDecay,
     random_seed: state.randomSeed,
     packing: state.packing,
@@ -101,6 +93,10 @@ export function serializeConfigToYaml(
     optim: state.optimizerType,
     lr_scheduler_type: state.lrSchedulerType,
   };
+  // Only when on, so a file exported without the feature reads exactly as before.
+  if (state.drafterEnabled) {
+    training.drafter = drafterRequestFrom(state);
+  }
 
   if (includeVisionImageSize) {
     training.vision_image_size = state.visionImageSize;

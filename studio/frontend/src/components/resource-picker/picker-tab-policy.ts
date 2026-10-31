@@ -52,6 +52,7 @@ export function resolvePickerDeviceListState({
 
 export interface PickerTabResolutionInput extends PickerDeviceInventoryState {
   hasExplicitTabPreference: boolean;
+  hasCurrentTabChoice?: boolean;
   lockedInferredTab: PickerTab | null;
   online: boolean;
   selectedTab: PickerTab;
@@ -60,12 +61,16 @@ export interface PickerTabResolutionInput extends PickerDeviceInventoryState {
 export function resolvePickerTab({
   hasDeviceItems,
   hasExplicitTabPreference,
+  hasCurrentTabChoice = false,
   isDeviceInventorySettled,
   lockedInferredTab,
   online,
   selectedTab,
 }: PickerTabResolutionInput): PickerTab {
   const shouldUseHubTab = online && isDeviceInventorySettled && !hasDeviceItems;
+  if (shouldUseHubTab && !hasCurrentTabChoice) {
+    return PICKER_TAB.hub;
+  }
   const inferredTab = hasExplicitTabPreference
     ? selectedTab
     : isDeviceInventorySettled

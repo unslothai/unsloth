@@ -13,7 +13,6 @@ from core.training.diffusion_train_common import (
     train_defaults,
 )
 
-# Derive this list so every family with positive warmup is covered.
 WARMUP_FAMILIES = [
     family
     for family, defaults in FAMILY_TRAIN_DEFAULTS.items()

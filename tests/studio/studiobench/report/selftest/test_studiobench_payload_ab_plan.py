@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The `ab_plan` row must survive payload assembly (unsloth#9580).
-
-It used to be filed under `header`, which is collapsed to its FIRST row, so the plan was
-dropped without a word while `record_counts` still reported two header rows.
-"""
+"""ab_plan must not be filed under header, which is collapsed to its first row and drops the plan."""
 
 from __future__ import annotations
 
@@ -62,9 +58,7 @@ def test_absent_ab_plan_is_an_empty_mapping():
     assert built["ab_plan"] == {}
 
 
-# A plan is written BEFORE its session runs, so cell rows decide ownership and the plan's own
-# `balanced` predates the run. Real `make_cell_id` shapes: a placeholder id would silently take
-# `executed_balance`'s cannot-tell path and exercise nothing.
+# Use real make_cell_id shapes; a placeholder id takes executed_balance's cannot-tell path.
 def _pair(
     rung,
     rep,
@@ -93,8 +87,6 @@ def _cells(
     *cell_ids,
     row_type = "cell",
 ):
-    # `Recorder.emit` stamps session_id on every row; ownership keys on it as
-    # `latest_attempt_rows` does, over the same ATTEMPT_ROW_TYPES.
     return [
         {
             "row_type": row_type,

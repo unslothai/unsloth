@@ -11,9 +11,8 @@ import { DOWNLOAD_KIND } from "./constants";
 import { patchJob, putJob, scheduleRemoval } from "./download-manager-state";
 
 /**
- * Downloads owned by another subsystem that still belong in the shared panel.
- * Dictation models are fetched by the STT sidecars, not the hub API, so the
- * poll loop cannot drive them; they report progress through here instead.
+ * Downloads owned by another subsystem (STT sidecars) that report progress here, since the
+ * poll loop cannot drive them.
  */
 
 const TERMINAL_LINGER_MS = 4_000;
@@ -36,13 +35,11 @@ export async function cancelExternalJob(key: string): Promise<void> {
   try {
     await job.cancel();
   } catch {
-    // The transfer is still running and progress updates do not reset state,
-    // so put the row back rather than leaving it stuck on "cancelling".
+    // Progress updates do not reset state, so restore the row instead of leaving it "cancelling".
     if (externalJobs.has(key)) patchJob(key, { state: "running" });
   }
 }
 
-/** Register a job and show it in the panel. Re-registering keeps the row. */
 export function startExternalJob(init: {
   key: string;
   repoId: string;
@@ -78,9 +75,7 @@ export function updateExternalJob(
   if (!job) return;
   const downloadedBytes = Math.max(0, progress.downloadedBytes);
   const expectedBytes = Math.max(0, progress.expectedBytes);
-  // External trackers own their own timers, and a hidden tab's are clamped to
-  // about once a minute, which the estimator would read as the burst cadence.
-  // Guarding here rather than per tracker covers every one of them.
+  // Hidden tabs clamp tracker timers to ~1/min, which the estimator would read as burst cadence.
   let stats: TransferStats | null = null;
   if (typeof document !== "undefined" && document.hidden) {
     job.samples.length = 0;
@@ -99,7 +94,6 @@ export function updateExternalJob(
   });
 }
 
-/** Settle the row, then drop it the way a hub job does. */
 export function finishExternalJob(
   key: string,
   outcome: "complete" | "cancelled" | "error",
@@ -116,7 +110,6 @@ export function finishExternalJob(
   scheduleRemoval(key, TERMINAL_LINGER_MS);
 }
 
-/** Update an external operation whose package manager does not report byte totals. */
 export function updateExternalActivity(
   key: string,
   activity: string,

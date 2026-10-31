@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Block-FP8 linears sit inside compiled modules (e.g. Gemma 3 attention / MLP), so they must trace without graph breaks.
+# Block-FP8 linears sit inside compiled modules, so they must trace without graph breaks.
 import os
 
 import pytest
@@ -26,7 +26,7 @@ def test_block_fp8_linear_compiles_fullgraph_and_matches_eager():
 
     torch._dynamo.reset()
     compiled = torch.compile(step, fullgraph = True)
-    # Several weight shapes (the second triggers automatic dynamic shapes); K = 200 takes the dequant fallback.
+    # The second shape triggers automatic dynamic shapes; K = 200 takes the dequant fallback.
     for N, K in [(512, 256), (256, 256), (256, 768), (768, 256), (512, 200)]:
         torch.manual_seed(0)
         X = torch.randn(256, K, device = dev, dtype = torch.bfloat16, requires_grad = True)

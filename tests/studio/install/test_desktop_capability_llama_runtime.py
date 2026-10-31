@@ -1,29 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""End-to-end contract for the ``llama_runtime_ok`` keys in ``desktop-capabilities``.
-
-The probe function and the payload tables are covered by
-``test_installed_runtime_health`` and ``test_keep_install_backcompat_9979``. This file
-owns the wiring between them: the command the desktop shells out to must emit those keys
-from a real pip install and keep emitting the payload older desktops already parse.
-
-Two failure modes justify the subprocess cost, since an in-process import cannot see them:
-
-* ``studio`` not being packaged. The probe sits inside a bare ``except Exception``, so a
-  wheel without ``studio`` would report null forever with no error and no failure from a
-  source checkout, which has ``studio/`` on sys.path.
-* The command exiting non-zero or dropping a key. The desktop hands stdout to serde_json
-  and treats a failed parse as Stale, so a payload change is launch-blocking.
-
-The subprocess tests need a venv with the CLI installed from this tree, which CI does not
-build; they skip when it is absent. Build one with::
-
-    uv venv "$UNSLOTH_WORKSPACE/temp/venv_desktop_cap"
-    uv pip install --python "$UNSLOTH_WORKSPACE/temp/venv_desktop_cap/bin/python" .
-
-The rest of the file is pure text and dict work and always runs.
-"""
+"""A wheel missing studio reports null silently, and a payload change blocks desktop launch."""
 
 import importlib.util
 import json
@@ -48,9 +26,7 @@ SPEC.loader.exec_module(ILP)
 
 MANAGED_RS = PACKAGE_ROOT / "studio" / "src-tauri" / "src" / "preflight" / "managed.rs"
 
-# Every key the payload carried before the two llama_runtime keys, with the type the
-# desktop's Option<T> fields require. Spelled out rather than derived from the command's
-# own dict, which could not notice a key being dropped or retyped.
+# Spelled out rather than derived from the command's dict, which could not notice a dropped key.
 PRE_PR_KEYS: dict[str, type | tuple[type, ...]] = {
     "desktop_protocol_version": int,
     "desktop_manageability_version": int,
@@ -63,8 +39,7 @@ PRE_PR_KEYS: dict[str, type | tuple[type, ...]] = {
 }
 NEW_KEYS = ("llama_runtime_ok", "llama_runtime_reason")
 
-# Bumping either tells an older desktop the CLI speaks a protocol it does not know, so an
-# additive key must not touch them.
+# Bumping either tells older desktops the protocol changed; additive keys must not.
 EXPECTED_PROTOCOL_VERSION = 1
 EXPECTED_MANAGEABILITY_VERSION = 2
 
@@ -104,16 +79,11 @@ def _capabilities(
     *,
     json_output: bool = True,
 ):
-    """Run the installed console script against ``install_dir`` and return (rc, stdout).
-
-    Both overrides point at fixtures so the developer's real ~/.unsloth and Studio home
-    stay out of the run.
-    """
+    """Runs the installed CLI outside the checkout, with Studio and llama.cpp paths pointed at fixtures."""
     env = dict(os.environ)
     env["UNSLOTH_LLAMA_CPP_PATH"] = str(install_dir)
     env["UNSLOTH_STUDIO_HOME"] = str(tmp_path / "studio_home")
-    # cwd matters: from the source checkout `studio` resolves to the tree beside it rather
-    # than site-packages, the shadowing this file rules out.
+    # cwd matters: from the checkout `studio` would resolve to the source tree, not site-packages.
     args = [str(_console_script()), "studio", "desktop-capabilities"]
     if json_output:
         args.append("--json")
@@ -129,11 +99,7 @@ def _capabilities(
 
 
 def _shared_health_groups() -> list[list[str]]:
-    """Required runtime file groups every install kind on this platform shares.
-
-    Mirrors ``_kept_install_payload_is_healthy`` for a marker naming no backend, the shape
-    the fixture below writes. Derived from the tables so it holds on any platform.
-    """
+    """Runtime file groups every install kind on this platform shares, read from the health tables."""
     host = ILP.platform_only_host()
     prefix = "windows-" if host.is_windows else "macos-" if host.is_macos else "linux-"
     kinds = sorted(k for k in ILP.INSTALL_KIND_BACKENDS if k.startswith(prefix))
@@ -157,10 +123,7 @@ def _shared_health_groups() -> list[list[str]]:
 
 
 def _complete_tree(root: Path) -> Path:
-    """A marker plus every file the health tables require; returns the runtime dir.
-
-    Empty files, since ``installed_runtime_health`` only looks and never executes.
-    """
+    """Empty files suffice: installed_runtime_health only looks and never executes."""
     host = ILP.platform_only_host()
     runtime_dir = ILP.install_runtime_dir(root, host)
     runtime_dir.mkdir(parents = True, exist_ok = True)
@@ -169,8 +132,6 @@ def _complete_tree(root: Path) -> Path:
         encoding = "utf-8",
     )
     for group in _shared_health_groups():
-        # Dropping the globs from the first pattern still matches it:
-        # libggml-cpu*.so* -> libggml-cpu.so.
         (runtime_dir / group[0].replace("*", "")).write_text("x", encoding = "utf-8")
     ext = ".exe" if host.is_windows else ""
     for name in ("server", "quantize"):
@@ -191,9 +152,6 @@ def _assert_pre_pr_payload_intact(payload: dict) -> None:
             assert isinstance(payload[key], expected), f"{key} is {payload[key]!r}"
     assert payload["desktop_protocol_version"] == EXPECTED_PROTOCOL_VERSION
     assert payload["desktop_manageability_version"] == EXPECTED_MANAGEABILITY_VERSION
-
-
-# ── part 1: the real command in a real install ───────────────────────────────
 
 
 @NEEDS_VENV
@@ -381,9 +339,6 @@ def test_an_unimportable_probe_leaves_the_verdict_null(tmp_path):
     _assert_pre_pr_payload_intact(payload)
 
 
-# ── part 2: interoperability in both directions ──────────────────────────────
-
-
 def test_the_command_emits_exactly_the_pre_pr_keys_plus_the_two_new_ones():
     """Read off the source, so it holds without the venv. A key added without a matching
     Option<T> in managed.rs is invisible to the desktop; a key removed breaks it.
@@ -428,10 +383,7 @@ def test_the_desktop_reads_every_emitted_key_as_optional():
 
 
 def test_unknown_keys_do_not_break_the_desktop_parse():
-    """An older desktop meeting a newer CLI. serde ignores unknown fields unless told
-    otherwise, so the guard is that nobody adds deny_unknown_fields to the capability
-    struct; without it, today's additive keys would have bricked every shipped desktop.
-    """
+    """Keeps the desktop parse tolerant: the capability struct must never gain deny_unknown_fields."""
     source = MANAGED_RS.read_text(encoding = "utf-8")
     assert "deny_unknown_fields" not in source
     prologue = source.split("struct DesktopCapability {", 1)[0]
@@ -439,15 +391,11 @@ def test_unknown_keys_do_not_break_the_desktop_parse():
 
 
 def test_unknown_keys_do_not_break_the_cli_side_consumer():
-    """The same question for the Python consumer: CI's interrupted-install probe decides
-    HEALTHY or REPAIRABLE from this payload by reading named keys, so extra keys must be
-    inert. A consumer comparing key sets would fail the build on the next additive field.
-    """
+    """The CI probe reads named keys only, so extra keys in the payload must stay inert."""
     probe = PACKAGE_ROOT / ".github" / "scripts" / "interrupted_install_probe.py"
     if not probe.is_file():
         pytest.skip("CI probe script not present in this tree")
     source = probe.read_text(encoding = "utf-8")
-    # The parse is `json.loads` plus `.get`, never a key-set comparison.
     assert 'parsed.get("studio_install_ok")' in source
     assert not re.search(r"set\(parsed", source)
     payload = {key: ("" if kind is str else kind()) for key, kind in PRE_PR_KEYS.items()}
@@ -462,10 +410,7 @@ def test_unknown_keys_do_not_break_the_cli_side_consumer():
 
 
 def test_the_managed_probe_is_skipped_when_a_custom_runtime_is_active(monkeypatch):
-    """Codex 3958908987, P2. _find_llama_server_binary prefers LLAMA_SERVER_PATH and the
-    folder chosen in Studio's settings ahead of the managed tree, so grading the managed tree
-    regardless would send a user who runs their own build into repair over an install their
-    backend never opens. Offline that repair cannot even succeed."""
+    """Skip the managed probe under a user's own runtime; the backend would never open that tree."""
     active = _active_helper()
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     assert active() is True
@@ -474,7 +419,6 @@ def test_the_managed_probe_is_skipped_when_a_custom_runtime_is_active(monkeypatc
     monkeypatch.setenv("LLAMA_SERVER_PATH", str(pinned))
     assert active() is False
 
-    # Whitespace is not a selection: the finder strips before testing it.
     monkeypatch.setenv("LLAMA_SERVER_PATH", "   ")
     assert active() is True
 
@@ -490,19 +434,12 @@ def test_the_managed_runtime_path_override_is_not_treated_as_a_custom_runtime(mo
 
 
 def _helper_namespace(studio_home = None):
-    """The helper block, read out of the CLI source: importing the module pulls in typer.
-
-    ``studio_home`` stands in for the root ``_resolve_studio_home`` inferred off
-    ``sys.prefix``; None is the ordinary legacy install.
-    """
+    """Reads the helper block from the CLI source, since importing the module pulls in typer."""
     text = (
         pathlib.Path(__file__).resolve().parents[3] / "unsloth_cli" / "commands" / "studio.py"
     ).read_text(encoding = "utf-8")
     start = text.index("def _managed_llama_runtime_is_the_active_one")
     end = text.index('@studio_app.command("desktop-capabilities"', start)
-    # _master_root_llama_dir lives beside the export that writes the same value, so it
-    # is outside the block above and has to come along; taken from the source for the
-    # same reason as the rest, so a change there is what these run.
     master_start = text.index("def _master_root_llama_dir")
     master_end = text.index("def _ensure_studio_env_exported", master_start)
     namespace = {
@@ -526,12 +463,7 @@ def _active_helper():
 
 
 def test_an_inferred_studio_root_is_graded_not_the_legacy_tree(tmp_path, monkeypatch):
-    """Codex 3971960862, P1. The desktop scrubs UNSLOTH_STUDIO_HOME and STUDIO_HOME before
-    it spawns this command (MANAGED_CHILD_SCRUBBED_ENV), so default_managed_llama_dir read
-    an empty environment and answered the legacy ~/.unsloth/llama.cpp, while
-    preflight::managed::inferred_studio_llama_root fingerprints <root>/llama.cpp off the
-    same sys.prefix inference the CLI already made. The two halves graded different trees,
-    so quarantine in the runtime actually in use never moved the cached verdict."""
+    """Grade the studio root inferred from sys.prefix; the desktop scrubs STUDIO_HOME before spawning."""
     for name in (
         "LLAMA_SERVER_PATH",
         "UNSLOTH_LLAMA_CPP_PATH",
@@ -543,8 +475,6 @@ def test_an_inferred_studio_root_is_graded_not_the_legacy_tree(tmp_path, monkeyp
     root = tmp_path / "custom-studio"
     graded = _helper_namespace(root)["_llama_runtime_to_grade"]()
     assert graded == root / "llama.cpp"
-    # And the environment is left exactly as it was found, since this runs inside a command
-    # that goes on to read it.
     assert "UNSLOTH_STUDIO_HOME" not in os.environ
 
 
@@ -581,10 +511,7 @@ def test_an_explicit_studio_home_is_left_alone(tmp_path, monkeypatch):
 
 
 def test_a_deleted_llama_server_path_does_not_suppress_the_managed_verdict(tmp_path, monkeypatch):
-    """Codex 3958908320, P2. _scan_pinned treats an absent pin as no pin and falls through to
-    the managed tree, so a LLAMA_SERVER_PATH naming a file that has since been deleted still
-    loads the managed runtime. Suppressing the verdict on the bare string left a quarantined
-    managed runtime reporting Ready and failing at model load."""
+    """A deleted LLAMA_SERVER_PATH falls through to the managed tree, which must still be graded."""
     active = _active_helper()
     monkeypatch.setenv("LLAMA_SERVER_PATH", str(tmp_path / "gone" / "llama-server"))
     assert active() is True
@@ -596,12 +523,7 @@ def test_a_deleted_llama_server_path_does_not_suppress_the_managed_verdict(tmp_p
 
 
 def test_a_dangling_symlink_pin_falls_through_like_any_absent_pin(tmp_path, monkeypatch):
-    """Codex 3959620579, P2, correcting this test's own earlier claim. ``_file_status`` asks
-    ``Path.is_file()``, which follows the link, so a pin whose target was deleted or
-    quarantined reads as "absent" there and the finder walks on to the managed tree. lexists
-    called that a pin and left the tree the backend really loads ungraded, so an incomplete
-    managed runtime reported Ready. A pin that resolves to a file, executable or not, does
-    stop the finder and is still not ours to grade."""
+    """A dangling symlink pin is absent, so the finder falls through and the managed tree is graded."""
     if os.name == "nt":
         pytest.skip("POSIX symlink semantics")
     active = _active_helper()
@@ -617,20 +539,7 @@ def test_a_dangling_symlink_pin_falls_through_like_any_absent_pin(tmp_path, monk
 
 
 def test_a_user_set_runtime_override_is_not_ours_to_repair(tmp_path, monkeypatch):
-    """Codex 3973660810, P1, superseding the grading half of 3959620607, P2.
-
-    3959620607 was right that the finder reads UNSLOTH_LLAMA_CPP_PATH at step 1b and the
-    stored folder only at step 2, so an override holding a server is the tree the backend
-    opens, and reading the setting first graded the wrong one. Grading that tree was still
-    the wrong answer: setup.sh derives LLAMA_CPP_DIR from STUDIO_HOME and setup.ps1 from
-    Get-ManagedLlamaCppDir, and neither reads UNSLOTH_LLAMA_CPP_PATH, so the repair the
-    verdict asks for rebuilds a different tree, reports success, and the next launch asks
-    again. A repair that cannot reach the tree is worse than no verdict, which is why
-    LLAMA_SERVER_PATH is skipped for the same reason.
-
-    The ordering the earlier item won is still pinned below: the override is classified
-    before the stored folder is read, so which of the two answers None is not an accident.
-    """
+    """A user's UNSLOTH_LLAMA_CPP_PATH override is not graded, since setup cannot repair that tree."""
     active = _active_helper()
     override = tmp_path / "relocated" / "llama.cpp"
     server = (
@@ -644,13 +553,9 @@ def test_a_user_set_runtime_override_is_not_ours_to_repair(tmp_path, monkeypatch
     _stub_stored_selection(monkeypatch, "/home/someone/older-build")
     assert active() is False
 
-    # With no stored folder either, the answer is still None rather than the managed
-    # tree: the finder stops at the override, so the managed tree is not what loads.
     _stub_stored_selection(monkeypatch, None)
     assert active() is False
 
-    # The desktop's own marker is the exception: the finder skips the override when it
-    # set it, so the tree behind it is the managed one and it is repairable again.
     monkeypatch.setenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", "1")
     assert active() is True
     _stub_stored_selection(monkeypatch, "/home/someone/older-build")
@@ -658,13 +563,7 @@ def test_a_user_set_runtime_override_is_not_ours_to_repair(tmp_path, monkeypatch
 
 
 def test_the_cli_s_own_inferred_override_is_not_mistaken_for_a_user_pin(tmp_path, monkeypatch):
-    """Codex 3962938538, P2. Under a custom STUDIO_HOME the CLI's
-    _ensure_studio_env_exported writes STUDIO_HOME/llama.cpp into
-    UNSLOTH_LLAMA_CPP_PATH and sets no marker, while the backend calls
-    mark_managed_llama_cpp_path on the same value before discovery and its finder
-    then walks past the override to the stored folder. Reading the marker alone
-    made this grade the managed tree as an explicit pin, so a damaged managed tree
-    blocked launch and was sent for repair though the backend would never open it."""
+    """A CLI-inferred UNSLOTH_LLAMA_CPP_PATH is not a user pin, and the backend walks past it."""
     active = _active_helper()
     studio_home = tmp_path / "custom-studio"
     managed = studio_home / "llama.cpp"
@@ -681,11 +580,6 @@ def test_the_cli_s_own_inferred_override_is_not_mistaken_for_a_user_pin(tmp_path
         "it and the stored folder is what the backend opens"
     )
 
-    # A pin somewhere else under the same studio home is a real user pin, and the
-    # classification still tells the two apart: it is not the managed tree, so the
-    # managed tree is not what the finder reaches and nothing here is graded. It is
-    # also not repairable, which is Codex 3973660810 and why the answer is False
-    # rather than the pinned tree.
     elsewhere = tmp_path / "hand-built" / "llama.cpp"
     pinned = (
         elsewhere / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
@@ -694,8 +588,6 @@ def test_the_cli_s_own_inferred_override_is_not_mistaken_for_a_user_pin(tmp_path
     pinned.write_text("x", encoding = "utf-8")
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(elsewhere))
     assert active() is False
-    # And the classification itself is unchanged: with the stored folder cleared, the
-    # managed-equal override is still graded and the pin elsewhere is still not.
     _stub_stored_selection(monkeypatch, None)
     assert active() is False
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(managed))
@@ -703,12 +595,7 @@ def test_the_cli_s_own_inferred_override_is_not_mistaken_for_a_user_pin(tmp_path
 
 
 def test_a_master_root_grades_the_runtime_beside_studio_not_the_one_under_it(tmp_path, monkeypatch):
-    """Codex 4063404685, P1. `UNSLOTH_HOME=<master>` puts llama.cpp BESIDE studio/, and
-    _ensure_studio_env_exported writes <master>/llama.cpp into UNSLOTH_LLAMA_CPP_PATH while
-    UNSLOTH_STUDIO_HOME stays <master>/studio. default_managed_llama_dir reads only the
-    studio home, so with the override out of the way it answered <master>/studio/llama.cpp:
-    the two did not match, the installer's own export graded as a user pin, and every
-    master-root install fell out of the health check this PR adds."""
+    """A master root grades llama.cpp beside studio/, not under it, to match the installer's export."""
     active = _active_helper()
     master = tmp_path / "portable"
     managed = master / "llama.cpp"
@@ -725,8 +612,6 @@ def test_a_master_root_grades_the_runtime_beside_studio_not_the_one_under_it(tmp
         active() is True
     ), "the exported <master>/llama.cpp is the tree this install owns, so it is graded"
 
-    # And the distinction survives: a pin somewhere else under the same master root is
-    # still somebody's own, not ours to repair.
     elsewhere = tmp_path / "hand-built" / "llama.cpp"
     pinned = (
         elsewhere / "build" / "bin" / ("llama-server.exe" if os.name == "nt" else "llama-server")
@@ -746,16 +631,12 @@ def test_the_master_root_rule_is_the_one_the_export_writes(tmp_path, monkeypatch
     master = tmp_path / "portable"
     monkeypatch.setenv("UNSLOTH_HOME", str(master))
     assert master_dir() == master.resolve() / "llama.cpp"
-    # Blank is not a root, the way every other read of this variable treats it.
     monkeypatch.setenv("UNSLOTH_HOME", "   ")
     assert master_dir() is None
 
 
 def test_an_override_that_holds_no_server_does_not_outrank_the_stored_folder(tmp_path, monkeypatch):
-    """Codex 3960069962, P2. _scan_pinned finds no candidate under an empty or missing
-    UNSLOTH_LLAMA_CPP_PATH and walks on to the stored folder, so treating the override as
-    final graded a directory nobody loads, answered "not installed", and left the runtime the
-    backend really opens ungraded."""
+    """An override with no server yields to the stored folder, since the backend never loads it."""
     active = _active_helper()
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
@@ -763,8 +644,6 @@ def test_an_override_that_holds_no_server_does_not_outrank_the_stored_folder(tmp
     _stub_stored_selection(monkeypatch, "/home/someone/older-build")
     assert active() is False, "the finder walks past an empty override to the stored folder"
 
-    # With no stored folder either, the finder reaches the managed tree, so there is
-    # something to grade again.
     _stub_stored_selection(monkeypatch, None)
     assert active() is True
 
@@ -787,11 +666,7 @@ def test_an_override_naming_no_account_answers_instead_of_raising(tmp_path, monk
 
 
 def _stub_stored_selection(monkeypatch, selected):
-    """A stored custom folder, without a settings database or the backend package.
-
-    The helper imports ``studio.backend.utils.llama_cpp_path_settings`` by name, so the
-    parents have to be in sys.modules too or the real packages are pulled in.
-    """
+    """The helper imports by name, so parent packages must be in sys.modules or real ones get pulled in."""
     import types
 
     for name in ("studio", "studio.backend", "studio.backend.utils"):
@@ -800,26 +675,17 @@ def _stub_stored_selection(monkeypatch, selected):
         monkeypatch.setitem(sys.modules, name, module)
     settings = types.ModuleType("studio.backend.utils.llama_cpp_path_settings")
     settings.get_stored_custom_llama_cpp_path = lambda: selected
-    # The real layout contract, so the helper and the finder cannot disagree about
-    # which folders hold a server.
     settings.llama_server_candidates = _real_llama_server_candidates
-    # The real reader, not Path.expanduser: leaving it off the stub made the
-    # helper's import fail, and the import is wrapped in a fallback, so every test
-    # here silently graded the except branch instead of the code it names.
+    # The real reader: without it the guarded import failed and tests graded the fallback.
     settings.expanded_user_path = lambda value: pathlib.Path(os.path.expanduser(str(value)))
     monkeypatch.setitem(sys.modules, "studio.backend.utils.llama_cpp_path_settings", settings)
-    # The helper asks install_llama_prebuilt for the managed root, and the stub
-    # package above hides the real module, so it is stubbed to the same rule.
     prebuilt = types.ModuleType("studio.install_llama_prebuilt")
     prebuilt.default_managed_llama_dir = _managed_dir_rule
     monkeypatch.setitem(sys.modules, "studio.install_llama_prebuilt", prebuilt)
 
 
 def _managed_dir_rule():
-    """``default_managed_llama_dir``'s rule, retyped only because the stub package
-    above hides the real module: the override, else a custom studio home's
-    llama.cpp, else the legacy root. The studio-home arm is not decoration, since
-    that is the value the helper compares an override against."""
+    """Mirrors default_managed_llama_dir: override, then the custom studio home, then legacy root."""
     override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
     if override:
         return pathlib.Path(override).expanduser()
@@ -842,18 +708,12 @@ def _real_llama_server_candidates(directory):
 
 
 def test_a_skipped_runtime_verdict_says_so_in_its_reason(monkeypatch):
-    """Codex 3959620616, P2, the CLI half. Null because another runtime is selected is not
-    null because nothing is installed: the first expires when the user clears the selection,
-    which the desktop's fingerprint does not watch. Naming it lets managed.rs decline to
-    cache it. Read off the source, so it holds without the venv."""
+    """A skipped verdict must name the skip in its reason, so the desktop does not cache it."""
     source = (
         pathlib.Path(__file__).resolve().parents[3] / "unsloth_cli" / "commands" / "studio.py"
     ).read_text(encoding = "utf-8")
     body = source.split("def desktop_capabilities(", 1)[1].split("if json_output:", 1)[0]
     assert 'payload["llama_runtime_reason"] = "llama_runtime_not_managed"' in body
-    # Codex 3973660789, P2: the third null. A probe that raised is a fact about one
-    # attempt and carries the damaged tree's own fingerprint, so it is not cacheable
-    # either, while "nothing installed" is a fact about the tree and still is.
     assert 'payload["llama_runtime_reason"] = "llama_runtime_probe_failed"' in body
     managed_rs = MANAGED_RS.read_text(encoding = "utf-8")
     for reason in ("llama_runtime_not_managed", "llama_runtime_probe_failed"):
@@ -861,13 +721,7 @@ def test_a_skipped_runtime_verdict_says_so_in_its_reason(monkeypatch):
 
 
 def test_the_stored_settings_lookup_can_reach_its_own_database_module(monkeypatch):
-    """Codex 3958908340, P2, reproduced before fixing: llama_cpp_path_settings imports
-    storage.studio_db as a top level package and swallows the failure, so without
-    studio/backend on sys.path the stored selection always read as absent and a user whose
-    custom folder is set in Studio would be sent to repair a tree their backend never opens.
-
-    The import is asserted through a fresh interpreter, since sys.modules in this one may
-    already carry a storage imported by an earlier test."""
+    """The stored-folder lookup silently reads as absent unless studio/backend is on sys.path."""
     import subprocess
     import sys as _sys
 

@@ -35,6 +35,8 @@ export {
   useTrainingUnloadGuard,
 } from "./hooks/use-training-unload-guard";
 export { useMaxStepsEpochsToggle } from "./hooks/use-max-steps-epochs-toggle";
+export { useDrafterCapability } from "./hooks/use-drafter-capability";
+export { drafterEligible } from "./lib/drafter-config";
 export { HfDatasetSubsetSplitSelectors } from "./components/hf-dataset-subset-split-selectors";
 export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-store";
 export {
@@ -44,6 +46,12 @@ export {
   uploadNativeTrainingDataset,
   uploadTrainingDataset,
 } from "./api/datasets-api";
+export {
+  type PreviewToken,
+  type TokenPreviewResponse,
+  type TokenPreviewSample,
+  fetchTokenPreview,
+} from "./api/token-preview-api";
 export { clearDeletedDataset } from "./stores/training-config-store";
 export type { CheckFormatResponse } from "./types/datasets";
 export type {
@@ -84,7 +92,7 @@ export {
   emitTrainingRunDeleted,
   emitTrainingRunsChanged,
 } from "./events";
-export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
+// lib/yaml-config is imported directly: re-exporting it here would make js-yaml eager.
 export {
   type StartValidationResult,
   validateTrainingConfig,

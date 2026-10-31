@@ -2,21 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Diff two `package-lock.json` files and flag NEW install-script deps.
-
-A `"hasInstallScript": true` package runs preinstall/install/postinstall
-hooks on every `npm ci` -- the lever behind recent npm supply-chain
-compromises (attacker publishes a malicious version of a trusted dep).
-This refuses to land a newly-introduced install-script dep without a
-maintainer eyeball; pre-existing ones are not re-flagged.
-
-Supports lockfileVersion 1 (recursive `dependencies`) and 2/3 (flat
-`packages` with `node_modules/.../node_modules/...` nesting). For each
-new entry we best-effort fetch the registry metadata to recover the
-postinstall command body; the finding is still emitted if unreachable.
-
-Exit codes: 0 = none; 1 = one or more (on stderr); 2 = internal error.
-"""
+"""Fails on newly added hasInstallScript deps in package-lock.json; existing ones are not flagged;
+registry metadata fetch is best-effort and the finding is still emitted if unreachable"""
 
 from __future__ import annotations
 
@@ -57,7 +44,6 @@ def _strip_nm_prefix(key: str) -> str:
     """Convert a v2/v3 `packages` key into a bare package name (leaf after last `node_modules/`)."""
     if not key:
         return ""
-    # LAST node_modules/ segment so transitives map to their leaf name.
     marker = "node_modules/"
     idx = key.rfind(marker)
     if idx == -1:
@@ -119,7 +105,6 @@ def _load_lockfile(path: Path) -> dict:
         raise ValueError(f"{path}: not valid JSON: {exc}") from exc
 
 
-# Registry lookup for the postinstall command body (best-effort).
 def _fetch_registry_scripts(name: str, version: str) -> dict[str, str] | None:
     """Return {hook: command} for lifecycle hooks in registry metadata; None on any error (never raises)."""
     safe_name = urllib.parse.quote(name, safe = "@/")
@@ -150,7 +135,7 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
     findings: list[Finding] = []
     for key in sorted(head):
         if key in base:
-            continue  # pre-existing install-script dep; not in scope
+            continue
         name = head[key]
         version = key[len(name) + 1 :] if key.startswith(name + "@") else "<unversioned>"
         scripts = _fetch_registry_scripts(name, version)

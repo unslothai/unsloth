@@ -18,8 +18,6 @@ export const UserMessageActionBar: FC<PropsWithChildren> = ({ children }) => (
     className="aui-user-action-bar-root contents text-chat-icon-fg"
   >
     <UserMessageTime />
-    {/* The date can shrink; the action targets retain their size. On very
-        narrow panes the footer can wrap the branch picker onto another row. */}
     <div className="aui-user-action-controls flex shrink-0 gap-1 [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover">
       {children}
     </div>

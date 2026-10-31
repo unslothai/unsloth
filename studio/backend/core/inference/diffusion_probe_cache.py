@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persist the transformer-quant smoke-probe verdicts across processes (4-5 s of every cold quantised load).
-
-Only a clean child table is stored, keyed by everything a verdict depends on (torch / CUDA / torchao / triton, driver,
-card UUID + capability, the probe sources, the quant env). Any difference, or a torn file, is a miss that runs the
-child as before. UNSLOTH_DIFFUSION_PROBE_CACHE=0 disables read and write.
-"""
+"""Cross-process cache of quant probe verdicts, keyed by torch/CUDA/driver/card; mismatch is a miss."""
 
 from __future__ import annotations
 

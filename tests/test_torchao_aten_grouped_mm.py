@@ -12,23 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""`import unsloth` must survive a torchao wanting an aten op this torch lacks.
-
-torchao 0.18 does `@implements([aten._grouped_mm.default])` at module scope,
-and that op arrived in torch 2.8, so older torch raises AttributeError on the
-lookup. transformers imports torchao from `modeling_utils`, so this kills
-`import transformers` and therefore `import unsloth`. Seen on Colab in
-Granite4.0, which pins torch 2.7.1 via uv against a current torchao.
-
-Sibling of the `ScalingType` skew in test_torchao_subprocess_fix.py, but not
-the same bug: this lookup goes through `torch.ops`, so adding names to
-`torch.nn.functional` does nothing for it.
-
-These tests run on a torch that HAS the operator, so they mostly assert the
-safety properties: the fix stays out of the way, refuses to guess, and never
-registers twice. Registering into `aten` on a healthy torch would be far worse
-than the crash being fixed.
-"""
+"""import unsloth must survive torchao using an aten op missing from older torch (before 2.8)."""
 
 import sys
 from pathlib import Path
@@ -43,9 +27,6 @@ import torch  # noqa: E402
 from unsloth import import_fixes as IF  # noqa: E402
 
 
-# ---- the guard ----------------------------------------------------------
-
-
 def test_a_present_op_is_reported_as_present():
     assert IF._torch_op_is_missing("aten", "mm") is False
 
@@ -55,11 +36,7 @@ def test_an_absent_op_is_reported_as_missing():
 
 
 def test_an_op_in_an_unknown_namespace_is_missing():
-    """`getattr(torch.ops, "nope")` hands back a namespace object, but looking
-    an op up inside it still raises AttributeError, so an op in a namespace
-    that does not exist is correctly missing. Harmless only because the sole
-    caller passes "aten", which always exists.
-    """
+    """An op in a namespace that does not exist reads as missing; the one caller only ever passes aten."""
     assert IF._torch_op_is_missing("unsloth_no_such_namespace", "_grouped_mm") is True
 
 
@@ -94,7 +71,6 @@ def test_it_does_nothing_when_torch_already_has_the_op():
 def test_the_real_operator_still_works_afterwards():
     IF._ensure_aten_grouped_mm("detail")
     assert callable(torch.ops.aten._grouped_mm)
-    # The schema is torch's own, not a placeholder we substituted.
     assert "offs" in str(torch.ops.aten._grouped_mm.default._schema)
 
 
@@ -105,15 +81,8 @@ def test_it_never_registers_twice(monkeypatch):
     assert IF._ensure_aten_grouped_mm("detail") is False
 
 
-# ---- the schema ---------------------------------------------------------
-
-
 def test_the_placeholder_schema_matches_upstream():
-    """Read off `torch.ops.aten._grouped_mm.default._schema` on torch 2.9.
-
-    If it drifts, torchao's decorator still resolves but anything introspecting
-    the signature sees a lie, so pin it.
-    """
+    """Placeholder schema must match torch 2.9's upstream _grouped_mm schema, or introspection lies."""
     s = IF._ATEN_GROUPED_MM_SCHEMA
     assert s.startswith("_grouped_mm(Tensor self, Tensor mat2")
     for kwarg in ("Tensor? offs=None", "Tensor? bias=None", "ScalarType? out_dtype=None"):
@@ -155,9 +124,6 @@ def test_the_placeholder_refuses_to_compute_rather_than_guessing():
             torch.ops.unsloth_refuse_probe._grouped_mm(a, b)
     finally:
         del lib
-
-
-# ---- wiring -------------------------------------------------------------
 
 
 def test_the_subprocess_fix_covers_the_op_too():

@@ -1,11 +1,7 @@
-# Model defaults for unsloth/gpt-oss-20b
-# Based on gpt-oss-(20B)-Fine-tuning.ipynb
 # Also applies to: openai/gpt-oss-20b, unsloth/gpt-oss-20b-unsloth-bnb-4bit, unsloth/gpt-oss-20b-BF16
-# added inference parameters from unsloth guides
 
 training:
   max_seq_length: 1024
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 1

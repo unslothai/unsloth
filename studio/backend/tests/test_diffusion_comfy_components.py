@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate ComfyUI text-encoder / VAE files beside a single-file DiT (``diffusion_comfy_components.py``).
-
-Everything runs on CPU against tiny models and tiny synthetic safetensors files written in the ComfyUI
-layout: the key rules must load STRICTLY (nothing missing, nothing extra beyond the known-dead tensors),
-quantized layers must dequantize (scaled fp8) or stay int8 (ConvRot), unsupported formats must be refused
-by name, and the request / planner wiring must drop and re-price the replaced components.
-"""
+"""ComfyUI encoder and VAE files beside a single-file DiT; key rules must load strictly on CPU."""
 
 from __future__ import annotations
 
@@ -57,6 +51,24 @@ def test_parse_local_absolute_relative_and_bare(tmp_path):
     assert rel.local_path == str(Path(te).resolve())
     bare = C.parse_component_file("vae_here.safetensors", model_path = str(dit_dir))
     assert bare.local_path.endswith("vae_here.safetensors")
+
+
+def test_status_summary_names_the_supplied_basename_of_a_symlinked_cache_file(tmp_path):
+    blob = _save(tmp_path / "blobs" / "0123abcdef", {"x": torch.zeros(1)})
+    snap = tmp_path / "snapshots" / "rev" / "ae.safetensors"
+    snap.parent.mkdir(parents = True)
+    try:
+        snap.symlink_to(blob)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    ref = C.parse_component_file(str(snap), what = "vae_file")
+    assert ref.local_path == str(Path(blob).resolve())  # loads still read the real file
+    assert ref.name == "ae.safetensors"
+    assert C.ComponentOverrides(files = {"vae": ref}).summary() == {"vae": "ae.safetensors"}
+    rel = C.parse_component_file(
+        "../snapshots/rev/ae.safetensors", model_path = str(tmp_path / "blobs")
+    )
+    assert rel.name == "ae.safetensors"
 
 
 def test_parse_existing_subpath_under_model_dir_is_local(tmp_path):
@@ -438,6 +450,7 @@ def test_qwen3_bf16_strip_model_prefix_and_dead_lm_head(tmp_path):
     "conf",
     [
         {"format": "asym_w4a8_int8", "group_size": 16, "convrot": True, "convrot_groupsize": 256},
+        # Block formats load (below), but a layer not stored as one is refused naming the format.
         {"format": "nvfp4"},
         {"format": "mxfp8"},
     ],
@@ -454,6 +467,82 @@ def test_unsupported_comfy_quant_formats_refused_by_name(tmp_path, conf):
         C.quant_layers(path)
     with pytest.raises(C.ComponentFileError, match = conf["format"]):
         C.validate_component_specs([path], None, model_path = None)
+
+
+def _comfy_fp8mixed_qwen3(ref: "torch.nn.Module") -> tuple[dict, dict]:
+    """``ref`` in ComfyUI's fp8mixed text-encoder layout (qwen_3_8b_fp8mixed: float8_e4m3fn and nvfp4 Linears,
+    here with an mxfp8 one too), written by the independent encoder of test_diffusion_comfy_block. Returns the
+    file tensors and the dense weight each quantized key must load as."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_comfy_block_encoders", Path(__file__).with_name("test_diffusion_comfy_block.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    ENCODERS = module.ENCODERS
+
+    out, want = {}, {}
+    for key, value in ref.state_dict().items():
+        comfy_key = "model." + key
+        stem = comfy_key[: -len(".weight")]
+        fmt = None
+        if key.endswith(".weight") and value.dim() == 2 and "embed" not in key:
+            fmt = (
+                "nvfp4"
+                if ".mlp.gate_proj" in key or ".mlp.up_proj" in key or ".self_attn.k_proj" in key
+                else "mxfp8"
+                if ".mlp.down_proj" in key
+                else "float8_e4m3fn"
+            )
+        if fmt is None:
+            out[comfy_key] = value.to(torch.bfloat16)
+        elif fmt == "float8_e4m3fn":
+            scale = value.abs().amax().float() / 448.0
+            out[comfy_key] = (value.float() / scale).to(torch.float8_e4m3fn)
+            out[stem + ".weight_scale"] = scale.reshape(())
+            want[key] = out[comfy_key].float() * scale
+        else:
+            encode, reference = ENCODERS[fmt]
+            enc = encode(value)
+            for suffix, tensor in enc.items():
+                out[comfy_key if suffix == "weight" else f"{stem}.{suffix}"] = tensor
+            want[key] = reference(enc)
+        if fmt is not None:
+            out[stem + ".comfy_quant"] = _quant_blob({"format": fmt})
+    return out, want
+
+
+def test_qwen3_comfy_fp8mixed_with_nvfp4_and_mxfp8_dequantizes(tmp_path):
+    """ComfyUI's qwen_3_8b_fp8mixed (FLUX.2 klein 9B) mixes fp8 with nvfp4 Linears, whose packed weight is half
+    the logical width. It used to fail as "85 shape mismatches"; every layer now loads dense, bit for bit."""
+    cfg, ref = _tiny_qwen3()
+    out, want = _comfy_fp8mixed_qwen3(ref)
+    path = _save(tmp_path / "qwen_3_8b_fp8mixed.safetensors", out)
+    formats = {layer.format for layer in C.quant_layers(path).values()}
+    assert formats == {"nvfp4", "mxfp8", "float8_e4m3fn"}
+    assert C.validate_component_specs([path], None, model_path = None)
+    enc = C.build_text_encoder(
+        path, encoder_cls = transformers.Qwen3Model, config = cfg, dtype = torch.float32
+    )
+    state = enc.state_dict()
+    for key, dense in want.items():
+        assert state[key].shape == dense.shape, key
+        assert torch.equal(state[key], dense.to(torch.float32)), key
+    # The same model with the reference weights gives the same hidden states.
+    expected = transformers.Qwen3Model(cfg).eval()
+    # Unquantized tensors are stored bf16.
+    expected.load_state_dict(
+        {**{k: v.to(torch.bfloat16).float() for k, v in ref.state_dict().items()}, **want}
+    )
+    ids = torch.tensor([[1, 2, 3, 4, 5]])
+    with torch.no_grad():
+        assert torch.equal(
+            enc(input_ids = ids).last_hidden_state, expected(input_ids = ids).last_hidden_state
+        )
+    # Priced at the logical (dense) size, not the packed one.
+    dense_bytes = sum(v.numel() for k, v in ref.state_dict().items()) * 2
+    assert C.resident_bytes(path, dtype_itemsize = 2) == dense_bytes
 
 
 def test_wrong_class_refused_with_diagnostics(tmp_path):

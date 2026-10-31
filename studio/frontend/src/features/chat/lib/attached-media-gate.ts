@@ -22,7 +22,6 @@ export function attachedMediaUnavailableReason({
   if (audio && !activeModel?.hasAudioInput) {
     return `${modelLabel} cannot accept audio. Load an audio-input model, or remove the audio file.`;
   }
-  // MLX takes one clip per message (see maxAudioFilesFor).
   if (audio && audioCount > 1 && activeModel?.isMlx) {
     return `${modelLabel} takes one audio file per message. Remove the extra audio files, or load a GGUF model to send several.`;
   }

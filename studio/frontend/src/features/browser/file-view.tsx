@@ -7,6 +7,7 @@ import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Spinner } from "@/components/ui/spinner";
 import {
   ArtifactHtmlFrame,
+  ReactPreview,
   attachmentTextLanguage,
   truncateAttachmentPreviewText,
 } from "@/features/chat";
@@ -15,6 +16,7 @@ import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { canShowFile, mediaKind, textFileKind } from "./file-kind";
+import { registerArtifactFrame } from "./page-frame";
 import { stageEditsPrompt } from "./stage-edits";
 import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
 import { VideoFile } from "./video-file";
@@ -74,7 +76,9 @@ function TextFile({
   // HTML runs only once previewed, so opening to source does not run it.
   const [previewed, setPreviewed] = useState(view.mode === "preview");
   if (!previewed && view.mode === "preview") setPreviewed(true);
-  const kind = textFileKind(name, contentType, plainText);
+  const fileKind = textFileKind(name, contentType, plainText);
+  // A React preview runs only in a tab of its own; anywhere else it is just its code.
+  const kind = fileKind === "react" && !tabId ? "code" : fileKind;
   useEffect(() => {
     let active = true;
     // HTML runs whole: a cut document breaks its scripts and closing tags.
@@ -93,6 +97,10 @@ function TextFile({
     ({ errors }: { errors: number }) => tabId && useBrowserStore.getState().setFileView(tabId, { errorCount: errors }),
     [tabId],
   );
+  const onFrameReady = useCallback(
+    (frame: HTMLIFrameElement) => tabId ? registerArtifactFrame(tabId, frame) : undefined,
+    [tabId],
+  );
   const language = useMemo(() => {
     if (!text || text.length > MAX_HIGHLIGHT_CHARS) return null;
     if (kind === "html") return "html";
@@ -101,7 +109,7 @@ function TextFile({
   }, [text, name, kind]);
   if (text === null) return <Spinner className="m-auto size-6" />;
   const preview = truncateAttachmentPreviewText(text);
-  const source = (kind === "html" || kind === "markdown") && view.mode === "source";
+  const source = (kind === "html" || kind === "react" || kind === "markdown") && view.mode === "source";
   const sourceView = language ? (
     <div className={cn("size-full overflow-auto", view.wrap && WRAP_CLASS)} style={{ zoom: scale }}>
       <CodeSourceView code={preview.text} language={language} className="px-5 py-4" />
@@ -117,6 +125,28 @@ function TextFile({
       {preview.text}
     </pre>
   );
+  if (kind === "react") {
+    return (
+      <>
+        {previewed ? (
+          <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
+            <ReactPreview
+              onFrameReady={onFrameReady}
+              source={text}
+              lang={/\.jsx$/i.test(name) ? "jsx" : "tsx"}
+              title={name}
+              reloadNonce={reloadNonce}
+              consoleOpen={view.consoleOpen}
+              onConsoleOpenChange={tabId ? onConsoleOpenChange : undefined}
+              onOutputCountChange={tabId ? onOutputCountChange : undefined}
+              onFixWithModel={requestEdits ?? stageEditsPrompt}
+            />
+          </div>
+        ) : null}
+        {source ? sourceView : null}
+      </>
+    );
+  }
   // Same frame as the attachment preview: network stays off until the user allows it.
   if (kind === "html") {
     return (
@@ -126,6 +156,7 @@ function TextFile({
           <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
             <ArtifactHtmlFrame
               code={text}
+              onFrameReady={onFrameReady}
               title={name}
               fill={true}
               reloadNonce={reloadNonce}
@@ -162,6 +193,7 @@ export function FileView({
   scale = 1,
   tabId,
   reloadNonce = 0,
+  saved = false,
 }: {
   blob: Blob;
   name: string;
@@ -170,19 +202,33 @@ export function FileView({
   scale?: number;
   tabId?: string;
   reloadNonce?: number;
+  saved?: boolean;
 }) {
   const t = useT();
-  const media = plainText ? null : mediaKind(name, contentType);
-  const docKind = plainText ? null : documentKind(name, contentType);
+  const media = plainText || saved ? null : mediaKind(name, contentType);
+  const docKind = plainText || saved ? null : documentKind(name, contentType);
   const svg = media === "image" && (/^image\/svg\+xml\b/i.test(contentType) || /\.svg$/i.test(name));
   const src = useObjectUrl(blob, media !== null, svg);
   const [failed, setFailed] = useState(false);
+  const pageTarget = useBrowserStore((state) => (tabId ? state.fileViews[tabId]?.pageTarget : undefined));
+  const dropPageTarget = useCallback(
+    () => tabId && useBrowserStore.getState().setFileView(tabId, { pageTarget: null }),
+    [tabId],
+  );
 
   if (docKind) {
     if (blob.size > MAX_DOCUMENT_PREVIEW_BYTES) return <Unavailable message={t("library.preview.cannotPreview")} />;
     return (
       <div className="flex size-full min-h-0 flex-col">
-        <DocumentView file={blob} kind={docKind} name={name} contentType={contentType} scale={scale} />
+        <DocumentView
+          file={blob}
+          kind={docKind}
+          name={name}
+          contentType={contentType}
+          scale={scale}
+          pageTarget={pageTarget ?? undefined}
+          onPageTargetDone={dropPageTarget}
+        />
       </div>
     );
   }
@@ -212,7 +258,7 @@ export function FileView({
       </div>
     );
   }
-  if (plainText || canShowFile(name, contentType)) {
+  if (!saved && (plainText || canShowFile(name, contentType))) {
     return (
       <TextFile
         blob={blob}

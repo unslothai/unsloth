@@ -96,11 +96,7 @@ def _host_workflow(restriction: str = "", step_extra: str = "") -> str:
     ],
 )
 def test_lint_rejects_a_narrowed_host(tmp_path, key, value):
-    """A host narrowed any way is skipped by the PR that narrows it.
-
-    The merge ref carries the restriction, so it applies to that PR. A branch
-    or event-type filter skips ordinary PRs as well as `paths` does.
-    """
+    """A narrowed host skips the PR that narrows it, since the merge ref carries the restriction."""
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "host.yml").write_text(_host_workflow(f"    {key}:\n{value}"))
@@ -119,10 +115,7 @@ def test_lint_rejects_a_narrowed_host(tmp_path, key, value):
     ],
 )
 def test_lint_rejects_a_host_that_cannot_fail(tmp_path, where, key, value, expected):
-    """A host that cannot fail, or is skipped, is not a gate.
-
-    `continue-on-error` makes findings advisory; a false `if:` skips the step.
-    """
+    """A host with continue-on-error or a false if: is no gate; the lint must reject it."""
     wf = tmp_path / "wf"
     wf.mkdir()
     if where == "step":
@@ -170,11 +163,7 @@ def test_lint_rejects_a_host_that_cannot_fail(tmp_path, where, key, value, expec
     ],
 )
 def test_lint_rejects_a_defanged_invocation(tmp_path, command, expected):
-    """Running the script is not enough; it has to be able to gate.
-
-    A pipeline or `|| true` detaches the step's status from the lint's, and an
-    argument can redirect it, disable its wiring check, or exit early.
-    """
+    """A pipeline or || true can detach the lint's exit status, so the invocation must be rejected."""
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "host.yml").write_text(
@@ -194,7 +183,6 @@ def test_lint_rejects_a_defanged_invocation(tmp_path, command, expected):
         "python3 -c 'pass' scripts/lint_workflow_triggers.py",
         "python3 -m json.tool scripts/lint_workflow_triggers.py",
         "echo scripts/lint_workflow_triggers.py",
-        # A decoy with the right basename but not this repository's script.
         "python3 /tmp/lint_workflow_triggers.py",
     ],
     ids = ["dash-c", "dash-m", "echo", "decoy-path"],
@@ -216,7 +204,6 @@ def test_lint_does_not_count_a_non_running_command_as_a_host(tmp_path, command):
 @pytest.mark.parametrize(
     "body",
     [
-        # A decoy under any prefix, not just a bare /tmp path.
         "python3 /tmp/scripts/lint_workflow_triggers.py",
         # Defining a function is not calling it.
         "never_called() {\n            python3 scripts/lint_workflow_triggers.py\n          }",
@@ -283,9 +270,7 @@ def test_lint_accepts_an_explicit_plain_shell(tmp_path):
 @pytest.mark.parametrize(
     "command",
     [
-        # A fake interpreter that merely contains "python" in its name.
         "/tmp/fakepython scripts/lint_workflow_triggers.py",
-        # Flags that make python print and exit before running the file.
         "python3 --version scripts/lint_workflow_triggers.py",
         "python3 -V scripts/lint_workflow_triggers.py",
         "python3 --help scripts/lint_workflow_triggers.py",
@@ -371,7 +356,6 @@ def test_publish_cache_key_collision_found_under_both_suffixes(tmp_path, suffix)
         # -i drops into the REPL after the script;
         # on EOF the interpreter exits 0 even though the lint called sys.exit(1).
         "python3 -i scripts/lint_workflow_triggers.py",
-        # Anything outside the allowlist fails closed.
         "python3 -d scripts/lint_workflow_triggers.py",
         "python3 -uB scripts/lint_workflow_triggers.py",
     ],
@@ -606,11 +590,7 @@ def test_lint_rejects_missing_host(tmp_path):
     ids = ["prose", "commented-run-step"],
 )
 def test_commented_mention_is_not_a_host(tmp_path, mention):
-    """A mention that executes nothing must not register as a host.
-
-    The commented-out `run:` is the dangerous one: it would satisfy
-    `--require-host` with the real workflow deleted.
-    """
+    """A commented-out run must not count as a host, or --require-host passes with no workflow."""
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "mentions.yml").write_text(
@@ -636,11 +616,7 @@ def test_workflow_trigger_lint_host_exists_and_is_unfiltered():
 
 
 def _codeowners_rules(text: str) -> list[tuple[str, list[str]]]:
-    """Rules in file order, INCLUDING ownerless ones.
-
-    A pattern with no owners is valid CODEOWNERS and clears ownership for what
-    it matches, so skipping those lines would miss a silent carve-out.
-    """
+    """Keep ownerless rules too: a pattern with no owners still clears ownership for what it matches."""
     rules = []
     for line in text.splitlines():
         fields = line.split("#", 1)[0].split()
@@ -650,13 +626,7 @@ def _codeowners_rules(text: str) -> list[tuple[str, list[str]]]:
 
 
 def _pattern_regex(pattern: str) -> re.Pattern:
-    """CODEOWNERS globbing: `*` stops at `/`, `**` crosses directories.
-
-    `fnmatch` gets both halves wrong here. Its `*` consumes `/`, so
-    `/.github/*` would wrongly claim nested workflow files and fail a valid
-    CODEOWNERS change; and it cannot express `**/` matching zero directories,
-    so `/.github/**/workflows/` would wrongly miss one.
-    """
+    """CODEOWNERS globs: * stops at '/' and ** crosses directories, which fnmatch gets wrong."""
     out, i = [], 0
     while i < len(pattern):
         if pattern.startswith("**/", i):
@@ -686,19 +656,7 @@ def _is_valid_owner(token: str) -> bool:
 
 
 def _pattern_matches(pattern: str, path: str) -> bool:
-    """Approximate GitHub's CODEOWNERS matching.
-
-    A pattern that NAMES a directory owns everything beneath it, so directory
-    prefixes of the path are candidates. A pattern with a wildcard in it does
-    not: GitHub documents `docs/*` as matching `docs/getting-started.md` but
-    not `docs/build-app/troubleshooting.md`.
-
-    Only a pattern with no internal separator floats to any depth, gitignore
-    style. A leading slash anchors, and so does an internal one, so
-    `workflows/lint.yml` is root-relative and does NOT match
-    `.github/workflows/lint.yml`; a bare `workflows/` still matches at any
-    depth.
-    """
+    """A leading or inner slash anchors a CODEOWNERS pattern to root; a bare name floats to any depth."""
     if pattern == "*":
         return True
     is_dir = pattern.endswith("/")
@@ -717,7 +675,6 @@ def _pattern_matches(pattern: str, path: str) -> bool:
         return any(matches(p) for p in prefixes)
     if matches(path):
         return True
-    # A plain path may name a directory, and then owns everything under it.
     return not any(ch in body for ch in "*?") and any(matches(p) for p in prefixes)
 
 
@@ -737,16 +694,7 @@ CODEOWNERS_PROBES = (
 
 
 def test_workflow_changes_require_code_owner_review():
-    """Every workflow must keep an EFFECTIVE code owner.
-
-    The lint cannot stop a PR that disables the lint's own host workflow, so
-    owner review is the merge-time control. GitHub applies only the last
-    matching pattern, so checking that a rule exists somewhere is not enough:
-    a later rule, broad or narrow, silently takes over. Any workflow can hand
-    a fork PR the base repo's secrets, so every one of them is checked, not
-    just the lint host. Delegating a workflow to another maintainer is fine;
-    leaving one unowned is not.
-    """
+    """Each workflow needs an effective code owner, since GitHub applies only the last matching rule."""
     text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding = "utf-8")
     workflows = sorted(
         p.relative_to(REPO_ROOT).as_posix()
@@ -779,10 +727,8 @@ def test_workflow_changes_require_code_owner_review():
         ("/.github/**", ".github/workflows/lint.yml", True),
         ("/.github/**/workflows/", ".github/workflows/lint.yml", True),
         ("/.github/**/workflows/", ".github/a/b/workflows/lint.yml", True),
-        # A plain path naming a directory owns everything beneath it.
         ("/.github/workflows/", ".github/workflows/lint.yml", True),
         ("/scripts", "scripts/data/x.txt", True),
-        # Unanchored patterns may start at any depth.
         ("workflows/", ".github/workflows/lint.yml", True),
         ("**/workflows/", ".github/workflows/lint.yml", True),
         # An internal slash anchors at the root, gitignore style, so this names a top-level workflows/ and not the one
@@ -794,11 +740,7 @@ def test_workflow_changes_require_code_owner_review():
     ],
 )
 def test_codeowners_pattern_semantics(pattern, path, matches):
-    """The matcher must model GitHub, in both directions.
-
-    Under-matching hides a rule that steals ownership; over-matching fails a
-    valid CODEOWNERS change that never touched the workflows.
-    """
+    """Match GitHub both ways: under-matching hides a stolen owner, over-matching fails valid changes."""
     assert _pattern_matches(pattern, path) is matches
 
 
@@ -813,11 +755,7 @@ def test_codeowners_pattern_semantics(pattern, path, matches):
     ],
 )
 def test_owner_token_validity(token, valid):
-    """An unusable owner token leaves a path effectively unowned.
-
-    GitHub cannot request review from a bare word, so counting it as an owner
-    would let a trailing rule quietly disown a workflow.
-    """
+    """A bare word is not a usable owner: counting it would let a trailing rule quietly disown a path."""
     assert _is_valid_owner(token) is valid
 
 
@@ -836,9 +774,7 @@ def test_invalid_owner_does_not_count_as_ownership():
         ("* @someone-else", ["@someone-else"]),
         ("/.github/ @someone-else", ["@someone-else"]),
         (f"/{CODEOWNERS_PROBES[0]} @someone-else", ["@someone-else"]),
-        # A pattern with no owners is valid, and clears ownership.
         (f"/{CODEOWNERS_PROBES[0]}", []),
-        # Globbed and unanchored directory patterns are valid rules too.
         ("**/workflows/ @someone-else", ["@someone-else"]),
         ("workflows/ @someone-else", ["@someone-else"]),
         (".github/*/ @someone-else", ["@someone-else"]),
@@ -910,7 +846,6 @@ def test_lint_rejects_shared_cache_key_between_pr_and_publish(tmp_path):
     publish workflow is the TanStack cache-poisoning vector."""
     wf = tmp_path / "wf"
     wf.mkdir()
-    # PR-triggered: writes a cache the publish job will also restore.
     (wf / "pr-build.yml").write_text(
         "name: pr-build\n"
         "on:\n"
@@ -945,13 +880,7 @@ def test_lint_rejects_shared_cache_key_between_pr_and_publish(tmp_path):
 
 
 def test_lint_rejects_a_publish_restore_keys_prefix_over_a_pr_namespace(tmp_path):
-    """A prefix restore reaches the same cache an equal key would, and was invisible.
-
-    `restore-keys` restores the newest entry whose key merely STARTS WITH the prefix, so
-    a publish workflow can adopt an entry a pull request wrote without the two keys ever
-    being equal. The exact-key check next to this one compares whole strings, so it never
-    saw this route.
-    """
+    """A restore-keys prefix can adopt a PR-written entry, so it is checked like an exact key."""
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "pr-build.yml").write_text(
@@ -1025,13 +954,7 @@ def test_a_partitioned_publish_prefix_is_accepted(tmp_path):
 
 
 def test_lint_sees_cache_keys_declared_in_composite_actions(tmp_path):
-    """The keys that matter mostly live in .github/actions, which the lint used to skip.
-
-    A PR-triggered workflow here delegates its key to a composite action, so the workflow
-    text carries only `${{ steps.x.outputs.key }}`. Before composite actions were read,
-    the PR-side namespace was effectively empty and a publish prefix could not be
-    compared against anything.
-    """
+    """Cache keys live mostly in .github/actions, so the lint must read composite actions too."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "pip-cache-restore"
@@ -1085,12 +1008,7 @@ def test_lint_sees_cache_keys_declared_in_composite_actions(tmp_path):
 
 
 def test_a_restore_keys_entry_that_opens_with_an_unexpandable_expression_is_refused(tmp_path):
-    """A prefix whose leading expression cannot be expanded decides nothing.
-
-    `${{ runner.os }}-` is NOT this case: it takes exactly Linux, Windows and macOS, so it
-    expands into three decidable prefixes. `${{ matrix.flavour }}-` is unbounded, so
-    whether it reaches a pull-request namespace cannot be answered here.
-    """
+    """A restore-keys prefix that opens with an unbounded expression cannot be decided, so it is refused."""
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "release-desktop.yml").write_text(
@@ -1147,15 +1065,7 @@ def _pr_workflow(key: str) -> str:
 
 
 def test_a_publish_prefix_longer_than_the_pr_literal_head_is_caught(tmp_path):
-    """One-directional prefix comparison missed this, and it is the common shape.
-
-    A PR key `pip-v2-${{ runner.os }}-abc` has the literal head `pip-v2-`. A publish
-    prefix `pip-v2-Linux-` is LONGER than that head, so `head.startswith(prefix)` is
-    False and the pairing was accepted, while the runtime key `pip-v2-Linux-abc` does
-    start with the prefix and would be restored. restore-keys matching is left-anchored
-    and exact, per GitHub's dependency-caching reference, so either string being a prefix
-    of the other means they can meet.
-    """
+    """A prefix collision runs both ways: either key being a prefix of the other can meet."""
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "pr-build.yml").write_text(_pr_workflow("pip-v2-${{ runner.os }}-abc"))
@@ -1168,12 +1078,7 @@ def test_a_publish_prefix_longer_than_the_pr_literal_head_is_caught(tmp_path):
 
 
 def test_an_expression_led_pr_key_is_expanded_not_dropped(tmp_path):
-    """Dropping these was a gate bypass, not a gap in coverage.
-
-    `${{ runner.os }}-shared-abc` has no literal head, so it used to be filtered out of
-    the comparison entirely and a publish prefix `Linux-shared-` passed. runner.os takes
-    exactly Linux, Windows and macOS, so expanding it makes the case decidable.
-    """
+    """An expression-led PR key must be expanded, not dropped: runner.os takes three known values."""
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "pr-build.yml").write_text(_pr_workflow("${{ runner.os }}-shared-abc"))
@@ -1188,13 +1093,7 @@ def test_an_expression_led_pr_key_is_expanded_not_dropped(tmp_path):
 
 
 def test_a_composite_that_builds_its_key_in_shell_is_read(tmp_path):
-    """The real composites name their namespace in shell, not in `key:`.
-
-    pip-cache-restore sets `prefix="pip-v2-${name}-..."` in a run step and exposes it as
-    an output, so its YAML `key:` is only `${{ steps.probe.outputs.key }}`. A check that
-    read YAML alone learned nothing about the very actions it was added to cover, and the
-    earlier regression test hid that by putting a literal key in the workflow instead.
-    """
+    """Some composites build the key in shell, not in key:, so their shell namespace must be read."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "pip-cache-restore"
@@ -1240,12 +1139,7 @@ def test_a_composite_that_builds_its_key_in_shell_is_read(tmp_path):
 
 
 def test_a_publish_only_composite_is_not_treated_as_a_pr_namespace(tmp_path):
-    """Scanning every action made a publish-only cache reject its own prefix.
-
-    That is a false failure on a safe configuration, and a security lint that fails on
-    correct code is one someone eventually switches off. Only actions reachable from a
-    pull-request-triggered workflow count.
-    """
+    """Only PR-reachable actions form a PR namespace; publish-only caches must not be rejected."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "release-cache"
@@ -1285,15 +1179,7 @@ def test_a_publish_only_composite_is_not_treated_as_a_pr_namespace(tmp_path):
 
 
 def test_a_restore_keys_prefix_after_a_blank_line_is_still_read(tmp_path):
-    """A blank line inside the block scalar used to truncate the list silently.
-
-    A YAML block scalar runs until the indentation drops, blank lines included, and
-    actions/cache reads the value as a newline-delimited list and skips empty entries. So
-    `safe-`, a blank line, then `shared-` really does offer `shared-` at runtime, while
-    the reader stopped at the blank line and never compared it. That is a bypass anyone
-    can reach by formatting a long restore-keys block for readability, and the dropped
-    entries are exactly the ones furthest from the eye.
-    """
+    """A blank line in restore-keys does not end the list; actions/cache still restores later prefixes."""
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "pr-build.yml").write_text(_pr_workflow("shared-${{ runner.os }}-abc"))
@@ -1312,13 +1198,7 @@ def test_a_restore_keys_prefix_after_a_blank_line_is_still_read(tmp_path):
 
 
 def test_a_cache_key_in_a_local_reusable_workflow_is_seen(tmp_path):
-    """`uses: ./.github/workflows/x.yml` names the file, not a directory with action.yml.
-
-    Probing only for `action.yml` beneath the reference found nothing, so a reusable
-    workflow called from a pull request declared keys that stayed outside the comparison
-    entirely: reachable from a pull request in fact, invisible to the check. The
-    composite-action case was already covered, which is what made this one easy to miss.
-    """
+    """A local reusable workflow is named by its file; read its cache keys from that file."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     wf.mkdir(parents = True)
@@ -1355,13 +1235,7 @@ def test_a_cache_key_in_a_local_reusable_workflow_is_seen(tmp_path):
 
 
 def test_a_composite_key_equal_to_a_publish_key_is_caught(tmp_path):
-    """An EQUAL key, not a prefix, and declared in a composite action rather than a workflow.
-
-    Composite keys reached the prefix comparison but not the exact one, so a publish
-    workflow sharing a literal key with a PR-reachable action and carrying no
-    restore-keys at all passed. That is the original cache-poisoning shape, and it was
-    the one route through this check with nothing watching it.
-    """
+    """A publish key equal to a composite-declared key must be caught, not just prefix matches."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "shared-cache"
@@ -1409,14 +1283,7 @@ def test_a_composite_key_equal_to_a_publish_key_is_caught(tmp_path):
 
 
 def test_a_shell_built_namespace_is_narrowed_by_the_inputs_callers_pass(tmp_path):
-    """Recording a namespace more broadly than the real one is a false rejection.
-
-    The pip cache builds `prefix="pip-${name}-..."`, so reading the shell alone records
-    the bare head `pip-`, which then collides with any publish prefix beginning `pip-`
-    including a properly partitioned `pip-release-` that no pull request can write.
-    Substituting the `name:` values callers actually pass gives `pip-mlx-`, which does
-    not.
-    """
+    """Shell-built namespaces are narrowed by the name values callers pass, or a bare head over-rejects."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "pip-cache-restore"
@@ -1458,7 +1325,6 @@ def test_a_shell_built_namespace_is_narrowed_by_the_inputs_callers_pass(tmp_path
         f"`pip-mlx-`, so this must pass:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # And the narrowed namespace still has teeth: a publish prefix over `pip-mlx-` fails.
     (wf / "release-desktop.yml").write_text(
         _publish_with_restore_keys("pip-mlx-pub-${{ runner.os }}", "            pip-mlx-\n")
     )
@@ -1471,14 +1337,7 @@ def test_a_shell_built_namespace_is_narrowed_by_the_inputs_callers_pass(tmp_path
 
 
 def test_a_publish_composite_that_restores_a_pr_namespace_is_caught(tmp_path):
-    """The publish side delegates to local actions too, and that half went unread.
-
-    Only the top-level publish workflow was parsed for `restore-keys`, so a publish
-    workflow whose composite owns the `actions/cache/restore` contributed no prefixes at
-    all. A pull request writing `shared-*` against a publish-only composite restoring
-    `shared-` therefore passed, and a comparison that collects nothing on one side
-    reports success rather than admitting it looked at nothing.
-    """
+    """Publish composites that restore a PR namespace are read too, not only top-level workflows."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "publish-cache"
@@ -1516,15 +1375,7 @@ def test_a_publish_composite_that_restores_a_pr_namespace_is_caught(tmp_path):
 
 
 def test_narrowing_keeps_the_broad_head_when_a_caller_is_dynamic(tmp_path):
-    """Substituting only the literal call sites discards the dynamic one's namespace.
-
-    With one caller passing `name: mlx` and another `name: ${{ matrix.cache_name }}`, the
-    literal set is non-empty, so narrowing replaced the broad `pip-v2-` head with
-    `pip-v2-mlx-` alone. The matrix caller can still expand to `shared`, write
-    `pip-v2-shared-abc`, and a publish `restore-keys: pip-v2-shared-` would pass. The
-    narrowing I added to remove a false REJECTION had therefore opened a false
-    ACCEPTANCE, which is the worse of the two.
-    """
+    """A dynamic caller keeps the broad head, since literal-only narrowing would drop its namespace."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "pip-cache-restore"
@@ -1580,14 +1431,7 @@ def test_narrowing_keeps_the_broad_head_when_a_caller_is_dynamic(tmp_path):
 
 
 def test_a_folded_restore_keys_block_is_one_prefix_not_several(tmp_path):
-    """Folding joins the lines with spaces, so the runtime fallback is a single string.
-
-    `restore-keys: >` over `safe-only-` and `shared-` reaches actions/cache as
-    `safe-only- shared-`, which cannot restore a `shared-` key: there is no fallback
-    named `shared-` at all. Reading each physical line as its own prefix invented one,
-    and rejecting a configuration over an invented fallback is how a security lint earns
-    the reputation that gets it switched off.
-    """
+    """A folded restore-keys block is one space-joined string, not one prefix per physical line."""
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "pr-build.yml").write_text(_pr_workflow("shared-${{ runner.os }}-abc"))
@@ -1613,7 +1457,6 @@ def test_a_folded_restore_keys_block_is_one_prefix_not_several(tmp_path):
         f"namespace, so this must pass:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # The literal form of the same block really does offer `shared-`, and must fail.
     (wf / "release-desktop.yml").write_text(
         _publish_with_restore_keys(
             "safe-only-${{ runner.os }}",
@@ -1629,13 +1472,7 @@ def test_a_folded_restore_keys_block_is_one_prefix_not_several(tmp_path):
 
 
 def test_a_quoted_restore_keys_field_is_read(tmp_path):
-    """`"restore-keys": |` is valid YAML and offers the same fallback.
-
-    The lexical reader matched only the bare token, so this spelling produced no
-    prefixes at all and the collision was accepted. One of several spellings that had to
-    be added one at a time before the reader was replaced with the parser, which resolves
-    all of them to the same mapping key.
-    """
+    """A quoted 'restore-keys' key is the same YAML mapping key, so the parser must read it."""
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "pr-build.yml").write_text(_pr_workflow("shared-${{ runner.os }}-abc"))
@@ -1688,11 +1525,7 @@ def test_a_restore_keys_sequence_is_read(tmp_path):
 
 
 def test_a_flow_style_local_uses_is_followed(tmp_path):
-    """`- {uses: ./.github/actions/x}` is the same step mapping in flow style.
-
-    The traversal matched `uses:` lexically, so a flow-style or quoted-key call was never
-    followed and the namespace that action declares stayed outside the comparison.
-    """
+    """Flow-style and quoted-key 'uses' steps must be followed, not only the lexical block form."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "shared-cache"
@@ -1730,14 +1563,7 @@ def test_a_flow_style_local_uses_is_followed(tmp_path):
 
 
 def test_a_caller_supplied_key_is_resolved_not_dismissed(tmp_path):
-    """`key: ${{ inputs.cache_key }}` is caller-supplied, which is not delegation.
-
-    `steps.*` genuinely delegates: the real key is built in a composite's shell and is
-    collected from there. `inputs.*` is different, because the value comes from the
-    CALLER, so a pull request passing `cache_key: shared-abc` writes the `shared-`
-    namespace. Treating the two alike dropped this key silently and a publish `shared-`
-    fallback passed.
-    """
+    """An inputs.* key comes from the caller, not a delegated step; resolve it, do not dismiss it."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     wf.mkdir(parents = True)
@@ -1780,14 +1606,7 @@ def test_a_caller_supplied_key_is_resolved_not_dismissed(tmp_path):
 
 
 def test_a_key_delegated_to_a_step_output_is_still_accepted(tmp_path):
-    """The other half of the rule above, and the reason it is not simply stricter.
-
-    Every live caller of this repository's pip-cache-save passes
-    `key: ${{ steps.pip-cache.outputs.key }}`, whose real namespace was already collected
-    from the restoring action's shell. Reporting that as undecidable failed the live tree,
-    which is the false-failure shape that gets a security check switched off, so
-    resolved-with-no-literals has to mean delegation rather than doubt.
-    """
+    """A key delegated to a step output is accepted when its producer's namespace was already collected."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "cache-save"
@@ -1831,13 +1650,7 @@ def test_a_key_delegated_to_a_step_output_is_still_accepted(tmp_path):
 
 
 def test_inputs_are_collected_through_a_wrapper_action(tmp_path):
-    """Call sites live in composites too, not only in workflow files.
-
-    A cache action reached through a wrapper gets its inputs from that wrapper. Reading
-    only the top-level workflows meant that call site was invisible, so if the workflow
-    ALSO called the action directly with a literal, every input looked resolved and the
-    narrowing dropped the namespace the wrapper passes.
-    """
+    """Call sites in wrapper composites count too, since a wrapped cache action gets its inputs there."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     inner = root / "actions" / "pip-cache-restore"
@@ -1899,14 +1712,7 @@ def test_inputs_are_collected_through_a_wrapper_action(tmp_path):
 
 
 def test_an_omission_before_the_first_literal_is_counted(tmp_path):
-    """Counting omissions in the same pass made the answer depend on call-site order.
-
-    A site that omitted an input had no bucket yet, so the omission went unrecorded, and
-    a later site supplying a literal made the input look fully resolved. Verified before
-    fixing: a composite called first with no `name` and then with `name: safe` reported
-    `({'safe'}, True)`, so the namespace narrowed to `safe` and the action's real default
-    namespace was left undefended.
-    """
+    """An omitted input must be counted even when a later call site supplies a literal."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "pipc"
@@ -1956,13 +1762,7 @@ def test_an_omission_before_the_first_literal_is_counted(tmp_path):
 
 
 def test_a_prefix_that_opens_with_a_variable_is_recovered(tmp_path):
-    """`prefix="${name}-pip-..."` put its literal part after the variable.
-
-    The head pattern requires an alphanumeric start, so this composite contributed no
-    head at all, while the `steps.*` key reading its output was dismissed as delegation.
-    A publish `restore-keys: shared-pip-` then had nothing to be compared against, which
-    is the failure mode where a check reports success having looked at nothing.
-    """
+    """Recover the literal tail of a prefix that opens with a variable, rather than dropping it."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "varfirst"
@@ -2015,14 +1815,7 @@ def test_a_prefix_that_opens_with_a_variable_is_recovered(tmp_path):
 
 
 def test_an_input_backed_key_is_resolved_before_the_exact_comparison(tmp_path):
-    """The plainest shape of all: an equal key, with no `restore-keys` anywhere.
-
-    Input resolution reached the prefix comparison through `pr_heads` and stopped there,
-    so a pull request writing `shared-key` directly, against a dispatch workflow calling
-    a reusable workflow whose key is `${{ inputs.cache_key }}` with
-    `cache_key: shared-key`, compared a literal against an unexpanded expression and
-    matched nothing.
-    """
+    """An input-backed key must be resolved before the exact comparison, or it matches nothing."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     wf.mkdir(parents = True)
@@ -2063,14 +1856,7 @@ def test_an_input_backed_key_is_resolved_before_the_exact_comparison(tmp_path):
 
 
 def test_a_longer_fallback_over_a_complete_pr_key_is_accepted(tmp_path):
-    """The reverse-prefix direction only holds for a head cut short by an expression.
-
-    A PR key that is exactly `shared` is saved as `shared`, and
-    `shared`.startswith(`shared-long`) is false, so a publish fallback `shared-long`
-    cannot restore it. Allowing the reverse unconditionally rejected every longer
-    fallback that merely shared an opening with a complete key, which is a false failure
-    on a correct configuration.
-    """
+    """The reverse-prefix match applies only to a head cut short by an expression, not to complete keys."""
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "pr-build.yml").write_text(_pr_workflow("shared"))
@@ -2083,8 +1869,6 @@ def test_a_longer_fallback_over_a_complete_pr_key_is_accepted(tmp_path):
         f"pass:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # The truncated case still has teeth: the same fallback over an expression-completed
-    # key CAN meet it at runtime.
     (wf / "pr-build.yml").write_text(_pr_workflow("shared-long-${{ runner.os }}-abc"))
     proc = _run(wf)
     assert proc.returncode == 1, (
@@ -2094,11 +1878,7 @@ def test_a_longer_fallback_over_a_complete_pr_key_is_accepted(tmp_path):
 
 
 def _lint_module():
-    """The lint script loaded as a module, for testing its predicates directly.
-
-    The rest of this file drives the script as a subprocess, which is the right way to
-    test the tool but cannot reach a single function.
-    """
+    """Loads the lint script as a module so its predicates can be tested directly, not via subprocess."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("_lint_under_test", SCRIPT)
@@ -2112,9 +1892,6 @@ def test_the_truncation_predicate_reads_the_key():
     lint = _lint_module()
     _is_truncated = lint._is_truncated
     _prefix_compatible = lint._prefix_compatible
-    # `runner.os` is expanded before the head is taken, so a key containing only that
-    # expression ends up with a COMPLETE head and is not truncated. It is the expressions
-    # this check cannot expand that cut a head short.
     cases = [
         ("shared", False),
         ("shared-long-abc", False),
@@ -2126,22 +1903,13 @@ def test_the_truncation_predicate_reads_the_key():
     for key, expected in cases:
         assert _is_truncated(key) is expected, f"_is_truncated({key!r})"
 
-    # A head cut short by an expression may be reached by a LONGER publish prefix; a
-    # complete key may not.
     assert _prefix_compatible("pip-v2-", "pip-v2-Linux-", True) is True
     assert _prefix_compatible("shared", "shared-long", False) is False
-    # Either way, a prefix the head already starts with is always compatible.
     assert _prefix_compatible("shared-long-abc", "shared-", False) is True
 
 
 def test_a_declared_input_default_is_part_of_the_namespace(tmp_path):
-    """Actions applies a declared default when the caller omits the input.
-
-    A composite declaring `cache_key` with default `shared-key` writes that namespace on
-    a bare invocation. Reading only the call sites left the key as an unexpanded
-    expression, so the exact comparison matched nothing, and with no `restore-keys` in
-    play the undecidable-prefix path never reported it either. A silent pass.
-    """
+    """A declared default for an omitted input is part of the namespace the action writes."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "defaulted-cache"
@@ -2192,14 +1960,7 @@ def test_a_declared_input_default_is_part_of_the_namespace(tmp_path):
 
 
 def test_a_declared_default_does_not_settle_an_explicit_dynamic_value(tmp_path):
-    """A default applies to an OMISSION. It says nothing about an explicit override.
-
-    Recording a declared default as blanket resolution -- the first fix for the omission
-    case -- meant a second caller passing `key: ${{ matrix.cache_key }}` was marked
-    resolved on the strength of a default it had overridden. Its namespace is unknown, so
-    the publish prefix `shared-` cannot be shown not to reach it, and dropping it turned
-    the fix for one false failure into a silent bypass.
-    """
+    """A declared default covers only an omitted input, never an explicit dynamic value such as a matrix."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "defaulted-cache"
@@ -2257,15 +2018,7 @@ def test_a_declared_default_does_not_settle_an_explicit_dynamic_value(tmp_path):
 
 
 def test_a_shell_key_that_never_leaves_the_step_is_not_a_namespace(tmp_path):
-    """A shell variable becomes a cache key by being written to `$GITHUB_OUTPUT`.
-
-    Reading every assignment named `key` or `prefix` regardless meant an unrelated
-    `key="shared-${RANDOM}"` -- a temp-file name, in a workflow with no cache at all --
-    registered `shared-` as a pull-request cache namespace and failed the publish
-    workflow's legitimate `restore-keys: shared-`. A false failure on a correct tree is
-    how a guard gets exempted, so the recovered value has to be tied to something that
-    can actually become a key.
-    """
+    """Only a shell key written to $GITHUB_OUTPUT can become a cache namespace; temp names cannot."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -2304,14 +2057,7 @@ def test_a_shell_key_that_never_leaves_the_step_is_not_a_namespace(tmp_path):
 
 
 def test_an_input_embedded_in_a_key_is_expanded(tmp_path):
-    """`key: prefix-${{ inputs.name }}` with `name: shared` runs as `prefix-shared`.
-
-    Only a key that was NOTHING but one expression got expanded, so the commonest
-    spelling -- an input with a literal prefix in front of it -- kept its raw text
-    through the exact comparison and matched no publish key. With no `restore-keys` on
-    the publish side the prefix pass never looked either, leaving the plainest exact
-    collision unguarded.
-    """
+    """Expand an input embedded after a literal prefix, not only a key that is a lone expression."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "embedded"
@@ -2353,13 +2099,7 @@ def test_an_input_embedded_in_a_key_is_expanded(tmp_path):
 
 
 def test_runner_os_is_expanded_before_the_exact_comparison(tmp_path):
-    """`shared-${{ runner.os }}` and `shared-Linux` are the same key on a Linux runner.
-
-    The exact comparison was a plain string test, so two keys that are equal at run time
-    but differ textually never met. `_prefix_candidates` already knew the three values
-    `runner.os` takes, but only the fallback-prefix pass used them, so a publish workflow
-    with no `restore-keys` never benefited.
-    """
+    """Expand runner.os before the exact comparison; shared-Linux and shared-${{ runner.os }} match."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -2386,13 +2126,7 @@ def test_runner_os_is_expanded_before_the_exact_comparison(tmp_path):
 
 
 def test_an_unresolvable_pr_key_is_reported_against_an_exact_publish_key(tmp_path):
-    """Fail closed when the PR key's value cannot be settled and could equal a publish key.
-
-    Unresolved keys were reported only from inside the restore-prefix pass, so a publish
-    workflow that uses an exact key and no `restore-keys` at all had the question never
-    asked: a matrix-supplied `shared-${{ matrix.tag }}` may well produce `shared-key`,
-    and the lint exited 0.
-    """
+    """An unresolvable PR key must fail closed against an exact publish key, not only against prefixes."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -2419,8 +2153,6 @@ def test_an_unresolvable_pr_key_is_reported_against_an_exact_publish_key(tmp_pat
         f"produce:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # ... and a publish key the PR key's fixed head cannot lead to stays accepted, or
-    # every unresolved key in the tree would reject every publish key in it.
     (wf / "release-desktop.yml").write_text(
         "name: release-desktop\n"
         "on:\n  workflow_dispatch:\n"
@@ -2437,13 +2169,7 @@ def test_an_unresolvable_pr_key_is_reported_against_an_exact_publish_key(tmp_pat
 
 
 def test_two_targets_sharing_an_input_name_keep_their_own_namespaces(tmp_path):
-    """An input name does not identify a namespace; the definition it belongs to does.
-
-    Merging every reachable target's inputs by field name handed one composite's values
-    to another, so a publish key equal to a value only the NON-caching composite ever
-    receives was rejected. A guard that fails a correct configuration is one that gets
-    deleted, so this direction matters as much as the bypasses.
-    """
+    """Same-named inputs on different actions need separate namespaces, or a correct config fails."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     caching = root / "actions" / "caching"
@@ -2458,7 +2184,6 @@ def test_two_targets_sharing_an_input_name_keep_their_own_namespaces(tmp_path):
         "    - uses: actions/cache@v4\n"
         "      with:\n        path: wheels\n        key: ${{ inputs.cache_key }}\n"
     )
-    # Same input NAME, no cache anywhere in it.
     (unrelated / "action.yml").write_text(
         "name: unrelated\n"
         "inputs:\n  cache_key:\n    description: k\n"
@@ -2490,7 +2215,6 @@ def test_two_targets_sharing_an_input_name_keep_their_own_namespaces(tmp_path):
         f"cache writes it:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # The caching composite receiving it IS a collision, so the narrowing kept its teeth.
     (wf / "pr-build.yml").write_text(
         "name: pr-build\n"
         "on:\n  pull_request:\n"
@@ -2507,18 +2231,9 @@ def test_two_targets_sharing_an_input_name_keep_their_own_namespaces(tmp_path):
 
 
 def test_a_reusable_workflow_is_named_by_its_file_not_its_directory():
-    """`uses: ./.github/workflows/reuse.yml` names a FILE. An action names a directory.
-
-    Taking the parent directory for both made every reusable workflow a target called
-    `workflows`, which no call site mentions, so the values its callers pass were never
-    recovered and a key built from one of them had no namespace at all.
-    """
+    """A reusable workflow is named by its file, not its parent directory, which would collapse them all."""
     lint = _lint_module()
-    # The FULL local reference, which is what a `uses:` line writes. A basename was
-    # enough to tell a workflow from an action, and not enough to tell two actions
-    # apart: `.github/actions/a/cache` and `.github/actions/b/cache` both end in
-    # `cache`, so their call sites pooled and one action's value was invented for the
-    # other.
+    # The FULL local reference: basenames cannot tell .github/actions/a/cache from b/cache.
     assert lint._target_name(Path(".github/workflows/reuse.yml")) == ".github/workflows/reuse.yml"
     assert (
         lint._target_name(Path(".github/actions/pip-cache/action.yml"))
@@ -2528,21 +2243,13 @@ def test_a_reusable_workflow_is_named_by_its_file_not_its_directory():
         lint._target_name(Path(".github/actions/pip-cache/action.yaml"))
         == ".github/actions/pip-cache"
     )
-    # An action is still named by its directory and a reusable workflow by its file,
-    # which is the distinction this started from.
     assert lint._target_name(Path(".github/actions/a/cache/action.yml")) != (
         lint._target_name(Path(".github/actions/b/cache/action.yml"))
     )
 
 
 def test_an_unresolvable_publish_key_is_reported_too(tmp_path):
-    """Failing closed on one side only leaves half this check's own rule unenforced.
-
-    A publish composite called with `cache_key: ${{ matrix.cache_key }}` may well
-    produce a literal a pull request also writes, and the publish branch skipped every
-    key that still contained an expression. The PR side had already been made to fail
-    closed, which made the asymmetry easy to miss: the rule looked enforced.
-    """
+    """An unresolvable publish key must be reported too, not skipped; it may equal a PR literal."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "pub-cache"
@@ -2580,13 +2287,7 @@ def test_an_unresolvable_publish_key_is_reported_too(tmp_path):
 
 
 def test_two_identically_spelled_unresolved_keys_collide(tmp_path):
-    """`shared-${{ hashFiles('lock') }}` on both sides is one key at run time.
-
-    Both sides were dropped for still containing an expression, so the most direct
-    collision there is -- the same key, written the same way, in both workflows -- was
-    invisible. A pull request that leaves the lockfile untouched writes exactly the entry
-    the publish run restores.
-    """
+    """Identically spelled unresolved keys on both sides can collide at run time, so compare them."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     body = (
@@ -2613,13 +2314,7 @@ def test_two_identically_spelled_unresolved_keys_collide(tmp_path):
 
 
 def test_a_publish_key_is_expanded_with_its_own_targets_inputs(tmp_path):
-    """The publish side kept using the merged namespace, so its scoping changed nothing.
-
-    `publish_by_target` was computed and never read. Two publish-reachable actions
-    sharing an input name therefore had every key expanded with both their values, and a
-    cache composite given `publish-key` was also expanded to an unrelated action's
-    `safe-key` and reported as colliding with a pull request cache of that name.
-    """
+    """Expand a publish key with its own target's inputs, not the merged set of all targets."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     caching = root / "actions" / "pub-caching"
@@ -2666,14 +2361,7 @@ def test_a_publish_key_is_expanded_with_its_own_targets_inputs(tmp_path):
 
 
 def test_a_composite_key_is_not_counted_a_second_time_without_its_inputs(tmp_path):
-    """A duplicate entry with an empty namespace made a decided key look undecided.
-
-    Composite YAML keys were added once with their target's inputs and once more with no
-    namespace at all. The second copy expanded to nothing, counted as unresolved, and the
-    fail-closed rule then rejected an unrelated publish key on the strength of the
-    duplicate -- even though every caller passes a literal and the key can only be one
-    thing.
-    """
+    """A composite key must not be added twice, once without its inputs, or it looks unresolved."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "decided"
@@ -2710,14 +2398,7 @@ def test_a_composite_key_is_not_counted_a_second_time_without_its_inputs(tmp_pat
 
 
 def test_two_differently_spelled_unresolved_keys_are_paired(tmp_path):
-    """Both sides unresolved, spelled differently, is the case the earlier fixes missed.
-
-    The identical-text rule only reaches keys written the same way, and an unresolved
-    publish key was compared against RESOLVED PR keys alone before continuing, so
-    `shared-${{ matrix.pr_part }}` and `shared-${{ matrix.pub_part }}` were never
-    paired even though both can become `shared-x`. Each earlier fix covered one
-    unresolved side at a time.
-    """
+    """Unresolved keys spelled differently must still be paired when both can become the same value."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -2746,8 +2427,6 @@ def test_two_differently_spelled_unresolved_keys_are_paired(tmp_path):
         f"same entry:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # Incompatible heads stay accepted, or every unresolved key in a tree would reject
-    # every other one.
     (wf / "release-desktop.yml").write_text(
         "name: release-desktop\n"
         "on:\n  workflow_dispatch:\n"
@@ -2765,13 +2444,7 @@ def test_two_differently_spelled_unresolved_keys_are_paired(tmp_path):
 
 
 def test_a_delegated_key_whose_producer_was_not_read_stays_undecided(tmp_path):
-    """Delegation settles a key only when the producer's namespace was recovered.
-
-    `_shell_built_key_prefixes` reads two narrow spellings. A workflow emitting its key
-    with `printf 'key=%s\\n'` matches neither, so nothing was recorded -- and dismissing
-    the key as "delegated" turned an unread producer into a clean bill of health, letting
-    a publish `restore-keys: shared-` through.
-    """
+    """A delegated key stays undecided if its producer was not read, such as a printf 'key=%s' emitter."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -2796,13 +2469,7 @@ def test_a_delegated_key_whose_producer_was_not_read_stays_undecided(tmp_path):
 
 
 def test_a_literal_producer_output_is_read_as_a_key(tmp_path):
-    """A producer emitting a fully literal key is resolved, not unrecognised.
-
-    Requiring a dynamic HEAD as the evidence that a producer was understood failed the
-    opposite case: `echo 'key=own-v1-abc'` has no tail to assemble, so the head
-    extractor finds nothing while the key is completely known. The value is an exact
-    cache key, so it joins the comparison rather than only vouching for the step.
-    """
+    """A literal producer output is an exact key, so it joins the comparison rather than being skipped."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -2830,7 +2497,6 @@ def test_a_literal_producer_output_is_read_as_a_key(tmp_path):
         f"{proc.stdout}\n{proc.stderr}"
     )
 
-    # And the literal really is compared, rather than merely vouching for the producer.
     (wf / "release-desktop.yml").write_text(
         "name: release-desktop\n"
         "on:\n  workflow_dispatch:\n"
@@ -2847,13 +2513,7 @@ def test_a_literal_producer_output_is_read_as_a_key(tmp_path):
 
 
 def test_a_publish_side_delegated_key_is_resolved_from_its_own_shell(tmp_path):
-    """Shell heads were collected from PR-reachable documents only.
-
-    So a publish workflow that emits `key=shared-key` and restores
-    `${{ steps.probe.outputs.key }}` had that key dismissed as delegated with nothing
-    recovered to compare it against, and a pull request writing the literal `shared-key`
-    passed an exact collision.
-    """
+    """Shell heads must also be collected from publish workflows, not only PR-reachable documents."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -2883,11 +2543,7 @@ def test_a_publish_side_delegated_key_is_resolved_from_its_own_shell(tmp_path):
 
 
 def test_two_actions_sharing_a_directory_name_keep_their_call_sites(tmp_path):
-    """`a/cache` and `b/cache` are different actions, however they end.
-
-    Matching call sites on the last path component pooled them, so a value passed to one
-    was attributed to the other and a publish key no pull request writes was rejected.
-    """
+    """a/cache and b/cache are different actions; match call sites by full path, not the last component."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     first = root / "actions" / "a" / "cache"
@@ -2934,14 +2590,7 @@ def test_two_actions_sharing_a_directory_name_keep_their_call_sites(tmp_path):
 
 
 def test_one_readable_producer_does_not_vouch_for_an_unreadable_one(tmp_path):
-    """Resolution belongs to a producing STEP, not to a whole side of the comparison.
-
-    A side-wide flag let an ordinary `echo 'key=safe-key'` in one step certify a second
-    step emitting `printf 'key=%s\\n'`, whose namespace was never recovered: the flag was
-    true, the unread delegated key was dismissed, and a publish `restore-keys: shared-`
-    passed. The single-producer test could not see this, because there was nothing else
-    in the workflow to do the vouching.
-    """
+    """Resolution belongs to each producing step; a readable step must not vouch for an unreadable one."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -2949,10 +2598,8 @@ def test_one_readable_producer_does_not_vouch_for_an_unreadable_one(tmp_path):
         "on:\n  pull_request:\n"
         "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
         "    steps:\n"
-        # readable, and entirely unrelated to the key that is actually used
         "      - id: safe\n"
         "        run: echo 'key=safe-key' >> \"$GITHUB_OUTPUT\"\n"
-        # unreadable spelling, and this is the one whose value reaches the cache
         "      - id: make\n"
         '        run: printf \'key=%s\\n\' "shared-$GITHUB_SHA" >> "$GITHUB_OUTPUT"\n'
         "      - uses: actions/cache/save@v4\n"
@@ -2970,18 +2617,9 @@ def test_one_readable_producer_does_not_vouch_for_an_unreadable_one(tmp_path):
 
 
 def test_a_producer_that_declares_its_key_inline_is_readable():
-    """A step's own `key:` is its output, and a local action's is too.
-
-    Requiring a shell-built key as the evidence declared this repository's real
-    producers unreadable: `frontend-dist-restore` hands out
-    `steps.restore.outputs.cache-primary-key`, whose value is the `key:` the action
-    declares in YAML, and an `actions/cache/restore` step publishes the key written
-    beside it. Both failed the live tree before being recognised.
-    """
+    """A step's or local action's inline key: is its output, so the producer is readable."""
     lint = _lint_module()
-    # Identities are (document, job, step id), because a step id is unique only within
-    # its job. A bare id let a readable namesake in another job -- or another file --
-    # answer for an unreadable one.
+    # Identities are (document, job, step id): a step id is unique only within its job.
     here = ("wf.yml", "build")
     producers = {("wf.yml", "build", "probe"): {"key"}}
     assert lint._delegation_is_read("${{ steps.probe.outputs.key }}", producers, here) is True
@@ -3007,26 +2645,18 @@ def test_a_producer_that_declares_its_key_inline_is_readable():
         )
         is False
     )
-    # A step this check never saw is not evidence of anything.
     assert lint._delegation_is_read("${{ steps.other.outputs.key }}", producers, here) is False
-    # Nor is a form that names no step at all.
     assert lint._delegation_is_read("${{ needs.build.outputs.key }}", producers, here) is False
 
 
 def test_a_readable_namesake_in_another_job_vouches_for_nothing(tmp_path):
-    """Step ids are unique within a job, so a bare id is the wrong identity.
-
-    Merging producers by bare id let a readable `id: probe` in a later job -- or a
-    later-sorted file -- overwrite an unreadable `id: probe` elsewhere, and the unread
-    key was then dismissed on the strength of a step that has nothing to do with it.
-    """
+    """Step ids are unique only within a job; identify producers by document, job and step id."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
         "name: pr-build\n"
         "on:\n  pull_request:\n"
         "jobs:\n"
-        # unreadable producer, and the job that actually caches
         "  first:\n    runs-on: ubuntu-latest\n"
         "    steps:\n"
         "      - id: probe\n"
@@ -3034,7 +2664,6 @@ def test_a_readable_namesake_in_another_job_vouches_for_nothing(tmp_path):
         "      - uses: actions/cache/save@v4\n"
         "        with:\n          path: wheels\n"
         "          key: ${{ steps.probe.outputs.key }}\n"
-        # readable namesake in a different job, caching nothing of interest
         "  second:\n    runs-on: ubuntu-latest\n"
         "    steps:\n"
         "      - id: probe\n"
@@ -3051,13 +2680,7 @@ def test_a_readable_namesake_in_another_job_vouches_for_nothing(tmp_path):
 
 
 def test_an_inline_key_input_does_not_certify_an_unrelated_output(tmp_path):
-    """`with: {key: ...}` is evidence only for an action that publishes THAT key.
-
-    Marking every id-bearing step with a `with.key` readable was too generous: a local
-    action may accept an unrelated `key` input while emitting its own `outputs.key`
-    from a command this check cannot read, and the delegated key was then dismissed
-    with no namespace recovered at all.
-    """
+    """A with: key input proves nothing about the action's outputs; only the output it publishes counts."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "sneaky"
@@ -3099,13 +2722,7 @@ def test_an_inline_key_input_does_not_certify_an_unrelated_output(tmp_path):
 
 
 def test_a_top_level_publish_input_is_not_resolved_by_a_child_targets_value(tmp_path):
-    """A dispatch workflow's own `${{ inputs.X }}` is chosen by whoever dispatches it.
-
-    Top-level workflow paths are not targets, so the publish side fell back to the
-    merged child namespace and expanded a user-controlled workflow input using an
-    unrelated action's literal -- then marked it complete. Dispatching with
-    `cache_key=shared-key` restores exactly the cache a pull request wrote.
-    """
+    """A dispatch workflow's own inputs are chosen by the dispatcher, so no child value may resolve them."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "unrelated"
@@ -3149,13 +2766,7 @@ def test_a_top_level_publish_input_is_not_resolved_by_a_child_targets_value(tmp_
 
 
 def test_an_action_used_from_a_checkout_subdirectory_is_reachable(tmp_path):
-    """`./unsloth/.github/actions/x` is the same action, through a runtime layout.
-
-    A job that checks this repository out into a subdirectory writes the reference that
-    way, and probing it as written found nothing in the source tree, so the action was
-    never added to the reachable set: the keys it declares sat outside both comparisons.
-    `notebooks-ci.yml` and `version-compat-ci.yml` both use this form.
-    """
+    """Checkout-subdirectory refs like ./unsloth/.github/actions/x name a reachable action."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "nested-cache"
@@ -3191,12 +2802,7 @@ def test_an_action_used_from_a_checkout_subdirectory_is_reachable(tmp_path):
 
 
 def test_a_commented_out_output_does_not_certify_a_producer(tmp_path):
-    """A commented line executes nothing, so it is not evidence about the step.
-
-    Reading one as a recovered output let an otherwise unreadable producer certify
-    itself: a `# echo 'key=safe-key'` above a real `printf` marked the step readable,
-    its delegated key was dismissed, and a publish `restore-keys: shared-` passed.
-    """
+    """A commented line executes nothing, so it must not certify an unreadable producer as readable."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -3223,11 +2829,7 @@ def test_a_commented_out_output_does_not_certify_a_producer(tmp_path):
 
 
 def test_an_unquoted_scalar_key_is_compared(tmp_path):
-    """`key: 123` is an int to YAML and a cache key to Actions.
-
-    The scoped pass accepted only `str`, so it dropped the key entirely and two
-    workflows sharing it were reported as collision-free.
-    """
+    """An unquoted key: 123 is an int to YAML and a cache key to Actions, so it must be compared."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -3251,12 +2853,7 @@ def test_an_unquoted_scalar_key_is_compared(tmp_path):
 
 
 def test_a_wrapper_forwarding_its_own_input_is_resolved(tmp_path):
-    """A forwarded `${{ inputs.name }}` is whatever the WRAPPER's callers pass.
-
-    Classifying it as dynamic left a nested composite undecidable, so an unrelated
-    publish key was rejected though every top-level caller supplies a literal. A guard
-    that fails a valid arrangement is one that gets switched off.
-    """
+    """A forwarded ${{ inputs.name }} is whatever the wrapper's callers pass, so it must be resolved."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     inner = root / "actions" / "inner-cache"
@@ -3300,7 +2897,6 @@ def test_a_wrapper_forwarding_its_own_input_is_resolved(tmp_path):
         f"{proc.stdout}\n{proc.stderr}"
     )
 
-    # And the resolution keeps its teeth: the value really reaching the cache collides.
     (wf / "release-desktop.yml").write_text(
         "name: release-desktop\n"
         "on:\n  workflow_dispatch:\n"
@@ -3316,13 +2912,7 @@ def test_a_wrapper_forwarding_its_own_input_is_resolved(tmp_path):
 
 
 def test_one_readable_output_does_not_certify_another_from_the_same_step(tmp_path):
-    """Readability belongs to an OUTPUT, not to the step that writes several.
-
-    A step emitting a recognisable `key=safe-key` alongside a `danger=` written by a
-    `printf` form that recovers nothing was marked readable as a whole, and the cache
-    consuming `outputs.danger` was dismissed on the strength of the output it does not
-    use.
-    """
+    """Readability belongs to each output, so a recognisable key must not certify an unreadable one."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -3349,12 +2939,7 @@ def test_one_readable_output_does_not_certify_another_from_the_same_step(tmp_pat
 
 
 def test_an_unrelated_assignment_does_not_certify_the_output(tmp_path):
-    """A recognisable assignment elsewhere in the body is not evidence about the output.
-
-    `safe_key="safe-${RANDOM}"` followed by an unreadable `printf` writing the real key
-    left only `safe-` recovered, and the delegated cache key was skipped even though
-    nothing about it had been understood.
-    """
+    """A recognisable assignment elsewhere in the body is not evidence about the output being read."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -3380,11 +2965,7 @@ def test_an_unrelated_assignment_does_not_certify_the_output(tmp_path):
 
 
 def test_two_publish_jobs_sharing_a_raw_key_keep_their_own_scopes(tmp_path):
-    """`(path, key)` is not unique, and the first job's scope was kept for both.
-
-    So a second publish job whose producer could not be read was judged against the
-    first job's readable one, and a PR cache matching the unread producer passed.
-    """
+    """(path, key) is not unique, so each publish job must keep its own scope, not the first job's."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents = True)
     (wf / "pr-build.yml").write_text(
@@ -3422,12 +3003,7 @@ def test_two_publish_jobs_sharing_a_raw_key_keep_their_own_scopes(tmp_path):
 
 
 def test_a_key_passed_to_a_non_cache_action_is_not_a_cache_namespace(tmp_path):
-    """Not every field named `key` declares a cache.
-
-    A composite passing `with: {key: release-key}` to an unrelated action registered
-    that value as a namespace pull requests write, so a publish workflow genuinely
-    caching `release-key` was rejected though the PR path never touches a cache.
-    """
+    """Not every field named key is a cache: a key passed to a non-cache action is not a namespace."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "signer"
@@ -3462,11 +3038,7 @@ def test_a_key_passed_to_a_non_cache_action_is_not_a_cache_namespace(tmp_path):
 
 
 def test_a_call_site_reached_through_a_checkout_prefix_is_matched(tmp_path):
-    """Reachability strips the runtime prefix; the call-site comparison did not.
-
-    So literal inputs passed through `./repo/.github/actions/x` were never recovered and
-    the key stayed undecidable, rejecting an unrelated publish key.
-    """
+    """Call-site matching must strip the runtime prefix too, or literal inputs are never recovered."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "prefixed-cache"
@@ -3503,12 +3075,7 @@ def test_a_call_site_reached_through_a_checkout_prefix_is_matched(tmp_path):
 
 
 def test_a_publish_restore_prefix_is_expanded_with_its_own_inputs(tmp_path):
-    """A publish fallback carrying an input reduces to a head far broader than it is.
-
-    `restore-keys: prefix-${{ inputs.name }}-` called with `name: publish` falls back to
-    `prefix-publish-` at run time, and reducing it to `prefix-` collided with every PR
-    key under that head.
-    """
+    """A restore-keys fallback must expand its inputs, or it reduces to a far broader prefix."""
     root = tmp_path / ".github"
     wf = root / "workflows"
     action = root / "actions" / "pub-restore"

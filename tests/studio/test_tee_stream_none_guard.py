@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AST test that run.py survives being launched with no console.
-
-A process with no valid std handles (a Windows pythonw or detached launch)
-starts with sys.stdout / sys.stderr / sys.stdin as None.
-`_normalize_standard_streams` replaces the missing ones at import time, and the
-_TeeStream guards keep a direct `_TeeStream(None, ...)` from crashing.
-
-Source contract only. The behaviour is pinned at runtime in
-studio/backend/tests/test_server_disk_logging.py, which CI runs on Python
-3.10-3.13 rather than 3.12 alone.
-"""
+"""Source-only check: run.py must normalize None std streams before the logger import."""
 
 from __future__ import annotations
 
@@ -40,13 +30,7 @@ def _top_level_fn(name: str) -> ast.FunctionDef:
 
 
 def _guards_target(fn: ast.FunctionDef, target: str) -> bool:
-    """True if *fn* early-exits on `<target> is None` before dereferencing it.
-
-    Deliberately strict -- the guard must name the target, compare it against
-    None, and return/raise -- so an unrelated `if data is None:` cannot pass.
-    A preceding local alias counts as the target, so hoisting the attribute into
-    a local before the guard stays legal.
-    """
+    """True only if fn returns or raises on target is None; a local alias of the target also counts."""
     aliases = {target}
     for node in fn.body:
         if isinstance(node, ast.Assign) and ast.unparse(node.value) in aliases:
@@ -68,12 +52,7 @@ def _guards_target(fn: ast.FunctionDef, target: str) -> bool:
 
 
 def test_streams_are_normalized_before_the_logger_import():
-    """The fix has to land before structlog is imported, or it does nothing.
-
-    structlog binds `from sys import stdout` at ITS import time and PrintLogger
-    does `self._file = file or stdout`, so a None stdout is captured permanently
-    the moment `from loggers import get_logger` runs.
-    """
+    """structlog binds sys.stdout at its import, so the stream fix must run before loggers is imported."""
     src = _RUN_PY.read_text(encoding = "utf-8")
     assert "\n_normalize_standard_streams()" in src, (
         "run.py never calls _normalize_standard_streams(); a console-less launch "

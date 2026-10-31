@@ -17,14 +17,17 @@ import { cn } from "@/lib/utils";
 export type TooltipIconButtonProps = ComponentPropsWithRef<typeof Button> & {
   tooltip: string;
   side?: "top" | "bottom" | "left" | "right";
+  tooltipClassName?: string;
 };
 
 export const TooltipIconButton = forwardRef<
   HTMLButtonElement,
   TooltipIconButtonProps
->(({ children, tooltip, side = "bottom", className, ...rest }, ref) => {
+>(({ children, tooltip, side = "bottom", className, tooltipClassName, ...rest }, ref) => {
   return (
-    <Tooltip>
+    // No grace area: the label is wider than the icon, so the path to it covers the next icon in
+    // a row and kept this label up (and that icon's away) while the pointer rested there.
+    <Tooltip disableHoverableContent={true}>
       <TooltipTrigger asChild={true}>
         <Button
           variant="ghost"
@@ -37,7 +40,7 @@ export const TooltipIconButton = forwardRef<
           <span className="aui-sr-only sr-only">{tooltip}</span>
         </Button>
       </TooltipTrigger>
-      <TooltipContent side={side} className="tooltip-compact">
+      <TooltipContent side={side} className={cn("tooltip-compact", tooltipClassName)}>
         {tooltip}
       </TooltipContent>
     </Tooltip>

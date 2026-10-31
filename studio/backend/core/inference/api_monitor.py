@@ -212,8 +212,7 @@ class ApiMonitorEntry:
     prompt_progress_time_ms: Optional[float] = None
     # Stamped on the first reply text; snapshot() prefers it over engine timings.
     first_token_monotonic: Optional[float] = None
-    # The same instant, but only for output the model decoded. A tool card is client output that TTFT should count and
-    # the token-rate clock must not: the tool run between it and the first token is not decoding.
+    # Tool cards count for TTFT but not the token-rate clock.
     first_decode_monotonic: Optional[float] = None
     prompt_ms: Optional[float] = None
     tok_per_sec: Optional[float] = None
@@ -221,8 +220,7 @@ class ApiMonitorEntry:
     # timings.predicted_ms; set only from engine timings, so its presence marks a rateable row.
     decode_ms: Optional[float] = None
     stop_reason: Optional[str] = None
-    # Every finish reason seen so far. An n > 1 stream reports each choice in its own chunk, so agreement can only be
-    # judged across the whole request. Not serialized.
+    # An n > 1 stream reports each choice in its own chunk. Not serialized.
     stop_reasons_seen: set[str] = field(default_factory = set)
     # request-local preview state, omitted from snapshots and cleared on terminal paths.
     openai_stream_tool_calls: list[_OpenAIStreamToolCall] = field(default_factory = list)
@@ -250,8 +248,7 @@ class ApiMonitorEntry:
             context_usage = min(1.0, max(0.0, self.total_tokens / self.context_length))
         ttft_ms = None
         if self.first_token_monotonic is not None:
-            # Preferred over the prompt_ms fallback: that is prefill only, so it misses the admission-queue wait before
-            # llama-server sees the request.
+            # Preferred over prompt_ms, which misses the admission-queue wait.
             ttft_ms = max(0, int((self.first_token_monotonic - self.started_monotonic) * 1000))
         elif self.prompt_ms is not None:
             ttft_ms = max(0, int(self.prompt_ms))
@@ -259,8 +256,7 @@ class ApiMonitorEntry:
         if (
             tok_per_sec is None
             and self.completion_tokens
-            # The clock starts at the first token, so it spans only the gaps that followed it: one token has no gap to
-            # measure, hence no rate at all.
+            # Clock starts at the first token, so one token has no gap to measure and yields no rate
             and self.completion_tokens > 1
             and self.finished_monotonic is not None
             and self.first_decode_monotonic is not None
@@ -295,8 +291,7 @@ class ApiMonitorEntry:
             "endpoint": self.endpoint,
             "method": self.method,
             "model": self.model,
-            # A shared row reaches subjects with nothing to do with it, and the overlay auto-opens on this flag, so
-            # report it only to the attributed caller.
+            # Shared rows reach unrelated subjects and auto-open the overlay, so only attributed callers see it
             "via_api_key": self.via_api_key and attributed,
             "prompt_preview": _trim(self.prompt, _PREVIEW_CHARS),
             "reply_preview": _trim(self.reply, _PREVIEW_CHARS),
@@ -324,8 +319,7 @@ class ApiMonitorEntry:
             "prompt_tok_per_sec": (
                 round(self.prompt_tok_per_sec, 2) if self.prompt_tok_per_sec is not None else None
             ),
-            # The engine's decode span, not the streamed window: an unknowable first-chunk token count and reasoning
-            # tokens both inflate a streamed rate. Absent rather than guessed.
+            # Engine decode span, not the streamed window, which reasoning tokens inflate.
             "decode_ms": int(self.decode_ms) if self.decode_ms is not None else None,
             "stop_reason": self.stop_reason,
         }
@@ -367,12 +361,7 @@ class ApiMonitor:
             self._terminal_callback = callback
 
     def acquire_terminal_callback(self, callback: TerminalCallback) -> str:
-        """Register a callback owned by one lifespan and return its lease token.
-
-        Only the newest live lease is notified, so overlapping lifespans do not
-        duplicate durable receipts. Releasing an older lease cannot disable a
-        newer owner, while releasing the newer one falls back to the older.
-        """
+        """Only the newest live lease is notified, so overlapping lifespans do not write duplicate receipts; releasing the newest falls back to the older"""
         lease = uuid.uuid4().hex
         with self._lock:
             self._terminal_callback_leases[lease] = callback
@@ -382,8 +371,7 @@ class ApiMonitor:
         """Remove only the terminal callback registration owned by ``lease``."""
         with self._callback_condition:
             self._terminal_callback_leases.pop(lease, None)
-            # A notification may already have captured this callback. Let its fast enqueue finish before the owner
-            # drains/stops the writer.
+            # Wait out an in-flight notification's fast enqueue before the owner drains and stops the writer
             while self._terminal_callbacks_inflight.get(lease, 0):
                 self._callback_condition.wait()
 
@@ -447,16 +435,7 @@ class ApiMonitor:
         via_api_key: bool = False,
         subject: Optional[str] = None,
     ) -> str:
-        """Record a model load/unload alongside the request traffic that caused it.
-
-        ``running=True`` opens the row for the caller to close with :meth:`finish` /
-        :meth:`fail`; an unload is terminal on arrival. Rows are shared (visible to
-        every subject) and share the request retention budget.
-
-        ``subject`` names the caller whose request drove this, which is what
-        ``via_api_key`` is reported to; it does not narrow who sees the row. Pass it
-        whenever ``via_api_key`` is set, or the attribution reaches nobody.
-        """
+        """Pass subject whenever via_api_key is set or attribution reaches nobody; it does not narrow visibility, since rows are shared with every subject"""
         if not self._enabled:
             return ""
         now = time.time()
@@ -476,9 +455,7 @@ class ApiMonitor:
             event = event,
             reason = reason,
             shared = True,
-            # The overlay opens on API-key traffic only, and a refused switch never reaches api_monitor.start, so this
-            # row is its whole trace: without the attribution the monitor stayed shut on the failures it exists to
-            # surface.
+            # Refused switches skip api_monitor.start, so this row is the sole trace; attribution opens overlay
             via_api_key = via_api_key,
             subject = subject,
         )
@@ -595,9 +572,7 @@ class ApiMonitor:
                     entry.first_token_monotonic = now
                 if entry.first_decode_monotonic is None:
                     entry.first_decode_monotonic = now
-            # Preview is capped: once the "..." marker is present the head is frozen, so skip the per-chunk re-concat
-            # (avoids O(n^2) on long generations). A reply that landed exactly on the cap has no marker yet, so let
-            # one more append record the truncation before freezing.
+            # Once the ... marker is present the head is frozen and the re-concat skipped; a reply exactly at the cap still needs one append to add the marker
             if len(entry.reply) >= _MAX_REPLY_CHARS:
                 if not entry.reply.endswith("..."):
                     entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
@@ -754,11 +729,8 @@ class ApiMonitor:
         *,
         decoded: bool = True,
     ) -> None:
-        """Stamp TTFT for deltas with no reply text, e.g. reasoning tokens.
-
-        ``decoded = False`` for output the model did not generate (a tool card), which
-        starts the clock the user sees but must not start the token-rate clock.
-        """
+        """``decoded=False`` is for output the model did not generate: starts TTFT, not the token-
+        rate clock."""
         if not entry_id:
             return
         now = time.monotonic()
@@ -794,8 +766,7 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
-        # Coerce before locking: arbitrary payloads, and a raise here (this runs inside streaming generators) would
-        # truncate the user's response.
+        # Coerce before locking: a raise here would truncate the streamed response.
         tok_per_sec = _finite_float_or_none(tok_per_sec)
         prompt_tok_per_sec = _finite_float_or_none(prompt_tok_per_sec)
         prompt_ms = _finite_float_or_none(prompt_ms)
@@ -818,13 +789,7 @@ class ApiMonitor:
             _advance_updated_at(entry)
 
     def note_stop_reason(self, entry_id: Optional[str], reason: Optional[str]) -> None:
-        """Record one choice's finish reason, without publishing it yet.
-
-        The row carries a single stop reason, so it only describes the request once every
-        choice has reported one. An n > 1 stream finishes its choices in separate chunks,
-        so publishing here would state a request-level verdict from the first one and
-        retract it when a later choice disagrees. :meth:`finish` resolves it instead.
-        """
+        """Not published here: with n > 1 a later choice can disagree, so finish() resolves it."""
         if not entry_id or not reason:
             return
         with self._lock:
@@ -836,13 +801,7 @@ class ApiMonitor:
 
     @staticmethod
     def _settle_stop_reason_locked(entry: ApiMonitorEntry, completed: bool) -> None:
-        """Fix the row's stop reason as it becomes terminal.
-
-        Only a completed request has one: a cancelled or failed stream stopped for that
-        reason, so any natural reason recorded on the way describes what it was doing
-        rather than how it ended. Clearing here catches the direct ``set_perf`` writers
-        too, which several streams reach before the cancellation is stamped.
-        """
+        """Only a completed request keeps its stop reason; clearing sits here so direct set_perf writers, reached before cancellation is stamped, are caught"""
         if not completed:
             entry.stop_reason = None
             return
@@ -880,8 +839,7 @@ class ApiMonitor:
             elif not entry.total_tokens_authoritative and (
                 prompt_tokens is not None or completion_tokens is not None
             ):
-                # Derive only when no authoritative total has been set; a later partial chunk must not clobber a
-                # provider total.
+                # Derive total only when none is set; a later partial chunk must not overwrite a provider total
                 entry.total_tokens = (entry.prompt_tokens or 0) + (entry.completion_tokens or 0)
             if context_length is not None:
                 entry.context_length = context_length
@@ -1065,12 +1023,7 @@ class ApiMonitor:
             )
 
     def clear(self, *, subject: Optional[str] = None) -> None:
-        """Drop recorded entries. ``subject`` limits the wipe to one caller's.
-
-        Every other read on this class is subject-scoped, so an unscoped clear
-        would let one user erase another's history (and zero their active count
-        mid-generation). Callers that genuinely mean "everything" pass None.
-        """
+        """Scoped to ``subject``: an unscoped clear would let one user erase every other user's history."""
         with self._lock:
             if subject is None:
                 self._entries.clear()
@@ -1081,9 +1034,7 @@ class ApiMonitor:
             for entry in self._entries:
                 if entry.shared and entry.status != "running":
                     hidden.add(entry.id)
-            # Shared rows are hidden, never dropped, even when owned: they are another caller's history too. An own
-            # running row is not history either, and dropping it loses the request outright: active_count falls to zero
-            # and the finish or fail that follows has no entry left to land on.
+            # Shared rows are hidden, never dropped; dropping an own running row loses the request.
             self._entries = deque(
                 entry
                 for entry in self._entries
@@ -1101,11 +1052,7 @@ class ApiMonitor:
         return entry.subject == subject and entry.account_id == current_account_id()
 
     def _attributed(self, entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
-        """Whether *subject* is the caller this row's API traffic belongs to.
-
-        Only they should have the overlay pop open for it. An unscoped read (no
-        subject: internal callers and tests) sees the row's own flag.
-        """
+        """Unscoped reads (no subject) see the row's own flag; the overlay is for its owner only."""
         if subject is None:
             return True
         return entry.subject == subject and entry.account_id == current_account_id()

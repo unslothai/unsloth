@@ -6,8 +6,7 @@ import {
   MAX_OPEN_DOCUMENT_XML_BYTES,
 } from "./open-document";
 
-// A call, not a const: read at module scope, an import the chat barrel also reaches can still be
-// in its temporal dead zone when this module runs.
+// A call, not a const: an import may still be in its temporal dead zone at module scope.
 function maxTextLength(): number {
   return MAX_OPEN_DOCUMENT_XML_BYTES;
 }
@@ -182,7 +181,7 @@ function rtfToText(bytes: Uint8Array, filename: string): string {
     pending.push(byte);
     length++;
   };
-  // Writers escape a double-byte lead byte but may leave its trail byte literal, even \\ { or }.
+  // Writers may leave a double-byte trail byte literal, even \\ { or }.
   const emitLiteral = (byte: number) => {
     if (pending.length > 0) {
       emitByte(byte);

@@ -1,12 +1,8 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# The NVIDIA inventory's Python rung: CPython's ctypes makes the same NVML and CUDA driver calls
-# the emitted type made, so a host that cannot emit a type (Constrained Language Mode, WDAC,
-# Dynamic Code Security) still gets the CUDA version AND the per-device compute capabilities,
-# which feed $CudaArch into -DCMAKE_CUDA_ARCHITECTURES (#5854) and the pre-Turing cap.
-# Guards three kinds of drift: the two copies of the shared region, the embedded probe versus
-# studio/nvidia_probe.py, and the rung's budget and retry shape.
+# The NVIDIA inventory's ctypes rung serves hosts that cannot emit a type (CLM, WDAC).
+# Guards drift between the two shared copies, nvidia_probe.py, and the budget/retry shape.
 # Run: pwsh -NoProfile -File tests/studio/test_nvidia_python_probe_parity.ps1
 
 $ErrorActionPreference = "Stop"
@@ -43,8 +39,7 @@ $installPs1 = Join-Path $root "install.ps1"
 $setupPs1 = Join-Path $root "studio\setup.ps1"
 $probePy = Join-Path $root "studio\nvidia_probe.py"
 
-# The embedded Python is the $probeSource here-string inside Read-NvidiaLibraryRawViaPython. Both
-# files carry other here-strings (including a $probe one), so anchor on the function and the name.
+# Both files carry other here-strings, so anchor on the function and the name.
 function Get-EmbeddedProbe($path) {
     $text = [System.IO.File]::ReadAllText($path)
     $at = $text.IndexOf("function Read-NvidiaLibraryRawViaPython")
@@ -69,7 +64,7 @@ $blockNames = @(
 )
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
-# install.ps1 nests its helpers one level deeper; compare the two copies without indentation.
+# install.ps1 nests its helpers one level deeper; compare without indentation.
 $strip = { param($text) ($text -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n" }
 for ($k = 0; $k -lt $blockNames.Count; $k++) {
     Check "install.ps1 and setup.ps1 carry the same $($blockNames[$k])" `
@@ -78,7 +73,7 @@ for ($k = 0; $k -lt $blockNames.Count; $k++) {
 
 $installProbe = Get-EmbeddedProbe $installPs1
 $setupProbe = Get-EmbeddedProbe $setupPs1
-# Leading whitespace IS the Python syntax, so the two copies must match byte for byte.
+# Leading whitespace IS the Python syntax, so the copies must match byte for byte.
 Check "the embedded Python is byte-identical in both files" ($installProbe -ceq $setupProbe)
 Check "the embedded Python sits at column 0, so its indentation survives both files" `
     (($installProbe -split "`n" | Where-Object { $_ -match '^import ctypes' }).Count -eq 1)
@@ -96,7 +91,7 @@ foreach ($symbol in @(
         (($installProbe -match [regex]::Escape($symbol)) -and ($referenceProbe -match [regex]::Escape($symbol)))
 }
 
-# CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR / _MINOR: a wrong number returns a plausible integer.
+# A wrong attribute number still returns a plausible integer.
 Check "the embedded probe reads attribute 75 for the capability major" ($installProbe -match 'byref\(major\), 75,')
 Check "the embedded probe reads attribute 76 for the capability minor" ($installProbe -match 'byref\(minor\), 76,')
 Check "nvidia_probe.py reads the same two attribute numbers" `
@@ -134,17 +129,16 @@ foreach ($file in @($installPs1, $setupPs1)) {
 }
 
 $pyBlock = & $strip $setupParts[2]
-# The rung's own comments NAME the banned constructs, so these rows read comment-free source.
+# The rung's comments NAME the banned constructs, so read comment-free source.
 $pyCode = ($pyBlock -split "`n" | Where-Object { $_.TrimStart() -notmatch '^#' }) -join "`n"
 Check "the rung compiles nothing" ($pyCode -notmatch 'Add-Type')
 Check "the rung emits no type" ($pyCode -notmatch 'New-StudioEmittedNativeType|DefinePInvokeMethod')
-# Constrained Language Mode refuses these, and CLM hosts are the population this rung serves.
+# CLM refuses these, and CLM hosts are the population this rung serves.
 Check "the launcher avoids ProcessStartInfo, which CLM refuses" ($pyCode -notmatch 'ProcessStartInfo')
 Check "the launcher avoids [Process]::Start, which CLM refuses" ($pyCode -notmatch '\[(System\.)?Diagnostics\.Process\]::Start|\[Process\]::Start')
 Check "the launcher avoids [System.IO.Path], which CLM refuses" ($pyCode -notmatch '\[System\.IO\.Path\]')
 Check "the launcher avoids [math], which CLM refuses" ($pyCode -notmatch '\[math\]::')
-# CLM allows property reads only on its allowed-type list, which excludes Process and FileInfo; the
-# sibling early-python launcher shipped with these reads and failed on windows-latest under 5.1.
+# CLM allows property reads only on allowed types, which excludes Process and FileInfo.
 foreach ($blocked in @("\.Id\b", "\.HasExited\b", "\.ExitCode\b", "\.FullName\b", "New-TemporaryFile")) {
     Check "the launcher avoids $($blocked -replace '\\[.b]', '') , which CLM refuses on a Process or FileInfo" (
         $pyCode -notmatch $blocked)
@@ -176,8 +170,7 @@ Check "the embedded probe reads the hints from the environment" `
 Write-Host ""
 Write-Host "=== the installer uses the interpreter this run installed ==="
 
-# Get-StudioEarlyPython memoises a MISS from the install-lock path, long before this run creates
-# its venv, so asking only the cache would decline on exactly the fresh install that needs it.
+# Get-StudioEarlyPython memoises a MISS from before the venv exists.
 Invoke-Expression (Get-Helper $installPs1 "Get-NvidiaProbePythonExe")
 function Get-StudioEarlyPython { $script:EarlyCalled = $true; return "/early/python3" }
 
@@ -201,7 +194,7 @@ try {
     $VenvPython = $null
     Check "an unset variable falls through rather than returning empty" ((Get-NvidiaProbePythonExe) -eq "/early/python3")
 
-    # Only ever a New-StudioShortcuts parameter; under `irm | iex` a caller's variable would leak in.
+    # Only a New-StudioShortcuts parameter; under `irm | iex` a caller's variable would leak in.
     $ManagedPythonPath = $fakeVenv
     Check "a stray `$ManagedPythonPath is not a candidate" ((Get-NvidiaProbePythonExe) -eq "/early/python3")
     Remove-Variable -Name ManagedPythonPath -ErrorAction SilentlyContinue
@@ -238,7 +231,7 @@ Check "the venv interpreter is named before the inventory is first read" ($venvA
 Write-Host ""
 Write-Host "=== the timeout is whole seconds, rounded up, without [math]::Ceiling ==="
 
-# / is floating point and [int] rounds to nearest, so "+999" turns 10000ms into 11s. Run the shipped lines.
+# / is floating point and [int] rounds to nearest, so "+999" turns 10000ms into 11s.
 $ceilLines = @($pyBlock -split "`n" | Where-Object {
     $_ -match '^\$seconds = ' -or $_ -match '^if \(\(\$TimeoutMs % 1000\) -ne 0\)' -or $_ -match '^if \(\$seconds -lt 1\)'
 })
@@ -253,7 +246,6 @@ Write-Host ""
 Write-Host "=== behaviour, driven through the real functions ==="
 
 foreach ($part in $setupParts) { Invoke-Expression $part }
-# The emitted rung declines, as on a Constrained Language Mode or WDAC host.
 function Get-NvidiaLibraryProbeType { return $null }
 $script:PythonExe = ""
 function Get-NvidiaProbePythonExe { return $script:PythonExe }
@@ -276,7 +268,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
         @("raises the integrity label rather than trusting a DACL", ($dirFn -match 'icacls' -and $dirFn -match 'setintegritylevel')),
         @("reads the label back rather than assuming it took", ($dirFn -match '\$labelled' -and $dirFn -match 'High Mandatory Level')),
         @("does not depend on the English spelling of the label", ($dirFn -match '\$result.ExitCode -eq 0' -and $dirFn -match 'S-1-16-12288')),
-        # Accepted on the path it HANDS BACK: a bracketed %TEMP% is a pattern that can match elsewhere.
+        # A bracketed %TEMP% is a pattern that can match elsewhere.
         @("confirms the directory it returns really exists", ($dirFn -match 'Test-Path -LiteralPath \$dir -PathType Container')),
         @("cleans up a directory the pattern created elsewhere", ($dirFn -match 'Remove-Item -LiteralPath \$createdPath')),
         @("refuses a directory something was planted in before the label landed", (
@@ -323,8 +315,7 @@ try {
 $savedEnv = Save-Env @("OS")
 try {
     $env:OS = "Windows_NT"
-    # The tools are reached by their System32 path, so the label is stubbed at that call: the real
-    # icacls cannot raise a label from a standard account, which would skip the check under test.
+    # Stubbed: the real icacls cannot raise a label from a standard account.
     function Test-StudioChildScriptDirectoryElevated { return $false }
     function Get-StudioSystem32Tool { param([string]$Name) return "C:\Windows\System32\$Name" }
     function Invoke-StudioSystem32ToolBounded { param([string]$Exe, [string[]]$Arguments, [int]$TimeoutMs) return @{ Output = ""; ExitCode = 0 } }
@@ -336,8 +327,7 @@ try {
     Restore-Env $savedEnv
 }
 
-# With whoami absent the answer has to be "elevated", not "not elevated". It is looked up in System32,
-# never on PATH, so the lookup itself is what goes missing here.
+# With whoami absent the answer must be "elevated"; it is looked up only in System32.
 try {
     function Get-StudioSystem32Tool { param([string]$Name) return "" }
     Check "an unreadable token reads as elevated" ((Test-StudioChildScriptDirectoryElevated) -eq $true)
@@ -368,7 +358,6 @@ if (-not $python) {
     } finally { Restore-Env $savedEnv }
 
     $answer = Read-NvidiaLibraryRawViaPython -TimeoutMs 30000
-    # A runner without an NVIDIA driver is the common case and must answer "" rather than throw.
     if (-not $answer) {
         Check "no driver on this host answers empty, not an error" ($answer -eq "")
     } else {
@@ -432,25 +421,22 @@ foreach ($row in @(
     $got = Invoke-RawWithStub $row[1]
     Check $row[0] ($script:StubCalls.Count -eq $row[2] -and $got -eq $row[3])
 }
-# Shared deadline 2 x 1500 ms; the first child burns 1200 ms of it, leaving under 3 s.
+# Shared deadline 2 x 1500 ms; the first child burns 1200 ms of it.
 $got = Invoke-RawWithStub @("TIMEOUT", "cuda;12;8;8.9") -TimeoutMs 1500 -TimeoutSleepMs 1200
 Check "stub: no CUDA-only child when under 3 s of the shared budget remain" ($script:StubCalls.Count -eq 1 -and $got -eq "")
-# Shared deadline 2 x 4000 ms, first child hangs 3200 ms; each bound leaves 2 s to reap, so the CUDA child gets ~2800 ms.
-# Not 3000 ms: that sits on the window's upper edge and an early Start-Sleep wake on Windows gave 3001.
+# Each bound leaves 2 s to reap, so the CUDA child gets ~2800 ms. Not 3000: an early
+# Start-Sleep wake on Windows gave 3001.
 $got = Invoke-RawWithStub @("TIMEOUT", "cuda;12;8;8.9") -TimeoutMs 4000 -TimeoutSleepMs 3200
 $secondMs = if ($script:StubCalls.Count -ge 2) { $script:StubCalls[1].TimeoutMs } else { "none" }
 Check "stub: every child's bound leaves 2 s of the shared deadline to reap it (second bound: $secondMs ms)" (
     $script:StubCalls.Count -eq 2 -and $script:StubCalls[0].TimeoutMs -eq 4000 -and
     $script:StubCalls[1].TimeoutMs -le 3000 -and $script:StubCalls[1].TimeoutMs -ge 2000)
-# Shared deadline 2 x 5000 ms; the first child burns 5000 ms, so the retry gets only the rest.
 $got = Invoke-RawWithStub @("TIMEOUT", "cuda;12;8;8.9") -TimeoutMs 5000 -TimeoutSleepMs 5000
 Check "stub: the CUDA-only child gets what is left of the shared budget, not a fresh bound" `
     ($script:StubCalls.Count -eq 2 -and $script:StubCalls[0].TimeoutMs -eq 5000 -and
      $script:StubCalls[1].TimeoutMs -lt 5000 -and $script:StubCalls[1].TimeoutMs -ge 2000 -and $got -eq "cuda;12;8;8.9")
 
-# End to end through the real launcher, with a fake interpreter that logs the switch it sees and
-# hangs like a wedged NVML unless it is set. POSIX sh only: a .cmd stand-in's sleeping child would
-# hold the output file on Windows.
+# POSIX sh only: a .cmd stand-in's sleeping child would hold the output file on Windows.
 if ($IsWindows -or $env:OS -eq "Windows_NT") {
     Write-Host "  SKIP  the fake-interpreter rows need a POSIX shell"
 } else {
@@ -473,7 +459,6 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
     ) -join "`n"
     [System.IO.File]::WriteAllText($fakePy, "$fakeBody`n")
     & chmod +x $fakePy
-    # Runs $Body in fake-interpreter $Mode with a fresh log; -Env overrides are restored after, and
     # -NoPrivateDir makes the private child-script directory decline (the inline path).
     function Invoke-Fake {
         param([string]$Mode, [scriptblock]$Body, [hashtable]$Env = @{}, [switch]$NoPrivateDir)
@@ -496,7 +481,6 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
     try {
         $script:PythonExe = $fakePy
         $env:UNSLOTH_FAKE_PY_LOG = $fakeLog
-        # A value already in this shell must reach no first child and must survive the calls.
         $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = "caller"
         $raw = { Read-NvidiaLibraryRaw -TimeoutMs 5000 }
         $viaPython = { Read-NvidiaLibraryRawViaPython -TimeoutMs 5000 }
@@ -515,7 +499,7 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
         $null = Invoke-Fake "hang" $raw
         Check "live: an unset switch is left unset" ($null -eq $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML)
 
-        # The shared-root fallback is a standard user's; an elevated run declines it, checked last.
+        # The shared-root fallback is a standard user's; an elevated run declines it.
         $savedElevated = ${function:Test-StudioChildScriptDirectoryElevated}
         function Test-StudioChildScriptDirectoryElevated { return $false }
         $seen = Invoke-Fake "inline" $viaPython -NoPrivateDir
@@ -523,7 +507,6 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
         Check "live: the program came through the environment, not a file" (($seen -join ",") -eq "argv4=-c src=present")
         Check "live: the program variable does not outlive the child" ($null -eq $env:UNSLOTH_NVIDIA_PROBE_SOURCE)
 
-        # TEMP and TMP beneath a regular file, as on a host whose temp directory is broken.
         $blocker = Join-Path $fakeDir "not-a-dir"
         Set-Content -LiteralPath $blocker -Value ""
         $altRoot = Join-Path $fakeDir "localappdata"
@@ -533,7 +516,6 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
         Check "live: an unusable TEMP falls through to the next root" ($script:FakeGot -eq "nvml;12;8;8.9")
         Check "live: and leaves nothing behind there" (@(Get-ChildItem -LiteralPath $altRoot).Count -eq 0)
 
-        # TEMP and TMP on a drive that does not exist: Join-Path itself throws, in the real directory helper too.
         $null = Invoke-Fake "inline" $viaPython -Env @{ TEMP = "Z:\UnslothReviewTemp"; TMP = "Z:\UnslothReviewTemp"; LOCALAPPDATA = $altRoot; TMPDIR = $null }
         Check "live: a TEMP on a missing drive falls through to the next root" ($script:FakeGot -eq "nvml;12;8;8.9")
         Check "live: and no stray output file lands in the working directory" (-not (Test-Path -LiteralPath ".out"))
@@ -549,10 +531,8 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
     }
 }
 
-# Constrained Language Mode refuses ProcessStartInfo, so the system-tool wrapper has a job branch:
-# without it the directory label and the elevation read both fail, and every probe declines.
-# A host with no enforced policy refuses Start-Job from a hand-constrained session, so a trusted
-# wrapper starts the job and constrains its body instead, as an enforced policy would.
+# CLM refuses ProcessStartInfo, so the system-tool wrapper has a job branch. A trusted
+# wrapper starts the job and constrains its body, as an enforced policy would.
 if ($IsWindows -or $env:OS -eq "Windows_NT") {
     Write-Host "  SKIP  the constrained system-tool rows need a POSIX shell"
 } else {

@@ -52,7 +52,7 @@ try:
 except Exception:
     HAS_CT = False
 
-# The quantizer hook that adds converters (HfQuantizer.update_weight_conversions) is 5.8+.
+# HfQuantizer.update_weight_conversions is transformers 5.8+.
 HAS_CONVERTERS = _transformers_supports_weight_converters()
 
 H, I, E, K = 64, 64, 4, 2
@@ -378,7 +378,6 @@ def test_a_target_list_naming_expert_paths_opts_packed_experts_in():
     scoped = packed_expert_target_parameters(model, auto, rf"{re.escape(stack)}\.\d+\.w2")
     assert scoped == [f"{stack}.down_proj"]
     assert packed_expert_target_parameters(model, None, ["experts.0.w2"]) == ["experts.down_proj"]
-    # Suffixes that name something else, and a non-index where the expert index goes, do not.
     assert packed_expert_target_parameters(model, auto, ["mlp.w1", "experts.x.w1", "0.w1x"]) is None
 
 
@@ -466,7 +465,7 @@ def _write_checkpoint(root):
         tensors[f"model.layers.{layer}.mlp.gate.weight"] = (
             torch.randn(E, H, generator = g) * 0.1
         ).to(torch.bfloat16)
-    # The module tree has no `model.` level: the loader strips the base-model prefix.
+    # The loader strips the base-model prefix, so the module tree has no `model.` level.
     tensors = {k.replace("model.layers.", "layers.", 1): v for k, v in tensors.items()}
     save_file(tensors, os.path.join(d, "model.safetensors"), metadata = {"format": "pt"})
     config = {
@@ -581,14 +580,12 @@ def test_plan_stacks_the_experts_and_keeps_every_other_packed_linear_all_or_noth
     extra = ("model.layers.0.proj.weight_packed", "model.layers.0.proj.weight_scale")
     plan = plan_mxfp4_keep_packed(model, _keys(extra = extra))
     assert len(plan.blocks) == 2 and plan.linears == ["layers.0.proj"]
-    # A layer packed only in part, or a packed module with no home: nothing stays packed.
     assert (
         plan_mxfp4_keep_packed(model, _keys(drop = "model.layers.1.mlp.experts.0.w2.weight_packed"))
         is None
     )
     assert plan_mxfp4_keep_packed(model, _keys(extra = ("model.nowhere.weight_packed",))) is None
     assert plan_mxfp4_keep_packed(model, ["model.layers.0.proj.weight"]) is None
-    # Experts that are not the plain layout a stack replaces stay packed one Linear each.
     _, model = _tiny_model("transformers_modules.k3s_plan_b.modeling_tinymoe")
     for layer in model.layers:
         for expert in layer.mlp.experts:
@@ -737,7 +734,6 @@ def test_full_save_writes_the_checkpoints_per_expert_keys(tmp_path):
             assert torch.equal(state[f"{prefix}.w1.weight"], gate_up[e, :, :I].t())
             assert torch.equal(state[f"{prefix}.w3.weight"], gate_up[e, :, I:].t())
             assert torch.equal(state[f"{prefix}.w2.weight"], down[e].t())
-    # The remote code's own per-expert loop on the saved weights gives the packed model's output.
     plain = mod.TinyMoeForCausalLM(mod.TinyMoeConfig(num_hidden_layers = 2)).to(torch.bfloat16)
     plain.load_state_dict(state, strict = True)
     ids = torch.randint(0, 128, (2, 8))
@@ -874,7 +870,7 @@ def test_auto_targets_keep_packed_experts_as_they_kept_the_per_expert_linears(
     _swap_planned_stacks(model, _keys(layers = 1), torch.bfloat16)
     _materialize_packed(model)
     model.max_seq_length = 64
-    # Real Kimi layers carry attention Linears; without any, get_peft_regex has nothing to target.
+    # Without attention Linears get_peft_regex has nothing to target.
     model.layers[0].self_attn = nn.Module()
     model.layers[0].self_attn.q_proj = nn.Linear(H, H, bias = False)
     model.vision_tower = nn.Module()
@@ -961,4 +957,4 @@ def test_compressed_tensors_route_stacking_stages_gate_up_then_down():
     assert stack_packed_expert_linears(model, ["layers.0.mlp"]) == ["layers.0.mlp"]
     torch.cuda.synchronize()
     assert torch.cuda.max_memory_allocated() - start <= gate_up + 1024
-    assert torch.cuda.memory_allocated() <= start + 1024  # every per-expert byte moved, none kept
+    assert torch.cuda.memory_allocated() <= start + 1024

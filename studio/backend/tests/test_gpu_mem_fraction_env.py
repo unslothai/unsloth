@@ -27,7 +27,6 @@ GIB = 1024**3
 
 _WORKER_PY = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
 
-# "cuda" is the one wired; the rest guard a later backend inheriting an unmeasured cap.
 _OTHER_BACKENDS = ["cuda", "xpu", "mps", "cpu"]
 _PLATFORMS = ["linux", "win32", "darwin"]
 
@@ -55,7 +54,6 @@ def test_the_rocm_arm_is_byte_identical_to_the_helper_it_delegates_to(
 
 
 def test_a_known_rocm_answer_is_unchanged():
-    # Spot values, so a refactor of both sides at once still fails here.
     assert _gpu_memory_fraction(24 * GIB, False, "linux", "rocm") == _DISCRETE_MEM_FRACTION
     assert _gpu_memory_fraction(128 * GIB, True, "win32", "rocm") == 1.0
     assert _gpu_memory_fraction(24 * GIB, True, "linux", "rocm") == pytest.approx(0.80)
@@ -118,7 +116,6 @@ def test_nothing_set_resolves_to_nothing():
 
 
 def test_a_cuda_host_ignores_the_rocm_only_name():
-    # UNSLOTH_ROCM_MEM_FRACTION names a ROCm reserve policy, not a user's cap.
     environ = {_MEM_FRACTION_ENV: "0.5"}
     assert _mem_fraction_env_value("cuda", environ) == (None, None)
 
@@ -209,7 +206,6 @@ def _run_section_1h(
     from core.training import worker as worker_module
 
     def resolve_env(backend, environ_ = None):
-        # The shipped line passes one argument, so the fake environ cannot arrive via os.
         return worker_module._mem_fraction_env_value(
             backend, environ if environ_ is None else environ_
         )
@@ -500,7 +496,6 @@ def test_each_rocm_device_is_solved_from_its_own_properties():
             )
 
         def mem_get_info(self, index = None):
-            # Same pool both ways, so the cap is the one the properties alone imply.
             total = self.get_device_properties(index).total_memory
             return (total // 2, total)
 

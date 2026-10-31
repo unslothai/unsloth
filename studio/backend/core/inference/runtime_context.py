@@ -9,9 +9,7 @@ from collections.abc import Iterator, Mapping
 from itertools import chain
 from typing import Any, Optional
 
-#: Longest context a load may ask for, and the ceiling a resolved window is held to.
-#: LoadRequest.max_seq_length bounds requests by this; a backend that reads a wider
-#: window from the model reports it as native but does not serve past it.
+# LoadRequest.max_seq_length is bounded by this; wider native windows are not served.
 MAX_REQUESTABLE_CONTEXT = 1048576
 
 #: Budget for an unset limit when there is no free context to size it from.
@@ -79,18 +77,13 @@ def runtime_context_length(model: Any, fallback: Optional[int] = None) -> Option
 def generation_budget_for_window(
     window: Optional[int], prompt_length: int, max_new_tokens: Optional[int]
 ) -> Optional[int]:
-    """Resolve a generation budget, where ``None`` means the caller set no limit.
-
-    An unset limit becomes the context the prompt leaves free. An explicit one is returned
-    untouched, so asking for more than fits still gets the backend's overflow error.
-    """
+    """Explicit limits pass through, so an oversized request gets the backend's overflow error."""
     if max_new_tokens is not None:
         return max_new_tokens
     if not window:
         return UNSET_GENERATION_BUDGET
     free = int(window) - int(prompt_length)
-    # No room left: take the default and let the backend's overflow check decide. A floor
-    # of 1 would pass that check on a model loaded narrower than its checkpoint.
+    # A floor of 1 would pass the overflow check on a model loaded narrower than its checkpoint.
     return free if free > 0 else UNSET_GENERATION_BUDGET
 
 

@@ -1,7 +1,4 @@
-"""Tests _pin_device_to_decoder in vision.py: while the embedding is offloaded to RAM,
-`model.device` must report the decoder device, because `inputs.to(model.device)` is the
-documented idiom and CPU ids make generation build position_ids on the wrong device.
-No GPU needed: a meta parameter stands in for the accelerator."""
+"""While embed_tokens is offloaded, model.device must report the decoder device, not the CPU."""
 
 import ast, os
 import torch
@@ -53,8 +50,7 @@ def test_reports_decoder_device_while_offloaded():
 
 
 def test_untouched_model_of_same_class_is_unaffected():
-    # The property lives on the class, so a second instance that never offloaded must
-    # keep the stock answer.
+    # The property lives on the class, so a non-offloaded instance must keep the stock answer.
     class _M(_Base):
         pass
 
@@ -63,7 +59,6 @@ def test_untouched_model_of_same_class_is_unaffected():
 
 
 def test_whole_model_on_cpu_falls_back():
-    # model.to("cpu") after an offload: there is no accelerator parameter left to report.
     class _M(_Base):
         pass
 

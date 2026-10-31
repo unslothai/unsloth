@@ -68,6 +68,78 @@ export function chatModelIsResident(
   );
 }
 
+export type LoadedChatModelSlot = {
+  id: string;
+  quant?: string | null;
+  checkpoint?: string;
+};
+
+/** The loaded slot already serving a chat's model, or null. Another quant of the same repo is a different load. */
+export function chatModelLoadedTarget(
+  createdModel: ChatModelSwitchTarget,
+  loadedModels: readonly LoadedChatModelSlot[],
+): ChatModelSwitchTarget | null {
+  for (const slot of loadedModels) {
+    const checkpoint = slot.checkpoint ?? slot.id;
+    // undefined = the slot's quant is still being looked up: wait for it rather than guess.
+    if (
+      slot.quant === undefined ||
+      !sameHfCacheIdentity(checkpoint, createdModel.modelId)
+    ) {
+      continue;
+    }
+    if (createdModel.ggufVariant != null) {
+      if (
+        !slot.quant ||
+        !ggufVariantsMatch(createdModel.ggufVariant, slot.quant)
+      ) {
+        continue;
+      }
+    }
+    return {
+      modelId: checkpoint,
+      ggufVariant: slot.quant ?? createdModel.ggufVariant ?? null,
+    };
+  }
+  return null;
+}
+
+export type ChatModelAutoSwitch = { threadId?: string; settled: boolean };
+
+/** Settles once the open chat is on its model, so a later pick inside it is never undone. */
+export function stepChatModelAutoSwitch(
+  previous: ChatModelAutoSwitch,
+  input: {
+    threadId: string | undefined;
+    active: boolean;
+    resident: boolean;
+    loadedTarget: ChatModelSwitchTarget | null;
+    modelLoading: boolean;
+  },
+): { state: ChatModelAutoSwitch; switchTo: ChatModelSwitchTarget | null } {
+  if (!(input.active && input.threadId)) {
+    return { state: { threadId: undefined, settled: false }, switchTo: null };
+  }
+  const state =
+    previous.threadId === input.threadId
+      ? previous
+      : { threadId: input.threadId, settled: false };
+  if (state.settled) {
+    return { state, switchTo: null };
+  }
+  if (input.resident) {
+    return { state: { ...state, settled: true }, switchTo: null };
+  }
+  if (!input.loadedTarget) {
+    return { state, switchTo: null };
+  }
+  return {
+    state: { ...state, settled: true },
+    // A load already running is a newer pick than the one this chat saved.
+    switchTo: input.modelLoading ? null : input.loadedTarget,
+  };
+}
+
 /** The live picker id Switch Back loads: the exact id, else a row of the same HF cache repo. */
 export function chatModelSelectableId(
   modelId: string,
@@ -151,8 +223,7 @@ export function createChatModelHistoryReader(
       }
       emit(chatModelSwitchTargetFromThread(thread));
     },
-    // Every history event for this thread lands here, renames and archives included, so the model is
-    // compared before a new object is handed to the caller.
+    // Renames and archives land here too, so compare the model before emitting.
     applyUpdate(thread: ChatModelThreadSnapshot): void {
       if (disposed || thread.id !== threadId) {
         return;
@@ -160,18 +231,24 @@ export function createChatModelHistoryReader(
       updateSeen = true;
       emit(chatModelSwitchTargetFromThread(thread));
     },
+    // Another tab's change: no model until a fresh read lands, and no in-flight opening read answers.
+    invalidate(): void {
+      if (disposed) {
+        return;
+      }
+      updateSeen = true;
+      emitted = undefined;
+      onModel(null);
+    },
     dispose(): void {
       disposed = true;
     },
   };
 }
 
-/** The picker metadata a "Switch back" has to carry, or undefined when the id needs none. A local
- *  or fine-tuned row is in neither `/api/models/list` nor the external ids, so with no metadata
- *  `isGguf` resolves false and the /load request drops the llama.cpp flags. A Hub repo resolves
- *  itself, and a synthesized `source: "hub"` would only route an on-disk model into the download
- *  manager, so just the variant travels. The remembered config stays off both branches:
- *  `stageOrLoad` already falls back to `rememberedConfigFor`. */
+/** Picker metadata a Switch back must carry, or undefined. Local/fine-tuned rows are in no list,
+ *  so without it isGguf resolves false and /load drops the llama.cpp flags. Hub repos need only
+ *  the variant. */
 export function chatModelSwitchMeta(
   target: ChatModelSwitchTarget,
   loraModels: readonly LoraModelOption[],
@@ -185,10 +262,8 @@ export function chatModelSwitchMeta(
   const isLocal = row.source === "local";
   return {
     source: isLocal ? "local" : row.source === "exported" ? "exported" : "lora",
-    // local folders and merged or gguf exports are not adapters.
     isLora:
       !isLocal && row.exportType !== "merged" && row.exportType !== "gguf",
-    // every row here is already on disk.
     isDownloaded: true,
     isGguf: row.isDirectGguf === true || Boolean(ggufVariant),
     ...(ggufVariant ? { ggufVariant } : {}),

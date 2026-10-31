@@ -12,9 +12,9 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Alert02Icon,
-  AlertDiamondIcon,
   CookBookIcon,
   FloppyDiskIcon,
+  AlertCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, type ReactElement, useState } from "react";
@@ -88,7 +88,7 @@ export function RecipeStudioHeader({
     <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 border-b px-4 py-3 max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:gap-x-2 max-sm:gap-y-2.5 max-sm:px-3">
       <div className="flex min-w-0 items-center gap-3">
         <div
-          className="flex size-8 shrink-0 items-center justify-center rounded-lg corner-squircle border border-border/70 bg-muted/20"
+          className="flex size-8 shrink-0 items-center justify-center rounded-md corner-squircle border border-border/70 bg-muted/20"
           aria-hidden={true}
         >
           <HugeiconsIcon
@@ -148,7 +148,7 @@ export function RecipeStudioHeader({
             <PopoverTrigger asChild={true}>
               <button
                 type="button"
-                className={`inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 text-ui-10 font-medium ${RECIPE_STUDIO_WARNING_BADGE_TONE}`}
+                className={`inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-ui-10 font-medium ${RECIPE_STUDIO_WARNING_BADGE_TONE}`}
               >
                 <HugeiconsIcon icon={Alert02Icon} className="size-3" />
                 {warnings.length}
@@ -168,7 +168,7 @@ export function RecipeStudioHeader({
                   >
                     <HugeiconsIcon
                       icon={
-                        w.severity === "error" ? AlertDiamondIcon : Alert02Icon
+                        w.severity === "error" ? AlertCircleIcon : Alert02Icon
                       }
                       className={`mt-0.5 size-3 shrink-0 ${w.severity === "error" ? "text-destructive" : RECIPE_STUDIO_WARNING_ICON_TONE}`}
                     />

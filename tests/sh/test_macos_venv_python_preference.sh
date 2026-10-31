@@ -1,9 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# _uv_venv_arm64: managed-only, so uv never executes the PATH pythons (the Xcode CLT
-# dialog on a Mac without the tools), with an unflagged retry so a host that cannot
-# resolve a managed build keeps its system Python.
+# _uv_venv_arm64: managed-only, so uv never runs PATH pythons (the CLT dialog), with an
+# unflagged retry so a host without a managed build keeps its system Python.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,8 +12,7 @@ _FN=$(mktemp)
 sed -n '/^_uv_venv_arm64()/,/^}/p' "$INSTALL_SH" > "$_FN"
 [ -s "$_FN" ] || { echo "  FAIL: _uv_venv_arm64 not found in install.sh"; exit 1; }
 
-# $1 = shell, $2 = exit code for the only-managed attempt. The stub echoes which
-# form it got, so ordering and fallback both show up in one trace.
+# $1 = shell, $2 = exit code for the managed-only attempt.
 _run() {
     "$1" -c '
         . "'"$_FN"'"
@@ -39,8 +37,7 @@ for _sh in sh bash; do
     _out=$(_run "$_sh" 2)
     assert_eq "managed request fails, falls back unflagged" "managed unflagged rc=0 " "$_out"
 
-    # Both failing must stay non-zero: the caller is under set -e and the
-    # rollback trap depends on it.
+    # Both failing must stay non-zero: the caller is under set -e and the rollback trap depends on it.
     _out=$("$_sh" -c '
         . "'"$_FN"'"
         VENV_DIR=/tmp/venv; PYTHON_VERSION=3.12
@@ -52,8 +49,7 @@ done
 
 echo "=== install.sh call sites ==="
 
-# The last call site re-assigns PYTHON_VERSION to 3.12 first, so the helper has to
-# read it at call time.
+# The last call site re-assigns PYTHON_VERSION first, so it must be read at call time.
 assert_contains "helper expands PYTHON_VERSION at call time" \
     "$(cat "$_FN")" 'cpython-${PYTHON_VERSION}-macos-aarch64-none'
 
@@ -63,8 +59,7 @@ assert_eq "arm64 sites go through the helper only" "0" "$_direct"
 _calls=$(grep -c '^ *_uv_venv_arm64 ' "$INSTALL_SH" || true)
 assert_eq "all three arm64 venv sites routed" "3" "$_calls"
 
-# _python_request carries a user --python or an interpreter path, which only-managed
-# would ignore.
+# _python_request may carry a user --python or a path, which managed-only would ignore.
 _out=$(grep -A 1 '_python_request "\$PYTHON_VERSION"' "$INSTALL_SH" || true)
 if echo "$_out" | grep -q 'only-managed'; then
     echo "  FAIL: only-managed leaked onto a _python_request call site"
@@ -76,9 +71,8 @@ fi
 
 echo "=== Unsloth installer stream ==="
 
-# install.rs turns [TAURI:ERROR_OUTPUT] into "Installation failed" until a later
-# [TAURI:ERROR_CLEAR]. A recovered fallback must emit one or Unsloth reports a
-# failure it already recovered from.
+# install.rs treats [TAURI:ERROR_OUTPUT] as failure until [TAURI:ERROR_CLEAR], so a
+# recovered fallback must emit the clear.
 _STREAM=$(mktemp)
 {
     printf 'C_ERR=""; TAURI_MODE=true; UNSLOTH_VERBOSE=false\n'

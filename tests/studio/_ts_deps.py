@@ -1,32 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Follow the dependencies of source sliced into a ``node`` harness.
-
-The harnesses in this directory pin frontend behaviour by slicing the real source VERBATIM
-and running it under ``node --experimental-strip-types``. A slice only carries the lines
-between its two markers, so the moment a sliced function starts calling a helper that lives
-somewhere else the harness dies with ``ReferenceError: <helper> is not defined`` -- which is
-what happened when ``sanitizeAssistantReplayText`` picked up ``stripSearchImageTokens``.
-
-Naming the missing helper in the harness prelude fixes that one call and nothing else: the
-next helper a sliced function gains breaks the harness again. So instead of another name,
-this resolves them. Every identifier a slice references is looked up the way the module
-itself would resolve it -- a top-level declaration in the same file, then its imports and
-re-exports -- and the declaration is sliced in too, recursively.
-
-Deliberately conservative. A name it cannot resolve, or a declaration it is not confident is
-side-effect free, is left alone rather than guessed at: that is exactly the state the harness
-is in today, so a helper this cannot follow is no worse off than before. Names the harness
-already defines are never pulled, so the hand-written prelude fixtures still win.
-"""
+"""Helpers that a sliced harness references are resolved and sliced in, not stubbed by hand."""
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-# `@/x` in the studio frontend means `studio/frontend/src/x`.
+# `@/x` means `studio/frontend/src/x`.
 _ALIAS = "@/"
 
 _DECL_RE = re.compile(
@@ -39,12 +21,44 @@ _IDENT_RE = re.compile(r"(?<![\w$])([A-Za-z_$][\w$]*)")
 _IMPORT_RE = re.compile(
     r"^import\s+(?P<clause>[^;]*?)\s+from\s+[\"'](?P<spec>[^\"']+)[\"']", re.MULTILINE
 )
+_TYPE_REEXPORT_RE = re.compile(
+    r"^export\s+type\s+\{(?P<names>[^}]*)\}\s+from\s+[\"'](?P<spec>[^\"']+)[\"']", re.MULTILINE
+)
+_TYPE_REEXPORT_NAME_RE = re.compile(r"([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?")
 _REEXPORT_RE = re.compile(
     r"^export\s+(?P<clause>\{[^}]*\}|\*)\s+from\s+[\"'](?P<spec>[^\"']+)[\"']", re.MULTILINE
 )
 # Initialisers a `const` may carry and still be safe to lift: literals and callables.
 # Anything else (a store built by `create(...)`, a client instantiated at import time) is
 # module setup rather than a helper, so it is refused instead of executed in the harness.
+# A `const` bound to a function expression runs nothing until it is called, like a `function`.
+_FUNCTION_DECL_RE = re.compile(
+    r"^(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*"
+    r"(?:async\s+function\b|function\b|(?:async\s*)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)"
+)
+_FUNCTION_KEYWORD_INIT_RE = re.compile(r"=\s*(?:async\s+)?function\b")
+
+
+def _invokes_its_function(text: str) -> bool:
+    """`const v = function () {...}(...)` calls the function on load; `{...} as Fn` and `{...};` do not."""
+    blanked = _blank_noise(text)
+    found = _FUNCTION_KEYWORD_INIT_RE.search(blanked)
+    if found is None:
+        return False
+    start = blanked.find("{", found.end())
+    if start == -1:
+        return False
+    depth = 0
+    for i in range(start, len(blanked)):
+        if blanked[i] in "{([":
+            depth += 1
+        elif blanked[i] in "})]":
+            depth -= 1
+            if depth == 0:
+                return blanked[i + 1 :].lstrip().startswith(("(", ")("))
+    return False
+
+
 _SAFE_INIT_RE = re.compile(
     r"^(?:/|[\"'`]|\d|\[|\{|!|new\s+(?:Set|Map|RegExp|Date)\b"
     r"|async\s+function\b|function\b|async\s*\(|\(|[A-Za-z_$][\w$]*\s*(?:=>|;))"
@@ -58,30 +72,16 @@ _KEYWORDS = frozenset(
 )
 
 
-# Keywords a `/` may legally follow, where it opens a regex rather than dividing. Without
-# these `return /x{1,2}/.test(s)` scans as division and the quantifier braces count as
-# structure, which truncates every declaration that returns a regex.
+# Keywords after which `/` opens a regex, not division.
 _REGEX_MAY_FOLLOW = frozenset(
     """return case typeof instanceof in of delete void yield await throw new do else""".split()
 )
 
 
 def _blank_noise(text: str, keep_strings: bool = False) -> str:
-    """The source with comments, strings and regex literals blanked to same-length spaces.
-
-    Identifier scanning and bracket matching both run over this, so a brace inside a string
-    or a regex quantifier (``[0-9a-f]{12}``) cannot be mistaken for structure. Newlines are
-    kept so every offset still lines up with the original.
-
-    Template literals are scanned with a stack: the text is blanked, but a ``${...}`` hole is
-    ordinary code and is scanned as such, so a helper called only inside one is still found.
-    With ``keep_strings`` the quoted literals survive, which is what the import parser needs
-    to read a module specifier out of a statement whose comments are gone.
-    """
+    """Blanks comments, strings and regexes to equal-length spaces, keeping template holes as code."""
     out = list(text)
     i, n = 0, len(text)
-    # Frames of the scanner: "code" is ordinary source, "template" is inside a backtick. A
-    # `${` pushes code onto a template, and the `}` that closes it pops back.
     frames: list[tuple[str, int]] = [("code", 0)]
 
     def blank(start: int, stop: int) -> None:
@@ -150,8 +150,6 @@ def _blank_noise(text: str, keep_strings: bool = False) -> str:
                 or prev_significant in "_$`'\""
             )
         ):
-            # A regex literal: `/` after an operator, an opening bracket or one of the
-            # keywords above cannot be division.
             j = i + 1
             in_class = False
             while j < n:
@@ -182,7 +180,6 @@ def _blank_noise(text: str, keep_strings: bool = False) -> str:
             frames[-1] = (frames[-1][0], frames[-1][1] - 1)
         elif ch == "}":
             if frames[-1][1] == 0 and len(frames) > 1:
-                # The `}` closing a `${...}` hole: blank it with the `${` that opened it.
                 out[i] = " "
                 frames.pop()
                 i += 1
@@ -218,12 +215,7 @@ def _balanced(blanked: str) -> bool:
 
 
 def _block_end(blanked: str, start: int) -> int:
-    """Index just past the closing brace of the top-level block beginning at ``start``.
-
-    The first ``{`` is not always the body -- a destructured parameter or an inline return
-    type opens one first -- so this walks the column-0 ``}`` lines these prettier-formatted
-    sources end declarations on and takes the first one that leaves the slice balanced.
-    """
+    """Returns the index past the block's end: the first column-zero } that leaves the slice balanced."""
     at = start
     while True:
         found = blanked.find("\n}", at)
@@ -236,11 +228,7 @@ def _block_end(blanked: str, start: int) -> int:
 
 
 def _assignment(blanked: str, start: int) -> int:
-    """Index of the `=` that opens the initialiser of the declaration at ``start``.
-
-    Not simply the first `=`: a typed binding can carry a `(a: X) => Y` annotation first, and
-    reading the `>` of that arrow as the initialiser refuses a helper that is fine to lift.
-    """
+    """Finds the = that opens the initialiser, not the > of a typed arrow annotation before it."""
     depth = 0
     for i in range(start, len(blanked)):
         ch = blanked[i]
@@ -281,8 +269,6 @@ class _Module:
         self.path = path
         self.text = path.read_text(encoding = "utf-8")
         self.blanked = _blank_noise(self.text)
-        # Comments gone, quoted literals kept: the import parser has to read a specifier, but
-        # must not read one out of a commented-out statement.
         self.uncommented = _blank_noise(self.text, keep_strings = True)
         self.declarations: dict[str, list[tuple[str, int]]] = {}
         for match in _DECL_RE.finditer(self.blanked):
@@ -291,6 +277,23 @@ class _Module:
             )
         self.imports = self._parse(_IMPORT_RE)
         self.reexports = self._parse(_REEXPORT_RE)
+        # Type-only re-exports (`export type { A }`, `export { type A }`) name erased types; never lifted.
+        self.type_reexports = {
+            (alias or name): (match.group("spec"), name)
+            for match in _TYPE_REEXPORT_RE.finditer(self.uncommented)
+            for name, alias in _TYPE_REEXPORT_NAME_RE.findall(match.group("names"))
+        }
+        for match in _REEXPORT_RE.finditer(self.uncommented):
+            braces = re.search(r"\{([^}]*)\}", match.group("clause"), re.DOTALL)
+            for entry in braces.group(1).split(",") if braces else ():
+                inline = re.fullmatch(
+                    r"\s*type\s+([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*", entry
+                )
+                if inline:
+                    self.type_reexports[inline.group(2) or inline.group(1)] = (
+                        match.group("spec"),
+                        inline.group(1),
+                    )
 
     def _parse(self, pattern: re.Pattern[str]) -> dict[str, tuple[str, str]]:
         """``local name -> (module specifier, exported name)`` for one statement kind."""
@@ -299,7 +302,6 @@ class _Module:
             clause = match.group("clause")
             spec = match.group("spec")
             if clause.lstrip().startswith("type") or ("*" in clause and "{" not in clause):
-                # `import type {...}` is erased by node, and `export * from` names nothing here.
                 continue
             braces = re.search(r"\{([^}]*)\}", clause, re.DOTALL)
             if braces is None:
@@ -309,7 +311,6 @@ class _Module:
                 continue
             default = clause[: braces.start()].rstrip().rstrip(",").strip()
             if re.fullmatch(r"[A-Za-z_$][\w$]*", default):
-                # `import Default, { named } from ...` binds both.
                 found[default] = (spec, "default")
             for entry in braces.group(1).split(","):
                 entry = entry.strip()
@@ -357,20 +358,11 @@ class _Module:
             return None
         text = self.text[line_start:end].strip("\n")
         if not _balanced(_blank_noise(text)) or "\nexport " in text:
-            # Over-sliced into whatever followed.
             return None
         return text
 
     def references(self, source: str) -> list[str]:
-        """Every identifier ``source`` uses as a name, in the order it first appears.
-
-        Member accesses are skipped, and prettier breaks a chain before the `.`, so the
-        nearest preceding non-space character is what decides. The `.` of a spread is not a
-        member access: `...defaults` reads the binding, and missing that put a pulled `const`
-        above the one it spreads. Object and interface keys are skipped too -- `{ role: "x" }`
-        names a field, not a binding, and treating those as references pulled in whole
-        modules a harness never asked for.
-        """
+        """Lists names used in source, skipping member accesses and object keys, but not spread operands."""
         blanked = _blank_noise(source)
         names: list[str] = []
         for match in _IDENT_RE.finditer(blanked):
@@ -393,7 +385,7 @@ def _resolve_module(spec: str, importer: Path, root: Path) -> Path | None:
     elif spec.startswith("."):
         base = (importer.parent / spec).resolve()
     else:
-        return None  # A package, not our source.
+        return None
     for candidate in (
         base,
         Path(f"{base}.ts"),
@@ -406,13 +398,7 @@ def _resolve_module(spec: str, importer: Path, root: Path) -> Path | None:
 
 
 def _harness_bindings(harness_source: str) -> set[str]:
-    """Every name the harness itself binds at the top level, fixtures included.
-
-    Deliberately over-inclusive: a name counted here is one that will not be pulled, so a
-    stray extra costs a resolution the harness did not need, while a missed one is a
-    duplicate declaration and a hard ``SyntaxError``. Destructured and multi-declarator
-    bindings (``const { only, ...rest } = ...``) are the ones a declaration regex misses.
-    """
+    """Lists the harness's top-level bindings, erring wide: a missed one is a duplicate declaration."""
     blanked = _blank_noise(harness_source)
     names: set[str] = set()
     for match in _DECL_RE.finditer(blanked):
@@ -454,13 +440,7 @@ def resolve_dependencies(
     sources: tuple[Path, ...],
     root: Path | None = None,
 ) -> str:
-    """``harness_source`` with the declarations its slices reference prepended.
-
-    ``sources`` are the files the slices came from, in the order the harness concatenates
-    them; a reference is resolved against the module it was sliced out of. Names the harness
-    already defines -- the hand-written prelude fixtures included -- are never pulled, and
-    anything unresolvable is left as it is.
-    """
+    """Prepends the declarations the slices reference, never pulling names the harness already defines."""
     sources = tuple(Path(s) for s in sources if Path(s).is_file())
     root = root or _frontend_root(sources)
     if root is None or not sources:
@@ -478,6 +458,29 @@ def resolve_dependencies(
     order: list[str] = []
     seen: set[tuple[Path, str]] = set()
 
+    def type_only(
+        name: str,
+        origin: Path,
+        hops: int = 0,
+    ) -> bool:
+        """``name`` as seen from ``origin`` is a type or interface, which Node erases."""
+        home = module(origin)
+        if name in home.declarations:
+            return all(kind in {"type", "interface"} for kind, _ in home.declarations[name])
+        target = home.imports.get(name) or home.reexports.get(name) or home.type_reexports.get(name)
+        if target is None or hops > 8:
+            return False
+        path = _resolve_module(target[0], origin, root)
+        if path is None and target[0].startswith((".", _ALIAS)):
+            # Lifting never follows into a component file, but a type declared there is still erased.
+            base = (
+                root / target[0][len(_ALIAS) :]
+                if target[0].startswith(_ALIAS)
+                else origin.parent / target[0]
+            )
+            path = next((c for c in (Path(f"{base}.tsx"), base / "index.tsx") if c.is_file()), None)
+        return path is not None and type_only(target[1], path, hops + 1)
+
     def pull(name: str, origin: Path) -> None:
         """Emit ``name`` as resolved from ``origin``, dependencies first."""
         if name in defined or (origin, name) in seen:
@@ -491,11 +494,10 @@ def resolve_dependencies(
             spec, exported = target
             path = _resolve_module(spec, origin, root)
             if path is None or path.suffix == ".tsx":
-                # A component file is JSX, which node's type stripping will not parse.
+                # Node's type stripping cannot parse JSX.
                 return
             pull(exported, path)
             if exported != name and exported in defined:
-                # Imported under another name: bind the local spelling to what was emitted.
                 defined.add(name)
                 pulled[name] = ("const", f"const {name} = {exported};", {exported})
                 order.append(name)
@@ -504,20 +506,21 @@ def resolve_dependencies(
         if text is None:
             return
         defined.add(name)
-        # Dependencies first: a hoisted `function` would not care, but a `const` read before its declaration is a TDZ
-        # error rather than `undefined`.
+        # Dependencies first: a `const` read before its declaration is a TDZ error.
         wanted = set()
         for reference in home.references(text):
             if (
                 reference in home.declarations
                 or reference in home.imports
                 or reference in home.reexports
-            ):
-                # A name this module really does resolve, so failing to follow it matters.
+            ) and not type_only(reference, origin):
                 wanted.add(reference)
             pull(reference, origin)
+        kind = home.kind(name) or "const"
+        if _FUNCTION_DECL_RE.match(text.lstrip()) and not _invokes_its_function(text):
+            kind = "function"
         pulled[name] = (
-            home.kind(name) or "const",
+            kind,
             f"// sliced from {home.path.name}\n" + re.sub(r"^export\s+", "", text, count = 1),
             wanted,
         )
@@ -531,14 +534,27 @@ def resolve_dependencies(
     # A declaration evaluated at import time cannot be left half-resolved: `const A = [B]` with `B` refused crashes the
     # whole harness on load, which is worse than the lazy ReferenceError it replaced. Drop those to a fixed point
     # instead. Functions and types are lazy or erased, so an unfollowed reference in one costs nothing until it is
-    # called. A fixture the harness defines does not rescue one either: the fixtures sit BELOW this block, so reading
+    # called, and so is a `const` bound to an arrow or function expression. A fixture the harness defines does not
+    # rescue one either: the fixtures sit BELOW this block, so reading
     # one from here is a TDZ error rather than a resolution.
     eager = {"const", "let", "var", "class"}
     while True:
+        # Any reference to a half-resolved lazy helper dooms an eager declaration: whether it is called on load is
+        # not decided, and a load-time crash costs more than a dropped declaration.
+        partial: set[str] = set()
+        while True:
+            grown = {
+                name
+                for name, (kind, _, wanted) in pulled.items()
+                if kind not in eager and not wanted <= set(pulled) - partial
+            }
+            if grown == partial:
+                break
+            partial = grown
         doomed = {
             name
             for name, (kind, _, wanted) in pulled.items()
-            if kind in eager and not wanted <= set(pulled)
+            if kind in eager and not wanted <= set(pulled) - partial
         }
         if not doomed:
             break
@@ -554,5 +570,5 @@ def resolve_dependencies(
     )
     block = header + "\n".join(emitted) + "\n"
     if not _balanced(_blank_noise(block)):
-        return harness_source  # Never hand node something worse than it had.
+        return harness_source
     return block + harness_source

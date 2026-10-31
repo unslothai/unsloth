@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness page for tests/studio/playwright_link_definition_probe.py: three settled replies
-// through the real Thread, selected by ?case=.
+// Harness for tests/studio/playwright_link_definition_probe.py, selected by ?case=.
 
 /* eslint-disable no-restricted-imports -- a measurement entry point, not app code. */
 import "@/features/chat/stores/sidebar-organization-store";

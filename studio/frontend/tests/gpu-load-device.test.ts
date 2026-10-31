@@ -6,7 +6,6 @@ import test from "node:test";
 
 import { pickLoadDevice } from "../src/hooks/gpu-selection.ts";
 
-/** The subset of the /api/system device record the load-device pick reads. */
 type GpuDevice = {
   index?: number;
   index_kind?: string;
@@ -14,8 +13,7 @@ type GpuDevice = {
   memory_total_gb?: number;
 };
 
-// CUDA_VISIBLE_DEVICES="3,1": physical GPU 3 becomes CUDA device 0, so a bare "cuda"
-// load lands on the 8 GB card even though the lower PHYSICAL index (1) is the 48 GB one.
+// CUDA_VISIBLE_DEVICES="3,1": physical GPU 3 becomes CUDA device 0.
 const reorderedMask: GpuDevice[] = [
   { index: 1, index_kind: "physical", visible_ordinal: 1, memory_total_gb: 48 },
   { index: 3, index_kind: "physical", visible_ordinal: 0, memory_total_gb: 8 },

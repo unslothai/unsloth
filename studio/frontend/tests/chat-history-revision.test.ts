@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The two channels: a structural change goes at once, the per-chunk streaming path waits for
-// its quiet window. Sharing one timer leaves a delete unannounced for a whole generation.
+// Structural changes publish at once; streaming chunks wait for a quiet window. One timer starves deletes.
 
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
@@ -54,7 +53,6 @@ test("a stream collapses into one write rather than one per window", () => {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
     store.clear();
-    // Two seconds of chunks at 50ms, which under a throttle would have published four times.
     for (let i = 0; i < 40; i += 1) {
       publishChatHistoryRevision(true);
       mock.timers.tick(50);
@@ -78,7 +76,6 @@ test("a structural change during a stream does not wait for it", () => {
     store.clear();
     publishChatHistoryRevision(true);
     mock.timers.tick(100);
-    // Under a shared timer the chunks that follow would push this back to the end.
     publishChatHistoryRevision(false);
     const published = revision();
     assert.notEqual(published, null, "the delete publishes on its own");
@@ -104,7 +101,6 @@ test("a pending write is published before the tab goes away", () => {
     publishChatHistoryRevision(true);
     assert.equal(revision(), null);
 
-    // What the pagehide handler calls: otherwise the write leaves with the page.
     flushChatHistoryRevision();
     assert.notEqual(revision(), null);
 
@@ -126,7 +122,6 @@ test("flushing with nothing pending writes nothing", () => {
   assert.equal(revision(), null);
 });
 
-// misreading a chunk save as structural starves a retiring listener for a whole generation
 test("a coalesced streaming update is distinguishable from a structural change", () => {
   assert.equal(
     isCoalescedHistoryEvent(
@@ -143,7 +138,6 @@ test("a coalesced streaming update is distinguishable from a structural change",
 });
 
 test("an undetailed history event counts as structural", () => {
-  // what the cross-tab listener re-raises, and what any caller that skips the detail sends
   assert.equal(isCoalescedHistoryEvent(new Event("x")), false);
   assert.equal(isCoalescedHistoryEvent(new CustomEvent("x")), false);
 });

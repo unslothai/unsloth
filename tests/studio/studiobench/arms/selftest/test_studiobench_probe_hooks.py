@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The two halves of the external-probe channel, pinned so neither can rot on its own.
-
-A probe needs a way IN (`SBENCH_EXTRA_INIT_SCRIPT`, concatenated after the scene scripts) and a way
-OUT (`SBENCH_PAGE_CONSOLE`, a prefix filter on the page's console). Neither is exercised by a
-normal run, because both are off unless the environment asks for them, which is exactly the
-property that makes them safe and exactly the property that lets them break unnoticed: delete the
-console filter and the probe still installs, still samples, and reports nothing, which reads as
-"the arm did not fire".
-
-The off-by-default half is the one worth stating. A hook that changed the page even slightly when
-unset would make every scored run a probe run.
-"""
+"""Probes are off unless SBENCH_EXTRA_INIT_SCRIPT is set, so a scored run is never a probe run."""
 
 from __future__ import annotations
 
@@ -61,47 +50,26 @@ def test_the_hooks_are_off_unless_asked_for(main_src: str, monkeypatch):
 
     assert os.environ.get("SBENCH_EXTRA_INIT_SCRIPT") is None
     assert os.environ.get("SBENCH_PAGE_CONSOLE") is None
-    # Both call sites are guarded by a plain truthiness check on the variable, so an unset variable
-    # cannot reach `add_init_script` or `page.on`. Pinned as source, because the failure this guards
-    # is a refactor that hoists either call out of its `if`.
+    # Pinned as source: the failure is a refactor hoisting either call out of its `if`.
     for guarded in ("if extra_init:", "if console_prefix:"):
         assert guarded in main_src, f"{guarded!r} is gone; the hook may no longer be opt-in"
 
 
 def test_the_probe_path_is_validated_before_anything_is_started(main_src: str):
-    """A path typo must not leave a detached Unsloth holding a port.
-
-    The source is not needed until the browser launches, but reading it there raises after Unsloth
-    and the pacer are up and before the cleanup `finally` around the cell loop is entered, so
-    nothing stops them. Reading it in the first second of the run fails while there is nothing to
-    clean up.
-    """
+    """Read the probe before Unsloth starts, so a bad path cannot leave Unsloth holding a port."""
 
     read_at = main_src.index("extra_init_source = Path(extra_init).read_text")
     assert read_at < main_src.index("install_studio(ref, home)")
     assert read_at < main_src.index("_probe_init_scripts(extra_init, extra_init_source)")
     assert "except (OSError, UnicodeDecodeError) as exc:" in main_src
-    # Read once, used later. A second read at launch time would reintroduce the window.
     assert main_src.count("Path(extra_init).read_text") == 1
-    # AND ahead of the archive, the other thing a refusal must not arrive after: reusing an --out
-    # without --resume moves the payload aside, so reading the probe after that call let a path typo
-    # take payload.jsonl off its standard path while running no benchmark at all. The behaviour is
-    # pinned in runtime/selftest/test_studiobench_run_acquisition.py; the order is pinned here.
+    # Also ahead of the archive, which moves the payload aside; behaviour is pinned in
+    # runtime/selftest/test_studiobench_run_acquisition.py.
     assert read_at < main_src.index("prepare_payload(")
 
 
 def test_the_probe_is_installed_without_eval(main_src: str):
-    """CSP, not style. Unsloth serves `script-src 'self'` with no `'unsafe-eval'`, and the DEFAULT
-    engine on Linux and macOS is webkit, which enforces that against an init script.
-
-    The probe was briefly handed to indirect eval as a string so that a malformed file could not
-    stop the scene scripts. Measured against a page carrying Unsloth's own header, with the real
-    `content_visibility_probe.js`: chromium and firefox installed the probe either way, and webkit
-    refused the eval with `EvalError` and installed NOTHING. The isolation was not real there
-    either -- Playwright gives webkit its init scripts as one bootstrap unit, so a parse error
-    kills them all however the probe is written -- and on the two engines where it is real,
-    separate `add_init_script` calls already provide it. So the source goes in as source.
-    """
+    """Installed as source, not via eval: Unsloth's CSP forbids unsafe-eval, and webkit enforces that."""
 
     assert "def _probe_init_scripts(" in main_src
     assert "init_scripts.extend(_probe_init_scripts(extra_init, extra_init_source))" in main_src
@@ -128,84 +96,49 @@ def test_the_probe_prefix_is_the_one_the_console_filter_expects(probe_src: str):
 
 
 def test_a_probe_run_records_the_gate_that_makes_it_unscorable(main_src: str):
-    """The guarantee has to be a gate, not a sentence in a doc.
-
-    A probe run otherwise looks entirely ordinary: same cells, same A/B table. `floor_table`
-    refuses it on this field, and it can only do that if `__main__` writes it.
-    """
+    """A probe run must record its gate; otherwise floor_table cannot tell it from a clean run."""
 
     assert '"probe_init_script": extra_init or None' in main_src
-    # Matched without pinning the indent: `run()` puts side acquisition under a cleanup guard, so
-    # everything from the acquisition loop to the end of setup sits one level deeper, and the gate
-    # moving with it is not what this test notices.
+    # Indent not pinned: setup sits under a cleanup guard.
     assert re.search(r"rec\.gate\(\s*\n\s*\"probe_free\",", main_src)
 
 
 def test_roots_are_adopted_at_insertion_not_on_the_sample_tick(probe_src: str):
-    """The listener must exist before the element's FIRST transition.
-
-    A root inserted off screen becomes skipped once and then never changes again. Attach on a
-    two-second tick and every root mounted inside that tick emits its only event into a void,
-    which is exactly the false NOT RUN this probe exists to prevent.
-    """
+    """Adopt roots at insertion: an off-screen root has one transition that a late listener would miss."""
 
     assert "MutationObserver" in probe_src
     assert "adoptAdded" in probe_src
-    # The DOCUMENT, not documentElement: an init script can run before the parser has created the
-    # root element, and `observe(null, ...)` throws into the catch that hides it.
+    # The document, not documentElement: the root element may not exist yet.
     assert "observe(doc, {" in probe_src
-    # Added nodes only. A document-wide re-scan per mutation would make the probe the load.
     assert "addedNodes" in probe_src
     assert "adoptAll();" in probe_src
 
 
 def test_the_fallback_and_padding_buckets_cannot_both_count_one_root(probe_src: str):
-    """They mean opposite things, and on this app they are close enough to collide.
-
-    The user root's declared fallback is 60px and its padding is 40px. A single `height <= 64`
-    bucket charged a root sitting exactly on its fallback to the zero-remembered-size trap as
-    well. Fallback is tested first and wins ties.
-    """
+    """Fallback is tested before padding: one height <= 64 bucket would count a root under both traps."""
 
     assert "ROLE_PX" in probe_src
     assert "out.fallbackBite += 1;" in probe_src
     assert 'targetHeight(px, "padding")' in probe_src
-    # getBoundingClientRect() is the border box, so BOTH targets carry the root's own padding;
-    # comparing against the bare declared length pinned fallbackBite at zero whatever happened.
     assert 'targetHeight(px, "fallback")' in probe_src
     assert 'return (which === "fallback" ? px.fallback : 0) + px.padding;' in probe_src
 
 
 def test_only_a_skipped_root_can_land_in_a_size_bucket(probe_src: str):
-    """`content-visibility: auto` computes to `auto` whether or not it is currently skipping.
-
-    An armed root that is on screen has its ordinary rendered height, and size containment is not
-    applying to it. Without the gate, a natural height near a role target reads as the trap.
-    """
+    """content-visibility computes to auto either way, so only a skipped root can land in a size bucket."""
 
     assert "skippedState(el) === true" in probe_src
 
 
 def test_detached_roots_stop_counting_as_skipped(probe_src: str):
-    """`thread_reopen` rebuilds the thread, so watched roots leave the document.
-
-    A detached root receives no further transitions, so one whose last event said `skipped` would
-    keep inflating `skippedNow` for the rest of the session.
-    """
+    """Detached roots get no further transitions, so they must be dropped or skippedNow inflates."""
 
     assert "droppedDetached" in probe_src
     assert "doc.contains(wel)" in probe_src
 
 
 def test_each_scene_script_keeps_its_own_failure_domain(main_src: str):
-    """Separate `add_init_script` calls, which is what this always did.
-
-    They were briefly joined into one script to pin the evaluation order, which Playwright does
-    not define. That was a regression: the browser evaluates a joined script as one unit, so a
-    throw in any one of the three stops the other two, and on the CI fixture it cost
-    `message_menu` its More button. Fault isolation beats an ordering guarantee for a sequence
-    that has been correct in practice for the life of the file.
-    """
+    """Each scene script stays its own add_init_script, so one throw cannot stop the others."""
 
     for name in ("scene/dom.js", "scene/parity.js", "scene/surfaces.js"):
         assert f'init_scripts.append(resources.read_text("{name}"))' in main_src
@@ -213,13 +146,7 @@ def test_each_scene_script_keeps_its_own_failure_domain(main_src: str):
 
 
 def test_the_probe_is_its_own_script_and_says_when_it_did_not_install(main_src: str):
-    """Order is undefined, so a probe has to be self-contained; that is the documented rule.
-
-    A probe that installed nothing must not read as an arm that did not fire, so both failure
-    modes have a channel. A probe that did not PARSE leaves `window.__sbExtraInitScript` unset and
-    the second script names it on the console; a probe that parsed and then THREW arrives as a
-    `pageerror`. Both listeners are attached whenever a probe is asked for.
-    """
+    """Init script order is undefined, so the probe must be self-contained and report failures itself."""
 
     assert "init_scripts.extend(_probe_init_scripts(extra_init, extra_init_source))" in main_src
     assert "window.__sbExtraInitScript" in main_src
@@ -228,19 +155,7 @@ def test_the_probe_is_its_own_script_and_says_when_it_did_not_install(main_src: 
 
 
 def test_the_probe_source_is_the_first_thing_in_its_script():
-    """REGRESSION. A directive prologue is only a prologue while nothing precedes it.
-
-    ECMA-262 defines a Directive Prologue as the run of expression statements a Script or
-    FunctionBody OPENS with, so a probe beginning `"use strict"` stops being strict the moment a
-    statement is put in front of it: the directive degrades into a string expression that does
-    nothing, and an undeclared assignment inside the probe creates a global instead of throwing.
-    The installation stamp used to be that statement. It goes last instead, which changes nothing
-    about the probe and still leaves the stamp unset when the file did not run.
-
-    Playwright wraps each init script in `(() => { ... })();` (`playwright-core`, `class
-    InitScript`), so the file's own prologue is a FunctionBody prologue -- real, and equally
-    destroyed by a prepend.
-    """
+    """Probe source must come first: a use strict directive stops being a prologue after any statement."""
 
     import studiobench.__main__ as sb
 
@@ -253,8 +168,7 @@ def test_the_probe_source_is_the_first_thing_in_its_script():
         "semantics than the file it was read from"
     )
     assert "window.__sbExtraInitScript" in scripts[0]
-    # Appended after an explicit statement boundary, so neither ASI nor an unterminated expression can
-    # join it to the probe's last line.
+    # After an explicit statement boundary so ASI cannot join it to the probe's last line.
     assert (
         scripts[0][len(source) :]
         .lstrip("\n")
@@ -287,13 +201,7 @@ def test_a_probe_run_invalidates_the_reports_it_inherited(tmp_path: Path):
 
 
 def test_a_clean_run_invalidates_the_probe_refusal_it_inherited(tmp_path: Path):
-    """The probed-then-clean direction, which keying only on the init script left open.
-
-    A probe run replaces both reports with text saying the payload beside them is not scorable.
-    The next clean run into the same directory archives that payload and records a scorable one,
-    and writes neither report of its own -- `summary.md` only under `--report`, `ab.md` only under
-    `--ab` -- so the refusal survives and is read as a finding about a run it never saw.
-    """
+    """A clean run must clear an inherited probe refusal, or it would read as a finding about this run."""
     from studiobench.__main__ import invalidate_stale_reports
 
     out = _seed(tmp_path, "NO SUMMARY: ... is not scorable ...")
@@ -306,7 +214,6 @@ def test_a_clean_run_invalidates_the_probe_refusal_it_inherited(tmp_path: Path):
     for name in ("summary.md", "ab.md"):
         body = (out / name).read_text(encoding = "utf-8")
         assert "payload-20260101-000000.jsonl" in body
-        # The stale claim is GONE, not merely accompanied by a correction.
         assert "is not scorable" not in body
 
 
@@ -351,11 +258,7 @@ def test_a_refused_run_does_not_leave_a_stale_ab_table(main_src: str):
 
 
 def test_a_refused_report_does_not_leave_a_stale_summary(main_src: str):
-    """`--report` writes `summary.md` beside the payload, and `--resume` reuses the directory.
-
-    The refusal is a `SystemExit`, which is not an `Exception`, so it would leave the process
-    before the write and an earlier clean summary would survive next to a probed payload.
-    """
+    """SystemExit is not an Exception, so a refused report must explicitly overwrite any old summary.md."""
 
     assert "except SystemExit as exc:" in main_src
     assert 'out = path.parent / "summary.md"' in main_src
@@ -363,11 +266,7 @@ def test_a_refused_report_does_not_leave_a_stale_summary(main_src: str):
 
 
 def test_the_report_refuses_before_it_assembles(build_src: str):
-    """A refusal any other failure can pre-empt is not a refusal.
-
-    `assemble_rows` validates the payload schema on the way past, so a probed payload that also
-    tripped an unrelated schema complaint reported that instead and was never refused.
-    """
+    """Refuse before assembling rows, so an unrelated schema error cannot pre-empt the probe refusal."""
 
     before = build_src.index("refuse_if_probed(_records(path)")
     assert before < build_src.index("payload = assemble_rows(path)")
@@ -378,16 +277,12 @@ def test_the_event_counter_is_the_one_potency_rests_on(probe_src: str):
 
     assert "contentvisibilityautostatechange" in probe_src
     assert "ev_skip" in probe_src
-    # The geometry route is a documented false negative and must stay documented rather than quietly
-    # removed: someone will reimplement it otherwise.
+    # Documented so nobody reimplements the geometry route.
     assert "KNOWN FALSE NEGATIVE" in probe_src
 
 
 def _node_parses(source: str):
-    """Parse `source` the way Playwright ships it: wrapped in its `class InitScript` arrow IIFE.
-
-    Returns None when it parses, or the engine's message when it does not. Skips with no node.
-    """
+    """Parses the source as Playwright wraps it in an arrow IIFE: returns None, or the engine's message."""
 
     import shutil
     import subprocess
@@ -397,9 +292,7 @@ def _node_parses(source: str):
     if node is None:
         pytest.skip("no node on PATH; this assertion needs a real JS parser, not a regex")
     with tempfile.TemporaryDirectory() as tmp:
-        # `--check` reads a FILE, so the IIFE is written out rather than passed with `-e`: an argument
-        # would have to survive the shell, and the point of this helper is that nothing between the
-        # producer and the parser is allowed to edit the bytes.
+        # `--check` reads a file, so nothing between producer and parser can edit the bytes.
         script = Path(tmp) / "init_script.js"
         script.write_text("(() => {\n" + source + "\n})();", encoding = "utf-8")
         done = subprocess.run([node, "--check", str(script)], capture_output = True, text = True)
@@ -417,18 +310,7 @@ def _node_parses(source: str):
     ],
 )
 def test_a_truncated_probe_cannot_stamp_itself_installed(truncated: str):
-    """REGRESSION. The stamp must not be able to complete the source it is attesting to.
-
-    A file cut off after an assignment operator is a SyntaxError on its own, and concatenating the
-    stamp onto it USED TO MAKE IT VALID: `window.__sbExtraInitScript = <path>` became the dangling
-    initializer, so the one variable the probe never got to compute was assigned the stamp and the
-    deferred check returned early. Nothing threw, so `pageerror` said nothing either. Measured on
-    webkit and chromium: stamp set, console silent, probe never ran -- the harness reporting a
-    clean probe run for a probe whose source does not parse.
-
-    This drives the PRODUCER and a real parser, because the defect is JavaScript grammar: any
-    assertion made of string matching would have passed against the broken version too.
-    """
+    """The install stamp must not complete a truncated probe, or it reports installed when it never ran."""
 
     import studiobench.__main__ as sb
 

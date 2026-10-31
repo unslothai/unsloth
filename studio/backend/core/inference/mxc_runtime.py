@@ -10,7 +10,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import platform
 import re
 import subprocess
 import sys
@@ -22,8 +21,7 @@ MXC_SCHEMA_VERSION = "0.8.0-alpha"
 PROFILE_ID = "unsloth-mxc-windows-processcontainer-v2"
 RELEASE_REPOSITORY = "microsoft/mxc"
 RELEASE_TAG = "v0.8.0"
-# Microsoft's @microsoft/mxc-sdk 0.8.0 npm package: every x64 binary is byte-identical to the
-# v0.8.0 release zip (358 MB, which adds only .pdb/.dwp symbols), at 26 MB.
+# @microsoft/mxc-sdk 0.8.0 npm: x64 binaries identical to the release zip, 26 MB vs 358 MB
 RELEASE_ASSET = "@microsoft/mxc-sdk@0.8.0"
 RELEASE_URL = "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-0.8.0.tgz"
 RELEASE_ARCHIVE_SIZE = 25_881_758
@@ -35,6 +33,14 @@ WXC_EXEC_SHA256 = "6049c64723af1173c3739dc6cd6b2f33f6c021bb2832c4216233cba7f71ae
 RELEASE_HOST_PREP_MEMBER = "package/bin/x64/wxc-host-prep.exe"
 WXC_HOST_PREP_SIZE = 913_728
 WXC_HOST_PREP_SHA256 = "a9b8b14a11a1c5888641297c26abca547c2afa4435085c03ccfebd1deface310"
+# The same package's ARM64 build: ARM64 PCs need it (the x64 one fails its live check under emulation).
+ARM64_RELEASE_MEMBER = "package/bin/arm64/wxc-exec.exe"
+ARM64_WXC_EXEC_SIZE = 4_836_152
+ARM64_WXC_EXEC_SHA256 = "dde1c592270e9a659b01dccad70362da7b99fec114885fa4d625507aa775a503"
+ARM64_RELEASE_HOST_PREP_MEMBER = "package/bin/arm64/wxc-host-prep.exe"
+ARM64_WXC_HOST_PREP_SIZE = 804_664
+ARM64_WXC_HOST_PREP_SHA256 = "c8ddcf0461ae3d7ddff4656abb87b51236146742bb711a2e03fdc23cb8a966b0"
+_ARCHITECTURES = ("x86_64", "arm64")
 HOST_PREP_STEPS = ("prepare-system-drive", "prepare-null-device")
 HOST_PREP_PROBE_SECONDS = 10.0
 DACL_RECOVERY_SECONDS = 60.0
@@ -53,15 +59,16 @@ class MxcRuntimeUnavailable(RuntimeError):
 class RuntimeInfo:
     path: Path
     sha256: str
+    architecture: str = "x86_64"
 
     @property
     def identity(self) -> str:
         material = {
-            "architecture": "x86_64",
+            "architecture": self.architecture,
             "mxcRevision": MXC_REVISION,
             "releaseTag": RELEASE_TAG,
             "sha256": self.sha256,
-            "size": WXC_EXEC_SIZE,
+            "size": _artifact(self.architecture, "exec")[1],
         }
         encoded = json.dumps(material, sort_keys = True, separators = (",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
@@ -97,7 +104,11 @@ def _studio_root() -> Path:
 
 
 def _installed_package_root() -> Path:
-    return _studio_root() / "mxc-runtime" / "windows-x86_64"
+    try:
+        architecture = _expected_architecture()
+    except MxcRuntimeUnavailable:
+        architecture = "x86_64"
+    return _studio_root() / "mxc-runtime" / f"windows-{architecture}"
 
 
 def dacl_state_path() -> Path:
@@ -136,15 +147,35 @@ def _require_plain_directory(path: Path) -> Path:
 
 
 def _expected_architecture() -> str:
-    machine = platform.machine().casefold()
-    if machine not in {"amd64", "x86_64"}:
+    """The OS architecture, not the interpreter's: an x64 Python on an ARM64 PC still needs the ARM64 build."""
+    from .wsl_host import native_machine
+
+    machine = native_machine()
+    if machine not in _ARCHITECTURES:
         raise MxcRuntimeUnavailable(
-            f"Microsoft MXC v0.8.0 is supported only on Windows x86-64, not {machine or 'unknown'}",
+            f"Microsoft MXC v0.8.0 is supported only on Windows x64 and ARM64, not {machine or 'unknown'}",
         )
-    return "x86_64"
+    return machine
 
 
-def _validate_artifact(package_root: Path, name: str, size: int, sha256: str) -> RuntimeInfo:
+def _artifact(architecture: str, kind: str) -> tuple[str, int, str]:
+    if architecture == "arm64":
+        if kind == "exec":
+            return ARM64_RELEASE_MEMBER, ARM64_WXC_EXEC_SIZE, ARM64_WXC_EXEC_SHA256
+        return ARM64_RELEASE_HOST_PREP_MEMBER, ARM64_WXC_HOST_PREP_SIZE, ARM64_WXC_HOST_PREP_SHA256
+    if kind == "exec":
+        return RELEASE_MEMBER, WXC_EXEC_SIZE, WXC_EXEC_SHA256
+    return RELEASE_HOST_PREP_MEMBER, WXC_HOST_PREP_SIZE, WXC_HOST_PREP_SHA256
+
+
+def artifact(kind: str) -> tuple[str, int, str]:
+    """(package member, size, sha256) of ``exec`` or ``prep`` for this PC's architecture."""
+    return _artifact(_expected_architecture(), kind)
+
+
+def _validate_artifact(package_root: Path, name: str, kind: str) -> RuntimeInfo:
+    architecture = _expected_architecture()
+    _member, size, sha256 = _artifact(architecture, kind)
     root = _require_plain_directory(package_root)
     executable = root / name
     if not executable.is_file() or executable.is_symlink():
@@ -162,17 +193,15 @@ def _validate_artifact(package_root: Path, name: str, size: int, sha256: str) ->
     digest = _sha256_file(executable)
     if digest != sha256:
         raise MxcRuntimeUnavailable(f"the managed {name} digest is not approved")
-    return RuntimeInfo(path = executable.resolve(), sha256 = digest)
+    return RuntimeInfo(path = executable.resolve(), sha256 = digest, architecture = architecture)
 
 
 def _validate_runtime(package_root: Path) -> RuntimeInfo:
-    return _validate_artifact(package_root, _WXC_EXEC_NAME, WXC_EXEC_SIZE, WXC_EXEC_SHA256)
+    return _validate_artifact(package_root, _WXC_EXEC_NAME, "exec")
 
 
 def _validate_host_prep(package_root: Path) -> RuntimeInfo:
-    return _validate_artifact(
-        package_root, _WXC_HOST_PREP_NAME, WXC_HOST_PREP_SIZE, WXC_HOST_PREP_SHA256
-    )
+    return _validate_artifact(package_root, _WXC_HOST_PREP_NAME, "prep")
 
 
 def selected_runtime(*, package_root: Path | None = None) -> RuntimeInfo:

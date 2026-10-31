@@ -363,8 +363,8 @@ def _converter_dir(print_output = False) -> Path:
     tag = os.environ.get("UNSLOTH_LLAMA_CPP_CONVERTER_TAG", "").strip() or DECISION_LLAMA_CPP_TAG
     stage = None
     try:
-        from unsloth_zoo.llama_cpp import _stage_converter_sources
-        stage = _stage_converter_sources(tag)
+        from unsloth_zoo.llama_cpp import _fork_release_tag_for, _stage_converter_sources
+        stage = _stage_converter_sources(_fork_release_tag_for(tag))
     except Exception as error:
         if print_output:
             print(f"Unsloth: could not stage llama.cpp {tag} converter sources: {error}")
@@ -444,6 +444,9 @@ def _convert(
     env["PYTHONPATH"] = os.pathsep.join(
         [str(converter / "gguf-py")] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
     )
+    # Decision backbones are built-in classes; the converter loads some tokenizers with
+    # trust_remote_code=True, so give it no modules cache to import a folder's auto_map code from.
+    env["HF_MODULES_CACHE"] = os.path.join(os.path.abspath(__file__), "no_remote_code")
     command = [
         sys.executable,
         converter / "convert_hf_to_gguf.py",

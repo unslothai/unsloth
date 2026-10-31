@@ -16,11 +16,13 @@ class DataCollatorSpeechSeq2SeqWithPadding:
     Data collator for Whisper speech-to-text training.
 
     Pads audio input features and text labels separately, masks label padding
-    with -100, and strips the leading BOS token. Mirrors the Whisper.ipynb
-    notebook collator.
+    with -100, and strips the decoder start token that the model adds when
+    shifting labels right to construct decoder inputs.
     """
 
     processor: Any
+    # Not bos_token_id: Whisper's bos is <|endoftext|>, labels open with <|startoftranscript|>.
+    decoder_start_token_id: Optional[int] = None
 
     def __call__(self, features: List[dict]) -> dict:
         input_features = [{"input_features": feature["input_features"]} for feature in features]
@@ -31,7 +33,10 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
         labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
 
-        if (labels[:, 0] == self.processor.tokenizer.bos_token_id).all().cpu().item():
+        start_id = self.decoder_start_token_id
+        if start_id is None:
+            start_id = self.processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+        if (labels[:, 0] == start_id).all().cpu().item():
             labels = labels[:, 1:]
 
         batch["labels"] = labels
@@ -51,16 +56,8 @@ class DeepSeekOCRDataCollator:
     ignore_index: int = -100
 
     def __call__(self, batch: List[dict]) -> dict:
-        """
-        Collate a batch of samples.
-
-        Args:
-            batch: List of dicts, each with 'messages' containing
-                   [{'role': 'user', 'content': [...]}, {'role': 'assistant', 'content': [...]}]
-
-        Returns:
-            dict with input_ids, attention_mask, labels, pixel_values, etc.
-        """
+        """Each sample holds 'messages': a user turn and an assistant turn, with content as lists of
+        parts."""
         from PIL import Image
 
         all_messages = []

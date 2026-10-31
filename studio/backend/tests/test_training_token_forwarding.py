@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""load_and_format_dataset must forward an explicit hf_token to every remote call.
-
-Without it, load_dataset and get_dataset_split_names resolve None through
-huggingface_hub.get_token() and read a gated dataset under the ambient HF_TOKEN
-instead of the request identity. The no-token case is pinned too: that env fallback
-is the only credential a caller without a token has."""
+"""load_and_format_dataset must pass hf_token to every remote call, not ambient HF_TOKEN."""
 
 from __future__ import annotations
 
@@ -26,12 +21,7 @@ _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    """Stub a dep the backend pytest job does not install, as test_audio_type_inconclusive.py does.
-
-    core.training.trainer imports unsloth and trl at module scope; that job installs studio.txt
-    plus torch and transformers and stops. __spec__ = None keeps the trainer's own
-    _ensure_real_packages namespace-shadow guard a no-op on the stub.
-    """
+    """Stubs a dep the backend pytest job lacks, so collection succeeds; real installs are left alone."""
     if name in sys.modules:
         return
     try:
@@ -177,7 +167,6 @@ def test_auto_detect_eval_forwards_explicit_token(monkeypatch):
     )
 
     assert result is not None
-    # Auto-detect (no explicit eval_split) probes the splits, then loads a candidate.
     assert probe_calls == [
         {
             "path": "org/gated",

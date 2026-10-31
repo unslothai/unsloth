@@ -47,10 +47,8 @@ test("② follows ① until the user types in it, and Reset puts it back", () =>
   const draft = () => [state().edited, state().transcriptFor];
   state().resetEdited();
   assert.deepEqual(draft(), ["wasn't a human voice.", "in1"]);
-  // A new recording's transcript resets ② while it is untouched.
   state().setTranscript("It was a fine day.", "in2");
   assert.deepEqual(draft(), ["It was a fine day.", "in2"]);
-  // Once typed in, ② stays; leaving transcriptFor out keeps its source.
   state().setEdited("It was a rainy day.");
   state().setTranscript("It was a fine day!");
   assert.deepEqual(draft(), ["It was a rainy day.", "in2"]);

@@ -139,7 +139,6 @@ def test_pi_child_error_events_fail_the_tool_call(tmp_path):
         ),
         encoding = "utf-8",
     )
-    # Pi reports model/API failures as message_end events while exiting 0.
     driver = tmp_path / "pi-driver.js"
     driver.write_text(
         """

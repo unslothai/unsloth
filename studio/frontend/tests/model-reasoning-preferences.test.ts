@@ -31,11 +31,7 @@ const CAPS: ExternalReasoningCapabilities = {
 type RuntimeModule = typeof import("../src/features/chat/stores/chat-runtime-store.ts");
 const runtimeUrl = new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url).href;
 
-// Each boot imports a fresh copy of the runtime store, but every copy writes to the same
-// settingsHttp and threadRows stubs. A copy left with a debounced write (400 ms, on the real
-// clock) would land it in the NEXT test's stubs after they were reset: on a slow runner the
-// eject test saw an earlier test's { reasoningEffort: "low" } PUT and failed. Drain the
-// previous copy before resetting.
+// Drain the previous store copy's 400 ms debounced write, or it lands in the next test's stubs.
 let previousRuntime: RuntimeModule | null = null;
 
 async function boot(scenario: string, paired: boolean | null = true): Promise<RuntimeModule> {

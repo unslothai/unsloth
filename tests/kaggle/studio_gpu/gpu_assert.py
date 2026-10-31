@@ -1,46 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Did the GGUF actually run on the GPU, or did it quietly fall back to CPU?
-
-This module is the whole reason the Unsloth Kaggle leg is worth its quota. A
-CPU fallback in Unsloth is invisible from the outside: llama.cpp loads the same
-file, answers the same prompt, and returns the same text, only slower. Every
-Unsloth inference check in this repo today would pass against a CPU-only
-build, because every one of them runs on a machine that has no GPU to fall
-back from.
-
-So "the model produced text" is explicitly NOT evidence here. The verdict is
-built from three independent observations, and the rules are stated up front
-because the interesting cases are the ambiguous ones:
-
-**Negative evidence is conclusive.** llama.cpp saying it offloaded 0 layers,
-Unsloth reporting ``cpu_fallback_reason``, or Unsloth reporting an effective
-``gpu_layers`` of 0 each fail on their own. No amount of positive evidence
-overrides them: they are the fallback announcing itself.
-
-**Positive evidence has to come from somewhere.** At least one of
-
-* the llama-server process appearing in ``nvidia-smi --query-compute-apps``
-  with a non-trivial resident allocation,
-* llama.cpp's own load line reporting N of M layers offloaded with N > 0,
-* device-wide VRAM in use climbing by more than a model's worth across the
-  load,
-
-must hold. Any one of them is enough; requiring all three would turn a
-container quirk into a red pull request.
-
-**Silence is a failure, not a pass.** If all three come back unreadable, the
-verdict is FAIL. That is the deliberate asymmetry this file exists for: the
-question being asked is "prove the GPU was used", and an unanswerable
-question has not proved it. Three independent probes are enough that all of
-them going blank is itself worth looking at.
-
-The one known way to get a blank first probe is a container whose PID
-namespace does not match the one nvidia-smi reports, where
-``--query-compute-apps`` lists nothing at all even under load. That is why it
-is not the only probe.
-"""
+"""Decide GPU offload from three probes; a CPU fallback is silent, so text output proves nothing."""
 
 from __future__ import annotations
 
@@ -48,17 +9,13 @@ import json
 import re
 from pathlib import Path
 
-# A llama-server holding less than this on the card is not offloading anything worth calling offload -- CUDA context
-# plus scratch alone is tens of MiB, and a fully CPU-resident model can still show a context-sized allocation if
-# anything touched the device.
+# CUDA context plus scratch alone is tens of MiB, so less than this is not real offload.
 MIN_PROCESS_VRAM_MIB = 96
 
 # Device-wide growth across the load that no CPU-resident model explains.
 MIN_DEVICE_VRAM_DELTA_MIB = 256
 
-# GGUF's four-byte file magic.
-# Checked before anything tries to load a file the export path claims to have written: a truncated or half-moved file is
-# a far more likely export bug than a wrong-magic one, and both look like a present file to `os.path.exists`.
+# Checked before loading: a truncated file passes os.path.exists.
 GGUF_MAGIC = b"GGUF"
 
 _OFFLOAD_RE = re.compile(r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+GPU")
@@ -68,22 +25,14 @@ _CUDA_BUFFER_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Install kinds from studio/install_llama_prebuilt.py that mean the binaries on disk carry CUDA kernels.
 CUDA_INSTALL_KINDS = frozenset({"linux-cuda", "linux-arm64-cuda"})
 
-# "cuda12", "cuda13", and whatever major comes next, anywhere in a runtime
-# line or an asset filename. Anchored on the digit so "cudart" or a repo name
-# containing "cuda" cannot match on its own.
+# Anchored on the digit so "cudart" or a repo name containing "cuda" cannot match.
 _CUDA_RUNTIME_RE = re.compile(r"cuda\d+")
 
 
 def parse_compute_apps(csv_text: str) -> dict[int, int]:
-    """``nvidia-smi --query-compute-apps=pid,used_gpu_memory`` as {pid: MiB}.
-
-    Accepts the ``--format=csv,noheader,nounits`` shape and tolerates the unit
-    suffix being present anyway, because which of the two you get depends on
-    the driver version and getting it wrong silently yields an empty dict.
-    """
+    """Parse compute-apps CSV to {pid: MiB}; a unit suffix is accepted, since getting it wrong yields {}."""
     apps: dict[int, int] = {}
     for line in csv_text.splitlines():
         line = line.strip()
@@ -107,16 +56,7 @@ def parse_compute_apps(csv_text: str) -> dict[int, int]:
 
 
 def count_listed_pids(csv_text: str) -> int:
-    """How many processes ``--query-compute-apps`` LISTED, whether or not it could say
-    how much memory each holds.
-
-    On Windows (WDDM) and on unified-memory parts such as the GB10, nvidia-smi lists
-    every CUDA process but reports ``[N/A]`` for all of them, and it lists a
-    ``-ngl 0`` server too, since a CUDA build creates a context regardless. So a
-    listing with no readable figure is not "nothing on the card" and not proof of
-    offload either: it is "cannot attribute", and the caller falls back to the
-    device-wide delta, which does move on those parts (measured on a GB10: +140 MiB
-    for a bare context, +428 MiB with a 270M model offloaded)."""
+    """Count pids nvidia-smi listed, with or without a memory figure; [N/A] rows cannot be attributed."""
     n = 0
     for line in csv_text.splitlines():
         line = line.strip()
@@ -134,15 +74,7 @@ def count_listed_pids(csv_text: str) -> int:
 
 
 def listed_pids(csv_text: str) -> set[int]:
-    """Every pid ``--query-compute-apps`` LISTED, whether or not it carried a figure.
-
-    count_listed_pids answers "how many", which is enough to tell an empty listing from
-    an all-``[N/A]`` one. It is not enough for a MIXED listing: a readable row on one GPU
-    and the newly launched server as ``[N/A]`` on another leaves the parsed mapping
-    nonempty, so the caller saw a normal result and the server's pid simply was not in
-    it. Naming the pids lets the caller notice that the process it cares about is the
-    unattributed one, rather than concluding it never reached the card.
-    """
+    """Every pid listed, figure or not; a mixed listing can hide the one process being checked."""
     pids: set[int] = set()
     for line in csv_text.splitlines():
         line = line.strip()
@@ -159,12 +91,7 @@ def listed_pids(csv_text: str) -> set[int]:
 
 
 def offloaded_layers(log_text: str) -> tuple[int, int] | None:
-    """The last ``offloaded N/M layers to GPU`` in a llama.cpp log.
-
-    The last one, not the first: Unsloth loads a model more than once in a
-    session (an export is verified by loading the file it just wrote), and the
-    question is always about the most recent load.
-    """
+    """The last 'offloaded N/M layers to GPU' line, since a session may load the model more than once."""
     matches = _OFFLOAD_RE.findall(log_text or "")
     if not matches:
         return None
@@ -181,30 +108,7 @@ def cuda_buffer_mib(log_text: str) -> float | None:
 
 
 def install_kind(marker_path: Path | None) -> str | None:
-    """What KIND of llama.cpp bundle is installed, from its marker.
-
-    There is no ``install_kind`` key in UNSLOTH_PREBUILT_INFO.json and there
-    never was. ``install_llama_prebuilt.py`` writes ``install_kind`` only into
-    the JSON its resolver prints to stdout (line ~7678); the marker it writes
-    to disk (~line 5931) records ``asset``, ``tag``, ``runtime_line``,
-    ``coverage_class``, ``bundle_profile`` and no kind at all.
-
-    So reading ``install_kind`` from the marker answered None on every box, for
-    every bundle, including a perfectly good CUDA one -- six hardware runs
-    reported ``install_kind=None`` and failed the export assertion for it while
-    a working CUDA llama.cpp sat on disk. The installer said as much when asked
-    to install again: "existing llama.cpp install already matches selected
-    release b10360-mix-87da1a2; skipping download and install".
-
-    ``runtime_line`` is the field that answers the question actually being
-    asked. It is ``cuda12``/``cuda13`` for the CUDA bundles and names the
-    non-CUDA backends otherwise, and it is written on the same line of the same
-    dict as the asset, so the two cannot disagree. ``asset`` is the fallback
-    for a marker old enough to predate it.
-
-    ``None`` in means no marker was found, and answers ``None`` rather than
-    raising: ``llama_cpp_marker`` returns ``None`` for that case.
-    """
+    """Read runtime_line from the marker, not install_kind (absent from it); asset is the fallback."""
     if marker_path is None:
         return None
     try:
@@ -221,43 +125,16 @@ def install_kind(marker_path: Path | None) -> str | None:
 
 
 def is_cuda_install(kind: str | None) -> bool:
-    """Is this a CUDA bundle?
-
-    ``kind`` is now a ``runtime_line`` (``cuda12``, ``cuda13``, ...) or, for a
-    marker too old to carry one, an asset filename like
-    ``app-b10360-mix-87da1a2-linux-x64-cuda13-older.tar.gz``. Both are matched
-    by looking for a cuda runtime line rather than by equality against a fixed
-    set, because the set would need a new entry on every CUDA major and would
-    fail closed -- reporting a working cuda14 install as not-CUDA -- which is
-    the same failure mode this whole function just spent six runs in.
-    """
+    """Match any cuda runtime line, not a fixed set, so a new CUDA major never reads as non-CUDA."""
     if not kind:
         return False
     lowered = str(kind).lower()
     return bool(_CUDA_RUNTIME_RE.search(lowered)) or lowered in CUDA_INSTALL_KINDS
 
 
-# Where a llama.cpp install can be, most specific first.
-# STUDIO_HOME is checked because a caller may point an install there explicitly;
-# the canonical location is what `install_llama_prebuilt.py` uses by default (its `Path.home() / ".unsloth" /
-# "llama.cpp"`), and it is where `install.sh --local` actually puts one.
+# Most specific first; the canonical location is install_llama_prebuilt.py's default.
 def llama_cpp_marker(studio_home: Path) -> Path | None:
-    """The UNSLOTH_PREBUILT_INFO.json of the llama.cpp this box will use.
-
-    Five hardware runs reported install_kind=None and failed the export
-    assertion for it. There was no missing llama.cpp: install.sh --local had
-    installed one into ~/.unsloth/llama.cpp, and this payload was reading
-    STUDIO_HOME/llama.cpp, a path nothing ever wrote to. The installer even
-    said so when asked to install again --
-
-        existing llama.cpp install already matches selected release
-        b10360-mix-87da1a2; skipping download and install
-
-    -- while the directory it had been pointed at stayed empty.
-
-    Returns None when neither location has a marker, which is then a real
-    absence rather than a guess about where to look.
-    """
+    """Marker in ~/.unsloth/llama.cpp (where the installer writes) or studio_home/llama.cpp; else None."""
     candidates = (
         Path(studio_home) / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json",
         Path.home() / ".unsloth" / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json",
@@ -286,15 +163,7 @@ def offload_verdict(
     status: dict | None,
     server_pids: list[int] | None = None,
 ) -> dict:
-    """Was the model on the GPU? Returns a verdict dict with its evidence.
-
-    ``status`` is Unsloth's ``GET /api/inference/status`` body. Only two of its
-    fields are load-bearing here and both are negative signals:
-    ``cpu_fallback_reason`` (Unsloth replayed the launch on CPU) and an
-    effective ``gpu_layers`` of exactly 0 (nothing was placed on the card).
-    A ``gpu_layers`` of -1 is Unsloth's Auto mode, which says nothing either
-    way and is left to the other probes.
-    """
+    """Negative signals: cpu_fallback_reason, or gpu_layers of 0; gpu_layers -1 (Auto) is neutral."""
     evidence: list[str] = []
     failures: list[str] = []
     positives: list[str] = []
@@ -330,8 +199,7 @@ def offload_verdict(
     if buffer_mib is not None:
         evidence.append(f"llama.cpp device model buffer: {buffer_mib:.0f} MiB")
 
-    # Unsloth's status body carries no pid, so the caller also discovers the llama-server processes itself; either
-    # source is accepted here.
+    # The status body carries no pid, so discovered pids are accepted too.
     candidates: list[int] = []
     for pid in [server_pid, *(server_pids or [])]:
         if isinstance(pid, int) and pid not in candidates:

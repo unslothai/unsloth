@@ -50,10 +50,10 @@ import {
 } from "@/features/library";
 import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
+import { asPng } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type FC,
@@ -64,13 +64,15 @@ import {
   useMemo,
   useState,
 } from "react";
+import { PlayIcon } from "lucide-react";
 
 type TextPreviewState =
   | { status: "loading" }
   | { status: "error" }
   | ({ status: "ready" } & AttachmentText);
 
-const WEB_PAGE_NAME = /\.(html?|xhtml)$/i;
+// Not .xhtml: the composer sends the backend parser's text for it, which must not render as markup.
+const WEB_PAGE_NAME = /\.html?$/i;
 
 const fetchBlob = (src: string): Promise<Blob> => fetch(src).then((response) => response.blob());
 
@@ -131,35 +133,20 @@ const useObjectUrl = (file: File | undefined): string | undefined => {
 const loadGalleryImage = (image: GalleryImage): Promise<Blob> =>
   image.file ? Promise.resolve(image.file) : fetchBlob(image.image ?? "");
 
-/** As PNG: the one image type every browser's clipboard takes. */
-const pngOf = async (blob: Blob): Promise<Blob> => {
-  if (blob.type === "image/png") return blob;
-  const bitmap = await createImageBitmap(blob);
-  const canvas = document.createElement("canvas");
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
-  bitmap.close();
-  return new Promise((resolve, reject) =>
-    canvas.toBlob((png) => (png ? resolve(png) : reject(new Error("PNG encoding failed"))), "image/png"),
-  );
-};
-
 const copyImage = (image: GalleryImage, t: ReturnType<typeof useT>): void => {
   if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
     toast.error(t("imageViewer.copyFailed"));
     return;
   }
-  // The item is made now, inside the click, and resolves later: Safari refuses a write made after.
+  // The item is made inside the click and resolves later: Safari refuses a write made after.
   navigator.clipboard
-    .write([new ClipboardItem({ "image/png": loadGalleryImage(image).then(pngOf) })])
+    .write([new ClipboardItem({ "image/png": loadGalleryImage(image).then(asPng) })])
     .then(
       () => toast.success(t("imageViewer.copied")),
       () => toast.error(t("imageViewer.copyFailed")),
     );
 };
 
- /** The full-window viewer for an image attachment, with arrows to the images beside it. */
 const ImageGalleryDialog: FC<
   PropsWithChildren<{
     owner: GalleryImage;
@@ -239,7 +226,7 @@ const neighbourOf = (images: GalleryImage[], id: string): GalleryImage | undefin
   return images[index + 1] ?? images[index - 1];
 };
 
-// Composer images saved to the Library, so a second star or project action reuses that copy.
+// Reused so a second star or project action does not save the composer image twice.
 const savedComposerImages = new WeakMap<File, Promise<string>>();
 
 const saveComposerImage = (image: GalleryImage): Promise<string> => {
@@ -325,7 +312,7 @@ const ComposerImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src:
   );
 };
 
-// The Library's id for a sent attachment, as _attachment_id in backend/core/library.py quotes it.
+// Must match _attachment_id in backend/core/library.py.
 const attachmentItemId = (messageId: string, attachmentId: string): string =>
   `attachment:${encodeURIComponent(messageId).replace(
     /[!'()*]/g,
@@ -389,7 +376,6 @@ const SentImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src: str
           const neighbour = neighbourOf(images, image.id);
           if (image.id === attachmentId || !neighbour) gallery.onOpenChange(false);
           else gallery.onShow(neighbour.id);
-          // Removing it from the Library also takes it out of this message.
           import("@/features/library/store")
             .then(({ removeLibraryItem }) => removeLibraryItem(attachmentItemId(messageId, image.id)))
             .catch((error: unknown) =>
@@ -403,8 +389,7 @@ const SentImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src: str
   );
 };
 
-// Extraction only starts once the viewer has been opened: parsing every PDF or
-// spreadsheet in a thread up front would stall the composer.
+// Extraction starts only once the viewer opens: parsing every attachment up front stalls the composer.
 const useAttachmentTextPreview = (
   enabled: boolean,
   file: File | undefined,
@@ -415,8 +400,6 @@ const useAttachmentTextPreview = (
   const [fileState, setFileState] = useState<TextPreviewState>({
     status: "loading",
   });
-  // Unwrapping runs on open too: a thread can hold several large sent
-  // attachments, and their payloads are scanned in full to strip the wrapper.
   const sentState = useMemo(
     (): TextPreviewState =>
       enabled
@@ -495,18 +478,16 @@ const AttachmentTextDialog: FC<
     [ready],
   );
   const truncated = Boolean(preview?.truncated || ready?.truncated);
-  // Highlighting stops at the transcript's ceiling so a long file opens without tokenizing.
   const language = useMemo(() => {
     if (!ready || !preview || preview.text.length > MAX_HIGHLIGHT_CHARS) return null;
     return attachmentTextLanguage(source.name, ready.label);
   }, [ready, preview, source.name]);
-  // A page's own HTML renders, as the Library shows it; text pulled out of a document never does.
+  // A page's own HTML renders; text pulled out of a document never does.
   const webPage = Boolean(ready && !ready.label && !truncated && WEB_PAGE_NAME.test(source.name));
   const meta = useMemo(() => {
     if (state.status === "error") return "This file could not be read";
     if (!ready || !preview) return "Reading file";
-    // Counting the capped text, not ready.text: a sent attachment keeps its
-    // full payload in memory and splitting all of it would stall the webview.
+    // Count the capped text: splitting a sent attachment's full payload would stall the webview.
     const lines = countAttachmentTextLines(preview.text);
     return attachmentViewerMeta(
       source,
@@ -516,7 +497,6 @@ const AttachmentTextDialog: FC<
       truncated && "preview truncated",
     );
   }, [state.status, ready, preview, source, truncated]);
-  // The preview caps a sent body, so the whole one is cut from the stored text on click.
   const { file, text: sentText } = source;
   const load = file
     ? () => Promise.resolve<Blob>(file)
@@ -595,7 +575,7 @@ const AttachmentTextDialog: FC<
                 active={!showCode}
                 onClick={() => setShowCode(false)}
               >
-                <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-5" />
+                <PlayIcon strokeWidth={1.75} className="size-5" />
               </ViewButton>
             </div>
           )}
@@ -607,14 +587,7 @@ const AttachmentTextDialog: FC<
   );
 };
 
-/**
- * The player, and the only place a sent clip's data URL is built for playback.
- *
- * Joining the header onto the base64 payload copies up to MAX_AUDIO_SIZE of
- * it, and a transcript mounts `useAttachmentSource` once per tile and again
- * per dialog, so the join waits until the viewer renders its body, which it
- * only does once open.
- */
+/** The only place a sent clip's data URL is built; deferred until open since the join copies the payload. */
 const AttachmentAudioBody: FC<{ source: AttachmentSource }> = ({ source }) => {
   const src = useMemo(() => {
     if (source.src) {
@@ -647,7 +620,6 @@ const AttachmentAudioDialog: FC<
       media={false}
       noun="clip"
       redactFromReload={redactFromReload}
-      // Built on click, like the player's: a sent clip is only base64 until someone asks for it.
       load={
         file
           ? () => Promise.resolve(file)

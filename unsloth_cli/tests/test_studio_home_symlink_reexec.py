@@ -146,7 +146,6 @@ def test_reexec_marks_the_child(monkeypatch):
     studio_mod, result, execs = _run_app(monkeypatch, prefix = "/nonexistent/outer/venv")
     assert len(execs) == 1, result.output
     argv, guard = execs[0]
-    # Head is the console script or, when the venv path resolves elsewhere, python -c.
     assert argv[argv.index("studio") + 1] == "run"
     assert guard == "1", "the re-exec'd child must see the marker"
     assert studio_mod._STUDIO_REEXEC_ENV not in os.environ, "the parent must not keep it"
@@ -174,7 +173,6 @@ def test_unlinked_venv_still_execs_the_console_script(monkeypatch):
 
 @_posix_exec_only
 def test_symlinked_venv_execs_through_the_linked_interpreter(tmp_path, monkeypatch):
-    # An older venv CLI would loop via the console script (resolved sys.prefix).
     studio_mod = _studio()
     real, link = _symlinked_venv(tmp_path)
     _, result, execs = _run_app(

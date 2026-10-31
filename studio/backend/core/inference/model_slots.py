@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Models kept loaded alongside the primary one, each with its own llama-server and orchestrator.
-A task naming one sets ``routed_slot``, so the usual backend getters answer with that slot."""
+"""Models kept loaded beside the primary, each with its own llama-server; routed_slot selects one."""
 
 import asyncio
 import atexit
@@ -76,6 +75,11 @@ def _worker_alive(orchestrator) -> bool:
     return bool(callable(worker_alive) and worker_alive())
 
 
+def cpu_only(llama) -> bool:
+    """A running llama-server started with no GPU layers: unloading it frees no VRAM."""
+    return bool(llama.is_active) and getattr(llama, "_gpu_offload_active", None) is False
+
+
 def holds_vram() -> bool:
     """A kept model on the GPU or one loading; a llama-server started with no GPU layers is not."""
     return any_loading() or any(
@@ -143,6 +147,7 @@ def eviction_victims(
     exclude,
     short_mib: int,
     gpu_indices = None,
+    discrete: bool = False,
 ) -> list[ExtraSlot]:
     """Least recently used idle slots, as many as it takes to free ``short_mib`` on ``gpu_indices``;
     one at a time when a footprint is unknown, since the retry prices the rest. A slot still
@@ -153,6 +158,8 @@ def eviction_victims(
         planned = getattr(slot.llama, "_planned_vram_mib", {})
         held = sum(mib for idx, mib in planned.items() if gpu_indices is None or idx in gpu_indices)
         if slot.generations or slot.refs or (planned and not held):
+            continue
+        if discrete and not planned and cpu_only(slot.llama):
             continue
         victims.append(slot)
         freed += held

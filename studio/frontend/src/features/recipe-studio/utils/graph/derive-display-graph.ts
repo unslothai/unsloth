@@ -111,7 +111,6 @@ function normalizeEdge(
       isDataTargetHandle(targetHandleNormalized)
         ? targetHandleNormalized ?? semanticTargetDefault
         : semanticTargetDefault;
-    // LLM nodes only expose data lane handles; coerce legacy semantic handles.
     if (source?.kind === "llm" && isSemanticSourceHandle(sourceHandle)) {
       sourceHandle = semanticSourceDefault;
     }

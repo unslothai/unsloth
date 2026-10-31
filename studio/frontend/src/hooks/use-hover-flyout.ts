@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 
+import { isBlockedByActiveModal } from "@/components/ui/tooltip-modal-layer";
 import { type HoverFlyoutIntent, isPointerHeadingInto } from "@/lib/hover-intent";
 
 type PointerHandler = (event: ReactPointerEvent<HTMLElement>) => void;
@@ -45,7 +46,12 @@ export function useHoverFlyout(
       if (event.pointerType !== "mouse") return;
       cancel();
       if (open) return;
-      timerRef.current = window.setTimeout(() => setOpen(true), intent.openDelay);
+      const trigger = event.currentTarget;
+      // A modal opened inside the delay (a shortcut while the pointer rests here) sends WebKit no
+      // pointerleave, so the timer would open the flyout over the dialog.
+      timerRef.current = window.setTimeout(() => {
+        if (!isBlockedByActiveModal(trigger)) setOpen(true);
+      }, intent.openDelay);
     },
     [cancel, intent.openDelay, open],
   );

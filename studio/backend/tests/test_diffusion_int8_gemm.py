@@ -6,6 +6,8 @@ need NVIDIA CUDA, Triton and torchao (they force the lever on, so an arch outsid
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 from core.inference import diffusion_convrot_quant as cq
@@ -19,27 +21,33 @@ def _clean(monkeypatch):
     monkeypatch.delenv(g8.INT8_GEMM_ENV, raising = False)
     monkeypatch.delenv(cq.INT8_ROTQUANT_ENV, raising = False)
     monkeypatch.delenv(g8.INT8_GEMM_TILES_ENV, raising = False)
+    monkeypatch.delenv(cq.INT8_ROTQUANT_H16_ENV, raising = False)
+    monkeypatch.delenv(cq.INT8_ROTQUANT_SWIGLU_ENV, raising = False)
     g8._DEVICE_CFG.clear()
     g8._DEVICE_TILES.clear()
     cq._ROTQ_DEVICE.clear()
     cq._ROTQ_DEVICE_K.clear()
+    cq._H16_DEVICE.clear()
+    cq._SWIGLU_DEVICE.clear()
     yield
     g8._DEVICE_CFG.clear()
     g8._DEVICE_TILES.clear()
     cq._ROTQ_DEVICE.clear()
     cq._ROTQ_DEVICE_K.clear()
+    cq._H16_DEVICE.clear()
+    cq._SWIGLU_DEVICE.clear()
 
 
 @pytest.mark.parametrize(
     "cap, on",
     [
         ((7, 5), False),  # T4: Triton cannot lower the int8 dot
-        ((8, 0), True),  # A100
-        ((8, 6), False),  # unmeasured
-        ((8, 9), True),  # L4
-        ((9, 0), False),  # H100: unmeasured
+        ((8, 0), True),
+        ((8, 6), False),
+        ((8, 9), True),
+        ((9, 0), False),
         ((10, 0), False),  # B200: Triton int8 ~2.5x slower than cuBLAS
-        ((12, 0), True),  # RTX PRO 6000
+        ((12, 0), True),
     ],
 )
 def test_arch_gate_auto(cap, on):
@@ -92,9 +100,9 @@ def test_probe_shapes_stay_on_the_16_byte_grid():
     ns = [n for _m, n, _k, _b, _x in g8._PROBE_SHAPES]
     ks = [k for _m, _n, k, _b, _x in g8._PROBE_SHAPES]
     assert all(n % 16 == 0 for n in ns) and all(k % 16 == 0 for k in ks)
-    for bk in (64, 128):  # every shipped BLOCK_K still sees a ragged K
+    for bk in (64, 128):
         assert any(k % bk for k in ks)
-    assert any(n % 128 for n in ns)  # and BLOCK_N a ragged N
+    assert any(n % 128 for n in ns)
 
 
 def test_misaligned_operands_take_the_stock_epilogue(monkeypatch):
@@ -222,7 +230,6 @@ def _tie_operands(k = 4096, rows = 32):
 @pytest.mark.parametrize("cfg", sorted({g8._FALLBACK_CONFIG, *g8._ARCH_CONFIG.values()}))
 @pytest.mark.parametrize("ws32", [False, True])
 def test_epilogue_rounds_large_accumulators_twice_like_torch(cfg, ws32):
-    # Arch-independent epilogue math: every tile config is launched directly, past the arch gate.
     a, w, targets = _tie_operands()
     assert torch.equal(torch._int_mm(a, w.t())[0].cpu(), targets)
     assert (
@@ -281,8 +288,7 @@ def test_linear_swap_is_bit_identical_eager_and_compiled(forced, version, bias):
         assert g8.call_count() == before + 1
         counters.clear()
         torch._dynamo.reset()
-        # Studio compiles with emulate_precision_casts (diffusion_speed); without it Inductor's stock epilogue keeps an
-        # fp32 chain eager never had, and the fused kernel matches eager instead.
+        # Studio compiles with emulate_precision_casts; without it Inductor keeps an fp32 chain eager lacks.
         with torch._inductor.config.patch(emulate_precision_casts = True):
             out = torch.compile(fused, fullgraph = True)(x)
             assert not counters["graph_break"]
@@ -336,7 +342,7 @@ def test_no_compiled_variant_spills_to_local_memory(forced):
 
 @needs_cuda
 def test_small_m_and_misaligned_keep_stock(forced):
-    lin = _int8_linear(1000, 768, False, None)  # K off the 64 grid
+    lin = _int8_linear(1000, 768, False, None)
     assert g8._eligible(lin) is None
     ok = _int8_linear(1024, 768, False, None)
     holder = torch.nn.Sequential(ok)
@@ -345,7 +351,7 @@ def test_small_m_and_misaligned_keep_stock(forced):
     with torch.inference_mode():
         ok(
             torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16)
-        )  # M = 16 < _int_mm's floor: stock
+        )  # M = 16 is below _int_mm's floor
     assert g8.call_count() == before
 
 
@@ -385,9 +391,7 @@ def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(for
     cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
     if not hasattr(cfg, "version"):
         pytest.skip("torchao without config versions")
-    cfg.version = (
-        2  # what streams under diffusers group offloading (v1's subclass rejects is_pinned)
-    )
+    cfg.version = 2  # what streams under group offloading (v1's subclass rejects is_pinned)
     quantize_(dit.blocks, cfg)
     x = torch.randn(300, 256, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
@@ -418,7 +422,7 @@ def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(for
         assert g8.call_count() == before + 8
         restore = dm.release_resident_groups(pipe, 1024)
         assert restore is not None and not dm.denoisers_pinned_resident(pipe)
-        for _ in range(2):  # first streamed forward traces the prefetch order
+        for _ in range(2):
             assert torch.equal(dit(x), ref)
         restore()
         assert dm.denoisers_pinned_resident(pipe)
@@ -444,7 +448,7 @@ def test_fused_mlp_down_projection_traces_without_breaks(forced, monkeypatch):
     fused = torch.nn.Sequential(ff)
     if not f8.install(fused):
         pytest.skip("int8 fused MLP probe refused this device")
-    g8.install(fused)  # as diffusion_speed does: sets the op handle linear_from_q calls
+    g8.install(fused)
     x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16)
 
     def run(mode):
@@ -512,7 +516,7 @@ def test_other_linear_subclasses_and_bad_groups_stay_stock(monkeypatch):
 
     assert g8._eligible(Other(512, 256, bias = False)) is None
     lin = _convrot(torch.nn.Linear(512, 256, bias = False))
-    lin.convrot_groupsize = 1024  # does not divide in_features: the forward could not rotate it
+    lin.convrot_groupsize = 1024
     assert g8._eligible(lin) is None
 
 
@@ -528,7 +532,7 @@ def test_convrot_linear_swap_is_bit_identical_eager_and_compiled(forced, monkeyp
     holder = torch.nn.Sequential(fused)
     assert g8.install(holder) == 1 and g8.is_installed(fused)
     x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
-    x[0, 7, :5] *= 200  # an outlier row, what the rotation exists for
+    x[0, 7, :5] *= 200
     with torch.inference_mode():
         before = g8.call_count()
         assert torch.equal(fused(x), stock(x))
@@ -539,7 +543,7 @@ def test_convrot_linear_swap_is_bit_identical_eager_and_compiled(forced, monkeyp
             out = torch.compile(fused, fullgraph = True)(x)
             assert not counters["graph_break"]
             if fused.__dict__[g8._REC][2]:
-                # the opaque fused op is eager-exact; Inductor's compiled act quant is not on every torch
+                # The fused op is eager-exact; Inductor's compiled act quant is not on every torch.
                 assert torch.equal(out, stock(x))
             else:
                 assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
@@ -587,9 +591,7 @@ def test_block_streamed_denoiser_installs_against_its_onload_device(
         use_stream = use_stream,
     )
     assert fused.weight.device.type == "cpu"
-    assert (
-        g8.install(holder, offload_active = True) == 0
-    )  # no onload device: an offloaded denoiser stays stock
+    assert g8.install(holder, offload_active = True) == 0
     assert g8.install(holder, device = "cuda") == 1 and g8.is_installed(fused)
     x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
     with torch.no_grad():  # group offload's swap_tensors onload cannot run on inference tensors
@@ -612,9 +614,9 @@ def test_streamed_kill_switch(forced, monkeypatch):
 @pytest.mark.parametrize(
     "cap, on",
     [
-        ((8, 0), True),  # A100: measured end to end (streamed H3)
+        ((8, 0), True),
         ((8, 6), False),
-        ((8, 9), True),  # L4
+        ((8, 9), True),
         ((9, 0), False),
         ((10, 0), False),
         ((12, 0), True),
@@ -625,9 +627,7 @@ def test_rotquant_arch_gate(cap, on):
 
 
 def test_rotquant_kill_switch_and_force(monkeypatch):
-    assert (
-        cq.rotquant_config((12, 0), "off") is None
-    )  # the fused GEMM's own kill switch also turns it off
+    assert cq.rotquant_config((12, 0), "off") is None
     assert cq.rotquant_config((10, 0), "force") is not None
     assert cq.rotquant_config((7, 5), "force") is None
     assert cq.rotquant_config((8, 0), "off") is None
@@ -645,11 +645,30 @@ def forced_rotq(forced):
     return cfg
 
 
+@pytest.fixture
+def dense_rotq(forced, monkeypatch):
+    """The dense ``rotq_i8`` only (``UNSLOTH_DIFFUSION_INT8_ROTQUANT_H16=0``): codes bit-identical to the stock path."""
+    monkeypatch.setenv(cq.INT8_ROTQUANT_H16_ENV, "0")
+    cfg = cq.rotquant_device_config(torch.cuda.current_device())
+    if cfg is None:
+        pytest.skip("fused rotation probe refused this device")
+    assert cq._H16_DEVICE[torch.cuda.current_device()] is False
+    return cfg
+
+
+@pytest.fixture
+def h16_rotq(forced):
+    cfg = cq.rotquant_device_config(torch.cuda.current_device())
+    if cfg is None or not cq._H16_DEVICE.get(torch.cuda.current_device()):
+        pytest.skip("rotation probes refused this device")
+    return cfg
+
+
 def _act(m, k, seed):
     g = torch.Generator().manual_seed(seed)
     x = torch.randn(m, k, generator = g) * (torch.rand(1, k, generator = g) * 4)
-    x[:, :5] *= 80  # outlier channels, what the rotation is for
-    x[min(1, m - 1)] = 0  # a zero row: the eps clamp
+    x[:, :5] *= 80
+    x[min(1, m - 1)] = 0
     return x.to(torch.bfloat16).cuda()
 
 
@@ -658,11 +677,11 @@ def _act(m, k, seed):
     "m, k", [(17, 256), (300, 256 * 3), (1037, 5376), (257, 7168), (129, 14336), (19, 256 * 128)]
 )
 @pytest.mark.parametrize("kind", ["v1", "v2"])
-def test_rotquant_kernel_is_bit_exact_vs_rotation_then_torchao_quant(forced_rotq, m, k, kind):
+def test_rotquant_kernel_is_bit_exact_vs_rotation_then_torchao_quant(dense_rotq, m, k, kind):
     x = _act(m, k, m + k)
     q, s = cq._rotq_op()(x, 256, kind == "v2")
     rq, rs = cq.rotquant_reference(x, 256, kind)
-    # torchao's own activation-scale dtype: bf16, except v2 on torchao >= 0.18 (fp32)
+    # torchao act-scale dtype: bf16, except v2 on torchao >= 0.18 (fp32).
     want = torch.float32 if kind == "v2" and cq._v2_act_scale_fp32() else torch.bfloat16
     assert q.dtype == torch.int8 and s.dtype == want and s.shape == (m,)
     assert torch.equal(q, rq) and torch.equal(s, rs)
@@ -670,12 +689,11 @@ def test_rotquant_kernel_is_bit_exact_vs_rotation_then_torchao_quant(forced_rotq
 
 @needs_cuda
 def test_rotquant_probe_accepts_this_torchao(forced):
-    # with 0.17's bf16 roundings on 0.18, ~4% of codes differed and the probe refused every device
     assert cq.rotquant_device_config(torch.cuda.current_device()) is not None
 
 
 @needs_cuda
-def test_rotquant_fake_op_matches_the_real_scale_dtype(forced_rotq):
+def test_rotquant_fake_op_matches_the_real_scale_dtype(dense_rotq):
     from torch._subclasses.fake_tensor import FakeTensorMode
     x = _act(40, 768, 9)
     for v2 in (False, True):
@@ -686,15 +704,15 @@ def test_rotquant_fake_op_matches_the_real_scale_dtype(forced_rotq):
 
 
 @needs_cuda
-def test_rotquant_unsupported_shapes_take_the_stock_math(forced_rotq):
-    x = _act(40, 256 * 129, 3)  # more groups than one tile holds
-    assert not cq.rotquant_supported(x, 256, forced_rotq)
-    assert not cq.rotquant_supported(_act(40, 1024, 4), 64, forced_rotq)
-    assert not cq.rotquant_supported(_act(40, 1024, 5).half(), 256, forced_rotq)
+def test_rotquant_unsupported_shapes_take_the_stock_math(dense_rotq):
+    x = _act(40, 256 * 129, 3)
+    assert not cq.rotquant_supported(x, 256, dense_rotq)
+    assert not cq.rotquant_supported(_act(40, 1024, 4), 64, dense_rotq)
+    assert not cq.rotquant_supported(_act(40, 1024, 5).half(), 256, dense_rotq)
     q, s = cq._rotq_op()(x, 256, True)
     rq, rs = cq.rotquant_reference(x, 256, "v2")
     assert torch.equal(q, rq) and torch.equal(s, rs)
-    xt = _act(1024, 300, 6).t()  # non-contiguous input: made contiguous, same result
+    xt = _act(1024, 300, 6).t()
     q, s = cq._rotq_op()(xt, 256, True)
     rq, rs = cq.rotquant_reference(xt.contiguous(), 256, "v2")
     assert torch.equal(q, rq) and torch.equal(s, rs)
@@ -703,7 +721,7 @@ def test_rotquant_unsupported_shapes_take_the_stock_math(forced_rotq):
 @needs_cuda
 @pytest.mark.parametrize("version", [None, 2])
 def test_convrot_linear_fuses_rotation_into_act_quant_eager_and_compiled(
-    forced_rotq, monkeypatch, version
+    dense_rotq, monkeypatch, version
 ):
     """The rotated Linear quantizes its activation with the fused kernel: same output as ConvRotLinear.forward, eager
     and compiled, one graph, no graph break, no recompile on a second call."""
@@ -716,9 +734,7 @@ def test_convrot_linear_fuses_rotation_into_act_quant_eager_and_compiled(
     assert g8.install(holder) == 1 and fused.__dict__[g8._REC][2] is True
     x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
     x[0, 7, :5] *= 200
-    x2 = (
-        x * 0.5
-    )  # made outside inference_mode like x, so a recompile here would be the op's own guards
+    x2 = x * 0.5  # made outside inference_mode, so a recompile would come from the op's own guards
     with torch.inference_mode():
         before = cq.rotquant_call_count()
         assert torch.equal(fused(x), stock(x))
@@ -759,18 +775,15 @@ def test_rotquant_probe_refusal_keeps_the_stock_rotation(forced, monkeypatch):
     assert g8.install(torch.nn.Sequential(fused)) == 1 and fused.__dict__[g8._REC][2] is False
 
 
-# ---------------------------------------------------------------- per-shape tiles
-
-
 def test_tile_for_picks_the_shape_rule_then_the_arch_default(monkeypatch):
     default, wide = (128, 128, 64, 8, 4, 4), (128, 256, 64, 8, 8, 3)
     g8._DEVICE_CFG[0] = default
     g8._DEVICE_TILES[0] = ((16384, 65536, 4096, 8192, wide),)
     assert g8.tile_for(0, 4096, 21504, 5376) == wide
-    assert g8.tile_for(0, 4096, 5376, 5376) == default  # N outside the rule
-    assert g8.tile_for(0, 4096, 21504, 14336) == default  # K outside the rule
-    assert g8.tile_for(0, g8._SHAPE_MIN_M - 1, 21504, 5376) == default  # small M keeps the default
-    assert g8.tile_for(1, 4096, 21504, 5376) is None  # unprobed device: stock
+    assert g8.tile_for(0, 4096, 5376, 5376) == default
+    assert g8.tile_for(0, 4096, 21504, 14336) == default
+    assert g8.tile_for(0, g8._SHAPE_MIN_M - 1, 21504, 5376) == default
+    assert g8.tile_for(1, 4096, 21504, 5376) is None
 
 
 def test_tiles_kill_switch_and_unmeasured_arch(monkeypatch):
@@ -783,7 +796,7 @@ def test_tiles_kill_switch_and_unmeasured_arch(monkeypatch):
 
 def test_shape_tile_launch_failure_falls_back_to_the_default(monkeypatch):
     default, wide = (128, 128, 64, 8, 4, 4), (128, 256, 64, 8, 8, 3)
-    g8._DEVICE_CFG[None] = default  # CPU tensors report device index None
+    g8._DEVICE_CFG[None] = default
     g8._DEVICE_TILES[None] = ((1, 1 << 20, 1, 1 << 20, wide),)
     used = []
 
@@ -859,13 +872,13 @@ def test_every_shipped_shape_tile_is_bit_exact(forced, tile, ws32):
     )
 
 
-# ---------------------------------------------------------------- fused rotation without the fused GEMM
-
-
 @pytest.fixture
 def rotq_only(monkeypatch):
     """The fused rotation forced on, the fused GEMM forced off (what sm100 and other unfused archs run)."""
     monkeypatch.setenv(cq.INT8_ROTQUANT_ENV, "1")
+    monkeypatch.setenv(
+        cq.INT8_ROTQUANT_H16_ENV, "0"
+    )  # the bit-identity tests below run the dense kernel
     monkeypatch.setattr(g8, "device_config", lambda index: None)
     monkeypatch.setattr(g8, "arch_config", lambda cap, mode = None: None)
     cfg = cq.rotquant_device_config(torch.cuda.current_device())
@@ -878,7 +891,7 @@ def test_rotquant_mode_follows_its_own_switch_and_the_gemm_master(monkeypatch):
     assert cq.rotquant_mode() == "auto"
     monkeypatch.setenv(cq.INT8_ROTQUANT_ENV, "1")
     assert cq.rotquant_mode() == "force" and cq.rotquant_config((9, 0)) == cq._ROTQ_FALLBACK
-    monkeypatch.setenv(g8.INT8_GEMM_ENV, "0")  # the whole int8 swap off
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "0")
     assert cq.rotquant_mode() == "off" and cq.rotquant_config((12, 0)) is None
     monkeypatch.setenv(g8.INT8_GEMM_ENV, "1")
     monkeypatch.delenv(cq.INT8_ROTQUANT_ENV)
@@ -916,7 +929,7 @@ def test_rotated_linear_without_the_fused_gemm_is_bit_identical(
             out = compiled(x)
             assert not counters["graph_break"]
             assert counters["stats"]["unique_graphs"] == 1
-            # codes / scales come from the eager-exact op; the epilogue's bf16 roundings are emulated
+            # Codes / scales come from the eager-exact op; the epilogue's bf16 roundings are emulated.
             assert torch.equal(out, stock(x))
     g8.uninstall(holder)
 
@@ -942,12 +955,12 @@ def test_stock_gemm_matches_torchao_linear_bit_for_bit(rotq_only):
 
 
 @needs_cuda
-def test_convrot_act_quant_api(forced_rotq):
+def test_convrot_act_quant_api(dense_rotq):
     x = _act(300, 1024, 11)
     q, s = cq.convrot_act_quant(x, 256, True)
     rq, rs = cq.rotquant_reference(x, 256, "v2")
     assert torch.equal(q, rq) and torch.equal(s, rs)
-    assert cq.convrot_act_quant(x, 64, True) is None  # group the kernel does not cover
+    assert cq.convrot_act_quant(x, 64, True) is None
     assert cq.convrot_act_quant(x.half(), 256, True) is None
     assert cq.convrot_act_quant(x.cpu(), 256, True) is None
 
@@ -957,7 +970,7 @@ def test_rotq_tile_for_picks_the_k_rule_only_where_a_row_fits(monkeypatch):
     cq._ROTQ_DEVICE[0] = default
     cq._ROTQ_DEVICE_K[0] = ((5000, 20000, narrow),)
     assert cq.rotq_tile_for(0, 5376) == narrow
-    assert cq.rotq_tile_for(0, 4096) == default  # outside the rule
+    assert cq.rotq_tile_for(0, 4096) == default
     assert cq.rotq_tile_for(0, 256 * 70) == default  # 70 groups do not fit a 64-row tile
     assert cq.rotq_tile_for(1, 5376) is None
     monkeypatch.setitem(cq._ROTQ_K_TILES, (8, 0), ((1, 2, narrow),))
@@ -981,3 +994,530 @@ def test_every_shipped_rotq_k_tile_is_bit_exact(forced):
                 q, s = cq._rotq_launch(x, 256, kind, tile)
                 rq, rs = cq.rotquant_reference(x, 256, kind)
                 assert torch.equal(q, rq) and torch.equal(s, rs), (tile, m, k, kind)
+
+
+# ---- rotq_h16 (H16 x H16 rotation), the shared act quant and the SwiGLU prologue ----
+
+
+def _exact_codes(x, kind):
+    """Codes of an exact (fp64) rotation, rounded to bf16, then the stock quant: the target both kernels approximate."""
+    from core.inference.diffusion_convrot import build_convrot_hadamard
+
+    h = build_convrot_hadamard(256, device = x.device, dtype = torch.float64)
+    xr = (x.double().reshape(x.shape[0], -1, 256) @ h).reshape(x.shape).to(torch.bfloat16)
+    if kind == "v1":
+        return cq.act_quant_v1(xr)[0]
+    from torchao.quantization.granularity import PerRow
+    from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
+
+    return Int8Tensor.from_hp(xr, PerRow()).qdata
+
+
+def test_codes_close_tolerance():
+    rq = torch.randint(-120, 120, (64, 1024), dtype = torch.int8)
+    rs = torch.rand(64) + 0.5
+    assert cq.codes_close(rq.clone(), rs.clone(), rq, rs)
+    q = rq.clone()
+    q[3, 7] += 1
+    q[9, 1] -= 2
+    assert cq.codes_close(q, rs, rq, rs)
+    q[5, 5] += 3  # three steps: a broken kernel
+    assert not cq.codes_close(q, rs, rq, rs)
+    q = rq.clone()
+    q[:2] += 1  # 2048 codes off on rows whose scale matches
+    assert not cq.codes_close(q, rs, rq, rs)
+    s = rs.clone()
+    s[4] = s[4] * (1 + 2.0**-8)  # one row's amax rounded the other way
+    assert cq.codes_close(rq, s, rq, rs)
+    s[4] = s[4] * 1.1
+    assert not cq.codes_close(rq, s, rq, rs)
+    assert not cq.codes_close(rq, rs.to(torch.bfloat16), rq, rs)
+
+
+def test_h16_plan_keeps_every_chunk_full():
+    for ng in (1, 3, 12, 16, 21, 40, 48, 56, 129, 160):
+        cg, rows, nch, one = cq._h16_plan(ng)
+        assert ng % cg == 0 and nch * cg == ng and cg * rows == cq._H16_TILE_ROWS
+        assert one == (nch == 1)
+    assert cq._h16_plan(16) == (16, 1, 1, True) and cq._h16_plan(4) == (4, 4, 1, True)
+    assert cq._h16_plan(48) == (16, 1, 3, False)  # Qwen-Image-2.1's K 12288
+
+
+@needs_cuda
+@pytest.mark.parametrize(
+    "m, k",
+    [
+        (17, 256),
+        (300, 256 * 3),
+        (1037, 5376),
+        (257, 4096),
+        (129, 12288),
+        (19, 256 * 129),
+        (4, 256 * 16),
+    ],
+)
+@pytest.mark.parametrize("tf32x3", [False, True])
+@pytest.mark.parametrize("kind", ["v1", "v2"])
+def test_h16_kernel_matches_the_stock_codes_and_the_exact_rotation(h16_rotq, m, k, kind, tf32x3):
+    """Within ``codes_close`` of the stock rotation + quant, and no further from the exact rotation than the stock
+    (dense GEMM) path itself: the two only differ where an fp32 sum lands on the other side of a bf16 rounding."""
+    x = _act(m, k, m * 7 + k)
+    q, s = cq._h16_launch(x, kind, tf32x3 = tf32x3)
+    rq, rs = cq.rotquant_reference(x, 256, kind)
+    assert q.dtype == torch.int8 and s.dtype == rs.dtype and s.shape == (m,)
+    assert cq.codes_close(q, s, rq, rs)
+    ex = _exact_codes(x, kind)
+    assert int((q != ex).sum()) <= int((rq != ex).sum()) + max(4, q.numel() // 200000)
+
+
+@needs_cuda
+def test_h16_is_the_default_and_its_kill_switch_keeps_the_dense_kernel(forced, monkeypatch):
+    index = torch.cuda.current_device()
+    if cq.rotquant_device_config(index) is None:
+        pytest.skip("fused rotation probe refused this device")
+    if not cq._H16_DEVICE[index]:
+        pytest.skip("rotq_h16 probe refused this device")
+    x = _act(300, 256 * 129, 5)  # 129 groups: no dense tile holds the row, rotq_h16 does
+    before = cq.h16_call_count()
+    q, s = cq.convrot_act_quant(x, 256, True)
+    assert cq.h16_call_count() == before + 1
+    assert cq.codes_close(q, s, *cq.rotquant_reference(x, 256, "v2"))
+    cq._ROTQ_DEVICE.clear()
+    cq._H16_DEVICE.clear()
+    monkeypatch.setenv(cq.INT8_ROTQUANT_H16_ENV, "0")
+    assert cq.rotquant_device_config(index) is not None and cq._H16_DEVICE[index] is False
+    assert cq.convrot_act_quant(x, 256, True) is None  # dense tiles stop at 128 groups
+    x = _act(300, 1024, 6)
+    q, s = cq.convrot_act_quant(x, 256, True)
+    rq, rs = cq.rotquant_reference(x, 256, "v2")
+    assert torch.equal(q, rq) and torch.equal(s, rs) and cq.h16_call_count() == before + 1
+
+
+@needs_cuda
+def test_h16_mode_follows_the_arch(forced):
+    index = torch.cuda.current_device()
+    if cq.rotquant_device_config(index) is None or not cq._H16_DEVICE.get(index):
+        pytest.skip("rotation probes refused this device")
+    cap = tuple(torch.cuda.get_device_capability(index))
+    want = "tf32x3" if cap in cq._H16_TF32X3_ARCHS else "ieee"
+    assert cq._H16_DEVICE[index] == want
+
+
+@needs_cuda
+def test_h16_probe_refusal_keeps_the_dense_kernel(forced, monkeypatch):
+    monkeypatch.setattr(cq, "_h16_probe", lambda index: False)
+    index = torch.cuda.current_device()
+    if cq.rotquant_device_config(index) is None:
+        pytest.skip("fused rotation probe refused this device")
+    assert cq._H16_DEVICE[index] is False and cq._SWIGLU_DEVICE[index] is False
+    x = _act(300, 1024, 6)
+    q, s = cq.convrot_act_quant(x, 256, True)
+    rq, rs = cq.rotquant_reference(x, 256, "v2")
+    assert torch.equal(q, rq) and torch.equal(s, rs)
+
+
+def _swiglu_halves(m, k, seed):
+    gate = (_act(m, k, seed).float() * 0.05).to(torch.bfloat16)
+    gate[0, :6] = torch.tensor([-90.0, -20.0, -1e-3, 0.0, 1e-3, 90.0])
+    return gate, _act(m, k, seed + 1)
+
+
+@needs_cuda
+@pytest.mark.parametrize("m, k", [(300, 4096), (129, 12288), (33, 5376)])
+@pytest.mark.parametrize("kind", ["v1", "v2"])
+def test_swiglu_prologue_matches_the_stock_product_rotation_and_quant(h16_rotq, m, k, kind):
+    if not cq._SWIGLU_DEVICE.get(torch.cuda.current_device()):
+        pytest.skip("SwiGLU prologue probe refused this device")
+    gate, value = _swiglu_halves(m, k, m + k)
+    q, s = cq._h16_launch(gate, kind, value)
+    rq, rs = cq.rotquant_reference(gate, 256, kind, value)
+    assert cq.codes_close(q, s, rq, rs)
+    # a different tile (rows per program) gives the same codes bit for bit: the rotation is per group
+    q2, s2 = cq._h16_launch(gate, kind, value, tile_rows = 32)
+    assert torch.equal(q, q2) and torch.equal(s, s2)
+    before = cq.swiglu_call_count()
+    out = cq.convrot_swiglu_act_quant(gate, value, 256, kind == "v2")
+    assert out is not None and cq.swiglu_call_count() == before + 1
+    assert torch.equal(out[0], q) and torch.equal(out[1], s)
+    assert cq.convrot_swiglu_act_quant(gate, value[:, :256], 256, True) is None
+    assert cq.convrot_swiglu_act_quant(gate, value, 64, True) is None
+
+
+@needs_cuda
+def test_swiglu_kill_switch(forced, monkeypatch):
+    monkeypatch.setenv(cq.INT8_ROTQUANT_SWIGLU_ENV, "0")
+    index = torch.cuda.current_device()
+    if cq.rotquant_device_config(index) is None:
+        pytest.skip("fused rotation probe refused this device")
+    assert cq._SWIGLU_DEVICE[index] is False
+    gate, value = _swiglu_halves(64, 1024, 3)
+    assert cq.convrot_swiglu_act_quant(gate, value, 256, True) is None
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+def test_shared_input_linears_quantize_once_and_match_the_separate_calls(
+    h16_rotq, monkeypatch, version
+):
+    """Q / K / V on one input: one fused rotation + act quant, three GEMMs, outputs bit-identical to the three swapped
+    Linears called one by one (each of those quantizes the same input to the same codes)."""
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    lins = [
+        _convrot(_int8_linear(1024, n, bias, version))
+        for n, bias in ((1024, False), (512, True), (1024, False))
+    ]
+    holder = torch.nn.Sequential(*lins)
+    assert g8.install(holder) == 3
+    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
+    x[0, 7, :5] *= 200
+    with torch.inference_mode():
+        separate = [m(x) for m in lins]
+        before = cq.rotquant_call_count()
+        shared = g8.shared_rotq_linears(x, tuple(lins))
+        assert cq.rotquant_call_count() == before + 1
+    assert shared is not None and all(torch.equal(a, b) for a, b in zip(shared, separate))
+    # a plain (unrotated) Linear, a replaced weight or a wrapped forward: not shareable
+    plain = _int8_linear(1024, 256, False, version)
+    g8.install(torch.nn.Sequential(plain))
+    assert g8.shared_rotq_linears(x, (lins[0], plain)) is None
+    lins[1]._diffusers_hook = object()  # a leaf-level offload hook on one of them
+    assert g8.shared_rotq_linears(x, tuple(lins)) is None
+    del lins[1]._diffusers_hook
+    g8.uninstall(holder)
+
+
+def _swiglu_ff(dim, hidden, version):
+    """A module shaped and named like diffusers' QwenImage21SwiGLUFeedForward, int8 + ConvRot."""
+
+    def forward(self, hidden_states):
+        return self.out(
+            self.activation_fn(self.gate_layer(hidden_states)) * self.proj(hidden_states)
+        )
+
+    cls = type("QwenImage21SwiGLUFeedForward", (torch.nn.Module,), {"forward": forward})
+    ff = cls()
+    ff.proj = _convrot(_int8_linear(dim, hidden, False, version))
+    ff.out = _convrot(_int8_linear(hidden, dim, False, version))
+    ff.gate_layer = _convrot(_int8_linear(dim, hidden, False, version))
+    ff.activation_fn = torch.nn.SiLU()
+    return ff
+
+
+def _swapped_unfused(ff):
+    """``ff`` with its Linears swapped but the MLP forward left stock: each Linear quantizes on its own."""
+    assert g8.install(torch.nn.Sequential(ff)) == 3
+    ff.__dict__.pop("forward", None)
+    ff.__dict__.pop(g8._FF_MARK, None)
+    return ff
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+def test_swiglu_mlp_fuses_the_product_into_the_down_quant_eager_and_compiled(
+    h16_rotq, monkeypatch, version
+):
+    """The patched MLP: gate / value share one act quant, the down projection takes its codes from the halves.
+    Output within the stock MLP's own int8 rounding (codes_close upstream), compiled fullgraph, one graph, no
+    recompile on a second input, uninstall restores the class forward."""
+    from torch._dynamo.utils import counters
+
+    if not cq._SWIGLU_DEVICE.get(torch.cuda.current_device()):
+        pytest.skip("SwiGLU prologue probe refused this device")
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    stock = _swiglu_ff(1024, 3072, version)
+    unfused = _swapped_unfused(_swiglu_ff(1024, 3072, version))
+    ff = _swiglu_ff(1024, 3072, version)
+    holder = torch.nn.Sequential(ff)
+    assert g8.install(holder) == 3
+    assert g8.is_installed(ff) and ff.__dict__.get(g8._FF_MARK)
+    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16)
+    x[0, 7, :5] *= 50
+    x2 = x * 0.5
+    with torch.inference_mode():
+        before, sw = cq.rotquant_call_count(), cq.swiglu_call_count()
+        out = ff(x)
+        assert cq.rotquant_call_count() == before + 2 and cq.swiglu_call_count() == sw + 1
+        # vs the same kernels unfused (four quants, the product through HBM) and vs the stock ConvRotLinear MLP
+        for ref in (unfused(x), stock(x)):
+            cos = torch.nn.functional.cosine_similarity(
+                out.float().flatten(), ref.float().flatten(), dim = 0
+            )
+            assert cos > 0.9999
+            assert (out.float() - ref.float()).abs().max() <= 0.02 * ref.float().abs().max()
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            compiled = torch.compile(ff, fullgraph = True)
+            c1 = compiled(x)
+            c2 = compiled(x2)
+            assert not counters["graph_break"]
+            assert counters["stats"]["unique_graphs"] == 1
+        assert torch.equal(c1, out)  # opaque kernels + emulated epilogue: eager-exact
+        assert torch.equal(c2, ff(x2))
+    g8.uninstall(holder)
+    assert "forward" not in ff.__dict__ and not g8.is_installed(ff)
+
+
+@needs_cuda
+def test_swiglu_mlp_without_the_prologue_still_shares_the_gate_value_quant(h16_rotq, monkeypatch):
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    cq._SWIGLU_DEVICE[torch.cuda.current_device()] = False
+    unfused = _swapped_unfused(_swiglu_ff(1024, 3072, 2))
+    ff = _swiglu_ff(1024, 3072, 2)
+    assert g8.install(torch.nn.Sequential(ff)) == 3 and ff.__dict__.get(g8._FF_MARK)
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16)
+    with torch.inference_mode():
+        sw = cq.swiglu_call_count()
+        before = cq.rotquant_call_count()
+        out = ff(x)
+        # shared gate / value quant + the down projection's own: two kernels, no SwiGLU prologue
+        assert cq.rotquant_call_count() == before + 2 and cq.swiglu_call_count() == sw
+        before = cq.rotquant_call_count()
+        ref = unfused(x)
+        assert cq.rotquant_call_count() == before + 3
+        assert torch.equal(out, ref)
+    g8.uninstall(torch.nn.Sequential(ff))
+
+
+def _host_swiglu_ff(monkeypatch):
+    ff = torch.nn.Module()
+    ff.gate_layer, ff.proj, ff.out = (
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+    )
+    ff.activation_fn = torch.nn.SiLU()
+    monkeypatch.setattr(g8, "_swiglu_ff_eligible", lambda m: m is ff)
+    return ff
+
+
+@pytest.mark.parametrize("streamed, patched", [(False, False), (True, True)])
+def test_streamed_install_patches_the_host_swiglu_mlp(monkeypatch, streamed, patched):
+    monkeypatch.delenv(g8.INT8_SWIGLU_STREAMED_ENV, raising = False)
+    ff = _host_swiglu_ff(monkeypatch)
+    assert g8._install_swiglu_ff(torch.nn.Sequential(ff), 0, streamed = streamed) == int(patched)
+    assert bool(ff.__dict__.get(g8._FF_MARK)) is patched
+
+
+def test_streamed_install_keeps_a_swiglu_mlp_on_another_card(monkeypatch):
+    ff = _host_swiglu_ff(monkeypatch)
+    monkeypatch.setattr(g8, "_weight_card", lambda m: 1)
+    assert g8._install_swiglu_ff(torch.nn.Sequential(ff), 0, streamed = True) == 0
+    assert g8._FF_MARK not in ff.__dict__
+
+
+def test_swap_passes_streamed_only_for_the_onload_device_install(monkeypatch):
+    seen = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        g8, "_swap_on", lambda t, lg, i, streamed = False: seen.append((i, streamed)) or 0
+    )
+    import core.inference.diffusion_int8_fused as fused
+
+    monkeypatch.setattr(fused, "resident_cuda_device", lambda t: torch.device("cuda", 0))
+    g8._swap(torch.nn.Linear(2, 2), device = "cuda:0")
+    g8._swap(torch.nn.Linear(2, 2))
+    assert seen == [(0, True), (0, False)]
+
+
+@needs_cuda
+def test_block_streamed_swiglu_mlp_runs_fused_after_the_onload(h16_rotq, monkeypatch):
+    """Streamed host MLP runs fused, bit-identical to resident; the kill switch keeps it stock."""
+    hooks = pytest.importorskip("diffusers.hooks")
+    if not cq._SWIGLU_DEVICE.get(torch.cuda.current_device()):
+        pytest.skip("SwiGLU prologue probe refused this device")
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    monkeypatch.delenv(g8.INT8_GEMM_STREAMED_ENV, raising = False)
+
+    class Holder(torch.nn.Module):
+        def __init__(self, ff):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([torch.nn.Sequential(ff)])
+
+        def forward(self, x):
+            return self.blocks[0](x)
+
+    resident = _swiglu_ff(1024, 3072, 2)
+    assert g8.install(torch.nn.Sequential(resident)) == 3 and resident.__dict__.get(g8._FF_MARK)
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = resident(x)
+    for kill, fused in ((None, True), ("0", False)):
+        if kill is None:
+            monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED", raising = False)
+        else:
+            monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED", kill)
+        ff = _swiglu_ff(1024, 3072, 2)
+        holder = Holder(ff).requires_grad_(False).cpu()
+        hooks.apply_group_offloading(
+            holder,
+            onload_device = torch.device("cuda"),
+            offload_device = torch.device("cpu"),
+            offload_type = "block_level",
+            num_blocks_per_group = 1,
+        )
+        assert ff.out.weight.device.type == "cpu"
+        assert g8.install(holder, device = "cuda") == 3
+        assert bool(ff.__dict__.get(g8._FF_MARK)) is fused
+        with torch.no_grad():
+            sw = cq.swiglu_call_count()
+            out = holder(x)
+            assert cq.swiglu_call_count() == sw + int(fused)
+        if fused:
+            assert torch.equal(out, ref)
+        assert ff.out.weight.device.type == "cpu"
+
+
+def test_hooked_linear_is_not_shared():
+    """A forward hook or pre-hook (module-level or global) on a swapped Linear must see its call, so the shared QKV /
+    SwiGLU paths, which run the GEMM without calling the module, decline it and the per-module call runs instead."""
+    lin = torch.nn.Linear(8, 8)
+    lin.__dict__[g8._REC] = ("v2", 64, True, lin.weight, False)
+    lin.__dict__[g8._MARK] = True
+    lin.forward = types.MethodType(g8._linear_forward, lin)
+    assert g8._swapped_rec(lin) is not None
+    noop = lambda *a, **k: None  # noqa: E731
+    for register in (
+        lin.register_forward_hook,
+        lin.register_forward_pre_hook,
+        lambda f: lin.register_forward_hook(f, with_kwargs = True),
+        torch.nn.modules.module.register_module_forward_hook,
+        torch.nn.modules.module.register_module_forward_pre_hook,
+    ):
+        handle = register(noop)
+        try:
+            assert g8._swapped_rec(lin) is None
+        finally:
+            handle.remove()
+        assert g8._swapped_rec(lin) is not None
+
+
+def test_replaced_linear_forward_is_not_shared():
+    """An instance ``forward`` assigned over the installed ``_linear_forward`` (adapter / instrumentation code) is
+    what a module call runs, so the shared paths, which skip the call, decline it; restoring it re-enables them."""
+    lin = torch.nn.Linear(8, 8)
+    lin.__dict__[g8._REC] = ("v2", 64, True, lin.weight, False)
+    lin.__dict__[g8._MARK] = True
+    installed = types.MethodType(g8._linear_forward, lin)
+    lin.forward = installed
+    assert g8._swapped_rec(lin) is not None
+    lin.forward = lambda t: t
+    assert g8._swapped_rec(lin) is None
+    lin.forward = types.MethodType(lambda self, t: t, lin)
+    assert g8._swapped_rec(lin) is None
+    del lin.forward
+    assert g8._swapped_rec(lin) is None
+    lin.forward = installed
+    assert g8._swapped_rec(lin) is not None
+
+
+def test_hooked_activation_declines_the_swiglu_fusion(monkeypatch):
+    """The fused SwiGLU path never calls ``activation_fn``: a hook (module-level or global) or an instance
+    ``forward`` on it has to see the call, so the MLP takes ``out(act(gate) * value)`` instead."""
+    ff = torch.nn.Module()
+    ff.gate_layer, ff.proj, ff.out = (
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+    )
+    ff.activation_fn = torch.nn.SiLU()
+    fused = object()
+    monkeypatch.setattr(g8, "shared_rotq_linears", lambda x, linears: None)
+    monkeypatch.setattr(g8, "_swiglu_down", lambda down, gate, value: fused)
+    x = torch.randn(3, 8)
+    assert g8._swiglu_ff_forward(ff, x) is fused
+    seen = []
+    for register in (
+        lambda f: ff.activation_fn.register_forward_hook(lambda m, a, o: seen.append(1)),
+        lambda f: ff.activation_fn.register_forward_pre_hook(lambda m, a: seen.append(1)),
+        lambda f: torch.nn.modules.module.register_module_forward_hook(
+            lambda m, a, o: seen.append(1)
+        ),
+    ):
+        handle = register(None)
+        try:
+            seen.clear()
+            y = g8._swiglu_ff_forward(ff, x)
+            assert y is not fused and seen
+            ref = ff.out(torch.nn.functional.silu(ff.gate_layer(x)) * ff.proj(x))
+            assert torch.equal(y, ref)
+        finally:
+            handle.remove()
+        assert g8._swiglu_ff_forward(ff, x) is fused
+    ff.activation_fn.forward = lambda t: t  # an instance override replacing the activation
+    assert g8._swiglu_ff_forward(ff, x) is not fused
+
+
+def test_replaced_activation_declines_the_swiglu_fusion(monkeypatch):
+    """The fused prologue hard-codes SiLU: an ``activation_fn`` swapped after install for GELU, a custom module or a
+    ``SiLU`` subclass (no hooks, no instance ``forward``) has to run itself, and restoring a plain SiLU fuses again."""
+
+    class _SiLUSub(torch.nn.SiLU):
+        def forward(self, t):
+            return torch.nn.functional.silu(t) * 2
+
+    class _Custom(torch.nn.Module):
+        def forward(self, t):
+            return t * 3
+
+    ff = torch.nn.Module()
+    ff.gate_layer, ff.proj, ff.out = (
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+    )
+    ff.activation_fn = torch.nn.SiLU()
+    fused = object()
+    monkeypatch.setattr(g8, "shared_rotq_linears", lambda x, linears: None)
+    monkeypatch.setattr(g8, "_swiglu_down", lambda down, gate, value: fused)
+    x = torch.randn(3, 8)
+    assert g8._swiglu_ff_forward(ff, x) is fused
+    for act in (torch.nn.GELU(), torch.nn.GELU(approximate = "tanh"), _SiLUSub(), _Custom()):
+        ff.activation_fn = act
+        y = g8._swiglu_ff_forward(ff, x)
+        assert y is not fused
+        assert torch.equal(y, ff.out(act(ff.gate_layer(x)) * ff.proj(x)))
+    ff.activation_fn = torch.nn.SiLU()
+    assert g8._swiglu_ff_forward(ff, x) is fused
+
+
+def test_codes_close_rejects_non_finite_scales():
+    """NaN compares false against every tolerance: a NaN / inf scale on one row (e.g. the probe's all-zero row) must
+    still fail, on either side."""
+    rq = torch.randint(-120, 120, (64, 1024), dtype = torch.int8)
+    rs = torch.rand(64) + 0.5
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        s = rs.clone()
+        s[1] = bad
+        assert not cq.codes_close(rq, s, rq, rs)
+        assert not cq.codes_close(rq, rs, rq, s)
+
+
+@needs_cuda
+def test_h16_probe_covers_the_one_pass_branch_and_rejects_nan_scales(forced):
+    """The per-device probe runs both ``rotq_h16`` branches (one pass, two pass) on v1 / v2, and a kernel that returns
+    a NaN scale on one row is refused."""
+    index = torch.cuda.current_device()
+    real = cq._h16_launch
+    seen = set()
+
+    def recording(x, kind, *a, **k):
+        seen.add((cq._h16_plan(x.shape[-1] // 256)[3], kind))
+        return real(x, kind, *a, **k)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cq, "_h16_launch", recording)
+        if not cq._h16_probe(index):
+            pytest.skip("rotq_h16 probe refused this device")
+    assert seen == {(True, "v1"), (True, "v2"), (False, "v1"), (False, "v2")}
+
+    def nan_row(x, kind, *a, **k):
+        q, s = real(x, kind, *a, **k)
+        s = s.clone()
+        s[1] = float("nan")  # the probe's all-zero row
+        return q, s
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cq, "_h16_launch", nan_row)
+        assert cq._h16_probe(index) is False
+        assert cq._swiglu_probe(index) is False

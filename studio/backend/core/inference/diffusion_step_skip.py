@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in static step skip (``transformer_cache="static"``): a schedule fixed per generation, decided outside the
-forward, so compile fullgraph and the CUDA graph are kept. A GraphedForward installed later goes under this layer."""
+"""Opt-in static step skip (transformer_cache=static): schedule fixed per generation outside the
+forward, keeps fullgraph compile and CUDA graph; GraphedForward installed later goes under it"""
 
 from __future__ import annotations
 

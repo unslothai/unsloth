@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export {
+  clearDownloadTransportCapabilitiesCache,
   DOWNLOAD_KIND,
   DownloadProgressBar,
   downloadManager,
@@ -15,6 +16,7 @@ export {
   type TransportMode,
   updateExternalJob,
   TRANSPORT_MODE_STORAGE_KEY,
+  DOWNLOAD_DIR_STORAGE_KEY,
   useDownloadManagerStore,
   useHttpPartialsResumable,
   useRepoDownload,
@@ -29,6 +31,10 @@ export {
 } from "./hooks/use-hub-model-search";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
 export type { CapabilityKey } from "./lib/model-capabilities";
+export {
+  HUB_CAPABILITY_FILTERS,
+  type HubCapabilityFilter,
+} from "./lib/model-capabilities";
 export { useLatestRef } from "./hooks/use-latest-ref";
 export { useHubAvailability, useOnlineStatus } from "./hooks/use-online-status";
 export { isHuggingFaceOffline } from "./lib/network";
@@ -70,7 +76,10 @@ export {
   dedupeSameSourceHubCacheRows,
   defaultCapabilities,
   deleteCachedDataset,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  revealLocalModel,
   epochMillisecondsToSeconds,
   fetchInventorySource,
   findCompleteHfCacheLocalRow,
@@ -107,6 +116,19 @@ export {
 export { useInventoryVersion } from "./stores/inventory-events";
 export { looksLikeLocalPath, localPathCacheKey } from "./lib/local-path";
 export { scanFolderStatusCopy } from "./lib/scan-folder-status";
+export {
+  countModelsPerFolder,
+  folderDisplayName,
+} from "./lib/scan-folder-models";
+export {
+  addScanFolderToStore,
+  refreshScanFolders,
+  removeScanFolderFromStore,
+  setScanFolderRecursive,
+  useScanFolders,
+  type AddScanFolderResult,
+  type ScanFoldersState,
+} from "./inventory/scan-folders-store";
 export type { ScanFolderStatus } from "./lib/scan-folder-status";
 export { hubTokenHeader } from "./lib/hub-token-header";
 export {

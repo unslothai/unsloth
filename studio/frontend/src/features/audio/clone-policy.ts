@@ -100,7 +100,6 @@ export function cloneBlocker(
   if (input.referenceExpired) {
     return {
       kind: "reference-expired",
-      // The "Add it again" action follows the reason under Generate.
       reason: "This reference expired.",
     };
   }
@@ -130,5 +129,44 @@ export function cloneBlocker(
     return { kind: "text", reason: "Type the text to speak." };
   }
   if (input.panelError) return { kind: "panel", reason: input.panelError };
+  return null;
+}
+
+/** Transcribe the reference by itself: only for a model that needs its words, a blank field,
+ *  a usable clip, an STT model on disk, and once per reference. */
+export function shouldAutoTranscribeReference(input: {
+  mode: ReferenceTextField;
+  referenceText: string;
+  referenceId: string | null;
+  referenceBusy: boolean;
+  referenceExpired: boolean;
+  sttReady: boolean;
+  doneFor: string | null;
+}): boolean {
+  return (
+    input.mode === "required" &&
+    !input.referenceText.trim() &&
+    input.referenceId !== null &&
+    !input.referenceBusy &&
+    !input.referenceExpired &&
+    input.sttReady &&
+    input.referenceId !== input.doneFor
+  );
+}
+
+const seconds = (value: number) =>
+  `${Number(value.toFixed(1)).toLocaleString("en-US")} s`;
+
+/** The line under a reference clip within the length cap; null when its length is fine. */
+export function referenceLengthHint(
+  durationS: number | null,
+  ideal: readonly [number, number],
+): string | null {
+  if (durationS === null || !Number.isFinite(durationS)) return null;
+  const [low, high] = ideal;
+  if (durationS < low)
+    return `${seconds(durationS)}. ${low} to ${high} s of one clear voice clones best.`;
+  if (durationS > high)
+    return `Longer than needed; ${low} to ${high} s works best.`;
   return null;
 }

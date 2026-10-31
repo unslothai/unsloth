@@ -1,10 +1,7 @@
-# Model defaults for unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit
-# Based on Llama3.1_(8B)-Inference.ipynb
 # Also applies to: "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit", "meta-llama/Meta-Llama-3.1-8B-Instruct", "unsloth/Meta-Llama-3.1-8B-Instruct","RedHatAI/Llama-3.1-8B-Instruct-FP8","unsloth/Llama-3.1-8B-Instruct-FP8-Block","unsloth/Llama-3.1-8B-Instruct-FP8-Dynamic"
 
 training:
   max_seq_length: 8192
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SDKs the probes call by name must not float across a major.
-
-On 2026-08-20 `anthropic` 1.0.0 was published. The inference smoke workflows installed
-`anthropic>=0.40` with no upper bound, pip resolved the new major, and v1 had removed
-`temperature`, `top_p` and `top_k` as accepted arguments on `messages.create()`. Every
-probe that pins `temperature = 0.0` for determinism started raising:
-
-    TypeError: Messages.create() got an unexpected keyword argument 'temperature'
-
-75 job failures in about four hours, across every PR that ran those workflows, none of
-them caused by the PR they were reported against. #9432 pinned `<1` to stop it.
-
-This guard is deliberately NOT "every `>=` needs an upper bound". Most pins here are
-libraries whose majors do not reach our code, and asserting on all of them would be noise
-that gets suppressed. It covers the packages whose *call surface* our own probe scripts
-use directly with keyword arguments, which is exactly the surface a major is allowed to
-remove. Adding to this set needs that property; removing from it needs a reason.
-"""
+"""Guards SDKs whose keyword arguments our probes call, since a major may remove them."""
 
 from __future__ import annotations
 
@@ -38,32 +21,24 @@ ANTHROPIC_PROBES = (
     WORKFLOWS / "studio-windows-inference-smoke.yml",
 )
 
-# Packages our probe code calls directly by keyword, each with the first major it must NOT reach.
-# Asserting the boundary rather than "some upper bound exists" is what makes this mean anything: `openai>=1.50,<999`
-# contains a `<` and admits every major it is meant to keep out.
+# Each with the first major it must NOT reach: `<999` contains a `<` and admits everything.
 GUARDED = {
     # v1 probes pass sampling parameters through extra_body.
     "anthropic": (2,),
-    # 3.3.1 resolves today and the probes pass, so the bound sits above it, not at <2.
+    # 3.3.1 resolves today and the probes pass, so the bound sits above it.
     "openai": (4,),
     "playwright": (2,),
 }
 
-# One `pip install` argument: name, optional [extras], optional specifier. Optional on purpose: a bare
-# `pip install openai` resolves whatever major is current, and a pattern that required a specifier could not see it
-# at all.
+# The specifier is optional: a bare `pip install openai` must be seen too.
 _REQUIREMENT = re.compile(r"""^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?P<spec>.*)$""")
 
-# pip, pip3, pip3.12, pip.exe, and any of those behind a path with either separator, quoted or not. mlx-ci.yml:439 uses
-# "$STUDIO_VENV/bin/pip", and the Windows workflows can use pip.exe; matching the literal text `pip install` saw
-# neither.
+# Any pip spelling, behind any path, quoted or not (e.g. "$STUDIO_VENV/bin/pip").
 _PIP_INSTALL = re.compile(
     r"""(?:^|[\s"'/\\])pip[0-9]*(?:\.[0-9]+)*(?:\.exe)?["']?\s+install(?:\s|$)"""
 )
 
-# The whole version token, suffix included.
-# Capturing only the numeric prefix turned `<4.post1` into `<4`, and such a bound is LOOSER than its digits: `<4.post1`
-# admits 4.0.
+# The whole version token: `<4.post1` admits 4.0.
 _UPPER = re.compile(r"(?P<op><=|<)(?P<version>[^,\s'\"]+)")
 _NUMERIC = re.compile(r"^[0-9][0-9.]*$")
 _EXACT = re.compile(r"===?(?P<version>[0-9][0-9.]*)")
@@ -71,14 +46,7 @@ _COMPATIBLE = re.compile(r"~=(?P<version>[0-9][0-9.]*)")
 
 
 def _strip_inline_comment(line: str) -> str:
-    """Drop a trailing shell comment, respecting quotes.
-
-    Only whole-line comments were dropped before, so `run: echo ok  # pip install
-    'openai<4'` was scanned as a real install: commented text could satisfy the bound
-    and anti-vacuity checks, and merely naming a bare guarded package after a `#` could
-    fail CI. A `#` only opens a comment at the start of a word, so `git+https://x#egg=y`
-    survives.
-    """
+    """Trailing comments are stripped, but only where a hash starts a word, so URL fragments survive."""
     quote = ""
     for index, char in enumerate(line):
         if quote:
@@ -92,15 +60,7 @@ def _strip_inline_comment(line: str) -> str:
 
 
 def _install_commands_in(text: str) -> list[tuple[int, str]]:
-    """Every `pip install` COMMAND, continuations joined, comment lines dropped.
-
-    `pip install \\` over several lines is the house style at 19 sites here, and a
-    line-at-a-time scan sees only the first, so a guarded SDK below it would be
-    unchecked while the anti-vacuity test stayed satisfied by the single-line pins.
-
-    Comments go because #9432 put comments naming `anthropic` beside the pins, and one
-    must not be able to satisfy or trip this.
-    """
+    """Joins backslash continuations, so a guarded SDK on a later line of a pip install is seen."""
     commands = []
     pending: list[str] = []
     start = 0
@@ -142,12 +102,7 @@ def _install_lines() -> list[tuple[Path, int, str]]:
 
 
 def _requirements_in(command: str, package: str) -> list[str]:
-    """Every requirement for `package` in one pip command, as its raw specifier.
-
-    "" means a bare `pip install openai`: a requirement with no constraint, which is
-    not the same as the package being absent. Tokenized so a name inside a URL or a
-    `-r` path is not mistaken for an install of it.
-    """
+    """Tokenized so a name inside a URL or -r path is not an install; an empty string is a bare install."""
     try:
         tokens = shlex.split(command, posix = True)
     except ValueError:
@@ -196,20 +151,12 @@ def _anthropic_create_blocks() -> list[tuple[Path, str]]:
 
 
 def _release(raw: str) -> tuple[int, ...]:
-    """Release segment as ints, every component kept.
-
-    `~=` semantics depend on how many components were written -- `~=3.0` implies <4
-    and `~=3.0.0` implies <3.1 -- so it needs this rather than the normalized form.
-    """
+    """Keeps every written component: ~=3.0 means <4 but ~=3.0.0 means <3.1, so zeros matter."""
     return tuple(int(part) for part in raw.strip(".").split(".") if part.isdigit())
 
 
 def _version(raw: str) -> tuple[int, ...]:
-    """Release with trailing zeros dropped, so 4.0 and 4 compare equal.
-
-    Without this, `<4.0` was rejected against a boundary of `(4,)`: the tuples differ
-    even though the two bounds are the same release.
-    """
+    """Drops trailing zeros so <4.0 and <4 compare equal; the tuples differed for the same release."""
     parts = list(_release(raw))
     while len(parts) > 1 and parts[-1] == 0:
         parts.pop()
@@ -217,16 +164,7 @@ def _version(raw: str) -> tuple[int, ...]:
 
 
 def _excludes(spec: str, major: tuple[int, ...]) -> bool:
-    """Does this requirement keep `major` out?
-
-    - no specifier at all resolves whatever is current, so it excludes nothing
-    - `<2` and `<1.58` both exclude 2.x; `<=2` does not, since it admits 2.0 itself
-    - `==3.0.0` cannot drift anywhere, so an exact pin below the major is safe
-    - `~=1.4` means `>=1.4,<2`, so it carries an upper bound of its own
-
-    Compared as integer tuples rather than through `packaging`, which the
-    workflow-trigger-lint job does not install.
-    """
+    """Only a spec that cannot resolve to the major counts; <=2 admits 2.0 itself, so it does not."""
     if not spec.strip():
         return False
     for match in _EXACT.finditer(spec):
@@ -293,47 +231,30 @@ def test_anthropic_smokes_install_v1() -> None:
 
 
 def test_a_bound_above_the_next_major_is_not_accepted() -> None:
-    """`<` alone is not the property; keeping the major out is.
-
-    Checking only for the presence of an upper bound let `openai>=1.50,<999` through,
-    which admits every major the pin exists to exclude.
-    """
+    """Presence of an upper bound is not enough; a bound like <999 that admits the next major must fail."""
     assert not _excludes(">=1.50,<999", GUARDED["openai"])
     assert not _excludes(">=1.50,<5", GUARDED["openai"])
     assert not _excludes(">=1.50", GUARDED["openai"])
-    # <=4 admits 4.0 itself, so it does not exclude the 4 series.
     assert not _excludes(">=1.50,<=4", GUARDED["openai"])
     assert _excludes(">=1.50,<4", GUARDED["openai"])
-    # A narrower window than the boundary is stricter, and still fine.
     assert _excludes(">=1.55,<1.58", GUARDED["playwright"])
     assert _excludes(">=1.45,<2", GUARDED["playwright"])
 
 
 def test_a_pin_that_cannot_drift_is_accepted() -> None:
-    """An exact or compatible-release pin already excludes the major.
-
-    Rejecting them would push people to add a redundant `<N` beside an `==`, so the
-    rule is what the requirement can RESOLVE to, not which operator was typed.
-    """
+    """Judged by what the requirement can resolve to, not by operator: ==3.0.0 and ~=1.4 are accepted."""
     assert _excludes("==3.0.0", GUARDED["openai"])
     assert _excludes("===3.0.0", GUARDED["openai"])
     assert not _excludes("==4.1.0", GUARDED["openai"])
-    # ~=1.4 is >=1.4,<2, so it keeps 2.x out.
     assert _excludes("~=1.4", GUARDED["playwright"])
-    # ~=1.4.5 is >=1.4.5,<1.5, narrower still.
     assert _excludes("~=1.4.5", GUARDED["playwright"])
 
 
 def test_a_bare_or_extras_install_is_not_invisible() -> None:
-    """`pip install openai` resolves whatever major is current.
-
-    Requiring a version specifier matched nothing here, so the package was neither
-    bounded nor reported. Extras are the same shape.
-    """
+    """A bare or extras install still counts as an install, so an unbounded package is reported."""
     assert _requirements_in("pip install openai", "openai") == [""]
     assert _requirements_in("pip install 'openai[datalib]>=1.50'", "openai") == [">=1.50"]
     assert not _excludes("", GUARDED["openai"]), "a bare install constrains nothing"
-    # A name inside a URL or a requirements path is not an install of that package.
     assert _requirements_in("pip install -r reqs/openai.txt", "openai") == []
     assert (
         _requirements_in(
@@ -344,11 +265,7 @@ def test_a_bare_or_extras_install_is_not_invisible() -> None:
 
 
 def test_a_pin_on_a_continuation_line_is_still_seen() -> None:
-    """`pip install \\` over several lines is the house style at 19 sites here.
-
-    A line-at-a-time scan sees only the first line, so a guarded SDK added below it would
-    be invisible while the anti-vacuity test stayed satisfied by the single-line pins.
-    """
+    """Pins on backslash-continued pip install lines must be seen; a line scan only reads the first."""
     text = (
         "      - name: Install\n"
         "        run: |\n"
@@ -387,11 +304,7 @@ def test_a_yaml_workflow_is_scanned_too(tmp_path) -> None:
 
 
 def test_pip_is_recognized_beyond_the_bare_command() -> None:
-    """`"$STUDIO_VENV/bin/pip" install` is already used at mlx-ci.yml:439.
-
-    Matching the literal text `pip install` missed it and `pip3` alike, so a guarded
-    SDK installed either way was never inspected.
-    """
+    """Matches pip3 and a quoted venv pip path too, not only the literal pip install text."""
     for command in (
         "pip install openai",
         "pip3 install openai",
@@ -409,27 +322,18 @@ def test_equivalent_bounds_compare_equal() -> None:
     assert _version("1.58") == (1, 58)
     assert _excludes(">=1.50,<4.0", GUARDED["openai"])
     assert _excludes(">=1.50,<4.0.0", GUARDED["openai"])
-    # <4.0.1 still admits 4.0, so it does not exclude the 4 series.
     assert not _excludes(">=1.50,<4.0.1", GUARDED["openai"])
 
 
 def test_a_bound_with_a_suffix_is_not_read_as_its_digits() -> None:
-    """`<4.post1` admits 4.0, so it must not be read as `<4`.
-
-    The regex used to capture only the numeric prefix, which quietly turned a looser
-    bound into a passing one. Anything that is not a plain release now fails closed.
-    """
+    """A bound with a suffix, like <4.post1, admits 4.0 and must fail closed, not be read as <4."""
     assert not _excludes(">=1.50,<4.post1", GUARDED["openai"])
     assert not _excludes(">=1.50,<4+local", GUARDED["openai"])
     assert _excludes(">=1.50,<4", GUARDED["openai"])
 
 
 def test_a_compatible_pin_keeps_its_written_precision() -> None:
-    """`~=3.0` implies <4 and `~=3.0.0` implies <3.1, so the component count matters.
-
-    Normalizing trailing zeros before this branch collapsed both to `(3,)` and made the
-    guard reject two valid pins.
-    """
+    """~=3.0 means <4 but ~=3.0.0 means <3.1, so trailing zeros must not be normalized away."""
     assert _excludes("~=3.0", GUARDED["openai"])
     assert _excludes("~=3.0.0", GUARDED["openai"])
     assert _release("3.0.0") == (3, 0, 0)
@@ -437,12 +341,7 @@ def test_a_compatible_pin_keeps_its_written_precision() -> None:
 
 
 def test_a_trailing_comment_is_not_an_install() -> None:
-    """Only whole-line comments were dropped, which cut both ways.
-
-    Commented text could satisfy the bound and anti-vacuity checks after the real
-    installs were gone, and merely naming a bare guarded package after a `#` could fail
-    CI. A `#` only opens a comment at the start of a word, so a URL fragment survives.
-    """
+    """Trailing comments must not count as installs in either direction, so commented pins are ignored."""
     assert _install_commands_in("      - run: echo ok  # pip install 'openai<4'\n") == []
     assert _install_commands_in("          pip install 'openai>=1.50,<4'  # below 4\n")
     assert _strip_inline_comment("pip install 'git+https://x#egg=y'") == (
@@ -466,11 +365,7 @@ def test_a_windows_pip_executable_is_recognized() -> None:
 
 
 def test_a_powershell_continuation_is_joined() -> None:
-    """PowerShell continues with a backtick, not a backslash.
-
-    Nothing here uses the form yet, but 92 pwsh steps live in these workflows and 9 sit
-    around a pip install, so it is one long install list away.
-    """
+    """PowerShell continues lines with a backtick, not a backslash, so pwsh installs must be joined too."""
     text = (
         "        shell: pwsh\n"
         "        run: |\n"

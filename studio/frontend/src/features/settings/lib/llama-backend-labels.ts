@@ -3,7 +3,6 @@
 
 import type { TranslationKey } from "@/i18n";
 
-/** Backend labels shared by the picker and notifications. */
 export const LLAMA_BACKEND_LABELS: Record<string, TranslationKey> = {
   auto: "settings.resources.llamaBackend.backends.auto",
   cpu: "settings.resources.llamaBackend.backends.cpu",
@@ -13,7 +12,6 @@ export const LLAMA_BACKEND_LABELS: Record<string, TranslationKey> = {
   metal: "settings.resources.llamaBackend.backends.metal",
 };
 
-/** Use the backend identifier when this client has no localized label. */
 export function backendDisplayName(
   backend: string | null | undefined,
   t: (key: TranslationKey) => string,

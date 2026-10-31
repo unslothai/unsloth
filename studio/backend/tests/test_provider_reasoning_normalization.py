@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Streamed thinking has to reach its consumers whichever field a provider uses.
-
-``test_provider_control_frame_spoofing.py`` pins the rename in isolation; these drive
-whole streams through the real relay, which is where #8838 failed. Ollama sends thinking
-as ``delta.reasoning`` while Deep Research counts only non-empty ``delta.content`` /
-``delta.reasoning_content`` as output (``core/research_runs.py``), so a reasoning-only
-prefix spent the first-output budget. The chat client, the second consumer, concatenates
-``reasoning_content`` with the text in ``reasoning_details`` (``chat-adapter.ts``), so a
-provider sending both must not have the alias renamed into a second copy.
-"""
+"""Map delta.reasoning to reasoning_content so Deep Research counts it, without duplicating the block."""
 
 from __future__ import annotations
 
@@ -130,11 +121,7 @@ def test_a_reasoning_only_prefix_is_already_output(shape):
 
 
 def test_openrouter_text_details_stay_the_only_copy():
-    """Renaming the alias here would double the thinking block, so it is left alone.
-
-    Deep Research still cannot see reasoning that only arrives as
-    ``reasoning_details``; that is the same on main and is its own fix.
-    """
+    """Leave the alias alone when reasoning_details has the text; renaming it doubles the thinking."""
     seen = _consume(_relay(_openrouter()))
 
     assert seen["rendered"] == "".join(THOUGHT)

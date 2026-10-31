@@ -34,8 +34,7 @@ def test_format_installer_failure_prefers_fallback_reason_over_path_noise():
 
 
 def test_format_installer_failure_does_not_name_llama_for_a_whisper_install():
-    # whisper.cpp updates share stream_installer, and prebuilt_core raises the same
-    # 403 text for both, so the message must not name the wrong component.
+    # whisper.cpp updates share stream_installer and the same 403 text.
     lines = [
         "[whisper-prebuilt] prebuilt install failed: GitHub API returned 403 for "
         "https://api.github.com/repos/unslothai/whisper.cpp/releases/latest; "
@@ -53,8 +52,7 @@ def test_format_installer_failure_falls_back_to_tail_without_actionable_line():
 
 
 def test_format_installer_failure_prefers_the_verdict_over_an_earlier_rate_limit_retry():
-    # The installer retries a rate-limited fetch and can still get through, so a
-    # retry line must never outrank the reason it actually exited on.
+    # A retry line must never outrank the exit reason.
     lines = [
         "[llama-prebuilt] fetch failed (1/4) for "
         "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b10679: "
@@ -79,9 +77,7 @@ def _run_fake_installer(tmp_path, body: str) -> flow.InstallerExit:
 
 
 def test_stream_installer_keeps_reason_a_long_system_report_pushes_out_of_the_tail(tmp_path):
-    # The report (selection log, nvidia-smi, ldd) outruns the bounded tail on a
-    # Linux CUDA host, so the reason has to be kept as it streams, not looked up
-    # in the tail afterwards.
+    # The report outruns the bounded tail, so keep the reason as it streams.
     exc = _run_fake_installer(
         tmp_path,
         "print('[llama-prebuilt] prebuilt fallback reason: failed to inspect published "
@@ -135,7 +131,6 @@ def test_stream_installer_keeps_a_multiline_verdict_whole(tmp_path):
     assert exc.returncode == 2
     assert "missing=libcuda.so.1" in str(exc)
     assert "missing=libgomp.so.1" in str(exc)
-    # The unprefixed system report is where the verdict ends.
     assert "linux_runtime_dirs" not in str(exc)
     assert "platform=Linux" not in str(exc)
 
@@ -177,8 +172,7 @@ def test_stream_installer_keeps_the_output_when_only_a_rate_limit_hint_is_presen
 
 
 def test_format_installer_failure_tells_an_authenticated_run_to_wait(monkeypatch):
-    # The token is already set, so its quota is what ran out: setting it again is
-    # advice the user cannot act on. fetch_json omits its own hint here too.
+    # The token is already set, so its quota ran out; setting it again is useless advice.
     monkeypatch.setenv("GH_TOKEN", "x")
     lines = [
         "[llama-prebuilt] prebuilt fallback reason: failed to inspect published "

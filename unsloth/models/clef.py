@@ -340,13 +340,24 @@ def build_layout(records, device) -> dict:
     return layout
 
 
+def _layer_norm(norm, x):
+    # Not Unsloth's compiled F.layer_norm: memory and queries recompile it mid-checkpoint, and the
+    # recompute's newer graph hands the first graph's backward unpadded mean / rstd strides (#13160).
+    layer_norm = getattr(functional, "_uncompiled_layer_norm", functional.layer_norm)
+    return layer_norm(x, norm.normalized_shape, norm.weight, norm.bias, norm.eps)
+
+
 def _route(layer, queries, memory, padding):
-    memory = layer.memory_norm(memory)
+    memory = _layer_norm(layer.memory_norm, memory)
     routed, _ = layer.attention(
-        layer.query_norm(queries), memory, memory, key_padding_mask = padding, need_weights = False
+        _layer_norm(layer.query_norm, queries),
+        memory,
+        memory,
+        key_padding_mask = padding,
+        need_weights = False,
     )
     queries = queries + layer.attention_dropout(routed)
-    return queries + layer.feedforward(layer.feedforward_norm(queries))
+    return queries + layer.feedforward(_layer_norm(layer.feedforward_norm, queries))
 
 
 def _decode(layer, fields, memory, field_padding, padding):

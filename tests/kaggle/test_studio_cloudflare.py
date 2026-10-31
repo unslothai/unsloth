@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The quick tunnel: the one assertion here that reaches the public internet.
-
-Because it does, what it claims is narrow and what it refuses to claim is
-written down.
-
-Three rules, and the third is the one that makes opening a public URL from a CI
-machine defensible at all: the tunnel must REFUSE an unauthenticated request.
-Without it this check would prove that anyone holding the URL can drive
-inference on the box, and call that a pass.
-
-Two details are load-bearing rather than stylistic:
-
-* `--host 0.0.0.0`. Studio raises a quick tunnel for WILDCARD binds only; on
-  127.0.0.1 there is nothing to publish, no URL is printed, and a working
-  feature reads as a broken one.
-* the negative lookahead on `api.trycloudflare.com`. That host appears in
-  cloudflared's own FAILURE lines ("failed to request quick Tunnel: Post
-  https://api.trycloudflare.com/tunnel"), so a naive match extracts a URL from
-  the message that says there is no URL. Studio's own matcher carries the same
-  lookahead, and this one is checked against both strings.
-"""
+"""The tunnel must refuse unauthenticated requests, or anyone holding the URL can drive inference."""
 
 from __future__ import annotations
 
@@ -54,10 +34,7 @@ def test_the_assertion_exists_and_is_driven_from_the_run():
 
 
 def _flat(text: str) -> str:
-    """Whitespace-stripped, because the repo's formatter reflows an argument
-    list to one entry per line and a guard matching the unformatted spelling
-    goes red on a reformat rather than on a regression. That has happened three
-    times in this payload now."""
+    """Whitespace-stripped, so a reformat of the argument list does not break the guard."""
     return "".join(text.split())
 
 
@@ -118,9 +95,7 @@ def test_the_no_tunnel_excuse_is_narrow():
     ]
     assert excuses, "the excuse branch is gone or is no longer gated on the URL"
     for node in excuses:
-        # node.body only. Walking the whole If would sweep in the `else`
-        # branch, which is where every real failure lives, and the guard would
-        # then fail on correct code -- it did, the first time this was written.
+        # node.body only: the else branch holds the real failures.
         appended = [
             n
             for stmt in node.body

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import functools
 import glob
 import hashlib
 import json
@@ -102,6 +103,11 @@ def _read_digest_cache(cache_path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _load_digest_cache() -> dict:
+    cache_path = _digest_cache_path()
+    return {} if cache_path is None else _read_digest_cache(cache_path)
+
+
 def _remember_digests(entries: Mapping[str, str]) -> None:
     cache_path = _digest_cache_path()
     if cache_path is None or not entries:
@@ -132,6 +138,7 @@ def cached_file_digest(
     *,
     compute: bool = True,
     learned: Optional[dict] = None,
+    persisted: Optional[Callable[[], Mapping[str, str]]] = None,
 ) -> tuple[Optional[str], int]:
     """(digest, bytes hashed). Stat metadata cannot prove unchanged bytes, so the persisted cache only serves ``compute=False`` estimates."""
     try:
@@ -140,10 +147,7 @@ def cached_file_digest(
         return None, 0
     key = _digest_cache_key(path, kind, st)
     if not compute:
-        cache_path = _digest_cache_path()
-        if cache_path is None:
-            return None, 0
-        cached = _read_digest_cache(cache_path).get(key)
+        cached = (persisted or _load_digest_cache)().get(key)
         return (cached, 0) if isinstance(cached, str) and digest_kind(cached) == kind else (None, 0)
     try:
         digest = file_digest(path, kind)
@@ -279,13 +283,19 @@ def find_reusable_copies(
                 if remote.get(path) == expected[path][1]:
                     matches[path] = candidate
     learned: dict[str, str] = {}
+    persisted = functools.cache(_load_digest_cache)
+
     for path, found in candidates.items():
         if path in matches:
             continue
         kind = digest_kind(expected[path][1])
         for candidate in found:
             local, spent = cached_file_digest(
-                candidate, kind, compute = allow_hashing, learned = learned
+                candidate,
+                kind,
+                compute = allow_hashing,
+                learned = learned,
+                persisted = persisted,
             )
             hashed += spent
             if local == expected[path][1]:

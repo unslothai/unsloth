@@ -436,7 +436,6 @@ def restore_resumable_partials() -> bool:
 
 def invalidate_probe_cache() -> None:
     """Forget every probed filesystem. Called when the cache location changes."""
-    # getattr: a test that replaced either probe outright has no cache to clear.
     for probe in (_lock_is_honoured_on, _filesystem_is_local_on):
         clear = getattr(probe, "cache_clear", None)
         if clear is not None:

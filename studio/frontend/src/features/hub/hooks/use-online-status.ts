@@ -48,11 +48,7 @@ function subscribeOnlineStatus(onStoreChange: () => void): () => void {
   };
 }
 
-/**
- * Legacy boolean view. Prefer useHubAvailability() in UI: this collapses
- * "backing off" and "proven reachable" into one bit, so every failure looked
- * identical on screen.
- */
+/** Legacy boolean view; prefer useHubAvailability(), which distinguishes backoff from reachable. */
 export function useOnlineStatus(): boolean {
   return useSyncExternalStore(
     subscribeOnlineStatus,
@@ -82,10 +78,7 @@ function getServerFailureSnapshot(): HubFailure | null {
   return null;
 }
 
-/**
- * Availability plus the reason for the last failure. The failure outlives the
- * backoff and clears only on success, so the UI keeps naming the real cause.
- */
+/** The failure outlives the backoff and clears only on success. */
 export function useHubAvailability(): HubAvailability {
   const phase = useSyncExternalStore(
     subscribeOnlineStatus,

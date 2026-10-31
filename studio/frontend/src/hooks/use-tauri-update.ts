@@ -32,7 +32,7 @@ export interface UpdateInfo {
   currentVersion: string;
   // Backend release this build pins, which preflight checks against.
   pypiVersion?: string;
-  // latest.json's `notes`: a static download blurb. Kept as metadata, not shown.
+  // latest.json's static download blurb; kept as metadata, not shown.
   body?: string;
   date?: string;
 }
@@ -79,7 +79,7 @@ const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
 const STARTUP_UPDATE_CHECK_DELAY_MS = 5000;
 const PERIODIC_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const BUNDLE_DOWNLOAD_POLL_MS = 500;
-// A native download that stalls without clearing the flag would otherwise hold the update forever.
+// A stalled native download would otherwise hold the update forever.
 const BUNDLE_DOWNLOAD_WAIT_MS = 10 * 60 * 1000;
 
 // Desktop quit never fires beforeunload, and only the renderer sees the shell installer.
@@ -131,8 +131,8 @@ export function useTauriUpdate(isExternalServer = false) {
   const lastCheckAtRef = useRef<number | null>(null);
   const checkingRef = useRef(false);
   const updatingRef = useRef(false);
-  // Windows kill-on-close: false once a re-arm has failed, and every path that starts a backend must check it.
-  // A webview reload resets this ref while the native job may still be disarmed, so the first gate asks natively.
+  // Windows kill-on-close: false after a failed re-arm; every backend start must check it. A reload
+  // resets this ref, so the first gate asks natively.
   const cleanupRearmedRef = useRef(true);
   const cleanupCheckedRef = useRef(false);
 
@@ -166,7 +166,7 @@ export function useTauriUpdate(isExternalServer = false) {
       setError(null);
       setDismissed(false);
     }
-    // An hourly re-offer of the version already on show must not reopen a dismissed banner.
+    // An hourly re-offer of the same version must not reopen a dismissed banner.
     updateStatus("available");
   }
 
@@ -207,7 +207,7 @@ export function useTauriUpdate(isExternalServer = false) {
     return failure;
   }
 
-  /** `resolved` is false when the policy is a fail-safe guess, not the real answer. */
+  /** `resolved` is false when the policy is a fail-safe guess. */
   async function resolveUpdatePolicy(): Promise<{
     policy: DesktopUpdatePolicy;
     resolved: boolean;
@@ -272,16 +272,14 @@ export function useTauriUpdate(isExternalServer = false) {
         // Self-gates on the real target_os, so it is authoritative even if policy is a guess.
         if (await checkManualUpdate(policy)) return;
         if (resolved) {
-          // Reaching here means the Rust side resolved the mode and still said manual, so this
-          // install has no in-app path: rpm, a plain tarball, or a .deb whose updater checks
-          // failed. latest.json carries linux-x86_64-deb now, but only linux-x86_64 otherwise,
-          // and that is an AppImage none of those installs can apply.
+          // Rust resolved manual mode: rpm, tarball, or a .deb whose updater failed; latest.json's
+          // linux-x86_64 entry is an AppImage they cannot apply.
           updateRef.current = null;
           replaceInfo(null);
           updateStatus("idle");
           return;
         }
-        // Guessed policy, no manual offer: macOS, Windows, AppImage and .deb do have an in-app path.
+        // Guessed policy, no manual offer: macOS, Windows, AppImage and .deb have an in-app path.
       }
 
       const update = await checkDesktopUpdate();
@@ -357,18 +355,17 @@ export function useTauriUpdate(isExternalServer = false) {
     setUpdateProgress(0);
     const version = updateRef.current?.version;
     if (!version) throw new Error("No desktop update has been checked.");
-    // Attached only once a download is in flight and released whichever way the wait ends.
     let unlisten: (() => void) | null = null;
     const waitUntil = Date.now() + BUNDLE_DOWNLOAD_WAIT_MS;
     try {
       for (;;) {
-        // A bundle retained by an earlier attempt is reused, so a retry usually stops here.
+        // A bundle retained by an earlier attempt is reused.
         const bundle = await desktopUpdateBundleStatus();
         if (bundle.downloaded && sameUpdateVersion(bundle.version, version)) {
           setUpdateProgress(100);
           return;
         }
-        // A webview reload leaves the native download running with no listener, and a second one is refused.
+        // A reload leaves the native download running with no listener, and a second one is refused.
         if (!bundle.downloading) break;
         if (Date.now() >= waitUntil) break;
         if (!unlisten) {
@@ -455,27 +452,27 @@ export function useTauriUpdate(isExternalServer = false) {
       setUpdatePhase("shell_install");
       updateStatus("installing");
 
-      // `update::is_update_running` is already false here, and quitting mid-install leaves a half-updated app.
+      // `update::is_update_running` is already false; quitting mid-install leaves a half-updated app.
       publishShellUpdateActive(true);
       try {
         await installDesktopUpdate();
       } catch (installError) {
-        // Failed or cancelled: we keep running, so the stood-down cleanup has to come back.
+        // Failed or cancelled: bring the stood-down cleanup back.
         await resumeCleanup();
         throw installError;
       } finally {
         publishShellUpdateActive(false);
       }
 
-      // Deliberately NOT re-arming kill-on-close before the restart: relaunch() starts the replacement as a child,
-      // which inherits this job. The handoff stays in the recovery scope, or a throw leaves cleanup stood down.
+      // No kill-on-close re-arm: relaunch() starts the replacement as a child inheriting this job.
+      // Kept in the recovery scope so a throw restores cleanup.
       try {
         // relaunch() re-execs with the original argv, so flag the inherited --hidden as not a login start.
         await invoke("mark_in_app_relaunch");
         const { relaunch } = await import("@tauri-apps/plugin-process");
         await relaunch();
       } catch (relaunchError) {
-        // No replacement process, so the marker would outlive it and unhide a later login start.
+        // No replacement process, so the marker would unhide a later login start.
         await invoke("clear_in_app_relaunch").catch(() => {});
         await resumeCleanup();
         throw relaunchError;
@@ -485,7 +482,7 @@ export function useTauriUpdate(isExternalServer = false) {
       const msg = String(e);
 
       if (phaseRef.current === "shell_download" || phaseRef.current === "shell_install") {
-        // A backend started under a job with kill-on-close disabled is the orphan this prevents.
+        // Starting a backend with kill-on-close disabled would orphan it.
         if (!(await crashCleanupReady())) {
           retainFailure(msg, phaseRef.current ?? "shell_install");
           return;
@@ -531,7 +528,7 @@ export function useTauriUpdate(isExternalServer = false) {
         const { invoke } = await import("@tauri-apps/api/core");
         cleanupRearmedRef.current = await invoke<boolean>("desktop_update_cleanup_armed");
       } catch {
-        // The one answer we cannot assume on the desktop: fail closed and let the gate re-arm.
+        // Fail closed on desktop and let the gate re-arm.
         cleanupRearmedRef.current = !isTauri;
       }
     }
@@ -546,7 +543,6 @@ export function useTauriUpdate(isExternalServer = false) {
 
   async function skipAndRestart() {
     const skippedError = error;
-    // Same gate as the recovery path: this is offered on every error.
     if (!(await crashCleanupReady())) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");

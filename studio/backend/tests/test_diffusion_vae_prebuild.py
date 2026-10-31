@@ -15,8 +15,14 @@ from pathlib import Path
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import diffusion_vae_prebuild as prebuild  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -75,12 +81,12 @@ def test_restart_and_kill_switch_never_spawn(monkeypatch):
     monkeypatch.setattr(prebuild, "_spawn", lambda job, logger: spawned.append(job) or True)
     monkeypatch.setattr(prebuild, "plan", lambda pipe: {"device": 0})
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (64 * 1024**3, 96 * 1024**3))
     pipe = types.SimpleNamespace()
-    assert (
-        prebuild.maybe_kick(pipe, types.SimpleNamespace(hit = True)) is False
-    )  # restart: cache already warm
-    assert prebuild.maybe_kick(pipe, None) is False  # no compile bundle at all
+    assert prebuild.maybe_kick(pipe, types.SimpleNamespace(hit = True)) is False
+    assert prebuild.maybe_kick(pipe, None) is False
     monkeypatch.setenv("UNSLOTH_DIFFUSION_VAE_PREBUILD", "0")
     assert prebuild.maybe_kick(pipe, types.SimpleNamespace(hit = False)) is False
     monkeypatch.delenv("UNSLOTH_DIFFUSION_VAE_PREBUILD")
@@ -186,10 +192,7 @@ def _run(tmp_path: Path, mode: str) -> dict:
 def test_child_fills_the_triton_cache_the_full_size_decode_then_reads(tmp_path):
     child = _run(tmp_path, "child")
     if "skip" in child:
-        pytest.skip(
-            child["skip"]
-        )  # e.g. Triton absent / fused passes refuse this GPU: nothing to prebuild
+        pytest.skip(child["skip"])
     assert child["files"] > 0
     parent = _run(tmp_path, "parent")
-    # A full-resolution decode in a fresh process compiles nothing new: every kernel came from the child's 64x64 decode.
     assert parent["after"] == parent["before"], parent

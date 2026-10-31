@@ -9,10 +9,8 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
-# model_config imports this module.
 
-
-# model_config imports this module, so the naming helpers are pulled in per call rather than at import; they stay where they are because they are constants and pure functions shared with non-drafter code (gguf_variants, the auto download paths), so the GGUF naming rules keep one home.
+# Imported per call: model_config imports this module.
 def is_published_drafter_filename(
     name: str,
     *,

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createMinimumSizeApplier,
   finalizeAppWindowLayout,
   measureWindowLayout,
   observeDevicePixelRatio,
@@ -22,7 +23,6 @@ import {
   fitWindowSize,
 } from "../src/app/window-layout.ts";
 
-// A work area is the panel minus the taskbar, in logical pixels.
 function workArea(
   width: number,
   height: number,
@@ -86,7 +86,6 @@ test("waits for the first native restore event before settling", () => {
 test("keeps the nominal minimum and preferred size on a roomy work area", () => {
   const bounds = calculateWindowSizeBounds({ width: 1920, height: 1040 });
 
-  // The resize floor is a companion width, not the size a first launch opens.
   assert.deepEqual(bounds.minimum, MINIMUM_APP_WINDOW_SIZE);
   assert.deepEqual(calculateFirstAppWindowSize(bounds), {
     width: 1440,
@@ -98,7 +97,6 @@ test("lets a window stay squeezed to a companion width", () => {
   const bounds = calculateWindowSizeBounds({ width: 1920, height: 1040 });
   const squeezed = { width: 480, height: 700 };
 
-  // Nothing widens it back to a desktop size once the user has narrowed it.
   assert.deepEqual(
     constrainWindowSize(squeezed, bounds.minimum, bounds),
     squeezed,
@@ -139,8 +137,7 @@ test("rearms the resolution query on every pixel ratio change", () => {
     changes += 1;
   });
 
-  // The query that reports a change is the one that stopped matching, so the
-  // next change has to come off a query for the ratio now in force.
+  // The query that reports a change stopped matching, so re-query for the new ratio.
   change(1.5);
   assert.equal(changes, 1);
   change(2);
@@ -156,12 +153,10 @@ test("rearms the resolution query on every pixel ratio change", () => {
 });
 
 test("never opens a first window below the resize floor", () => {
-  // Small enough that the nominal size relaxes: 85% of it is under the floor.
   const bounds = calculateWindowSizeBounds({ width: 700, height: 500 });
   const first = calculateFirstAppWindowSize(bounds);
 
-  // Opening under the floor leaves the size constraints to grow the window
-  // afterwards, away from the centre it was just placed on.
+  // Opening under the floor lets the size constraints grow the window off-centre.
   assert.ok(first.width >= bounds.minimum.width, `width ${first.width}`);
   assert.ok(first.height >= bounds.minimum.height, `height ${first.height}`);
   assert.deepEqual(first, { width: 595, height: 480 });
@@ -170,14 +165,12 @@ test("never opens a first window below the resize floor", () => {
 test("keeps the resize floor a CSS-pixel floor under webview zoom", () => {
   const workAreaSize = { width: 1920, height: 1040 };
 
-  // Windows text scaling: the window measures in logical pixels but lays out
-  // in fewer CSS pixels, so the floor has to grow by the same ratio.
+  // Windows text scaling: logical pixels lay out in fewer CSS pixels, so the floor grows.
   const zoomed = calculateWindowSizeBounds(workAreaSize, 1.5);
   assert.deepEqual(zoomed.minimum, {
     width: MINIMUM_APP_WINDOW_SIZE.width * 1.5,
     height: MINIMUM_APP_WINDOW_SIZE.height * 1.5,
   });
-  // No zoom, no change: every platform without text scaling.
   assert.deepEqual(
     calculateWindowSizeBounds(workAreaSize, 1).minimum,
     MINIMUM_APP_WINDOW_SIZE,
@@ -190,7 +183,6 @@ test("fits a 1366x768 panel at 125% scaling above the taskbar", () => {
   assert.deepEqual(bounds.maximum, { width: 1092, height: 582 });
   const size = calculateFirstAppWindowSize(bounds);
   assert.deepEqual(size, { width: 900, height: 556 });
-  // The window clears the taskbar.
   assert.ok(size.height <= (768 - 40) / 1.25);
 });
 
@@ -244,7 +236,6 @@ test("relaxes a minimum that does not fit, keeping room to resize", () => {
       minimum.height <= maximum.height,
       `minimum ${minimum.height} exceeds work area ${maximum.height}`,
     );
-    // Keep a vertical resize range.
     assert.ok(
       minimum.height < maximum.height,
       `minimum ${minimum.height} leaves no vertical resize range`,
@@ -259,7 +250,6 @@ test("fits the non-resizable setup window to the available area", () => {
     width: 760,
     height: 485,
   });
-  // Roomy panels retain the preferred size.
   assert.deepEqual(
     fitWindowSize(
       PREFERRED_SETUP_WINDOW_SIZE,
@@ -337,7 +327,6 @@ test("centers against the work area of the monitor it is on", () => {
     calculateCenteredPosition(secondary, { width: 1125, height: 728 }),
     { x: 2040, y: 40 },
   );
-  // Oversized windows pin to the work-area origin.
   assert.deepEqual(
     calculateCenteredPosition(secondary, { width: 1500, height: 800 }),
     { x: 1920, y: 40 },
@@ -430,7 +419,6 @@ test("remeasures a restored window after show on its compact secondary", async (
   ]);
   assert.deepEqual(constrainedMinimum, MINIMUM_APP_WINDOW_SIZE);
   assert.deepEqual(enforcementBounds, { minimum: MINIMUM_APP_WINDOW_SIZE });
-  // The restored size survives: the floor no longer inflates a saved window.
   assert.deepEqual(savedSize, { width: 900, height: 556 });
 });
 
@@ -588,4 +576,84 @@ test("stale layouts do not show the window", async () => {
   });
 
   assert.equal(shown, false);
+});
+
+function fakeMinimumSizeWindow(restored: boolean) {
+  const state = {
+    restored,
+    applied: [] as { width: number; height: number }[],
+    handlers: [] as (() => void)[],
+    unlistened: 0,
+  };
+  const applier = createMinimumSizeApplier({
+    isRestored: async () => state.restored,
+    onResized: async (handler) => {
+      state.handlers.push(handler);
+      return () => {
+        state.unlistened += 1;
+      };
+    },
+    applyFloor: async (minimum) => {
+      state.applied.push(minimum);
+    },
+  });
+  const resize = async (nextRestored: boolean) => {
+    state.restored = nextRestored;
+    for (const handler of state.handlers) handler();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  return { state, applier, resize };
+}
+
+test("a restored window gets its floor at once", async () => {
+  const { state, applier } = fakeMinimumSizeWindow(true);
+  await applier.apply({ width: 900, height: 600 });
+  assert.deepEqual(state.applied, [{ width: 900, height: 600 }]);
+  assert.equal(state.handlers.length, 0);
+});
+
+test("a maximized window keeps maximized until it is restored", async () => {
+  const { state, applier, resize } = fakeMinimumSizeWindow(false);
+  await applier.apply({ width: 900, height: 600 });
+  await applier.apply({ width: 960, height: 640 });
+  assert.deepEqual(state.applied, []);
+  assert.equal(state.handlers.length, 1);
+
+  await resize(false);
+  assert.deepEqual(state.applied, []);
+
+  await resize(true);
+  assert.deepEqual(state.applied, [{ width: 960, height: 640 }]);
+  assert.equal(state.unlistened, 1);
+
+  await resize(true);
+  assert.equal(state.applied.length, 1);
+});
+
+test("a restore during listener setup still applies the floor", async () => {
+  const applied: { width: number; height: number }[] = [];
+  let restored = false;
+  const applier = createMinimumSizeApplier({
+    isRestored: async () => restored,
+    onResized: async () => {
+      restored = true;
+      return () => undefined;
+    },
+    applyFloor: async (minimum) => {
+      applied.push(minimum);
+    },
+  });
+  await applier.apply({ width: 900, height: 600 });
+  assert.deepEqual(applied, [{ width: 900, height: 600 }]);
+});
+
+test("setup cancels a floor still waiting for the restore", async () => {
+  const { state, applier, resize } = fakeMinimumSizeWindow(false);
+  await applier.apply({ width: 900, height: 600 });
+  applier.cancel();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(state.unlistened, 1);
+
+  await resize(true);
+  assert.deepEqual(state.applied, []);
 });

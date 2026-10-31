@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Guards the Windows Pester bootstrap against the PSGallery flake coming back.
-
-The setup.ps1 Pester job installs its own Pester. Twice now that install has
-broken CI on unrelated PRs, and both times the failure was hidden:
-
-1. PSGallery is intermittently missing from the repository list on GitHub's
-   Windows runners, so `Set-PSRepository PSGallery` died with "No repository
-   with the name 'PSGallery' was found." (#6892)
-
-2. The guard added for (1) called `Register-PSRepository -Default` with
-   `-ErrorAction SilentlyContinue`. On a runner where the legacy
-   PackageManagement provider cannot bootstrap nuget.exe, that call fails with
-   "NuGet.Commands.CommandException: Missing option value for: '-source'" --
-   silently. The next line then died with the misleading message from (1), so
-   the logs pointed at the wrong cause.
-
-The bootstrap now prefers PSResourceGet (which resolves PSGallery over HTTPS and
-never shells out to nuget.exe), retries, and verifies the module actually
-imported. These tests fail if any of that is removed.
-"""
+"""Pins Pester bootstrap to PSResourceGet, with retries and an import check, since PSGallery flakes."""
 
 from pathlib import Path
 
@@ -33,13 +14,7 @@ _GUARD_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pester-guard-ci.yml"
 
 
 def _pester_steps() -> list[dict]:
-    """Every step of whichever job carries the Pester phase.
-
-    Found by content rather than by job id: the phase used to be a job called `pester` and
-    is now one phase of a job that groups the small Windows checks by runner image, and
-    keying on the id meant this whole file went red on a rename that changed nothing it
-    asserts.
-    """
+    """Matches steps by the Install Pester name, not the job id, so a job rename cannot break it."""
     workflow = yaml.safe_load(_WORKFLOW.read_text(encoding = "utf-8"))
     for job in workflow["jobs"].values():
         steps = job.get("steps") or []
@@ -75,8 +50,7 @@ def test_registration_failures_are_never_silenced():
                 "registering the gallery must fail loudly, not silently leave it unregistered: "
                 f"{stripped}"
             )
-    # Without this, deleting both registrations would leave the loop with nothing to inspect and the test would pass on
-    # an unregistered-PSGallery runner.
+    # Otherwise deleting both registrations would pass on an unregistered-PSGallery runner.
     assert seen == {
         "Register-PSRepository",
         "Register-PSResourceRepository",
@@ -86,13 +60,11 @@ def test_registration_failures_are_never_silenced():
 
 def test_psresourceget_is_preferred_over_the_nuget_bootstrap():
     run = _bootstrap_step()["run"]
-    # Match the invocation, not the `Get-Command Install-PSResource` probe: the probe
-    # alone would satisfy a bare substring check even with the branch deleted.
+    # Match the invocation: the `Get-Command` probe alone would satisfy a substring check.
     assert "Install-PSResource -Name" in run, "the PSResourceGet branch must actually install"
     assert (
         "$usePSResourceGet = $hasPSResourceGet" in run
     ), "PSResourceGet must be the initial choice, not just a reachable fallback"
-    # The legacy path may remain as a fallback, but must not be the only option.
     assert run.index("Install-PSResource -Name") < run.index(
         "Install-Module "
     ), "PSResourceGet must be tried before the nuget.exe-backed Install-Module path"
@@ -125,8 +97,7 @@ def test_the_guard_runs_from_the_workflow_it_guards():
     """No pytest workflow filters on this file, so the job must run the guard itself."""
     workflow = yaml.safe_load(_WORKFLOW.read_text(encoding = "utf-8"))
     on = workflow.get("on") or workflow.get(True)
-    # as_posix(), not str(): this runs on windows-latest, where str() would give
-    # backslashes and never match the forward-slash paths in the YAML.
+    # as_posix(): this runs on windows-latest, where str() gives backslashes.
     assert _WORKFLOW.relative_to(REPO_ROOT).as_posix() in on["pull_request"]["paths"]
     assert any(
         Path(__file__).name in (s.get("run") or "") for s in _pester_steps()

@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The post-training save must be visible, and must stay non-terminal (#7897).
-
-After the last optimizer step the worker still merges and saves, emitting no step
-updates, so /api/train/status reported phase="training" at 100% throughout,
-indistinguishable from a hang. The `finalizing` phase names it.
-
-Two invariants matter more than the label:
-  1. Reaching total_steps must never imply completion; `completed` still comes
-     only from progress.is_completed.
-  2. Every phase the route emits must be in TrainingStatus's Literal, or pydantic
-     raises ValidationError and the blanket handler turns /status into a 500.
-"""
+"""Post-training save shows as finalizing, not completed; reaching total_steps must not imply done."""
 
 from __future__ import annotations
 
@@ -49,15 +38,12 @@ def _progress(step = 0, total_steps = 0):
     return SimpleNamespace(step = step, total_steps = total_steps)
 
 
-# _is_finalizing
-
-
 @pytest.mark.parametrize(
     "step, total, msg, expected",
     [
         (126, 126, "training in progress...", True),  # the reported symptom
-        (127, 126, "training in progress...", True),  # defensive overshoot
-        (125, 126, "training in progress...", False),  # steps remain
+        (127, 126, "training in progress...", True),
+        (125, 126, "training in progress...", False),
         (0, 126, "training in progress...", False),
         (0, 0, "training in progress...", False),  # total unknown -> inert
         (5, 0, "training in progress...", False),
@@ -79,9 +65,6 @@ def test_is_finalizing_tolerates_missing_attributes():
     assert fn(SimpleNamespace(step = None, total_steps = None), "training") is False
 
 
-# Contract guards
-
-
 def _phase_literals() -> set[str]:
     src = _MODELS_TRAINING.read_text(encoding = "utf-8")
     tree = ast.parse(src)
@@ -95,7 +78,6 @@ def _phase_literals() -> set[str]:
                 and stmt.target.id == "phase"
             ):
                 sub = stmt.annotation
-                # phase: Literal[...] = Field(...)
                 while isinstance(sub, ast.Subscript) and not (
                     isinstance(sub.value, ast.Name) and sub.value.id == "Literal"
                 ):
@@ -139,7 +121,6 @@ def test_finalizing_is_declared():
 def test_completion_still_comes_only_from_is_completed():
     """100% must not be promoted to a terminal state."""
     src = _ROUTES_TRAINING.read_text(encoding = "utf-8")
-    # Follow the phase derivation wherever it lives: it moved into _build_training_status.
     fn_src = next(
         seg
         for seg in (
@@ -153,7 +134,6 @@ def test_completion_still_comes_only_from_is_completed():
     completed_branch = re.search(r'phase\s*=\s*"completed"', fn_src)
     assert completed_branch, "no completed branch found"
     preceding = fn_src[: completed_branch.start()]
-    # The guard immediately governing `completed` must still be is_completed.
     assert (
         "is_completed" in preceding.rsplit("elif", 1)[-1]
     ), "the `completed` phase is no longer gated on progress.is_completed"
@@ -172,3 +152,8 @@ def test_frontend_phase_union_covers_the_backend_literal():
     union = set(re.findall(r'\|\s*"([a-z_]+)"', runtime_ts.read_text(encoding = "utf-8")))
     missing = _phase_literals() - union
     assert not missing, f"TrainingPhase is missing backend phases: {sorted(missing)}"
+
+
+def test_a_stopped_run_reports_no_eta():
+    src = _ROUTES_TRAINING.read_text(encoding = "utf-8")
+    assert '"eta_seconds": getattr(progress, "eta_seconds", None) if is_active else None' in src

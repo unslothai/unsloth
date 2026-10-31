@@ -9,14 +9,9 @@ import {
 } from "./hub-infinite-scroll-policy";
 
 /**
-* IntersectionObserver sentinel for infinite scroll, plus a ResizeObserver fallback that
-* rechecks a sentinel still inside the prefetch range. Fallback firings are coalesced to one
-* frame; concurrency is gated at the data-source layer.
-*
-* `signal` is a progress marker so the fit check re-runs after a fetch even when the page
-* filter rejected every new row and the DOM didn't change. `DEFAULT_MAX_AUTO_FILL_FETCHES`
-* caps consecutive automatic pages that add no visible results.
-*/
+ * IntersectionObserver sentinel plus a ResizeObserver fallback. `signal` re-runs the fit check
+ * after a fetch even when the filter rejected every new row.
+ */
 const DEFAULT_MAX_AUTO_FILL_FETCHES = 40;
 const PREFETCH_MARGIN_PX = 200;
 
@@ -177,8 +172,7 @@ export function useHubInfiniteScroll(
     [],
   );
 
-  // Fires when the stable sentinel scrolls into view. Omits `signal` on purpose:
-  // rebuilding per batch could drop an intersection. Refills fall to the auto-fire effect.
+  // Omits `signal` on purpose: rebuilding per batch could drop an intersection.
   useEffect(() => {
     if (!enabled) {
       return;
@@ -212,8 +206,6 @@ export function useHubInfiniteScroll(
     return () => observer.disconnect();
   }, [enabled, requestAutomaticPage, sentinelNode]);
 
-  // Recheck after progress, filter resets, and scroll-root resizes so a sentinel
-  // that stays intersecting can continue paging without rebuilding its observer.
   useEffect(() => {
     if (!enabled) {
       wasEnabledRef.current = false;

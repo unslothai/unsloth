@@ -9,6 +9,7 @@ import { gfm } from "micromark-extension-gfm";
 import { gfmFromMarkdown } from "mdast-util-gfm";
 import {
   ReasoningTranscriptIndex,
+  cachedReasoningTranscriptIndex,
   findReasoningAnchor,
   REASONING_FRAGMENT_CHARACTERS,
 } from "../src/components/assistant-ui/reasoning-transcript-index.ts";
@@ -39,6 +40,50 @@ test("long prose remains lossless and completed fragments keep their identity", 
     after.map((part) => part.text).join(""),
     source + "Another thought",
   );
+});
+
+test("rewrites in any thinking segment advance the transcript generation", () => {
+  const index = new ReasoningTranscriptIndex();
+  const first = "Before the tool call.\n\n";
+  const second = "After the tool call.\n\n";
+  const before = index.update([first, second]);
+  const generation = index.generation;
+  const after = index.update([first, "Revised after the tool call.\n\n"]);
+  assert.equal(after[0], before[0]);
+  assert.notEqual(after[1].key, before[1].key);
+  assert.ok(index.generation > generation);
+
+  const restarted = index.generation;
+  index.update(["Revised before the tool call.\n\n", second]);
+  assert.ok(index.generation > restarted);
+});
+
+test("streamed appends and additional segments preserve the transcript generation", () => {
+  const index = new ReasoningTranscriptIndex();
+  index.update(["First thought.\n\n"]);
+  const generation = index.generation;
+  for (const sources of [
+    ["First thought.\n\n"],
+    ["First thought.\n\nMore thoughts."],
+    ["First thought.\n\nMore thoughts.", ""],
+    ["First thought.\n\nMore thoughts.", "After the tool call."],
+  ]) {
+    index.update(sources);
+    assert.equal(index.generation, generation);
+  }
+});
+
+test("removing and replacing a later segment cannot reuse its old transcript generation", () => {
+  const index = new ReasoningTranscriptIndex();
+  index.update(["First thought.", "Second thought."]);
+  const before = index.generation;
+  index.update(["First thought."]);
+  assert.ok(index.generation > before);
+  const removed = index.generation;
+  index.update(["First thought.", "Replacement thought."]);
+  assert.equal(index.generation, removed);
+  index.update(["First thought.", ""]);
+  assert.ok(index.generation > removed);
 });
 
 test("a giant fence does not swallow the surrounding prose", () => {
@@ -405,4 +450,21 @@ test("a list split between items does not invent a nested continuation", () => {
       list.children.every((item) => item.children[0].type === "paragraph"),
     );
   }
+});
+
+test("a remount reuses the index it parsed before, bounded to the last eight messages", () => {
+  const first = cachedReasoningTranscriptIndex("m1");
+  assert.equal(cachedReasoningTranscriptIndex("m1"), first);
+  const source = "Earlier paragraph.\n\n```js\nconst x = 1;\n```\n\nLater paragraph.";
+  const fragments = first.update([source]);
+  const again = cachedReasoningTranscriptIndex("m1").update([source]);
+  assert.equal(again.length, fragments.length);
+  for (let i = 0; i < fragments.length; i += 1) {
+    assert.equal(again[i], fragments[i], "the same documents hand back the fragments already parsed");
+  }
+  for (let i = 2; i <= 9; i += 1) cachedReasoningTranscriptIndex(`m${i}`);
+  assert.notEqual(cachedReasoningTranscriptIndex("m1"), first, "the oldest entry was evicted");
+  const warm = cachedReasoningTranscriptIndex("m3");
+  for (let i = 10; i <= 16; i += 1) cachedReasoningTranscriptIndex(`m${i}`);
+  assert.equal(cachedReasoningTranscriptIndex("m3"), warm, "a recently used entry survives");
 });

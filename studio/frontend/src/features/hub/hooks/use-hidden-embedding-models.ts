@@ -5,7 +5,6 @@ import { loadEmbeddingModelSettings } from "@/features/settings";
 import { useEffect, useState } from "react";
 import { useInventoryVersion } from "../stores/inventory-events";
 
-/** Backend-resolved embedding repos that optimistic inventory rows must hide. */
 export function useHiddenEmbeddingModelIds(
   enabled: boolean,
 ): ReadonlySet<string> {

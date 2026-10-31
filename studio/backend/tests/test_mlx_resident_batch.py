@@ -79,7 +79,7 @@ class _Session:
         self.rows.remove(handle)
         self.settled[handle] = self.stats_at_retire.get(handle, {})
 
-    def step(self):
+    def step(self, waiting):
         for handle in list(self.rows):
             events = self.script.get(handle) or []
             if not events:
@@ -159,6 +159,71 @@ def test_replies_a_command_asked_for_together_are_addressed_and_counted_by_row()
     assert sorted(m["stats"]["n"] for m in done) == [1, 2]
     assert [m["type"] for m in resp.sent][-1] == "gen_done"
     assert resp.sent[-1]["stats"] is None
+
+
+def test_a_reply_whose_own_decode_fails_is_answered_alone_and_the_batch_decodes_on():
+    batch, resp = _batch()
+    batch.admit(_cmd("r1", rows = [{"seed": 1}, {"seed": 2}], parallel_slots = 4), None)
+    batch.admit(_cmd("r2", parallel_slots = 4), None)
+    batch.admit(_cmd("r3", parallel_slots = 4), None)
+    session = batch.session
+
+    def step(_waiting):
+        session.rows.remove(("r1", 0))
+        session.rows.remove(("r3", None))
+        yield ("r1", 0), ValueError("schema")
+        yield ("r3", None), KeyError("bind")
+        yield ("r2", None), "b"
+        # The failed reply's sibling ending in the same step does not answer it as done.
+        yield ("r1", 1), None
+
+    session.step = step
+    batch.step()
+    sent = [(m["type"], m["request_id"], m.get("error")) for m in resp.sent]
+    assert sent == [
+        ("gen_error", "r1", "schema"),
+        ("gen_error", "r3", "'bind'"),
+        ("token", "r2", None),
+    ]
+    assert "ValueError" in resp.sent[0]["stack"] and "KeyError" in resp.sent[1]["stack"]
+    assert session.rows == [("r2", None)] and not session.closed
+
+
+def test_a_failed_reply_whose_siblings_cannot_be_withdrawn_is_still_answered():
+    batch, resp = _batch()
+    batch.admit(_cmd("r1", rows = [{"seed": 1}, {"seed": 2}], parallel_slots = 4), None)
+    batch.admit(_cmd("r2", parallel_slots = 4), None)
+    session = batch.session
+
+    def step(_waiting):
+        session.rows.remove(("r1", 0))
+        yield ("r1", 0), ValueError("schema")
+
+    def withdraw(_handles):
+        raise RuntimeError("metal")
+        yield
+
+    session.step, session.withdraw = step, withdraw
+    batch.step()
+    errors = {m["request_id"]: m["error"] for m in resp.sent if m["type"] == "gen_error"}
+    assert errors == {"r1": "schema", "r2": "schema"} and batch.session is None
+
+
+def test_raw_completion_rows_join_the_batch_and_decode_alone_through_the_completion_path():
+    batch, _ = _batch()
+    cmd = _cmd(
+        rows = [{"prompt_ids": [5], "seed": 1}, {"prompt_ids": [6], "seed": 2}],
+        penalty_window = 3,
+        parallel_slots = 2,
+    )
+    assert batch.unavailable_reason(cmd) is None and batch.admit(cmd, None)
+    assert [(r["prompt_ids"], r["penalty_window"]) for _, r in batch.session.admitted] == [
+        ([5], 3),
+        ([6], 3),
+    ]
+    backend = SimpleNamespace(generate_completion = lambda ids, **kw: iter([f"{ids} {kw['seed']}"]))
+    apart = worker._rows_apart(backend, [{"prompt_ids": [5], "seed": 1}], threading.Event(), [None])
+    assert list(apart) == [(0, "[5] 1"), (0, None)]
 
 
 IDLE = object()

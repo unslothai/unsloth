@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A Stop before the turn produced anything must not strand two user turns (#9484).
-
-The abandoned turn serialises to a lone empty assistant message, every backend drops it, and
-strict templates (Ministral, Gemma) then refuse the two user turns that are left touching.
-``toOpenAIMessages`` fills it with ``incompleteLabel`` instead, so the prompt stays on the wire
-and roles still alternate (#10428). Refusals and silent empty turns still drop with theirs.
-
-The prune, ``toOpenAIMessages`` and ``serializeAssistantReplayMessages`` are sliced verbatim out
-of the studio sources and run under ``node`` (see ``_node_harness``), so what is asserted is the
-wire shape rather than the spelling of the source. ``cancelled-turn-history-prune.test.ts`` pins
-the wiring; this pins what it does, and the refusal-only prune the fix replaces is run beside it
-so the case states the defect rather than only the repair.
-"""
+"""A Stop before any output fills the turn with incompleteLabel, so user turns still alternate."""
 
 from __future__ import annotations
 
@@ -36,7 +24,6 @@ TEMP = WORKDIR / "temp" / "cancelled_turn_history_prune"
 
 SOURCES = (ADAPTER, CODEX, CONTINUATION)
 
-# Fixtures the sliced code reads through.
 HARNESS = """
 // @ts-nocheck
 function readCodexReasoning(_metadata: any): any {
@@ -84,12 +71,7 @@ def _adapter_slice(start: str, end: str) -> str:
 
 
 def _send_path_slice() -> str:
-    """The send path's own outbound build, wrapped so the test runs it instead of reading it.
-
-    Sliced out of ``createOpenAIStreamAdapter``. Wiring assertions on the source text pass just
-    as happily against a send path that went back to ``messages.flatMap(...)``; this one only
-    passes while the payload is actually built from pruned history.
-    """
+    """Slices the real outbound build from the adapter so the test runs it, not its source text."""
     body = slice_between(
         read(ADAPTER),
         "      const survivingMessages = pruneOutboundHistory(messages, replayReasoning);",
@@ -187,7 +169,7 @@ CANCELLED = (
     '{ role: "assistant", content: [], status: { type: "incomplete" },'
     ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }'
 )
-# Nothing yielded, so status is the only record; a failure has the same shape under "error".
+# Nothing yielded, so status is the only record; a failure looks the same under "error".
 STOPPED_UNMARKED = (
     '{ role: "assistant", content: [], status: { type: "incomplete", reason: "cancelled" } }'
 )
@@ -248,12 +230,7 @@ def test_a_reply_that_produced_text_is_kept_with_its_prompt():
 
 
 def test_a_stop_during_reasoning_keeps_its_prompt_on_both_serialisations():
-    """An incomplete turn never replays its reasoning, so the local and external builds agree.
-
-    They pass different ``includeReasoningContent``: the recount always sends true, the request
-    sends ``!isExternalRequest``. A turn cut mid-think must keep the prompt either way or
-    the two paths would price and send different histories.
-    """
+    """A turn stopped mid-reasoning keeps its prompt on both paths, which pass different reasoning flags."""
     thinking = (
         '{ role: "assistant", content: [{ type: "reasoning", text: "let me think" }],'
         ' status: { type: "incomplete" } }'
@@ -302,13 +279,7 @@ def test_back_to_back_stops_keep_every_interrupted_prompt():
 
 
 def test_a_reply_that_finished_on_reasoning_alone_keeps_its_prompt():
-    """A complete reasoning-only turn is a reply, not a Stop.
-
-    External requests serialise with ``includeReasoningContent = false``, which strips the
-    reasoning and leaves an empty assistant message. Reading only the wire shape called that
-    abandoned and deleted the prompt that produced it, so the question the user actually asked
-    left the context on hosted providers but survived on local ones.
-    """
+    """A reasoning-only reply is a real answer, not a Stop, so its prompt stays on hosted providers too."""
     answered = '{ role: "assistant", content: [{ type: "reasoning", text: "thought" }] }'
     for include_reasoning in ("true", "false"):
         out = _run(_script(f"[{_user('first')}, {answered}, {_user('second')}]", include_reasoning))
@@ -328,16 +299,7 @@ def test_a_reply_that_finished_with_no_text_at_all_is_still_abandoned():
 
 
 def test_a_tool_call_the_replay_cannot_carry_prunes_with_its_prompt():
-    """A resultless local call is dropped by the serialiser, so the turn carries nothing.
-
-    OpenAI rejects an assistant ``tool_calls`` turn whose ids have no responding ``role="tool"``
-    message, so the serialiser cannot rescue this by emitting the call -- it skips it, and the
-    turn reaches the provider as the same lone empty assistant message a Stop with no output
-    produces. Treating the call as payload only moved the defect one hop: the backend drops the
-    empty assistant (``_drop_empty_assistant_sentinels``) and then merges the two user turns
-    that are left touching (``_coalesce_consecutive_user_turns``), which resends the cancelled
-    prompt glued to the next one and invites the tool request the user Stopped.
-    """
+    """A tool call the replay drops leaves an empty turn, so the prompt is pruned with it, not merged."""
     stopped = (
         ', status: { type: "incomplete" },'
         ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }'
@@ -353,7 +315,6 @@ def test_a_tool_call_the_replay_cannot_carry_prunes_with_its_prompt():
             "measuring the defect it was written for"
         )
         if marker == stopped:
-            # Stopped, so the prompt is history. The unreplayable call stays off the wire.
             assert out["kept"] == ["user", "assistant", "user"], marker
             assert out["keptText"] == ["first", "second"]
             assert out["wire"] == ["user", "assistant", "user"]
@@ -364,13 +325,7 @@ def test_a_tool_call_the_replay_cannot_carry_prunes_with_its_prompt():
 
 
 def test_a_resultless_call_that_replays_without_role_tool_keeps_its_prompt():
-    """Resultless is not the test; unreplayable is.
-
-    Provider-native builtin cards replay through ``extra_content``/native parts and never
-    produce a ``role="tool"`` message, so ``canReplayToolCallWithoutRoleTool`` lets the
-    serialiser emit the call with no result. That call does reach the provider, so the prompt
-    that asked for it is history and pruning the pair would delete it.
-    """
+    """A resultless call that replays without role=tool still reaches the provider, so its prompt stays."""
     builtin = (
         '{ role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1",'
         ' toolName: "web_search", args: "{}", canReplay: true }],'
@@ -383,12 +338,7 @@ def test_a_resultless_call_that_replays_without_role_tool_keeps_its_prompt():
 
 
 def test_a_trailing_abandoned_turn_keeps_the_prompt_it_followed():
-    """Nothing follows it, so there is no stranded pair to repair and nothing to drop.
-
-    The token-count path rebuilds outbound history for the live thread, which after a Stop
-    ends on the abandoned turn. Popping there emptied the whole history and priced the thread
-    at zero.
-    """
+    """A trailing abandoned turn must keep its prompt, or the token count of the live thread reads zero."""
     for include_reasoning in ("true", "false"):
         out = _run(_script(f"[{_user('first')}, {CANCELLED}]", include_reasoning))
         assert out["kept"] == [
@@ -449,11 +399,7 @@ def _send_script(history: str, is_external: str) -> str:
 
 
 def test_the_send_path_builds_its_payload_out_of_pruned_history():
-    """Run the send path's own outbound build, not a restatement of it.
-
-    A send path that stopped pruning would still satisfy every wiring assertion on the source
-    text, so the abandoned pair is put through the real slice here.
-    """
+    """Runs the send path's real outbound build, so a regression to unpruned messages fails the test."""
     for is_external in ("false", "true"):
         out = _run(_send_script(f"[{_user('first')}, {CANCELLED}, {_user('second')}]", is_external))
         assert out["roles"] == ["user", "assistant", "user"], f"isExternalRequest={is_external}"
@@ -517,13 +463,7 @@ def test_the_send_path_still_carries_an_answered_exchange():
 
 
 def test_a_stop_that_produced_only_whitespace_keeps_its_prompt():
-    """Whitespace is not an answer, and the backend already agrees.
-
-    ``_build_external_messages`` drops any assistant turn whose string content trims away
-    (studio/backend/routes/inference.py). Keeping the pair here because "   " is truthy in JS
-    only moved the defect one hop: the backend removed the assistant alone and put the two user
-    turns back on the wire touching.
-    """
+    """Whitespace-only output counts as no answer, matching the backend, so the prompt is kept."""
     for blank in ("   ", "\\n\\t"):
         whitespace = (
             '{ role: "assistant", content: [{ type: "text", text: "%s" }],'
@@ -548,15 +488,7 @@ def test_whitespace_only_replies_leave_no_pair_for_the_backend_to_split():
 
 
 def test_a_refusal_is_never_filled_back_onto_the_wire():
-    """A refusal is the only turn that serialises to nothing, and that is deliberate.
-
-    ``serializeAssistantReplayMessages`` force-flushes every other assistant shape, so the
-    empty-list branch of the fill is reachable only for a refusal. Synthesising a turn there
-    puts a stop label back on the wire for the one message the serialiser suppressed, and the
-    refusal can carry an incomplete marker of its own: a context_window refusal stamps both
-    into the same ``custom`` object. Today ``pruneOutboundHistory`` drops it first either way,
-    so this pins the layer rather than an outcome the prune already fixes.
-    """
+    """Refilling a refusal would put a stop label on the wire for a message the serialiser suppresses."""
     refusals = (
         " metadata: { custom: { anthropicRefusal: true } } }",
         ' status: { type: "incomplete", reason: "cancelled" },'

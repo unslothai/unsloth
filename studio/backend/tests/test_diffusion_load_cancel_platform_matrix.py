@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load cancellation across [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, Intel XPU, Apple MPS, CPU].
-
-Simulation notice. This host is Linux with an NVIDIA card. The OS axis is `sys.platform` /
-`platform.system` / `platform.release` (the WSL marker), the way
-`test_gpu_arch_gate_os_matrix_7624.py` and `test_llama_extra_args_platforms.py` do it, and the device
-axis is the documented per-instance seam `DiffusionBackend._pick_device_and_dtype`, the way
-`_force_cuda_target` in `test_diffusion_backend.py` does it. So these cells prove that the
-cancellation LOGIC is device- and platform-independent -- which is the claim under test, since none
-of it branches on either -- and they do NOT prove ROCm kernels, Metal placement, oneAPI or real VRAM
-reclamation. Only hardware can do that.
-
-What each cell asserts, from the three defects this file was added with:
-  * an eject cancels a load that was already in flight (the epoch, not a counter, decides);
-  * a load that arrives AFTER the eject started waits for teardown and then runs -- it is not
-    refused with "Diffusion load was cancelled.", which is a cancellation that never happened and,
-    through the route's 409, surfaced to the user as a failed model switch;
-  * both fences drain: `_unload_waiters` and `_teardown_waiters` return to zero, so no later load or
-    generation inherits a raised fence.
-"""
+"""Load cancel across OS and device axes, simulated on one host; proves logic, not real hardware."""
 
 import importlib.util
 import sys
@@ -30,8 +12,7 @@ import pytest
 
 from core.inference.diffusion import DiffusionBackend
 
-# The fake torch/diffusers runtime is reused rather than re-declared. Loaded by path because the
-# test directory is not a package, which is the same idiom test_mlx_context_platform_matrix.py uses.
+# Loaded by path because the test directory is not a package.
 _SIBLING = "test_diffusion_backend"
 if _SIBLING in sys.modules:
     _backend_tests = sys.modules[_SIBLING]
@@ -49,7 +30,7 @@ fake_runtime = _backend_tests.fake_runtime
 OS_CELLS = {
     "windows": ("win32", "Windows", "10.0.22631"),
     "linux": ("linux", "Linux", "6.8.0-45-generic"),
-    # Indistinguishable from Linux except for this marker, which is exactly why the row exists.
+    # WSL is indistinguishable from Linux except for this release marker.
     "wsl": ("linux", "Linux", "5.15.153.1-microsoft-standard-WSL2"),
     "macos": ("darwin", "Darwin", "24.1.0"),
 }
@@ -63,7 +44,7 @@ VENDOR_CELLS = {
     "cpu": ("cpu", "float32"),
 }
 
-# Cells a user can actually be in: no CUDA/ROCm/XPU on macOS, no Metal anywhere else.
+# Only reachable cells: no CUDA/ROCm/XPU on macOS, no Metal anywhere else.
 CELLS = [
     (os_key, vendor)
     for os_key in OS_CELLS
@@ -103,7 +84,7 @@ def test_an_eject_cancels_the_load_that_was_already_in_flight(cell, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"weights")
     token = backend._load_token
     backend.unload()
-    # The worker carries the epoch it was given; the eject bumped it, so the worker is cancelled.
+    # The eject bumped the epoch the worker carries, so the worker is cancelled.
     with pytest.raises(RuntimeError, match = "cancelled"):
         backend.load_pipeline(
             str(tmp_path),
@@ -124,7 +105,7 @@ def test_a_load_arriving_during_an_eject_queues_and_then_runs(cell, tmp_path, mo
     monkeypatch.setattr(backend, "_run_load", lambda **kwargs: dispatched.set())
 
     def hold_pipeline_lock():
-        # Stands in for the multi-minute constructor (or the active denoise) the eject must wait for.
+        # Stands in for the multi-minute constructor or denoise the eject must wait for.
         with backend._lock:
             held.set()
             release.wait(10)

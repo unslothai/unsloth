@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import {
   Tooltip,
   TooltipContent,
@@ -13,7 +14,7 @@ import {
 } from "@/features/hub";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   type DownloadTransportSettings,
   loadDownloadTransportSettings,
@@ -45,14 +46,14 @@ const OPTIONS: {
 
 export function DownloadTransportRow() {
   const t = useT();
+  const pillId = useId();
   const [mode, setMode] = useTransportMode();
-  // huggingface_hub 1.18 refetches an interrupted transfer from zero, so promising HTTPS
-  // "resumes where it stopped" there is backwards.
+  // huggingface_hub 1.18 refetches interrupted transfers from zero.
   const partialsResumable = useHttpPartialsResumable();
   const [settings, setSettings] = useState<DownloadTransportSettings | null>(
     null,
   );
-  // Distinct from "settings is null": a FAILED load must not disable Xet for good.
+  // A failed load must not disable Xet for good.
   const [capabilityPending, setCapabilityPending] = useState(true);
 
   useEffect(() => {
@@ -61,8 +62,7 @@ export function DownloadTransportRow() {
       setSettings(next);
       setCapabilityPending(false);
     });
-    // Refreshed on mount: the cache can hold a mode another browser changed, or a stale
-    // Auto verdict.
+    // Refreshed on mount: another browser may have changed the mode.
     loadDownloadTransportSettings({ refresh: true })
       .then(setSettings)
       .catch(() => undefined)
@@ -70,19 +70,15 @@ export function DownloadTransportRow() {
     return unsubscribe;
   }, []);
 
-  // Unknown counts as unavailable while the first load is in flight: clicking Xet there
-  // stored a preference every later download silently ignored.
+  // Unknown counts as unavailable while loading, or Xet could be stored and silently ignored.
   const xetUnavailable = capabilityPending || settings?.xetAvailable === false;
-  // The localized string first: the backend's one reason is English prose, and preferring it
-  // showed English to every other locale. An unknown future reason still gets through.
+  // Localized string first; the backend reason is English prose.
   const serverReason = settings?.xetUnavailableReason;
   const xetReason =
     !serverReason || /hf_xet is not installed/i.test(serverReason)
       ? t("settings.general.downloads.xetMissing")
       : serverReason;
 
-  // Xet selected but unable to run here: say so rather than silently using HTTPS. Only once
-  // known, since while pending we have not been told hf_xet is missing.
   const status =
     !capabilityPending && xetUnavailable && mode === "xet"
       ? xetReason
@@ -96,9 +92,13 @@ export function DownloadTransportRow() {
         : null;
 
   // The health check's own words, on their own line: free-form English, so folding it into a
-  // translated sentence produced half a sentence in each language. Auto is the only branch
-  // with a reason to explain.
-  const statusReason = mode === "auto" ? (settings?.autoReason ?? null) : null;
+  // translated sentence produced half a sentence in each language. Only a fallback to HTTPS has
+  // something to explain (stalls, low RAM, an env switch); on Xet the reason is bookkeeping
+  // like "Xet download succeeded" or "no cached verdict; defaulting to Xet".
+  const statusReason =
+    mode === "auto" && settings?.autoResolvesTo === "http"
+      ? (settings.autoReason ?? null)
+      : null;
 
   return (
     <SettingsRow
@@ -143,7 +143,6 @@ export function DownloadTransportRow() {
                 <button
                   type="button"
                   role="radio"
-                  // Indexed for settings search, so the result has somewhere to scroll to.
                   data-settings-label={t(opt.labelKey)}
                   aria-checked={active}
                   aria-disabled={disabled || undefined}
@@ -155,10 +154,13 @@ export function DownloadTransportRow() {
                     disabled
                       ? "cursor-not-allowed text-muted-foreground/45"
                       : active
-                        ? "hub-tab-toggle-pill text-foreground"
+                        ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground",
                   )}
                 >
+                  {active && !disabled && (
+                    <SegmentedPill group={`${pillId}-transport`} />
+                  )}
                   <span className="relative z-10">{t(opt.labelKey)}</span>
                 </button>
               </TooltipTrigger>
