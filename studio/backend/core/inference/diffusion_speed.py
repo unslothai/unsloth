@@ -1371,6 +1371,9 @@ def pin_reduction_configs(kwargs: dict[str, Any], logger: Any = None) -> bool:
             from torch._inductor import list_mode_options
             options = {**list_mode_options(mode, kwargs.get("dynamic")), **options}
         options[REDUCTION_FILTER_OPTION] = True
+        # Max's coordinate descent retimes the filtered config in every process (its guard reads deterministic).
+        if options.get("coordinate_descent_tuning"):
+            options["coordinate_descent_tuning"] = False
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "reduction config filter", exc)
         return False

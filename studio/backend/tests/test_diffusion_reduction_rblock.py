@@ -278,6 +278,31 @@ def test_opted_in_compile_carries_the_filter_and_leaves_the_process_knob(max_aut
     )
 
 
+@_needs_filter
+def test_max_compile_with_the_filter_turns_coordinate_descent_off():
+    # Coordinate descent retunes the filtered config per process: 3 fresh Max processes, 3 different images on L4.
+    kwargs = _compiled_kwargs(True, filter_reductions = True)
+    assert kwargs["options"]["max_autotune"] is True
+    assert kwargs["options"]["coordinate_descent_tuning"] is False
+    assert kwargs["options"][_FILTER] is True
+
+
+@_needs_filter
+@pytest.mark.parametrize("mode", ["max-autotune-no-cudagraphs", "max-autotune"])
+def test_pin_turns_off_coordinate_descent_from_any_mode(mode):
+    kwargs = {"fullgraph": True, "dynamic": None, "mode": mode}
+    assert ds.pin_reduction_configs(kwargs) is True
+    assert "mode" not in kwargs
+    assert kwargs["options"]["coordinate_descent_tuning"] is False
+
+
+@_needs_filter
+def test_pin_without_a_mode_adds_no_coordinate_descent_option():
+    kwargs = {"fullgraph": True, "dynamic": True}
+    assert ds.pin_reduction_configs(kwargs) is True
+    assert kwargs["options"] == {_FILTER: True}
+
+
 @pytest.mark.parametrize("max_autotune", [False, True])
 def test_other_families_compile_with_inductor_default(max_autotune):
     kwargs = _compiled_kwargs(max_autotune, filter_reductions = False)
