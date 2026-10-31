@@ -117,7 +117,7 @@ def _fast_poll(monkeypatch):
     ],
 )
 def test_every_seed_kind_reaches_the_job_as_saved(name, seed_type):
-    payload = json.loads((LEARNING / name).read_text())
+    payload = json.loads((LEARNING / name).read_text(encoding = "utf-8"))
     doc = _flow(payload)
     group = doc["groups"][0]
     assert group["config"]["seed_config"] == payload["recipe"]["seed_config"]
@@ -388,7 +388,7 @@ def test_run_settings_change_the_cache_key_of_the_step():
 
 
 def test_sharing_keeps_a_full_hf_seed_path(client):
-    payload = json.loads((LEARNING / "ocr-document-extraction.json").read_text())
+    payload = json.loads((LEARNING / "ocr-document-extraction.json").read_text(encoding = "utf-8"))
     path = payload["recipe"]["seed_config"]["source"]["path"]
     assert path == "datasets/ylecun/mnist/mnist/**/*.parquet"
     payload["recipe"]["seed_config"]["source"]["token"] = "hf_" + "x" * 30

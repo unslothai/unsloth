@@ -25,7 +25,7 @@ from .test_flows_recipes import _Ctx
 
 BACKEND = Path(__file__).resolve().parents[1]
 LEARNING = BACKEND.parent / "frontend" / "src" / "features" / "data-recipes" / "learning-recipes"
-SQL = json.loads((LEARNING / "text-to-sql.json").read_text())
+SQL = json.loads((LEARNING / "text-to-sql.json").read_text(encoding = "utf-8"))
 
 
 def _flow(payload = SQL) -> dict:
@@ -55,7 +55,7 @@ def test_the_backend_learning_recipes_are_the_frontend_files():
         p.name for p in LEARNING.glob("*.json")
     )
     for path in LEARNING.glob("*.json"):
-        assert json.loads((copies / path.name).read_text()) == json.loads(path.read_text())
+        assert json.loads((copies / path.name).read_text(encoding = "utf-8")) == json.loads(path.read_text(encoding = "utf-8"))
 
 
 def test_a_recipe_group_survives_a_save_and_a_plain_group_saves_as_before():
@@ -285,7 +285,7 @@ def test_the_dataset_counts_every_batch_not_the_last_one():
 
 
 def test_a_bare_hub_seed_is_resolved_before_validate_like_recipe_studios_load():
-    payload = json.loads((LEARNING / "instruction-from-answer.json").read_text())
+    payload = json.loads((LEARNING / "instruction-from-answer.json").read_text(encoding = "utf-8"))
     assert payload["recipe"]["seed_config"]["source"]["path"] == "unsloth/alpaca-cleaned"
     resolved = "datasets/unsloth/alpaca-cleaned/**/*.parquet"
     sent = {}

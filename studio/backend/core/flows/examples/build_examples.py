@@ -1488,7 +1488,7 @@ LEARNING = (
 
 
 def learning_recipe(stem: str, title: str, description: str) -> B:
-    payload = json.loads((LEARNING_RECIPES / f"{stem}.json").read_text())
+    payload = json.loads((LEARNING_RECIPES / f"{stem}.json").read_text(encoding = "utf-8"))
     b = B(
         f"recipe-{stem}",
         title,

@@ -616,7 +616,7 @@ async def test_an_unchanged_recipe_group_hands_back_its_last_dataset():
         (
             Path(__file__).resolve().parents[1]
             / "core/flows/examples/learning_recipes/text-to-sql.json"
-        ).read_text()
+        ).read_text(encoding = "utf-8")
     )
     jobs = []
 
@@ -654,7 +654,7 @@ async def test_a_run_that_may_not_use_mcp_gets_no_cached_mcp_recipe_output(monke
         (
             Path(__file__).resolve().parents[1]
             / "core/flows/examples/learning_recipes/text-to-sql.json"
-        ).read_text()
+        ).read_text(encoding = "utf-8")
     )
     sql["recipe"]["mcp_providers"] = [
         {"name": "docs", "provider_type": "streamable_http", "endpoint": "https://mcp.example/mcp"}

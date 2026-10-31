@@ -148,7 +148,7 @@ export function recipeSetup(
       title: name,
       subtitle: "Provider connection",
       fields: local
-        ? [{ label: "Uses", value: "Unsloth Studio's chat model" }]
+        ? [{ label: "Uses", value: "Unsloth's chat model" }]
         : [
             { label: "Endpoint", value: text(provider.endpoint) || "not set" },
           ],
