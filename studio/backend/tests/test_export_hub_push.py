@@ -6,6 +6,7 @@ from __future__ import annotations
 import weakref
 
 import functools
+import json
 import os
 import shutil
 import importlib.util
@@ -109,6 +110,16 @@ def _expected_calls(private):
 def _expected_merged_calls(private):
     visibility = ["update_repo_settings"] if private else []
     return ["create_repo", *visibility, "upload_folder", "model_card"]
+
+
+_OLD_NS = 1_600_000_000_000_000_000
+
+
+def _age(directory):
+    """Leftovers of an earlier export: written long before this one (a fresh write is staged)."""
+    for path in Path(directory).rglob("*"):
+        if path.is_file():
+            os.utime(path, ns = (_OLD_NS, _OLD_NS))
 
 
 @pytest.mark.parametrize("private", [True, False])
@@ -232,6 +243,7 @@ def test_merged_export_push_to_a_reused_folder_uploads_overwritten_files(tmp_pat
     (export_dir / "model.safetensors").write_bytes(b"stale")
     (export_dir / "eagle3" / "old.json").write_text("{}")
     (export_dir / "weird[v2].txt").write_text("leftover")
+    _age(export_dir)
     save = backend.current_model.save_pretrained_merged
 
     def save_with_extras(
@@ -292,7 +304,9 @@ def test_merged_export_push_stages_a_clean_save_when_the_folder_cannot_be_tracke
     assert leftover.stat().st_mtime_ns == before
 
 
-def test_reused_folder_tracking_restores_leftover_times_when_the_save_fails(tmp_path, monkeypatch):
+def test_reused_folder_tracking_leaves_leftover_times_alone_when_the_save_fails(
+    tmp_path, monkeypatch
+):
     calls: list[str] = []
     seen: dict = {}
     backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
@@ -347,6 +361,7 @@ def test_whisper_merged_export_is_a_16bit_merge(tmp_path, monkeypatch):
     export_dir = tmp_path / "export"
     export_dir.mkdir()
     (export_dir / "adapter_config.json").write_text("{}")
+    _age(export_dir)
 
     success, message, _ = backend.export_merged_model(
         str(export_dir),
@@ -714,6 +729,7 @@ def test_base_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp_p
     export_dir.mkdir()
     (export_dir / "old.Q4_K_M.gguf").write_bytes(b"GGUF")
     (export_dir / "export_metadata.json").write_text("{}")
+    _age(export_dir)
 
     success, message, output_path = backend.export_base_model(
         str(export_dir),
@@ -1243,3 +1259,171 @@ def test_hub_push_with_no_token_and_no_cli_login_is_refused(tmp_path, monkeypatc
     assert success is False
     assert "Hugging Face token required" in message
     assert calls == []
+
+
+def _reexport(backend, export_dir, extra_save):
+    save = backend.current_model.save_pretrained_merged
+
+    def save_like_the_merge(
+        save_directory,
+        tokenizer,
+        save_method = None,
+        token = None,
+    ):
+        save(save_directory, tokenizer, save_method = save_method, token = token)
+        extra_save(Path(save_directory))
+
+    backend.current_model.save_pretrained_merged = save_like_the_merge
+    return backend.export_merged_model(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+
+
+def test_reexport_uploads_the_shard_index_huggingface_hub_kept(tmp_path, monkeypatch):
+    # unsloth_zoo fetches a Hub base's index with hf_hub_download(local_dir = export folder):
+    # one an earlier export fetched at this commit is kept as is, yet belongs to this save.
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub._local_folder import write_download_metadata
+
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    shards = [f"model-0000{i}-of-00002.safetensors" for i in (1, 2)]
+    index = {"weight_map": {"a": shards[0], "b": shards[1]}}
+    (export_dir / "model.safetensors.index.json").write_text(json.dumps(index))
+    commit = "c" * 40
+    write_download_metadata(
+        local_dir = export_dir, filename = "model.safetensors.index.json", commit_hash = commit, etag = "e"
+    )
+    for shard in shards:
+        (export_dir / shard).write_bytes(b"old")
+    _age(export_dir)
+    before = (export_dir / "model.safetensors.index.json").stat()
+
+    def merge(folder):
+        (folder / "model.safetensors").unlink()
+        for shard in shards:
+            (folder / shard).write_bytes(b"merged")
+        hf_hub_download(
+            "org/base", "model.safetensors.index.json", revision = commit, local_dir = folder
+        )
+
+    success, message, output_path = _reexport(backend, export_dir, merge)
+
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit"]
+    assert seen["folder"] == output_path
+    kept = Path(output_path, "model.safetensors.index.json").stat()
+    assert (kept.st_mtime_ns, kept.st_ino) == (before.st_mtime_ns, before.st_ino)
+    assert seen["uploaded"] == sorted(["model.safetensors.index.json", *shards])
+
+
+def test_reexport_with_a_new_shard_layout_does_not_upload_the_old_shards(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    old = [f"model-0000{i}-of-00003.safetensors" for i in (1, 2, 3)]
+    for shard in old:
+        (export_dir / shard).write_bytes(b"old")
+    (export_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {str(i): shard for i, shard in enumerate(old)}})
+    )
+    (export_dir / "README.md").write_text("old card")
+    (export_dir / ".huggingface").mkdir()
+    (export_dir / ".huggingface" / "upload.lock").write_text("")
+    _age(export_dir)
+
+    success, message, output_path = _reexport(backend, export_dir, lambda folder: None)
+
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit"]
+    assert seen["folder"] == output_path
+    assert seen["uploaded"] == ["model.safetensors"]
+
+
+@pytest.mark.parametrize("leftover", ["tokenizer.model", "single_file_index", "fresh"])
+def test_reexport_stages_a_clean_save_when_a_kept_file_may_belong_to_it(
+    tmp_path, monkeypatch, leftover
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    if leftover == "tokenizer.model":
+        # unsloth_zoo downloads tokenizer.model only when it is missing.
+        (export_dir / "tokenizer.model").write_bytes(b"spm")
+    elif leftover == "single_file_index":
+        (export_dir / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"a": "model.safetensors"}})
+        )
+    else:
+        (export_dir / "adapter_config.json").write_text("{}")
+    if leftover != "fresh":
+        _age(export_dir)
+
+    success, message, output_path = _reexport(backend, export_dir, lambda folder: None)
+
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit", "merged_16bit"]
+    assert seen["folder"] != output_path
+    assert seen["uploaded"] == ["model.safetensors"]
+
+
+def test_reexport_uploads_a_file_copied_with_the_leftovers_times(tmp_path, monkeypatch):
+    # copy2 / copystat give a rewritten file its source's times, however old.
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "config.json").write_text('{"a": 1}')
+    _age(export_dir)
+    source = tmp_path / "base" / "config.json"
+    source.parent.mkdir()
+    source.write_text('{"a": 2}')
+    os.utime(source, ns = (_OLD_NS, _OLD_NS))
+
+    def copy_from_base(folder):
+        staged = folder / ".unsloth-copy"
+        shutil.copy2(source, staged)
+        os.replace(staged, folder / "config.json")
+
+    success, message, output_path = _reexport(backend, export_dir, copy_from_base)
+
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit"]
+    assert Path(output_path, "config.json").stat().st_mtime_ns == _OLD_NS
+    assert seen["uploaded"] == ["config.json", "model.safetensors"]
+
+
+def test_reexport_never_touches_the_leftovers_while_saving(tmp_path, monkeypatch):
+    # Cancel terminates the export worker mid-save, so nothing may be changed to undo later.
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    (export_dir / "sub").mkdir(parents = True)
+    (export_dir / "notes.txt").write_text("user")
+    (export_dir / "sub" / "data.bin").write_bytes(b"x")
+    _age(export_dir)
+
+    def stat_all():
+        return {
+            path: (path.stat().st_mtime_ns, path.stat().st_atime_ns, path.stat().st_ctime_ns)
+            for path in export_dir.rglob("*")
+            if path.is_file()
+        }
+
+    before = stat_all()
+    during = {}
+    success, message, _ = _reexport(backend, export_dir, lambda folder: during.update(stat_all()))
+
+    assert success is True, message
+    assert {path: during[path] for path in before} == before
+    assert {path: stat_all()[path] for path in before} == before
+    assert seen["uploaded"] == ["model.safetensors"]

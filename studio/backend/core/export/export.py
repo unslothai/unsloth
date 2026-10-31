@@ -7,6 +7,7 @@ import glob
 import json
 import structlog
 import tempfile
+import time
 from loggers import get_logger
 import os
 import re
@@ -620,81 +621,87 @@ def _escaped_patterns(names):
     return None if names is None else [glob.escape(name) for name in names]
 
 
-# 1980-01-01 00:00:02 UTC: no save writes this mtime, and FAT/exFAT can store it.
-_LEFTOVER_MARK_NS = 315_532_802 * 1_000_000_000
+# Single-file weights carry no index: a leftover one beside them is not part of the save.
+_UNSHARDED_WEIGHTS = ({"model.safetensors"}, {"pytorch_model.bin"})
+# A rewrite within one timestamp tick (FAT/exFAT: 2 s) of a file's last write can keep its mtime.
+_SAME_TICK_NS = 3_000_000_000
 
 
 class _ReusedFolderWrites:
     """Tells the files one save writes into a reused folder from its leftovers, so that folder
     can be uploaded as is instead of saving the whole model a second time into a staging dir.
 
-    Every file already there gets a marker mtime; any write (or copy2, which sets the source's
-    mtime) replaces it. Untouched files get their own times back. ``written()`` is None when
-    the folder could not be marked, and the caller stages a clean second save as before."""
+    Read only: every file's (size, mtime, inode, ctime) is noted before the save, and a file that
+    is new or whose note changed was written. Nothing in the user's folder is touched, so a killed
+    or cancelled export leaves no trace. ``written()`` is None when the save's files cannot be
+    told apart, and the caller stages a clean second save as before."""
 
     def __init__(self, directory):
         self._root = Path(directory)
-        self._marks: Optional[dict] = {}
-        self._written: Optional[List[str]] = None
-        self._released = False
         try:
-            for path in self._root.rglob("*"):
-                if path.is_symlink():
-                    raise OSError(f"{path} is a symlink")
-                if not path.is_file():
-                    continue
-                stat = path.stat()
-                # A hard link shares its times with a file a save may copy from (copy2 keeps them).
-                if stat.st_nlink > 1:
-                    raise OSError(f"{path} is hard linked")
-                os.utime(path, ns = (stat.st_atime_ns, _LEFTOVER_MARK_NS))
-                marked = path.stat().st_mtime_ns
-                self._marks[path.relative_to(self._root).as_posix()] = (
-                    stat.st_atime_ns,
-                    stat.st_mtime_ns,
-                    marked,
-                )
-                if marked == stat.st_mtime_ns:
-                    raise OSError(f"could not mark {path}")
-        except Exception as exception:
-            logger.info(f"Reused folder not tracked, staging a second save: {exception}")
-            self.release()
-            self._marks = None
-
-    def written(self) -> Optional[List[str]]:
-        """Relative posix paths the save wrote; restores the leftovers' times on the first call."""
-        if self._marks is None or self._written is not None or self._released:
-            return self._written
-        written = []
-        try:
-            for path in self._root.rglob("*"):
-                if not path.is_file():
-                    continue
-                name = path.relative_to(self._root).as_posix()
-                mark = self._marks.get(name)
-                if mark is None or path.stat().st_mtime_ns != mark[2]:
-                    written.append(name)
+            self._before: Optional[dict] = self._scan(time.time_ns() - _SAME_TICK_NS)
         except OSError as exception:
             logger.info(f"Reused folder not tracked, staging a second save: {exception}")
-            self.release()
-            self._marks = None
-            return None
-        self.release()
-        self._written = sorted(written)
-        return self._written
+            self._before = None
 
-    def release(self) -> None:
-        """Give every file the save left alone its original times back (idempotent)."""
-        if self._released:
-            return
-        self._released = True
-        for name, (atime_ns, mtime_ns, marked) in (self._marks or {}).items():
-            path = self._root / name
-            try:
-                if path.stat().st_mtime_ns == marked:
-                    os.utime(path, ns = (atime_ns, mtime_ns))
-            except OSError:
+    def _scan(self, settled_before: Optional[int] = None) -> dict:
+        notes = {}
+        for path in self._root.rglob("*"):
+            if path.is_symlink():
+                raise OSError(f"{path} is a symlink")
+            if not path.is_file():
                 continue
+            stat = path.stat()
+            # A hard link changes with a file outside the folder (the save may write one).
+            if stat.st_nlink > 1:
+                raise OSError(f"{path} is hard linked")
+            # Also a clock skewed ahead (network filesystems): a rewrite could match its times.
+            if settled_before is not None and stat.st_mtime_ns > settled_before:
+                raise OSError(f"{path} was written too recently to tell a rewrite apart")
+            notes[path.relative_to(self._root).as_posix()] = (
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ino,
+                stat.st_ctime_ns,
+            )
+        return notes
+
+    def _index_shards(self, name) -> Optional[set]:
+        try:
+            weight_map = json.loads((self._root / name).read_text(encoding = "utf-8"))["weight_map"]
+            return {str(shard) for shard in weight_map.values()}
+        except Exception:
+            return None
+
+    def written(self) -> Optional[List[str]]:
+        """Relative posix paths the save wrote, or None to stage a second save."""
+        if self._before is None:
+            return None
+        try:
+            after = self._scan()
+        except OSError as exception:
+            logger.info(f"Reused folder not tracked, staging a second save: {exception}")
+            return None
+        written = {name for name, note in after.items() if self._before.get(name) != note}
+        # A save can keep a file it would write into an empty folder: huggingface_hub's local_dir
+        # download skips one its bookkeeping or hash calls current (unsloth_zoo fetches the shard
+        # index that way), and unsloth_zoo fetches tokenizer.model only when it is missing.
+        kept = set(after) - written
+        if "tokenizer.model" in kept:
+            logger.info("Reused folder keeps tokenizer.model, staging a second save")
+            return None
+        for name in sorted(kept):
+            if "/" in name or not name.endswith(".index.json"):
+                continue
+            shards = self._index_shards(name)
+            if shards is None or shards in _UNSHARDED_WEIGHTS:
+                logger.info(f"Reused folder keeps {name}, staging a second save")
+                return None
+            # Kept, yet it lists exactly what this save wrote: the save's own (skipped) index.
+            # One naming files the save did not write describes a previous export's weights.
+            if shards and shards <= written:
+                written.add(name)
+        return sorted(written)
 
 
 def _ensure_hub_repo_private(hf_api, repo_id):
@@ -1771,9 +1778,6 @@ class ExportBackend:
 
             logger.error(traceback.format_exc())
             return False, f"Export failed: {str(e)}", None
-        finally:
-            if reused_writes is not None:
-                reused_writes.release()
 
     def export_base_model(
         self,
@@ -1917,9 +1921,6 @@ class ExportBackend:
 
             logger.error(traceback.format_exc())
             return False, f"Export failed: {str(e)}", None
-        finally:
-            if reused_writes is not None:
-                reused_writes.release()
 
     def export_gguf(
         self,
