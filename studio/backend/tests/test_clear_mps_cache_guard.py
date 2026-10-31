@@ -22,7 +22,9 @@ def _fake_torch(monkeypatch, available):
     calls = []
     torch = types.ModuleType("torch")
     torch.mps = types.SimpleNamespace(empty_cache = lambda: calls.append("empty_cache"))
-    torch.backends = types.SimpleNamespace(mps = types.SimpleNamespace(is_available = lambda: available))
+    torch.backends = types.SimpleNamespace(
+        mps = types.SimpleNamespace(is_available = lambda: available)
+    )
     monkeypatch.setitem(sys.modules, "torch", torch)
     return calls
 
@@ -54,6 +56,6 @@ def test_clearing_the_mps_cache_does_not_crash_this_host():
         "print('cleared', flush = True)\n"
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 300)
-    assert proc.returncode == 0 and "cleared" in proc.stdout, (
-        f"exit {proc.returncode}\nstdout:\n{proc.stdout[-2000:]}\nstderr:\n{proc.stderr[-2000:]}"
-    )
+    assert (
+        proc.returncode == 0 and "cleared" in proc.stdout
+    ), f"exit {proc.returncode}\nstdout:\n{proc.stdout[-2000:]}\nstderr:\n{proc.stderr[-2000:]}"
