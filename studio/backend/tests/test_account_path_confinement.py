@@ -277,6 +277,66 @@ def test_a_dotdot_through_a_link_that_stays_in_the_folder_passes(tmp_path, files
 
 
 @symlinks
+def test_a_module_path_that_reads_as_the_root_but_lands_elsewhere_has_its_index_read(tmp_path):
+    # link/.. is "." as text but opens deep/, whose index is not the model root's.
+    from utils.security.file_security import escaping_weight_references
+
+    folder = _write(
+        tmp_path / "m",
+        {"modules.json": [{"idx": 0, "name": "0", "path": "link/..", "type": "x"}]},
+    )
+    (folder / "deep" / "child").mkdir(parents = True)
+    (folder / "link").symlink_to(folder / "deep" / "child", target_is_directory = True)
+    index = {"weight_map": {"w": "../../victim.safetensors"}}
+    _write(folder / "deep", {"model.safetensors.index.json": index})
+    assert escaping_weight_references(folder) == ["link/../../../victim.safetensors"]
+    _write(
+        folder / "deep", {"model.safetensors.index.json": {"weight_map": {"w": "s.safetensors"}}}
+    )
+    assert escaping_weight_references(folder) == []
+
+
+@symlinks
+def test_a_module_index_climbing_back_into_the_folder_from_where_it_lands_passes(tmp_path):
+    # link/.. opens deep/, so its ../model.safetensors is the root's shard.
+    from utils.security.file_security import escaping_weight_references
+
+    folder = _write(
+        tmp_path / "m",
+        {"modules.json": [{"idx": 0, "name": "0", "path": "link/..", "type": "x"}]},
+    )
+    (folder / "model.safetensors").write_bytes(b"")
+    (folder / "deep" / "child").mkdir(parents = True)
+    (folder / "link").symlink_to(folder / "deep" / "child", target_is_directory = True)
+    index = {"weight_map": {"w": "../model.safetensors"}}
+    _write(folder / "deep", {"model.safetensors.index.json": index})
+    assert escaping_weight_references(folder) == []
+
+
+@symlinks
+def test_a_module_index_shard_linking_outside_from_where_it_lands_is_flagged(tmp_path):
+    from utils.security.file_security import escaping_weight_references
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    folder = _write(
+        tmp_path / "m",
+        {"modules.json": [{"idx": 0, "name": "0", "path": "link/..", "type": "x"}]},
+    )
+    (folder / "deep" / "child").mkdir(parents = True)
+    (folder / "link").symlink_to(folder / "deep" / "child", target_is_directory = True)
+    (folder / "deep" / "out").symlink_to(victim, target_is_directory = True)
+    # Rooted and drive-qualified names ignore the module path they are joined onto.
+    for shard, flagged in (
+        ("out/s.safetensors", "link/../out/s.safetensors"),
+        ("/abs/s.safetensors", "/abs/s.safetensors"),
+        ("C:/s.safetensors", "C:/s.safetensors"),
+    ):
+        _write(folder / "deep", {"model.safetensors.index.json": {"weight_map": {"w": shard}}})
+        assert escaping_weight_references(folder) == [flagged]
+
+
+@symlinks
 def test_a_hub_cache_snapshot_with_blob_links_passes(tmp_path):
     from utils.security.file_security import escaping_weight_references
 

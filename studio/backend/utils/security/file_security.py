@@ -108,6 +108,27 @@ def _climbs_through_link(folder: Path, name: str) -> bool:
     return not any(_within(landing, root) for root in roots)
 
 
+def _lands_outside(folder: Path, module: Path, name: str) -> bool:
+    spelled = name.replace("\\", "/")
+    if spelled.startswith("/") or name[1:2] == ":":
+        return True
+    try:
+        landing = os.path.realpath(os.path.join(os.path.realpath(module), name))
+        roots = _confinement_roots(folder)
+    except (OSError, ValueError):
+        return True
+    return not any(_within(landing, root) for root in roots)
+
+
+def _same_folder(path: Path, folder: Path) -> bool:
+    try:
+        return os.path.normcase(os.path.realpath(path)) == os.path.normcase(
+            os.path.realpath(folder)
+        )
+    except (OSError, ValueError):
+        return False
+
+
 def _escapes(folder: Path, name: str) -> bool:
     return _escapes_folder(name) or _climbs_through_link(folder, name)
 
@@ -166,6 +187,7 @@ def escaping_weight_references(folder) -> list:
     except (OSError, ValueError):
         return []
     names = _weight_names(folder)
+    outside = []
     try:
         modules = json.loads((folder / "modules.json").read_text(encoding = "utf-8-sig"))
     except (OSError, ValueError):
@@ -190,10 +212,18 @@ def escaping_weight_references(folder) -> list:
             module_names = _weight_names(folder / sub)
             for spelled in spellings:
                 names.extend(_in_subfolder(spelled, name) for name in module_names)
+        elif not _same_folder(folder / sub, folder):
+            # "link/.." reads as "." but lands elsewhere: judge names from where it lands.
+            outside.extend(
+                _in_subfolder(sub, name)
+                for name in _weight_names(folder / sub)
+                if _lands_outside(folder, folder / sub, name)
+            )
     # Spark-TTS / BiCodec load their transformers model from LLM/.
     if (folder / "LLM").is_dir():
         names.extend(_in_subfolder("LLM", name) for name in _weight_names(folder / "LLM"))
-    return [name for name in dict.fromkeys(names) if _escapes(folder, name)]
+    names = [name for name in names if _escapes(folder, name)]
+    return list(dict.fromkeys(names + outside))
 
 
 def _normalize_repo_path(path: str) -> str:
