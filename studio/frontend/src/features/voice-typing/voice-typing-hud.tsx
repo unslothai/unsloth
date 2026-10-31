@@ -19,6 +19,7 @@ const MAX_H = 24;
 interface HudPayload {
   state?: string;
   level?: number;
+  sublabel?: string | null;
 }
 
 const ACCENTS: Record<string, string> = {
@@ -27,6 +28,7 @@ const ACCENTS: Record<string, string> = {
   transcribing: "#fcd34d",
   fixing: "#a78bfa",
   refining: "#67e8f9",
+  blocked: "#ef4444",
 };
 
 function formatElapsed(milliseconds: number): string {
@@ -37,6 +39,7 @@ function formatElapsed(milliseconds: number): string {
 
 export function VoiceTypingHud() {
   const [state, setState] = useState("");
+  const [message, setMessage] = useState("");
   const [elapsedMs, setElapsedMs] = useState(0);
   const stateRef = useRef("");
   const levelRef = useRef(0);
@@ -51,6 +54,7 @@ export function VoiceTypingHud() {
       if (payload.state) {
         stateRef.current = payload.state;
         setState(payload.state);
+        setMessage(payload.sublabel ?? "");
         if (payload.state !== "recording") targetLevelRef.current = 0;
       }
       if (typeof payload.level === "number") {
@@ -165,20 +169,28 @@ export function VoiceTypingHud() {
             </svg>
           </span>
         </button>
-        <span className="vt-wave" aria-hidden="true">
-          {BAR_IDS.map((id, index) => (
-            <span
-              key={id}
-              className="vt-bar"
-              ref={(node) => {
-                barRefs.current[index] = node;
-              }}
-            />
-          ))}
-        </span>
-        <span className="vt-time" aria-hidden="true">
-          {formatElapsed(elapsedMs)}
-        </span>
+        {state === "blocked" ? (
+          <span className="vt-blocked" role="alert">
+            {message || "Abusive Language is Discouraged!"}
+          </span>
+        ) : (
+          <>
+            <span className="vt-wave" aria-hidden="true">
+              {BAR_IDS.map((id, index) => (
+                <span
+                  key={id}
+                  className="vt-bar"
+                  ref={(node) => {
+                    barRefs.current[index] = node;
+                  }}
+                />
+              ))}
+            </span>
+            <span className="vt-time" aria-hidden="true">
+              {formatElapsed(elapsedMs)}
+            </span>
+          </>
+        )}
       </output>
     </div>
   );

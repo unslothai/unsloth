@@ -263,7 +263,7 @@ pub async fn voice_typing_hud_state(
         // The whole session lifecycle counts as active, including the wait for the
         // microphone or the model and the final transcription: a second press or
         // Escape during any of those must reach the frontend as stop/cancel.
-        "preparing" | "recording" | "transcribing" | "fixing" | "refining" => {
+        "preparing" | "recording" | "transcribing" | "fixing" | "refining" | "blocked" => {
             SESSION_ACTIVE.store(true, Ordering::SeqCst);
             if state == "recording" && mute_enabled {
                 audio_mute::mute_after_cue();

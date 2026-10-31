@@ -69,7 +69,8 @@ type HudPhase =
   | "recording"
   | "transcribing"
   | "fixing"
-  | "refining";
+  | "refining"
+  | "blocked";
 type Cue = VoiceTypingCue;
 
 /** Safety net so a forgotten toggle cannot record forever. */
@@ -884,11 +885,14 @@ export class VoiceTypingController {
     // its audio) so nothing survives in history or local storage.
     useVoiceSettingsStore.getState().removeLatestRecentDictation(rawText);
     this.transcript = "";
-    this.setPhase("idle");
-    toast.error(
-      translate("settings.voice.voiceTyping.abusiveLanguage"),
-      { duration: 3000 },
-    );
+    const message = translate("settings.voice.voiceTyping.abusiveLanguage");
+    this.setPhase("blocked", message);
+    this.setTimer(3000, () => {
+      if (this.phase === "blocked") this.setPhase("idle");
+    });
+    // The HUD carries the message when dictating into another app; the toast
+    // covers the case where the settings window is the active window.
+    toast.error(message, { duration: 3000 });
   }
 
   private cancelSession(): void {
