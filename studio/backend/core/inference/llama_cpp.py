@@ -7101,6 +7101,21 @@ _MOE_SPILL_UB_MAX_RESIDENT_LOSS = 0.10
 # "on" = ungated v0.1.906, "off" = v0.1.905 (no cache / no raise), else auto.
 _MOE_CACHE_ENV = "UNSLOTH_MOE_CACHE"
 _MOE_SPILL_UBATCH_ENV = "UNSLOTH_MOE_SPILL_UBATCH"
+# Default serving slots once MoE experts spill to host RAM and a drafter runs. Every slot
+# past one carries its own KV, recurrent state, draft reserve and compute buffer, which
+# llama.cpp's fitter pays for by moving experts off the GPU, and drafting slots verify
+# multi-token batches that touch more experts. Two keep two chats (or a 2-choice request)
+# concurrent. A chosen slot count is never cut.
+_MOE_SPILL_DEFAULT_SLOTS = 2
+# Cut only at or above this resident share of the routed experts (Studio's estimate at the
+# asked count), independent of the MoE cache gate. Measured: Qwen3.6-35B-A3B with MTP at
+# 16 GB (cache band) and 96% (24 GB free) gained from 2 slots; Flash-Next with its drafter
+# at 5/18/32% (16/24/32 GB) lost 6-8% on four chats and kept single-chat speed, so the
+# threshold sits just above the deepest spill measured to prefer 4. That holds for the
+# --fit split only: a launch the MoE cache serves is cut at any share (see load_model).
+_MOE_SPILL_SLOTS_MIN_RESIDENT_SHARE = 0.35
+# "on" cuts at any resident share, "off" keeps the default slots (the pre-cut launch).
+_MOE_SPILL_SLOTS_ENV = "UNSLOTH_MOE_SPILL_SLOTS"
 _MOE_SWITCH_ON = frozenset({"1", "on", "true", "yes", "force"})
 _MOE_SWITCH_OFF = frozenset({"0", "off", "false", "no", "never"})
 
@@ -24191,6 +24206,13 @@ class LlamaCppBackend:
                 _spec_dropped_no_vram = False
                 _mtp_slots_asked: Optional[int] = None
                 _mtp_slots_target_ctx: Optional[int] = None
+                # Default slots before the spilled-MoE cut (_MOE_SPILL_DEFAULT_SLOTS), or None.
+                _spill_slots_asked: Optional[int] = None
+                # The cut stood only on the MoE cache serving a deep spill: any launch
+                # without the cache gives the slots back (_undo_cache_only_spill_cut).
+                _spill_cut_needs_cache = False
+                # The vision argv the text-only and CPU replays rebuild from, once saved.
+                _vision_gpu_cmd: Optional[List[str]] = None
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
                 # GPU backend on that, leaving no partial offload. Only the paravirtual
@@ -27120,6 +27142,158 @@ class LlamaCppBackend:
                             gpu_indices, _detected_gpus, _shared_gpu_ids
                         )
                     )
+                    # Fewer default slots once the fit spills experts (_MOE_SPILL_DEFAULT_SLOTS).
+                    # Here, not at the #6718 search above: that one only cuts slots when the
+                    # cut keeps the model whole on the GPU, and a spilled MoE fits at no count.
+                    # Before the micro-batch raise, so the raise and every reserve after it
+                    # (KV, MTP, compute buffer, MoE cache share) are priced at the cut count.
+                    # Only with a drafter that will run: without one the extra slots cost the
+                    # experts little and four concurrent chats gain from them (Qwen3.6 at
+                    # 16 GB: one chat even, four chats 316 vs 273 tok/s), while drafting
+                    # slots verify 3-token batches whose expert misses multiply (four MTP
+                    # chats 158 vs 278 tok/s). Auto stands an embedded hybrid head down
+                    # under this very spill (embedded_mtp_partial_offload), so that one
+                    # does not count. And only near the fit edge (resident share at least
+                    # _MOE_SPILL_SLOTS_MIN_RESIDENT_SHARE, priced at the asked count) or when
+                    # the MoE cache serves the experts: deep in a --fit split the slots move a
+                    # layer or two of a mostly-host expert set and four chats still gain
+                    # (Flash-Next at 18-32%: one chat within 3%, four chats 77 vs 71 tok/s at
+                    # 24 GB), but over the cache four drafting slots collapse at any share
+                    # (Flash-Next with the cache at 24 GB: four chats 59 vs 85, one 89 vs
+                    # 94). Unpriceable keeps the ask.
+                    # Auto also drops an embedded MLA head (_auto_mla_embedded_mtp in
+                    # _build_speculative_flags) for ngram-mod or no speculation.
+                    # Only Studio's own drafter keeps the head up there. A bare -md (extras
+                    # or env) stays beside the emitted --spec-type none / ngram-mod, under
+                    # which it never drafts; it runs only where neither is emitted.
+                    _drafter_stands_down = bool(
+                        _spec_canon == "auto"
+                        and self._nextn_predict_layers
+                        and not mtp_draft_path
+                        and not _extra_args_set_spec_type(extra_args)
+                        and (
+                            (
+                                self._ssm_inner_size is not None
+                                and self._full_attention_interval is not None
+                                and (not _separate_draft_launches or server_caps.get("mtp_token"))
+                            )
+                            or (
+                                getattr(self, "_kv_lora_rank", None) is not None
+                                and not _mla_mtp_auto_enabled()
+                                and not _arch_has_fast_mla_mtp(getattr(self, "_architecture", None))
+                                and not _trained_drafter_sidecar(model_path)[1]
+                                and (
+                                    not _separate_draft_launches
+                                    or server_caps.get("supports_ngram_mod")
+                                )
+                            )
+                        )
+                    )
+                    # _mtp_will_engage reserves for a drafter the name or the mode implies
+                    # (a forced DSpark / DFlash with no sidecar, an -mtp name whose sidecar
+                    # was dropped), which launches without one. The cut needs one that
+                    # runs: a separate drafter the launch emits, or the embedded head.
+                    # Studio's own drafter that is not on disk is dropped at launch
+                    # (_resolve_launch_mtp_path); the extras' and env's are the user's.
+                    _studio_drafter_missing = bool(
+                        mtp_draft_path
+                        and not _extra_args_mtp_draft_path(extra_args, env = {})
+                        and not _extra_args_set_spec_type(extra_args)
+                        and not Path(mtp_draft_path).is_file()
+                    )
+                    _drafter_launches = bool(
+                        (_separate_draft_launches and not _studio_drafter_missing)
+                        or (
+                            self._nextn_predict_layers
+                            and (
+                                _spec_canon not in ("dspark", "dflash")
+                                # Extras that run MTP use the head under any mode.
+                                or _extra_args_requests_mtp(
+                                    extra_args, env = _child_spec_env(extra_args)
+                                )
+                            )
+                        )
+                    )
+                    _slots_switch = _moe_switch(_MOE_SPILL_SLOTS_ENV)
+
+                    def _spill_slots_near_edge() -> bool:
+                        """Shallow spill, or a launch the MoE cache will serve (the four
+                        slots' verify batches thrash it at any share)."""
+                        _share = _moe_resident_share_now()
+                        if _share is not None and _share >= _MOE_SPILL_SLOTS_MIN_RESIDENT_SHARE:
+                            return True
+                        # The cache launches pinned only (_argv_loads_pinned at its emit), so
+                        # a loader mode the user picked that is not pinned is a --fit split.
+                        # Extras win by last-arg, then the per-model pick, then the env.
+                        if extra_args_select_load_mode(extra_args):
+                            _user_pinned = _argv_loads_pinned(extra_args, os.environ)
+                        elif _normalized_load_mode(load_mode) is not None:
+                            _user_pinned = _normalized_load_mode(load_mode) == self._FIT_LOAD_MODE
+                        elif memory_env_selects_load_mode(os.environ):
+                            _user_pinned = _argv_loads_pinned((), os.environ)
+                        else:
+                            _user_pinned = None
+                        if _user_pinned is False:
+                            return False
+                        nonlocal _spill_cut_needs_cache
+                        _spill_cut_needs_cache = bool(
+                            self._moe_cache_auto_eligible(
+                                caps = server_caps,
+                                gpu_memory_mode = gpu_memory_mode,
+                                use_fit = use_fit,
+                                experts_on_host = _moe_experts_on_host,
+                                discrete_gpu = _moe_spill_discrete_gpu,
+                                gpu_indices = gpu_indices,
+                                detected_gpus = _detected_gpus,
+                                is_vulkan_backend = is_vulkan_backend,
+                                tensor_parallel = tensor_parallel,
+                                extra_args = extra_args,
+                                env = os.environ,
+                            )
+                            and _moe_cache_share_admits(
+                                _share, drafter = True, switch = _moe_switch(_MOE_CACHE_ENV)
+                            )
+                        )
+                        return _spill_cut_needs_cache
+
+                    if (
+                        use_fit
+                        and _moe_spill_discrete_gpu
+                        and self.n_moe_layers > 0
+                        and _mtp_will_engage
+                        and _drafter_launches
+                        and not _drafter_stands_down
+                        and intent.n_parallel_from_default
+                        and n_parallel > _MOE_SPILL_DEFAULT_SLOTS
+                        and _extra_args_n_parallel(extra_args, env = {}) is None
+                        and _slots_switch != "off"
+                        and (_slots_switch == "on" or _spill_slots_near_edge())
+                    ):
+                        logger.info(
+                            "MoE experts spill to system RAM: serving slots %d -> %d, so the "
+                            "VRAM the other slots would reserve keeps experts on the GPU. Set "
+                            "Parallel Slots to keep %d.",
+                            n_parallel,
+                            _MOE_SPILL_DEFAULT_SLOTS,
+                            n_parallel,
+                        )
+                        _spill_slots_asked = n_parallel
+                        n_parallel = (
+                            _MOE_SPILL_DEFAULT_SLOTS  # allow-slot-clamp: experts spill at any count
+                        )
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                        _compute_buffer_tensor = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
+                            per_device_tensor = True,
+                        ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        if mtp_overhead_fn is not None:
+                            mtp_overhead_fn = functools.partial(
+                                mtp_overhead_fn,
+                                _np = n_parallel,
+                                _n_ubatch = _effective_ubatch,
+                            )
                     _spill_n_batch, _spill_n_ubatch = _moe_spill_batch_ubatch(
                         n_batch,
                         n_ubatch,
@@ -27989,6 +28163,13 @@ class LlamaCppBackend:
                     _vram_fit_ctx = None
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
+                    # Nor is the spilled-MoE slot cut: it was priced by the arm that threw.
+                    _spill_cut_needs_cache = False
+                    if _spill_slots_asked is not None:
+                        n_parallel = _spill_slots_asked
+                        _spill_slots_asked = None
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
                     # Nor is a slot cut for the drafter: requested count, no drafter, as before.
                     if _mtp_slots_asked is not None:
                         n_parallel = _mtp_slots_asked
@@ -29491,6 +29672,141 @@ class LlamaCppBackend:
                     cmd.extend(_pv_split_mode_pin)
                 if _pv_device_pin:
                     cmd.extend(_pv_device_pin)
+
+                def _undo_cache_only_spill_cut(why: str, run_cmd = None):
+                    """Back to the asked slots once a relaunch drops the MoE cache that alone
+                    justified the spilled-MoE cut (a deep --fit split keeps four, see
+                    _MOE_SPILL_SLOTS_MIN_RESIDENT_SHARE). Rewrites ``cmd`` too, since later
+                    rungs rebuild from it; a rung that set its own count is left alone.
+
+                    Only for a launch that carried the cache: it is emitted on a placement
+                    llama.cpp's fitter owns (_placed_by_fitter, no tensor plan), which
+                    re-fits at the restored count. A cache refused at emission keeps the
+                    cut, since that placement (a --fit off plan included) was priced at it."""
+                    nonlocal cmd, n_parallel, _spill_slots_asked, _spill_cut_needs_cache
+                    nonlocal _auto_ctx_checkpoints, _auto_ckpt_emitted, _vision_gpu_cmd
+                    if not (
+                        _spill_cut_needs_cache
+                        and self._moe_cache_flags
+                        and _placed_by_fitter
+                        and _spill_slots_asked is not None
+                        and n_parallel == _MOE_SPILL_DEFAULT_SLOTS
+                    ):
+                        return run_cmd
+                    _spill_cut_needs_cache = False
+                    logger.info(
+                        "MoE cache: not on the %s, so the serving slots go back %d -> %d.",
+                        why,
+                        n_parallel,
+                        _spill_slots_asked,
+                    )
+                    _cut = n_parallel
+                    n_parallel = _spill_slots_asked
+                    # The cut is gone, as in the placement rollback: nothing below may
+                    # read it as standing (drafter fallback, the slot-cut marker).
+                    _spill_slots_asked = None
+                    _kv_unified_caps = bool(server_caps.get("supports_kv_unified"))
+                    _old_ckpt = _auto_ckpt_emitted
+                    _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+
+                    def _restore(argv):
+                        if _extra_args_n_parallel(argv, env = {}) != _cut:
+                            return argv
+                        # The slots come back because the cache is gone: an argv relaunched
+                        # without _spawn_and_wait (the text-only retry) must not keep it.
+                        argv = self._drop_moe_cache(argv)
+                        argv = _with_parallel_slots(
+                            argv,
+                            n_parallel,
+                            n_batch = n_batch,
+                            supports_kv_unified = _kv_unified_caps,
+                        )
+                        if _old_ckpt:
+                            argv = self._without_flag_pairs(argv, _old_ckpt)
+                        return argv
+
+                    cmd = _restore(cmd)
+                    _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(cmd)
+                    if run_cmd is not None:
+                        run_cmd = _restore(run_cmd)
+                        if _old_ckpt or _auto_ckpt_emitted:
+                            run_cmd = [*run_cmd, *_auto_ckpt_emitted]
+                    # The text-only and CPU replays relaunch it after a failed retry.
+                    if _vision_gpu_cmd is not None:
+                        _vision_gpu_cmd = _restore(_vision_gpu_cmd)
+                        if _old_ckpt or _auto_ckpt_emitted:
+                            _vision_gpu_cmd = [*_vision_gpu_cmd, *_auto_ckpt_emitted]
+                    # The plan other loads place against was priced at the cut count.
+                    if self._pending_plan_mib and self._can_estimate_kv():
+                        _restored_kv = self._estimate_kv_cache_bytes(
+                            effective_ctx,
+                            cache_type_kv,
+                            n_parallel = n_parallel,
+                            swa_full = swa_full,
+                            kv_unified = bool(_kv_unified_from_args(cmd)),
+                            n_ubatch = _ubatch_for_slots(n_parallel),
+                            flash_attn = planned_flash_attn,
+                        )
+                        self._pending_plan_mib = _gpu_plan_mib(
+                            max(1, gguf_size - _host_input_embd) + mmproj_size + _restored_kv,
+                            list(self._pending_plan_mib),
+                            gpus,
+                        )
+                    return run_cmd
+
+                def _cpu_replay_at_asked_slots(argv: list[str]):
+                    """``argv`` back at the asked slots for a --device none replay, and the
+                    commit to run once that replay is up (None when nothing changed). A CPU
+                    fallback streams no experts, so the spilled-MoE cut never applies to
+                    one (intent.cpu_fallback at _moe_experts_on_host), as the micro-batch
+                    raise and the cache _prepare_cpu_fallback_launch strips do not. Nothing
+                    is committed before: a replay that cannot be staged or started leaves
+                    the GPU ladder, and a second replay, at the cut."""
+                    nonlocal n_parallel, _auto_ctx_checkpoints
+                    if (
+                        _spill_slots_asked is None
+                        or _extra_args_n_parallel(argv, env = {}) != _MOE_SPILL_DEFAULT_SLOTS
+                    ):
+                        return argv, None
+                    _asked = _spill_slots_asked
+                    argv = _with_parallel_slots(
+                        argv,
+                        _asked,
+                        n_batch = n_batch,
+                        supports_kv_unified = bool(server_caps.get("supports_kv_unified")),
+                    )
+                    if _auto_ckpt_emitted:
+                        argv = self._without_flag_pairs(argv, _auto_ckpt_emitted)
+                    # The cap for the asked count, decided as every respawn does but
+                    # handed back unset until the replay is up.
+                    _held_slots, _held_cap = n_parallel, _auto_ctx_checkpoints
+                    try:
+                        n_parallel = _asked
+                        _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+                        _cap = _auto_ctx_checkpoints
+                        _pair = _emit_auto_ctx_checkpoints(argv)
+                    finally:
+                        n_parallel = _held_slots
+                        _auto_ctx_checkpoints = _held_cap
+
+                    def _commit() -> None:
+                        nonlocal n_parallel, _spill_slots_asked, _spill_cut_needs_cache
+                        nonlocal _auto_ctx_checkpoints, _auto_ckpt_emitted
+                        logger.info(
+                            "CPU fallback: no experts to stream, so the serving slots go "
+                            "back %d -> %d.",
+                            _MOE_SPILL_DEFAULT_SLOTS,
+                            _asked,
+                        )
+                        n_parallel = _asked
+                        # The cut is gone, as in _undo_cache_only_spill_cut.
+                        _spill_slots_asked = None
+                        _spill_cut_needs_cache = False
+                        _auto_ctx_checkpoints = _cap
+                        _auto_ckpt_emitted = _pair
+
+                    return argv, _commit
+
                 # Pinned loads only: under mmap the cache measured slower than none.
                 self._moe_cache_flags = []
                 if (
@@ -30296,9 +30612,11 @@ class LlamaCppBackend:
                         )
                     # The cache only rides the first pinned launch: every retry re-places.
                     if label or not _argv_loads_pinned(run_cmd, env):
-                        run_cmd = self._drop_moe_cache(
-                            run_cmd, f"{label.lstrip('-') or 'unpinned'} launch"
-                        )
+                        _cached_cmd = run_cmd
+                        _stage = f"{label.lstrip('-') or 'unpinned'} launch"
+                        run_cmd = self._drop_moe_cache(run_cmd, _stage)
+                        if run_cmd != _cached_cmd:
+                            run_cmd = _undo_cache_only_spill_cut(_stage, run_cmd)
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
                     _did_moe_cache_retry = False
@@ -30757,7 +31075,7 @@ class LlamaCppBackend:
                                     _crashed_proc.returncode,
                                     self._llama_log_path,
                                 )
-                                run_cmd = _uncached
+                                run_cmd = _undo_cache_only_spill_cut("retry", _uncached)
                                 _did_moe_cache_retry = True
                                 continue
                         if (
@@ -30997,6 +31315,7 @@ class LlamaCppBackend:
                     if not _crashed or not _cpu_fallback_eligible or _load_cancelled():
                         return False
                     fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
+                    failed_cmd, _commit_cpu_slots = _cpu_replay_at_asked_slots(failed_cmd)
                     prepared = self._prepare_cpu_fallback_launch(
                         binary,
                         failed_cmd,
@@ -31050,6 +31369,8 @@ class LlamaCppBackend:
                         self._cleanup_failed_cpu_fallback()
                         self._vram_fraction_pending = None
                         raise RuntimeError(detail)
+                    if _commit_cpu_slots is not None:
+                        _commit_cpu_slots()
 
                     # The replay dropped the fit's --load-mode none, so a record taken
                     # off the launch argv describes a reservation this child does not
@@ -31253,6 +31574,7 @@ class LlamaCppBackend:
                     if self._auto_vulkan_cpu_fallback_eligible(
                         binary, intent, extra_args, env, allow_manual_cpu = True
                     ):
+                        cmd, _commit_cpu_slots = _cpu_replay_at_asked_slots(cmd)
                         prepared = self._prepare_cpu_fallback_launch(
                             binary,
                             cmd,
@@ -31272,6 +31594,8 @@ class LlamaCppBackend:
                                 "`unsloth studio update` to repair the managed llama.cpp runtime."
                             )
                         cmd, _spawn_cwd, _replay_pageable_note = prepared
+                        if _commit_cpu_slots is not None:
+                            _commit_cpu_slots()
                         # The override is new since the replay's argv was built, so it is appended to the recorded notice.
                         self._record_memory_state(cmd, env)
                         _mem_policy_for_cmd = _snapshot_policy_for_cmd()
@@ -31813,6 +32137,10 @@ class LlamaCppBackend:
                         cmd = _kvu_cmd
                         # Read by admission control; left as-is Studio over-admits.
                         n_parallel = 1  # allow-slot-clamp: llama-server refused more
+                        # The build's limit, not the spill cut: a chosen count relaunches
+                        # to this same one slot, so nothing may read the cut as standing.
+                        _spill_slots_asked = None
+                        _spill_cut_needs_cache = False
                         kv_cache_unified = False
                         # The reserve was priced for the dropped slots: reprice for one sequence.
                         if (
@@ -32062,6 +32390,11 @@ class LlamaCppBackend:
                             user_args = _sidecar_user_tokens,
                         )
                     # Restore the cut slots; if they fail (unified KV refused), retry as cut.
+                    # The spilled-MoE cut needs a drafter too, so it goes with it: the
+                    # drafterless retry runs at the ask, as main and the crash replay do.
+                    _fb_slots_asked = (
+                        _mtp_slots_asked if _mtp_slots_asked is not None else _spill_slots_asked
+                    )
                     _fb_cut = (
                         (
                             fallback_cmd,
@@ -32071,11 +32404,12 @@ class LlamaCppBackend:
                             _auto_ctx_checkpoints,
                             _auto_ckpt_emitted,
                         )
-                        if _mtp_slots_asked is not None
+                        if _fb_slots_asked is not None and n_parallel < _fb_slots_asked
                         else None
                     )
                     if _fb_cut is not None:
-                        n_parallel = _mtp_slots_asked
+                        n_parallel = _fb_slots_asked
+                        _spill_cut_needs_cache = False
                         fallback_cmd = _with_parallel_slots(
                             fallback_cmd,
                             n_parallel,
@@ -32564,8 +32898,11 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(effective_ctx if _replayed_ctx_refit else n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
-                self._slots_cut_for_drafter = (
-                    _mtp_slots_asked is not None and n_parallel < _mtp_slots_asked
+                # Either cut (the drafter's own, or the spilled-MoE default) is one a
+                # chosen count must not dedupe against.
+                self._slots_cut_for_drafter = any(
+                    _asked is not None and n_parallel < _asked
+                    for _asked in (_mtp_slots_asked, _spill_slots_asked)
                 )
                 # Commit with the rest of the known-good state: only a launch that got
                 # this far replaced the runtime, so a rejected preflight leaves the old
