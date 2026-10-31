@@ -1119,11 +1119,7 @@ class LoRA_QKV(torch.autograd.Function):
                 X if ctx.inplace and not _is_compiling() else None,
             )
             for W_, W_quant_, dY_ in ((QW, QW_quant, dQ), (KW, KW_quant, dK), (VW, VW_quant, dV)):
-                W_ = (
-                    W_.t()
-                    if W_quant_ is None
-                    else _dequantize_t(W_, W_quant_, dY_.dtype)
-                )
+                W_ = W_.t() if W_quant_ is None else _dequantize_t(W_, W_quant_, dY_.dtype)
                 addmm_(dX, dY_, W_.t())
                 del W_
             return (

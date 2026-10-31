@@ -2181,12 +2181,16 @@ def matmul_lora(
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             if W_quant is not None:
-                W = _dequantize_for_lora(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+                W = _dequantize_for_lora(
+                    W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype
+                )
             out = _accumulated(addmm_(out, XA, B, alpha = s, beta = 0), out.addmm_(X, W.t()))
         else:
             # Unquantized, fast_dequantize returns W as is (FP8 never takes this branch).
             if W_quant is not None:
-                W = _dequantize_for_lora(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+                W = _dequantize_for_lora(
+                    W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype
+                )
             if not _is_compiling():
                 out = _lora_first_addmm(X, W.t(), XA, B, s)
             elif (
