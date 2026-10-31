@@ -32,7 +32,9 @@ def _stub_if_missing(name, attrs):
     sys.modules[name] = mod
 
 
-_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "FastModel", "is_bfloat16_supported"))
+_stub_if_missing(
+    "unsloth", ("FastLanguageModel", "FastVisionModel", "FastModel", "is_bfloat16_supported")
+)
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
@@ -89,7 +91,9 @@ def load(monkeypatch):
             calls["returns"] = returns
         trainer = trainer_mod.UnslothTrainer()
         trainer._detect_diffusion_lm = noop
-        trainer._update_progress = lambda **kw: calls.setdefault("errors", []).append(kw.get("error"))
+        trainer._update_progress = lambda **kw: calls.setdefault("errors", []).append(
+            kw.get("error")
+        )
         ok = trainer.load_model(
             "LiquidAI/LFM3-Audio-2B",
             is_dataset_audio = True,
@@ -115,4 +119,3 @@ def test_audio_without_vision_loads_the_multimodal_class(load):
 def test_audio_with_vision_keeps_the_default_load(load):
     _, kwargs = load(vision = True)  # Gemma 3n / Gemma 4
     assert "auto_model" not in kwargs
-

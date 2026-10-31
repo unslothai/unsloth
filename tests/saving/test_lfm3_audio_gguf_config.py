@@ -81,7 +81,6 @@ def test_other_models_are_untouched(tmp_path, model_type):
 
 def test_the_gguf_export_restores_it_before_converting():
     import inspect
-
     src = inspect.getsource(save_mod.unsloth_save_pretrained_gguf)
     assert src.index("_restore_lfm3_audio_release_config(") < src.index("save_to_gguf(")
 
@@ -91,14 +90,23 @@ def test_a_hub_base_is_read_at_the_loaded_commit(tmp_path, monkeypatch):
 
     calls = []
 
-    def hf_hub_download(repo, filename, revision = None, local_files_only = False):
+    def hf_hub_download(
+        repo,
+        filename,
+        revision = None,
+        local_files_only = False,
+    ):
         calls.append((repo, filename, revision))
         return str(_write(tmp_path / "snap", RELEASE) / "config.json")
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", hf_hub_download)
     model = types.SimpleNamespace(
-        peft_config = {"default": types.SimpleNamespace(base_model_name_or_path = "LiquidAI/LFM3-Audio-2B")},
-        config = types.SimpleNamespace(_name_or_path = "LiquidAI/LFM3-Audio-2B", _commit_hash = "cddb56b5ec"),
+        peft_config = {
+            "default": types.SimpleNamespace(base_model_name_or_path = "LiquidAI/LFM3-Audio-2B")
+        },
+        config = types.SimpleNamespace(
+            _name_or_path = "LiquidAI/LFM3-Audio-2B", _commit_hash = "cddb56b5ec"
+        ),
     )
     merged = _write(tmp_path / "merged", SAVED)
     assert save_mod._restore_lfm3_audio_release_config(model, str(merged))
@@ -123,7 +131,9 @@ def test_a_4bit_merge_keeps_its_saved_config(tmp_path):
     base = _write(tmp_path / "base", RELEASE)
     quantized = {**SAVED, "quantization_config": {"load_in_4bit": True}}
     merged = _write(tmp_path / "merged", quantized)
-    assert not save_mod._release_layout_for_merged_save(_peft_model(base), str(merged), "merged_4bit")
+    assert not save_mod._release_layout_for_merged_save(
+        _peft_model(base), str(merged), "merged_4bit"
+    )
     assert _saved(merged) == quantized
 
 
@@ -132,10 +142,24 @@ def test_a_peft_merged_push_uploads_the_release_config(tmp_path, monkeypatch):
     import huggingface_hub
 
     base = _write(tmp_path / "base", RELEASE)
-    hub = _write(tmp_path / "hub", {**SAVED, "dtype": "bfloat16", "auto_map": {"AutoConfig": "configuration_lfm3_audio.Lfm3AudioConfig"}})
+    hub = _write(
+        tmp_path / "hub",
+        {
+            **SAVED,
+            "dtype": "bfloat16",
+            "auto_map": {"AutoConfig": "configuration_lfm3_audio.Lfm3AudioConfig"},
+        },
+    )
     uploads = []
 
-    def download(repo_id, filename, token = None, local_dir = None, force_download = False, **kw):
+    def download(
+        repo_id,
+        filename,
+        token = None,
+        local_dir = None,
+        force_download = False,
+        **kw,
+    ):
         assert (repo_id, filename, force_download) == ("leo/merged", "config.json", True)
         target = os.path.join(local_dir, filename)
         shutil.copy(hub / filename, target)
@@ -153,11 +177,17 @@ def test_a_peft_merged_push_uploads_the_release_config(tmp_path, monkeypatch):
     model = _peft_model(base)
     model.config.model_type = "lfm3_audio"
     assert save_mod._push_lfm3_audio_release_config(model, "leo/merged", token = None)
-    assert uploads == [(
-        "leo/merged",
-        "config.json",
-        {**RELEASE, "dtype": "bfloat16", "auto_map": {"AutoConfig": "configuration_lfm3_audio.Lfm3AudioConfig"}},
-    )]
+    assert uploads == [
+        (
+            "leo/merged",
+            "config.json",
+            {
+                **RELEASE,
+                "dtype": "bfloat16",
+                "auto_map": {"AutoConfig": "configuration_lfm3_audio.Lfm3AudioConfig"},
+            },
+        )
+    ]
 
     other = _peft_model(base)
     other.config.model_type = "llama"

@@ -4023,7 +4023,6 @@ def _base_config_dicts(model):
                 path = os.path.join(name, "config.json")
             else:
                 from huggingface_hub import hf_hub_download
-
                 try:
                     path = hf_hub_download(
                         name, "config.json", revision = revision, local_files_only = True
@@ -4055,7 +4054,10 @@ def _restore_lfm3_audio_release_config(model, save_directory):
         if vocab is not None and release["lfm"].get("vocab_size") != vocab:
             continue  # resized embeddings: the release config no longer describes these weights
         # The dtype the weights were written in and the code modules the save copied, not the release's.
-        release = {**release, **{k: saved[k] for k in ("dtype", "torch_dtype", "auto_map") if k in saved}}
+        release = {
+            **release,
+            **{k: saved[k] for k in ("dtype", "torch_dtype", "auto_map") if k in saved},
+        }
         with open(path, "w", encoding = "utf-8") as f:
             json.dump(release, f, indent = 2)
         return True
@@ -4074,7 +4076,11 @@ def _release_layout_for_merged_save(model, save_directory, save_method):
     return _restore_lfm3_audio_release_config(model, save_directory)
 
 
-def _push_lfm3_audio_release_config(model, repo_id, token = None):
+def _push_lfm3_audio_release_config(
+    model,
+    repo_id,
+    token = None,
+):
     # A plain PEFT merged push uploads straight from the merge, so the release layout is pushed after it.
     if getattr(getattr(model, "config", None), "model_type", None) != "lfm3_audio":
         return False

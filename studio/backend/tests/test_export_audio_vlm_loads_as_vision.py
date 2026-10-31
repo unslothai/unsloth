@@ -70,7 +70,9 @@ def test_audio_vlm_with_vision_takes_the_vision_load(
 ):
     backend, text, vision, fast = _load(monkeypatch, tmp_path, audio_type, is_vision)
     assert backend.is_vision is expect_vision
-    assert (len(vision.calls), len(text.calls), len(fast.calls)) == ((1, 0, 0) if expect_vision else (0, 1, 0))
+    assert (len(vision.calls), len(text.calls), len(fast.calls)) == (
+        (1, 0, 0) if expect_vision else (0, 1, 0)
+    )
 
 
 def test_audio_vlm_without_vision_takes_the_multimodal_load(monkeypatch, tmp_path):

@@ -192,7 +192,13 @@ class _Lfm3Processor(_Processor):
     def __init__(self):
         self.tokenizer = _Lfm3Tokenizer(preset_markers = True)
 
-    def __call__(self, text = None, audio = None, return_tensors = None, padding = None):
+    def __call__(
+        self,
+        text = None,
+        audio = None,
+        return_tensors = None,
+        padding = None,
+    ):
         return super().__call__(text, audio, return_tensors, padding)
 
 
