@@ -196,7 +196,8 @@ def test_back_to_back_renders_never_wait_and_owe_nothing():
         time.sleep(0.05)  # the render
         job.resume()
         time.sleep(0.02)  # the client's turnaround, inside the grace
-    assert max(waits) < 0.05, waits
+    # without freeze the first pause waits out the block graph in flight; after that nothing is owed
+    assert waits[0] < 0.4 and max(waits[1:]) < 0.05, waits
     done_during_renders = len(net.compiled_blocks)
     assert done_during_renders <= 2  # the graph in flight at the first pause, then nothing
     _wait_for(lambda: job.state == "done")
@@ -211,8 +212,9 @@ def test_without_freeze_the_compile_parks_at_the_next_block_boundary():
     job.kick()
     _wait_for(lambda: len(net.compiled_blocks) >= 1)
     waited, paused = job.pause(freeze = False)
-    assert paused and waited < 0.05
-    _wait_for(lambda: job._parked, timeout = 1.0)
+    # the block in flight sleeps (no Python running), yet pause returns only once the compile parked: an
+    # offloaded block must not run beside the render
+    assert paused and job._parked and waited < 1.0
     held = len(net.compiled_blocks)
     time.sleep(0.5)
     assert len(net.compiled_blocks) == held and not job._frozen

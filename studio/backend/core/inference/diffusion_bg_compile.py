@@ -1018,7 +1018,9 @@ class BackgroundCompile:
             if not nested:
                 # Running Python, the thread stops within microseconds (frozen) or at its next block boundary (no
                 # freeze: offloaded, or refused). Blocked without the GIL (a Triton / C++ build in the pool, a
-                # subprocess) it costs the render nothing and stops when it wakes: do not wait for it then.
+                # subprocess) it costs the render nothing and the armed freeze stops it when it wakes: do not wait
+                # for it then. Without freeze nothing would stop it before the block boundary, and an offloaded
+                # block running beside the render moves the same weights, so wait for the park.
                 last = _innermost(thread.ident)
                 quiet_since = time.perf_counter()
                 while thread.is_alive() and not self._parked:
@@ -1029,7 +1031,7 @@ class BackgroundCompile:
                     here = _innermost(thread.ident)
                     if here != last:
                         last, quiet_since = here, now
-                    elif now - quiet_since >= _FREEZE_QUIET_S:
+                    elif self._freeze_ok and now - quiet_since >= _FREEZE_QUIET_S:
                         break
         waited = time.perf_counter() - t0
         self.pause_wait_s += waited
