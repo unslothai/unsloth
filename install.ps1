@@ -108,9 +108,8 @@ function Install-UnslothStudio {
     $script:UvExe = 'uv'
     $script:UvInstallDestDir = $null
     $script:StudioPrivateUvDir = $null
-    # Same reason, and this one caches a decision about the machine: a policy added or
-    # removed between two runs in one console, or a replaced launcher under a hash rule,
-    # would otherwise be answered from the first run's probe.
+    # Caches a machine-level decision, so a policy added or removed between runs in one console, or
+    # a replaced launcher under a hash rule, would otherwise be answered from the first probe.
     $script:ShimLaunchBlockedCache = $null
     $script:ShimLaunchBlockedPath = $null
 
@@ -3243,9 +3242,8 @@ function Install-UnslothStudio {
         try {
             foreach ($entry in [System.IO.Directory]::GetFileSystemEntries($Cache)) {
                 $name = [System.IO.Path]::GetFileName($entry)
-                # Only where a BUCKET should be. Anything else up here is not uv's to write,
-                # and a cache-dir on a mount point has a root-owned lost+found that must not
-                # condemn it.
+                # Only entries where a bucket should be are checked: anything else is not uv's to
+                # write, and a mount point's root-owned lost+found must not condemn the cache.
                 if (-not (Test-StudioUvBucketName -Name $name -Fold:$fold)) { continue }
                 # A file, or a link dangling or not, is an existing path to uv's own create,
                 # which answers "already exists", so uv refuses it.
@@ -3300,9 +3298,8 @@ function Install-UnslothStudio {
         return $false
     }
 
-    # Can we create AND fill this directory? A real create, since an existing unwritable one
-    # satisfies CreateDirectory. For the Studio cache, which may not exist yet, where the bucket
-    # probe above has nothing to walk.
+    # Checks create and fill for a directory that may not exist yet, since CreateDirectory passes an
+    # existing unwritable one and the bucket probe has no buckets to walk.
     function Test-StudioUvCacheRootWritable {
         param([Parameter(Mandatory = $true)][string]$Cache)
         try {
@@ -4600,10 +4597,9 @@ function Install-UnslothStudio {
     $script:UnslothCmdShimMarker = "unsloth-studio-managed-launcher"
     $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 
-    # Policy refusal through PowerShell's wrapper exceptions: AppLocker 1260, App Control
-    # for Business and Smart App Control 4551 (ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION).
-    # $LASTEXITCODE cannot answer this: no process was created, so it still holds the
-    # exit code of whichever native command ran last.
+    # Policy refusal via PowerShell wrapper exceptions: AppLocker 1260, App Control for Business and
+    # Smart App Control 4551 (ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION); $LASTEXITCODE cannot answer
+    # since no process was created.
     function Test-ApplicationControlBlock {
         param($ErrorRecord)
 
@@ -4667,12 +4663,9 @@ function Install-UnslothStudio {
         }
     }
 
-    # Does Application Control deny this launcher here? Windows cannot be asked without
-    # trying: AppLocker's cmdlets need the policy and an admin token, WDAC and Smart App
-    # Control expose nothing. A denial is free (CreateProcess fails synchronously, no
-    # child, the policy code straight back); an unaffected machine pays one `--version`,
-    # measured at a quarter second. A process that started is not blocked whatever it does next,
-    # so the timeout path still answers "not blocked" and just stops waiting.
+    # Windows cannot be asked (AppLocker needs policy and an admin token, WDAC and Smart App Control
+    # expose nothing), so it is tried: a denial fails synchronously; an unaffected machine pays one
+    # --version run; a started process is not blocked, so a timeout still answers not blocked.
     function Test-ShimLaunchBlocked {
         param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -6122,9 +6115,8 @@ exit 0
         substep "Get it from https://aka.ms/getwinget if Python / uv are not already on PATH." "Yellow"
     }
 
-    # The interpreter's own arch, asked of it: win-amd64|win-arm64|win32|"".
-    # -S: the caller compares this with -eq, so a sitecustomize banner would read as
-    # "unknown" and lose the x64-over-ARM64 preference.
+    # The interpreter's own platform tag (win-amd64, win-arm64, win32 or empty); -S stops a
+    # sitecustomize banner reading as unknown and losing the x64-over-ARM64 preference.
     function Get-PythonPlatformTag {
         param([string]$Exe)
         try {
@@ -6139,10 +6131,9 @@ exit 0
         return ($env:UNSLOTH_ALLOW_ARM64_PYTHON -in @('1', 'true', 'yes', 'on'))
     }
 
-    # Does an environment we are about to REUSE still match the interpreter we chose? A
-    # migrated venv keeps whatever built it,
-    # which on Windows on ARM is native ARM64 CPython (#8495, #10875). True only with an x64
-    # interpreter in hand, so a host served by native ARM64 wheels is left alone.
+    # A migrated venv keeps whatever built it, which on Windows on ARM can be native ARM64 CPython
+    # (issues 8495 and 10875); a mismatch is only reported with an x64 interpreter in hand, so hosts
+    # served by native ARM64 wheels are left alone.
     function Test-StudioVenvArchMismatch {
         param(
             [Parameter(Mandatory = $true)][string]$VenvPython,
@@ -6162,9 +6153,8 @@ exit 0
         if ($tag -ne "win-arm64") { return $false }
         # Honoured here too, or a migrated ARM64 environment the user asked to keep is replaced.
         if (Test-Arm64PythonOptOut) {
-            # Two outcomes, so two sentences: with an ARM64 interpreter the environment is
-            # really not rebuilt on x64, and with none the reinstall has already moved the
-            # tree aside and the new one IS on x64.
+            # Two outcomes: with an ARM64 interpreter the environment is really not rebuilt on x64,
+            # while with none the reinstall has already moved the tree aside and the new one is x64.
             if ($SelectedPython -and $SelectedPython.Arch -eq "x86_64") {
                 substep "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set, but no ARM64 Python is left on" "Yellow"
                 substep "this machine, so the new environment is built on x64; the ARM64 one is kept." "Yellow"
@@ -6255,9 +6245,8 @@ exit 0
 
     # Every uv in bare-token order (alias, then PATH), so the version gate can skip a stale one.
     function Get-UvExecutableCandidates {
-        # An ALIAS pointing at a real executable FIRST, because PowerShell resolves aliases
-        # ahead of PATH. Followed only as far as an Application, returning the resolved path so
-        # the rest of the script is not back in command discovery.
+        # An alias pointing at a real executable comes first since PowerShell resolves aliases ahead
+        # of PATH; follow it only as far as an Application and return the resolved path.
         $found = [System.Collections.Generic.List[string]]::new()
         $alias = Get-Command uv -CommandType Alias -ErrorAction SilentlyContinue
         while ($alias -and $alias.ResolvedCommand) {
@@ -6556,9 +6545,8 @@ exit 0
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
         }
-        # winget unavailable or it didn't put uv on PATH: install the pinned
-        # release directly (ARM64 runners, machines without the Store). A stale private uv is
-        # replaced even when PATH has a good one: Studio puts the private one first.
+        # If winget is unavailable or did not put uv on PATH, install the pinned release directly
+        # (ARM64 runners, no Store); a stale private uv is replaced even if PATH has a good one.
         if ($script:StudioPrivateUvStale -or -not (Test-UvVersionOk)) {
             if (@(Install-UvFromRelease)[-1] -ne $true -and $script:UvReleaseUnfetched -and (Use-MirrorSpare uvbin)) { Install-UvFromRelease | Out-Null }
             Refresh-SessionPath
@@ -7000,9 +6988,8 @@ exit 0
     }
 
     function Merge-StudioVenvRollbackTree {
-        # Moves every entry of $Source into $Destination without ever overwriting or
-        # deleting what is already there. Returns $true only when $Source ends up
-        # empty and removed, i.e. the two halves were fully reunited.
+        # Moves every entry of $Source into $Destination without overwriting or deleting anything
+        # already there; returns $true only when $Source ends up empty and removed.
         param(
             [Parameter(Mandatory = $true)][string]$Source,
             [Parameter(Mandatory = $true)][string]$Destination
@@ -7012,9 +6999,8 @@ exit 0
         }
         $complete = $true
         foreach ($entry in @(Get-ChildItem -LiteralPath $Source -Force -ErrorAction Stop)) {
-            # Not $destination: PowerShell names are case-insensitive, so that would
-            # reassign the $Destination parameter and nest every later sibling under
-            # the previous entry's name.
+            # Not $destination: PowerShell names are case-insensitive, so it would overwrite
+            # $Destination.
             $entryTarget = Join-Path $Destination $entry.Name
             if (-not (Test-Path -LiteralPath $entryTarget)) {
                 Move-Item -LiteralPath $entry.FullName -Destination $entryTarget -ErrorAction Stop
@@ -7045,12 +7031,10 @@ exit 0
     }
 
     function Restore-StudioVenvRollback {
-        # The same flag the marker restore consults, so an interruption mid-commit cannot
-        # put one half of a committed install back and keep the other.
+        # Same flag as the marker restore, so an interrupted commit cannot restore only half.
         if ($script:StudioInstallCommitted) { return }
         if (-not $script:StudioVenvRollbackActive) { return }
-        # A restore puts the tree back at $VenvDir, so there is nothing left to preserve and
-        # the flag must not survive into any later rollback in the same run.
+        # A restore leaves nothing to preserve; the flag must not outlive this rollback.
         $script:StudioVenvRollbackPreserve = $false
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
@@ -7099,15 +7083,13 @@ exit 0
     }
 
     function Complete-StudioVenvRollback {
-        # First and alone: this one assignment is what both restores consult, so an
-        # interruption cannot find them disagreeing. A first install rolls nothing back
-        # and still commits.
+        # Set first and alone: both restores read this flag so an interruption cannot split them; a
+        # first install rolls nothing back and still commits
         $script:StudioInstallCommitted = $true
         $script:StudioUvMarkerSaved = $false
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
-        # The replacement is committed. Disable restoration before deleting the
-        # backup so interruption cannot restore a partially deleted environment.
+        # Disable restore before the backup is deleted, else a partial venv gets restored.
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
         $script:StudioVenvRollbackPartial = $false
@@ -7181,8 +7163,7 @@ exit 0
         return $null
     }
 
-    # Version of distribution $Name in $VenvRoot from its dist-info METADATA, without running the
-    # interpreter. $null when there is no record or more than one.
+    # Version from dist-info METADATA, read without the interpreter; $null if none or several.
     function Get-PackageVersionFromDisk {
         param([string]$VenvRoot, [string]$Name)
         $sitePackages = Join-Path $VenvRoot "Lib\site-packages"
@@ -7309,8 +7290,7 @@ exit 0
         $studioUsesLegacyLayout `
         -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe"))
     ) {
-        # CWD-relative venv from old install.ps1 -> migrate to absolute path.
-        # Skip custom-root env-mode so it is not relocated into a workspace root.
+        # Legacy CWD-relative venv: migrate it to the absolute path, never into a custom root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
         if (-not (Test-LegacyVenvReusable -VenvDir $CwdVenv -Python $DetectedPython -Exact ([bool]$PythonPatchRequest))) {
             substep "found a CWD-relative Unsloth environment not on the uv-managed Python $($DetectedPython.Full) -- creating a fresh environment; the old one stays at $CwdVenv" "Yellow"
@@ -7355,8 +7335,7 @@ exit 0
                     substep "the previous ARM64 environment was discarded by --no-rollback rather than kept;" "Yellow"
                     substep "the x64 environment is built fresh, and extra packages are not recoverable." "Yellow"
                 } else {
-                    # After the move, so a rollback that never started cannot leave the flag set
-                    # for some later unrelated rollback to act on.
+                    # Set after the move, so an unstarted rollback cannot leave the flag set.
                     $script:StudioVenvRollbackPreserve = $true
                 }
             }
@@ -8578,8 +8557,7 @@ main()
                 $nvTok = if ($env:CUDA_VISIBLE_DEVICES) { ($env:CUDA_VISIBLE_DEVICES -split ',')[0].Trim() } else { '' }
                 # True while nothing has IDENTIFIED a device: a plain ordinal.
                 $nvByOrdinal = $true
-                # Set when an identity mask was given but did not resolve, which means CUDA
-                # selected NO device. Row 0 is not a fallback for that.
+                # Mask given but unresolved: CUDA selects no device; row 0 is not a fallback.
                 $nvUnresolved = $false
                 if ($nvTok -match '^\d+$') {
                     $nvIdx = [int]$nvTok
@@ -8621,8 +8599,7 @@ main()
                                   Sort-Object -Unique).Count
                     $nvAmbiguous = ($nvOrder -ne 'PCI_BUS_ID' -and $nvModels -gt 1)
                 }
-                # Split from the right: nvidia-smi does not quote, so a comma in a device
-                # name would otherwise shift every field.
+                # Split from the right: names are unquoted, so a comma would shift fields.
                 $nvParts = $nvRow -split ','
                 if ($nvParts.Count -ge 3) {
                     $NvidiaDriverVersion = $nvParts[-1].Trim()
@@ -8636,8 +8613,7 @@ main()
                     # compute capability as part of the name ("RTX 4090, 8.9").
                     $NvidiaGpuName = $nvParts[0].Trim()
                 }
-                # An nvidia-smi too old for a field answers with a placeholder rather
-                # than failing (the 470 branch has no compute_cap at all).
+                # Old nvidia-smi gives a placeholder, not an error, for unsupported fields.
                 $nvPlaceholders = @('[N/A]', '[Not Supported]', '[Unknown Error]')
                 if ($nvPlaceholders -contains $NvidiaGpuName)       { $NvidiaGpuName = $null }
                 if ($nvPlaceholders -contains $NvidiaDriverVersion) { $NvidiaDriverVersion = $null }
@@ -8655,8 +8631,7 @@ main()
     $ROCmGpuName = $null
     $ROCmVersion = $null
     $ROCmGfxArch = $null
-    # Declared with its neighbours, not inside the block below: the arms that read
-    # it are outside that gate, so an NVIDIA host would leave it undefined.
+    # Declared here, not inside the gated block: arms that read it sit outside that gate.
     $ROCmUnsupportedGfxArch = $null
     if (-not $HasNvidiaSmi) {
         # Ignore the venv hipInfo.exe: an AMD wheel, not a HIP SDK, so amd-smi still auto-elevates.
@@ -8726,8 +8701,7 @@ main()
             try {
                 $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
                 if ($hipOut -match "(?i)gcnArchName") {
-                    # hipinfo can crash after printing gcnArchName (#6043).
-                    # Once the arch is printed, keep the ROCm wheel path.
+                    # hipinfo can crash after gcnArchName prints; keep the ROCm path then.
                     $HasROCm = $true
                     $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
                     # Names are trusted only when they line up with the arch list; the arch never reads them.
@@ -8770,9 +8744,8 @@ main()
                         $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                         # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
                         $_smiGfxTokens = @([regex]::Matches($smiOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
-                        # Market names, when this amd-smi prints them, indexed like the gfx
-                        # tokens above. Banner only; the arch that selects the wheel is never
-                        # taken from here.
+                        # Market names, indexed like the gfx tokens; banner only, never used to pick
+                        # the wheel arch.
                         $_smiNames = @([regex]::Matches($smiOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
                         if ($_smiGfxTokens.Count -gt 0) {
                             $ROCmGfxArch = if ($_smiVisIdx -lt $_smiGfxTokens.Count) { $_smiGfxTokens[$_smiVisIdx] } else { $_smiGfxTokens[0] }

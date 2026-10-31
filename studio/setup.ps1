@@ -3461,10 +3461,9 @@ function Test-MasterRootNoteIsHonoured {
         Write-StudioLine "        UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
         return $false
     }
-    # A note must describe the tree it is written into: every reader requires the Studio
-    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot aim
-    # a removal at the original install. A split layout, with the runtimes under the master root
-    # and Studio outside it, is that shape: say so, rather than leave a note no reader honours.
+    # A note must describe the tree it sits in: readers require the Studio directory to lie inside
+    # the named root, so a copied tree cannot aim removal at the original; a split layout must say
+    # so.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true
@@ -7198,9 +7197,8 @@ function Find-InstalledUv {
     return $null
 }
 
-# The floor a found uv has to clear: install.ps1's UvMinVersion, so reuse accepts exactly what
-# the Windows installer accepts. Below 0.13.4 uv's bundled roots still trust the compromised
-# emSign CAs (GHSA-hq85-5cpj-mr62).
+# The floor a found uv must clear, matching install.ps1 UvMinVersion; below 0.13.4 uv's bundled
+# roots still trust the compromised emSign CAs (GHSA-hq85-5cpj-mr62).
 $SetupUvMinVersion = "0.13.4"
 
 function Test-SetupUvVersionAtLeast {
@@ -7229,10 +7227,9 @@ function Get-InstalledUvVerdict {
     return $verdict
 }
 
-# Try to use uv (much faster than pip), fall back to pip if unavailable
-# A uv on PATH below the floor is passed over like an installed one, and kept only when the
-# download fails (offline). One that hangs, fails or answers no version counts as old. A staged run
-# never downloads: it keeps the old uv, as before, behind the Windows trust store.
+# A uv on PATH below the floor is passed over unless the download fails offline; a hang or
+# unreadable version counts as old; a staged run never downloads and keeps the old uv behind the
+# Windows trust store.
 function Get-SetupPathUvTooOld {
     $pathUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $pathUv) { return $null }
@@ -9493,9 +9490,8 @@ if ($LocalLlamaCppLinked) {
 # ==========================================================================
 #  PHASE 3.4: Install the whisper.cpp prebuilt (dictation runtime)
 # ==========================================================================
-# Mirrors the llama.cpp prebuilt install above; current whisper releases are
-# slim bundles that reuse the llama install's ggml runtime, so this runs after
-# llama. Failure is never fatal: local dictation falls back to Transformers STT.
+# Runs after llama because current whisper releases are slim bundles reusing its ggml runtime;
+# failure is never fatal, as local dictation falls back to Transformers STT.
 $WhisperCppDir = Join-Path $UnslothHome "whisper.cpp"
 $WhisperInstaller = Join-Path $PSScriptRoot "install_whisper_prebuilt.py"
 # A user-configured whisper binary/dir or an explicit skip disables the managed install entirely.
