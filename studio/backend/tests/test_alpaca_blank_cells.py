@@ -148,3 +148,38 @@ def test_cell_text_maps_every_empty_spelling_to_empty_text():
     assert cell_text(False) == "False"
     assert cell_text("0") == "0"
     assert cell_text(" ") == " "
+
+
+def test_alpaca_without_input_column_formats_empty_input_on_every_row():
+    dataset = Dataset.from_dict(
+        {
+            "instruction": ["a", "b", "c", "d", "e"],
+            "output": ["1", None, "3", "4", "5"],
+        }
+    )
+
+    texts = _format(dataset)
+
+    assert len(texts) == 5
+    for instruction, output, text in zip("abcde", ["1", "", "3", "4", "5"], texts):
+        assert text.endswith(
+            f"### Instruction:\n{instruction}\n\n### Input:\n\n\n### Response:\n{output}</s>"
+        )
+
+
+def test_alpaca_input_column_is_read_per_row_across_batches():
+    dataset = Dataset.from_dict(
+        {
+            "instruction": [f"i{n}" for n in range(5)],
+            "input": [f"x{n}" if n % 2 else None for n in range(5)],
+            "output": [f"o{n}" for n in range(5)],
+        }
+    )
+
+    texts = _format(dataset)
+
+    for n, text in enumerate(texts):
+        expected_input = f"x{n}" if n % 2 else ""
+        assert text.endswith(
+            f"### Instruction:\ni{n}\n\n### Input:\n{expected_input}\n\n### Response:\no{n}</s>"
+        )

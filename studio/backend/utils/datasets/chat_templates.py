@@ -675,14 +675,18 @@ def apply_chat_template_to_dataset(
 
         def _format_alpaca(examples):
             texts = []
+            instructions = examples["instruction"]
+            outputs = examples["output"]
             systems = examples.get("system")
             if systems is None:
-                systems = [None] * len(examples["instruction"])
-            for i in range(len(examples["instruction"])):
+                systems = [None] * len(instructions)
+            # Build the missing-input fallback once per batch, not once per row.
+            inputs = examples["input"] if "input" in examples else [""] * len(instructions)
+            for i in range(len(instructions)):
                 fields = {
-                    "instruction": examples["instruction"][i],
-                    "input": examples.get("input", [""] * len(examples["instruction"]))[i],
-                    "output": examples["output"][i]
+                    "instruction": instructions[i],
+                    "input": inputs[i],
+                    "output": outputs[i]
                 }
                 fields = {key: cell_text(value) for key, value in fields.items()}
                 system = systems[i]
