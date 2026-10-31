@@ -262,6 +262,8 @@ _ARG_FIXTURES = {
     "markers": lambda text: _tool_healing_build_markers(text),
     "patterns": lambda text: _tool_healing_all_pats(),
     "strip_segment": lambda text: (lambda segment, is_last: segment),
+    # The DeepSeek opener match the envelope parser is handed; None (no opener) pins the raise.
+    "begin": lambda text: _parser_deepseek_begin(text),
 }
 
 
@@ -299,6 +301,11 @@ def _parser_first_sentinel(text: str):
 def _parser_first_foreign_signal(text: str):
     from core.inference import tool_call_parser
     return tool_call_parser._first_foreign_tool_signal(text)
+
+
+def _parser_deepseek_begin(text: str):
+    from core.inference import tool_call_parser
+    return tool_call_parser._DEEPSEEK_BEGIN_RE.search(text)
 
 
 def _tool_healing_build_markers(text: str):
