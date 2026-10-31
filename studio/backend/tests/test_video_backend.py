@@ -1357,12 +1357,14 @@ def test_is_ltx23_checkpoint_gguf(monkeypatch, tmp_path):
             "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 6),
         }
     )
+    path.write_bytes(b"xy")
     assert is_ltx23_checkpoint(path) is False
 
     def _boom(path):
         raise RuntimeError("bad magic")
 
     gguf.GGUFReader = _boom
+    path.write_bytes(b"xyz")
     assert is_ltx23_checkpoint(path) is False
 
 
@@ -2958,8 +2960,8 @@ def test_a_quantized_reference_load_resolves_the_reference_denoiser():
     # needs a host that can attempt the load at all.
     check_refusal = _h3_pipeline_load_is_attemptable(fam)
     for scheme, expected in (
-        ("int8", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
-        ("fp8", "MiniMax-H3-Ref2VA-FP8.pt"),
+        ("int8", "MiniMax-H3-Ref2VA-INT8-ConvRot.safetensors"),
+        ("fp8", "MiniMax-H3-Ref2VA-FP8.safetensors"),
     ):
         if check_refusal:
             try:
