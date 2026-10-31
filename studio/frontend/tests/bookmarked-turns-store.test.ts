@@ -27,7 +27,6 @@ test("forgetting chats with no bookmarks keeps the state object", () => {
 });
 
 test("every chat delete route forgets the deleted chats' bookmarks", async () => {
-  // project delete and clear-all remove chats without going through deleteChatItems
   const { readSrcAsync } = await import("./helpers/kit.ts");
   for (const file of [
     "features/chat/hooks/use-chat-sidebar-items.ts",
@@ -89,7 +88,6 @@ test("an open turn card reads its reply live while it streams", async () => {
   );
   assert.match(nav, /const liveReply = useAuiState/);
   assert.match(nav, /\(liveReply \?\? preview\.reply\)/);
-  // the live scan stops at the latest prompt, so an older card costs one turn per token
   assert.match(
     nav,
     /role === "user"\) \{\s*return messages\[index\]\.id === previewOpenerId/,
@@ -104,7 +102,6 @@ test("the turn card stays inside a phone-width viewport", async () => {
     ),
     "utf8",
   );
-  // the card opens right of the left-edge rail, so the cap is what keeps its right edge on screen
   assert.match(
     nav,
     /left: `calc\(\$\{preview\.left\}px \+ 0\.5rem\)`,[\s\S]{0,160}maxWidth: `calc\(100vw - \$\{preview\.left\}px - 1\.5rem\)`/,
@@ -133,7 +130,6 @@ test("the turn card stays out of select-all copies, and each marker names its tu
     ),
     "utf8",
   );
-  // the card is portaled to body, so the rail anchor's select-none does not reach it
   assert.match(nav, /"aui-turn-preview [^"]*\bselect-none\b/);
   assert.match(nav, /aria-label=\{t\(\s*isBookmarked \? "turns\.bookmarkedLabel" : "turns\.label",/);
 });

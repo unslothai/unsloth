@@ -49,22 +49,16 @@ import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
 
 const MIN_NAVIGATOR_TURNS = 3;
-// end fade of an overflowing rail, scaled by how much is hidden past each end
 const RAIL_FADE_PX = 24;
 const RAIL_LEAD = 1.15;
-// rail clearance from the thread's top and bottom
 const RAIL_INSET_PX = 48;
-// T3 Code's pitch: one 8px row per turn
 const RAIL_ROW_PX = 8;
 const PROMPT_PREVIEW_CHARS = 240;
 const REPLY_PREVIEW_CHARS = 480;
-// long enough to cross from a marker onto the card
 const PREVIEW_HIDE_DELAY_MS = 150;
 const PYRAMID_REACH = 2;
-// math blocks above the target settle from placeholder heights, so the jump re-aligns briefly
 const JUMP_ALIGN_FRAMES = 4;
 
-// keyed by thread (compare panes mount several); settled after a switch mounts, so it adds no cost
 interface TurnIndex {
   turns: ReadonlyMap<string, number>;
   settled: boolean;
@@ -86,12 +80,10 @@ function useIsTurnBookmarked(
   );
 }
 
-// ownTurn: a user message opens its own turn, so its action bar skips the message scan
 function useTurnBookmark(
   ownTurn: boolean,
 ): { bookmarked: boolean; toggle: () => void } | null {
   const incognito = useChatRuntimeStore((state) => state.incognito);
-  // one primitive selector: it runs on every store write for every mounted message
   const key = useAuiState(
     ({ thread, message, threadListItem }) =>
       `${threadListItem.remoteId ?? ""}\n${ownTurn ? message.id : (turnOpenerIdAt(thread.messages, message.index) ?? "")}`,
@@ -166,7 +158,6 @@ const BookmarkTurnMenuItemInner: FC<{ className?: string }> = ({
   );
 };
 
-// memoized: the thread re-renders on composer resizes
 export const TurnNavigator: FC<{
   viewportRef: RefObject<HTMLElement | null>;
 }> = memo(({ viewportRef }) => {
@@ -273,7 +264,6 @@ function previewText(content: readonly PreviewPart[], maxChars: number) {
   const text = content
     .map((part) => (part.type === "text" ? (part.text ?? "") : ""))
     .join("\n")
-    // the regexes only need what can survive the cut
     .slice(0, maxChars * 4)
     .replace(/```[^\n]*/g, " ")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -290,7 +280,6 @@ type PreviewMessage = {
   content: readonly PreviewPart[];
 };
 
-// skips tool-only steps so the card is not blank
 function turnReplyText(
   messages: readonly PreviewMessage[],
   start: number,
@@ -314,22 +303,17 @@ interface TurnPreview {
   openerId: string;
   prompt: string;
   reply: string;
-  // viewport px: portaled, so its text changes stay out of the thread's autoscroll MutationObserver
   top: number;
   left: number;
-  // first or last turn: the card hangs from or sits on its marker instead of centring on it
   edge: "start" | "end" | null;
 }
 
-// Rail and card follow T3 Code's timeline minimap (left edge, fisheye dashes, in-view tint);
-// numbering, bookmarks, the scroll-following rail and the jump come from #11668.
 const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   viewportRef,
 }) => {
   const t = useT();
   const aui = useAui();
   const detachFromBottom = useDetachThreadFromBottom();
-  // a string, so a streamed token that adds no turn does not render the rail
   const signature = useAuiState(
     ({ thread }) => threadTurns(thread.messages).signature,
   );
@@ -348,18 +332,14 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   const bookmarked = useMemo(() => new Set(bookmarkedIds), [bookmarkedIds]);
   const anchorRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLElement>(null);
-  // rebuilt only when the messages array changes, so a hover is one lookup
   const messageIndexRef = useRef<{
     messages: readonly PreviewMessage[] | null;
     index: Map<string, number>;
   }>({ messages: null, index: new Map() });
   const previewId = useId();
-  // closing keeps the last preview, so the hidden card keeps its text nodes
   const [preview, setPreview] = useState<TurnPreview | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
-  // non-empty from the start, so the first hover edits text nodes instead of inserting them
   const lastReplyRef = useRef(" ");
-  // only the latest turn can stream, so an open card follows it and the scan stops at its prompt
   const previewOpenerId = previewOpen ? preview?.openerId : undefined;
   const liveReply = useAuiState(({ thread }) => {
     if (!previewOpenerId) {
@@ -439,7 +419,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     [jumpToTurn],
   );
 
-  // read on hover so the rail never holds stale message text
   const showPreview = useCallback(
     (
       event: PointerEvent<HTMLButtonElement> | FocusEvent<HTMLButtonElement>,
@@ -478,7 +457,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     [aui, cancelHide, setActiveMarker, openerIds.length],
   );
   const onRailScroll = useCallback((event: UIEvent<HTMLElement>) => {
-    // the rail follows a keyboard jump, so the card stays on its still-focused marker
     const rail = event.currentTarget;
     const focused = document.activeElement;
     if (focused instanceof HTMLButtonElement && rail.contains(focused)) {
@@ -499,7 +477,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       return;
     }
     let frame = 0;
-    // refit only after a resize; scrolling just moves the rail
     let fitPending = true;
     let railRange = 0;
     let railFull = 0;
@@ -524,7 +501,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       let fit: Record<string, string> | null = null;
       if (fitPending && anchor) {
         const box = viewport.getBoundingClientRect();
-        // centred on the anchor, so twice the tighter side's room; not the composer, it grows with the queue
         const centre = anchor.getBoundingClientRect().top;
         const room =
           Math.min(centre - box.top, box.bottom - centre) - RAIL_INSET_PX;
@@ -545,12 +521,10 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
         for (const [name, value] of Object.entries(fit)) {
           setStyle(name, value);
         }
-        // forces a layout, so only after a resize
         railFull = rail.scrollHeight;
         railView = rail.clientHeight;
         railRange = Math.max(0, railFull - railView);
       }
-      // thread position maps to mid-rail, a touch ahead, so the ends come into view early
       const progress = range > 0 ? scrollTop / range : 0;
       const ahead = 0.5 + (progress - 0.5) * RAIL_LEAD;
       const railTop = Math.min(
@@ -570,7 +544,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       schedule();
     };
     const fadeEnds = () => setFades(rail.scrollTop);
-    // focus scrolls the rail to reveal its dash; once focus leaves, follow the thread again
     const onFocusOut = (event: globalThis.FocusEvent) => {
       if (!rail.contains(event.relatedTarget as Node | null)) {
         schedule();
@@ -580,7 +553,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     viewport.addEventListener("scroll", schedule, { passive: true });
     rail.addEventListener("scroll", fadeEnds, { passive: true });
     rail.addEventListener("focusout", onFocusOut);
-    // the rail height eases, so observing it keeps the fades in step
     const resize = new ResizeObserver(refit);
     resize.observe(rail);
     resize.observe(viewport);
@@ -592,7 +564,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       cancelAnimationFrame(frame);
     };
   }, [viewportRef, turnCount]);
-  // T3's in-view tint: turns whose prompt is on screen light up, written to the markers directly
   useEffect(() => {
     const viewport = viewportRef.current;
     const rail = railRef.current;
@@ -754,14 +725,12 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   if (previewReply) {
     lastReplyRef.current = previewReply;
   }
-  // the rail is not a scroller, so wheel scrolling over it reaches the thread
   return (
     <div
       ref={anchorRef}
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-turn-navigator-anchor pointer-events-none select-none sticky top-1/2 z-10 h-0 w-full shrink-0"
     >
-      {/* the gutter left of the message column; when it is too narrow the rail shows on hover only */}
       <div
         style={{
           width:
@@ -795,7 +764,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
               ? {
                   top: preview.top,
                   left: `calc(${preview.left}px + 0.5rem)`,
-                  // keeps the card on screen at phone widths or a larger ui text scale
                   maxWidth: `calc(100vw - ${preview.left}px - 1.5rem)`,
                   transform: `translateY(${preview.edge === "start" ? "-1rem" : preview.edge === "end" ? "calc(-100% + 1rem)" : "-50%"})`,
                 }

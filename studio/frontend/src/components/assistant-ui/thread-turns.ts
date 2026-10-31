@@ -4,10 +4,8 @@
 export type TurnMessage = { readonly id: string; readonly role: string };
 
 export interface ThreadTurns {
-  // openerIds[n - 1] is the user message that opens turn n
   readonly openerIds: readonly string[];
   readonly signature: string;
-  // turn per message index, 0 before the first user message
   readonly turnAt: Int32Array;
 }
 

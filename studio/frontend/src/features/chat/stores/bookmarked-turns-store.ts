@@ -4,7 +4,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-// thread id -> opening user message ids of its bookmarked turns
 export interface BookmarkedTurnsState {
   bookmarkedByThread: Record<string, string[]>;
   toggleBookmarkedTurn: (threadId: string, messageId: string) => void;

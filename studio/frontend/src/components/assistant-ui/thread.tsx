@@ -8481,7 +8481,6 @@ function useDeleteMessage() {
         messageId,
         remoteId,
       });
-      // A deleted prompt no longer opens a turn, so its bookmark goes too.
       if (remoteId) {
         useBookmarkedTurnsStore.getState().forgetTurns(remoteId, [messageId]);
       }
