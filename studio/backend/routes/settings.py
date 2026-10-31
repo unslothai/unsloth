@@ -36,6 +36,11 @@ from auth.authentication import (
     get_current_subject,
 )
 from auth.storage import rotate_preview_link_secret
+from models.model_annotations import (
+    ModelAnnotationUpdate,
+    ModelAnnotationsResponse,
+    ModelAnnotationResponse,
+)
 from auth import policy
 from utils.account_context import (
     OWNER,
@@ -2951,6 +2956,26 @@ def update_openai_auto_switch_override(
             log = logger,
         ) from exc
     return ModelOverridesResponse(overrides = get_model_overrides(), removed_keys = removed_keys)
+
+
+@_account_settings_router.get("/model-annotations", response_model = ModelAnnotationsResponse)
+def get_model_annotations_route(
+    current_subject: str = Depends(get_current_subject),
+) -> ModelAnnotationsResponse:
+    """Return the signed-in account's personal On Device model details."""
+    from utils.model_annotations import get_model_annotations
+    return ModelAnnotationsResponse(annotations = get_model_annotations())
+
+
+@_account_settings_router.put("/model-annotations", response_model = ModelAnnotationResponse)
+def update_model_annotation_route(
+    payload: ModelAnnotationUpdate, current_subject: str = Depends(get_current_subject)
+) -> ModelAnnotationResponse:
+    """Save or reset one inventory row's personal details without changing model files."""
+    from utils.model_annotations import set_model_annotation
+    return ModelAnnotationResponse(
+        annotation = set_model_annotation(payload.model_id, payload.annotation)
+    )
 
 
 class ModelSamplingDefaultsPayload(BaseModel):
