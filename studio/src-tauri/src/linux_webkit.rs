@@ -322,11 +322,10 @@ fn rendering_plan(
         let shared_memory = gles_usable && supports_force_shared_memory(webkit_version);
         match gpu.setting {
             GpuRendering::Off => {
-                // X11 keeps an SHM transport with compositing off; DISABLE_DMABUF can leave none.
-                let workaround = if wayland_session || !shared_memory {
+                // NVIDIA X11: DISABLE_DMABUF is the proven anti-flicker path (#16028 / #16318).
+                // Non-NVIDIA X11 keeps SHM + compositing off so a transport remains.
+                let workaround = if wayland_session || !shared_memory || nvidia_driver_loaded {
                     RenderingWorkaround::DisableDmabuf
-                } else if nvidia_driver_loaded {
-                    RenderingWorkaround::DisableCompositingOnNvidiaX11
                 } else {
                     RenderingWorkaround::DisableCompositingOnX11
                 };
@@ -377,8 +376,9 @@ fn rendering_plan(
         }
     }
 
-    // Wayland: DISABLE_DMABUF (FORCE_SHM hits bug 315436). X11: SHM, with compositing off below
-    // the minimum driver branch; DISABLE_DMABUF can leave no transport there.
+    // Wayland: DISABLE_DMABUF (FORCE_SHM hits bug 315436). NVIDIA X11 below the minimum driver
+    // branch also uses DISABLE_DMABUF: compositing-off + FORCE_DMABUF still flickered (#16028 /
+    // #16318 photosensitivity). On 610+ keep SHM with compositing on.
     if nvidia_driver_loaded {
         let reason = if missing_appimage_gles {
             NVIDIA_APPIMAGE_GLES_REASON
@@ -393,14 +393,13 @@ fn rendering_plan(
         let workaround = if wayland_session
             || missing_appimage_gles
             || !supports_force_shared_memory(webkit_version)
+            || !(requested(false)
+                || nvidia_driver_branch
+                    .is_some_and(|branch| branch >= NVIDIA_COMPOSITING_MIN_BRANCH))
         {
             RenderingWorkaround::DisableDmabuf
-        } else if requested(false)
-            || nvidia_driver_branch.is_some_and(|branch| branch >= NVIDIA_COMPOSITING_MIN_BRANCH)
-        {
-            nvidia_shared_memory()
         } else {
-            RenderingWorkaround::DisableCompositingOnNvidiaX11
+            nvidia_shared_memory()
         };
         return RenderingPlan::Apply(workaround, reason);
     }
@@ -863,15 +862,12 @@ mod tests {
     }
 
     #[test]
-    fn older_or_unreadable_nvidia_branches_keep_compositing_off_everywhere() {
+    fn older_or_unreadable_nvidia_branches_disable_dmabuf_to_stop_flicker() {
         let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
         for branch in [0, 470, 580, 595, 609] {
             assert_eq!(
                 plan_on_nvidia_branch(native, branch),
-                RenderingPlan::Apply(
-                    RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                    NVIDIA_REASON
-                )
+                RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
             );
         }
     }
@@ -974,22 +970,19 @@ mod tests {
     }
 
     #[test]
-    fn native_nvidia_x11_disables_compositing_like_the_appimage() {
+    fn native_nvidia_x11_disables_dmabuf_like_wayland() {
         assert_eq!(
             plan_on_nvidia(&[]),
-            RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                NVIDIA_REASON
-            )
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
         );
     }
 
     #[test]
-    fn nvidia_appimage_under_an_explicit_x11_backend_disables_compositing() {
+    fn nvidia_appimage_under_an_explicit_x11_backend_disables_dmabuf() {
         assert_eq!(
             plan_on_nvidia(&[(APPIMAGE, "/tmp/Unsloth.AppImage"), (GDK_BACKEND, "x11")]),
             RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                RenderingWorkaround::DisableDmabuf,
                 NVIDIA_APPIMAGE_X11_REASON
             )
         );
@@ -1090,7 +1083,7 @@ mod tests {
         assert_eq!(
             plan_on_nvidia(&[(APPIMAGE, "/tmp/Unsloth.AppImage"), (FORCE_DMABUF, "0")]),
             RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                RenderingWorkaround::DisableDmabuf,
                 NVIDIA_APPIMAGE_X11_REASON
             )
         );
@@ -1224,10 +1217,7 @@ mod tests {
     fn a_named_wayland_that_cannot_open_falls_through_to_the_next_backend() {
         assert_eq!(
             plan_on_nvidia(&[(GDK_BACKEND, "wayland,x11"), (X11_DISPLAY, ":0")]),
-            RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                NVIDIA_REASON
-            )
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
         );
         assert_eq!(
             plan_on_host_with_socket(
@@ -1276,16 +1266,13 @@ mod tests {
         ];
         assert_eq!(
             plan_on_nvidia(&inherited),
-            RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                NVIDIA_REASON
-            )
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
         );
         let appimage = [&[(APPIMAGE, "/tmp/Unsloth.AppImage")], &inherited[..]].concat();
         assert_eq!(
             plan_on_nvidia(&appimage),
             RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                RenderingWorkaround::DisableDmabuf,
                 NVIDIA_APPIMAGE_X11_REASON
             )
         );
@@ -1347,10 +1334,7 @@ mod tests {
                 (WAYLAND_DISPLAY, "wayland-0"),
                 (X11_DISPLAY, ":0"),
             ]),
-            RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                NVIDIA_REASON
-            )
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
         );
         assert_eq!(
             plan_on_nvidia(&[
@@ -1449,10 +1433,7 @@ mod tests {
         );
         assert_eq!(
             plan_on_host_with_socket(&[(X11_DISPLAY, ":0")], MODERN_WEBKIT, true, true, false),
-            RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                NVIDIA_REASON
-            )
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
         );
     }
 
@@ -1568,10 +1549,7 @@ mod tests {
         );
         assert_eq!(
             plan_on_displays(session, MODERN_WEBKIT, true, true, true, true),
-            RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                NVIDIA_REASON
-            )
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
         );
     }
 
@@ -1580,10 +1558,7 @@ mod tests {
         let session = &[(WAYLAND_DISPLAY, "wayland-0"), (X11_DISPLAY, ":0")];
         assert_eq!(
             plan_on_host_with_socket(session, MODERN_WEBKIT, true, true, false),
-            RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                NVIDIA_REASON
-            )
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
         );
         assert_eq!(
             plan_on_host_with_socket(session, MODERN_WEBKIT, true, false, false),
@@ -1638,22 +1613,19 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_x11_takes_its_dedicated_compositing_fallback() {
+    fn nvidia_x11_below_the_minimum_branch_disables_dmabuf() {
         let appimage: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
         assert_eq!(
             plan_on_graphics(appimage, true),
             RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                RenderingWorkaround::DisableDmabuf,
                 NVIDIA_APPIMAGE_X11_REASON
             )
         );
         let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
         assert_eq!(
             plan_on_graphics(native, true),
-            RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                NVIDIA_REASON
-            )
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
         );
     }
 
@@ -2110,10 +2082,7 @@ mod tests {
                 true,
                 gpu(GpuRendering::Off, false)
             ),
-            RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                GPU_OFF_REASON
-            )
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, GPU_OFF_REASON)
         );
         assert_eq!(
             plan_with_setting(
@@ -2302,10 +2271,7 @@ mod tests {
                 HOST_MODE,
                 (GDK_BACKEND, "x11")
             ]),
-            RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                NVIDIA_REASON
-            )
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
         );
     }
 
