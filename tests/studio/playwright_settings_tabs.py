@@ -700,7 +700,9 @@ def run_search_reuse(page, query: str, first_label: str) -> None:
     after_second = page.evaluate(SEARCH_STATE_JS)
     report["search_reuse"]["after_second"] = after_second
     if after_second["query"] != query or after_second["current"] != [second]:
-        fail(f"search reuse: second result '{second}' did not open from the kept list ({after_second})")
+        fail(
+            f"search reuse: second result '{second}' did not open from the kept list ({after_second})"
+        )
     else:
         log(f"search reuse: '{first_label}' then '{second}' opened from one '{query}' search")
     click_forced(page.locator('div[role="dialog"] aside button[aria-label]').first)
