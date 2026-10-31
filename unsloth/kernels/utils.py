@@ -1875,9 +1875,13 @@ def _lora_first_addmm(X, Wt, XA, Bt, alpha):
         out = torch.addmm(XA.new_zeros(1), XA, Bt, beta = 0, alpha = alpha)
         return torch.addmm(out, X, Wt)
     out = torch.empty((X.shape[0], Wt.shape[1]), dtype = X.dtype, device = X.device)
-    # The in-place update returns a subclass operand's type (a plain buffer stays plain otherwise).
-    out = out.addmm_(XA, Bt, alpha = alpha, beta = 0)
-    return out.addmm_(X, Wt)
+    # Both updates mutate the plain buffer; a subclass operand's returned type is kept for the result.
+    return _accumulated(out.addmm_(XA, Bt, alpha = alpha, beta = 0), out.addmm_(X, Wt))
+
+
+def _accumulated(lora_out, base_out):
+    # The more derived of the two returned types, else the base GEMM's.
+    return lora_out if isinstance(lora_out, type(base_out)) else base_out
 
 
 # Traced, x.addmm_ copies x first; this op stays in place. No derivative: grad off only.
@@ -2112,8 +2116,7 @@ def matmul_lora(
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
-            out = addmm_(out, XA, B, alpha = s, beta = 0)
-            out = out.addmm_(X, W.t())
+            out = _accumulated(addmm_(out, XA, B, alpha = s, beta = 0), out.addmm_(X, W.t()))
         else:
             W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
             if not _is_compiling():

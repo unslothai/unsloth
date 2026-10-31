@@ -971,6 +971,25 @@ def test_a_caller_buffer_keeps_its_storage_and_the_subclass(which, on, monkeypat
     _same(got, want, True)
 
 
+class _NoReceiverTensor(torch.Tensor):
+    # A subclass that refuses to be the receiver of an in-place GEMM, though it may be an operand.
+    def addmm_(self, *args, **kwargs):
+        raise RuntimeError("not an addmm_ receiver")
+
+
+@pytest.mark.parametrize("on", [True, False])
+@pytest.mark.parametrize("caller_out", [False, True])
+def test_the_base_gemm_accumulates_on_the_buffer_not_the_adapters_result(
+    caller_out, on, monkeypatch
+):
+    X, W, A, B = _subclass_inputs()
+    _set(monkeypatch, on)
+    kw = (lambda: dict(out = torch.empty(16, 32))) if caller_out else dict
+    want = kernel_utils.matmul_lora(X, W, None, A, B, 0.5, **kw())
+    got = kernel_utils.matmul_lora(X, W, None, A.as_subclass(_NoReceiverTensor), B, 0.5, **kw())
+    torch.testing.assert_close(_plain(got), _plain(want), rtol = 0, atol = 0)
+
+
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("which", ["X", "W", "B", "XA", "plain"])
 def test_autocast_with_a_precomputed_xa_keeps_fp32_operands_finite(which, dtype, monkeypatch):
