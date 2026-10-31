@@ -1,0 +1,415 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from auth.authentication import authenticated_via_api_key, get_current_subject
+from routes import benchmarks as benchmarks_routes
+from storage import benchmark_runs_db as db
+
+
+def _result(
+    variant,
+    rep,
+    tps,
+    warmup = False,
+):
+    return {
+        "variant": variant,
+        "rep": rep,
+        "warmup": warmup,
+        "promptIndex": rep % 5,
+        "tps": tps,
+        "promptTps": 300.0,
+        "promptTokens": 40,
+        "genTokens": 256,
+        "ttftMs": 120.5,
+        "wallMs": 5000.0,
+        "clientTps": None,
+        "draftN": 100,
+        "draftAccepted": 78,
+        "loadMs": 8100.0 if rep == 0 else None,
+        "at": 1_700_000_000_000 + rep,
+    }
+
+
+def _run(run_id = "run-1", results = None):
+    return {
+        "id": run_id,
+        "kind": "sweep",
+        "sweep": "draft",
+        "model": "unsloth/Qwen3.5-4B-MTP-GGUF",
+        "ggufVariant": "Q4_K_M",
+        "kv": "q8_0",
+        "context": 32768,
+        "config": {
+            "sweep": "draft",
+            "variants": [{"label": "Speculation off", "load": {}}],
+            "repetitions": 3,
+        },
+        "meta": {"gpu": "AMD Radeon AI PRO R9700", "backend": "vulkan"},
+        "base": [{"field": "cache_type_kv", "label": "KV Cache Dtype", "value": "q8_0"}],
+        "outcomes": [{"label": "Speculation off", "state": "done"}],
+        "results": results
+        if results is not None
+        else [
+            _result("Speculation off", 0, 10.0, warmup = True),
+            _result("Speculation off", 1, 30.1),
+        ],
+        "createdAt": 1_700_000_000_000,
+        "finishedAt": None,
+    }
+
+
+def _client():
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    return TestClient(app)
+
+
+def test_round_trip_keeps_every_measurement_column():
+    saved = db.upsert_run(_run())
+    assert saved["id"] == "run-1"
+    assert [r["tps"] for r in saved["results"]] == [10.0, 30.1]
+    assert saved["results"][0]["warmup"] is True
+    assert saved["results"][1]["warmup"] is False
+    assert saved["results"][0]["loadMs"] == 8100.0
+    assert saved["results"][1]["draftAccepted"] == 78
+    assert saved["base"][0]["label"] == "KV Cache Dtype"
+    assert saved["meta"]["gpu"] == "AMD Radeon AI PRO R9700"
+
+
+def test_saving_again_replaces_results_instead_of_appending():
+    db.upsert_run(_run())
+    db.upsert_run(
+        _run(
+            results = [
+                _result("Speculation off", 0, 29.7),
+                _result("Speculation off", 1, 30.0),
+                _result("Speculation off", 2, 30.3),
+            ]
+        )
+    )
+    run = db.get_run("run-1")
+    assert [r["tps"] for r in run["results"]] == [29.7, 30.0, 30.3]
+
+
+def test_list_is_newest_first_without_results_and_counts_measured_runs_only():
+    db.upsert_run(_run("older"))
+    later = _run("newer")
+    later["createdAt"] += 1
+    db.upsert_run(later)
+    runs = db.list_runs()
+    assert [r["id"] for r in runs] == ["newer", "older"]
+    assert "results" not in runs[0]
+    # One warm-up and one measured run were saved; only the measured one counts.
+    assert runs[1]["resultCount"] == 1
+
+
+def test_list_carries_each_rows_measured_mean():
+    db.upsert_run(
+        _run(
+            results = [
+                _result("Speculation off", 0, 5.0, warmup = True),
+                _result("Speculation off", 1, 30.0),
+                _result("Speculation off", 2, 32.0),
+                _result("MTP 3", 1, 42.0),
+            ]
+        )
+    )
+    [run] = db.list_runs()
+    assert run["resultCount"] == 3
+    # The warm-up's 5.0 stays out of the mean.
+    assert run["rowMeans"] == {"Speculation off": 31.0, "MTP 3": 42.0}
+
+
+def test_delete_cascades_to_results():
+    db.upsert_run(_run())
+    assert db.delete_run("run-1") is True
+    assert db.get_run("run-1") is None
+    assert db.delete_run("run-1") is False
+    conn = db.get_connection()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM benchmark_results").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_routes_round_trip_and_refuse_a_mismatched_id():
+    client = _client()
+    put = client.put("/api/benchmarks/runs/run-1", json = _run())
+    assert put.status_code == 200, put.text
+    assert put.json()["results"][1]["tps"] == 30.1
+
+    assert client.put("/api/benchmarks/runs/other", json = _run()).status_code == 400
+
+    listed = client.get("/api/benchmarks/runs").json()["runs"]
+    assert [r["id"] for r in listed] == ["run-1"]
+    assert listed[0]["resultCount"] == 1
+
+    one = client.get("/api/benchmarks/runs/run-1")
+    assert one.status_code == 200
+    assert len(one.json()["results"]) == 2
+
+    assert client.delete("/api/benchmarks/runs/run-1").status_code == 204
+    assert client.get("/api/benchmarks/runs/run-1").status_code == 404
+    assert client.delete("/api/benchmarks/runs/run-1").status_code == 404
+
+
+def test_unknown_kind_is_rejected_until_that_phase_ships():
+    client = _client()
+    body = _run()
+    body["kind"] = "llama-bench"
+    assert client.put("/api/benchmarks/runs/run-1", json = body).status_code == 422
+
+
+def test_a_second_runner_is_refused_until_the_first_lets_go(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    client = _client()
+    first = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+    second = {"holder": "tab-bbbbbbbb", "kind": "sweep"}
+    assert client.post("/api/benchmarks/lease", json = first).status_code == 200
+    # Renewing your own lease is fine; anyone else is told what holds it.
+    assert client.post("/api/benchmarks/lease", json = first).status_code == 200
+    refused = client.post("/api/benchmarks/lease", json = second)
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["error"] == "benchmark_running"
+    # Only the holder can release it.
+    client.delete("/api/benchmarks/lease", params = {"holder": second["holder"]})
+    assert client.post("/api/benchmarks/lease", json = second).status_code == 409
+    client.delete("/api/benchmarks/lease", params = {"holder": first["holder"]})
+    assert client.post("/api/benchmarks/lease", json = second).status_code == 200
+
+
+def test_an_abandoned_lease_expires(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    client = _client()
+    assert client.post("/api/benchmarks/lease", json = {"holder": "tab-aaaaaaaa"}).status_code == 200
+    now = benchmarks_routes.time.monotonic()
+    monkeypatch.setattr(
+        benchmarks_routes.time,
+        "monotonic",
+        lambda: now + benchmarks_routes.LEASE_TTL_SECONDS + 1,
+    )
+    assert client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb"}).status_code == 200
+
+
+def test_other_traffic_during_a_sweep_is_counted_on_its_lease(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    app.post("/v1/chat/completions")(lambda: {})
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app)
+    mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+
+    client.post("/v1/chat/completions")  # no lease yet: nothing to count
+    assert client.post("/api/benchmarks/lease", json = mine).json()["outside"] == 0
+    client.post("/v1/chat/completions", headers = {"X-Unsloth-Bench-Lease": mine["holder"]})
+    client.post("/v1/chat/completions")
+    client.post("/v1/chat/completions", headers = {"X-Unsloth-Bench-Lease": "tab-bbbbbbbb"})
+    # Renewing keeps the count; a new holder starts from zero.
+    assert client.post("/api/benchmarks/lease", json = mine).json()["outside"] == 2
+    client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
+    other = {"holder": "tab-cccccccc", "kind": "sweep"}
+    assert client.post("/api/benchmarks/lease", json = other).json()["outside"] == 0
+
+
+def test_a_sweep_refuses_other_loads_until_it_lets_go(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    app.post("/api/inference/load")(lambda: {"ok": True})
+    app.post("/api/inference/unload")(lambda: {"ok": True})
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app, headers = {"Authorization": "Bearer t"})
+    mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+
+    assert client.post("/api/inference/load").status_code == 200
+    client.post("/api/benchmarks/lease", json = mine)
+    assert client.post("/api/inference/unload").status_code == 409
+    refused = client.post("/api/inference/load")
+    assert refused.status_code == 409 and "benchmark is running" in refused.json()["detail"]
+    own = client.post("/api/inference/load", headers = {"X-Unsloth-Bench-Lease": mine["holder"]})
+    assert own.status_code == 200
+    client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
+    assert client.post("/api/inference/load").status_code == 200
+    client.post("/api/benchmarks/lease", json = mine)
+    assert (
+        TestClient(app).post("/api/inference/load").status_code == 200
+    )  # the route's auth decides
+    client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
+    # Only sweeps fence loads: llama-bench and Evals manage the server themselves.
+    client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb", "kind": "llama-bench"})
+    assert client.post("/api/inference/load").status_code == 200
+
+
+def test_root_model_routes_are_fenced_and_token_counts_are_not_generations(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    for path in ("/models/load", "/models/load/", "/models/unload", "/models/unload/"):
+        app.post(path)(lambda: {"ok": True})
+    for path in ("/v1/messages/count_tokens", "/v1/chat/count_tokens", "/v1/embeddings"):
+        app.post(path)(lambda: {})
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app, headers = {"Authorization": "Bearer t"})
+    mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+
+    client.post("/api/benchmarks/lease", json = mine)
+    for path in ("/models/load", "/models/load/", "/models/unload", "/models/unload/"):
+        assert client.post(path).status_code == 409, path
+        assert (
+            client.post(path, headers = {"X-Unsloth-Bench-Lease": mine["holder"]}).status_code == 200
+        )
+    for path in ("/v1/messages/count_tokens", "/v1/chat/count_tokens", "/v1/embeddings"):
+        client.post(path)
+    assert client.post("/api/benchmarks/lease", json = mine).json()["outside"] == 0
+
+
+def test_the_lease_outlasts_a_throttled_background_tab():
+    # Chrome runs a hidden tab's 15 s renewal timer about once a minute.
+    assert benchmarks_routes.LEASE_TTL_SECONDS > 2 * 60
+
+
+def test_a_lease_waits_out_a_load_that_passed_the_fence_first(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    monkeypatch.setattr(benchmarks_routes, "_loads_in_flight", {})
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_load():
+        entered.set()
+        release.wait(5)
+        return {"ok": True}
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    app.post("/api/inference/load")(slow_load)
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app, headers = {"Authorization": "Bearer t"})
+    mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+
+    stray = threading.Thread(target = lambda: client.post("/api/inference/load"))
+    stray.start()
+    assert entered.wait(5)
+    refused = client.post("/api/benchmarks/lease", json = mine)
+    assert refused.status_code == 409 and refused.json()["detail"]["error"] == "model_loading"
+    release.set()
+    stray.join(5)
+    assert client.post("/api/benchmarks/lease", json = mine).status_code == 200
+
+    # The holder's own load in flight never blocks its renewal.
+    entered.clear()
+    release.clear()
+    own = threading.Thread(
+        target = lambda: client.post(
+            "/api/inference/load", headers = {"X-Unsloth-Bench-Lease": mine["holder"]}
+        )
+    )
+    own.start()
+    assert entered.wait(5)
+    assert client.post("/api/benchmarks/lease", json = mine).status_code == 200
+    release.set()
+    own.join(5)
+    assert benchmarks_routes._loads_in_flight == {}
+
+
+def test_a_load_left_running_by_its_client_still_holds_off_a_lease(monkeypatch):
+    import asyncio
+
+    from core.inference.llama_keepwarm import detached_work_hold
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    monkeypatch.setattr(benchmarks_routes, "_loads_in_flight", {})
+    monkeypatch.setattr(inference_routes, "_TUNNEL_KEEPALIVE_AFTER_S", 0.01)
+    mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+
+    async def main():
+        finish = asyncio.Event()
+
+        async def slow_load():
+            await finish.wait()
+            return {"ok": True}
+
+        async def endpoint(scope, receive, send):
+            # The padded answer is returned, then the client goes away: the body is never read.
+            await inference_routes._tunnel_safe_json(slow_load(), label = "Model load")
+
+        app = benchmarks_routes.BenchmarkTrafficMiddleware(endpoint)
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/inference/load",
+            "headers": [(b"authorization", b"Bearer t")],
+        }
+        await app(scope, None, None)
+        assert detached_work_hold.get() is None
+        held = benchmarks_routes._loads_pending(mine["holder"])
+        finish.set()
+        await asyncio.sleep(0.05)
+        return held
+
+    assert asyncio.run(main())
+    assert benchmarks_routes._loads_in_flight == {}
+    client = _client()
+    assert client.post("/api/benchmarks/lease", json = mine).status_code == 200
+
+
+def test_a_holders_restore_waits_for_the_load_it_abandoned(monkeypatch):
+    # Stop aborts a variant load whose work carries on detached; the runner's restore with the
+    # same lease must not race it to the load gate.
+    import asyncio
+
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    monkeypatch.setattr(benchmarks_routes, "_loads_in_flight", {})
+    monkeypatch.setattr(inference_routes, "_TUNNEL_KEEPALIVE_AFTER_S", 0.01)
+    order = []
+
+    async def main():
+        finish = asyncio.Event()
+
+        async def variant_load():
+            await finish.wait()
+            order.append("variant")
+            return {"ok": True}
+
+        async def endpoint(scope, receive, send):
+            if scope["path"] == "/api/inference/load":
+                await inference_routes._tunnel_safe_json(variant_load(), label = "Model load")
+            else:
+                order.append("restore")
+
+        app = benchmarks_routes.BenchmarkTrafficMiddleware(endpoint)
+        headers = [(b"authorization", b"Bearer t"), (b"x-unsloth-bench-lease", b"tab-aaaaaaaa")]
+        await app(
+            {"type": "http", "method": "POST", "path": "/api/inference/load", "headers": headers},
+            None,
+            None,
+        )
+        restore = asyncio.ensure_future(
+            app(
+                {"type": "http", "method": "POST", "path": "/models/load", "headers": headers},
+                None,
+                None,
+            )
+        )
+        await asyncio.sleep(0.3)
+        assert order == []
+        finish.set()
+        await asyncio.wait_for(restore, 5)
+
+    asyncio.run(main())
+    assert order == ["variant", "restore"]
+    assert benchmarks_routes._loads_in_flight == {}

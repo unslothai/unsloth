@@ -2969,9 +2969,14 @@ async def _tunnel_safe_json(coro, *, label: str):
     """Pad a slow call's body; early failures keep their status; a disconnect does not cancel the work."""
     from hub.utils.host_paths import restore_inventory_handles
 
+    from core.inference.llama_keepwarm import detached_work_hold
+
     task = asyncio.ensure_future(coro)
     # Retrieve the exception to avoid 'never retrieved' logs; result() below still raises.
     task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    hold = detached_work_hold.get()
+    if hold is not None:
+        task.add_done_callback(lambda _t, release = hold(): release())
     done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
     if done:
         # Here rather than at each `return LoadResponse`: the one funnel every answer passes.
