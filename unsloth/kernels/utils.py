@@ -1871,8 +1871,7 @@ def _functorch_wrapped(*tensors):
 
 def _lora_first_addmm(X, Wt, XA, Bt, alpha):
     # alpha * XA @ Bt into a fresh buffer (beta 0 never reads it), then the base GEMM accumulates onto it.
-    # A plain buffer would also drop a __torch_function__ subclass, so those take the functional pair too.
-    if _functorch_wrapped(X, Wt, XA, Bt) or torch.overrides.has_torch_function((X, Wt, XA, Bt)):
+    if _functorch_wrapped(X, Wt, XA, Bt):
         out = torch.addmm(XA.new_zeros(1), XA, Bt, beta = 0, alpha = alpha)
         return torch.addmm(out, X, Wt)
     out = torch.empty((X.shape[0], Wt.shape[1]), dtype = X.dtype, device = X.device)
@@ -1971,6 +1970,22 @@ except Exception:
     _LORA_DTENSOR = ()
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass as _is_wrapper_subclass
 
+# Tensor types the fused order handles. The plain accumulator would drop any other subclass (a
+# DTensor's placements, a __torch_function__ override), so those keep the base-then-LoRA order.
+# Fake and functional tensors are tracing infrastructure (make_fx, export), not user subclasses.
+_LORA_PLAIN_TYPES = (torch_Tensor, torch.nn.Parameter)
+try:
+    from torch._subclasses.fake_tensor import FakeTensor as _FakeTensor
+    from torch._subclasses.functional_tensor import FunctionalTensor as _FunctionalTensor
+    _LORA_PLAIN_TYPES += (_FakeTensor, _FunctionalTensor)
+except Exception:
+    pass
+
+
+def _lora_subclass(*tensors):
+    return any(t is not None and type(t) not in _LORA_PLAIN_TYPES for t in tensors)
+
+
 _functorch_active = getattr(torch._C, "_are_functorch_transforms_active", lambda: False)
 _is_dynamo_compiling = getattr(torch.compiler, "is_dynamo_compiling", lambda: False)
 
@@ -2006,7 +2021,7 @@ def _lora_fused_ok(W, W_quant, dtype):
     if W_quant is None:
         # A wrapper subclass (TorchAO NF4Tensor, ...) can report a float dtype over packed storage and only
         # implement its own mm.
-        if _is_wrapper_subclass(W):
+        if _is_wrapper_subclass(W) or _lora_subclass(W):
             return False
         return W.dtype == dtype
     return _quant_state_dtype(W_quant) == dtype
@@ -2077,8 +2092,8 @@ def matmul_lora(
         # Compiled inside torch.func transforms or native forward-mode AD: the op has no forward-mode or
         # batching rule, and a traced beta=0 addmm under jvp crashes, so keep the base-then-LoRA order there.
         and not (_is_compiling() and (_functorch_active() or _forward_ad_active()))
-        # A DTensor operand's placements would be lost in the plain accumulator (W is checked below).
-        and not any(isinstance(t, _LORA_DTENSOR) for t in (X, A, B, XA))
+        # A subclass operand or buffer (DTensor, ...) would be lost in the plain accumulator (W: below).
+        and not _lora_subclass(X, A, B, XA, out)
         and _lora_fused_ok(W, W_quant, dtype)
         # A caller's buffer must already be the output and must not share storage with a base operand.
         and (

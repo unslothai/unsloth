@@ -14,7 +14,7 @@ import sys
 import torch
 from unsloth_zoo.utils import Version
 from .utils import (
-    _LORA_DTENSOR,
+    _lora_subclass,
     _has_active_dora_adapter,
     _has_active_lora_bias,
     _has_multiple_active_adapters,
@@ -337,16 +337,10 @@ def _dense(t):
     return torch.compiler.is_compiling() or t.layout == torch.strided
 
 
-_SHARED_XA_CPU_MIN_ROWS = 2048
-
-
 def _shared_XA(X, As, dtype):
     # One X @ [A_1; A_2; ...].t() instead of one pass over X per projection; per-projection column views.
-    # Compressed sparse adapters cannot be concatenated, and on CPU the concat costs more than the extra passes
-    # over X below about 2048 rows: one product each there, as before.
-    if not all(_dense(A) for A in As) or (
-        X.device.type == "cpu" and X.shape[0] < _SHARED_XA_CPU_MIN_ROWS
-    ):
+    # Compressed sparse adapters cannot be concatenated: one product each, as before.
+    if not all(_dense(A) for A in As):
         return [torch.matmul(X, A.to(dtype).t()) for A in As]
     XA = torch.matmul(X, torch.cat([A.to(dtype) for A in As], 0).t())
     views, start = [], 0
@@ -396,9 +390,10 @@ def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
 
 
 def _lora_traced_ok(*lora_weights, X = None):
-    # A DTensor X or LoRA weight keeps the base-then-LoRA order: matmul_lora falls back for it, and the
-    # recorded decision must match so the backward does not take the shared / fused path either.
-    if any(isinstance(t, _LORA_DTENSOR) for t in (X, *lora_weights)):
+    # A subclass X or LoRA weight (DTensor, ...) keeps the base-then-LoRA order: matmul_lora falls back
+    # for it, and the recorded decision must match so the backward does not take the shared / fused
+    # path either.
+    if _lora_subclass(X, *lora_weights):
         return False
     # Traced, the fused order needs nn.Parameter LoRA weights: plain tensors of dynamic shape can
     # recompile with a zero output width on torch 2.14.

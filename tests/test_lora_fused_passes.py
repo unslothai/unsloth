@@ -904,37 +904,182 @@ class _TaggedTensor(torch.Tensor):
     pass
 
 
-@pytest.mark.parametrize("which", ["X", "W"])
-def test_a_tensor_subclass_operand_keeps_its_type_in_the_fused_order(which, monkeypatch):
-    # The eager fused order writes into a fresh buffer; a __torch_function__ subclass must come back as the
-    # subclass, as the base matmul returned it before.
+def _tag(t):
+    return t.as_subclass(_TaggedTensor)
+
+
+def _subclass_inputs():
+    g = torch.Generator().manual_seed(0)
+    X, W = torch.randn(16, 256, generator = g), torch.randn(32, 256, generator = g)
+    A, B = torch.randn(4, 256, generator = g), torch.randn(32, 4, generator = g)
+    return X, W, A, B
+
+
+def _spy_fused(monkeypatch):
+    # The eager fused order runs _lora_first_addmm, or a beta = 0 addmm_ into a caller's buffer. On CPU both
+    # orders can round alike, so the path taken is recorded rather than inferred from the bits.
+    calls = []
+    first, acc = kernel_utils._lora_first_addmm, kernel_utils.addmm_
+
+    def lora_first(*args, **kwargs):
+        calls.append("lora_first_addmm")
+        return first(*args, **kwargs)
+
+    def addmm(
+        out,
+        A,
+        B,
+        alpha = 1.0,
+        beta = 1.0,
+    ):
+        if beta == 0:
+            calls.append("addmm_ beta=0")
+        return acc(out, A, B, alpha = alpha, beta = beta)
+
+    monkeypatch.setattr(kernel_utils, "_lora_first_addmm", lora_first)
+    monkeypatch.setattr(kernel_utils, "addmm_", addmm)
+    return calls
+
+
+def _bitwise(got, want):
+    assert type(got) is type(want), (type(got), type(want))
+    assert got.dtype == want.dtype
+    torch.testing.assert_close(
+        got.as_subclass(torch.Tensor), want.as_subclass(torch.Tensor), rtol = 0, atol = 0
+    )
+
+
+def test_the_fused_spy_sees_plain_operands_take_the_fused_order(monkeypatch):
+    X, W, A, B = _subclass_inputs()
+    calls = _spy_fused(monkeypatch)
     _set(monkeypatch, True)
-    g = torch.Generator().manual_seed(0)
-    X, W = torch.randn(5, 8, generator = g), torch.randn(6, 8, generator = g)
-    A, B = torch.randn(2, 8, generator = g), torch.randn(6, 2, generator = g)
-    want = kernel_utils.matmul_lora(X, W, None, A, B, 0.5)
-    if which == "X":
-        X = X.as_subclass(_TaggedTensor)
+    kernel_utils.matmul_lora(X, W, None, A, B, 0.5)
+    kernel_utils.matmul_lora(X, W, None, A, B, 0.5, out = torch.empty(16, 32))
+    assert calls == ["lora_first_addmm", "addmm_ beta=0"], calls
+
+
+@pytest.mark.parametrize("which", ["X", "W", "A", "B", "XA"])
+def test_a_tensor_subclass_operand_keeps_mains_order_and_type(which, monkeypatch):
+    # The plain accumulator would drop the subclass, so it takes the base-then-LoRA order, as before the
+    # fused order existed: same type and same bits as UNSLOTH_LORA_FUSED_PASSES=0.
+    X, W, A, B = _subclass_inputs()
+    XA = X @ A.t() if which == "XA" else None
+    if which == "XA":
+        XA = _tag(XA)
     else:
-        W = W.as_subclass(_TaggedTensor)
-    got = kernel_utils.matmul_lora(X, W, None, A, B, 0.5)
-    assert isinstance(got, _TaggedTensor), type(got)
-    torch.testing.assert_close(got.as_subclass(torch.Tensor), want, rtol = 0, atol = 0)
+        X, W, A, B = (_tag(t) if n == which else t for n, t in zip("XWAB", (X, W, A, B)))
+    calls = _spy_fused(monkeypatch)
+    out = {}
+    for on in (False, True):
+        _set(monkeypatch, on)
+        out[on] = kernel_utils.matmul_lora(X, W, None, A, B, 0.5, XA = XA)
+    assert calls == [], calls
+    _bitwise(out[True], out[False])
 
 
-_CPU_MIN_ROWS = getattr(fast_lora, "_SHARED_XA_CPU_MIN_ROWS", 2048)
+@pytest.mark.parametrize("which", ["X", "out"])
+def test_a_caller_out_with_a_subclass_keeps_mains_order(which, monkeypatch):
+    X, W, A, B = _subclass_inputs()
+    if which == "X":
+        X = _tag(X)
+    calls = _spy_fused(monkeypatch)
+    out, ptr = {}, {}
+    for on in (False, True):
+        _set(monkeypatch, on)
+        buf = torch.empty(X.shape[0], W.shape[0])
+        if which == "out":
+            buf = _tag(buf)
+        ptr[on] = buf.data_ptr()
+        out[on] = kernel_utils.matmul_lora(X, W, None, A, B, 0.5, out = buf)
+        assert out[on].data_ptr() == ptr[on]
+    assert calls == [], calls
+    _bitwise(out[True], out[False])
 
 
-@pytest.mark.parametrize(
-    "rows, shared", [(8, False), (_CPU_MIN_ROWS - 1, False), (_CPU_MIN_ROWS, True)]
-)
-def test_cpu_shares_x_at_a_only_for_large_row_counts(rows, shared):
-    # On CPU the adapter concat costs more than the extra passes over X for small row counts.
-    g = torch.Generator().manual_seed(0)
-    X = torch.randn(rows, 16, generator = g)
-    As = [torch.randn(4, 16, generator = g) for _ in range(3)]
-    views = fast_lora._shared_XA(X, As, torch.float32)
-    ptrs = {v.untyped_storage().data_ptr() for v in views}
-    assert (len(ptrs) == 1) is shared, (rows, len(ptrs))
-    for v, A in zip(views, As):
-        torch.testing.assert_close(v, X @ A.t(), rtol = 1e-5, atol = 1e-5)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("which", ["X", "W", "plain"])
+def test_autocast_with_a_precomputed_xa_never_rounds_to_inf(which, dtype, monkeypatch):
+    # XA is computed outside autocast. The in-place fused order is not autocast, so plain fp32 operands
+    # stay fp32 and finite; a functional addmm would autocast and give 10240 in bf16, inf in fp16. A
+    # subclass operand behaves exactly as with UNSLOTH_LORA_FUSED_PASSES=0 (the autocast base GEMM
+    # then meets the fp32 adapter product, which that order has always rejected).
+    X, A = torch.ones(1, 1), torch.ones(1, 1)
+    W, B = torch.full((1, 1), -60000.0), torch.full((1, 1), 35000.0)
+    XA = X @ A.t()
+    if which != "plain":
+        X, W = (_tag(t) if n == which else t for n, t in zip("XW", (X, W)))
+
+    def run(on):
+        _set(monkeypatch, on)
+        try:
+            with torch.autocast("cpu", dtype = dtype):
+                return kernel_utils.matmul_lora(X, W, None, A, B, 2.0, XA = XA)
+        except RuntimeError as e:
+            return str(e)
+
+    got = run(True)
+    if which == "plain":
+        assert isinstance(got, torch.Tensor), got
+        assert got.dtype == torch.float32 and float(got) == 10000.0
+        return
+    want = run(False)
+    if isinstance(want, str):
+        assert got == want
+    else:
+        assert torch.isfinite(got).all()
+        _bitwise(got, want)
+
+
+def test_an_active_function_mode_keeps_the_in_place_fused_order(monkeypatch):
+    # A TorchFunctionMode (torch.device(...) as a context is one) is not a subclass: plain operands keep the
+    # in-place fused order, with no functional addmm and no extra output-sized buffer.
+    from torch.overrides import TorchFunctionMode
+
+    calls = []
+
+    class Record(TorchFunctionMode):
+        def __torch_function__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            calls.append(getattr(func, "__name__", str(func)))
+            return func(*args, **(kwargs or {}))
+
+    X, W, A, B = _subclass_inputs()
+    _set(monkeypatch, True)
+    want = kernel_utils.matmul_lora(X, W, None, A, B, 0.5)
+    with Record():
+        got = kernel_utils.matmul_lora(X, W, None, A, B, 0.5)
+    assert "addmm" not in calls, calls
+    assert calls.count("addmm_") == 2, calls
+    _bitwise(got, want)
+
+
+@pytest.mark.parametrize("name", ["W", "QKV", "MLP"])
+@pytest.mark.parametrize("which", ["X", "A"])
+def test_a_subclass_records_the_base_then_lora_order_for_the_backward(name, which, monkeypatch):
+    # Forward and backward read one decision: a subclass X or adapter keeps main's order in both.
+    def run(on):
+        _set(monkeypatch, on)
+        g = torch.Generator().manual_seed(0)
+        X, W = torch.randn(2, 4, 8, generator = g), torch.randn(8, 8, generator = g)
+        A, B = torch.randn(2, 8, generator = g), torch.randn(8, 2, generator = g)
+        if which == "X":
+            X = _tag(X)
+        else:
+            A = _tag(A)
+        X, A, B = X.requires_grad_(), A.requires_grad_(), B.requires_grad_()
+        out = _apply_lora_function(name, X, W, A, B)
+        sum(o.sum() for o in out).backward()
+        return out, (X.grad, A.grad, B.grad)
+
+    ref_out, ref_g = run(False)
+    out, grads = run(True)
+    assert out[0].grad_fn.fused is False
+    for a, b in zip((*out, *grads), (*ref_out, *ref_g)):
+        torch.testing.assert_close(
+            a.as_subclass(torch.Tensor), b.as_subclass(torch.Tensor), rtol = 0, atol = 0
+        )
