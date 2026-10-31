@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import logging
 import os
 import platform
@@ -1199,6 +1200,61 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             );
         END
         """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS activation_run_metadata (
+            job_id TEXT NOT NULL PRIMARY KEY REFERENCES training_runs(id) ON DELETE CASCADE,
+            model_name TEXT,
+            num_layers INTEGER,
+            hidden_size INTEGER,
+            intermediate_size INTEGER,
+            captured_channels_json TEXT,
+            capture_interval INTEGER,
+            max_channels INTEGER,
+            capture_mlp_out INTEGER NOT NULL DEFAULT 0,
+            capture_gradients INTEGER NOT NULL DEFAULT 0,
+            capture_lora_norms INTEGER NOT NULL DEFAULT 0,
+            lora_targets_json TEXT,
+            created_at TEXT NOT NULL,
+            pinned_channels_json TEXT,
+            full_coverage INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS activation_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL REFERENCES training_runs(id) ON DELETE CASCADE,
+            step INTEGER NOT NULL,
+            loss REAL,
+            layers_json TEXT NOT NULL,
+            grad_norms_json TEXT,
+            lora_norms_json TEXT,
+            captured_at TEXT NOT NULL,
+            coverage_json TEXT,
+            UNIQUE(job_id, step)
+        )
+        """
+    )
+    # Tables created by an earlier build of this feature lack the full-coverage columns.
+    meta_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(activation_run_metadata)").fetchall()
+    }
+    if "pinned_channels_json" not in meta_cols:
+        conn.execute("ALTER TABLE activation_run_metadata ADD COLUMN pinned_channels_json TEXT")
+    if "full_coverage" not in meta_cols:
+        conn.execute(
+            "ALTER TABLE activation_run_metadata ADD COLUMN full_coverage INTEGER NOT NULL DEFAULT 0"
+        )
+    record_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(activation_records)").fetchall()
+    }
+    if "coverage_json" not in record_cols:
+        conn.execute("ALTER TABLE activation_records ADD COLUMN coverage_json TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_activation_records_job_id ON activation_records(job_id)"
     )
     inventory_state = conn.execute(
         """
@@ -6029,6 +6085,128 @@ def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
         conn.close()
 
 
+def upsert_activation_metadata(job_id: str, meta: dict) -> None:
+    """Write (or overwrite) activation run metadata for *job_id*."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO activation_run_metadata
+                (job_id, model_name, num_layers, hidden_size, intermediate_size,
+                 captured_channels_json, capture_interval, max_channels,
+                 capture_mlp_out, capture_gradients, capture_lora_norms,
+                 lora_targets_json, created_at, pinned_channels_json, full_coverage)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                model_name          = excluded.model_name,
+                num_layers          = excluded.num_layers,
+                hidden_size         = excluded.hidden_size,
+                intermediate_size   = excluded.intermediate_size,
+                captured_channels_json = excluded.captured_channels_json,
+                capture_interval    = excluded.capture_interval,
+                max_channels        = excluded.max_channels,
+                capture_mlp_out     = excluded.capture_mlp_out,
+                capture_gradients   = excluded.capture_gradients,
+                capture_lora_norms  = excluded.capture_lora_norms,
+                lora_targets_json   = excluded.lora_targets_json,
+                created_at          = excluded.created_at,
+                pinned_channels_json = excluded.pinned_channels_json,
+                full_coverage       = excluded.full_coverage
+            """,
+            (
+                job_id,
+                meta.get("model_name"),
+                meta.get("num_layers"),
+                meta.get("hidden_size"),
+                meta.get("intermediate_size"),
+                json.dumps(meta.get("captured_channels") or []),
+                meta.get("capture_interval"),
+                meta.get("max_channels"),
+                int(bool(meta.get("capture_mlp_out", False))),
+                int(bool(meta.get("capture_gradients", False))),
+                int(bool(meta.get("capture_lora_norms", False))),
+                json.dumps(meta.get("lora_targets") or []),
+                meta.get("created_at") or datetime.now(timezone.utc).isoformat(),
+                json.dumps(meta.get("pinned_channels") or []),
+                int(bool(meta.get("full_coverage", False))),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _finite_or_none(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _finite_or_none(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_or_none(v) for v in value]
+    return value
+
+
+def insert_activation_record(
+    job_id: str,
+    step: int,
+    loss: Optional[float],
+    layers: dict,
+    grad_norms: Optional[dict],
+    lora_norms: Optional[dict],
+    coverage: Optional[dict] = None,
+) -> None:
+    """Insert one activation snapshot, ignoring duplicate (job_id, step) pairs."""
+    # An unstable step can produce NaN or inf, which the JSON API cannot render.
+    loss, layers, grad_norms, lora_norms, coverage = (
+        _finite_or_none(v) for v in (loss, layers, grad_norms, lora_norms, coverage)
+    )
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO activation_records
+                (job_id, step, loss, layers_json, grad_norms_json, lora_norms_json,
+                 captured_at, coverage_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                step,
+                loss,
+                json.dumps(layers),
+                json.dumps(grad_norms) if grad_norms else None,
+                json.dumps(lora_norms) if lora_norms else None,
+                datetime.now(timezone.utc).isoformat(),
+                json.dumps(coverage) if coverage else None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_activation_metadata(job_id: str) -> Optional[dict]:
+    """Return the metadata dict for *job_id*, or ``None`` if not found."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM activation_run_metadata WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["captured_channels"] = json.loads(d.pop("captured_channels_json") or "[]")
+        d["lora_targets"] = json.loads(d.pop("lora_targets_json") or "[]")
+        d["capture_mlp_out"] = bool(d["capture_mlp_out"])
+        d["capture_gradients"] = bool(d["capture_gradients"])
+        d["capture_lora_norms"] = bool(d["capture_lora_norms"])
+        d["pinned_channels"] = json.loads(d.pop("pinned_channels_json", None) or "[]")
+        d["full_coverage"] = bool(d.get("full_coverage"))
+        return d
+    finally:
+        conn.close()
+
+
 def get_external_import_mark(source: str, session_id: str) -> Optional[tuple[int, str]]:
     """(turns brought over, source revision they came from), or None if never imported."""
     conn = get_connection()
@@ -6039,6 +6217,36 @@ def get_external_import_mark(source: str, session_id: str) -> Optional[tuple[int
             (source, session_id),
         ).fetchone()
         return None if row is None else (row["turns_imported"], row["revision"])
+    finally:
+        conn.close()
+
+
+def get_activation_records(job_id: str, since_step: Optional[int] = None) -> list[dict]:
+    """Return activation records for *job_id*, optionally only those with step > *since_step*."""
+    conn = get_connection()
+    try:
+        if since_step is not None:
+            rows = conn.execute(
+                "SELECT * FROM activation_records WHERE job_id = ? AND step > ? ORDER BY step",
+                (job_id, since_step),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM activation_records WHERE job_id = ? ORDER BY step",
+                (job_id,),
+            ).fetchall()
+        records = []
+        for row in rows:
+            d = dict(row)
+            d["layers"] = json.loads(d.pop("layers_json") or "{}")
+            raw_gn = d.pop("grad_norms_json", None)
+            d["grad_norms"] = json.loads(raw_gn) if raw_gn else None
+            raw_ln = d.pop("lora_norms_json", None)
+            d["lora_norms"] = json.loads(raw_ln) if raw_ln else None
+            raw_cov = d.pop("coverage_json", None)
+            d["coverage"] = json.loads(raw_cov) if raw_cov else None
+            records.append(d)
+        return records
     finally:
         conn.close()
 

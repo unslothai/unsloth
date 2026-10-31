@@ -5255,6 +5255,81 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 "resuming this run later will read it as unbounded\n"
             )
 
+        # Wire ActivationCaptureCallback for text/VLM models (audio models skipped, off by default)
+        if config.get("enable_activation_capture", False) and (
+            trainer.is_audio or trainer.is_audio_vlm
+        ):
+            event_queue.put(
+                {
+                    "type": "warning",
+                    "message": "Neuron activation capture is not available for audio models; this run records no Interpretability data.",
+                    "ts": time.time(),
+                }
+            )
+        if (
+            config.get("enable_activation_capture", False)
+            and not trainer.is_audio
+            and not trainer.is_audio_vlm
+        ):
+            try:
+                from unsloth.activation_capture import (
+                    ActivationCaptureConfig,
+                    ActivationCapture,
+                    ActivationCaptureCallback,
+                )
+                from storage.studio_db import (
+                    upsert_activation_metadata,
+                    insert_activation_record,
+                )
+
+                _job_id = config.get("job_id")
+
+                class _StudioActivationCapture(ActivationCapture):
+                    """Writes metadata and records to the Studio DB instead of files."""
+
+                    def __init__(self, model, cfg, job_id):
+                        self._studio_job_id = job_id
+                        super().__init__(model, cfg)
+
+                    def _write_metadata(self, metadata):
+                        if not self._studio_job_id:
+                            return
+                        try:
+                            upsert_activation_metadata(self._studio_job_id, metadata)
+                        except Exception as _e:
+                            logger.warning("DB activation metadata write failed: %s", _e)
+
+                    def _write_record(self, record):
+                        if not self._studio_job_id:
+                            return
+                        try:
+                            insert_activation_record(
+                                self._studio_job_id,
+                                record["step"],
+                                record["loss"],
+                                record["layers"],
+                                record.get("grad_norms"),
+                                record.get("lora_norms"),
+                                record.get("coverage"),
+                            )
+                        except Exception as _e:
+                            logger.warning("DB activation record write failed: %s", _e)
+
+                # Target ~30 replay frames; fall back to every step when total unknown
+                _cfg_max_steps = config.get("max_steps", 0) or 0
+                _act_interval = max(1, _cfg_max_steps // 30) if _cfg_max_steps > 0 else 20
+                _act_config = ActivationCaptureConfig(
+                    # Unused: the Studio subclass writes to the DB, never to output_dir.
+                    output_dir = "",
+                    capture_interval = _act_interval,
+                )
+                _act_capture = _StudioActivationCapture(trainer.model, _act_config, _job_id)
+                _act_cb = ActivationCaptureCallback(_act_capture)
+                trainer.extra_hf_callbacks = [_act_cb]
+                logger.info("ActivationCaptureCallback registered for %s\n", output_dir)
+            except Exception as _act_err:
+                logger.warning("ActivationCaptureCallback unavailable: %s\n", _act_err)
+
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
             tensorboard_dir = str(resolve_tensorboard_dir(tensorboard_dir))

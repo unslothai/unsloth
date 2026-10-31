@@ -367,6 +367,13 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "gpu_ids": values.get("gpu_ids"),
         "s3_config": values.get("s3_config"),
         "disable_xet": values.get("disable_xet", False),
+        # Decision, embedding, audio-dataset and MLX runs never wire capture; audio models are caught in the worker.
+        "enable_activation_capture": bool(values.get("enable_activation_capture", False))
+        and not values.get("is_embedding", False)
+        and not values.get("is_decision", False)
+        and not values.get("is_dataset_audio", False)
+        and device_backend != "mlx"
+        and not is_apple_silicon_training_platform(),
     }
     for key in ("output_dir", "allow_external_output_dir"):
         if key in values:
@@ -1781,14 +1788,22 @@ class TrainingBackend:
         self._pump_running = False
 
         config = _build_training_worker_config(kwargs)
+        # Activation capture files its records under the run.
+        config["job_id"] = job_id
         if batch_members:
+            # The multi-LoRA trainer has no capture hooks.
+            config["enable_activation_capture"] = False
             config["batch_id"] = job_id
             config["batch_members"] = [
                 {
                     "run_id": member["run_id"],
                     "config": _sanitize_db_config(
                         _build_training_worker_config(
-                            {k: v for k, v in member.items() if k != "run_id"}
+                            {
+                                k: v
+                                for k, v in member.items()
+                                if k not in ("run_id", "enable_activation_capture")
+                            }
                         )
                     ),
                 }
