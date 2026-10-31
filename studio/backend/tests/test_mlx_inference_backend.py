@@ -10840,6 +10840,41 @@ def _video_vlm_backend(monkeypatch, streams):
     return backend
 
 
+def test_a_speculative_load_drafts_a_video_reply_on_its_expanded_prompt(monkeypatch):
+    from core.inference import mlx_inference
+
+    streams, prepared, drafted = [], [], []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    backend._vlm_is_diffusion_model = lambda _model: False
+    monkeypatch.setattr(mlx_inference, "_video_sampling_fps", lambda *_a: 2.0)
+
+    class _Ids(list):
+        def tolist(self):
+            return list(self)
+
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.prepare_inputs = lambda *_a, **kwargs: prepared.append(kwargs) or {
+        "input_ids": [_Ids([7, 7, 8])],
+        "pixel_values_videos": "frames",
+    }
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    backend._speculative_draft = SimpleNamespace(
+        draft_kind = "mtp",
+        draft_n = 0,
+        draft_n_accepted = 0,
+        prepare = lambda ids, *_a: drafted.append(ids),
+    )
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])) == ["ok"]
+    ((_, stream_kwargs, _),) = streams
+    assert drafted == [[7, 7, 8]] and stream_kwargs["draft_model"] is backend._speculative_draft
+    assert stream_kwargs["pixel_values_videos"] == "frames" and prepared[0]["fps"] == 2.0
+    assert len(prepared[0]["videos"]) == 1
+
+
 def test_mlx_vlm_a_video_turn_never_resumes_a_prompt_cache_snapshot(monkeypatch):
     """A snapshot spans the video rows but is keyed by token ids the clip does not vary, so a
     later clip would resume the earlier one's vision rows and its mRoPE grid."""

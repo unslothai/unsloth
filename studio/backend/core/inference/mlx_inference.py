@@ -4256,7 +4256,7 @@ def _vlm_add_special_tokens(model_type, processor):
         )
 
 
-def _vlm_prepared_inputs(model, processor, prompt, images):
+def _vlm_prepared_inputs(model, processor, prompt, images, **media):
     """The processor's inputs for *prompt* and *images*, as mlx-vlm's ``stream_generate`` prepares them."""
     from mlx_vlm.utils import prepare_inputs
 
@@ -4268,6 +4268,7 @@ def _vlm_prepared_inputs(model, processor, prompt, images):
         prompts = prompt,
         image_token_index = read("image_token_index"),
         add_special_tokens = _vlm_add_special_tokens(read("model_type"), processor),
+        **media,
     )
 
 
@@ -8062,15 +8063,14 @@ class MLXInferenceBackend:
         session_scope = session if session is not None else nullcontext()
         processors = vlm_kwargs.get("logits_processors") or ()
         # The draft is told these processors, and takes only ones that read just the history (a grammar's
-        # matcher advances per call); a clip is nothing a drafter was built for.
+        # matcher advances per call).
         if (
             draft is None
-            or videos
             or not all(getattr(processor, "history_only", False) for processor in processors)
             or _vlm_generation_is_diffusion(self._model)
         ):
             draft = None
-        elif "input_ids" not in vlm_kwargs:
+        elif "input_ids" not in vlm_kwargs and not videos:
             vlm_kwargs.update(
                 _vlm_generate_kwargs(
                     _vlm_prepared_inputs(self._model, self._processor, prompt, images)
@@ -8099,30 +8099,42 @@ class MLXInferenceBackend:
                 )
                 final_response = None
                 clip_paths = []
-                if draft is not None:
-                    from unsloth_zoo.mlx.generate import SamplingParams
-
-                    # Under the lock: the load's one draft serves one generation at a time.
-                    draft.prepare(
-                        vlm_kwargs["input_ids"][0].tolist(),
-                        SamplingParams(
-                            temperature = temperature,
-                            top_p = top_p,
-                            top_k = max(int(top_k or 0), 0),
-                            min_p = float(min_p or 0.0),
-                            seed = seed,
-                        ),
-                        processors,
-                    )
-                    vlm_kwargs.update(draft_model = draft, draft_kind = draft.draft_kind)
                 try:
                     if videos:
                         for clip in videos:
                             clip_paths.append(_write_video_clip(clip))
-                        vlm_kwargs["video"] = clip_paths
+                        clip_media = {"video": clip_paths}
                         frame_rate = _video_sampling_fps(clip_paths, self._processor)
                         if frame_rate is not None:
-                            vlm_kwargs["fps"] = frame_rate
+                            clip_media["fps"] = frame_rate
+                        if draft is None or "input_ids" in vlm_kwargs:
+                            vlm_kwargs.update(clip_media)
+                        else:
+                            # The draft needs the prompt as the clip's frames expand it.
+                            clip_media["videos"] = clip_media.pop("video")
+                            vlm_kwargs.update(
+                                _vlm_generate_kwargs(
+                                    _vlm_prepared_inputs(
+                                        self._model, self._processor, prompt, images, **clip_media
+                                    )
+                                )
+                            )
+                    if draft is not None:
+                        from unsloth_zoo.mlx.generate import SamplingParams
+
+                        # Under the lock: the load's one draft serves one generation at a time.
+                        draft.prepare(
+                            vlm_kwargs["input_ids"][0].tolist(),
+                            SamplingParams(
+                                temperature = temperature,
+                                top_p = top_p,
+                                top_k = max(int(top_k or 0), 0),
+                                min_p = float(min_p or 0.0),
+                                seed = seed,
+                            ),
+                            processors,
+                        )
+                        vlm_kwargs.update(draft_model = draft, draft_kind = draft.draft_kind)
                     # Emit prefilled <think> first; inside the adapter so unsupported requests raise before any output.
                     if prefill:
                         yield prefill
@@ -8329,7 +8341,7 @@ class MLXInferenceBackend:
         if not self._is_vlm or not self._reads_vision_input() or not _mlx_vlm_decodes_video():
             return "a reply carries a video clip this load does not read"
         if self._speculative_draft is not None:
-            return "a video clip decodes without the draft"
+            return "a speculative batch does not decode a video clip"
         try:
             from unsloth_zoo.mlx import generate as engine
         except ImportError:
