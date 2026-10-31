@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
 from utils.paths import outputs_root, resolve_output_dir
+from utils.scan_memo import memoized
 
 
 def _is_foreign_absolute_path(path_value: str) -> bool:
@@ -33,7 +34,11 @@ def _is_under_outputs(path: Path) -> bool:
 def has_resume_state(path_value: Optional[str]) -> bool:
     if not path_value:
         return False
-    return get_resume_checkpoint_path(path_value) is not None
+    # One read per folder per history listing: can_resume_run and the blocked reason both ask.
+    return memoized(
+        ("has_resume_state", path_value),
+        lambda: get_resume_checkpoint_path(path_value) is not None,
+    )
 
 
 def _checkpoint_step(path: Path) -> int:
@@ -165,7 +170,9 @@ def is_resume_checkpoint_valid(
     backend: Optional[str] = None,
 ) -> bool:
     step = _checkpoint_state(path) if path.is_dir() else None
-    step_valid = step is not None and (expected_step is None or step == expected_step)
+    if step is None or (expected_step is not None and step != expected_step):
+        # Invalid whatever the state files hold, so skip parsing them.
+        return False
     if backend == "mlx":
         valid_bundle = _valid_state_file(path / "adapters.safetensors") and _valid_state_file(
             path / "optimizer_state.safetensors"
@@ -181,7 +188,7 @@ def is_resume_checkpoint_valid(
             valid_bundle = _valid_state_file(path / "adapters.safetensors") and _valid_state_file(
                 path / "optimizer_state.safetensors"
             )
-    return step_valid and valid_bundle
+    return valid_bundle
 
 
 def artifacts_present(path_value: Optional[str]) -> bool:
