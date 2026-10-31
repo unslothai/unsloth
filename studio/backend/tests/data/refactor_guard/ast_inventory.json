@@ -1809,7 +1809,7 @@
       "_mask_blocked_bodies": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, enabled_tool_names, *, think: bool=False"
+        "signature": "text: str, enabled_tool_names, *, think: bool=False, mentions: bool=False"
       },
       "_merge_spans": {
         "decorators": [],
@@ -2168,6 +2168,7 @@
       "_REHEARSAL_CLOSED_STRIP_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
       "_REHEARSAL_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?=\\\\{)' flags=32",
       "_REHEARSAL_TAIL_STRIP_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?:\\\\{.*)?$' flags=48",
+      "_TAG_MENTION_RE": "'(?<!`)(``?)[ \\\\t]*(<(?!/?think(?:ing)?>)[^<>`\\\\n]+>[\\\\w.\\\\-]*|\\\\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\\\\][\\\\w.\\\\-]*)[ \\\\t]*\\\\1' flags=32",
       "_TC_END_TAG_RE": "'</tool_call>|<\\\\|end_message\\\\|>' flags=32",
       "_TC_FUNC_CLOSED_PAT": "'<function=[\\\\w.-]+>.*?</function>' flags=48",
       "_TC_FUNC_CLOSE_RE": "'\\\\s*</function>\\\\s*$' flags=32",
@@ -2212,6 +2213,7 @@
       "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*' + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL)": 1,
       "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?:\\\\{.*)?$', re.DOTALL)": 1,
       "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?=\\\\{)')": 1,
+      "re.compile('(?<!`)(``?)[ \\\\t]*(<(?!/?think(?:ing)?>)[^<>`\\\\n]+>[\\\\w.\\\\-]*|\\\\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\\\\][\\\\w.\\\\-]*)[ \\\\t]*\\\\1')": 1,
       "re.compile('</think>|\\\\[/THINK\\\\]')": 1,
       "re.compile('</tool_call>|<\\\\|end_message\\\\|>')": 1,
       "re.compile('<\\\\|tool_call>.*$', re.DOTALL)": 1,
@@ -2298,6 +2300,9 @@
         "kind": "assign"
       },
       "_REHEARSAL_TAIL_STRIP_RE": {
+        "kind": "assign"
+      },
+      "_TAG_MENTION_RE": {
         "kind": "assign"
       },
       "_TC_END_TAG_RE": {
@@ -2534,6 +2539,11 @@
         "kind": "def",
         "signature": "text: str, patterns, enabled_tool_names=None"
       },
+      "in_tag_mention": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "spans, pos: int"
+      },
       "marker_coverage": {
         "decorators": [],
         "kind": "def",
@@ -2558,6 +2568,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, patterns"
+      },
+      "tag_mention_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
       }
     }
   }

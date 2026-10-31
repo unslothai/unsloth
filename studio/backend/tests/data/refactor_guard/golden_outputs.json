@@ -132,7 +132,8 @@
     "parse_tool_calls_from_text": "8eea9ebd03da248ba65bde8dcaa1faa9bedd1ec92f6c244a1be1e83edfd207bd",
     "strip_outside_think": "3a97a231706b3ab23b3c7f28e69170eca6f749ed0388dd93bccc25150e97faf6",
     "strip_tool_call_markup": "1e30f8bc5fc374b58de007afd10702e5d4e6c4017f4352f653f3590b2077bcdc",
-    "strip_tool_patterns": "80677e0f8c3a42f9c58dc6384581d72b7bd548643608011f0ffe5bc4369b2e92"
+    "strip_tool_patterns": "80677e0f8c3a42f9c58dc6384581d72b7bd548643608011f0ffe5bc4369b2e92",
+    "tag_mention_spans": "a8cd18126ad22eac7c48eb8d51e1f7604ab4f2e8ff1e48cc281c919f5d968b1b"
   },
   "corpus": "03bce2b8121055afd12bab57f8811206877d9fbbec3186b3ac5b3107b9e967b3"
 }

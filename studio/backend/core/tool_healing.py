@@ -230,6 +230,32 @@ _CODE_SPAN_RE = re.compile(
     re.DOTALL | re.MULTILINE,
 )
 
+# A single tool tag (and at most a name) alone in an inline code span (`<tool_call>`, `[TOOL_CALLS]name`): a model
+# naming the format, never a call, since no body can follow inside the span. Every match is decided
+# by text already present (no lookahead past the closing run), so append-only growth never revokes
+# one. Runs of three or more are fences (``` + tag + ``` is a fence close, an envelope marker and a
+# fence open), and reasoning tags are left alone: they decide the think segmentation, not a call.
+_TAG_MENTION_RE = re.compile(
+    r"(?<!`)(``?)[ \t]*("
+    r"<(?!/?think(?:ing)?>)[^<>`\n]+>[\w.\-]*"
+    r"|\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\][\w.\-]*"
+    r")[ \t]*\1"
+)
+
+
+def tag_mention_spans(text: str) -> list[tuple[int, int]]:
+    """Ordered spans of the tag inside each lone-tag inline code span (backticks excluded)."""
+    if "`" not in text:
+        return []
+    return [m.span(2) for m in _TAG_MENTION_RE.finditer(text)]
+
+
+def in_tag_mention(spans, pos: int) -> bool:
+    """Whether ``pos`` falls in one of ``tag_mention_spans`` (a span may start at ``pos``)."""
+    i = bisect.bisect_right(spans, (pos, float("inf"))) - 1
+    return i >= 0 and spans[i][0] <= pos < spans[i][1]
+
+
 # Above this size skip the balanced scan; the linear regex catch-all bounds pathological output.
 _MAX_BRACKET_SCAN_CHARS = 1_000_000
 
@@ -971,10 +997,13 @@ def parse_tool_calls_from_text(
             continue
         parsed_items.append((start, span_end, name, arguments))
 
+    mention_spans = tag_mention_spans(content) if "<function" in content else []
     func_starts = [
         fm
         for fm in _TC_FUNC_START_RE.finditer(content)
         if not _inside_open_parameter(content, fm.start())
+        # `<function=NAME>` alone in backticks names the format; the display keeps it, so it must not run.
+        and not in_tag_mention(mention_spans, fm.start())
         and not _in_think(fm.start())
         and not _in_blocked(fm.start())
         and not any(s <= fm.start() < e for s, e in coverage)

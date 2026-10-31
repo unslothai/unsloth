@@ -1060,9 +1060,16 @@ def _mask_blocked_bodies(
     enabled_tool_names,
     *,
     think: bool = False,
+    mentions: bool = False,
 ) -> tuple:
-    """With think, reasoning is masked so a rehearsed call cannot execute; parse only, strip passes think=False. Returns (masked_text, bodies), restored in order."""
+    """With think, reasoning is masked so a rehearsed call cannot execute; parse only, strip passes think=False. With
+    mentions (display strips), a tag alone in backticks is masked so no strip arm reads it as an opener or closer.
+    Returns (masked_text, bodies), restored in order."""
     spans = _blocked_markerless_body_spans(text, enabled_tool_names)
+    if mentions:
+        mention_spans = _tool_healing.tag_mention_spans(text)
+        if mention_spans:
+            spans = _merge_spans(spans + mention_spans)
     if think:
         # Merged, not just sorted: sorting alone moves the masking cursor backward and re-appends the reasoning block of a blocked body unmasked.
         think_spans = _tool_healing._think_spans_outside_tool_markup(text)
@@ -1373,7 +1380,7 @@ def strip_tool_markup(
         )
 
     # Reasoning stays verbatim, display included; a literal think marker in call arguments is data and goes with the call; blocked call bodies are masked.
-    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names, mentions = True)
     result = _tool_healing.strip_outside_think(masked, _strip_segment)
     if bodies:
         restored = _unmask_blocked_bodies(result, bodies)
@@ -1730,7 +1737,7 @@ class StreamingMarkupStripper:
 
         # Mask as strip_tool_markup does: consumers get append-only snapshots, so a corrupted one
         # emitted earlier could never be repaired.
-        masked, bodies = _mask_blocked_bodies(text, self._enabled_tool_names)
+        masked, bodies = _mask_blocked_bodies(text, self._enabled_tool_names, mentions = True)
         result = _tool_healing.strip_outside_think(masked, _seg)
         if not bodies:
             return result
@@ -2509,11 +2516,13 @@ def _parse_function_xml(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     out: list[dict] = []
-    # Skip openers inside an open parameter value, else they become a second call.
+    mention_spans = _tool_healing.tag_mention_spans(content)
+    # Skip openers inside an open parameter value, else they become a second call; one alone in backticks names the format.
     func_starts = [
         fm
         for fm in _TC_FUNC_START_RE.finditer(content)
         if not _inside_open_parameter(content, fm.start())
+        and not _tool_healing.in_tag_mention(mention_spans, fm.start())
     ]
     for idx, fm in enumerate(func_starts):
         # group(1) is ``<function=name>``, group(2) is ``<function name="...">``.
