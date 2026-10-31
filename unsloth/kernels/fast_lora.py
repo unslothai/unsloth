@@ -337,10 +337,16 @@ def _dense(t):
     return torch.compiler.is_compiling() or t.layout == torch.strided
 
 
+_SHARED_XA_CPU_MIN_ROWS = 2048
+
+
 def _shared_XA(X, As, dtype):
     # One X @ [A_1; A_2; ...].t() instead of one pass over X per projection; per-projection column views.
-    # Compressed sparse adapters cannot be concatenated: one product each, as before.
-    if not all(_dense(A) for A in As):
+    # Compressed sparse adapters cannot be concatenated, and on CPU the concat costs more than the extra passes
+    # over X below about 2048 rows: one product each there, as before.
+    if not all(_dense(A) for A in As) or (
+        X.device.type == "cpu" and X.shape[0] < _SHARED_XA_CPU_MIN_ROWS
+    ):
         return [torch.matmul(X, A.to(dtype).t()) for A in As]
     XA = torch.matmul(X, torch.cat([A.to(dtype) for A in As], 0).t())
     views, start = [], 0

@@ -1871,7 +1871,8 @@ def _functorch_wrapped(*tensors):
 
 def _lora_first_addmm(X, Wt, XA, Bt, alpha):
     # alpha * XA @ Bt into a fresh buffer (beta 0 never reads it), then the base GEMM accumulates onto it.
-    if _functorch_wrapped(X, Wt, XA, Bt):
+    # A plain buffer would also drop a __torch_function__ subclass, so those take the functional pair too.
+    if _functorch_wrapped(X, Wt, XA, Bt) or torch.overrides.has_torch_function((X, Wt, XA, Bt)):
         out = torch.addmm(XA.new_zeros(1), XA, Bt, beta = 0, alpha = alpha)
         return torch.addmm(out, X, Wt)
     out = torch.empty((X.shape[0], Wt.shape[1]), dtype = X.dtype, device = X.device)

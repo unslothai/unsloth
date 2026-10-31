@@ -897,3 +897,44 @@ def test_a_caller_out_sharing_the_quant_state_is_written_after_dequantizing(monk
         return kernel_utils.matmul_lora(X, W, state, A, B, 0.5, out = buf).clone()
 
     torch.testing.assert_close(run(True), run(False), rtol = 0, atol = 0)
+
+
+class _TaggedTensor(torch.Tensor):
+    # A plain storage-backed subclass, as a user library might wrap activations.
+    pass
+
+
+@pytest.mark.parametrize("which", ["X", "W"])
+def test_a_tensor_subclass_operand_keeps_its_type_in_the_fused_order(which, monkeypatch):
+    # The eager fused order writes into a fresh buffer; a __torch_function__ subclass must come back as the
+    # subclass, as the base matmul returned it before.
+    _set(monkeypatch, True)
+    g = torch.Generator().manual_seed(0)
+    X, W = torch.randn(5, 8, generator = g), torch.randn(6, 8, generator = g)
+    A, B = torch.randn(2, 8, generator = g), torch.randn(6, 2, generator = g)
+    want = kernel_utils.matmul_lora(X, W, None, A, B, 0.5)
+    if which == "X":
+        X = X.as_subclass(_TaggedTensor)
+    else:
+        W = W.as_subclass(_TaggedTensor)
+    got = kernel_utils.matmul_lora(X, W, None, A, B, 0.5)
+    assert isinstance(got, _TaggedTensor), type(got)
+    torch.testing.assert_close(got.as_subclass(torch.Tensor), want, rtol = 0, atol = 0)
+
+
+_CPU_MIN_ROWS = getattr(fast_lora, "_SHARED_XA_CPU_MIN_ROWS", 2048)
+
+
+@pytest.mark.parametrize(
+    "rows, shared", [(8, False), (_CPU_MIN_ROWS - 1, False), (_CPU_MIN_ROWS, True)]
+)
+def test_cpu_shares_x_at_a_only_for_large_row_counts(rows, shared):
+    # On CPU the adapter concat costs more than the extra passes over X for small row counts.
+    g = torch.Generator().manual_seed(0)
+    X = torch.randn(rows, 16, generator = g)
+    As = [torch.randn(4, 16, generator = g) for _ in range(3)]
+    views = fast_lora._shared_XA(X, As, torch.float32)
+    ptrs = {v.untyped_storage().data_ptr() for v in views}
+    assert (len(ptrs) == 1) is shared, (rows, len(ptrs))
+    for v, A in zip(views, As):
+        torch.testing.assert_close(v, X @ A.t(), rtol = 1e-5, atol = 1e-5)
