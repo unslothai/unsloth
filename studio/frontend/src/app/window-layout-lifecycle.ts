@@ -70,11 +70,9 @@ type WindowMonitorReader<Monitor extends WorkAreaMonitor> = {
 };
 
 /**
- * Size bounds the window has to stay within on its current monitor.
- *
- * `logicalPerCssPx` reports the webview's zoom above a monitor's display scale,
- * keeping the resize floor a CSS-pixel floor under Windows text scaling. It
- * defaults to a no-op, which is every platform without it.
+ * Size bounds the window must stay within on its current monitor. logicalPerCssPx reports the
+ * webview's zoom above the monitor's display scale, keeping the resize floor in CSS pixels under
+ * Windows text scaling; the default no-op covers platforms without it.
  */
 export async function measureWindowLayout<Monitor extends WorkAreaMonitor>(
   reader: WindowMonitorReader<Monitor>,
@@ -222,10 +220,9 @@ export type MinimumSizeApplier = {
 };
 
 /**
- * tao applies a size floor by resizing the window to its own inner size, which drops
- * maximized first: a maximized window comes back unmaximized at full-screen size, its
- * bottom under the Windows taskbar (#13616). The floor only matters to a restored
- * window, so a call made while maximized, fullscreen or minimized waits for the restore.
+ * tao applies a size floor by resizing to its inner size, which drops maximized first, so a
+ * maximized window comes back at full-screen size, its bottom under the Windows taskbar (#13616); a
+ * call while maximized, fullscreen or minimized waits for restore.
  */
 export function createMinimumSizeApplier(
   win: MinimumSizeWindow,

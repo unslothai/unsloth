@@ -87,10 +87,8 @@ export function classifyGgufFit(
       ? "marginal"
       : "fits";
   }
-  // Raw card, deliberately. This band means "over your budget, still card-sized", which is the only
-  // thing that distinguishes it from `fits`: scoring it against `budget` too would make it
-  // unreachable, since `required <= budget` has already returned above. It is a warning tier, not a
-  // claim that the load will be admitted.
+  // Raw card size on purpose: this marginal band is over budget yet card-sized, and budget scoring
+  // would make it unreachable; a warning tier, not a claim the load will be admitted.
   if (required <= gpuGb) return "marginal";
   // Once layers spill, the GPU contributes only its budget; the reserve is off-limits
   // (vram_budget_settings.py).

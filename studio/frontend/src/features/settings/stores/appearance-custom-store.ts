@@ -799,10 +799,9 @@ const ACCENT_FG_VARS = [
 let appliedTypography: string | null = null;
 
 /**
- * Push the customization onto <html> as inline CSS variables, attributes, and
- * classes. Everything is keyed off explicit hooks (inline vars beat every
- * palette block; the classes/attributes gate rules in index.css), so the
- * default customization leaves the document byte-identical to stock.
+ * Applies the customization to html as inline CSS vars, attributes and classes; inline vars beat
+ * every palette block and classes gate index.css rules, so default leaves the document
+ * byte-identical to stock.
  */
 export function applyCustomizationToDocument(
   c: AppearanceCustomization,

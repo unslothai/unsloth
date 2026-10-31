@@ -17,11 +17,9 @@ function studioToolsBranch(): string {
   return SOURCE.slice(start, end);
 }
 
-// Images and Fetch have their own toggles and no local implementation. Before
-// this PR an OpenAI or Gemini connection never took the Unsloth branch, so the
-// hosted branch below always carried them; now that Search, Tools, MCP or a
-// project's automatic RAG selects the Unsloth branch instead, a list of purely
-// local names would leave a lit Images pill out of the request entirely.
+// Images and Fetch have their own toggles and no local implementation, so the Unsloth-tools branch
+// must still ask for them: Search, Tools, MCP or project RAG can now pick that branch, and a purely
+// local list would drop a lit Images pill.
 test("the Unsloth-tools branch still asks for the hosted tools Unsloth cannot run", () => {
   const branch = studioToolsBranch();
 

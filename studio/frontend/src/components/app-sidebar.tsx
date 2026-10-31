@@ -427,12 +427,9 @@ const SELECT_WITH_META =
   typeof navigator !== "undefined" &&
   /mac/i.test(navigator.platform || navigator.userAgent);
 
-// Insertion line on the landing edge, drawn inside the row: a section's collapsible clips its
-// overflow, and the first and last rows are exactly where a row is dragged to. A border, not a
-// filled bar: border widths snap to whole device pixels, so the line keeps one thickness at any
-// zoom or UI scale instead of rounding differently per row.
-// DROP_CUE_CLASS: the carried row's copy covers the spot it is aimed at, so the drag draws each
-// cue's border again above it.
+// Insertion line drawn inside the row, since a collapsible's overflow clips it; a border, since
+// border widths snap to whole device pixels, keeps one thickness at any zoom. DROP_CUE_CLASS
+// redraws each cue's border above the carried row's copy, which covers the spot.
 const DROP_CUE_BASE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-foreground before:content-['']`;
 const DROP_CUE_TOP = `${DROP_CUE_BASE} before:top-0`;
 // bottom-px: on the last row, DROP_ROW_HIT's extra pixel is clipped by the list.
@@ -1338,8 +1335,7 @@ export function AppSidebar() {
     select: (s) => ({
       pathname: s.location.pathname,
       search: s.location.search as Record<string, string | undefined>,
-      // Pathname and search as one string, so a dep can follow it without a
-      // fresh object every render.
+      // Pathname and search as one string: a dep follows it without a fresh object per render.
       href: s.location.href,
     }),
   });
@@ -1398,9 +1394,8 @@ export function AppSidebar() {
   const canRepair = repair !== null && !repair.isExternalServer;
   const fullInstall = useFullInstallUpgrade();
   const [fullInstallOpen, setFullInstallOpen] = useState(false);
-  // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
-  // Train and Video blacked out on load and only recovered once the backend reported. Gate the
-  // rows on a measured verdict and let them spin until it lands.
+  // Until /api/health answers, chatOnly is only a browser-platform guess, so Macs blacked out Train
+  // and Video on load; gate the rows on a measured verdict and spin until it lands.
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
   const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
   const trainDisabledHint: string | undefined = !chatOnlyMeasured
@@ -1553,9 +1548,8 @@ export function AppSidebar() {
     },
     [syncFade],
   );
-  // Rail width: 0 where scrollbars overlay (macOS default) or the list fits, the platform's thin rail
-  // where they are classic. Only rows inside the scroller lose it, so the rows outside pad by it to
-  // keep one edge. Written to the DOM, and only on a change: state here would loop (React #185).
+  // Rail width is 0 where scrollbars overlay or the list fits, else the thin classic rail; outside
+  // rows pad by it. Written to the DOM only on change, since state would loop (React #185).
   const railWidthRef = useRef<number | null>(null);
   const measureScrollRail = useCallback((el: HTMLDivElement) => {
     const rail = el.offsetWidth - el.clientWidth;
@@ -1564,9 +1558,8 @@ export function AppSidebar() {
     el.parentElement?.style.setProperty("--sidebar-rail", `${rail}px`);
   }, []);
 
-  // A callback ref, not an effect: the mobile Sheet unmounts its subtree on close and the breakpoint
-  // swaps it for the desktop one, so the scroller is a new node each time and an effect keyed on a
-  // stable callback never re-runs. Still runs before paint.
+  // A callback ref, not an effect: the mobile Sheet unmounts it on close, and a breakpoint swap
+  // replaces it, so an effect on a stable callback never re-runs. Still before paint.
   const railObserverRef = useRef<ResizeObserver | null>(null);
   const sectionObserverRef = useRef<MutationObserver | null>(null);
   const attachScroller = useCallback(
@@ -1576,15 +1569,13 @@ export function AppSidebar() {
       sectionObserverRef.current?.disconnect();
       sectionObserverRef.current = null;
       scrollRef.current = el;
-      // Per node: a new parent has no variable yet even at the same rail, and
-      // the cache would otherwise skip the write.
+      // Per node: a new parent has no rail variable yet, and the cache would skip the write.
       railWidthRef.current = null;
       if (!el) return;
       measureScrollRail(el);
       syncFade(el);
-      // Watch the box, not renders: the Images disclosure and the project toggles change the row count
-      // without rendering this component, and a scrollbar appearing shrinks the content box. Safe where
-      // the earlier observer was not: it writes the DOM, never state, so nothing feeds back.
+      // Watch the box, not renders: Images and project toggles change the row count without
+      // rendering, and a scrollbar shrinks the box. Safe here since it writes the DOM, never state.
       const observer = new ResizeObserver(() => {
         measureScrollRail(el);
         syncFade(el);
@@ -1694,10 +1685,9 @@ export function AppSidebar() {
     (projects.length > 0 || projectsLoaded);
   const projectsSectionRendered =
     !isStudioRoute && !showTrainingRecents && projectsSectionConfigured;
-  // Deliberately not the rendered flag: Train and Recipes swap the section for their runs, and a
-  // row reappearing there reads as a setting turning itself back on. The icon rail is the one
-  // exception, since it hides the section in CSS without unmounting it and the row is then the
-  // only way to reach projects.
+  // Not the rendered flag: Train and Recipes swap the section for their runs, and a row reappearing
+  // there reads as a setting turning itself back on. The icon rail is the exception: it hides the
+  // section in CSS, so the row is the only way to reach projects.
   const projectsSectionShowing =
     projectsSectionConfigured && (isMobile || sidebarState !== "collapsed");
   const chatSort = useSidebarOrganizationStore((s) => s.chatSort);
@@ -1910,9 +1900,8 @@ export function AppSidebar() {
     }
     return map;
   }, [allChatItems]);
-  // With the Projects section on, a project chat lives in its folder and repeating it here would be
-  // noise. With it off there are no folders, so Recents is where those chats go. Pinned chats are
-  // held back either way: the Pinned section renders those, as a custom section does its own.
+  // Project chats are left out here when the Projects section is on, since they live in their
+  // folder; with it off, Recents takes them. Pinned chats are held back either way.
   const recentChatItems = useMemo(
     () =>
       listedChatItems.filter(
@@ -2018,9 +2007,8 @@ export function AppSidebar() {
     projectActivityAt,
     projectSort,
   ]);
-  // Memoised for its identity, not for the slice. It feeds the rendered-row set the selection guard
-  // depends on, and that effect sets state: React re-renders once to find the bail-out, which would
-  // rebuild this array and schedule the effect again, without end.
+  // Memoised for identity, not the slice: it feeds the selection guard's rendered-row set, and that
+  // effect sets state, so a rebuilt array would re-trigger it without end.
   const [projectPageLimit, setProjectPageLimit] = useState(SIDEBAR_PAGE_SIZE);
   const visibleProjectRecords = useMemo(
     () =>
@@ -2114,11 +2102,9 @@ export function AppSidebar() {
       ? { id: pair.id, compare: true as const }
       : { id, compare: false as const };
   }, [runningByThreadId, approvalWaitingElsewhere, allChatItems]);
-  // A chat started from a section's header joins it when its first send gives it an id, which
-  // lands in the store while the address still names the new chat. Leaving that chat first lets
-  // the mark go, so a chat opened afterwards is never filed by mistake. Turning it into a compare
-  // chat before that first send is not leaving it: the compare chat takes the mark, and joins once
-  // its pair is listed, under the id the address gives it.
+  // A chat started from a section header joins it once its first send gives it an id; leaving that
+  // chat first drops the mark, so no later chat is filed by mistake. Turning it into a compare chat
+  // before then is not leaving: the compare chat takes the mark and joins once its pair is listed.
   useEffect(() => {
     if (!pendingNewChatSection) return;
     const { sectionId, nonce, compare } = pendingNewChatSection;
@@ -2199,8 +2185,7 @@ export function AppSidebar() {
       mode: SidebarChatSort,
     ): SidebarItem[] => {
       if (mode === "manual") {
-        // Incoming order is the list's own rule, so undragged rows keep it:
-        // newest first in Recents, pin order in Pinned.
+        // Undragged rows keep the list's order: newest first in Recents, pin order in Pinned.
         return applyManualOrder(items, displayManualOrder[scope], (item) => item.id);
       }
       return [...items].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -2228,9 +2213,8 @@ export function AppSidebar() {
       end();
     };
     window.addEventListener("keyup", onKeyUp);
-    // Losing the window ends it too: ⌘Tab away mid-walk and the release lands
-    // elsewhere, leaving the walk frozen, so the next press carries on instead
-    // of toggling back and the stack never takes the chat it landed on.
+    // Blur ends the walk too: ⌘Tab away mid-walk would leave it frozen, so the next press carries
+    // on instead of toggling back; the stack never takes the chat it landed on.
     window.addEventListener("blur", end);
     return () => {
       window.removeEventListener("keyup", onKeyUp);
@@ -2254,8 +2238,7 @@ export function AppSidebar() {
     }
     return map;
   }, [listedChatsByProjectId, sortChatItems, chatSort, pinnedIdSet, sectionByChatId]);
-  // One id array per list, shared by every row in it. Built per row, these
-  // would be N arrays of length N on each render.
+  // One id array per list shared by its rows; built per row, N arrays of length N each render.
   const recentRowIds = useMemo(
     () => sortedRecentChatItems.map((item) => item.id),
     [sortedRecentChatItems],
@@ -2470,8 +2453,7 @@ export function AppSidebar() {
   // disclosure, not the Projects one, so each section collects its own.
   const folderChatItems = useCallback(
     (open: boolean, records: ProjectRecord[]) => {
-      // Not in one list: every project chat is a Recents row there, and a folder listing them
-      // again would draw and publish each one twice.
+      // Not in one list: project chats are Recents rows, and a folder would list them twice.
       if (!chatListsOnScreen || organizeBy !== "project" || !open) return [];
       const out: SidebarItem[] = [];
       for (const project of records) {
@@ -2501,8 +2483,7 @@ export function AppSidebar() {
     () => (chatListsOnScreen && chatOpen ? sortedRecentChatItems : []),
     [chatListsOnScreen, chatOpen, sortedRecentChatItems],
   );
-  // Pinned draws folders and chats in one order, so the section's chats read in that order,
-  // each open folder's chats right under its row.
+  // Pinned draws folders and chats in one order; each open folder's chats sit under its row.
   const pinnedSectionChatItems = useMemo(
     () =>
       chatListsOnScreen && pinnedOpen
@@ -2690,11 +2671,9 @@ export function AppSidebar() {
     dropProjectSelection();
   }, [dropChatSelection, dropProjectSelection]);
 
-  // Emptying the published lists is not enough: Archive, Pin, Mark unread and Delete all prefer the
-  // selection over the open chat, and a selection shows nowhere but the rows. Carried onto Train or
-  // behind the icon rail it would be invisible and still be what the chords hit. Sections close one
-  // at a time, though, and a "show less" takes back only its own overflow, so drop what went and keep
-  // what stayed.
+  // Emptying the published lists is not enough: Archive, Pin, Mark unread and Delete prefer the
+  // selection over the open chat, and it shows only in the rows, so it is dropped when they leave.
+  // Show less takes back only its own overflow, so drop what went and keep what stayed.
   useEffect(() => {
     if (!chatRowsOnScreen) {
       clearSelection();
@@ -4059,9 +4038,8 @@ export function AppSidebar() {
   useEffect(() => {
     openChatItemRef.current = openChatItem;
   });
-  // The sidebar is unmounted on the auth routes, so this is where a sign-out reaches: the store
-  // outlives the component that filled it, and the unread set and the walk belong to the account
-  // that just left.
+  // The sidebar unmounts on auth routes, so sign-out must reset here: the store outlives the
+  // component, and the unread set and walk belong to the account that left.
   useEffect(
     () => () => useChatNavigationStore.getState().resetAccountState(),
     [],
@@ -4089,10 +4067,9 @@ export function AppSidebar() {
     openChatItemById(item);
   };
 
-  // With rows selected these act on the selection, matching the context menu; otherwise on the open
-  // chat. Acting on a selection clears it, so without this latch a second press would land on the
-  // open chat, which the user never selected. Keyed by action: the press to hold back is a repeat of
-  // the one that just took the selection, not a different command chosen deliberately.
+  // With rows selected these act on the selection, otherwise on the open chat. Acting clears the
+  // selection, so without this latch a second press would hit the open chat, which was never
+  // selected. Keyed by action, so only a repeat of the same press is held back.
   const selectionActedRef = useRef<{ id: ShortcutId; at: number } | null>(null);
   const actOnSelection = (id: ShortcutId, fn: () => void) => {
     selectionActedRef.current = { id, at: Date.now() };
@@ -4113,9 +4090,8 @@ export function AppSidebar() {
   // as covered would kill these chords on the mobile drawer, which unmounts.
   const sidebarCovered = () => {
     if (isSurfaceBackgrounded(SIDEBAR_SELECTOR)) return true;
-    // With the mobile drawer closed the sidebar is unmounted, so the check above has nothing to read.
-    // The app root is always mounted and Radix aria-hides it for a modal's life. A fallback only: an
-    // open drawer is itself a dialog hiding the root, and the sidebar in it is the foreground.
+    // The mobile drawer unmounts the sidebar when closed, so this check reads the app root, which
+    // Radix aria-hides for a modal's life; an open drawer hides it and is the foreground.
     return (
       typeof document !== "undefined" &&
       document.querySelector(SIDEBAR_SELECTOR) === null &&
@@ -4177,9 +4153,8 @@ export function AppSidebar() {
     },
     { claims: sidebarUncovered },
   );
-  // Through the dialog: the row's inline pill is rendered by the row, and the open chat may be behind
-  // a collapsed section, past a folder's "show more", or on a route with no chat list at all, where
-  // the chord would look dead and leave a rename waiting to appear when the row came back.
+  // Goes through the dialog: the open chat may be behind a collapsed section, past a folder's show
+  // more, or on a route with no chat list, where an inline row pill cannot show the rename.
   useShortcut(
     "renameChat",
     () => withActiveChat((item) => openRenameChat(item)),
@@ -4416,9 +4391,8 @@ export function AppSidebar() {
     );
   }
 
-  // The "..." on each list header, carrying only what that list is about, as ChatGPT does: Pinned
-  // sorts its pins, Projects groups the sidebar and sorts its folders, and Recents adds which
-  // sections show and a new one. A custom section's own "..." manages that section.
+  // The "..." menu on each list header carries only what that list is about, as ChatGPT does:
+  // Pinned sorts pins, Projects groups the sidebar, Recents adds which sections show.
   function renderSidebarHeaderMenu(
     options: { ariaLabel: string } & (
       | { kind: "pinned" | "projects" | "recents" }

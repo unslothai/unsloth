@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A catalog row on a gated vendor id is still a one-click download when the backend fetches it from an
-// open unsloth mirror, so it carries `fetchedFrom` and no `gated: true` (which would make the router skip
-// it). The nightly network check then judges the mirror. That is only true while the backend really
-// does redirect the id, so every `fetchedFrom` must be one of diffusion_families' gated mirror pairs.
+// A gated vendor id stays a one-click download via fetchedFrom, not gated: true (the router would
+// skip it); the nightly check judges the mirror, which holds only while the backend redirects that
+// id, so each fetchedFrom must be a diffusion_families gated mirror pair.
 
 import assert from "node:assert/strict";
 import test from "node:test";

@@ -79,9 +79,8 @@ export function subscribeModelDeleted(
 }
 
 /**
- * Announce a load around `run`, so the indicator shows it for the whole time
- * the toast does. Settles on failure too, or a failed load would leave the row
- * spinning until the next poll disagreed.
+ * Announces a load around run so the indicator lasts as long as the toast; settles on failure too,
+ * or the row would spin until a poll disagreed.
  */
 export async function withModelLoadNotice<T>(
   runtime: ModelRuntime,
@@ -97,12 +96,9 @@ export async function withModelLoadNotice<T>(
 }
 
 /**
- * What a `load-progress` endpoint reports. `null` is terminal once a load has
- * started: all three engines return it only for "nothing loading and nothing
- * loaded", and `begin_load` records its loading state before the POST answers,
- * so a read before the first byte moves says `downloading`. It is what a
- * cancelled or evicted load leaves behind -- the Images page's own poll treats
- * it the same way, and must, "else this loop spins forever".
+ * null is terminal once a load starts: all three engines return it only when nothing is loading or
+ * loaded; begin_load records loading before the POST answers, so an early read says downloading; a
+ * cancelled or evicted load leaves null, which pollers must treat as the end or spin forever.
  */
 export type LoadPhase =
   | "downloading"

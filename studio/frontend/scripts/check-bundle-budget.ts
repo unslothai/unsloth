@@ -672,9 +672,8 @@ export function eagerChunksFromHtml(html: string): string[] {
 }
 
 /**
- * Text that marks React-preview runtime code. The preview libraries and the bootstrap that imports
- * them are only ever fetched when a preview opens, so either string in a startup chunk means that
- * code was pulled onto the startup path: a static import where a lazy one was meant.
+ * Strings marking React-preview runtime code, fetched only when a preview opens; one in a startup
+ * chunk means a static import where a lazy one was meant.
  */
 export const LAZY_ONLY_NEEDLES = ["__unslothModules", "__vite_ssr_import__"];
 

@@ -276,9 +276,8 @@ async function readHealth(
           ? { chatOnly: previous.chatOnly, chatOnlyReason: null, chatOnlyDetail: null, chatOnlyHint: null }
           : previous,
       );
-      // Cache only a server-reported platform. Unauthenticated responses fall
-      // back to the browser platform, which can differ from the host (WSL,
-      // SSH); keeping fetched=false retries once a token exists.
+      // Cache only server-reported platforms: browser fallbacks differ from the host, so retry
+      // until authed.
       usePlatformStore.setState({
         deviceType,
         appleSilicon,

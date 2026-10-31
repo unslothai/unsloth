@@ -502,9 +502,8 @@ export async function generateDiffusionImage(
   }
   if (!response.ok && RESPONSE_LOST_STATUSES.has(response.status)) {
     const detail = await readFastApiError(response);
-    // A proxy answers with HTML (or nothing); the app answers with JSON. Only the former means the request may still
-    // be running: settling an application error would poll for a generation that never started and hide the reason
-    // the backend gave.
+    // Only a proxy's HTML or empty reply means the generation may still be running; a JSON
+    // application error is thrown with the backend's reason rather than polled for.
     if ((response.headers.get("content-type") || "").toLowerCase().includes("application/json")) {
       throw new Error(detail);
     }
