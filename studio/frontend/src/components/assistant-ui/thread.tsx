@@ -100,6 +100,7 @@ import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
+import { ChatAudioRecording } from "@/components/assistant-ui/chat-audio-recording";
 import {
   ChatAudioUploadMount,
   composerSubmitIntent,
@@ -5784,6 +5785,7 @@ const Composer: FC<{
               onStopClick={stopQueue}
               onResumeClick={resumeQueue}
               onDictateClick={startDictation}
+              composerIdentity={composerIdentity}
               audioUpload={audioUpload}
               pendingSend={pendingSend}
               menuSide={effectiveMenuSide}
@@ -7304,6 +7306,7 @@ const ComposerRightControls: FC<{
   onStopClick?: () => void;
   onResumeClick?: () => void;
   onDictateClick?: () => void;
+  composerIdentity: string;
   audioUpload: ReturnType<typeof useChatAudioUpload>;
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
@@ -7317,6 +7320,7 @@ const ComposerRightControls: FC<{
   onStopClick,
   onResumeClick,
   onDictateClick,
+  composerIdentity,
   audioUpload,
   pendingSend,
   menuSide,
@@ -7438,6 +7442,7 @@ const ComposerRightControls: FC<{
     >
       <ReasoningToggle side={menuSide} />
       <ComposerPrimitive.If dictation={false}>
+        <ChatAudioRecording key={composerIdentity} disabled={dictationDisabled || audioUpload.busy} />
         {audioUpload.busy ? (
           <Button
             type="button"
