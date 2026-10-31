@@ -161,3 +161,16 @@ export function applyLogChunk(
     cursor: chunk.cursor,
   };
 }
+
+/** True while a non-empty selection starts or ends inside the pane. */
+export function selectionInside<N>(
+  selection: {
+    isCollapsed: boolean;
+    anchorNode: N | null;
+    focusNode: N | null;
+  } | null,
+  pane: { contains(node: N | null): boolean } | null,
+): boolean {
+  if (!selection || !pane || selection.isCollapsed) return false;
+  return pane.contains(selection.anchorNode) || pane.contains(selection.focusNode);
+}

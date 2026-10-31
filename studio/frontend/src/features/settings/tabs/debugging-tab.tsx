@@ -76,6 +76,7 @@ import {
   parseRefreshMode,
   isRequestTimeout,
   pollDelayMs,
+  selectionInside,
   withRequestTimeout,
 } from "../lib/debug-log-buffer";
 import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
@@ -422,6 +423,42 @@ export function DebuggingTab() {
 
   const text = useMemo(() => visibleLines.join("\n"), [visibleLines]);
 
+  // Repainting the pane drops any selection in it, so hold the shown text while the user selects.
+  // Nothing re-renders between mousedown and the first selected character: a render there
+  // (even the badge) stops Chromium extending the drag.
+  const [holding, setHolding] = useState(false);
+  const pointerDownRef = useRef(false);
+  const textRef = useRef(text);
+  textRef.current = text;
+  const [shownText, setShownText] = useState(text);
+  if (!holding && !pointerDownRef.current && shownText !== text)
+    setShownText(text);
+
+  useEffect(() => {
+    const inside = () =>
+      selectionInside(document.getSelection(), paneRef.current);
+    const update = () => {
+      const held = inside();
+      if (pointerDownRef.current && !held) return;
+      setHolding(held);
+    };
+    const release = () => {
+      if (!pointerDownRef.current) return;
+      pointerDownRef.current = false;
+      const held = inside();
+      setHolding(held);
+      if (!held) setShownText(textRef.current);
+    };
+    document.addEventListener("selectionchange", update);
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    return () => {
+      document.removeEventListener("selectionchange", update);
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+    };
+  }, []);
+
   const scrollToBottom = useCallback(() => {
     const pane = paneRef.current;
     if (!pane) return;
@@ -434,7 +471,7 @@ export function DebuggingTab() {
   useEffect(() => {
     const pane = paneRef.current;
     if (pane && pinnedRef.current) pane.scrollTop = pane.scrollHeight;
-  }, [text, wrap, paneHeight]);
+  }, [shownText, wrap, paneHeight]);
 
   const resizePane = useCallback((next: number | null) => {
     const height =
@@ -729,7 +766,7 @@ export function DebuggingTab() {
                   "inline-flex h-5 items-center gap-1.5 rounded-full px-2 text-xs font-medium",
                   staleSession
                     ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
-                    : mode === "manual"
+                    : mode === "manual" || holding
                       ? "bg-muted text-muted-foreground"
                       : "bg-primary/10 text-primary",
                 )}
@@ -739,12 +776,13 @@ export function DebuggingTab() {
                     "size-1.5 rounded-full bg-current",
                     !staleSession &&
                       mode !== "manual" &&
+                      !holding &&
                       "motion-safe:animate-pulse",
                   )}
                 />
                 {staleSession
                   ? t("settings.debugging.statusStale")
-                  : mode === "manual"
+                  : mode === "manual" || holding
                     ? t("settings.debugging.statusPaused")
                     : t("settings.debugging.statusLive")}
               </span>
@@ -792,14 +830,17 @@ export function DebuggingTab() {
             <pre
               ref={paneRef}
               onScroll={onScroll}
+              onPointerDown={() => {
+                pointerDownRef.current = true;
+              }}
               data-testid="debug-log-pane"
               className={cn(
                 "h-full w-full overflow-auto [overflow-anchor:none] scroll-rounded rounded-md py-2 pr-11 pl-2.5 font-mono text-ui-11 leading-[1.55] text-foreground/90",
                 wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
-                !text && "text-muted-foreground",
+                !shownText && "text-muted-foreground",
               )}
             >
-              {text ||
+              {shownText ||
                 (trimmedFilter && buffer.lines.length > 0
                   ? t("settings.debugging.noMatches")
                   : t("settings.debugging.empty"))}
@@ -824,7 +865,7 @@ export function DebuggingTab() {
             </TooltipTrigger>
             <TooltipContent>{t("settings.debugging.wrapLines")}</TooltipContent>
           </Tooltip>
-          {!following && text ? (
+          {!following && shownText ? (
             <Button
               size="xs"
               variant="dark"
@@ -888,8 +929,8 @@ export function DebuggingTab() {
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => copy(text)}
-              disabled={!text}
+              onClick={() => copy(shownText)}
+              disabled={!shownText}
             >
               <HugeiconsIcon
                 strokeWidth={1.75}
