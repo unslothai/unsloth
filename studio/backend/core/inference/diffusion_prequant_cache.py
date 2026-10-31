@@ -1305,7 +1305,11 @@ def save_runtime_quant(
                 )
                 return pending
             if host_snapshot and async_enabled():
-                _log(logger, "info", f"skipped ({why}; a resident build is never written inside the load)")
+                _log(
+                    logger,
+                    "info",
+                    f"skipped ({why}; a resident build is never written inside the load)",
+                )
                 return None
             _log(logger, "info", f"writing {key} before the load returns ({why})")
         state_dict = None
@@ -1521,7 +1525,9 @@ def _host_memory_bytes() -> tuple[Optional[int], Optional[int]]:
 
 
 def _defer_blocker(
-    job: _WriteJob, host_snapshot: bool = False, cancel_check: Optional[Any] = None
+    job: _WriteJob,
+    host_snapshot: bool = False,
+    cancel_check: Optional[Any] = None,
 ) -> Optional[str]:
     """Why ``job`` must be written now, or None: it must be wholly on the host and what it keeps alive must fit.
     ``host_snapshot`` copies an off-host build to the host first, when that copy fits beside the reserve."""

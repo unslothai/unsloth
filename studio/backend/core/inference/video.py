@@ -3232,7 +3232,10 @@ def _video_cached_resident_scheme(
     later auto loads into int8. Whether the DiT stays resident and whether auto keeps bf16 is decided by the
     caller's seed checks, the same ones a hosted seed passes. Without an entry nothing is asked. Never raises."""
     try:
-        if requested is None or normalize_transformer_quant(requested) != TQ_AUTO:
+        # Unset is auto (the Studio page omits the field for the hardware ladder; load_pipeline maps it to auto), as
+        # in ``_video_hosted_denoiser_scheme``; "none" / "off" and explicit schemes never replay here.
+        auto = requested is None or str(requested).strip().lower() in ("", "auto")
+        if not auto:
             return None
         if speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
             return None
@@ -9573,8 +9576,10 @@ class VideoBackend:
                 f"{comfy_info.get('dequantized', 0)} dequantized"
             )
             logger.info("video.transformer_quant: %s", transformer_quant_source)
-        elif denoiser_injected and denoiser_seed_sources and all(
-            _is_prequant_cache_source(src) for src in denoiser_seed_sources.values()
+        elif (
+            denoiser_injected
+            and denoiser_seed_sources
+            and all(_is_prequant_cache_source(src) for src in denoiser_seed_sources.values())
         ):
             transformer_quant_engaged = denoiser_seed_scheme
             transformer_quant_source = (
@@ -9587,7 +9592,12 @@ class VideoBackend:
                 denoiser_seed_scheme,
                 fam.name,
                 ", ".join(
-                    sorted({Path(str(src.location)).parent.name for src in denoiser_seed_sources.values()})
+                    sorted(
+                        {
+                            Path(str(src.location)).parent.name
+                            for src in denoiser_seed_sources.values()
+                        }
+                    )
                 ),
             )
         elif denoiser_injected:

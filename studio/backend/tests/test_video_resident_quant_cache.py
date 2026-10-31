@@ -84,7 +84,11 @@ def _tiny_model(seed: int = 0):
     return model.to(torch.bfloat16).eval()
 
 
-def _write_base(tmp_path: Path, seed: int = 0, name: str = "base"):
+def _write_base(
+    tmp_path: Path,
+    seed: int = 0,
+    name: str = "base",
+):
     model = _tiny_model(seed)
     base = tmp_path / name
     model.save_pretrained(str(base / "transformer"), safe_serialization = True)
@@ -143,7 +147,8 @@ def _flat_equal(a: dict, b: dict) -> list:
             bad.append(k)
             continue
         if not torch.equal(
-            x.contiguous().reshape(-1).view(torch.uint8), y.contiguous().reshape(-1).view(torch.uint8)
+            x.contiguous().reshape(-1).view(torch.uint8),
+            y.contiguous().reshape(-1).view(torch.uint8),
         ):
             bad.append(k)
     return bad
@@ -215,13 +220,20 @@ def test_a_returning_auto_load_seeds_exactly_that_build(env, tmp_path, scheme, m
     fam = _fam(base)
     monkeypatch.setattr(vid, "select_transformer_quant_scheme", lambda *a, **k: scheme)
     kw = dict(target = _bf16_target(), requested = "auto", base_repo = str(base), speed_mode = None)
+    unset = dict(kw, requested = None)
     # First load: no entry, nothing to seed (and auto's pick is never asked for).
     assert vid._video_auto_denoiser_scheme(fam, **kw) is None
+    assert vid._video_auto_denoiser_scheme(fam, **unset) is None
 
     _quantize(model, scheme, monkeypatch)
-    pending = vid._save_runtime_quant_to_cache(fam, _views(model), base = str(base), source = str(base), defer = True)
+    pending = vid._save_runtime_quant_to_cache(
+        fam, _views(model), base = str(base), source = str(base), defer = True
+    )
     assert pending.start() and pending.wait(120)
     assert vid._video_auto_denoiser_scheme(fam, **kw) == scheme
+    # The default Studio request (transformer_quant omitted) replays the same entry.
+    assert vid._video_auto_denoiser_scheme(fam, **unset) == scheme
+    assert vid._video_auto_denoiser_scheme(fam, **dict(unset, requested = "none")) is None
 
     from core.inference.video_denoiser_prequant import denoiser_prequant_sources
 
@@ -230,23 +242,40 @@ def test_a_returning_auto_load_seeds_exactly_that_build(env, tmp_path, scheme, m
 
 
 # ------------------------------------------------------------------------------------------------ decision
-def _stub_decision(monkeypatch, *, cached = ("int8",), pick = "int8"):
+def _stub_decision(
+    monkeypatch,
+    *,
+    cached = ("int8",),
+    pick = "int8",
+):
     import core.inference.diffusion_prequant as pq
     import core.inference.video_denoiser_prequant as vdp
 
     calls = {"select": 0}
 
-    def _sources(fam, scheme, base_repo, *, hf_token = None):
+    def _sources(
+        fam,
+        scheme,
+        base_repo,
+        *,
+        hf_token = None,
+    ):
         if scheme not in cached:
             return None
-        return {"transformer": types.SimpleNamespace(kind = "path", location = f"/c/{scheme}/model.safetensors")}
+        return {
+            "transformer": types.SimpleNamespace(
+                kind = "path", location = f"/c/{scheme}/model.safetensors"
+            )
+        }
 
     def _select(*a, **k):
         calls["select"] += 1
         return pick
 
     monkeypatch.setattr(vdp, "denoiser_prequant_sources", _sources)
-    monkeypatch.setattr(vid, "_is_prequant_cache_source", lambda src: str(src.location).startswith("/c/"))
+    monkeypatch.setattr(
+        vid, "_is_prequant_cache_source", lambda src: str(src.location).startswith("/c/")
+    )
     monkeypatch.setattr(vid, "select_transformer_quant_scheme", _select)
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, *a: True)
     return calls
@@ -268,6 +297,33 @@ def test_auto_replays_only_its_own_pick(env, monkeypatch):
     assert _decide() is None
 
 
+@pytest.mark.parametrize("requested", [None, "", " Auto ", "auto"])
+def test_an_unset_request_replays_exactly_like_auto(env, monkeypatch, requested):
+    """The Studio video page omits transformer_quant for the hardware ladder: unset is the default user load."""
+    _stub_decision(monkeypatch)
+    assert _decide(requested = requested) == "int8"
+    _stub_decision(monkeypatch, cached = ("int8",), pick = "fp8")
+    assert _decide(requested = requested) is None
+    calls = _stub_decision(monkeypatch, cached = ())
+    assert _decide(requested = requested) is None and calls["select"] == 0
+
+
+def test_the_load_maps_unset_to_auto_before_the_seed_and_the_write():
+    """The write branch and the seed call see ``transformer_quant`` after load_pipeline turned unset into auto."""
+    src = inspect.getsource(vid.VideoBackend.load_pipeline)
+    mapped = src.index('transformer_quant = "off" if speed_off else TQ_AUTO')
+    unset = src[mapped - 600 : mapped]
+    assert "if transformer_quant is None or str(transformer_quant).strip().lower() in (" in unset
+    seed = src.index(
+        "denoiser_seed_scheme = _video_auto_denoiser_planned or _video_auto_denoiser_scheme("
+    )
+    write = src.index(
+        "_save_runtime_quant_to_cache(", src.index("_save_runtime_quant_to_cache(") + 1
+    )
+    assert mapped < seed < write
+    assert "requested = transformer_quant," in src[seed : seed + 300]
+
+
 def test_no_entry_asks_nothing_and_changes_nothing(env, monkeypatch):
     calls = _stub_decision(monkeypatch, cached = ())
     assert _decide() is None
@@ -277,10 +333,11 @@ def test_no_entry_asks_nothing_and_changes_nothing(env, monkeypatch):
 def test_explicit_unset_speed_off_modular_moe_and_non_bf16_never_replay(env, monkeypatch):
     _stub_decision(monkeypatch)
     assert _decide(requested = "int8") is None  # explicit schemes keep their own seed path
-    assert _decide(requested = None) is None  # unset never quantises at runtime
     assert _decide(requested = "off") is None
+    assert _decide(requested = "none") is None
     assert _decide(speed_mode = "off") is None
     assert _decide(speed_mode = " OFF ") is None
+    assert _decide(speed_mode = "off", requested = None) is None
     assert _decide(_fam(Path("/x"), modular_workflow = "fl2va")) is None
     assert _decide(_fam(Path("/x"), is_moe = True)) is None
     assert _decide(target = types.SimpleNamespace(device = "cuda", dtype = torch.float16)) is None
@@ -324,7 +381,9 @@ def test_kill_switches(env, monkeypatch):
 def test_the_hosted_seed_wins_and_the_cache_is_only_a_fallback(env, monkeypatch):
     seen = []
     monkeypatch.setattr(vid, "_video_hosted_denoiser_scheme", lambda fam, **kw: "nvfp4")
-    monkeypatch.setattr(vid, "_video_cached_resident_scheme", lambda fam, **kw: seen.append(1) or "int8")
+    monkeypatch.setattr(
+        vid, "_video_cached_resident_scheme", lambda fam, **kw: seen.append(1) or "int8"
+    )
     kw = dict(target = None, requested = "auto", base_repo = "b", speed_mode = None)
     assert vid._video_auto_denoiser_scheme(None, **kw) == "nvfp4" and seen == []
     monkeypatch.setattr(vid, "_video_hosted_denoiser_scheme", lambda fam, **kw: None)
@@ -356,7 +415,16 @@ class _FakeDeviceTensor:
 
 
 def _job(tmp_path, flat):
-    return C._WriteJob("k" * 32, tmp_path / "k", flat, {}, {}, sum(C._tensor_bytes(t) for t in flat.values()), 0.0, None)
+    return C._WriteJob(
+        "k" * 32,
+        tmp_path / "k",
+        flat,
+        {},
+        {},
+        sum(C._tensor_bytes(t) for t in flat.values()),
+        0.0,
+        None,
+    )
 
 
 def test_the_snapshot_moves_every_device_tensor_to_the_host(env, tmp_path, monkeypatch):
@@ -386,21 +454,34 @@ def test_a_resident_write_that_cannot_defer_is_skipped_not_written_in_the_load(
     base, model = _write_base(tmp_path)
     fam = _fam(base)
     _quantize(model, scheme, monkeypatch)
-    monkeypatch.setattr(C, "_defer_blocker", lambda job, **kw: "another background cache write is running")
-    assert vid._save_runtime_quant_to_cache(fam, _views(model), base = str(base), source = str(base), defer = True) is None
+    monkeypatch.setattr(
+        C, "_defer_blocker", lambda job, **kw: "another background cache write is running"
+    )
+    assert (
+        vid._save_runtime_quant_to_cache(
+            fam, _views(model), base = str(base), source = str(base), defer = True
+        )
+        is None
+    )
     assert C.lookup(fam, scheme, base_repo = str(base)) is None
     # ASYNC=0 is the operator asking for the synchronous write: honoured.
     monkeypatch.setenv(C.ENV_ASYNC, "0")
     monkeypatch.setattr(C, "_defer_blocker", lambda job, **kw: f"{C.ENV_ASYNC}=0")
-    out = vid._save_runtime_quant_to_cache(fam, _views(model), base = str(base), source = str(base), defer = True)
+    out = vid._save_runtime_quant_to_cache(
+        fam, _views(model), base = str(base), source = str(base), defer = True
+    )
     assert isinstance(out, str) and C.lookup(fam, scheme, base_repo = str(base)) == out
 
 
-def test_a_discarded_write_releases_its_slot_and_leaves_no_entry(env, tmp_path, scheme, monkeypatch):
+def test_a_discarded_write_releases_its_slot_and_leaves_no_entry(
+    env, tmp_path, scheme, monkeypatch
+):
     base, model = _write_base(tmp_path)
     fam = _fam(base)
     _quantize(model, scheme, monkeypatch)
-    pending = vid._save_runtime_quant_to_cache(fam, _views(model), base = str(base), source = str(base), defer = True)
+    pending = vid._save_runtime_quant_to_cache(
+        fam, _views(model), base = str(base), source = str(base), defer = True
+    )
     owner = types.SimpleNamespace(_resident_quant_write = (7, pending))
     vid._discard_resident_quant_write(owner, 8)  # another load's token: untouched
     assert owner._resident_quant_write is not None and not pending.done()
@@ -458,7 +539,9 @@ def test_the_load_writes_auto_resident_builds_deferred_and_keeps_explicit_writes
     assert "defer = True" in src[auto_at : auto_at + 400]
     assert "source = _base_local_dir or fetch_base," in src[auto_at : auto_at + 400]
     assert "_start_resident_quant_write(self, pipe, _load_token)" in src
-    assert src.index("_start_resident_quant_write(") > src.index('"video.loaded: %s (%s, %s, offload=%s')
+    assert src.index("_start_resident_quant_write(") > src.index(
+        '"video.loaded: %s (%s, %s, offload=%s'
+    )
 
 
 def test_a_failed_load_discards_and_an_unload_finishes_the_write():
