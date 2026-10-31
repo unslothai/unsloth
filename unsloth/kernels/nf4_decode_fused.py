@@ -25,6 +25,7 @@ __all__ = [
     "site_config",
     "fused_site",
     "final_norm",
+    "qk_norm_rope_kv",
     "supported_capability",
 ]
 
@@ -43,7 +44,7 @@ def _rstd_from_partials(SS, n_ss, K, EPS: tl.constexpr, SS_BLOCK: tl.constexpr):
 def _nf4_decode_fused_kernel(
     X, G, R, XG_OUT, SS_IN, SS_OUT, G_NEXT,
     W, ABSMAX, CODE2, ABSMAX2, SEG_OFFSET, LUT,
-    LB0, LB1, LB2, LORA_H,
+    LB0, LB1, LB2, LORA_H, BQ, BK, BV,
     OUT, K_CACHE, V_CACHE, COS, SIN, POS, SLOT,
     lora_rank, N, K, HALF, seg1, seg2, n_ss, stride_cache_h, stride_cache_l, stride_cos, head_dim,
     EPS: tl.constexpr,
@@ -51,6 +52,7 @@ def _nf4_decode_fused_kernel(
     BLOCKSIZE: tl.constexpr, BLOCKSIZE2: tl.constexpr, NESTED: tl.constexpr, USE_MUL_RN: tl.constexpr,
     EVEN_K: tl.constexpr, LUT_MODE: tl.constexpr,
     PRE: tl.constexpr, LORA: tl.constexpr, RANK_PAD: tl.constexpr, EPI: tl.constexpr, SS_BLOCK: tl.constexpr,
+    HAS_BIAS: tl.constexpr,
 ):  # fmt: skip
     W = W.to(tl.pointer_type(tl.uint8))
     pid = tl.program_id(0)
@@ -114,6 +116,11 @@ def _nf4_decode_fused_kernel(
         bw = tl.load(brow[:, None] + j[None, :], mask = rmask[:, None] & jm[None, :], other = 0.0)
         hv = tl.load(LORA_H + seg[:, None] * RANK_PAD + j[None, :], mask = jm[None, :], other = 0.0)
         acc += tl.sum(bw.to(tl.float32) * hv, axis = 1)
+    if HAS_BIAS:
+        # Per-segment bias (Qwen2 q / k / v), read through each projection's own tensor.
+        br = rows - tl.where(s0, 0, tl.where(s1, seg1, seg2)).to(tl.int64)
+        bptr = tl.where(s0, BQ, tl.where(s1, BK, BV)) + br
+        acc += tl.load(bptr, mask = rmask, other = 0.0).to(tl.float32)
 
     out_ty = OUT.dtype.element_ty
     if EPI == 3:
@@ -166,6 +173,57 @@ def _nf4_decode_fused_kernel(
             pm = pA < HALF
             act = a_val * tl.sigmoid(a_val) * b_val
             tl.store(OUT + pA, act.to(out_ty), mask = pm)
+
+
+@triton.jit
+def _qk_norm_rope_kv_kernel(
+    QKV, WQ, WK, COS, SIN, POS, SLOT, Q_OUT, K_CACHE, V_CACHE,
+    n_heads, n_kv_heads, stride_cos, stride_cache_h, stride_cache_l,
+    HEAD_DIM: tl.constexpr, EPS_Q: tl.constexpr, EPS_K: tl.constexpr,
+):  # fmt: skip
+    # Qwen3, one head per program: q / k RMSNorm then RoPE, V copied, K / V to cache row SLOT (roundings as decode_qk_norm_rope).
+    h = tl.program_id(0)
+    HALF: tl.constexpr = HEAD_DIM // 2
+    j = tl.arange(0, HALF)
+    base = h.to(tl.int64) * HEAD_DIM
+    x0 = tl.load(QKV + base + j).to(tl.float32)
+    x1 = tl.load(QKV + base + HALF + j).to(tl.float32)
+    slot = tl.load(SLOT).to(tl.int64)
+    out_ty = Q_OUT.dtype.element_ty
+    if h < n_heads + n_kv_heads:
+        is_q = h < n_heads
+        eps = tl.where(is_q, EPS_Q, EPS_K)
+        inv = tl.math.rsqrt((tl.sum(x0 * x0, axis = 0) + tl.sum(x1 * x1, axis = 0)) / HEAD_DIM + eps)
+        w_ty = WQ.dtype.element_ty
+        w0 = tl.where(is_q, tl.load(WQ + j).to(tl.float32), tl.load(WK + j).to(tl.float32))
+        w1 = tl.where(
+            is_q, tl.load(WQ + HALF + j).to(tl.float32), tl.load(WK + HALF + j).to(tl.float32)
+        )
+        # Normed in the weight's dtype, times the weight, rounded to the activation dtype.
+        y0 = ((x0 * inv).to(w_ty).to(tl.float32) * w0).to(w_ty).to(out_ty).to(tl.float32)
+        y1 = ((x1 * inv).to(w_ty).to(tl.float32) * w1).to(w_ty).to(out_ty).to(tl.float32)
+        pos = tl.load(POS).to(tl.int64)
+        c0 = tl.load(COS + pos * stride_cos + j).to(tl.float32)
+        s0 = tl.load(SIN + pos * stride_cos + j).to(tl.float32)
+        c1 = tl.load(COS + pos * stride_cos + HALF + j).to(tl.float32)
+        s1 = tl.load(SIN + pos * stride_cos + HALF + j).to(tl.float32)
+        r0 = y0 * c0 - y1 * s0
+        r1 = y1 * c1 + y0 * s1
+        if is_q:
+            tl.store(Q_OUT + base + j, r0.to(out_ty))
+            tl.store(Q_OUT + base + HALF + j, r1.to(out_ty))
+        else:
+            kp = K_CACHE + slot * stride_cache_l + (h - n_heads).to(tl.int64) * stride_cache_h
+            tl.store(kp + j, r0.to(K_CACHE.dtype.element_ty))
+            tl.store(kp + HALF + j, r1.to(K_CACHE.dtype.element_ty))
+    else:
+        vp = (
+            V_CACHE
+            + slot * stride_cache_l
+            + (h - n_heads - n_kv_heads).to(tl.int64) * stride_cache_h
+        )
+        tl.store(vp + j, x0.to(V_CACHE.dtype.element_ty))
+        tl.store(vp + HALF + j, x1.to(V_CACHE.dtype.element_ty))
 
 
 @triton.jit
@@ -264,8 +322,10 @@ class FusedSite:
         blocksize2 = 256,
         lora = None,
         scaling = 1.0,
+        bias = None,
     ):
         self.kind = kind
+        self.bias = None if bias is None else tuple(bias) + (bias[-1],) * (3 - len(bias))
         self.packed = packed
         self.absmax = absmax
         self.code = code
@@ -363,6 +423,7 @@ def fused_site(
     slot = None,
     head_dim = None,
     config = None,
+    bias = None,
 ):
     """One fused call site; returns its ss partial / program count.
     pre: PRE_NONE (x is the GEMV input), PRE_SCALED (x = h * gamma; rstd from ss_in[:n_ss]),
@@ -405,6 +466,7 @@ def fused_site(
         B3[1],
         B3[2],
         site.H if site.lora else d,
+        *(bias if bias is not None else (d, d, d)),
         out if out is not None else d,
         k_cache if k_cache is not None else d,
         v_cache if v_cache is not None else d,
@@ -441,6 +503,7 @@ def fused_site(
         RANK_PAD = site.rank_pad if site.lora else 16,
         EPI = epi,
         SS_BLOCK = max(16, triton.next_power_of_2(max(n_ss, 1))),
+        HAS_BIAS = bias is not None,
     )
     launch(
         _nf4_decode_fused_kernel,
@@ -453,6 +516,35 @@ def fused_site(
         enable_fp_fusion = True,
     )
     return nprog
+
+
+def qk_norm_rope_kv(
+    qkv,
+    q_out,
+    wq,
+    wk,
+    eps_q,
+    eps_k,
+    cos,
+    sin,
+    pos,
+    slot,
+    k_cache,
+    v_cache,
+    n_heads,
+    n_kv_heads,
+    head_dim,
+):
+    """Qwen3's per-head q / k RMSNorm + RoPE over the raw q|k|v row; Q -> q_out, K / V -> cache row slot[0]."""
+    args = (
+        qkv, wq, wk, cos, sin, pos, slot, q_out, k_cache, v_cache,
+        n_heads, n_kv_heads, cos.stride(0), k_cache.stride(2), k_cache.stride(0),
+    )  # fmt: skip
+    constexprs = dict(HEAD_DIM = head_dim, EPS_Q = float(eps_q), EPS_K = float(eps_k))
+    launch(
+        _qk_norm_rope_kv_kernel, (n_heads + 2 * n_kv_heads,), args, 10, constexprs,
+        qkv.device.index, num_warps = 2,
+    )  # fmt: skip
 
 
 def final_norm(residual, ss, n_ss, weight, eps, out):
