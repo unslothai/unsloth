@@ -217,9 +217,7 @@ def test_a_healthy_reading_still_passes():
 
 
 def test_a_jammed_page_that_coalesced_most_of_its_keystrokes_still_passes():
-    """A LOW SAMPLE COUNT IS NOT A FAULT, it is the finding. On a jammed page most keystrokes
-    arrive behind a paint that has not finished, and the slow paint that swallowed them IS
-    measured. What matters is that every input is accounted for."""
+    """A low sample count is the finding, not a fault: every input must still be accounted for."""
 
     result = _run_keystroke(_Instrument(_reading(samples = 3, coalesced = 9, p95_ms = 480.0)))
 
@@ -238,8 +236,7 @@ def test_a_reading_with_a_keystroke_still_unpainted_is_not_quotable():
 
 
 def test_a_keystroke_that_never_reached_the_instrument_is_not_quotable():
-    """`grew_by` is satisfied by a textarea whose value is right; it says nothing about which
-    keystrokes were measured on the way in."""
+    """`grew_by` is met by the textarea value alone; keystrokes must reach the instrument."""
 
     result = _run_keystroke(_Instrument(_reading(samples = 8, inputs_seen = 8, coalesced = 0)))
 

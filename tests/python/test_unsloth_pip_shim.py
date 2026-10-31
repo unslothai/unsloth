@@ -450,9 +450,8 @@ class _FakeDist:
 
 
 def _fake_distributions(monkeypatch, *pairs):
-    """Pin what _protected_constraints_file sees as INSTALLED, else the assertions
-    depend on the ambient venv. The shim imports it inside the function, so patch
-    it at its source."""
+    """Pin what _protected_constraints_file sees as installed, else assertions depend on the ambient
+    venv; the shim imports it inside the function, so patch at its source."""
     monkeypatch.setattr(
         "importlib.metadata.distributions",
         lambda **kw: [_FakeDist(n, v) for n, v in pairs],
@@ -1051,8 +1050,7 @@ def test_protected_pins_ignore_a_sidecar_on_pythonpath(shim, tmp_path, monkeypat
 
 
 def test_base_site_packages_never_returns_a_pythonpath_entry(shim, tmp_path, monkeypatch):
-    """sys.prefix cannot be influenced by PYTHONPATH, which is the property the pin
-    scoping relies on. A sidecar on sys.path must not appear in the scope."""
+    """PYTHONPATH cannot change sys.prefix, which pin scoping needs; sidecars must not appear."""
     sidecar = _sidecar_dir(tmp_path / "sc", "5.5.0")
     monkeypatch.syspath_prepend(str(sidecar))
     scope = shim._base_site_packages()
@@ -1252,8 +1250,7 @@ def test_a_separated_alias_value_is_not_read_as_a_target(shim, monkeypatch, argv
 
 
 def test_an_alias_value_does_not_hide_uv_pip_sync(shim, monkeypatch):
-    """The sync refusal is found by the same positional walk, so a mis-parsed global
-    hid it too."""
+    """The sync refusal uses the same positional walk, so a mis-parsed global hid it too."""
     _fake_distributions(monkeypatch, ("torch", "2.11.0"))
     with pytest.raises(SystemExit) as exc:
         _full_argv(shim, ["uv", "--python-preference", "system", "pip", "sync", "r.txt"])
@@ -1323,8 +1320,7 @@ def test_the_uv_working_dir_env_moves_the_file_too(shim, monkeypatch, tmp_path):
 
 
 def test_the_directory_flag_wins_over_the_working_dir_env(shim, monkeypatch, tmp_path):
-    """uv gives the flag precedence, so honouring the variable instead would filter
-    and record the wrong file."""
+    """uv gives the flag precedence, so honouring the variable would filter the wrong file."""
     _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
     here, there = _working_dir_case(tmp_path)
     other = tmp_path / "other"
@@ -1340,8 +1336,7 @@ def test_the_directory_flag_wins_over_the_working_dir_env(shim, monkeypatch, tmp
 
 
 def test_a_nested_include_follows_uvs_working_directory(shim, monkeypatch, tmp_path):
-    """A nested `-r` is relative to the file that NAMES it, and that file now lives
-    in uv's directory rather than ours."""
+    """Nested `-r` paths resolve against the naming file, which now sits in uv's directory."""
     _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
     here, there = _working_dir_case(tmp_path)
     (there / "requirements.txt").write_text("-r nested.txt\nsnac\n", encoding = "utf-8")
@@ -1413,8 +1408,7 @@ def test_the_working_dir_env_also_finds_a_local_protected_project(shim, monkeypa
 
 
 def test_a_local_project_relative_to_the_cwd_is_still_classified(shim, monkeypatch, tmp_path):
-    """The ordinary no-directory case must keep working: pip never changes directory
-    and uv without --directory resolves from the cwd exactly as we do."""
+    """Without --directory, uv resolves from the cwd as we do; local projects still classify."""
     _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
     here = tmp_path / "here"
     here.mkdir()
@@ -1428,8 +1422,7 @@ def test_a_local_project_relative_to_the_cwd_is_still_classified(shim, monkeypat
 
 
 def test_an_unrelated_local_project_still_reaches_the_real_tool(shim, monkeypatch, tmp_path):
-    """Resolving from uv's directory must not start dropping things: a local project
-    that is not protected still has to be installed."""
+    """Unprotected local projects must still install when resolving from uv's directory."""
     _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
     here, there = tmp_path / "here", tmp_path / "there"
     here.mkdir()
@@ -1449,9 +1442,8 @@ def test_an_unrelated_local_project_still_reaches_the_real_tool(shim, monkeypatc
     ids = ["subdirectory", "unknown-fragment"],
 )
 def test_a_fragment_does_not_hide_a_local_protected_project(shim, monkeypatch, tmp_path, spec):
-    """The stat has to happen on the path alone. `#egg=` is recognised earlier, but
-    any other fragment reaches the directory lookup still attached, and leaving it on
-    makes the stat miss and forwards the project for replacement."""
+    """Stat the bare path: the egg fragment is stripped earlier, but other fragments stay attached
+    and make the stat miss, forwarding a protected project for replacement"""
     there = _shared_setup_1(monkeypatch, tmp_path)
 
     ran = _full_argv(shim, ["uv", "pip", "--directory", str(there), "install", "-e", spec])
@@ -1511,8 +1503,7 @@ def test_an_install_aimed_elsewhere_keeps_the_packages_it_asked_for(shim, monkey
     ],
 )
 def test_a_destination_environment_variable_redirects_too(shim, monkeypatch, var, value):
-    """pip honours PIP_<OPTION> for every option and uv documents --python as
-    [env: UV_PYTHON=], so the destination moves with nothing on the command line."""
+    """pip reads PIP_<OPTION> and uv reads UV_PYTHON, so the destination moves without a flag."""
     _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
     monkeypatch.setenv(var, value)
     tool = "uv" if var.startswith("UV_") else "pip"
@@ -1527,9 +1518,8 @@ def test_a_destination_environment_variable_redirects_too(shim, monkeypatch, var
 
 
 def test_a_sync_aimed_elsewhere_is_not_refused(shim, monkeypatch):
-    """The sync refusal exists because sync UNINSTALLS everything missing from the
-    file, stripping the baked stack. Pointed at another environment there is no baked
-    stack for it to strip."""
+    """The sync refusal exists because sync uninstalls everything missing from the file, stripping
+    the baked stack; aimed elsewhere there is no stack to strip."""
     _fake_distributions(monkeypatch, ("torch", "2.9.1+cu128"))
     ran = _full_argv(shim, ["uv", "pip", "sync", "--python", "/tmp/venv/bin/python", "r.txt"])
     assert ran is not None and "r.txt" in ran, f"a sync aimed elsewhere was refused: {ran}"
@@ -1786,9 +1776,8 @@ def test_an_uninspectable_target_source_is_refused(shim, monkeypatch, argv):
 
 
 def test_a_group_install_aimed_elsewhere_is_not_refused(shim, monkeypatch):
-    """Guard: the destination bypass runs first on purpose. A group installed into
-    another environment cannot touch the baked stack, so refusing it would break a
-    command that was never a threat."""
+    """The destination bypass runs first on purpose: a group installed into another environment
+    cannot touch the baked stack, so refusing it would block a harmless command."""
     _fake_distributions(monkeypatch, ("unsloth", "2026.6.9"))
     ran = _full_argv(shim, ["pip", "install", "--target", "/tmp/lib", "--group", "dev"])
     assert ran is not None and "--group" in ran, f"a harmless group install was refused: {ran}"

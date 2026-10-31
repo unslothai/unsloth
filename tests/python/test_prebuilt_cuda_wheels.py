@@ -92,8 +92,7 @@ class TestWorkflowAndResolverAgree:
         assert checked == 6
 
     def test_every_url_the_resolver_can_emit_is_a_published_cell(self):
-        """Whatever the probe reports, a URL names a cell the publish matrix builds and the release
-        carries: (platform, torch, interpreter, package). Anything else is a 404 in front of the
+        """Every URL the resolver emits must be a published cell, or it is a 404 in front of the
         fallback."""
         published = set()
         for platform in prebuilt_wheels.PLATFORMS:
@@ -310,8 +309,7 @@ class TestOverrideScope:
             is None
         )
 
-    # win_amd64, win_arm64 and linux_aarch64 are published too, for fewer cells; the windows and arm
-    # resolver tests own them.
+    # win_amd64, win_arm64 and linux_aarch64 are published too; their own tests cover them.
     @pytest.mark.parametrize("platform_tag", ["macosx_11_0_arm64", "linux_armv7l"])
     def test_no_wheel_for_an_unbuilt_platform(self, platform_tag):
         assert (
@@ -680,13 +678,11 @@ def workflow():
 
 class TestWorkflow:
     def test_dispatch_only(self, workflow):
-        """It signs binaries and writes a release under our identity. A pull_request or push
-        trigger would put both behind whatever a fork can propose."""
+        """Signs and releases as us, so pull_request or push triggers would let forks reach it."""
         assert set(triggers(workflow)) == {"workflow_dispatch"}
 
     def test_publishing_is_opt_in(self, workflow):
-        """A run that only builds, smoke tests and signs is the default, so the expensive and
-        irreversible half has to be asked for."""
+        """Publishing is opt-in, since the expensive, irreversible half must be asked for."""
         inputs = triggers(workflow)["workflow_dispatch"]["inputs"]
         assert inputs["publish"]["default"] is False
         assert inputs["gpu_smoke"]["default"] is False
@@ -721,8 +717,7 @@ class TestWorkflow:
         assert "pip install" not in body
 
     def test_it_never_becomes_the_latest_release(self, workflow):
-        """The repository's latest release is what the installers and the README resolve to.
-        A wheelhouse tag must not take it."""
+        """Installers resolve the latest release, which a wheelhouse tag must not take."""
         body = json.dumps(workflow["jobs"]["publish"]["steps"])
         assert body.count("--latest=false") == 3
         assert "gh release create" in body
@@ -742,8 +737,7 @@ class TestWorkflow:
         assert any(u.startswith("actions/attest-build-provenance@") for u in uses)
 
     def test_the_signature_is_verified_in_the_same_job(self, workflow):
-        """A bundle nobody checked is a bundle nobody can rely on, and it must verify against
-        the identity the release notes tell people to use."""
+        """The bundle must verify against the identity the release notes tell people to use."""
         step = next(
             step
             for step in workflow["jobs"]["sign"]["steps"]
@@ -806,8 +800,7 @@ class TestWorkflow:
         assert tuple(workflow["jobs"]["gpu-smoke"]["runs-on"]) in existing
 
     def test_the_build_cannot_outlive_githubs_job_limit(self, workflow):
-        """A job that hits the 6 h cap is reported as cancelled with no logs. Both the step's
-        own timeout and the job's have to sit below it."""
+        """A job at the 6 h cap is reported cancelled with no logs, so keep timeouts below it."""
         assert workflow["jobs"]["build"]["timeout-minutes"] < 360
         for spec in prebuilt_wheels.SPECS.values():
             minutes = int(spec["build_timeout"].removesuffix("m"))

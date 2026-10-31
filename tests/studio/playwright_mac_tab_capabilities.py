@@ -93,8 +93,7 @@ def fail(m: str) -> None:
 
 
 def _transport_kind(err: object) -> str:
-    """Only ECONNREFUSED proves nothing is bound; any other failure is a stalled listener, not a
-    dead one."""
+    """Only ECONNREFUSED proves nothing is bound; any other failure means a stalled listener."""
     if isinstance(err, ConnectionRefusedError):
         return "refused"
     return "timeout"

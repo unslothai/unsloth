@@ -216,9 +216,8 @@ def test_attention_only_list_prefers_original_when_in_scope():
 
 
 def test_unfused_expert_parameters_resolve_both_leaves():
-    """NemotronH keeps the expert projections unfused as separate 3D Parameters, so
-    up_proj must resolve alongside down_proj instead of being silently dropped
-    (unsloth#4476)."""
+    """NemotronH keeps expert projections unfused as separate 3D Parameters, so up_proj must resolve
+    alongside down_proj rather than be silently dropped (unsloth#4476)."""
     import torch
     from unsloth.models._utils import get_moe_target_parameters
 
@@ -406,9 +405,8 @@ def test_does_not_warn_when_the_unfused_fallback_resolved_the_experts():
 
 
 def test_does_not_warn_when_an_ordinary_suffix_match_reaches_the_experts():
-    """transformers 4.x builds Qwen3-MoE experts as per-expert submodules. PEFT attaches
-    to them by leaf name, so a warning here would be a false alarm on a model that trains
-    its experts correctly. This is what keeps the fix identical on 4.57.6 and 5.x."""
+    """transformers 4.x Qwen3-MoE per-expert submodules get LoRA by leaf name, so a warning there
+    would be a false alarm; this keeps the fix identical on 4.57.6 and 5.x."""
     result, records = _warnings_from(_per_expert_submodule_moe_model(), ALL_MLP_LEAVES)
     assert result is None
     assert records == []

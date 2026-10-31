@@ -366,10 +366,8 @@ def test_an_empty_handoff_is_ignored(tmp_path):
     "var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
 )
 def test_a_mask_suppresses_the_handoff(tmp_path, var):
-    """The mask selects the unrecognized discrete card, so the inference above deliberately
-    resolves nothing rather than borrowing the 780M's arch. The installer scans without the mask
-    and forwards that very arch, and taking it would install for a GPU the mask hides from the
-    runtime entirely (ROCR filters below HIP, so masked devices never reach enumeration)."""
+    """Under a mask, resolve no arch rather than borrow the 780M's: the installer's unmasked arch
+    would target a GPU the runtime hides (ROCR filters below HIP)."""
     # RX 580 (gfx803) has no routed arch; the RX 5700 XT now routes.
     adapters = [(_R780M, 0), ("AMD Radeon RX 580", 0)]
     assert _run(tmp_path, adapters, env = {var: "1", HANDOFF: "gfx1103"})["arch"] is None
@@ -451,9 +449,8 @@ def _run_installer_scan(
 
 @requires_pwsh
 def test_the_installer_skips_a_disabled_adapter(tmp_path):
-    """A disabled Radeon listed first used to win here, and a mapped arch installs ROCm wheels
-    right there, so the dead card got the wheels and the live unsupported one went to nothing.
-    Setup filters this adapter out, so forwarding its arch also made the two disagree."""
+    """Skip disabled adapters as setup does: a dead Radeon listed first would otherwise get the ROCm
+    wheels while the live unsupported card gets none."""
     out = _run_installer_scan(tmp_path, [("AMD Radeon RX 9070 XT", 22), ("AMD Radeon RX 580", 0)])
     assert out["label"] == "AMD Radeon RX 580"
     assert out["arch"] is None, "the active card is unsupported, so this host belongs on CPU"
@@ -740,9 +737,8 @@ def _run_handoff_lifecycle(
 def test_the_caller_environment_survives_the_setup_call(
     tmp_path, arch, inherited, fails, caller_env
 ):
-    """`irm ... | iex` runs install.ps1 in the caller's own shell, so anything set for the child
-    has to be put back -- on the failure path too, which is the one that rolls back and retries,
-    and whether or not the caller had the variable to begin with."""
+    """install.ps1 runs in the caller's own shell via irm | iex, so variables set for the child must
+    be restored on success and failure, even if unset before."""
     out = _run_handoff_lifecycle(
         tmp_path,
         arch = arch,
@@ -932,14 +928,9 @@ def test_a_real_llama_cpp_dir_is_handed_over_and_then_put_back(tmp_path, caller_
 def test_only_this_runs_arch_is_handed_to_the_child(
     tmp_path, arch, inherited, expected, caller_env
 ):
-    """A value inherited from an outer process is not this run's answer, so it is cleared rather
-    than forwarded as though the scan had produced it.
-
-    Parametrised over the caller patterns, not left on the helper's default. The default is
-    `all`, which sets every caller variable, and a clear that wrongly keyed itself off some
-    other variable's $hadPrevious flag would then find that flag true and clear anyway. The
-    empty-caller case is the one that catches it, and running only the default lost it.
-    """
+    """Inherited values are cleared, not forwarded as this run's answer; parametrise over caller
+    patterns, since the default all hides a clear keyed off another $hadPrevious flag, which only
+    the empty-caller pattern catches."""
     out = _run_handoff_lifecycle(
         tmp_path, arch = arch, inherited = inherited, fails = False, caller_env = caller_env
     )

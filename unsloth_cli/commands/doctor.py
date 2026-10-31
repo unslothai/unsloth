@@ -174,12 +174,9 @@ def _nvml_int(pynvml, name, default):
 
 
 def nvml_topology(pynvml, gpus: List[dict]):
-    """({(a, b): {"level": "PHB", "nvlink": bool, "p2p_read": bool}} keyed by torch index, error).
-
-    Handles are looked up by PCI bus id (else device UUID), since NVML numbers GPUs in
-    PCI order and ignores CUDA_VISIBLE_DEVICES / CUDA_DEVICE_ORDER, which renumber them.
-    A query a virtualised GPU refuses degrades that field instead of the whole table.
-    """
+    """Returns ({(a, b): {level: PHB, nvlink: bool, p2p_read: bool}} keyed by torch index, error);
+    handles by PCI bus id, else UUID, since NVML numbers GPUs in PCI order and ignores
+    CUDA_VISIBLE_DEVICES and CUDA_DEVICE_ORDER; a refused query degrades only its field."""
     if pynvml is None:
         return None, "nvidia-ml-py is not installed"
     if len(gpus) < 2 or any(g["pci"] is None and not g.get("uuid") for g in gpus):
@@ -325,11 +322,8 @@ def allreduce_smoke(
     extra_env: Optional[dict] = None,
     numel: int = 16 * 1024 * 1024,
 ) -> dict:
-    """Run one all_reduce over `world` local ranks in fresh processes.
-
-    Separate interpreters rather than threads: a hung NCCL communicator can only be
-    recovered by killing its process, and the doctor must answer instead of hanging.
-    """
+    """Run one all_reduce over world local ranks in fresh processes: a hung NCCL communicator only
+    recovers by killing its process, so the doctor must not hang."""
     env = dict(os.environ)
     env.update(
         MASTER_ADDR = "127.0.0.1",
@@ -387,8 +381,7 @@ def allreduce_smoke(
             f.seek(0)
             outputs.append(f.read())
     finally:
-        # Ctrl-C on a hung run must not leave ranks holding GPU contexts behind. Bounded:
-        # a rank stuck in an uninterruptible driver call may never be reaped.
+        # Ctrl-C must not orphan GPU ranks; reaping is bounded, as a stuck rank may survive.
         for q in procs:
             if q.poll() is None:
                 q.kill()

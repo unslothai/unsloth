@@ -417,8 +417,7 @@ def _block_flag(
 @pytest.mark.parametrize("in_block,leaves", [(True, True), (True, None), (False, True)])
 def test_packed_rows_leave_a_compiled_block_for_the_eager_wrapper(monkeypatch, in_block, leaves):
     """Inside an Unsloth compiled block a packed call the predicate sends out runs the wrapper
-    eagerly (one graph break). A CPU row (real predicate) and a user's own compile (flag off) keep
-    the wrapped sdpa in the graph."""
+    eagerly (one graph break); CPU rows and a user's own compile keep sdpa in the graph."""
     hpa._ORIG_SDPA[0] = _plain_sdpa
     monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
     _block_flag(monkeypatch, in_block, leaves)

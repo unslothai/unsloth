@@ -181,9 +181,8 @@ def _verdict(**kw):
 
 
 def test_no_evidence_at_all_is_a_failure_and_not_a_pass():
-    """The asymmetry this whole module exists for. A CPU fallback returns
-    text just like the GPU path, so an unanswerable question has not been
-    answered in the affirmative."""
+    """No evidence at all must fail, not pass: a CPU fallback returns text just like the GPU path,
+    so an unanswerable question was never answered in the affirmative."""
     verdict = _verdict()
     assert not verdict["passed"]
     assert any("no probe could show" in f for f in verdict["failures"])
@@ -897,9 +896,8 @@ def test_the_reserve_leaves_ci_the_fifty_hours_it_is_allowed():
 
 
 def test_the_budget_hours_flag_covers_the_reaper_window():
-    """budget-hours is the worst case one invocation can cost. Nothing waits on
-    the kernel now, so a kernel that ignores its own timeout is left to the
-    collector's reaper window rather than to the kernel ceiling."""
+    """budget-hours is the worst case one invocation can cost and must cover the collector's reaper
+    window, since nothing waits on a kernel that ignores --kernel-timeout-sec."""
     source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--kernel-timeout-sec 4200" in source
     ceiling_hours = 4200 / 3600
@@ -1334,9 +1332,8 @@ def test_a_non_cuda_runtime_line_is_not_a_cuda_install():
 
 
 def test_a_future_cuda_major_is_recognised():
-    """Matching a fixed set of names fails closed on the next CUDA major,
-    reporting a working install as not-CUDA -- the same failure this fix is
-    for. The match is on the runtime line's shape instead."""
+    """Match the CUDA runtime line's shape, not a fixed list of names: a fixed set fails closed on
+    the next CUDA major and reports a working install as not-CUDA."""
     module = _load_payload()
     assert module.is_cuda_install("cuda14")
     assert module.is_cuda_install("app-bX-linux-x64-cuda99-portable.tar.gz")
@@ -1541,9 +1538,8 @@ def test_a_nested_executed_notebook_is_read_too(tmp_path):
 
 
 def test_evidence_that_is_json_but_not_a_notebook_does_not_raise(tmp_path):
-    """`[]`, a string cell, a numeric output: all valid JSON, all seen back from
-    a kernel. The reader used to raise on the first `.get`, failing the job
-    after its verdict was already posted."""
+    """Evidence that is valid JSON but not a notebook, such as [], a string cell or a numeric
+    output, must not raise, since a raise after the verdict was posted fails the job."""
     evidence = tmp_path / "evidence" / "unsloth-t4-ci-1234"
     evidence.mkdir(parents = True)
     (evidence / "a_output.ipynb").write_text("[]", encoding = "utf-8")
@@ -1579,9 +1575,8 @@ def test_the_evidence_unpack_is_best_effort_on_the_gpu_job():
 
 
 def test_a_nan_loss_is_not_a_trained_step():
-    """A T4 has no bf16, so this trains in fp16, and an fp16 run that diverges
-    logs NaN for every step while still reaching `completed` and still saving
-    an adapter. Counting mere list occupancy scored that as a full run."""
+    """A T4 has no bf16, so training runs in fp16; a diverged fp16 run logs NaN every step yet still
+    completes and saves an adapter, so NaN losses are not trained steps."""
     status = {"metric_history": {"loss": [float("nan")] * 8}}
     assert studio_client.trained_steps(status) == 0
     assert len(studio_client.nonfinite_losses(status)) == 8
@@ -1600,9 +1595,8 @@ def test_real_losses_still_count():
 
 
 def test_studio_is_launched_from_the_interpreter_running_the_payload(tmp_path, monkeypatch):
-    """The payload runs under the Unsloth venv, whose bin is NOT on PATH. A
-    global `unsloth` anywhere on PATH would otherwise win shutil.which() and
-    the run would measure some other install instead of the checkout."""
+    """Studio must be launched from the interpreter running the payload, since the venv bin is not
+    on PATH and a global unsloth on PATH would win shutil.which()."""
     module = _load_payload()
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents = True)
@@ -1641,9 +1635,8 @@ def test_without_a_console_script_the_same_interpreter_runs_the_module(tmp_path,
 
 
 def test_the_payload_never_reads_a_pid_the_status_response_does_not_declare():
-    """InferenceStatusResponse declares no llama_server_pid and no pid, and
-    FastAPI drops what the response model does not declare, so that lookup was
-    always None and the process-level VRAM probe could never fire."""
+    """InferenceStatusResponse declares neither llama_server_pid nor pid, and FastAPI drops
+    undeclared fields, so reading them was always None and the process VRAM probe never fired."""
     import re
 
     model_src = (REPO_ROOT / "studio" / "backend" / "models" / "inference.py").read_text(
@@ -1846,9 +1839,8 @@ def test_an_export_that_outlives_its_http_request_is_still_polled(tmp_path, monk
 
 
 def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
-    """The fallback used to rebuild with the report ALONE while its message
-    said it was shipping logs, discarding studio.log and the driver log in
-    exactly the failing runs that need them."""
+    """The size-capped fallback bundle must still carry studio.log and the driver log, not just the
+    report, since those logs matter most in failing runs."""
     module = _load_payload()
     session = _session(module, tmp_path)
     session.outdir = tmp_path / "out"
@@ -1876,9 +1868,8 @@ def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
 
 
 def test_a_crash_while_packaging_the_evidence_does_not_publish_a_pass(tmp_path, monkeypatch):
-    """extract_reports keeps the FIRST report per label|model, so printing a
-    pass and then crashing published the pass and left the correction
-    unread."""
+    """extract_reports keeps the first report per label|model, so a pass printed before a crash
+    would be published while the later correction goes unread."""
     module = _load_payload()
     session = _session(
         module,
@@ -2128,9 +2119,8 @@ def test_the_opt_in_label_can_actually_start_the_workflow():
 
 
 def test_an_unrelated_label_cannot_start_a_seventy_minute_kaggle_run():
-    """GitHub has no per-label event filter, so `labeled` fires for every label
-    added -- and the gate reads the whole label list, so once the opt-in label
-    sits on the pull request it would call every one of those events forced."""
+    """GitHub has no per-label event filter, so labeled fires for every label while the gate reads
+    the whole label list; the job if must screen out unrelated labels."""
     condition = " ".join(_workflow()["jobs"]["gate"]["if"].split())
     assert "github.event.action != 'labeled'" in condition
     assert "github.event.label.name == 'kaggle-studio-gpu-ci'" in condition
@@ -2184,9 +2174,8 @@ def test_load_model_does_not_inherit_the_previous_loads_offload_line(tmp_path, m
 
 
 def test_a_box_without_nvidia_smi_reports_no_gpu_rather_than_crashing(tmp_path, monkeypatch):
-    """environment() runs inside finish(), on every path including the
-    preflight one, so a FileNotFoundError there ended the run with a traceback
-    and no report at all."""
+    """environment() runs inside finish() on every path, so a missing nvidia-smi (FileNotFoundError)
+    must read as no GPU, not end the run with no report at all."""
     module = _load_payload()
     monkeypatch.setenv("PATH", str(tmp_path))
     assert module.gpu_inventory() == []
@@ -2349,9 +2338,8 @@ class TestTheListingNamesItsPids:
         assert gpu_assert.listed_pids("pid, used_gpu_memory\n\nnotapid, 5\n333, 10\n") == {333}
 
     def test_the_sample_is_taken_once(self):
-        """Two nvidia-smi calls would describe two different moments, so the attributed
-        mapping and the listed pids could disagree about which processes exist.
-        """
+        """The compute-apps listing is sampled once: two nvidia-smi calls would describe two
+        moments, so the attributed mapping and listed pids could disagree."""
         body = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
         assert body.count("nvidia_compute_apps_listing()") >= 3
         assert "apps_before = attributed_apps(_listing_before)" in body

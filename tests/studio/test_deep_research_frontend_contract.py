@@ -180,10 +180,8 @@ def test_research_presentation_is_integrated() -> None:
     assert "<ResearchMessage />" in thread
     assert "if (researchRunId) return null" in thread
     assert "!researchRunId &&" in thread
-    # A research message has no Delete. The hook reports `hidden` for research messages, and every
-    # component that renders Delete from it renders nothing when hidden. That component has been a
-    # bar button, a More-menu item (#12735) and a bar button again (#13615), so it is found by the
-    # hook it calls rather than by its name.
+    # Research messages have no Delete, so the hook reports hidden; the Delete component moved
+    # between bar, More-menu (ref 12735) and bar (ref 13615), so it is found via its hook.
     delete_hook = thread.split("function useDeleteMessage()", 1)[1].split("\n}\n", 1)[0]
     assert re.search(
         r"hidden:\s*Boolean\(\s*researchRunId\s*\|\|\s*ownsResearchMessage\s*\)", delete_hook
@@ -278,12 +276,9 @@ def test_research_presentation_is_integrated() -> None:
         1
     ].split("setActiveThreadId:", 1)[0]
     assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY" not in checkpoint_update
-    # #8686 put a chat-scoped override in front of the global read here, so the literal `const permissionMode =
-    # loadPermissionMode();` this used to pin is gone. The read itself is the contract, and it is still per call:
-    # toggling deep research re-resolves the permission level, taking the chat's own level when it has one and the
-    # persisted global otherwise, rather than reusing a stale value. Scoped to the setter, because over the whole file
-    # this would also match the initial-state constant, which is a different property and would keep passing if this
-    # read were dropped.
+    # Since ref 8686 a chat-scoped override precedes the global read, so the read must stay per
+    # call: toggling deep research re-resolves permission from the chat or the persisted global;
+    # scoped to the setter because a whole-file match would hit the initial-state constant.
     deep_research_update = store.split("setDeepResearchEnabled: (deepResearchEnabled) =>", 1)[
         1
     ].split("setResearchWebsitePolicy:", 1)[0]

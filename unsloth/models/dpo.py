@@ -109,9 +109,8 @@ def _output_head(trainer, model):
     # A LoRA / modules_to_save head computes more than weight @ h; leave it to its own forward.
     if head is None or hasattr(head, "base_layer") or hasattr(head, "modules_to_save"):
         return None, None
-    # The kernel reads weight / bias directly: only a plain, unhooked nn.Linear is exactly F.linear(h, W, b).
-    # The head module is never called, so its module backward hooks (which may rewrite grad_input)
-    # would never fire either. Weight tensor / AccumulateGrad hooks still see the kernel's dW.
+    # Only a plain unhooked nn.Linear is exactly F.linear(h, W, b); the kernel skips the head so its
+    # module backward hooks never run, but weight or AccumulateGrad hooks still see the kernel dW
     if (
         type(head) is not torch.nn.Linear
         or hasattr(head, "_hf_hook")
@@ -664,12 +663,9 @@ def unsloth_fused_dpo_compute_loss_v1(
     return_outputs = False,
     trl_semantics = None,
 ):
-    """TRL 1.x ``DPOTrainer._compute_loss`` for text-only decoder models, scored from hidden
-    states in row chunks. Returns ``None`` (run TRL's own) whenever the inputs leave that case.
-
-    ``trl_semantics`` is what rl_replacements read from the installed TRL's source: legacy_fdiv
-    (pre-1.10 f-divergence scores), entropy_mean (pre-1.3 entropy metric) and tp_size (1.13+
-    divides the token count by the tensor-parallel size)."""
+    """Chunked TRL 1.x DPO loss for text-only decoders; None means run the TRL loss instead;
+    trl_semantics mirrors installed TRL quirks: legacy_fdiv pre-1.10, entropy_mean pre-1.3,
+    tp_size 1.13 and newer"""
     if not _dpo_v1_supported(trainer, model, inputs, return_outputs, trl_semantics):
         return None
     heads = _dpo_v1_heads(trainer, model)

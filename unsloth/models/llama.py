@@ -1254,10 +1254,9 @@ __DTYPE_MAP = {
 
 
 def _is_left_padded(attention_mask):
-    # Dropping the training mask is exact only for right padding, where causal attention never
-    # reaches the trailing pads. A label-less forward (custom losses, rerankers) zeroes pad embeddings,
-    # so attending to left pads sends gradients to NaN (#3705). Checked only then: it syncs, so read
-    # one column; a left-padded row always starts with a pad.
+    # Dropping the mask is exact only for right padding; in label-less forwards (custom losses,
+    # rerankers) left pads, whose embeddings are zeroed, send NaN gradients (issue 3705); the check
+    # syncs, so it reads column 0 only, where a left-padded row always starts with a pad.
     if attention_mask.dim() != 2 or attention_mask.shape[-1] < 2:
         return False
     return not bool(attention_mask[:, 0].all())
@@ -1594,10 +1593,9 @@ def LlamaModel_fast_forward(
             and isinstance(self.rotary_emb, LongRopeRotaryEmbedding)
             and rope_len <= original < rope_rows
         ):
-            # transformers' longrope_frequency_update picks the factors from max(position_ids) + 1, a host
-            # sync it pays too; other models and LongRoPE without position_ids stay sync-free.
-            # Also under compile (one graph break): an in-graph choice would rebuild full-size hybrid
-            # tables every forward, and this forward is not compiled by Unsloth.
+            # Mirrors transformers longrope_frequency_update (factors from max(position_ids) + 1, a
+            # host sync); other models and LongRoPE without position_ids stay sync-free; in-graph
+            # choice under compile would rebuild tables each forward.
             rope_len = max(rope_len, int(position_ids.max()) + 1)
         # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
         position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
@@ -2664,9 +2662,8 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         t = torch.arange(self.current_rope_size, device = inv_freq.device, dtype = torch.int64).float()
         t = self._apply_time_scaling(t)
 
-        # Rows are independent, so the build goes 32768 rows at a time into the output (bit-identical,
-        # the same elementwise ops): the fp32 temporaries no longer scale with the cache size (about
-        # 2 GiB at 1M rows in one shot).
+        # Rows are independent, so the build runs in 32768-row chunks (bit-identical), keeping fp32
+        # temporaries from scaling with cache size (about 2 GiB at 1M rows in one shot).
         rows = self._rope_build_chunk_rows
         cos = sin = None
         for start in range(0, max(seq_len, 1), rows):

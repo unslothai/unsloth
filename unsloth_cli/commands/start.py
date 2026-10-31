@@ -1833,11 +1833,8 @@ def _loaded_models_response(
     key: str,
     timeout = 30,
 ) -> dict:
-    """Raw listing of what this server has resident. Startup and key checks need no more.
-
-    /v1/models answers the same question but waits for disk and media discovery first,
-    which on a slow scan folder outlasts the deadline below.
-    """
+    """Raw listing of resident models, enough for startup and key checks; unlike /v1/models it skips
+    disk and media discovery, which can outlast the deadline on a slow scan folder."""
     try:
         answer = _http_json("GET", f"{base}/api/inference/loaded-models", key, timeout = timeout)
         if isinstance(answer.get("data"), list):
@@ -5933,8 +5930,7 @@ def _vibe_env(
     model: dict,
     request_body: Optional[dict] = None,
 ) -> dict:
-    """Vibe settings as VIBE_* env vars: that layer outranks user and project config.toml, so
-    nothing is written to the user's Vibe config."""
+    """VIBE_* env vars outrank config.toml, so the user's Vibe config is never written."""
     entry = {"name": model["id"], "provider": _VIBE_PROVIDER, "alias": _VIBE_MODEL_ALIAS}
     # Vibe sends its own temperature (0.2 by default) with every request.
     temperature = (request_body or {}).get("temperature")
@@ -6251,13 +6247,8 @@ def write_dsh_patch(
     path: Path,
     request_body: Optional[dict] = None,
 ) -> None:
-    """Write the dsh loader patch that points the booted profile at Unsloth.
-
-    dsh 0.1.7 dropped `settings.yaml`: it now imports a leftover one into the profile only
-    after the first boot has settled, so that boot still runs on the DeepSeek default. A
-    `--patch` overlay is read at boot on every dsh release this supports, and the file is
-    Unsloth's own, so it is rewritten whole rather than merged.
-    """
+    """dsh 0.1.7 dropped settings.yaml, which only applies after a first boot still on the DeepSeek
+    default; the --patch overlay is read at boot and rewritten whole, as it is Unsloth's own."""
     import yaml
 
     model_entry = {"id": model["id"]}
@@ -8353,8 +8344,7 @@ def vibe(
     # Vibe keeps its own home; the env layer pins provider and model above its config files.
     request_body = server_options.request_body()
     if "temperature" not in request_body:
-        # Vibe always sends a temperature, which the server honours over the model's
-        # recommended one, so pass the recommendation along explicitly.
+        # Vibe always sends a temperature that beats the model's recommendation; pass that on.
         status = _inference_status(base, key, entry["id"])
         recommended = (status.get("inference") or {}).get("temperature")
         if recommended is not None and any(

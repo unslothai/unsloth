@@ -29,9 +29,8 @@ class _Result:
 
 
 def _posix(monkeypatch, tmp_path):
-    """POSIX refresh with no checkout in sight, the shape of a wheel install. The tests run
-    from a clone, so _PACKAGE_ROOT would otherwise short-circuit every fetch.
-    """
+    """POSIX refresh with no checkout, the shape of a wheel install; tests run from a clone, so
+    _PACKAGE_ROOT would short-circuit every fetch."""
     studio = _studio()
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     monkeypatch.setattr(studio, "_PACKAGE_ROOT", tmp_path / "no-checkout-here")
@@ -321,11 +320,8 @@ def test_markers_do_not_pin_internal_function_names():
 
 
 def test_a_local_installer_that_cannot_be_launched_falls_back_to_the_network(monkeypatch, tmp_path):
-    """Pre-refactor the candidate loop caught the exec OSError and carried on.
-
-    A machine that cannot spawn bash for the checkout must still reach the fetch, or a
-    refactor that only reorganised the code would have stopped refreshing launchers.
-    """
+    """A checkout installer that cannot be launched must still fall through to the network fetch;
+    the old loop caught the exec OSError and carried on."""
     studio = _studio()
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -374,9 +370,8 @@ def test_building_the_opener_never_mutates_global_urllib(monkeypatch):
 
 
 def test_a_second_on_disk_installer_is_tried_before_the_network(monkeypatch, tmp_path):
-    """The old loop probed and launched in one pass, so an unlaunchable candidate left
-    the next one to try. Selecting only the first match would drop that second chance
-    and reach for the network while a usable installer sat on disk."""
+    """The old loop probed and launched in one pass, so an unlaunchable candidate left the next to
+    try before the network; picking only the first match would skip a usable on-disk installer."""
     studio = _studio()
     local = tmp_path / "local"
     pkg = tmp_path / "pkg"

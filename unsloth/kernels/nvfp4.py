@@ -498,10 +498,9 @@ def _fused_ok(
     )
 
 
-# Fused beats dense while the weight (N * K elements) gives the GPU enough tiles:
-# rows <= clamp(max(N * K // div, k_rows), floor, max_rows), k_rows = c // K forward, K // c for dX (c = 0: none).
-# capability: ((div, c, floor, max_rows) forward, (...) dX). Fitted to a bf16 sweep (rows 1 to 256, N * K 2.4M to 67M)
-# on A100, L4 and RTX PRO 6000; unmeasured GPUs stay dense.
+# Per compute capability, fused beats dense while N x K gives enough tiles: rows <= clamp(max((N x
+# K) floor-div div, k_rows), floor, max_rows) with k_rows = (c floor-div K) forward or (K floor-div
+# c) for dX (c = 0: none); fitted on bf16 sweeps, unmeasured GPUs stay dense.
 _FUSED_ROW_GATE = {
     (8, 0): ((3 << 17, 3 << 14, 32, 64), (3 << 17, 0, 16, 64)),
     (8, 9): ((3 << 16, 3 << 14, 32, 256), (3 << 15, 0, 32, 256)),

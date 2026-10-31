@@ -344,8 +344,7 @@ def FalconH1Attention_fast_forward_inference(
 
     if bsz == 1:
         Qn *= self.scalar
-        # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
-        # (comment 2153349963).
+        # Scale Q before Q @ K to avoid overflow; see ggerganov/llama.cpp 7805.
         A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         A = _gqa_decode_values(A, Vnn, Qn)

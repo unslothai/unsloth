@@ -193,9 +193,8 @@ def test_training_forward_matches_eval_and_backpropagates():
 
 
 def test_shims_reach_a_module_behind_an_accelerate_hook():
-    """A device_map load wraps forward with an accelerate hook that keeps the original as
-    `_old_forward`; the class-level shim alone is never called from `module(...)`. Kimi-K2.7-Code
-    on four GPUs still hit the gate's training assert this way."""
+    """A device_map load wraps forward in an accelerate hook keeping the original as _old_forward,
+    so a class-level shim is never called; Kimi-K2.7-Code on four GPUs hit the training assert."""
     from accelerate.hooks import ModelHook, add_hook_to_module
 
     torch.manual_seed(0)

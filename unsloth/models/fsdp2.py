@@ -432,8 +432,7 @@ def install_fsdp2_prepare_hook():
     def fsdp2_prepare_model(accelerator, model, *args, **kwargs):
         from .fsdp2_qlora import fsdp2_qlora_wrap
 
-        # The 4-bit fallback to uint8 storage first: float-packed weights would count as frozen
-        # 16-bit weights in the dtype unification.
+        # uint8 storage first: float-packed 4-bit weights would count as frozen 16-bit weights.
         with fsdp2_qlora_wrap(model, original) as qlora:
             fill_fsdp2_mixed_precision(accelerator)
             unify_trainable_dtypes(accelerator, model)

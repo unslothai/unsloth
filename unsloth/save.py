@@ -1722,8 +1722,7 @@ def unsloth_save_model(
         raise ValueError(
             "Unsloth: a model with a trained MTP head saves as safetensors; drop `safe_serialization = False`."
         )
-    # Already `True` from the normalisation at the top of this function; the caller having
-    # passed `None` is what keeps the downgrade below from undoing it.
+    # Already True above; the caller passing None keeps the downgrade below from undoing it.
     if _force_safe_serialization:
         save_pretrained_settings["safe_serialization"] = safe_serialization
 
@@ -6595,9 +6594,7 @@ def unsloth_generic_save(
             'written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
             "model and load it again) before `get_peft_model`."
         )
-    # The pruned base REAP saved is a local folder: an adapter pushed against it names a path no one
-    # else can load. In this process the marker says so (even if the folder moved since); after a
-    # reload from that folder, the provenance file reap_prune wrote there does.
+    # Pushing an adapter against a local pruned base names a path others cannot load.
     if (
         push_to_hub
         and isinstance(model, PeftModel)
@@ -6963,9 +6960,8 @@ def _fsdp2_merged_gather_options(model, args, kwargs):
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
-    # Packed 4-bit weights are staged on the CPU as they are gathered. merged_4bit merges with PEFT
-    # one layer at a time on the GPU the packed weight came from, so those layers' LoRA weights stay
-    # on that device; every other gathered weight goes to the CPU.
+    # Packed 4-bit weights are staged on CPU as gathered; merged_4bit keeps those layers LoRA
+    # weights on the packed weight GPU; every other gathered weight goes to CPU.
     offload_to_cpu = lambda self, args, kwargs: _fsdp2_merged_offload(self, args, kwargs),
     gather_options = _fsdp2_merged_gather_options,
 )

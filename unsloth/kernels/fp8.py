@@ -247,11 +247,9 @@ def _has_fbgemm_rowwise():
 
 
 def _scale_mul(x, s, dtype):
-    # fp16: an fp16 scale goes subnormal below 6.1e-5 and overflows above 65504, zeroing or inf-ing
-    # the weight, so multiply by the fp32 scale and round once. fp8 values are exact in fp16, and an
-    # fp16 out= makes TensorIterator compute in fp32 per element without fp32 temporaries. Dynamo
-    # refuses a strided out=; under compile Inductor fuses the fp32 expression instead (same bits).
-    # Other dtypes keep their dtype-native expression.
+    # fp16 scales go subnormal below 6.1e-5 and overflow above 65504, so multiply by the fp32 scale
+    # and round once; an fp16 out= computes fp32 per element (fp8 is exact in fp16), and Dynamo
+    # refuses a strided out= so Inductor fuses it under compile.
     if _scale_dequant_one_pass_ok(x, s, dtype):
         return _scale_dequant_one_pass(x, s, dtype)
     if dtype != torch.float16:
@@ -1121,16 +1119,9 @@ def _hip_bytes_dequant(device, out_dtype):
 
 
 def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
-    """True when triton here cannot compile this fp8 dtype, so kernels taking it must be avoided.
-
-    triton adds fp8e4nv only from sm89 on, so compare the full (major, minor): sm89 (4090,
-    L40S, L4) does support it. ROCm's capability is gfx-derived, so it is gated on the gfx arch
-    and triton version instead (_rocm_fp8e4nv_kernel_supported).
-
-    kernel_dtype is the fp8 dtype the kernel really handles. It defaults to the tensor's own,
-    which is right for a dequant, but a forward must pass e4m3fn: act_quant emits e4m3fn
-    whatever the weight dtype is, so e5m2 weights hit the same unsupported kernel.
-    """
+    """True when triton here cannot compile this fp8 dtype (fp8e4nv from sm89 on, compared as major
+    and minor; ROCm uses gfx arch and triton version); forwards pass kernel_dtype e4m3fn since
+    act_quant always emits it, even for e5m2 weights."""
     return (
         tensor.is_cuda
         and (tensor.dtype if kernel_dtype is None else kernel_dtype) == torch.float8_e4m3fn
@@ -1805,9 +1796,8 @@ def _e4m3fn_bytes_dequant(
 
 
 def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dtype):
-    """Blockwise fp8 weight dequant for any shape: triton when the weight tiles
-    evenly into block_size and this GPU can compile its fp8 dtype, else a
-    torch-native per-block scale expansion."""
+    """Blockwise fp8 weight dequant for any shape: triton when weight tiles evenly into block_size
+    and this GPU can compile the fp8 dtype, else a torch scale expansion."""
     m, n = weight.shape
     if weight_scale.dtype not in (torch.float32, torch.float16, torch.bfloat16):
         weight_scale = weight_scale.to(torch.float32)  # e.g. float8_e8m0fnu scales break triton

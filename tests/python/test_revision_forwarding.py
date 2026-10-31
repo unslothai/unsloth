@@ -94,8 +94,7 @@ def test_llama_loads_forward_revision(callee, minimum):
 
 
 def test_llama_does_not_pass_revision_to_load_vllm():
-    """load_vllm has no `revision` parameter and load_vllm_kwargs is not filtered,
-    so putting one in that dict is an unconditional TypeError on the vLLM path."""
+    """load_vllm takes no revision and kwargs are not filtered, so the key raises TypeError."""
     function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")
     dicts = [
         node.value
@@ -380,8 +379,7 @@ def test_the_vllm_drop_only_fires_when_vllm_owns_the_weights():
 
 
 def test_the_tokenizer_revision_is_resolved_by_the_loader():
-    """The tokenizer repo is not always the base model's: a PEFT load whose
-    tokenizer_name is the adapter keeps the caller's ref, which the base model cannot."""
+    """The tokenizer repo can be the PEFT adapter, so the caller's ref is kept for it."""
     tree = _tree(LOADER)
     helper = _function(tree, "_revision_for_tokenizer_repo")
     assert helper, "the loader must resolve the tokenizer repo's revision"
@@ -449,16 +447,14 @@ def test_an_adapter_ref_never_reaches_the_base_tokenizer():
 
 
 def test_an_adapter_hosted_tokenizer_keeps_the_callers_ref():
-    """An adapter is a separate repo with its own history, so the caller's ref still
-    names it even though the base model it sits on cannot answer to it."""
+    """An adapter is its own repo with its own history, so the caller's ref still names it."""
     gate = _load_tokenizer_gate()
     assert gate("org/adapter", "org/base", "org/adapter", "v2", None, True) == "v2"
 
 
 def test_a_remapped_plain_load_drops_the_tokenizer_pin_too():
-    """Naming the requested repo as tokenizer_name must not smuggle the ref back in: the
-    weights now come off a mirror's default branch, and a pinned tokenizer beside them is
-    the ref mismatch the gate exists to prevent. Only a PEFT adapter is a separate repo."""
+    """A remapped plain load drops the tokenizer pin even when tokenizer_name is the requested repo,
+    since its weights come off a default branch; only a PEFT adapter is a separate repo"""
     gate = _load_tokenizer_gate()
     assert gate("org/model", "unsloth/model-bnb-4bit", "org/model", "v2", None) is None
 
@@ -532,8 +528,7 @@ def test_a_direct_llama_call_still_pins_its_tokenizer():
     ],
 )
 def test_the_vllm_drop_clears_the_tokenizer_pin_too(path, cls, name):
-    """Clearing only the model pin left vLLM on the default branch while the tokenizer
-    stayed on the requested ref."""
+    """Clearing only the model pin left vLLM on the default branch; the tokenizer kept the ref."""
     function = _function(ast.parse(path.read_text(encoding = "utf-8")), "from_pretrained", cls)
     clears = [
         n
@@ -673,8 +668,7 @@ def test_the_fp8_quantizer_takes_the_requested_revision():
 
 
 def test_the_fp8_cache_name_is_revision_specific():
-    """A shared temp dir keyed only on the repo name would serve one ref's artifact to
-    another, and the artifact outlives the process that built it."""
+    """A temp dir keyed only on the repo name would serve one ref's artifact to another ref."""
     function = _function(_tree(LOADER_UTILS), "_offline_quantize_to_fp8")
     writes = [
         n
@@ -707,9 +701,7 @@ def test_both_loaders_hand_the_fp8_quantizer_the_revision():
 
 
 def test_the_vllm_drop_happens_before_the_config_probe():
-    """model_types, auto_model and the text-only decision all come off the probed config.
-    Reading it at a ref vLLM will not fetch picks the dispatch for a different model, so
-    the pin has to be gone before the probe, not just before the dispatch."""
+    """Config probe must run unpinned: reading it at a ref vLLM will not fetch picks the wrong dispatch."""
     function = _function(_tree(LOADER), "from_pretrained", "FastModel")
     drops = [
         n
@@ -760,9 +752,8 @@ def test_the_fp8_cache_key_survives_a_lossy_sanitization():
 
 
 def test_the_peft_probe_keeps_the_adapter_ref_under_vllm():
-    """The vLLM drop runs before is_peft is known. An adapter is loaded in-process by peft,
-    so zeroing its probe would read the default branch and either miss PEFT entirely or
-    resolve a different base model before attaching the pinned adapter."""
+    """The vLLM drop runs before is_peft is known, so the PEFT probe keeps the adapter ref; zeroing
+    it reads the default branch and may miss PEFT or resolve the wrong base model"""
     tree = _tree(LOADER)
     for class_name in ("FastLanguageModel", "FastModel"):
         function = _function(tree, "from_pretrained", class_name)
@@ -781,8 +772,7 @@ def test_the_peft_probe_keeps_the_adapter_ref_under_vllm():
 
 
 def test_both_loaders_drop_the_vllm_pin_before_the_probe():
-    """model_types picks the architecture class off the probed config, so reading it at a
-    ref vLLM will not fetch dispatches the wrong one."""
+    """The vLLM pin must go before the probe, or model_types picks the wrong architecture."""
     tree = _tree(LOADER)
     for class_name in ("FastLanguageModel", "FastModel"):
         function = _function(tree, "from_pretrained", class_name)

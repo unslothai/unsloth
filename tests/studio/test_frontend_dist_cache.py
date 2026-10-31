@@ -149,12 +149,8 @@ def test_the_key_covers_every_path_the_rebuild_check_reads(reader) -> None:
 
 
 def test_the_two_installers_agree_on_what_makes_a_dist_stale() -> None:
-    """One key serves both, so the two checks reading different paths would be a bug.
-
-    Neither script alone can reveal that. setup.sh could gain a path group, the key
-    could gain it too, both Linux tests would pass, and Windows would keep hitting a key
-    that no longer describes what setup.ps1 reads.
-    """
+    """studio/setup.sh and studio/setup.ps1 share one dist cache key, so they must read the same
+    staleness inputs or Windows keeps hitting a key that no longer describes its reads."""
     assert _staleness_inputs_sh() == _staleness_inputs_ps1(), (
         f"studio/setup.sh checks {sorted(_staleness_inputs_sh())} but studio/setup.ps1 "
         f"checks {sorted(_staleness_inputs_ps1())}. They share one cache key, so the "

@@ -251,10 +251,9 @@ def _bias_router_model(model_type):
 
 @pytest.mark.parametrize("model_type", ["minimax_m2", "hy_v3", "lfm2_moe"])
 def test_sigmoid_correction_bias_routers_route_naturally_with_a_warning(replay, model_type):
-    # MiniMax-M2 / HY-V3: TopKRouter.forward(hidden_states, e_score_correction_bias), the bias a
-    # buffer of the parent MoE block; LFM2-MoE: forward(hidden_states, expert_bias = None). All three
-    # take sigmoid(logits) top-k weights, which no zoo replay formula reproduces: priming must reach
-    # the router (no TypeError), then take the hooks off and say so.
+    # MiniMax-M2 and HY-V3 (TopKRouter.forward takes e_score_correction_bias) and LFM2-MoE
+    # (expert_bias) use sigmoid top-k weights no zoo replay formula reproduces; priming must reach
+    # the router, then hooks come off with a warning.
     model = _bias_router_model(model_type)
     routers = [m for m in model.modules() if "TopKRouter" in type(m).__name__]
     if not routers:

@@ -168,9 +168,8 @@ def test_each_call_uses_a_fresh_isolated_subdirectory(tmp_path, monkeypatch):
 
 
 def test_sentencepiece_scratch_dir_is_reclaimed_once_the_tokenizer_is_gone(tmp_path, monkeypatch):
-    """The scratch dir must live as long as the returned tokenizer (its vocab_file
-    points there), then be reclaimed when the tokenizer is garbage collected.
-    """
+    """The scratch dir must outlive the returned tokenizer, whose vocab_file points into it, and be
+    reclaimed once the tokenizer is garbage collected."""
     loaded = _stub_auto_tokenizer(monkeypatch)
     old, new = _tokenizers()
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
@@ -240,9 +239,8 @@ def test_source_vocab_outside_the_work_directory_is_not_disturbed(tmp_path, monk
 
 
 def test_swap_mapping_swaps_both_pieces_without_duplicating(tmp_path, monkeypatch):
-    """When the caller swaps eos and stop_word in the fast JSON it must pass both
-    directions here; a one-way mapping would leave two stop_word pieces and no eos.
-    """
+    """A swap of eos and stop_word in the fast JSON must map both directions; a one-way mapping
+    would leave two stop_word pieces and no eos."""
     loaded = _stub_auto_tokenizer(monkeypatch)
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
 
@@ -282,9 +280,8 @@ def test_only_applied_mappings_are_patched(tmp_path, monkeypatch):
 
 
 def test_a_scratch_directory_created_by_another_process_is_reused(tmp_path, monkeypatch):
-    """Two processes sharing a working directory both see the scratch dir missing; the
-    second makedirs must not raise. Simulated by reporting the directory absent after
-    another process has already created it."""
+    """Two processes sharing a working directory can both see the scratch dir missing, so the second
+    makedirs must not raise; simulated by reporting it absent after creation."""
     import unsloth.tokenizer_utils as tokenizer_utils
 
     _stub_auto_tokenizer(monkeypatch)

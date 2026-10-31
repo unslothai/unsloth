@@ -458,9 +458,7 @@ def run_keystroke_search(page) -> None:
     toggle = page.locator(f"{PANEL} button[aria-pressed]")
     click_forced(toggle, timeout = 15000)
     until(page, "el => el?.getAttribute('aria-pressed') === 'true'", arg = toggle.element_handle())
-    # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
-    # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
-    # runner. Same read as isMacPlatform(), which is what the app itself goes by.
+    # bindingFromEvent drops Meta chords off macOS, so a hardcoded Meta records nothing on Linux.
     mac = page.evaluate(
         "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
     )

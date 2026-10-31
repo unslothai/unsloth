@@ -49,8 +49,7 @@ def _ps(
     timeout = 120,
     **kwargs,
 ):
-    """Use run_pwsh, not subprocess.run: xdist workers would share one PowerShell startup cache and
-    crash."""
+    """Use run_pwsh, not subprocess.run: xdist workers would share one PowerShell startup cache and crash"""
     return run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,

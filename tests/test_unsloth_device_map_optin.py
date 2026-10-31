@@ -394,9 +394,8 @@ def test_an_infeasible_plan_is_still_raised_for_the_balanced_name():
 
 
 def test_the_default_device_map_still_resolves_to_the_plain_sentinel():
-    """An omitted device_map becomes the planner, and its decline has always been
-    "sequential" -- which is also what an omitted device_map got before planning existed.
-    Widening that to "balanced" would change what every single-card caller loads."""
+    """An omitted device_map resolves to the planner, whose decline stays sequential as it was
+    before planning existed; widening that to balanced would change single-card loads."""
     ns = _load()
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "unsloth"
 
@@ -420,9 +419,8 @@ def test_the_plan_is_returned_and_the_model_name_reaches_the_planner():
 
 
 def test_free_memory_is_planned_against_not_total():
-    """Two 16 GB cards with a CUDA context already resident have far less than 16 GB to
-    give. Planning against total is what made the notebook's first attempt OOM
-    (unsloth-zoo#1048)."""
+    """Planning against total memory OOMed the notebook's first attempt (unsloth-zoo#1048): a
+    resident CUDA context leaves far less than 16 GB free on each 16 GB card."""
     seen = {}
     ns = _load(
         free = {0: 4 * 2**30, 1: 15 * 2**30},

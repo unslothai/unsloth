@@ -1542,12 +1542,9 @@ def test_zero3_partitioned_training_keeps_the_stock_forward(monkeypatch):
 
 
 def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
-    """A capture hook inside the block appends to an empty scratch list on every call.
-
-    Before: the hook appended to the collector's list and Dynamo guarded on its length (the layer
-    index), so each of 10 layers compiled its own graph. Now <= 2 graphs (static, then dynamic) across
-    10 layers at 10 sequence lengths, and the collected logits match the stock forward in order.
-    """
+    """A capture hook appends to an empty scratch list per call, so Dynamo does not guard on the
+    collector's length, which compiled one graph per layer; now at most 2 graphs across 10 layers
+    and 10 lengths, with logits matching the stock forward."""
     output_capturing = pytest.importorskip("transformers.utils.output_capturing")
     misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
     if not hasattr(misc, "output_capture_scratch"):

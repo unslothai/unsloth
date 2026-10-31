@@ -59,10 +59,8 @@ _LEAF_TYPES = (
 class FSDP2Config:
     param_dtype: Optional[torch.dtype] = None  # None = model compute dtype (bf16; fp16 on T4)
     reduce_dtype: torch.dtype = torch.float32
-    # None = auto: when the whole model fits on one GPU (fsdp2_perf.plan_fsdp2_layout), frozen weights stay
-    # replicated (never gathered), only trainable ones are sharded, kept gathered from forward to backward
-    # (False) with next-block prefetch, and a small trainable set (LoRA) is one root unit; otherwise every
-    # block reshards after forward (True). An explicit bool / int is used as is. Last block always False.
+    # None = auto: fit-on-one-GPU models keep frozen weights replicated; otherwise reshard every
+    # block but the last.
     reshard_after_forward: Optional[Union[bool, int]] = None
     cpu_offload: bool = False  # CPUOffloadPolicy
     mesh: Optional[object] = None  # DeviceMesh; None = 1-D over WORLD_SIZE
@@ -830,9 +828,8 @@ def _resolve_param_dtype(model, config):
     if compute == torch.float16 and any(
         p.requires_grad and p.dtype == torch.float32 for p in model.parameters()
     ):
-        # float16 gathers of float32 masters move the embedding / norm / lm_head backward into
-        # float16, where scaled gradients overflow and the GradScaler skips steps one GPU takes;
-        # gather the masters as they are and let autocast cast like one GPU does.
+        # Gather fp32 masters as they are: a float16 gather overflows scaled grads and GradScaler
+        # skips steps.
         return None
     return compute
 
@@ -1750,9 +1747,8 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         and param_dtype in (torch.bfloat16, torch.float16)
         and _all_trainable_float32(model)
     ):
-        # Fit layout: FSDP2 manages only trainable parameters. One GPU keeps float32 masters (LoRA) and
-        # lets autocast cast them at each op; a 16-bit gather casts them first, which moved Gemma4's step-0
-        # grad norm 0.2% off 1 GPU (A/A 0.01%). Gather them as they are; the 4-bit storage stays 16-bit.
+        # Fit layout: only trainable params are sharded; gather float32 LoRA masters as they are (a
+        # 16-bit gather moves grad norms off one GPU); the 4-bit storage stays 16-bit.
         gather_dtype = None
         mp_policy = MixedPrecisionPolicy(param_dtype = None, reduce_dtype = config.reduce_dtype)
     if not units and not layout.root_only:
@@ -2377,8 +2373,7 @@ def _install_accelerate_hooks():
             _refuse_bnb_optimizer_instance(optimizer)
         if native and _mixed_param_groups(optimizer):
             if getattr(_inner_optimizer(optimizer), "state", None):
-                # The split carries no per-parameter state over; a mixed group stepping a foreach /
-                # fused kernel over DTensor and plain tensors fails.
+                # Split drops per-parameter state; a mixed group breaks foreach / fused steps.
                 raise RuntimeError(_MIXED_GROUPS_REFUSAL)
         if native and _split_mixed_param_groups(getattr(optimizer, "optimizer", optimizer)):
             _print_rank0(
@@ -2691,8 +2686,7 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     # The target layout: this rank's shards (empty optimizer state is initialised first).
     state = get_optimizer_state_dict(root, optimizer, options = options)
     unstepped = _match_saved_optimizer_keys(state, directory, root)
-    # Hyperparameter keys the checkpoint lacks (another optimizer class, or an older torch) keep this
-    # optimizer's values; dcp.load would refuse them as missing.
+    # Missing hyperparameter keys keep this optimizer's values; dcp.load would refuse them.
     unsaved = _drop_unsaved_group_keys(state, directory)
     dcp.load(state, checkpoint_id = os.fspath(directory), process_group = group)
     for index, key, value in unsaved:
@@ -2932,8 +2926,7 @@ def _native_load_hf_sharded(root, checkpoint):
     try:
         dcp.load(state, storage_reader = reader, process_group = group)
     except (Exception, CheckpointException) as exc:
-        # A read error reaches every rank as a CheckpointException (a BaseException, so `except
-        # Exception` alone would let it abort the resume).
+        # CheckpointException is a BaseException, so `except Exception` alone would miss it.
         error = exc
     # The fallback is voted on too: the full load rewrites every tensor this one may have touched.
     if not _all_ranks_agree(error is None, group):
@@ -3214,9 +3207,8 @@ def _install_trainer_hooks():
             return original_save_model(self, output_dir, _internal_call = _internal_call)
         if output_dir is None:
             output_dir = self.args.output_dir
-        # Collective gather on every rank (the Trainer would only call _save on rank 0). The sharded
-        # root, not a torch.compile (`_orig_mod`) / DDP-style (`.module`) wrapper around it: a
-        # compiled PeftModel is still an adapter checkpoint, and its state dict keys carry no prefix.
+        # Gather on every rank from the sharded root, not a compile or DDP wrapper, so keys carry no
+        # prefix.
         root = _native_root(model)
         if _is_peft(root):
             # The adapter save also writes frozen tensors (resized embeddings, inactive adapters,
@@ -3279,8 +3271,7 @@ def _install_trainer_hooks():
         if is_native_fsdp2(getattr(self, "model", None)):
             # Before the LR scheduler records one base LR per group.
             _split_mixed_param_groups(getattr(optimizer, "optimizer", optimizer))
-            # Localized, or refused here (a bitsandbytes optimizer that cannot step local shards
-            # would otherwise fail inside the first step).
+            # A bnb optimizer that cannot step local shards is refused here, not in step one.
             _refuse_bnb_optimizer_instance(optimizer)
         return optimizer
 
@@ -3368,9 +3359,8 @@ def _install_trainer_hooks():
         ]
         group, usable = _dcp_group(_native_root(model))
         if usable:
-            # What each rank sees on (possibly node-local) storage is voted on, so all ranks read
-            # the same format or skip together: [all see dcp, all see .pt, all see the scheduler,
-            # none sees an optimizer, none sees the scheduler].
+            # Each rank's view of node-local storage is voted on, so all ranks read one format or
+            # skip together.
             sharded, full, scheduler, none_saved, no_scheduler = _all_ranks_agree(
                 local + [not (local[0] or local[1]), not local[2]], group
             )
@@ -4234,10 +4224,8 @@ def native_fsdp2_trainer_setup(
         )
         _refuse_bnb_optimizer_instance(optimizer)
         if is_native_fsdp2(model) and optimizer is not None and _mixed_param_groups(optimizer):
-            # The Trainer would split the groups after a scheduler recorded one base LR (and lambda)
-            # per group (the new groups keep their initial LR; a resumed scheduler state no longer
-            # matches), and a split cannot carry loaded per-parameter state, so it is skipped and the
-            # mixed group reaches a foreach / fused kernel. Only a fresh optimizer alone is split.
+            # Split only a fresh optimizer: a late split breaks the scheduler's base LRs or loaded
+            # state.
             if scheduler is not None or getattr(_inner_optimizer(optimizer), "state", None):
                 raise RuntimeError(_MIXED_GROUPS_REFUSAL)
         if is_native_fsdp2(model):

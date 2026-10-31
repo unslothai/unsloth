@@ -310,9 +310,8 @@ def test_ps1_printer(marker_dir, strict_mode, case_id, raw, expected):
 @requires_pwsh
 @pytest.mark.parametrize("strict_mode", ["2.0", "3.0", "Latest"])
 def test_a_legacy_marker_does_not_abort_under_strict_mode(marker_dir, strict_mode):
-    """The discriminating case: markers between #4562 and #8520 have no backend key, and
-    the function's only try/catch wraps ConvertFrom-Json, so the read escapes it.
-    """
+    """The discriminating case: markers between issues 4562 and 8520 lack a backend key, and the
+    only try/catch wraps ConvertFrom-Json, so the read escapes it."""
     install_dir = marker_dir(_drop_backend_key())
     proc = _run_ps1_printer(install_dir, strict_mode)
     assert "PropertyNotFound" not in proc.stderr, proc.stderr
@@ -636,9 +635,8 @@ def test_the_sh_printer_only_accepts_a_string():
 @requires_pwsh
 @requires_bash
 def test_the_upstream_source_branch_is_a_known_pre_existing_divergence(marker_dir, tmp_path):
-    """Recorded, not fixed: teaching setup.ps1 this branch changes what Windows prints
-    for upstream bundles, which is a separate change from naming the backend.
-    """
+    """A known pre-existing divergence, recorded not fixed: teaching setup.ps1 this branch would
+    change what Windows prints for upstream bundles, a separate change."""
     raw = json.dumps(
         {
             "published_repo": "unslothai/unsloth",

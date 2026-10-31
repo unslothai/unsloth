@@ -190,9 +190,8 @@ def _read_adapter(path):
 
 
 def _enable_reentrant_gc(model):
-    """Reentrant checkpointing only back-propagates into a segment whose input requires grad; with the
-    embeddings frozen (LoRA) that needs enable_input_require_grads, which transformers 4.x
-    gradient_checkpointing_enable does not do for a PEFT model (5.x does)."""
+    """Reentrant checkpointing needs a grad-requiring input: frozen LoRA embeddings need
+    enable_input_require_grads, which transformers 4.x skips for PEFT but 5.x does."""
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
     model.enable_input_require_grads()
 

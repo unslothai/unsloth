@@ -50,9 +50,8 @@ PROMPTS = [
 
 
 def length_reward_func(completions, **kwargs) -> list[float]:
-    """Reward longer completions. The fractional tie-break keeps rewards distinct
-    even if the model samples equal-length completions, so GRPO advantages are
-    never all-zero and the step stays meaningful on any vLLM/GPU combination."""
+    """Rewards longer completions; the fractional tie-break keeps rewards distinct even for
+    equal-length samples, so GRPO advantages are never all-zero on any vLLM/GPU setup."""
     n = len(completions)
     return [float(len(c[0]["content"])) + i / (n + 1) for i, c in enumerate(completions)]
 

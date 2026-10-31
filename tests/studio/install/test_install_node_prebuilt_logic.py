@@ -1130,9 +1130,8 @@ def _real_node_tree(root: Path, host) -> None:
 
 
 def test_a_verified_install_is_not_re_probed(tmp_path: Path, monkeypatch):
-    """`node -v` is an interpreter start of a 110 MB runtime, run on every install and
-    every update to re-derive an answer that cannot have changed while the binary has
-    not."""
+    """A verified node install is not re-probed: running node -v on a 110 MB runtime on every
+    install re-derives an answer that cannot change while the binary is unchanged."""
     host = _host("linux", "x64")
     _real_node_tree(tmp_path, host)
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
@@ -1175,11 +1174,9 @@ def _runnable_node_tree(
 def test_a_node_that_no_longer_runs_is_caught_even_at_the_recorded_size_and_mtime(
     tmp_path: Path, monkeypatch
 ):
-    """The record compares size and mtime_ns, not the digest, so a rewrite that preserves
-    both is invisible TO THE RECORD. It is not invisible to the check: npm-cli.js is run BY
-    the node binary, and that probe is never skipped, so a node that cannot run is still
-    rejected and repaired. This pins the reason the digest is affordable to skip.
-    """
+    """The record compares size and mtime_ns, not the digest; a rewrite that preserves both is still
+    caught when the node can no longer run, because the node and npm-cli.js spawn probes are
+    never skipped."""
     host = _host("linux", "x64")
     node = _runnable_node_tree(tmp_path, host)
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
@@ -1294,12 +1291,8 @@ _EXECUTE_BIT_IS_ENFORCED = os.name != "nt" and getattr(os, "geteuid", lambda: 0)
     reason = "needs an unprivileged POSIX user: root and Windows both ignore the execute bit",
 )
 def test_a_node_that_lost_its_execute_bit_is_not_a_match(tmp_path: Path, monkeypatch):
-    """Dropping the execute bit is invisible to the record: it moves ctime, and nothing else.
-
-    Size and mtime_ns both survive it, so the file record still matches a node that can no
-    longer be started. The spawn the record stands in for would have failed here and the
-    install would have been repaired, which is the outcome that has to be kept.
-    """
+    """Dropping the execute bit moves only ctime, so the size and mtime_ns record still matches; the
+    spawn it stands in for would fail, and the install must be repaired."""
     host = _host("linux", "x64")
     _real_node_tree(tmp_path, host)
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")

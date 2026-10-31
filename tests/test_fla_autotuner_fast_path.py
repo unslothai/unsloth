@@ -210,9 +210,8 @@ needs_probe = pytest.mark.skipif(CACHE_PROBE is None, reason = "tree without the
 
 @needs_probe
 def test_cache_probe_detects_the_reuse_cache_under_any_name():
-    """unsloth_zoo defines _ReuseBestCache inside a function, so there is no symbol to import.
-    The probe must key off behaviour, not the class name, or a rename silently turns the fast
-    path off."""
+    """unsloth_zoo defines _ReuseBestCache inside a function so there is no symbol to import; the
+    probe keys off behaviour, since a rename would silently turn the fast path off."""
 
     class RenamedTomorrow(_ReuseBestCache):
         pass

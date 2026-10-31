@@ -143,11 +143,9 @@ _cache_env_seeded = False
 
 
 def _seed_cache_env() -> None:
-    """Pin the cache locations the backend pins, for in-process CLI commands.
-
-    Otherwise they inherit unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION, resolved against the
-    working directory, leaving an unsloth_compiled_cache cache_cleanup will not remove (#8865).
-    """
+    """Pin cache locations as the backend does: unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION
+    would resolve against the cwd, leaving unsloth_compiled_cache that cache_cleanup misses
+    (issue 8865)."""
     global _cache_env_seeded
     if _cache_env_seeded:
         return
@@ -397,10 +395,8 @@ def render_columns(
 
 
 def stats_hit_token_limit(stats) -> bool:
-    """Whether a backend's end-of-generation stats say the reply ran out of budget.
-
-    Safetensors reports ``truncated``; MLX and llama-server report a finish reason.
-    """
+    """Whether end-of-generation stats show the reply ran out of budget: safetensors sets truncated;
+    MLX and llama-server set finish_reason to length."""
     if not isinstance(stats, dict):
         return False
     return bool(stats.get("truncated")) or stats.get("finish_reason") == "length"
@@ -639,11 +635,8 @@ def load_chat_backend(
     model_config = None,
     fresh_backend: bool = False,
 ):
-    """Load `model` in-process: GGUF via llama-server, else the orchestrator.
-
-    fresh_backend uses a private orchestrator so a second model (compare's
-    base column) can run alongside the main one.
-    """
+    """Load model in-process, GGUF via llama-server else the orchestrator; fresh_backend uses a
+    private orchestrator so a second model (compare's base column) runs alongside."""
     from unsloth_cli._studio_deps import studio_backend_imports
 
     with studio_backend_imports("unsloth inference", studio_only = True), quiet_if_nonzero_mlx_rank():
@@ -738,8 +731,7 @@ _STUDIO_SERVICE_MARKER = "Unsloth UI Backend"
 
 
 def _recorded_loopback_bases(address: Optional[str], port: str) -> list:
-    """Loopback bases for a server recorded at *address*. The wrong family reaches whoever else
-    holds that port number."""
+    """Loopback bases for a recorded address; the wrong family hits whoever holds that port."""
     import ipaddress
 
     loopback, parsed_any = set(), False
@@ -804,8 +796,7 @@ def _answers_as_studio(base: str, timeout: float) -> bool:
 def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     candidates = _loopback_candidate_bases(base)
-    # Try the concrete loopback addresses in order and return the first that answers, so the rest of
-    # the flow talks to that exact address.
+    # Use the first loopback address that answers, so the flow talks to that exact address.
     found = next((c for c in candidates if _answers_as_studio(c, timeout)), None)
     if os.environ.get("UNSLOTH_STUDIO_URL"):
         return found
@@ -883,8 +874,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
 
 
 def _studio_token() -> Optional[str]:
-    """Self-issue a JWT: the CLI runs as the same OS user as the server, so it
-    signs with the same stored secret the server validates against."""
+    """Signs a JWT with the server's stored secret, since the CLI runs as the same OS user."""
     try:
         import studio.backend.core  # noqa: F401  puts studio/backend on sys.path
 

@@ -116,9 +116,8 @@ def test_the_tokenizers_bound_matches_the_pinned_transformers_release():
 
 
 def test_the_tokenizers_line_covers_both_python_branches():
-    """The transformers pins split on python_version; the tokenizers line must not, unless
-    it splits the same way. An unconditional line is correct only while both pinned
-    releases declare the same window, which the test above is what enforces."""
+    """The transformers pins split on python_version, so the tokenizers line must split the same
+    way; an unconditional line is only correct while both releases declare the same window."""
     for path in _installing_files():
         reqs = _requirements(path)
         if not _pinned_versions(reqs, "transformers"):

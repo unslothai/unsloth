@@ -558,9 +558,8 @@ class TestPinnedIndexClearsUvEnv:
         assert "UV_CONFIG_FILE" not in env
 
     def test_pinned_cmd_disables_pip_config_files(self):
-        """devnull is the ONLY spelling that reaches a SITE or GLOBAL pip.conf. Measured
-        on pip 26.2: naming a real file suppresses the per-user file alone, so a
-        venv-level `no-index` still killed the pin."""
+        """Only devnull reaches a SITE or GLOBAL pip.conf; measured on pip 26.2, naming a real file
+        suppresses only the per-user file, so a venv-level no-index still killed the pin."""
         env = ips._install_env_for_cmd(
             ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
         )
@@ -727,9 +726,8 @@ class TestHardenedPipConfigRelaxation:
             assert ips._install_env_for_cmd(["python", "-m", "ensurepip", "--upgrade"]) is None
 
     def test_pinned_cmd_clears_hash_mode_only(self):
-        """Hash enforcement, which our unhashed requirements cannot satisfy, and nothing
-        else the operator hardened: dropping only-binary would let a compromised mirror
-        run a source build they had forbidden."""
+        """Only hash enforcement is cleared, since unhashed requirements cannot satisfy it; other
+        hardening such as only-binary stays, or a compromised mirror could run a source build."""
         with mock.patch.dict(os.environ, self.HOSTILE):
             env = ips._install_env_for_cmd(
                 ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
@@ -959,9 +957,8 @@ class TestHardenedPipConfigRelaxation:
 
     @pytest.mark.reads_real_pip_config
     def test_a_wedged_pip_costs_the_run_one_budget_not_one_per_command(self, monkeypatch):
-        """Failures are deliberately not memoised, so a transient miss cannot cost the
-        operator their cert for the whole run. Unbounded, a HANG paid the timeout once per
-        pinned command instead of once."""
+        """Failures are not memoised, so a transient miss cannot cost the operator their cert; a
+        wedged pip must spend one timeout budget for the whole run, not one per pinned command."""
         attempts = []
 
         def always_fails(cmd, **kwargs):
@@ -979,9 +976,8 @@ class TestHardenedPipConfigRelaxation:
 
     @pytest.mark.reads_real_pip_config
     def test_a_cheap_failure_does_not_spend_the_budget(self, monkeypatch):
-        """A fresh venv has no pip for the first part of the run. That answer is instant,
-        so budgeting it would mean the operator's cert is lost for the rest of the run the
-        moment pip does appear."""
+        """A fresh venv has no pip at first and that answer is instant, so it must not spend the
+        timeout budget, or the cert is lost once pip appears."""
         calls = []
 
         def missing_then_present(cmd, **kwargs):
@@ -1293,9 +1289,8 @@ class TestProgressLineNotes:
         assert "\n\n" not in out, out
 
     def test_uv_fallback_warning_does_not_glue_onto_the_bar(self):
-        """A real producer, not _note() directly: pip_install() warns on the uv
-        fallback while the bar for its own step is still open. This path survived
-        the first pass of the fix, which only converted '   message' call sites."""
+        """Uses a real producer, not _note(): pip_install() warns on the uv fallback while its step
+        bar is open; the first fix pass only converted ' message' call sites and missed it."""
         fake = mock.Mock(returncode = 1, stdout = "uv output")
         with (
             mock.patch.object(ips, "USE_UV", True),
@@ -1475,9 +1470,8 @@ class TestBuildPipCmdUpgradeIntent:
 
 
 class TestDamagedCorePayloadRepair:
-    """An upgrade of a distribution already at the wanted version installs
-    nothing: uv audits it, pip calls it satisfied, and both read metadata a
-    quarantine of the payload leaves intact."""
+    """An upgrade of a distribution already at the wanted version installs nothing: uv audits it and
+    pip calls it satisfied, both reading metadata a payload quarantine leaves intact."""
 
     def test_the_uv_command_targets_only_the_named_package(self):
         cmd = ips._build_uv_cmd(
@@ -1887,9 +1881,8 @@ class TestDuplicateCoreMetadataRepair:
         assert installs[0][2]["constrain"] is False
 
     def test_the_repair_runs_again_before_the_manifest_is_written(self):
-        """The first pass runs before the core packages are installed, so an
-        upgrade that leaves a superseded record behind would survive it and
-        write_manifest would record a null version under a successful exit."""
+        """The first repair pass runs before core packages install, so a superseded record left by
+        an upgrade would survive it and write_manifest would record a null version."""
         source = inspect.getsource(ips.install_python_stack)
         first = source.index("_repair_duplicate_core_metadata")
         second = source.index("_repair_duplicate_core_metadata", first + 1)
@@ -1983,9 +1976,8 @@ class TestDuplicateCoreMetadataRepair:
         assert calls[0][1]["input"] == b"unsloth-zoo"
 
     def test_a_falling_index_aborts_the_repair_rather_than_substituting(self, monkeypatch, capsys):
-        """uv fails the compile outright when a higher-priority index is unreachable,
-        which is the behaviour first-index exists to give: a public release must not
-        stand in for a private one just because the private mirror was down."""
+        """uv fails the compile when a higher-priority index is unreachable, as first-index intends;
+        a public release must not stand in for a private one just because its mirror is down."""
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
         self._uv_plan(monkeypatch, returncode = 1)
@@ -2030,11 +2022,9 @@ class TestDuplicateCoreMetadataRepair:
         ),
     )
     def test_a_direct_reference_is_staged_as_written(self, monkeypatch, requirement):
-        """The overlay paths hand staging a git URL or a checkout, not a bare name.
-        Such a requirement is its own provenance -- no index chose it -- and uv
-        appends the resolved commit to what it emits, so asking uv would compare a
-        bare spec against a pinned one and never match, aborting every local
-        duplicate-zoo repair before it started."""
+        """Overlay direct references (git URL or checkout) are their own provenance; uv appends the
+        resolved commit, so asking it would never match and abort every local duplicate-zoo
+        repair."""
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
         calls = self._uv_plan(monkeypatch)
@@ -2112,9 +2102,8 @@ class TestDuplicateCoreMetadataRepair:
         assert Path(ips._pip_config_without_sources(str(tmp_path))).read_text() == ""
 
     def test_uv_artifact_policy_is_replayed_from_its_configuration(self, monkeypatch):
-        """A no-binary or only-binary rule would otherwise change the artifact type
-        during the repair: a wheel downloaded under a no-binary rule, or an sdist
-        built under an only-binary one."""
+        """A no-binary or only-binary rule must be replayed during repair, or the artifact type
+        changes: a wheel downloaded under no-binary, or an sdist built under only-binary."""
         self._uv_only(monkeypatch)
         self._uv_plan(
             monkeypatch,
@@ -2124,9 +2113,8 @@ class TestDuplicateCoreMetadataRepair:
         assert options == ["--only-binary", ":all:"]
 
     def test_the_env_spelling_of_the_artifact_policy_is_translated(self, monkeypatch):
-        """Measured on uv 0.10.7: --emit-build-options surfaces the policy from
-        uv.toml but not the environment-variable spelling, so that half is
-        translated by hand."""
+        """On uv 0.10.7, --emit-build-options surfaces the policy from uv.toml but not the
+        UV_ONLY_BINARY spelling, so that half is translated by hand."""
         self._uv_only(monkeypatch)
         monkeypatch.setenv("UV_ONLY_BINARY", ":all:")
         monkeypatch.delenv("PIP_ONLY_BINARY", raising = False)
@@ -2217,9 +2205,8 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._strip_userinfo(url) == bare
 
     def test_offline_still_stages_a_local_checkout(self, tmp_path, monkeypatch):
-        """--local hands the repair a checkout on disk. It needs no network, so
-        UV_OFFLINE has nothing to say about it, and refusing left the conflict in
-        place and failed the update for no reason."""
+        """A --local checkout needs no network, so UV_OFFLINE does not apply to it; refusing would
+        leave the conflict in place and fail the update for no reason."""
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
         monkeypatch.setenv("UV_OFFLINE", "1")
@@ -2294,9 +2281,8 @@ class TestDuplicateCoreMetadataRepair:
         assert "Version: 1.2.3" in written
 
     def test_a_record_without_a_manifest_fails_closed(self, tmp_path):
-        """No RECORD means neither pip nor this installer knows which files belong
-        to the package, so a replacement laid over them would leave whatever the new
-        release no longer ships behind."""
+        """Without a RECORD, neither pip nor this installer knows which files belong to the package,
+        so a replacement would leave files the new release drops behind."""
         record = tmp_path / "realpkg-1.2.3.dist-info"
         record.mkdir()
         (record / "METADATA").write_bytes(b"\xff\xfe")
@@ -2623,9 +2609,8 @@ class TestDuplicateCoreMetadataRepair:
         assert "ci_source_overlay=ci_source_overlay" in source
 
     def test_the_replacement_is_staged_before_any_record_is_removed(self, monkeypatch):
-        """The uninstall loop deletes every record, so the replacement has to be
-        in hand first. Otherwise an index that is unreachable at that moment
-        leaves the venv with no unsloth and nothing to reinstall from."""
+        """The uninstall loop deletes every record, so the replacement must be staged first;
+        otherwise an unreachable index leaves the venv with no unsloth to reinstall."""
         probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
         order = []
 
@@ -2744,9 +2729,8 @@ class TestDuplicateCoreMetadataRepair:
         assert "Name: unsloth" in (backup / "METADATA").read_text()
 
     def test_staging_builds_a_wheel_so_the_offline_install_can_work(self):
-        """pip download leaves an sdist for a source-only index, and the install
-        that follows runs --no-index, so its isolated build cannot fetch
-        setuptools and the package stays uninstalled."""
+        """pip download leaves an sdist for a source-only index, and the following --no-index
+        install cannot fetch setuptools for its isolated build, so staging must build a wheel."""
         source = inspect.getsource(ips._stage_replacement).replace(" ", "")
         assert '"wheel",\n"--no-deps",' in source
         assert '"--wheel-dir",\nstaging,' in source
@@ -2754,9 +2738,8 @@ class TestDuplicateCoreMetadataRepair:
         assert 'glob.glob(os.path.join(staging,"*.whl"))' in source
 
     def test_a_git_overlay_is_staged_before_the_uninstall_loop(self, monkeypatch):
-        """--local pulls unsloth-zoo from git, so an overlay is a network fetch
-        too. Skipping staging for it meant an unreachable GitHub left the
-        package uninstalled."""
+        """A --local overlay pulls unsloth-zoo from git, a network fetch too; skipping its staging
+        meant an unreachable GitHub left the package uninstalled."""
         probes = {"unsloth-zoo": iter((["old", "new"], ["new"], [], ["new"]))}
         order = []
 
@@ -2803,9 +2786,8 @@ class TestDuplicateCoreMetadataRepair:
         assert installs and "--find-links" in installs[0]
 
     def test_a_partial_uninstall_restores_the_payload(self, monkeypatch, capsys):
-        """The first uninstall deletes the package tree. Returning after a later
-        one fails would leave a dist-info claiming an install whose files are
-        gone."""
+        """The first uninstall deletes the package tree, so a failure on a later one must restore
+        the payload rather than leave a dist-info claiming files that are gone."""
         probes = iter((["a", "b", "c"], ["b", "c"]))
         uninstalls = iter([True, False])
         installs = []
@@ -2885,11 +2867,9 @@ class TestDesktopBackendVersionConstraint:
         zoo = None,
         floors = None,
     ):
-        """uv pip compile over a fake index: unsloth 2026.10.2..have, unsloth-zoo 2026.10.2..zoo.
-
-        Each unsloth requires unsloth-zoo>=its own version unless *floors* says otherwise; the
-        zoo floor is only enforced when the probe resolves dependencies.
-        """
+        """uv pip compile over a fake index (unsloth 2026.10.2..have, unsloth-zoo 2026.10.2..zoo);
+        each unsloth requires its own zoo unless floors says otherwise; the zoo floor is enforced
+        only when the probe resolves dependencies."""
         from packaging.requirements import Requirement
 
         def releases(top):

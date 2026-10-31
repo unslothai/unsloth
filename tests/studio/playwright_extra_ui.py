@@ -699,8 +699,7 @@ with sync_playwright() as p:
                 next_rows_ms = float(WHEEL_ROWS_TIMEOUT_MS)
 
                 def search_abort_extension() -> tuple:
-                    """Re-bases the search budget onto the in-flight request, counting only requests
-                    made after typing."""
+                    """Budget rebased onto in-flight search; only requests after typing count."""
                     live = [(at, req) for req, at in hf_inflight.items() if at >= query_typed_at]
                     if not live:
                         return None, 0.0

@@ -56,9 +56,8 @@ def main():
                 base_repo = "black-forest-labs/FLUX.2-klein-4B",
                 family = "flux.2-klein",
                 model_kind = "gguf",
-                # The real status echoes the loaded checkpoint file. Reapply reloads the page's last pick
-                # only while it still matches what status reports (engine-choice.ts reapplyTarget, #14232),
-                # so without it nothing reloads.
+                # Status echoes the loaded checkpoint; reapplyTarget (engine-choice.ts, 14232)
+                # reloads the last pick only while it matches status.
                 gguf_filename = loads[-1].get("gguf_filename"),
                 dtype = "bfloat16",
                 text_encoder_quant = value,

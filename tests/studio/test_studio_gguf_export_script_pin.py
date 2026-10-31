@@ -202,9 +202,8 @@ def test_the_pin_is_never_left_in_the_environment():
 
 
 def test_pin_prefers_the_internal_helper():
-    """unsloth_zoo exempts a user pin from the strict converter scan, so Studio's own
-    routing has to be marked as internal or the exemption is taken by a converter nobody
-    reviewed."""
+    """unsloth_zoo exempts a user pin from the strict converter scan, so Studio's own routing must
+    be marked internal or the exemption goes to an unreviewed converter."""
     helper = _pin_helper_node(TREE)
     assert helper is not None
     imported = [

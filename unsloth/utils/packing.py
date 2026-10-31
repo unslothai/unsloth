@@ -1091,10 +1091,8 @@ def _wrap_kwargs_mixer_forward(module) -> None:
         return out
 
     if _dynamo_folds_is_exporting():
-        # Eager even inside a compiled block: Dynamo folds torch.compiler.is_exporting() to True, so
-        # the hub-kernel wrappers trace their torch reference, which drops seq_idx / cu_seqlens and
-        # runs the packed documents into each other (Qwen3.5-0.8B per-document cosine 0.71). Newer
-        # torch traces the real kernels, and the eager mixer costs 6-20% per step there.
+        # Dynamo folds is_exporting() to True, so this stays eager: the traced reference drops
+        # seq_idx; newer torch traces real kernels, where eager costs 6-20% per step.
         _packed_forward = torch.compiler.disable(_packed_forward)
 
     module.forward = forward
