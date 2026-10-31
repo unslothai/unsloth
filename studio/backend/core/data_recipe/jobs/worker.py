@@ -12,6 +12,8 @@ import shutil
 import time
 import traceback
 import unicodedata
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -311,15 +313,17 @@ def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
     except ImportError:
         return
 
-    dataframe = read_parquet_dataset(parquet_dir)
     # Written beside the shards first: a failed write must not take the generated batches with it.
     staged_file = base_dataset_path / "batch_00000.parquet.merging"
     try:
-        write_parquet_with_unified_types(
-            dataframe,
-            staged_file,
-            lambda frame: frame.to_parquet(staged_file, index = False),
-        )
+        if not _stream_merge_batches(parquet_dir, parquet_files, staged_file):
+            dataframe = read_parquet_dataset(parquet_dir)
+            write_parquet_with_unified_types(
+                dataframe,
+                staged_file,
+                lambda frame: frame.to_parquet(staged_file, index = False),
+            )
+            del dataframe
     except BaseException:
         staged_file.unlink(missing_ok = True)
         raise
@@ -331,6 +335,99 @@ def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
         base_dataset_path = base_dataset_path,
         parquet_file = merged_file,
     )
+
+
+# Shards are buffered up to this many bytes before a row group is written, so peak memory stays near
+# this plus the shards being read ahead, not the whole dataset as a dataframe.
+_MERGE_BUFFER_BYTES = 128 * 1024 * 1024
+# pyarrow's own row group cap for write_table, which the dataframe path used.
+_MERGE_ROW_GROUP_ROWS = 1024 * 1024
+_MERGE_READ_AHEAD = 4
+
+
+def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_file: Path) -> bool:
+    """Stream the shards into ``staged_file`` in order, as the same file the dataframe path writes
+    (``pd.read_parquet(dtype_backend = "pyarrow")`` then ``to_parquet(index = False)``): same rows, order,
+    Arrow types and pandas metadata. Returns False, writing nothing, when the shards are not plainly
+    concatenable (their types differ, or the folder holds something else the folder read would pick up)."""
+    import pandas
+    import pyarrow
+    import pyarrow.parquet as pyarrow_parquet
+
+    # The folder read skips names starting with "." or "_" and reads everything else, subfolders included.
+    # The glob lists such names too, so a shard named that way would be merged here but not there.
+    if any(path.name.startswith((".", "_")) for path in parquet_files):
+        return False
+    listed = {path.name for path in parquet_files}
+    for entry in parquet_dir.iterdir():
+        if entry.name not in listed and not entry.name.startswith((".", "_")):
+            return False
+
+    try:
+        schemas = [pyarrow_parquet.read_schema(path) for path in parquet_files]
+    except Exception:
+        # An unreadable shard: the folder read raises its own error, naming the file, as before.
+        return False
+    source_schema = schemas[0]
+    for schema in schemas[1:]:
+        if schema.names != source_schema.names or schema.types != source_schema.types:
+            return False
+
+    # The output schema (pandas metadata included) comes from running the dataframe path on zero rows.
+    probe = pyarrow.BufferOutputStream()
+    pyarrow_parquet.write_table(source_schema.empty_table(), probe)
+    frame = pandas.read_parquet(pyarrow.BufferReader(probe.getvalue()), dtype_backend = "pyarrow")
+    probe = pyarrow.BufferOutputStream()
+    frame.to_parquet(probe, index = False)
+    target_schema = pyarrow_parquet.read_schema(pyarrow.BufferReader(probe.getvalue()))
+    del frame, probe
+    if target_schema.names != source_schema.names or target_schema.types != source_schema.types:
+        return False
+
+    pending: list[Any] = []
+    pending_rows = pending_bytes = 0
+    with pyarrow_parquet.ParquetWriter(staged_file, target_schema) as writer:
+
+        def flush(final: bool) -> None:
+            nonlocal pending, pending_rows, pending_bytes
+            if not pending:
+                return
+            table = pyarrow.concat_tables(pending)
+            # Full row groups go out as the dataframe path cuts them; a remainder waits for more rows.
+            full = table.num_rows - table.num_rows % _MERGE_ROW_GROUP_ROWS
+            if final or pending_bytes >= _MERGE_BUFFER_BYTES:
+                full = table.num_rows
+            if full:
+                writer.write_table(table.slice(0, full), row_group_size = _MERGE_ROW_GROUP_ROWS)
+            rest = table.slice(full)
+            pending = [rest] if rest.num_rows else []
+            pending_rows, pending_bytes = rest.num_rows, rest.nbytes if rest.num_rows else 0
+
+        # Later shards are read while this one is buffered or written (both release the GIL), several at a
+        # time like the folder read. One thread per file unless there are too few files to keep the pool busy.
+        use_threads = len(parquet_files) < _MERGE_READ_AHEAD
+
+        def read(path: Path) -> Any:
+            with pyarrow_parquet.ParquetFile(path) as shard:
+                return shard.read(use_threads = use_threads)
+
+        with ThreadPoolExecutor(max_workers = _MERGE_READ_AHEAD) as reader:
+            upcoming = deque(
+                reader.submit(read, path) for path in parquet_files[:_MERGE_READ_AHEAD]
+            )
+            for path in parquet_files[_MERGE_READ_AHEAD:] + [None] * len(upcoming):
+                table = upcoming.popleft().result()
+                if path is not None:
+                    upcoming.append(reader.submit(read, path))
+                table = pyarrow.Table.from_arrays(table.columns, schema = target_schema)
+                pending.append(table)
+                pending_rows += table.num_rows
+                pending_bytes += table.nbytes
+                del table
+                if pending_rows >= _MERGE_ROW_GROUP_ROWS or pending_bytes >= _MERGE_BUFFER_BYTES:
+                    flush(final = False)
+        flush(final = True)
+    return True
 
 
 def _rewrite_merged_metadata(*, base_dataset_path: Path, parquet_file: Path) -> None:
