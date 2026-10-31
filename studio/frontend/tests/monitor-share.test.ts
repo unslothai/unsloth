@@ -116,3 +116,15 @@ test("the VRAM split counts only models known to sit on the reported GPUs", () =
     assert.match(src, /noModels=\{breakdown !== null && loadedModels\.length === 0\}/);
   }
 });
+
+test("a model size ahead of the memory sample is scaled into the measured share", () => {
+  // Just after a 20 GiB load, the pool still reads 5 GiB used.
+  const share = memoryShare(5, 32, 20)!;
+  const segments = memorySegments(share, modelBreakdown(null, [{ id: "m", name: "Big", gb: 20 }], true));
+  const used = segments.filter((segment) => segment.kind !== "free").reduce((sum, s) => sum + s.gb, 0);
+  assert.ok(Math.abs(used - 5) < 1e-9);
+  assert.ok(Math.abs(segments.reduce((sum, s) => sum + s.gb, 0) - 32) < 1e-9);
+  // In step, nothing is rescaled.
+  const steady = memorySegments(memoryShare(20, 32, 12)!, modelBreakdown(12, [{ id: "m", name: "A", gb: 8 }], true));
+  assert.deepEqual(steady.map((segment) => [segment.kind, segment.gb]), [["model", 8], ["app", 4], ["other", 8], ["free", 12]]);
+});

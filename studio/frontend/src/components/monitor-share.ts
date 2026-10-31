@@ -106,7 +106,7 @@ export function memorySegments(
   restIsOtherApps = true,
 ): MemorySegment[] {
   // Nothing loaded: splitting would only rename Unsloth's segment to "app".
-  const unsloth: MemorySegment[] = breakdown && breakdown.models.length > 0
+  const parts = breakdown && breakdown.models.length > 0
     ? [
         ...breakdown.models.map((model) => ({
           id: `model:${model.id}`,
@@ -118,6 +118,12 @@ export function memorySegments(
           ? [{ id: "app", kind: "app" as const, gb: breakdown.app }]
           : []),
       ]
+    : null;
+  // Model status can be fresher than the memory sample: scale the split into the measured share.
+  const partsGb = parts?.reduce((sum, part) => sum + part.gb, 0) ?? 0;
+  const scale = partsGb > share.unsloth && partsGb > 0 ? share.unsloth / partsGb : 1;
+  const unsloth: MemorySegment[] = parts
+    ? parts.map((part) => ({ ...part, gb: part.gb * scale }))
     : [{ id: "unsloth", kind: "unsloth", gb: share.unsloth }];
   return [
     ...unsloth,
