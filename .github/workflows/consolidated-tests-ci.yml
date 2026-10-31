@@ -1986,11 +1986,8 @@ jobs:
             trl_spec: "__from_pyproject__"
     name: "Core zoo (${{ matrix.combo.label }})"
     runs-on: ubuntu-24.04
-    # The zoo suite (`pytest -n 4` plus the serial files) has grown to about 30 min
-    # of pytest and 35 min of job on a passing cell, so a 35 min cap cancelled
-    # cells at 99% of the suite. The cap still turns a hung test into a bounded
-    # failure; PYTEST_TIMEOUT in the step below is the mechanism that actually
-    # names the culprit.
+    # A passing cell takes ~35 min (35 min cap cancelled it at 99%); PYTEST_TIMEOUT
+    # below names a hung test, this cap only bounds it.
     timeout-minutes: 50
     # Same contract as `consolidated`: no job-level or per-step
     # `continue-on-error`, so a failing test fails the cell.
