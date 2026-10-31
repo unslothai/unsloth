@@ -657,10 +657,10 @@ class ChatGenerationSupervisor:
             return failure
 
         try:
-            worker_run = await asyncio.to_thread(db.get_worker_run, run_id)
-            if worker_run is None:
+            # Only the token is used before the fenced re-read below, so skip parsing the request here.
+            worker_token = await asyncio.to_thread(db.get_worker_token, run_id)
+            if worker_token is None:
                 return
-            run, owner, worker_token = worker_run
             if cancel_event.is_set():
                 shutting_down = run_id in self._shutdown_runs
                 await asyncio.to_thread(

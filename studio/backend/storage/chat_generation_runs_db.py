@@ -322,14 +322,14 @@ def canonical_request(
     return request_json, hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
+def _run_fields(row: sqlite3.Row, request_payload: Any) -> dict[str, Any]:
     return {
         "id": row["id"],
         "threadId": row["thread_id"],
         "userMessageId": row["user_message_id"],
         "assistantMessageId": row["assistant_message_id"],
         "requestHash": row["request_hash"],
-        "requestPayload": _loads(row["request_json"], {}),
+        "requestPayload": request_payload,
         "status": row["status"],
         "cancelRequested": bool(row["cancel_requested"]),
         "lastEventSeq": int(row["last_event_seq"]),
@@ -340,6 +340,27 @@ def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "startedAt": row["started_at"],
         "completedAt": row["completed_at"],
     }
+
+
+def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return _run_fields(row, _loads(row["request_json"], {}))
+
+
+def _run_json_from_row(row: sqlite3.Row) -> str:
+    """json.dumps(_run_from_row(row), ensure_ascii=False, separators=(",", ":")) without parsing
+    request_json: canonical_request's output is a fixed point of loads then dumps with these options."""
+    fields = _run_fields(row, None)
+    keys = list(fields)
+    split = keys.index("requestPayload")
+    head, tail = (
+        json.dumps(
+            {key: fields[key] for key in part},
+            ensure_ascii = False,
+            separators = (",", ":"),
+        )
+        for part in (keys[:split], keys[split + 1 :])
+    )
+    return f'{head[:-1]},"requestPayload":{row["request_json"]},{tail[1:]}'
 
 
 def _append_events_locked(
@@ -660,6 +681,26 @@ def get_run_state(run_id: str) -> dict[str, Any] | None:
             "lastEventSeq": int(row["last_event_seq"]),
             "updatedAt": int(row["updated_at"]),
         }
+    finally:
+        conn.close()
+
+
+def get_run_frame(run_id: str) -> tuple[dict[str, Any], str] | None:
+    """get_run_state's fields plus get_run's row as its compact JSON text, without parsing request_json."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM chat_generation_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        state = {
+            "status": row["status"],
+            "lastEventSeq": int(row["last_event_seq"]),
+            "updatedAt": int(row["updated_at"]),
+        }
+        return state, _run_json_from_row(row)
     finally:
         conn.close()
 
