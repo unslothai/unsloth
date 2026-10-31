@@ -209,8 +209,6 @@ function FloatingMonitorPanel({
   const hasSharedPool = memoryTotals.shared > 0;
   // No dedicated pool (Apple unified memory): the shared total alone is the capacity.
   const unifiedPool = hasSharedPool && memoryTotals.dedicated === 0;
-  // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
-  // readout. The host figure can still be known when no device's is (#7452).
   const resolvedVramUsed = vramUsage.usedGb;
   const vramUsageKnown = resolvedVramUsed !== null;
   const vramUsed = resolvedVramUsed ?? 0;
