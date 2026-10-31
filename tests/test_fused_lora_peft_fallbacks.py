@@ -313,8 +313,12 @@ def test_disabled_adapter_without_grad_on_4bit_base_stays_fused(monkeypatch, pat
             base_only = PATHS[path][1](block)(X)
     assert [name for name, _ in spy.calls] == FUSED_NAMES[path]
     outs = [t if isinstance(t, tuple) else (t,) for t in (fused, base_only, ref)]
+    # On ROCm the MLP's SwiGLU and GEMMs need not round like torch's SiLU * up and F.linear (1 ulp seen on gfx1151).
+    exact = path != "mlp" or torch.version.hip is None
     for a, b, c in zip(*outs):
-        torch.testing.assert_close(a, b, rtol = 0, atol = 0)
+        torch.testing.assert_close(
+            a, b, rtol = 0, atol = 0 if exact else _BF16_TOL * b.abs().max().item()
+        )
         # PEFT's own forward agrees to bf16 rounding (the LoRA term here is over 90x larger).
         torch.testing.assert_close(a, c, rtol = 0, atol = _BF16_TOL * c.abs().max().item())
 
