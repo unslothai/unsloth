@@ -26,7 +26,6 @@ import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useIsAccountOwner } from "@/features/auth";
-import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -316,10 +315,6 @@ export function ChatTab() {
   );
   const setKeepRunningWhenTabClosed = useChatRuntimeStore(
     (state) => state.setKeepRunningWhenTabClosed,
-  );
-  const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
-  const setShowGreetingSloth = useUserProfileStore(
-    (s) => s.setShowGreetingSloth,
   );
   const searchImages = useChatRuntimeStore((state) => state.searchImages);
   const setSearchImages = useChatRuntimeStore((state) => state.setSearchImages);
@@ -794,17 +789,6 @@ export function ChatTab() {
             aria-label={t("settings.chat.inlineEditResponse")}
             checked={showInlineEditResponse}
             onCheckedChange={setShowInlineEditResponse}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.profile.greetingSloth")}
-          description={t("settings.profile.greetingSlothDescription")}
-        >
-          <Switch
-            aria-label={t("settings.profile.greetingSloth")}
-            id="profile-greeting-sloth"
-            checked={showGreetingSloth}
-            onCheckedChange={setShowGreetingSloth}
           />
         </SettingsRow>
       </SettingsSection>

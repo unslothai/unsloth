@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useChatPreferencesStore } from "@/features/chat";
+import { useUserProfileStore } from "@/features/profile";
 import { TrickOrTreatSettingsRow } from "@/features/halloween/trick-or-treat-settings-row";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -158,6 +159,10 @@ export function AppearanceTab() {
   const setComposerAtBottom = useChatPreferencesStore(
     (s) => s.setNewChatComposerAtBottom,
   );
+  const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const setShowGreetingSloth = useUserProfileStore(
+    (s) => s.setShowGreetingSloth,
+  );
   const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -253,6 +258,17 @@ export function AppearanceTab() {
           description={t("settings.appearance.custom.chatWidth.description")}
         >
           <ChatWidthSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.profile.greetingSloth")}
+          description={t("settings.profile.greetingSlothDescription")}
+        >
+          <Switch
+            aria-label={t("settings.profile.greetingSloth")}
+            id="profile-greeting-sloth"
+            checked={showGreetingSloth}
+            onCheckedChange={setShowGreetingSloth}
+          />
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.composerAtBottom")}
