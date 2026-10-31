@@ -1667,6 +1667,34 @@ def _unsloth_grpo_autocast_forced_float32(self):
     return forced
 
 
+def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
+    """Turn GRPO's packed forwards off for a model that mixes tokens across packed rows.
+
+    Sequence packing and PrefixGrouper score a batch as one flattened stream with per-row position_ids.
+    DeepSeek V4's compressors, Zaya's CCA and RecurrentGemma's RG-LRU pool or recur over that stream
+    whatever position_ids say, which is why SFT keeps padding-free off for them (packing_boundary_blocker).
+    Their leak is ~0.1 nats per token on tiny fp32 models, under the packed paths' 0.7 nat self-verify,
+    so the verify alone would enable packing and score every row after the first with another row's
+    state. Decided once per trainer; the flags below are the ones each packed path already honours."""
+    if getattr(self, "_unsloth_packing_boundary_checked", False):
+        return
+    self._unsloth_packing_boundary_checked = True
+    try:
+        from unsloth.utils.packing import packing_boundary_blocker
+
+        unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+        config = getattr(unwrapped, "config", None)
+        blocker = packing_boundary_blocker(unwrapped, (getattr(config, "model_type", None),))
+    except Exception:
+        return
+    if blocker is None:
+        return
+    unwrapped._unsloth_seq_packing_nograd_ok = False  # unsloth's no-grad packed forward
+    unwrapped._unsloth_seq_packing_grad_ok = False  # unsloth_zoo's grad packed forward
+    unwrapped._unsloth_prefix_grouper_nograd_disabled = True  # unsloth's no-grad PrefixGrouper
+    unwrapped._unsloth_prefix_grouper_disabled = True  # unsloth_zoo's grad PrefixGrouper
+
+
 def _unsloth_grpo_autocast(self):
     """Decide the GRPO autocast once and latch it on the trainer. ACCELERATE_MIXED_PRECISION is process wide, so a trainer built later but run first would hand this trainer its precision; args belongs to this trainer."""
     if not hasattr(self, "_autocast_enabled"):
@@ -3691,6 +3719,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 vision_inputs["mm_token_type_ids"] = mm_token_type_ids
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+            _unsloth_grpo_refuse_boundary_blind_packing(self, model)
 
             from unsloth_zoo.rl_replacements import (
                 chunked_hidden_states_selective_log_softmax,
@@ -4949,6 +4978,7 @@ UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_boundary_blind_packing))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_support_mismatch))
@@ -5068,6 +5098,8 @@ def grpo_trainer_compute_loss(function_name, function):
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
+        # The zoo loss runs its own packed forwards; refuse them here too (the logps pass can be skipped).
+        _unsloth_grpo_refuse_boundary_blind_packing(self, model)
         _loss_delta = getattr(self.args, "delta", None)
         if _rollout_logps_as_old and _loss_delta is None:
             # verl's dual-clip default (clip_ratio_c = 3.0).

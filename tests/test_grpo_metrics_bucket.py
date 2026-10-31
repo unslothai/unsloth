@@ -29,6 +29,7 @@ HELPERS = {
     "_unsloth_grpo_nanmax",
     "_unsloth_grpo_flush_metrics",
     "_unsloth_grpo_defer_metric",
+    "_unsloth_grpo_refuse_boundary_blind_packing",
 }
 BATCH, PROMPT, COMPLETION = 2, 3, 4
 
