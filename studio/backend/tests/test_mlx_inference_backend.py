@@ -1374,6 +1374,7 @@ def test_an_auto_drafter_gets_offload_room_only_within_the_cap_where_it_then_fit
             True,
             {
                 "load_in_4bit": False,
+                "kv_bits": None,
                 "costless": True,
                 "baseline": {"offload": (0.5, 0.5), "prefill_chunk": 8192},
                 "offload": (0.5, 0.53),
@@ -1390,6 +1391,7 @@ def test_an_auto_drafter_gets_offload_room_only_within_the_cap_where_it_then_fit
     assert resolve(False) == ((None, 0.78, 8192), None)
     assert asked[-1][4] == {
         "load_in_4bit": False,
+        "kv_bits": None,
         "offload": (None, 1.0),
         "prefill_chunk": None,
         "reserve": False,
@@ -5376,9 +5378,7 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
     # ... and is a request, so a load that cannot honour it says why.
     failing.append(True)
     backend.load_model(config, spec_draft_model = "org/d")
-    monkeypatch.setattr(
-        mlx_speculative, "speculation_refusal", lambda **_k: mlx_speculative.KV_QUANT
-    )
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: "refused")
     reasons = [
         entry["spec_fallback_reason"]
         for entry in (
@@ -5386,7 +5386,7 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
             backend.load_model(config, spec_draft_model = "org/d") and backend.models["org/text"],
         )
     ]
-    assert reasons == [mlx_speculative.RUNTIME_ERROR, mlx_speculative.KV_QUANT]
+    assert reasons == [mlx_speculative.RUNTIME_ERROR, "refused"]
     # A diffusion model gets no draft at load, so the resident batch cannot speculate on it either.
     failing.clear()
     monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
@@ -10838,6 +10838,20 @@ def _video_vlm_backend(monkeypatch, streams):
     backend._is_vlm = True
     backend._reads_vision = True
     return backend
+
+
+def test_a_quantized_speculative_load_replies_one_at_a_time(monkeypatch):
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: None)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._is_vlm, backend._kv_quant = True, {"kv_bits": 4}
+    assert backend._kv_policy_batch_reason(resident = True) is None
+    backend._speculative_draft = object()
+    assert "full-precision" in backend._kv_policy_batch_reason(resident = True)
+    # A budget alone leaves the caches at full precision.
+    backend._kv_quant, backend._kv_context_budget = {"kv_bits": None}, 1
+    assert backend._kv_policy_batch_reason(resident = True) is None
 
 
 def test_a_speculative_load_drafts_a_video_reply_on_its_expanded_prompt(monkeypatch):

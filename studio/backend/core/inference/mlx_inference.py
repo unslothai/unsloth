@@ -1431,6 +1431,7 @@ def mlx_resolve_drafter_offload(model_dir, knobs, drafter, *, auto: bool, **pric
             priced["pinned"],
             SimpleNamespace(path = drafter[0], builtin = drafter[1]),
             load_in_4bit = priced["load_in_4bit"],
+            kv_bits = priced.get("kv_bits"),
             **kwargs,
             **mlx_offload_route(plan),
         )[0]
@@ -3322,6 +3323,7 @@ def mlx_drafter_fit(
     prefill_chunk = None,
     baseline = None,
     reserve = True,
+    kv_bits = None,
 ):
     """``(attaches, fitted context or None)`` for *source*'s drafter on an mlx-vlm load of *model_dir*:
     only a priced fit reserves it, a pinned context must fit whole, and a ``costless`` one must fit
@@ -3336,6 +3338,8 @@ def mlx_drafter_fit(
         try:
             from core.inference.mlx_memory import mlx_fit_outcome
 
+            if kv_bits is not None and mlx_kv_quant_is_refused(model_dir, kv_bits):
+                kv_bits = None
             fit = functools.partial(
                 mlx_fit_outcome,
                 model_dir,
@@ -3345,6 +3349,7 @@ def mlx_drafter_fit(
                 vision = True,
                 offload = offload,
                 prefill_chunk = prefill_chunk,
+                kv_bits = kv_bits,
             )
             outcome, fitted = fit(drafter = (source.path, source.builtin))
             if outcome == "unsizable":
@@ -3365,6 +3370,7 @@ def mlx_prompt_cache_room(
     load_in_4bit: bool,
     offload = None,
     prefill_chunk = None,
+    kv_bits = None,
 ):
     """Bytes MLX's own cap leaves the prompt cache beside *source*'s drafter at *n_ctx*; None where unsized."""
     budget = mlx_memory_budget(retains_history = False)
@@ -3382,6 +3388,7 @@ def mlx_prompt_cache_room(
                 drafter = (source.path, source.builtin),
                 offload = offload,
                 prefill_chunk = prefill_chunk,
+                kv_bits = kv_bits,
             )
         except Exception as exc:
             logger.info("MLX prompt cache room beside %s not priced: %s", source.path, exc)
@@ -5997,7 +6004,6 @@ class MLXInferenceBackend:
         )
         if speculates:
             spec_reason = mlx_speculative.speculation_refusal(
-                kv_quant = kv_bits is not None or self._turboquant,
                 distributed = is_distributed,
                 lora = is_lora,
             )
@@ -6172,7 +6178,7 @@ class MLXInferenceBackend:
                     if spec_mode == "auto" and not spec_draft_model
                     else mlx_speculative.RUNTIME_ERROR
                 )
-            elif self._turboquant:
+            if self._turboquant:
                 self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
             use_vlm = False
         if model is None:
@@ -6254,6 +6260,17 @@ class MLXInferenceBackend:
                 allowed = spec_drafters_allowed,
             )
 
+            # As _fitted_context prices it: a refused quantization stays full width.
+            if not self._turboquant and kv_bits is not None and _eligibility is None:
+                _eligibility = _kv_quant_eligibility(
+                    self._model, use_vlm, _normalize_mlx_kv_bits(kv_bits)
+                )
+            _drafter_bits = (
+                _normalize_mlx_kv_bits(kv_bits)
+                if not self._turboquant and _eligibility and _eligibility[0] in ("full", "partial")
+                else None
+            )
+
             def _fits(source, reserve = True):
                 if not _priceable:
                     return None, None
@@ -6266,6 +6283,7 @@ class MLXInferenceBackend:
                     costless = spec_mode == "auto",
                     baseline = offload_baseline["route"],
                     reserve = reserve,
+                    kv_bits = _drafter_bits,
                     **_offloaded,
                 )
 
@@ -6329,7 +6347,12 @@ class MLXInferenceBackend:
             and getattr(self._speculative_draft, "drafter", None) is not None
         ):
             self._prompt_cache_room = mlx_prompt_cache_room(
-                model_dir, _served_ctx, _stretched[-1], load_in_4bit = load_in_4bit, **_offloaded
+                model_dir,
+                _served_ctx,
+                _stretched[-1],
+                load_in_4bit = load_in_4bit,
+                kv_bits = _drafter_bits,
+                **_offloaded,
             )
             if self._prompt_cache_room is not None:
                 logger.info(
@@ -8289,6 +8312,8 @@ class MLXInferenceBackend:
             return None
         # Only resident vision rows carry their own cache, where the quantization lives.
         if resident and self._is_vlm:
+            if self._kv_quant_bits() is not None and getattr(self, "_speculative_draft", None):
+                return "a speculative batch runs on full-precision KV caches"
             return _row_quantized_cache_gap()
         return "the load quantizes or budgets its KV cache, which a batch does not carry"
 
