@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""dp 2 x tp 2 gloo: a TP param in FSDP2 ignored_params is averaged over dp; replicas match a single process."""
+"""dp 2 x tp 2 gloo: a TP param in FSDP2 ignored_params is averaged over dp; replicas match a single process.
+Also when every trainable param is ignored, so FSDP2 manages none."""
 
 import multiprocessing
 import os
@@ -23,15 +24,21 @@ import test_tp_native_gloo as gloo  # noqa: E402
 _MAX_NORM = 0.05  # small enough that every step clips
 
 
-def _ignored_names(model):
+def _ignored_names(model, ignore_all = False):
     return [
         n
         for n, p in model.named_parameters()
-        if p.requires_grad and "layers.0." in n and ("q_proj" in n or "down_proj" in n)
+        if p.requires_grad
+        and (ignore_all or ("layers.0." in n and ("q_proj" in n or "down_proj" in n)))
     ]
 
 
-def _case_tp_fsdp2_ignored(rank, world, tmp):
+def _case_tp_fsdp2_ignored(
+    rank,
+    world,
+    tmp,
+    ignore_all = False,
+):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.tensor import DTensor
@@ -47,7 +54,7 @@ def _case_tp_fsdp2_ignored(rank, world, tmp):
     ids = _batch(ref, bsz = 4)
     mine = ids[2 * dp : 2 * dp + 2]
     tpn.apply_tensor_parallel(model, mesh["tp"])
-    names = _ignored_names(model)
+    names = _ignored_names(model, ignore_all)
     by_name = dict(model.named_parameters())
     ignored = {by_name[n] for n in names}
     native.shard_model(
@@ -90,7 +97,7 @@ def _case_tp_fsdp2_ignored(rank, world, tmp):
 gloo.CASES["tp_fsdp2_ignored"] = _case_tp_fsdp2_ignored
 
 
-def _spawn(world):
+def _spawn(world, **kwargs):
     """test_tp_native_gloo._spawn with this module's case registered in every spawned rank."""
     import tempfile
 
@@ -98,7 +105,7 @@ def _spawn(world):
     port = gloo._free_port()
     with tempfile.TemporaryDirectory() as tmp:
         procs = [
-            ctx.Process(target = _worker, args = (r, world, port, "tp_fsdp2_ignored", tmp, {}))
+            ctx.Process(target = _worker, args = (r, world, port, "tp_fsdp2_ignored", tmp, kwargs))
             for r in range(world)
         ]
         for p in procs:
@@ -117,8 +124,9 @@ def _worker(*args):
     gloo._worker(*args)
 
 
-def test_tp_param_in_ignored_params_is_averaged_over_dp():
-    results = _spawn(4)
+@pytest.mark.parametrize("ignore_all", [False, True], ids = ["some_ignored", "all_ignored"])
+def test_tp_param_in_ignored_params_is_averaged_over_dp(ignore_all):
+    results = _spawn(4, ignore_all = ignore_all)
     if results[0].get("unsupported"):
         pytest.skip("torch < 2.7: no fully_shard(ignored_params)")
     for res in results:
