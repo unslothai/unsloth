@@ -4,6 +4,7 @@
 import copy
 import json
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,11 @@ from transformers import PreTrainedTokenizerFast
 
 from core.training.dataset_audit import audit_dataset
 from core.training.token_preview_worker import _preview
+
+
+@pytest.fixture
+def needs_trl():
+    pytest.importorskip("trl", reason = "Dataset audit collation requires TRL")
 
 
 @pytest.fixture
@@ -62,6 +68,7 @@ def chat(user = "hello", assistant = "answer"):
     }
 
 
+@pytest.mark.usefixtures("needs_trl")
 def test_full_scan_finds_a_response_lost_beyond_the_preview_pool(tokenizer):
     dataset = Dataset.from_list([chat() for _ in range(100)] + [chat("long " * 100)])
     cfg = config(max_seq_length = 32)
@@ -83,6 +90,7 @@ def test_full_scan_finds_a_response_lost_beyond_the_preview_pool(tokenizer):
     assert full["status"] == "issues_found"
 
 
+@pytest.mark.usefixtures("needs_trl")
 def test_missing_response_is_distinct_from_truncated_response(tokenizer):
     dataset = Dataset.from_list([chat(), {"messages": [{"role": "user", "content": "hello"}]}])
     result = audit_dataset(dataset, tokenizer, config(), max_rows = None)
@@ -92,6 +100,7 @@ def test_missing_response_is_distinct_from_truncated_response(tokenizer):
 
 
 @pytest.mark.parametrize("format_name", ["chatml", "sharegpt", "alpaca"])
+@pytest.mark.usefixtures("needs_trl")
 def test_tokens_and_labels_agree_with_existing_preview(tokenizer, format_name):
     rows = {
         "chatml": [chat()],
@@ -117,6 +126,7 @@ def test_tokens_and_labels_agree_with_existing_preview(tokenizer, format_name):
 
 
 @pytest.mark.parametrize("format_type", ["raw", "auto"])
+@pytest.mark.usefixtures("needs_trl")
 def test_raw_text_retains_dropped_count_and_ignores_completion_masking(tokenizer, format_type):
     # Auto detection uses the first ten rows, just as training does.
     dataset = Dataset.from_list([{"text": "hello"}] * 10 + [{"text": " "}, {"text": None}])
@@ -133,6 +143,7 @@ def test_raw_text_retains_dropped_count_and_ignores_completion_masking(tokenizer
     assert any("dropped 2" in warning for warning in report["warnings"])
 
 
+@pytest.mark.usefixtures("needs_trl")
 def test_stream_scan_stops_without_consuming_a_lookahead(tokenizer):
     consumed = []
 
@@ -159,6 +170,7 @@ def test_full_stream_is_rejected_before_iteration(tokenizer):
         audit_dataset(IterableDataset.from_generator(rows), tokenizer, config(), max_rows = None)
 
 
+@pytest.mark.usefixtures("needs_trl")
 def test_pretokenized_labels_and_causal_shift_are_authoritative(tokenizer):
     dataset = Dataset.from_list(
         [
@@ -173,6 +185,7 @@ def test_pretokenized_labels_and_causal_shift_are_authoritative(tokenizer):
     assert report["rows_without_loss_after_truncation"] == 1
 
 
+@pytest.mark.usefixtures("needs_trl")
 def test_pretokenized_padding_and_assistant_mask_match_trl_collation(tokenizer):
     from core.training.dataset_audit import _label_rows
     from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
@@ -195,6 +208,7 @@ def test_pretokenized_padding_and_assistant_mask_match_trl_collation(tokenizer):
     assert expected == sum(label != -100 for label in labels[0][1:]) == 1
 
 
+@pytest.mark.usefixtures("needs_trl")
 def test_audit_keeps_training_format_detection_even_for_token_named_columns(tokenizer):
     from utils.datasets import format_and_template_dataset
 
@@ -207,6 +221,7 @@ def test_audit_keeps_training_format_detection_even_for_token_named_columns(toke
     assert report["format"] == training["final_format"]
 
 
+@pytest.mark.usefixtures("needs_trl")
 def test_pretokenized_padding_does_not_count_as_truncation(tokenizer):
     dataset = Dataset.from_list(
         [{"input_ids": [2, 1, 10, 11, 2], "attention_mask": [0, 1, 1, 1, 0]}]
@@ -232,6 +247,7 @@ def test_pretokenized_padding_does_not_count_as_truncation(tokenizer):
         "prompt_chat",
     ],
 )
+@pytest.mark.usefixtures("needs_trl")
 def test_counts_match_zoo_training_preparation_and_collation(tokenizer, kind):
     from types import SimpleNamespace
     from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
@@ -301,6 +317,7 @@ def test_counts_match_zoo_training_preparation_and_collation(tokenizer, kind):
 
 
 @pytest.mark.parametrize("limit", [1, 2])
+@pytest.mark.usefixtures("needs_trl")
 def test_pretokenized_truncation_recomputes_loss_targets(tokenizer, limit):
     dataset = Dataset.from_list([{"input_ids": [1, 10, 11], "labels": [-100, -100, 11]}])
     report = audit_dataset(dataset, tokenizer, config(max_seq_length = limit), max_rows = None)
@@ -308,9 +325,10 @@ def test_pretokenized_truncation_recomputes_loss_targets(tokenizer, limit):
 
 
 @pytest.mark.parametrize("limit", [2, 128])
+@pytest.mark.usefixtures("needs_trl")
 def test_retained_chat_tokens_keep_labels_and_training_truncation_policy(tokenizer, limit):
     row = chat()
-    row["input_ids"] = tokenizer.apply_chat_template(row["messages"])[:3]
+    row["input_ids"] = tokenizer.apply_chat_template(row["messages"], return_dict = False)[:3]
     row["labels"] = [-100] * len(row["input_ids"])
     report = audit_dataset(
         Dataset.from_list([row]),
@@ -323,11 +341,12 @@ def test_retained_chat_tokens_keep_labels_and_training_truncation_policy(tokeniz
     assert report["status"] == "issues_found"
 
 
+@pytest.mark.usefixtures("needs_trl")
 def test_mixed_chat_labels_follow_training_response_masking(tokenizer):
     from unsloth_zoo.dataset_utils import train_on_responses_only
 
     row = chat()
-    row["input_ids"] = tokenizer.apply_chat_template(row["messages"])
+    row["input_ids"] = tokenizer.apply_chat_template(row["messages"], return_dict = False)
     row["labels"] = row["input_ids"].copy()
     row["labels"][-2] = -100
     masker = train_on_responses_only(
@@ -341,6 +360,7 @@ def test_mixed_chat_labels_follow_training_response_masking(tokenizer):
     assert report["masking"]["applied"]
 
 
+@pytest.mark.usefixtures("needs_trl")
 def test_audit_loads_the_training_tokenizer_before_counting(tokenizer, tmp_path):
     from core.training.dataset_audit import _load_training_tokenizer
     from unsloth.tokenizer_utils import load_correct_tokenizer
@@ -360,6 +380,7 @@ def test_audit_loads_the_training_tokenizer_before_counting(tokenizer, tmp_path)
 
 
 @pytest.mark.parametrize("metadata", [{"filename": "train.py"}, {"speech": "transcript"}])
+@pytest.mark.usefixtures("needs_trl")
 def test_text_metadata_is_not_rejected_as_media(tokenizer, metadata):
     report = audit_dataset(
         Dataset.from_list([{**metadata, "text": "hello"}]), tokenizer, config(format_type = "raw")
@@ -377,6 +398,7 @@ def test_actual_media_is_still_refused(tokenizer):
         )
 
 
+@pytest.mark.usefixtures("needs_trl")
 def test_truncation_removes_the_entire_completion_even_without_response_masking(tokenizer):
     report = audit_dataset(
         Dataset.from_list([{"prompt": "hello " * 30, "completion": "answer"}]),
@@ -392,6 +414,7 @@ def test_truncation_removes_the_entire_completion_even_without_response_masking(
 
 
 @pytest.mark.parametrize("include_drop", [False, True])
+@pytest.mark.usefixtures("needs_trl")
 def test_row_expansion_cannot_invent_or_cancel_formatter_drops(tokenizer, include_drop):
     rows = [{"messages": chat()["messages"] * 2}]
     if include_drop:
@@ -413,6 +436,7 @@ def test_packing_is_not_given_unpacked_loss_statistics(tokenizer):
         audit_dataset(Dataset.from_list([chat()]), tokenizer, config(packing = True))
 
 
+@pytest.mark.usefixtures("needs_trl")
 def test_batch_size_does_not_change_effective_template_or_counts(tokenizer):
     dataset = Dataset.from_list([chat("hello " * i) for i in range(1, 10)])
     assert audit_dataset(dataset, tokenizer, config(), batch_size = 1) == audit_dataset(
@@ -422,6 +446,7 @@ def test_batch_size_does_not_change_effective_template_or_counts(tokenizer):
 
 @pytest.mark.parametrize("batch_size", [1, 64, 65])
 @pytest.mark.parametrize("head_has_bos", [False, True])
+@pytest.mark.usefixtures("needs_trl")
 def test_prompt_completion_batches_keep_trainings_global_bos_policy(
     tokenizer, batch_size, head_has_bos
 ):
@@ -482,6 +507,11 @@ def test_prompt_completion_batches_keep_trainings_global_bos_policy(
         "fallback_template",
         "bos_boundary",
     ],
+)
+@pytest.mark.usefixtures("needs_trl")
+@pytest.mark.skipif(
+    platform.system() == "Darwin" and platform.machine() == "arm64",
+    reason = "Dataset audit CLI does not support MLX hosts",
 )
 def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path, case):
     model = tmp_path / "tokenizer"
