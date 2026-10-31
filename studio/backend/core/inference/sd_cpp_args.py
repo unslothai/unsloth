@@ -418,10 +418,9 @@ METAL_MMAP_MIN_BUILD = 907
 _INSTALL_RECORD = ".unsloth-sd-cpp-install.json"
 
 
-# MOSS-Image negative-branch skip, per checkpoint, as the diffusers path (diffusion_moss_image.reference_uncond_skip):
-# SFT skips nothing; Base skips block 22 while sigma-percent of the shifted schedule is in 0 .. 0.5 (shift 5: sigma >=
-# 0.833, steps 0-12 of 25). The fork reads these as --extra-sample-args keys; a build without them ignores unknown keys
-# and keeps sd.cpp's own default, block 22 on every step. UNSLOTH_MOSS_REFERENCE_SKIP=0 sends nothing (that default).
+# MOSS-Image negative-branch skip, matching diffusion_moss_image.reference_uncond_skip: SFT skips nothing; Base skips
+# block 22 while sigma-percent is in 0 .. 0.5 (shift 5: steps 0-12 of 25). Builds without these --extra-sample-args keys
+# ignore them and keep sd.cpp's default (block 22 every step); UNSLOTH_MOSS_REFERENCE_SKIP=0 sends nothing.
 MOSS_REFERENCE_SKIP_ENV = "UNSLOTH_MOSS_REFERENCE_SKIP"
 MOSS_BASE_UNCOND_SKIP_END = 0.5
 
@@ -1078,7 +1077,6 @@ def build_img_gen_request(
     if guidance:
         sample_params["guidance"] = guidance
     if extra_sample_args:
-        # The server's sample_params parser reads it as sd-cli's --extra-sample-args.
         sample_params["extra_sample_args"] = str(extra_sample_args)
 
     req: dict = {
