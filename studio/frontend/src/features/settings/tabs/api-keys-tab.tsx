@@ -36,12 +36,12 @@ import {
 import { CreateKeyForm } from "../components/create-key-form";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { KeylessApiAccessLink } from "../components/keyless-api-access-link";
-import { McpAccessSection } from "../components/mcp-access-section";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { MonitorLink } from "../components/monitor-link";
 import { SettingsSection } from "../components/settings-section";
+import { UnslothStudioMcpRow } from "../components/unsloth-studio-mcp-row";
 import { ApiExamplesPanel } from "../components/api-example-tabs";
 import { useApiTunnelPref } from "../components/usage-examples";
 import { usePublishAccessUrls } from "../hooks/use-publish-access-urls";
@@ -294,7 +294,7 @@ export function ApiKeysTab() {
 
       {/* Installation-wide, so owner-only routes. */}
       <SettingsSection title="Access & monitoring">
-        {isOwner ? <McpAccessSection apiKey={freshKey} /> : null}
+        {isOwner ? <UnslothStudioMcpRow /> : null}
         {isOwner ? <KeylessApiAccessLink /> : null}
         <MonitorLink hideHeading={true} />
       </SettingsSection>
