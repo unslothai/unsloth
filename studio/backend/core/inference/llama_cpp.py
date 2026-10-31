@@ -7086,11 +7086,14 @@ def _expert_spill_places_tensors_on_cpu(
 # GPU cache of host-resident experts (ggml-org/llama.cpp#29887); "auto" is sized by the
 # fork's fitter (unslothai/llama.cpp#251). One run, so a retry can strip it.
 _MOE_CACHE_AUTO_TOKENS = ("--moe-cache-mib", "auto")
-# --moe-cache-mib auto only beats the --fit split at a middling resident expert share r
+# --moe-cache-mib auto beats the --fit split up to a resident expert share r of the max below
 # (unknown r keeps the split). Cache vs split decode / prompt t/s, L4 gemma-4-26B-A4B:
 # r 0.23 23.5/384 vs 24.5/448, r 0.53 44.9/556 vs 31.2/593, r 0.82 48.5/592 vs 42.0/897.
 # RTX PRO 6000 Qwen3.8-Flash-Next: r <= 0.745 decode +24-42%, r 0.846 prompt -6-40%.
-_MOE_CACHE_MIN_RESIDENT_SHARE = 0.35
+# No lower bound: below it the split computes most experts on the CPU. Flash-Next UD-IQ4_XS on a
+# 32 GB card (r 0.32): cache/split decode 1.47x (48 cores) and 2.6-3.3x (8 threads), prompt 0.86x.
+# llama.cpp's own auto still refuses a cache too small to hold the experts of two tokens.
+_MOE_CACHE_MIN_RESIDENT_SHARE = 0.0
 _MOE_CACHE_MAX_RESIDENT_SHARE = 0.75
 # Drafted launches may get the cache. L4 gemma-4 decode cache/split at r 0.53/0.82/0.23:
 # MTP 1.76x/1.25x/0.96x, ngram-mod 1.19x/0.87x/1.11x (the band covers the losses).
@@ -7147,12 +7150,15 @@ def _moe_spill_raise_keeps_experts(
     *,
     switch: str = "auto",
 ) -> bool:
-    """Keep the spill micro-batch raise? Nothing spilling = no; unpriceable = yes."""
+    """Keep the spill micro-batch raise? Same loss rule when nothing spills before it
+    (Flash-Next UD-IQ4_XS fully resident on a 96 GB card: 2k prompt +29-37% at ub 2048,
+    decode equal; Qwen3.6 MTP with a predicted 100% -> 98% share: prompt +50%, chat
+    -0.4%), but an unpriceable after-share keeps a fully resident load as it is."""
     if switch != "auto":
         return switch == "on"
     if share_before is None:
         return True
-    if share_before >= 1.0:
+    if share_before >= 1.0 and share_after is None:
         return False
     if share_after is None:
         return True
@@ -27112,7 +27118,16 @@ class LlamaCppBackend:
                         not (gpu_memory_mode == "manual" and gpu_layers >= 0)
                         and not intent.cpu_fallback
                         and not _device_selection_is_cpu(extra_args, os.environ)
-                        and (use_fit or _expert_spill_places_tensors_on_cpu(extra_args, os.environ))
+                        and (
+                            # A trailing user --fit off wins: no fitter spills for the larger buffer.
+                            (
+                                use_fit
+                                and fit_is_effectively_on(
+                                    ["--fit", "on", *(extra_args or ())], os.environ
+                                )
+                            )
+                            or _expert_spill_places_tensors_on_cpu(extra_args, os.environ)
+                        )
                     )
                     _moe_spill_discrete_gpu = bool(
                         _moe_experts_on_host
@@ -27162,8 +27177,13 @@ class LlamaCppBackend:
                             _share_before, _share_after, switch = _moe_ub_switch
                         ):
                             logger.info(
-                                "MoE experts are offloaded to system RAM; raising "
-                                "--ubatch-size %s -> %s for faster prompt processing.",
+                                "MoE experts %s; raising --ubatch-size %s -> %s for "
+                                "faster prompt processing.",
+                                (
+                                    "all stay on the GPU"
+                                    if _share_after is not None and _share_after >= 1.0
+                                    else "are offloaded to system RAM"
+                                ),
                                 (
                                     _pre_raise[1]
                                     if _pre_raise[1] is not None
