@@ -437,7 +437,12 @@ def moss_is_base_checkpoint(*identities: Optional[str]) -> bool:
 
 def moss_uncond_skip_sample_args(*identities: Optional[str]) -> Optional[str]:
     """sd.cpp ``extra_sample_args`` for a MOSS-Image checkpoint, or None for the binary's every-step default."""
-    if (os.environ.get(MOSS_REFERENCE_SKIP_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+    if (os.environ.get(MOSS_REFERENCE_SKIP_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return None
     if moss_is_base_checkpoint(*identities):
         return f"moss_uncond_skip_start=0,moss_uncond_skip_end={MOSS_BASE_UNCOND_SKIP_END:g}"

@@ -36,7 +36,14 @@ def _no_kill_switch(monkeypatch):
     monkeypatch.delenv(MOSS_REFERENCE_SKIP_ENV, raising = False)
 
 
-def _state(repo, gguf, *, mode = "oneshot", server = None, base_repo = None):
+def _state(
+    repo,
+    gguf,
+    *,
+    mode = "oneshot",
+    server = None,
+    base_repo = None,
+):
     fam = detect_family_for_pick(repo, gguf, None)
     return bk._SdState(
         repo_id = repo,
@@ -96,7 +103,9 @@ def test_policy_strings_and_kill_switch(monkeypatch):
 
 
 def test_request_builder_only_adds_the_key_when_given():
-    assert "extra_sample_args" not in build_img_gen_request(prompt = "p", steps = 25).get("sample_params", {})
+    assert "extra_sample_args" not in build_img_gen_request(prompt = "p", steps = 25).get(
+        "sample_params", {}
+    )
     req = build_img_gen_request(prompt = "p", steps = 25, extra_sample_args = BASE_ARGS)
     assert req["sample_params"]["extra_sample_args"] == BASE_ARGS
 
@@ -116,7 +125,10 @@ def test_oneshot_argv_carries_the_checkpoint_window(pick, expected):
 
 def test_a_base_gguf_resolved_to_the_sft_base_repo_still_windows():
     # The Base pick is recognised from its repo / filename even when base_repo resolved to the family's SFT base.
-    assert _server_sample_params(*_BASE, base_repo = "OpenMOSS-Team/MOSS-Image-SFT")["extra_sample_args"] == BASE_ARGS
+    assert (
+        _server_sample_params(*_BASE, base_repo = "OpenMOSS-Team/MOSS-Image-SFT")["extra_sample_args"]
+        == BASE_ARGS
+    )
 
 
 def test_kill_switch_sends_nothing_on_both_transports(monkeypatch):
