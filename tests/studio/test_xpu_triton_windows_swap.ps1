@@ -69,6 +69,8 @@ function Invoke-BoundedPythonProbe {
         if (-not $script:State.Imports) { return @{ Ok = $false; Output = "" } }
         return @{ Ok = $true; Output = "TRITONVER=`nHEALTHY=1`nPAIRED=0" }
     }
+    # A probe that fails part way still printed the fields it read first.
+    if ($script:State.PartialSpec) { return @{ Ok = $false; Output = "TRITONWIN=$($script:State.TritonWin)`nTRITONXPU=$($script:State.PartialSpec)`n" } }
     if (-not $script:State.Readable) { return @{ Ok = $false; Output = "" } }
     # XPUOK: the stubbed venv's torch requires 3.5.0.
     $ok = if ($script:State.XpuDist -eq "3.5.0") { 1 } else { 0 }
@@ -89,7 +91,8 @@ function Fast-Download {
 function Fast-Uninstall {
     $script:Calls += ,("uninstall " + ($args -join " "))
     Save-EnvSeen
-    if ($script:UninstallExit -eq 0) { $script:State.TritonWin = ""; $script:State.Imports = $false }
+    if ("$args" -like "*pytorch-triton-xpu*") { $script:State.XpuDist = ""; $script:State.Imports = $false }
+    elseif ($script:UninstallExit -eq 0) { $script:State.TritonWin = ""; $script:State.Imports = $false }
     # A failed uninstall that already removed some of the files.
     elseif ($script:UninstallBreaks) { $script:State.Imports = $false }
     $global:LASTEXITCODE = $script:UninstallExit
@@ -118,7 +121,7 @@ $manifestFile = Join-Path $venvRoot "unsloth_install_manifest.json"
 $xpuSpec = "pytorch-triton-xpu==3.5.0"
 $generic = "triton-windows<3.7"
 $xpuOk = @{ XpuDist = "3.5.0"; Imports = $true; XpuRt = $true }
-$backOk = @{ TritonWin = "3.6.0.post25"; Imports = $true }
+$backOk = @{ TritonWin = "3.6.0.post25"; Imports = $true; Readable = $true }
 
 # Runs the post-stack swap from a venv where triton-windows shadows torch's XPU triton.
 function Invoke-Swap($Exits = @(), $Leaves = @($xpuOk), [string]$TritonWin = "3.9.0.post30", [string]$Spec = $xpuSpec,
@@ -176,7 +179,7 @@ Write-Host "=== swap: resolver inputs isolated ==="
 foreach ($n in $envNames) { Set-Item "Env:$n" "inherited-$n" }
 $r = Try-Scenario "env isolation" { Invoke-Swap -Leaves @($null, $backOk) }
 $clean = "|||||0"
-Check "fetch, uninstall, install and fallback run with UV_OVERRIDE / UV_EXCLUDE / UV_CONSTRAINT / PIP_CONSTRAINT cleared and hashes relaxed" ($r -and $script:EnvSeen.Count -eq 4 -and @($script:EnvSeen | Where-Object { $_ -ne $clean }).Count -eq 0)
+Check "fetch, uninstalls, install and fallback run with UV_OVERRIDE / UV_EXCLUDE / UV_CONSTRAINT / PIP_CONSTRAINT cleared and hashes relaxed" ($r -and $script:EnvSeen.Count -eq 5 -and @($script:EnvSeen | Where-Object { $_ -ne $clean }).Count -eq 0)
 Check "and every inherited value is restored afterwards" (@($envNames | Where-Object { [Environment]::GetEnvironmentVariable($_) -ne "inherited-$_" }).Count -eq 0)
 foreach ($n in $envNames) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
 $r = Try-Scenario "unset env" { Invoke-Swap }
@@ -236,6 +239,22 @@ $r = Try-Scenario "generic payload, XPU record" {
     Invoke-Swap -TritonWin "" -XpuDist "3.5.0" -Leaves @($xpuOk) -Extra @{ XpuRt = $false }
 }
 Check "an importable generic triton under the XPU dist's record is reinstalled from the XPU wheel" ($r -and $r.Installs.Count -eq 1 -and $r.Calls[0] -like "download *" -and $r.StackExit -eq 0 -and $r.Manifest)
+
+Write-Host "=== swap: unreadable metadata ==="
+$r = Try-Scenario "managed, metadata unreadable, broken" { Invoke-Swap -TritonWin "" -Imports $false -Managed $true -Extra @{ Readable = $false } }
+Check "installer-managed: a broken triton fails setup even when the metadata probe could not read torch's requirement" ($r -and $r.StackExit -ne 0 -and (Has-Error $r))
+$r = Try-Scenario "metadata fails part way" { Invoke-Swap -TritonWin "" -Extra @{ PartialSpec = $xpuSpec } }
+Check "a metadata probe that fails after reading torch's requirement still repairs from the XPU wheel" ($r -and $r.Calls.Count -ge 2 -and $r.Calls[0] -like "download *")
+
+Write-Host "=== swap: the triton-windows fallback ==="
+$r = Try-Scenario "fallback after an unverified XPU install" { Invoke-Swap -Leaves @(@{ XpuDist = "3.5.0"; Imports = $true; Readable = $false }, $backOk) }
+Check "the XPU dist is uninstalled before the triton-windows fallback, so its record does not stay over generic files" ($r -and @($r.Calls | Where-Object { $_ -like "uninstall *pytorch-triton-xpu*" }).Count -eq 1 -and $r.Calls[-1] -eq "install --force-reinstall --no-deps $generic" -and $r.StackExit -eq 0)
+$r = Try-Scenario "fallback installs nothing" { Invoke-Swap -Exits @(1, 0) -Leaves @($null, @{ Imports = $true }) }
+Check "a fallback that exits 0 but leaves no triton-windows record is not verified" ($r -and $r.StackExit -ne 0 -and -not $r.Manifest)
+$r = Try-Scenario "managed, fallback replaces an XPU triton" { Invoke-Swap -TritonWin "" -XpuDist "3.4.0" -Exits @(1, 0) -Leaves @($null, $backOk) -Managed $true }
+Check "installer-managed: falling back to triton-windows over a triton that was not triton-windows fails setup" ($r -and $r.StackExit -ne 0 -and (Has-Error $r))
+$r = Try-Scenario "fallback replaces an XPU triton" { Invoke-Swap -TritonWin "" -XpuDist "3.4.0" -Exits @(1, 0) -Leaves @($null, $backOk) }
+Check "a direct update that falls back over a non-triton-windows triton warns and keeps going" ($r -and $r.StackExit -eq 0 -and -not (Has-Error $r))
 
 Write-Host "=== swap: installer-managed setup, offline ==="
 $r = Try-Scenario "managed, offline, broken" { Invoke-Swap -TritonWin "" -Imports $false -Offline $true -Managed $true }
@@ -311,7 +330,7 @@ try {
         Invoke-Expression $swap
         @{ Calls = $script:Calls }
     }
-    Check "swap: a backup with no triton files is repaired from the XPU wheel, with nothing to uninstall" ($r -and $r.Calls.Count -ge 2 -and $r.Calls[0] -like "download *" -and $r.Calls[1] -like "install --force-reinstall --no-deps *pytorch_triton_xpu*" -and @($r.Calls | Where-Object { $_ -like "uninstall *" }).Count -eq 0)
+    Check "swap: a backup with no triton files is repaired from the XPU wheel, with no triton-windows to uninstall" ($r -and $r.Calls.Count -ge 2 -and $r.Calls[0] -like "download *" -and $r.Calls[1] -like "install --force-reinstall --no-deps *pytorch_triton_xpu*" -and @($r.Calls | Where-Object { $_ -like "uninstall triton-windows*" }).Count -eq 0)
     $script:Offline = $true
     $r = Try-Scenario "fast path, payload missing, offline" {
         $SkipPythonDeps = $true; $_xpuIsReachable = $true; $script:IsIntelXpu = $true; $installedTorchTag = "xpu"
@@ -351,17 +370,11 @@ try {
     $s = Try-Scenario "swap probe, the XPU dist torch requires" { Get-XpuTritonState }
     Check "swap probe: the XPU triton torch requires is XpuOk" ($s -and $s.Known -and $s.XpuOk)
 
-    # The XPU dist's record over generic files: no Intel backend, or another version, is not the XPU payload.
+    # A backends/intel directory proves nothing (a generic overwrite leaves the old one behind): it does not decide.
     $intelGone = Join-Path (Join-Path (Join-Path $site "triton") "backends") "intel_gone"
     Rename-Item -LiteralPath $intel -NewName "intel_gone"
-    $s = Try-Scenario "swap probe, generic payload" { Get-XpuTritonState }
-    Check "swap probe: triton files without the Intel backend under the XPU dist's record are not XpuOk" ($s -and $s.Known -and -not $s.XpuOk -and $s.XpuDist -eq "3.5.0")
-    $r = Try-Scenario "fast path, generic payload" {
-        $SkipPythonDeps = $true; $_xpuIsReachable = $true; $script:IsIntelXpu = $true; $installedTorchTag = "xpu"
-        Invoke-Expression $fastPath
-        $SkipPythonDeps
-    }
-    Check "fast path: generic triton files under the XPU dist's record force the dependency pass" ($r -eq $false)
+    $s = Try-Scenario "swap probe, no Intel directory" { Get-XpuTritonState }
+    Check "swap probe: XpuOk does not depend on a triton/backends/intel directory" ($s -and $s.Known -and $s.XpuOk)
     Rename-Item -LiteralPath $intelGone -NewName "intel"
     $tinit = Join-Path (Join-Path $site "triton") "__init__.py"
     Set-Content -LiteralPath $tinit -Value "__version__ = '3.4.0'`ndef jit(f):`n    return f" -Encoding ascii
@@ -370,6 +383,16 @@ try {
     Set-Content -LiteralPath $tinit -Value "__version__ = '3.5.0'`ndef jit(f):`n    return f" -Encoding ascii
     # Same size, same second: the cached bytecode would still say 3.4.0.
     Remove-Item -LiteralPath (Join-Path (Join-Path $site "triton") "__pycache__") -Recurse -Force -ErrorAction SilentlyContinue
+
+    # No parser importable (-S: neither packaging nor pip): an exact pin with a local label matches its own wheel.
+    $torchInfo = Join-Path $site "torch-2.9.0+xpu.dist-info"
+    $xpuInfo = Join-Path $site "pytorch_triton_xpu-3.5.0.dist-info"
+    New-DistInfo "torch-2.9.0+xpu.dist-info" "torch" "2.9.0+xpu" "pytorch-triton-xpu==3.5.0+git1b0418a9; platform_system == 'Windows'"
+    New-DistInfo "pytorch_triton_xpu-3.5.0.dist-info" "pytorch-triton-xpu" "3.5.0+git1b0418a9"
+    $s = Try-Scenario "swap probe, local label" { Get-XpuTritonState }
+    Check "swap probe: ==3.5.0+git... matches an installed 3.5.0+git... without a version parser" ($s -and $s.Known -and $s.XpuOk)
+    New-DistInfo "torch-2.9.0+xpu.dist-info" "torch" "2.9.0+xpu" "$xpuSpec; platform_system == 'Windows'"
+    New-DistInfo "pytorch_triton_xpu-3.5.0.dist-info" "pytorch-triton-xpu" "3.5.0"
 
     # A packaging that is found but does not import: the next parser decides, the metadata stays readable.
     $pkg = Join-Path $site "packaging"
