@@ -10749,6 +10749,8 @@ async def _auto_switch_npu_model(
                     # Re-read under the gate: another request may have loaded it while this one waited.
                     if await asyncio.to_thread(_loaded_satisfies, named_model):
                         return
+                    # Again under the gates: a chat model can have loaded since the preflight.
+                    _refuse_unless_any_load("llm", named_model, fastapi_request)
                     require_no_foreign_generations(path = switch_path)
                     prior_marker = _get_preview_resident()
                     loaded_ok = False

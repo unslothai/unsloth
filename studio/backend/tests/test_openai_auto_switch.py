@@ -12296,6 +12296,19 @@ def test_an_npu_model_named_by_a_request_switches_when_on(monkeypatch):
     assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
 
 
+def test_a_chat_model_that_lands_before_the_npu_gates_still_refuses_a_chat_tools_switch(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    # The preflight sees no chat model; one is resident by the time the swap gates are held.
+    checks: list = []
+    monkeypatch.setattr(
+        inference_route, "_chat_model_resident", lambda **_kw: checks.append(1) or len(checks) > 1
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _as_chat_tools_key(OWNER, _run_hook, _NPU_MODEL, serves_npu = True)
+    assert excinfo.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=llm")
+    assert rec.calls == [] and len(checks) == 2
+
+
 def test_an_npu_switch_loads_with_the_saved_context_length(monkeypatch):
     backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
     monkeypatch.setattr(
