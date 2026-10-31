@@ -14,7 +14,7 @@ import sys
 import torch
 from unsloth_zoo.utils import Version
 from .utils import (
-    _lora_subclass,
+    _LORA_DTENSOR,
     _has_active_dora_adapter,
     _has_active_lora_bias,
     _has_multiple_active_adapters,
@@ -314,12 +314,13 @@ def _matmul_lora_ext(X, X_lora, W, W_quant, A, B, S, bias):
     XA = torch.matmul(X_lora.reshape(-1, X_lora.shape[-1]), A.to(dtype).t())
     out2d = out.view(-1, out.shape[-1])
     if bias is None:
-        addmm_(out2d, XA, B.to(dtype).t(), alpha = S)
+        out2d = addmm_(out2d, XA, B.to(dtype).t(), alpha = S)
     else:
         # PEFT's rounding order: (lora_B(x) + bias) * scaling, then + base. No add(alpha = S): Inductor
         # (torch 2.13) miscompiles it traced inside these Functions.
-        out2d.add_(torch.addmm(bias.to(dtype), XA, B.to(dtype).t()).mul_(S))
-    return out
+        out2d = out2d.add_(torch.addmm(bias.to(dtype), XA, B.to(dtype).t()).mul_(S))
+    # A subclass operand comes back from the in-place update as its own type; keep it.
+    return out if type(out2d) is type(out) else out2d.view(out.shape)
 
 
 def _add_lora_dX(dX, y_dB, A, S, mask, p):
@@ -390,10 +391,9 @@ def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
 
 
 def _lora_traced_ok(*lora_weights, X = None):
-    # A subclass X or LoRA weight (DTensor, ...) keeps the base-then-LoRA order: matmul_lora falls back
-    # for it, and the recorded decision must match so the backward does not take the shared / fused
-    # path either.
-    if _lora_subclass(X, *lora_weights):
+    # A DTensor X or LoRA weight keeps the base-then-LoRA order: matmul_lora falls back for it, and the
+    # recorded decision must match so the backward does not take the shared / fused path either.
+    if any(isinstance(t, _LORA_DTENSOR) for t in (X, *lora_weights)):
         return False
     # Traced, the fused order needs nn.Parameter LoRA weights: plain tensors of dynamic shape can
     # recompile with a zero output width on torch 2.14.

@@ -1848,13 +1848,13 @@ def fast_linear_forward(
             # Without out=, mv / mm follow a different autocast dtype; the in-place update does not.
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out.addmv_(B, temp_lora, alpha = lora_S)
+            out = out.addmv_(B, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
             temp_lora = torch_mm(X.view(bsz, in_dim), A.t(), out = temp_lora)
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out.addmm_(temp_lora, B.t(), alpha = lora_S)
+            out = out.addmm_(temp_lora, B.t(), alpha = lora_S)
         out = out.view(bsz, 1, out_dim)
 
     if bias is not None:
@@ -1875,9 +1875,9 @@ def _lora_first_addmm(X, Wt, XA, Bt, alpha):
         out = torch.addmm(XA.new_zeros(1), XA, Bt, beta = 0, alpha = alpha)
         return torch.addmm(out, X, Wt)
     out = torch.empty((X.shape[0], Wt.shape[1]), dtype = X.dtype, device = X.device)
-    out.addmm_(XA, Bt, alpha = alpha, beta = 0)
-    out.addmm_(X, Wt)
-    return out
+    # The in-place update returns a subclass operand's type (a plain buffer stays plain otherwise).
+    out = out.addmm_(XA, Bt, alpha = alpha, beta = 0)
+    return out.addmm_(X, Wt)
 
 
 # Traced, x.addmm_ copies x first; this op stays in place. No derivative: grad off only.
@@ -1941,6 +1941,20 @@ if _HAS_ADDMM_OP:
             _HAS_LORA_FIRST_OP = False
 
 
+# Tracing infrastructure (make_fx, export) wraps plain tensors; those are not user subclasses.
+_LORA_PLAIN_TYPES = (torch.Tensor, torch.nn.Parameter)
+try:
+    from torch._subclasses.fake_tensor import FakeTensor as _FakeTensor
+    from torch._subclasses.functional_tensor import FunctionalTensor as _FunctionalTensor
+    _LORA_PLAIN_TYPES += (_FakeTensor, _FunctionalTensor)
+except Exception:
+    pass
+
+
+def _lora_subclass(*tensors):
+    return any(t is not None and type(t) not in _LORA_PLAIN_TYPES for t in tensors)
+
+
 def addmm_(
     out,
     A,
@@ -1953,7 +1967,7 @@ def addmm_(
         and torch.compiler.is_compiling()
         and not torch.is_grad_enabled()
         and type(alpha) in (int, float)
-        # The opaque op returns nothing, so a subclass result type would be lost.
+        # The op returns nothing, so a subclass operand takes the method below, which returns its type.
         and not _lora_subclass(out, A, B)
     ):
         torch.ops.unsloth.addmm_(out, A, B, alpha, beta)
@@ -1971,22 +1985,6 @@ try:
 except Exception:
     _LORA_DTENSOR = ()
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass as _is_wrapper_subclass
-
-# Tensor types the fused order handles. The plain accumulator would drop any other subclass (a
-# DTensor's placements, a __torch_function__ override), so those keep the base-then-LoRA order.
-# Fake and functional tensors are tracing infrastructure (make_fx, export), not user subclasses.
-_LORA_PLAIN_TYPES = (torch_Tensor, torch.nn.Parameter)
-try:
-    from torch._subclasses.fake_tensor import FakeTensor as _FakeTensor
-    from torch._subclasses.functional_tensor import FunctionalTensor as _FunctionalTensor
-    _LORA_PLAIN_TYPES += (_FakeTensor, _FunctionalTensor)
-except Exception:
-    pass
-
-
-def _lora_subclass(*tensors):
-    return any(t is not None and type(t) not in _LORA_PLAIN_TYPES for t in tensors)
-
 
 _functorch_active = getattr(torch._C, "_are_functorch_transforms_active", lambda: False)
 _is_dynamo_compiling = getattr(torch.compiler, "is_dynamo_compiling", lambda: False)
@@ -2023,7 +2021,7 @@ def _lora_fused_ok(W, W_quant, dtype):
     if W_quant is None:
         # A wrapper subclass (TorchAO NF4Tensor, ...) can report a float dtype over packed storage and only
         # implement its own mm.
-        if _is_wrapper_subclass(W) or _lora_subclass(W):
+        if _is_wrapper_subclass(W):
             return False
         return W.dtype == dtype
     return _quant_state_dtype(W_quant) == dtype
@@ -2042,13 +2040,6 @@ def _shares_storage(out, *tensors):
         )
     except RuntimeError:
         return True
-
-
-def _base_matmul(X, W, out):
-    if out is not None and torch.is_grad_enabled() and (X.requires_grad or W.requires_grad):
-        # matmul(out = ...) does not support autograd.
-        return out.copy_(torch_matmul(X, W.t()))
-    return torch_matmul(X, W.t(), out = out)
 
 
 def matmul_lora(
@@ -2101,8 +2092,8 @@ def matmul_lora(
         # Compiled inside torch.func transforms or native forward-mode AD: the op has no forward-mode or
         # batching rule, and a traced beta=0 addmm under jvp crashes, so keep the base-then-LoRA order there.
         and not (_is_compiling() and (_functorch_active() or _forward_ad_active()))
-        # A subclass operand or buffer (DTensor, ...) would be lost in the plain accumulator (W: below).
-        and not _lora_subclass(X, A, B, XA, out)
+        # A DTensor operand's placements would be lost in the plain accumulator (W is checked below).
+        and not any(isinstance(t, _LORA_DTENSOR) for t in (X, A, B, XA))
         and _lora_fused_ok(W, W_quant, dtype)
         # A caller's buffer must already be the output and must not share storage with a base operand.
         and (
@@ -2121,8 +2112,8 @@ def matmul_lora(
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
-            addmm_(out, XA, B, alpha = s, beta = 0)
-            out.addmm_(X, W.t())
+            out = addmm_(out, XA, B, alpha = s, beta = 0)
+            out = out.addmm_(X, W.t())
         else:
             W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
             if not _is_compiling():
@@ -2142,18 +2133,7 @@ def matmul_lora(
         A = None
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
-        # A subclass with a caller's XA in X's dtype: the in-place fused order this replaces is not autocast,
-        # so neither is the base GEMM here, keeping the output in the dtype the accumulate below needs.
-        if (
-            XA is not None
-            and XA.dtype == dtype
-            and W.dtype == dtype
-            and _lora_subclass(X, W, A, B, XA, out)
-        ):
-            with torch.autocast(X.device.type, enabled = False):
-                out = _base_matmul(X, W, out)
-        else:
-            out = _base_matmul(X, W, out)
+        out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
 
@@ -2161,7 +2141,6 @@ def matmul_lora(
         A, B = A.t(), B.t()
         if XA is None:
             XA = torch_matmul(X, A.to(dtype))
-        # Keep the returned tensor: a subclass A, B or XA returns its own type from the in-place op.
         out = addmm_(out, XA, B.to(dtype), alpha = s)
 
     return out.view(batch, seq_len, -1) if reshape else out
