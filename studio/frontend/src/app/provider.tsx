@@ -56,6 +56,7 @@ import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
+import { installDismissClickStreakGuard } from "@/lib/dismiss-click-streak";
 import { useDocumentFlag } from "@/lib/document-flag";
 import {
   CHAT_SETTINGS_INSET_VAR,
@@ -1184,6 +1185,7 @@ export function AppProvider({ children }: AppProviderProps) {
   useEffect(() => {
     dismissStartToasts();
   }, [pathname]);
+  useEffect(() => installDismissClickStreakGuard(), []);
   return (
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>

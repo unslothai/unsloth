@@ -40,7 +40,11 @@ from unsloth.utils import (
     enable_padding_free_metadata,
     enable_sample_packing,
 )
-from unsloth.utils.packing import _stateful_mixer_kind, patch_hybrid_linear_attention_varlen
+from unsloth.utils.packing import (
+    _stateful_mixer_kind,
+    packing_boundary_blocker,
+    patch_hybrid_linear_attention_varlen,
+)
 from unsloth.utils.token_budget import install_token_budget
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
@@ -1829,6 +1833,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         model = args[0] if len(args) >= 1 else kwargs.get("model")
         model_config = None
+        model_types = ()
         is_vlm = False
         is_unsupported_model = False
         is_hybrid = False
@@ -1905,6 +1910,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         is_ring_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1 and (
             getattr(config_arg, "context_parallel_backend", None) or "ring"
         ) == "ring"
+        boundary_blocker = packing_boundary_blocker(model, model_types)
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
             "UNSLOTH_RETURN_LOGITS", "0"
@@ -1922,13 +1928,29 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or forward_rejects_packing
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
+        if boundary_blocker is not None:
+            if (
+                not blocked
+                and not requested_pack
+                and (
+                    getattr(config_arg, "padding_free", None) is True
+                    or _should_auto_padding_free(config_arg)
+                )
+            ):
+                print(
+                    f"Unsloth: Padding-free batching off: {boundary_blocker} mixes tokens across "
+                    "packed documents."
+                )
+            blocked = True
         if blocked:
             if hasattr(config_arg, "packing"):
                 setattr(config_arg, "packing", False)
             if hasattr(config_arg, "padding_free"):
                 setattr(config_arg, "padding_free", False)
         # TRL resolves eval_packing on its own; packed eval batches would hit ring attention's varlen refusal.
-        if is_ring_context_parallel and getattr(config_arg, "eval_packing", None):
+        if (is_ring_context_parallel or boundary_blocker is not None) and getattr(
+            config_arg, "eval_packing", None
+        ):
             setattr(config_arg, "eval_packing", False)
 
         if blocked and requested_pack:
@@ -1947,6 +1969,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             elif is_ring_context_parallel:
                 reason = "ring context parallelism"
+            elif boundary_blocker is not None:
+                reason = f"{boundary_blocker} mixes tokens across packed documents"
             elif forward_rejects_packing:
                 # Name the real blocker (for a string `model=`, the resolved class).
                 blocker = (

@@ -11,7 +11,9 @@ from transformers import TextIteratorStreamer, TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
 import contextlib
+import inspect
 import json
+import re
 import sys
 import threading
 import torch
@@ -693,6 +695,32 @@ class _StopSequenceStreamer:
             abort()
 
 
+_CUSTOM_GENERATE_REJECTED_KWARGS = ("logits_processor", "stopping_criteria")
+
+
+def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
+    """Drops kwargs a custom-code generate rejects (no presence penalty or early cancel there)."""
+    if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
+        return generation_kwargs
+    return {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
+
+
+def _processor_takes_text_first(processor) -> bool:
+    """LFM3-Omni's processor is (text, audio, ..., images); the usual VLM order is (images, text)."""
+    # unsloth_zoo wraps __call__ as (*args, **kwargs); read the first class that names its arguments.
+    for cls in type(processor).__mro__:
+        call = cls.__dict__.get("__call__")
+        if call is None:
+            continue
+        try:
+            params = list(inspect.signature(call).parameters.values())[1:]
+        except (TypeError, ValueError):
+            return False
+        if params and params[0].kind is not inspect.Parameter.VAR_POSITIONAL:
+            return params[0].name == "text"
+    return False
+
+
 # LlamaModel_fast_forward cuts input_ids at max_seq_length, so decoding past it crashes; FastModel's stock forward does not.
 def _truncates_past_window(model) -> bool:
     return any(
@@ -852,6 +880,12 @@ def _diffusion_frame_relay(
             logger.debug("Dropped a diffusion canvas frame: %s", exc)
 
     return on_frame
+
+
+# o200k_harmony's non-reserved special tokens (tokenizer_config.json added_tokens_decoder).
+_HARMONY_PROTOCOL_TOKEN_RE = re.compile(
+    r"<\|(?:start|end|message|channel|constrain|return|call|startoftext|endoftext|endofprompt)\|>"
+)
 
 
 class InferenceBackend:
@@ -2165,12 +2199,21 @@ class InferenceBackend:
                         input_text = _render_plain_vision(vision_messages)
                     else:
                         raise
-            inputs = processor(
-                attached[0] if len(attached) == 1 else attached,
-                input_text,
-                add_special_tokens = False,
-                return_tensors = "pt",
-            ).to(model.device)
+            _images = attached[0] if len(attached) == 1 else attached
+            if _processor_takes_text_first(processor):
+                inputs = processor(
+                    text = input_text,
+                    images = _images,
+                    add_special_tokens = False,
+                    return_tensors = "pt",
+                ).to(model.device)
+            else:
+                inputs = processor(
+                    _images,
+                    input_text,
+                    add_special_tokens = False,
+                    return_tensors = "pt",
+                ).to(model.device)
             prompt_text = input_text
         else:
             formatted_prompt = self.format_chat_prompt(
@@ -2274,7 +2317,9 @@ class InferenceBackend:
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        gen_outputs["sequences"] = model.generate(**generation_kwargs)
+                        gen_outputs["sequences"] = model.generate(
+                            **_supported_generate_kwargs(model, generation_kwargs)
+                        )
                     except Exception as e:
                         err["msg"] = str(e)
                         stop_streamer.abort()
@@ -2471,7 +2516,9 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        gen_outputs["sequences"] = model.generate(**generation_kwargs)
+                        gen_outputs["sequences"] = model.generate(
+                            **_supported_generate_kwargs(model, generation_kwargs)
+                        )
                     except Exception as e:
                         err["msg"] = str(e)
                         logger.error(f"Audio input generation error in thread: {e}")
@@ -2863,7 +2910,9 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact token count.
-                        gen_outputs["sequences"] = model.generate(**generation_kwargs)
+                        gen_outputs["sequences"] = model.generate(
+                            **_supported_generate_kwargs(model, generation_kwargs)
+                        )
                     except Exception as e:
                         err["msg"] = str(e)
                         stop_streamer.abort()
@@ -3685,9 +3734,8 @@ class InferenceBackend:
     ) -> str:
         """Strip leaked response-boundary tokens after streaming."""
         if self._is_gpt_oss_model():
-            # Strip harmony protocol tokens (e.g. <|return|>) that leak past HarmonyTextStreamer.
-            import re
-            text = re.sub(r"<\|[a-z_]+\|>", "", text)
+            # Harmony vocabulary only: a literal <|im_end|> in an answer is content.
+            text = _HARMONY_PROTOCOL_TOKEN_RE.sub("", text)
             return text.strip()
 
         tokenizer = self.models.get(self.active_model_name, {}).get("tokenizer")

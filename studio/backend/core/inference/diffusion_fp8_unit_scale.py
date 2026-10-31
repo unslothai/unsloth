@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """sm_89 precise-accumulate fp8: unit-scale _scaled_mm beats torchao row-wise (fast accumulate stays
-on torchao, no gain); UNSLOTH_DIFFUSION_FP8_UNIT_SCALE=0 off."""
+on torchao, no gain); UNSLOTH_DIFFUSION_FP8_UNIT_SCALE=0 off. Installed only where it can
+engage: installing tags the process-wide compile cache key."""
 
 from __future__ import annotations
 
@@ -13,6 +14,10 @@ UNIT_SCALE_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE"
 MIN_ROWS_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS"
 # Unit-scale wins from M = 256 up (L4: row-wise 2.5-4x slower from 512); below, tens of microseconds either way.
 _DEFAULT_MIN_ROWS = 256
+# Eager epilogue chunk size, avoids a full fp32 [M, N] buffer.
+_EAGER_EPILOGUE_ELEMS = 1 << 24
+_OFF_WORDS = ("0", "off", "false", "no", "none")
+_ON_WORDS = ("1", "on", "true", "yes", "force")
 _ADA_CAPS = ((8, 9),)
 
 _COUNTS = {"unit_scale": 0, "rowwise": 0}
@@ -21,9 +26,9 @@ _STATE: dict = {"installed": False, "orig": None, "caps": {}}
 
 def _mode() -> str:
     v = (os.environ.get(UNIT_SCALE_ENV) or "").strip().lower()
-    if v in ("0", "off", "false", "no"):
+    if v in _OFF_WORDS:
         return "off"
-    if v in ("1", "on", "true", "yes", "force"):
+    if v in _ON_WORDS:
         return "force"
     return "auto"
 
@@ -42,6 +47,41 @@ def _compiling() -> bool:
         return bool(torch.compiler.is_compiling())
     except Exception:  # noqa: BLE001 - no torch.compiler: nothing is being traced
         return False
+
+
+def _scale_epilogue(
+    acc: Any, a_scale: Any, b_scale: Any, bias: Optional[Any], output_dtype: Any
+) -> Any:
+    """``(acc * a_scale * b_scale + bias)`` in fp32, rounded once to ``output_dtype``. Eager runs it per row chunk
+    in place (bitwise identical) to bound peak memory."""
+    import torch
+
+    if _compiling():
+        out = acc * a_scale.float()
+        out.mul_(b_scale.float())
+        if bias is not None:
+            out.add_(bias.float())
+        return out.to(output_dtype)
+    sa, sb = a_scale.float(), b_scale.float()
+    bf = bias.float() if bias is not None else None
+    rows = int(acc.shape[0])
+    step = max(1, _EAGER_EPILOGUE_ELEMS // max(1, int(acc.shape[1])))
+    out = acc if acc.dtype == output_dtype else torch.empty_like(acc, dtype = output_dtype)
+    for start in range(0, rows, step):
+        stop = min(rows, start + step)
+        tmp = acc[start:stop] * sa[start:stop]
+        tmp.mul_(sb)
+        if bf is not None:
+            tmp.add_(bf)
+        out[start:stop].copy_(tmp)
+        # Free before the next chunk, else two are live.
+        del tmp
+    return out
+
+
+def can_engage(fast_accum: Optional[bool]) -> bool:
+    """False only for fast accumulate outside ``force``; None (unknown) installs."""
+    return _mode() == "force" or fast_accum is not True
 
 
 def stats() -> dict:
@@ -82,12 +122,13 @@ def _device_caps() -> dict:
     return caps
 
 
-def install(logger: Any = None) -> bool:
-    """Patch torchao's fp8 addmm with the dispatcher; idempotent, False when off / no qualifying GPU / layout moved."""
+def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
+    """Patch torchao's fp8 addmm with the dispatcher; idempotent, False when off / no qualifying GPU / layout moved /
+    it cannot engage."""
     if _STATE["installed"]:
         return True
     mode = _mode()
-    if mode == "off":
+    if mode == "off" or not can_engage(fast_accum):
         return False
     caps = _device_caps()
     if mode == "auto" and not any(c in _ADA_CAPS for c in caps.values()):
@@ -147,12 +188,7 @@ def install(logger: Any = None) -> bool:
             )
             if isinstance(acc, tuple):  # torch < 2.5 returns (out, amax)
                 acc = acc[0]
-            # bf16 * fp32 promotes without an upcast copy; in place saves an fp32 [M, N] buffer eagerly, same result.
-            out = acc * a_scale.float()
-            out.mul_(b_scale.float())
-            if bias is not None:
-                out.add_(bias.float())
-            return out.to(output_dtype)
+            return _scale_epilogue(acc, a_scale, b_scale, bias, output_dtype)
         if not _compiling():
             _COUNTS["rowwise"] += 1
         return orig(
