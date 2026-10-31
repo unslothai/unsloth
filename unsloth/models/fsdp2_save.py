@@ -598,7 +598,7 @@ def gather_on_accelerator_if_it_fits(model):
     (torchao's QAT convert). On one GPU they sit on the GPU, so the writer keeps the gathered weights
     on its accelerator when they fit there (with 1 GiB or 10% of the card spare), and the checkpoint
     is the one a single GPU writes. Otherwise they go to the CPU as for any other export."""
-    on_cpu = dict(offload_to_cpu = True, offload_4bit = True)
+    on_cpu = dict(offload_to_cpu = True, offload_4bit = True, converts_in_place = True)
     if not isinstance(model, torch.nn.Module):
         return on_cpu
     DTensor = _dtensor_class()
@@ -636,10 +636,14 @@ def gather_on_accelerator_if_it_fits(model):
         # Not on the CPU: CUDA computes torchao's `scale = max / 7.5` as max * (1 / 7.5), the CPU
         # divides, and for fp32 weights the two differ in the last bit of most scales.
         return dict(on_cpu, convert_on = device)
-    return dict(offload_to_cpu = False, offload_4bit = False)
+    return dict(offload_to_cpu = False, offload_4bit = False, converts_in_place = True)
 
 
-def _host_ram_refusal(method, need):
+def _host_ram_refusal(
+    method,
+    need,
+    what = "gathered weights",
+):
     """None when `need` gathered bytes fit this host's available RAM, else the refusal message."""
     if os.environ.get("UNSLOTH_FSDP2_EXPORT_SKIP_RAM_CHECK", "0") == "1":
         return None
@@ -652,7 +656,7 @@ def _host_ram_refusal(method, need):
     return (
         f"Unsloth: `{method}` under FSDP2 gathers the whole model into the host RAM of the rank that "
         f"exports: that needs about {(need + headroom) / _GIB:.1f} GiB ({need / _GIB:.1f} GiB of "
-        f"gathered weights + {headroom / _GIB:.1f} GiB headroom), but only {available / _GIB:.1f} GiB "
+        f"{what} + {headroom / _GIB:.1f} GiB headroom), but only {available / _GIB:.1f} GiB "
         "is available. Save the adapter with `model.save_pretrained(save_directory)` (it gathers only "
         "the LoRA weights), then in a single process load that folder with "
         f"`FastLanguageModel.from_pretrained` and call `{method}` there. Set "
@@ -744,6 +748,7 @@ def fsdp2_export_on_writer(
     offload_to_cpu = True,
     offload_4bit = False,
     convert_on = None,
+    converts_in_place = False,
 ):
     """An export that rebuilds or quantizes the whole model in one process (GGUF, torchao, OpenVINO),
     on a model FSDP2 shards. Every rank must call it. The writer (global rank 0, or the lowest rank
@@ -758,7 +763,14 @@ def fsdp2_export_on_writer(
     refusal = None
     if writer:
         need = _gathered_host_bytes(model, trainable_only, include, offload_to_cpu, offload_4bit)
-        refusal = _host_ram_refusal(method, need)
+        what = "gathered weights"
+        if converts_in_place:
+            # The kept module tree holds the originals while their converted copies are built.
+            need, what = (
+                _accelerator_convert_bytes(need),
+                "gathered weights and their converted copy",
+            )
+        refusal = _host_ram_refusal(method, need, what)
     if dist is not None:
         refusal = _share_from_writer(dist, writer, writer_rank, "fit", refusal)
     if refusal:
