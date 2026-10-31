@@ -2319,7 +2319,8 @@ def backfill_fp8_modules_to_convert(
         return None
     try:
         weight_map = _load_fp8_weight_map(
-            model_name, local_files_only, token, revision, subfolder, cache_dir, variant = variant
+            model_name, local_files_only, token, revision, subfolder, cache_dir, variant = variant,
+            index_only = True,  # runs before the guarded weight download: never fetch the weights here
         )
     except Exception:
         return None
@@ -2343,8 +2344,10 @@ def _load_fp8_weight_map(
     subfolder = None,
     cache_dir = None,
     variant = None,
+    index_only = False,
 ):
-    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`."""
+    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`.
+    `index_only` never downloads a remote single file just to list its keys."""
 
     def _local_path(filename):
         return (
@@ -2389,7 +2392,7 @@ def _load_fp8_weight_map(
     try:
         if is_local and os.path.exists(_local_path(single_file)):
             single_path = _local_path(single_file)
-        elif not is_local:
+        elif not is_local and not index_only:
             single_path = _remote_path(single_file)
         else:
             return None

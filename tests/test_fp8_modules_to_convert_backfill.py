@@ -75,4 +75,22 @@ def test_forwards_the_checkpoint_locator_options():
     )
     # subfolder / cache_dir / variant pick which index and shards are probed.
     ((args, kwargs),) = calls
-    assert args == ("repo", False, "tok", "rev", "sub", "/c") and kwargs == {"variant": "fp8"}
+    assert args == ("repo", False, "tok", "rev", "sub", "/c") and kwargs == {"variant": "fp8", "index_only": True}
+
+
+def test_index_only_never_downloads_a_single_file(monkeypatch):
+    import sys
+    node = next(
+        n for n in ast.parse(SRC).body if isinstance(n, ast.FunctionDef) and n.name == "_load_fp8_weight_map"
+    )
+    ns = {"os": os}
+    exec(ast.get_source_segment(SRC, node), ns)
+    fetched = []
+
+    def hf_hub_download(repo, filename, **k):
+        fetched.append(filename)
+        raise FileNotFoundError(filename)  # no index on this repo
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(hf_hub_download = hf_hub_download))
+    assert ns["_load_fp8_weight_map"]("org/single-file-fp8", False, None, index_only = True) is None
+    assert fetched == ["model.safetensors.index.json"]
