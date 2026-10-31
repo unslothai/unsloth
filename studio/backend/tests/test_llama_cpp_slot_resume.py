@@ -603,8 +603,11 @@ def test_every_slot_save_test_fakes_the_disk():
     unfaked = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
-            calls = {n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "")
-                     for n in ast.walk(node) if isinstance(n, ast.Call)}
+            calls = {
+                n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "")
+                for n in ast.walk(node)
+                if isinstance(n, ast.Call)
+            }
             if "save_slots_for_resume" in calls and "_fake_disk" not in calls:
                 unfaked.append(node.name)
     assert not unfaked, f"call _fake_disk(monkeypatch) first: {unfaked}"
