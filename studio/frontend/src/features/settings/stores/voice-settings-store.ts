@@ -466,17 +466,28 @@ const quotaSafeLocalStorage = {
     const state = parsed.state;
     const recents = state?.recentDictations;
     if (!state || !Array.isArray(recents)) return;
-    // Halve down to empty, since another store may already have consumed the quota.
+    const retry = (): boolean => {
+      try {
+        localStorage.setItem(key, JSON.stringify(parsed));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    // Base64 audio dominates the payload. Drop it from the oldest entries
+    // first so the text history survives instead of halving whole rows.
+    for (let index = recents.length - 1; index >= 0; index -= 1) {
+      if (!recents[index].audioDataUrl) continue;
+      delete recents[index].audioDataUrl;
+      if (retry()) return;
+    }
+    // Still over quota: halve down to empty, since another store may already
+    // have consumed the remaining space.
     let keep = Math.min(QUOTA_TRIM_KEEP, recents.length);
     for (;;) {
       keep = keep >= recents.length ? Math.floor(recents.length / 2) : keep;
-      try {
-        state.recentDictations = recents.slice(0, keep);
-        localStorage.setItem(key, JSON.stringify(parsed));
-        return;
-      } catch {
-        // Still over quota: trim harder.
-      }
+      state.recentDictations = recents.slice(0, keep);
+      if (retry()) return;
       if (keep === 0) return;
       keep = Math.floor(keep / 2);
     }

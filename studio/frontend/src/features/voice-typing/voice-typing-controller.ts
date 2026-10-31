@@ -754,9 +754,14 @@ export class VoiceTypingController {
 
     const template =
       llmPostProcessPrompt.trim() || DEFAULT_LLM_POST_PROCESS_PROMPT;
+    // Transcripts are data, not instructions: never let a dictated tag close
+    // the wrapper (or open a new one) inside the prompt.
+    const safeText = rawText.replace(/<\/?transcript>/gi, (tag) =>
+      tag.replace("<", "&lt;").replace(">", "&gt;"),
+    );
     const userContent = template.includes("${output}")
-      ? template.replaceAll("${output}", rawText)
-      : `${template}\n\n<transcript>\n${rawText}\n</transcript>`;
+      ? template.replaceAll("${output}", safeText)
+      : `${template}\n\n<transcript>\n${safeText}\n</transcript>`;
 
     const controller = new AbortController();
     this.llmAbortController = controller;

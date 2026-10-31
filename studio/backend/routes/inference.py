@@ -25458,6 +25458,14 @@ async def stt_keep_alive(
     from core.inference import stt_registry
 
     if keep_alive_seconds is not None:
+        # A timer is derived from this value; a NaN/infinite or negative one
+        # either raises in the scheduler or pins the model indefinitely.
+        if not math.isfinite(keep_alive_seconds) or keep_alive_seconds < 0:
+            raise HTTPException(
+                status_code = 422,
+                detail = "keep_alive_seconds must be a finite non-negative number.",
+            )
+        keep_alive_seconds = min(keep_alive_seconds, 86_400.0)
         await asyncio.to_thread(stt_registry.set_keep_alive_seconds, keep_alive_seconds)
     target = _resolve_serving_stt_engine(engine) if engine is not None else None
     result = await asyncio.to_thread(stt_registry.keep_alive, target, model)

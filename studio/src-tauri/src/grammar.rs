@@ -247,6 +247,37 @@ const ORDINAL_WORDS: &str = r"(?:first|second|third|fourth|fifth|sixth|seventh|e
 const MONTH_WORDS: &str = r"(?:january|february|march|april|may|june|july|august|september|october|november|december)";
 const YEAR_WORDS: &str = r"(?:(?:nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)){1,2})";
 const CURRENCY_WORDS: &str = r"(?:(?:pakistani|indian|us|american|australian|canadian|british|european)\s+)?(?:dollars?|euros?|pounds?|rupees?|dirhams?|riyals?|yen|yuan|rmb|won|taka|afghanis?|usd|eur|gbp|pkr|inr|aed|sar|cny|jpy|krw|bdt|afn)";
+/// "10 by 12" is a size next to these words, not a ratio.
+const DIMENSION_CONTEXT_WORDS: &[&str] = &[
+    "room",
+    "screen",
+    "table",
+    "desk",
+    "board",
+    "paper",
+    "sheet",
+    "photo",
+    "image",
+    "canvas",
+    "window",
+    "frame",
+    "bed",
+    "garden",
+    "pool",
+    "plot",
+    "card",
+    "poster",
+    "tile",
+    "panel",
+    "display",
+    "monitor",
+    "wall",
+    "size",
+    "dimension",
+    "wide",
+    "length",
+    "height",
+];
 
 static CURRENCY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
@@ -367,13 +398,26 @@ static DOMAIN_RE: LazyLock<Regex> = LazyLock::new(|| {
 static KILO_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(\d+)\s+k\b").expect("kilo regex"));
 static APPROX_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bapproximately\s+").expect("approximately regex")
+    // Only a quantity is shorthand-ed; ordinary prose keeps the word.
+    Regex::new(r"(?i)\bapproximately\s+([$€£₹¥₩₽₺₦₱฿₫₪₴₸৳₨]?\d[\d,.]*)")
+        .expect("approximately regex")
 });
 static EQUAL_TO_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(?:is\s+)?equal\s+to\b").expect("equal-to regex")
 });
 static TIMES_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(\d+)\s+times\s+(\d+)\b").expect("times regex")
+    // "3 times 2 years ago" is a cadence, not multiplication.
+    Regex::new(
+        r"(?i)\b(\d+)\s+times\s+(\d+)(?:\s+(years?|months?|weeks?|days?|hours?|minutes?|seconds?))?\b",
+    )
+    .expect("times regex")
+});
+static CURRENCY_RANGE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // "10 to 20 dollars" / "between 10 and 20 dollars": the unit applies to both.
+    Regex::new(&format!(
+        r"(?i)(?:[$€£₹¥₩₽₺₦₱฿₫₪₴₸৳₨]\s*)?(\d[\d,]*(?:\.\d+)?)\s+(to|and)\s+(?:[$€£₹¥₩₽₺₦₱฿₫₪₴₸৳₨]\s*)?(\d[\d,]*(?:\.\d+)?)\s+({CURRENCY_WORDS})\b"
+    ))
+    .expect("currency range regex")
 });
 static RATIO_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(\d+)\s+by\s+(\d+)\b").expect("ratio regex")
@@ -1052,6 +1096,20 @@ fn normalize_numbers(text: &str) -> (String, usize) {
         })
         .into_owned();
 
+    out = CURRENCY_RANGE_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let (symbol, spaced) = currency_symbol(&caps[4]);
+            let first = format_numeric_amount(&caps[1]);
+            let second = format_numeric_amount(&caps[3]);
+            changes.set(changes.get() + 1);
+            if spaced {
+                format!("{symbol} {first} {} {symbol} {second}", &caps[2])
+            } else {
+                format!("{symbol}{first} {} {symbol}{second}", &caps[2])
+            }
+        })
+        .into_owned();
+
     out = NUMERIC_CURRENCY_RE
         .replace_all(&out, |caps: &regex::Captures<'_>| {
             let (symbol, spaced) = currency_symbol(&caps[2]);
@@ -1115,7 +1173,12 @@ fn normalize_numbers(text: &str) -> (String, usize) {
         })
         .into_owned();
 
-    out = APPROX_RE.replace_all(&out, "~").into_owned();
+    out = APPROX_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            changes.set(changes.get() + 1);
+            format!("~{}", &caps[1])
+        })
+        .into_owned();
 
     (out, changes.get())
 }
@@ -1287,6 +1350,9 @@ fn normalize_math(text: &str) -> (String, usize) {
 
     out = TIMES_RE
         .replace_all(&out, |caps: &regex::Captures<'_>| {
+            if caps.get(3).is_some() {
+                return caps[0].to_string();
+            }
             count();
             format!("{}*{}", &caps[1], &caps[2])
         })
@@ -1299,10 +1365,28 @@ fn normalize_math(text: &str) -> (String, usize) {
         })
         .into_owned();
 
+    let ratio_source = out.clone();
     out = RATIO_RE
         .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let start = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            let end = caps.get(0).map(|m| m.end()).unwrap_or(0);
+            let before = ratio_source
+                .get(start.saturating_sub(48)..start)
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let after = ratio_source
+                .get(end..(end + 48).min(ratio_source.len()))
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let dimension = DIMENSION_CONTEXT_WORDS
+                .iter()
+                .any(|word| before.contains(word) || after.contains(word));
             count();
-            format!("{}/{}", &caps[1], &caps[2])
+            if dimension {
+                format!("{}x{}", &caps[1], &caps[2])
+            } else {
+                format!("{}/{}", &caps[1], &caps[2])
+            }
         })
         .into_owned();
 
@@ -1644,6 +1728,23 @@ mod tests {
 
     fn fix(text: &str) -> String {
         correct(text, "en", &[]).0
+    }
+
+    #[test]
+    fn keeps_prose_and_cadence_that_look_like_math() {
+        let approx = fix("i will approximately arrive at noon");
+        assert!(approx.contains("approximately arrive"), "{approx}");
+        let cadence = fix("i visited 3 times 2 years ago");
+        assert!(cadence.contains("3 times 2 years ago"), "{cadence}");
+        assert!(!cadence.contains("3*2"), "{cadence}");
+        let range = fix("the price is 10 to 20 dollars");
+        assert!(range.contains("$10 to $20"), "{range}");
+        let between = fix("the price is between 10 and 20 dollars");
+        assert!(between.contains("between $10 and $20"), "{between}");
+        let room = fix("the room is 10 by 12");
+        assert!(room.contains("10x12"), "{room}");
+        let ratio = fix("the ratio is 10 by 20");
+        assert!(ratio.contains("10/20"), "{ratio}");
     }
 
     #[test]

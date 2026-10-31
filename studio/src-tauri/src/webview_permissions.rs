@@ -74,7 +74,15 @@ fn write_saved_state(app: &AppHandle, state: u8) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    std::fs::write(path, format!("{}\n", state_name(state))).map_err(|error| error.to_string())
+    // Write beside the target and rename so a concurrent reader never sees a
+    // half-written file (or an empty one after a crash).
+    let temporary = path.with_extension("state.tmp");
+    std::fs::write(&temporary, format!("{}\n", state_name(state)))
+        .map_err(|error| error.to_string())?;
+    std::fs::rename(&temporary, &path).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        error.to_string()
+    })
 }
 
 /// Load the saved answer and wire the gate. Call once, after the main window exists.

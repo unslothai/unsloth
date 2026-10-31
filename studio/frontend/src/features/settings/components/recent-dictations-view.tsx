@@ -85,6 +85,9 @@ interface DiffToken {
   changed: boolean;
 }
 
+/** ~16 MB of Uint32 cells at the absolute worst case. */
+const MAX_DIFF_CELLS = 4_000_000;
+
 function tokenizeTranscript(text: string): string[] {
   return text.match(/\s+|[^\s]+/g) ?? [];
 }
@@ -95,6 +98,11 @@ function diffTranscript(original: string, corrected: string): DiffToken[] {
   const after = tokenizeTranscript(corrected);
   const rows = before.length;
   const cols = after.length;
+  // The LCS table is rows*cols Uint32s. A very long dictation would allocate
+  // hundreds of megabytes, so it degrades to plain corrected text instead.
+  if ((rows + 1) * (cols + 1) > MAX_DIFF_CELLS) {
+    return after.map((text) => ({ text, changed: false }));
+  }
   const lcs = Array.from({ length: rows + 1 }, () =>
     new Uint32Array(cols + 1),
   );
@@ -172,6 +180,9 @@ function DictationAudioPlayer({ src }: { src: string }) {
       audio.removeEventListener("ended", onEnded);
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("play", onPlay);
+      // Release the decoded media instead of leaving it attached until GC.
+      audio.removeAttribute("src");
+      audio.load();
       audioRef.current = null;
     };
   }, [src]);
