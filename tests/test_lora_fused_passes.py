@@ -556,10 +556,26 @@ print("OK")
 """
 
 
+def _skip_without_triton():
+    # A fresh interpreter imports unsloth.kernels without this process's test stubs, so it needs triton.
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec("triton")
+    except ValueError:
+        # A stub module in sys.modules with no spec.
+        spec = None
+    # unsloth_zoo's stand-in, while its finder is installed, is not a real triton either.
+    found = spec is not None and spec.origin != "triton_stub"
+    if not found:
+        pytest.skip("triton is not installed")
+
+
 @pytest.mark.parametrize("param", [False, True])
 def test_dynamic_compile_with_a_rank_equal_to_the_first_length(param):
     # torch 2.14: dynamic-shape plain-tensor LoRA weights once recompiled to a width-0 dQ; they keep the
     # base-then-LoRA order when traced. Fresh interpreter: depends on Dynamo state.
+    _skip_without_triton()
     import os
     import subprocess
     import sys
