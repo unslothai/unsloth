@@ -14023,3 +14023,53 @@ def test_h3_reference_video_frames_are_rgb_without_an_extra_copy(monkeypatch):
     frames, _, _ = h3.decode_h3_reference_video(blob, decode_audio = False)
     assert frames and all(frame.mode == "RGB" for frame in frames)
     assert converts == []
+
+
+def test_h3_staged_reference_frames_match_one_save_per_frame(tmp_path):
+    """Repeated frame objects (24 fps upsampling) and the writer threads leave the files a plain loop writes."""
+    import hashlib
+
+    from PIL import Image
+
+    from core.inference import video_minimax_h3 as h3
+
+    distinct = [
+        Image.new("RGB", (64, 48), (index * 9 % 256, index, 255 - index)) for index in range(7)
+    ]
+    frames = [distinct[index // 2] for index in range(13)] + [distinct[0]]
+    (tmp_path / "head").mkdir()
+    staged = h3.stage_h3_references(
+        h3.MiniMaxH3References(videos = ((frames, None, None),)), tmp_path / "head"
+    )
+    expected = tmp_path / "expected"
+    expected.mkdir()
+    for frame_index, frame in enumerate(frames):
+        frame.save(expected / f"{frame_index:05d}.png", format = "PNG", compress_level = 1)
+
+    directory = tmp_path / "head" / "ref-video-00"
+    assert staged.videos == (str(directory),)
+    names = sorted(path.name for path in directory.iterdir())
+    assert names == sorted(path.name for path in expected.iterdir())
+    for name in names:
+        assert (
+            hashlib.sha256((directory / name).read_bytes()).digest()
+            == hashlib.sha256((expected / name).read_bytes()).digest()
+        )
+
+
+def test_h3_staged_reference_frames_raise_the_first_failure_in_frame_order(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from core.inference import video_minimax_h3 as h3
+
+    frames = [Image.new("RGB", (16, 16), (index, 0, 0)) for index in range(8)]
+    real_save = Image.Image.save
+
+    def failing_save(self, fp, *args, **kwargs):
+        if self.getpixel((0, 0))[0] in (3, 6):
+            raise OSError(f"disk full at {self.getpixel((0, 0))[0]}")
+        return real_save(self, fp, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "save", failing_save)
+    with pytest.raises(OSError, match = "disk full at 3"):
+        h3.stage_h3_references(h3.MiniMaxH3References(videos = ((frames, None, None),)), tmp_path)

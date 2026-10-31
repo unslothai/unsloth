@@ -1001,6 +1001,48 @@ class MiniMaxH3StagedReferences:
     audios: tuple[str, ...] = ()
 
 
+# Pillow's zlib encoder releases the GIL, so a few threads write a reference video's PNGs in parallel.
+H3_REF_FRAME_WRITERS = 4
+
+
+def _write_h3_reference_frames(directory: Path, frames: Any) -> None:
+    """Write ``frames`` as 00000.png onward. A frame object repeated to reach 24 fps is encoded once and its bytes
+    written to each of its files; each file is what ``frame.save(path)`` writes."""
+    import io
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Keyed by identity: ``frames`` holds every object, so no id is reused while this runs.
+    slots: dict[int, tuple[Any, list[Path]]] = {}
+    for frame_index, frame in enumerate(frames):
+        slots.setdefault(id(frame), (frame, []))[1].append(directory / f"{frame_index:05d}.png")
+
+    def write(slot: tuple[Any, list[Path]]) -> None:
+        frame, paths = slot
+        if len(paths) == 1:
+            frame.save(paths[0], format = "PNG", compress_level = 1)
+            return
+        buffer = io.BytesIO()
+        frame.save(buffer, format = "PNG", compress_level = 1)
+        data = buffer.getvalue()
+        for path in paths:
+            path.write_bytes(data)
+
+    work = list(slots.values())
+    workers = min(H3_REF_FRAME_WRITERS, len(work), os.cpu_count() or 1)
+    if workers <= 1:
+        for slot in work:
+            write(slot)
+        return
+    pool = ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "h3-ref-frames")
+    try:
+        futures = [pool.submit(write, slot) for slot in work]
+        for future in futures:
+            # The first failure in frame order is raised, as the sequential loop would.
+            future.result()
+    finally:
+        pool.shutdown(wait = True, cancel_futures = True)
+
+
 def stage_h3_references(
     references: MiniMaxH3References, scratch: Path
 ) -> MiniMaxH3StagedReferences:
@@ -1018,8 +1060,7 @@ def stage_h3_references(
     for index, (frames, waveform, sample_rate) in enumerate(references.videos):
         directory = scratch / f"ref-video-{index:02d}"
         directory.mkdir()
-        for frame_index, frame in enumerate(frames):
-            frame.save(directory / f"{frame_index:05d}.png", format = "PNG", compress_level = 1)
+        _write_h3_reference_frames(directory, frames)
         videos.append(str(directory))
         if waveform is None:
             # Positional pairing cannot express "skip this one", so stop pairing here.
