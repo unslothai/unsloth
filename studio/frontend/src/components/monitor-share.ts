@@ -35,6 +35,15 @@ export function memoryShare(
   return { unsloth, other: used - unsloth, free: totalGb - used };
 }
 
+/** llama.cpp's inference GPUs share no backend with the displayed ones ("cuda+vulkan" includes "cuda"). */
+export function inferenceGpuDisjoint(
+  systemBackend: string | null | undefined,
+  inferenceBackend: string | null | undefined,
+): boolean {
+  if (!systemBackend || !inferenceBackend) return false;
+  return !inferenceBackend.split("+").includes(systemBackend);
+}
+
 /**
  * Loaded models that report a size, largest first. `gpuOnly` (the VRAM split): only models known to sit
  * on the displayed GPUs, so not llama.cpp's when it runs on a separate, other-vendor inference GPU.

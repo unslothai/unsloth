@@ -81,6 +81,7 @@ import {
   memorySegments,
   memoryShare,
   modelBreakdown,
+  inferenceGpuDisjoint,
   modelShares,
   unslothPoolGb,
 } from "@/components/monitor-share";
@@ -658,7 +659,11 @@ export function ResourcesTab() {
     !unifiedPool &&
     !memoryDisplay.sharedOnly &&
     vram.cards.some((card) => card.shared_memory !== true && card.unified_memory !== true);
-  const models = modelShares(loadedModels, discreteVram, separateInferenceGpu !== null);
+  const models = modelShares(
+    loadedModels,
+    discreteVram,
+    inferenceGpuDisjoint(systemInfo.gpu?.backend, separateInferenceGpu?.backend),
+  );
   const processMb =
     systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
   const unslothRamGb = unslothPoolGb(

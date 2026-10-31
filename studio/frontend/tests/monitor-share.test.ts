@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  inferenceGpuDisjoint,
   memorySegments,
   unslothPoolGb,
   memoryShare,
@@ -111,7 +112,7 @@ test("the VRAM split counts only models known to sit on the reported GPUs", () =
   assert.deepEqual(modelShares(entries).map((model) => model.id), ["gpu", "other"]);
   for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
     const src = readSrc(file);
-    assert.match(src, /modelShares\(loadedModels, discreteVram, separateInferenceGpu !== null\)/);
+    assert.match(src, /inferenceGpuDisjoint\(systemInfo\.gpu\?\.backend, separateInferenceGpu\?\.backend\)/);
     // "No model loaded" only when nothing is loaded, not when a model sits outside this pool.
     assert.match(src, /noModels=\{breakdown !== null && loadedModels\.length === 0\}/);
   }
@@ -138,4 +139,13 @@ test("llama.cpp on a separate, other-vendor inference GPU is not billed to the d
   assert.deepEqual(modelShares(entries, true, false).map((model) => model.id), ["gguf", "img"]);
   // The RAM split is untouched.
   assert.deepEqual(modelShares(entries, false, true).map((model) => model.id), ["gguf", "img"]);
+});
+
+test("a combined inference inventory that includes the displayed backend is not elsewhere", () => {
+  // get_mixed_vulkan_inference_gpu_info: llama.cpp built with CUDA and Vulkan reports the CUDA cards too.
+  assert.equal(inferenceGpuDisjoint("cuda", "cuda+vulkan"), false);
+  assert.equal(inferenceGpuDisjoint("cuda", "vulkan"), true);
+  assert.equal(inferenceGpuDisjoint("cuda", "rocm"), true);
+  assert.equal(inferenceGpuDisjoint("cuda", null), false);
+  assert.equal(inferenceGpuDisjoint(undefined, "vulkan"), false);
 });
