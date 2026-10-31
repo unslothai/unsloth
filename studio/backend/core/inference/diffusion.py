@@ -1445,6 +1445,21 @@ def _base_manifest_name(fam: Any) -> str:
     return FLUX3_INDEX if is_flux3_family(fam) else "model_index.json"
 
 
+def _cached_mirror_manifest(base: str, manifest: str) -> tuple[str, ...]:
+    """Probe files for a mirror decision made without a Hub listing (offline): the manifest when the mirror's cache holds it.
+
+    With no file list, ``prefer_ungated_mirror`` keeps the upstream id for ANY cached weight, so a lone single-file
+    checkpoint in the upstream snapshot (no model_index.json) pinned an offline load there although the online
+    prefetch staged the pipeline under the mirror. Empty (the old weight-file test) unless the mirror has the manifest.
+    """
+    from .diffusion_families import mirror_repo
+
+    mirror = mirror_repo(base)
+    if mirror and mirror.lower() != (base or "").lower() and cache_holds_files(mirror, (manifest,)):
+        return (manifest,)
+    return ()
+
+
 def _te_quant_for_supplied_encoders(requested: Optional[str]) -> Optional[str]:
     """Unset / auto never re-casts a supplied encoder (it would fetch the hosted encoder the file replaces)."""
     if requested is None or str(requested).strip().lower() in ("", "auto"):
@@ -5558,7 +5573,9 @@ class DiffusionBackend:
             ) or _local_base_transformer_present(base)
             # One mirror decision per load, so staging and assembly use the same repo.
             fetch_base = fetch_repos.get(base) or prefer_ungated_mirror(
-                base, kwargs.get("hf_token"), files = base_files
+                base,
+                kwargs.get("hf_token"),
+                files = base_files or _cached_mirror_manifest(base, _base_manifest_name(fam)),
             )
             kwargs["_fetch_base"] = fetch_base
             # Catch a gated base before the prefetch moves any bytes; probes fetch_base.
