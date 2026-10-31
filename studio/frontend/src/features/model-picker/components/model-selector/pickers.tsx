@@ -5088,6 +5088,19 @@ export function HubModelPicker({
     [fineTunedRows, pinnedSet],
   );
 
+  // Custom-folder pins leave that section, matching fine-tunes: the row is the same local
+  // model, so listing it twice would put two load targets on one path.
+  const pinnedCustomFolderRows = useMemo(
+    () =>
+      sortedCustomFolderModels.filter((m) => pinnedSet.has(pinKey(m.id))),
+    [sortedCustomFolderModels, pinnedSet],
+  );
+  const unpinnedCustomFolderModels = useMemo(
+    () =>
+      sortedCustomFolderModels.filter((m) => !pinnedSet.has(pinKey(m.id))),
+    [sortedCustomFolderModels, pinnedSet],
+  );
+
   const pinnedRows = useMemo(() => {
     const rank = makePinRank(pinnedIds);
     const rows = [
@@ -5096,23 +5109,39 @@ export function HubModelPicker({
         entry,
         model: null,
         fineTuned: null,
+        local: null,
       })),
       ...pinnedCachedModelRows.map((model) => ({
         key: pinKey(model.repo_id),
         entry: null,
         model,
         fineTuned: null,
+        local: null,
+      })),
+      ...pinnedCustomFolderRows.map((local) => ({
+        key: pinKey(local.id),
+        entry: null,
+        model: null,
+        fineTuned: null,
+        local,
       })),
       ...pinnedFineTunedRows.map((fineTuned) => ({
         key: pinKey(fineTuned.id),
         entry: null,
         model: null,
         fineTuned,
+        local: null,
       })),
     ];
     rows.sort((a, b) => rank(a.key) - rank(b.key));
     return rows;
-  }, [pinnedIds, pinnedQuants, pinnedCachedModelRows, pinnedFineTunedRows]);
+  }, [
+    pinnedIds,
+    pinnedQuants,
+    pinnedCachedModelRows,
+    pinnedCustomFolderRows,
+    pinnedFineTunedRows,
+  ]);
 
   // A sole quant that is pinned moves to Pinned instead of showing twice.
   const pinnedSoleQuantRows = useMemo(() => {
@@ -5532,7 +5561,9 @@ export function HubModelPicker({
               : makeModelOptionKey("pinned-quant", row.key)
             : row.model
               ? makeModelOptionKey("downloaded-model", row.model.repo_id)
-              : makeModelOptionKey("lora", row.fineTuned.id),
+              : row.local
+                ? makeModelOptionKey("custom-folder", row.local.id)
+                : makeModelOptionKey("lora", row.fineTuned.id),
         ),
       );
     }
@@ -5607,7 +5638,7 @@ export function HubModelPicker({
 
     if (section === "downloaded" && !customFoldersCollapsed) {
       keys.push(
-        ...sortedCustomFolderModels.map((model) =>
+        ...unpinnedCustomFolderModels.map((model) =>
           makeModelOptionKey("custom-folder", model.id),
         ),
       );
@@ -5655,6 +5686,7 @@ export function HubModelPicker({
     pinnedSoleQuantRows,
     downloadedCollapsed,
     unpinnedFineTunedRows,
+    unpinnedCustomFolderModels,
     fineTunedCollapsed,
     filteredRecommendedIds,
     searchRowIds,
@@ -6953,12 +6985,23 @@ export function HubModelPicker({
     );
   };
 
-  const renderLocalRowMenu = (m: LocalModelInfo) => {
+  const renderLocalRowMenu = (m: LocalModelInfo, allowPin = false) => {
     const name = m.model_id ?? m.display_name;
+    const isPinned = pinnedSet.has(pinKey(m.id));
     return (
       <ModelRowMenu
         ariaLabel={`More options for ${name}`}
         onReveal={() => revealLocalModel(m.path, m.id)}
+        pin={
+          allowPin
+            ? {
+                pinned: isPinned,
+                pinLabel: "Pin",
+                unpinLabel: "Unpin",
+                onToggle: () => togglePinned(m.id),
+              }
+            : undefined
+        }
         del={
           DELETABLE_LOCAL_SOURCES.has(m.source)
             ? {
@@ -6973,12 +7016,113 @@ export function HubModelPicker({
                 ),
                 successMessage: `Deleted ${name}`,
                 disabled: deleteDisabled,
-                onConfirm: () => deleteLocalModel(m.path, m.id),
+                onConfirm: async () => {
+                  await deleteLocalModel(m.path, m.id);
+                  if (isPinned) unpinRepo(m.id);
+                },
                 onDeleted: refreshLocalModelsList,
               }
             : undefined
         }
       />
+    );
+  };
+
+  const renderCustomFolderModelRow = (m: LocalModelInfo) => {
+    const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
+    // Honor the backend model_format hint (suffixless GGUF folders) as well as name/path, so the
+    // row classifies and loads through the same GGUF path as the filter.
+    const isGguf = localModelIsGguf(m);
+    // Single .gguf files load directly; GGUF repos and directories expand to pick a variant. An
+    // Ollama manifest reference names one blob, so it is direct too.
+    const isDirectGguf = isGgufFile || m.source === "ollama";
+    const optionKey = makeModelOptionKey("custom-folder", m.id);
+    return (
+      <div key={m.id}>
+        <div className={downloadedRowShellClassName(value === m.id)}>
+          <div className="min-w-0 flex-1">
+            <ModelRow
+              label={m.model_id ?? m.display_name}
+              meta={isGguf ? "GGUF" : "Local"}
+              tooltipText={localPathTooltip(
+                m.model_id ?? m.display_name,
+                m.path,
+              )}
+              selected={value === m.id}
+              loaded={isRuntimeLoadedModel(
+                loadedModelId,
+                activeGgufVariant,
+                m.id,
+                // Direct loads set no active variant, so requiring one never reads as loaded.
+                isDirectGguf ? "ignore" : isGguf ? "required" : "none",
+              )}
+              optionProps={hubModelList.getOptionProps(optionKey, value === m.id)}
+              onClick={() => {
+                if (isDirectGguf) {
+                  onSelect(m.id, localDirectGgufMeta(m.task));
+                } else if (isGguf) {
+                  toggleGgufExpanded(m.id);
+                } else {
+                  onSelect(
+                    m.id,
+                    localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                  );
+                }
+              }}
+              onArrowDownIntoChildren={
+                isGguf && !isDirectGguf && isGgufExpanded(m.id)
+                  ? () => {
+                      const focused = focusFirstChildOption(optionKey);
+                      return focused;
+                    }
+                  : undefined
+              }
+              alignMeta="device"
+              vramStatus={null}
+              className={downloadedRowButtonClassName}
+            />
+          </div>
+          <span className={ROW_ACTIONS_CLASS}>
+            {isDirectGguf && onConfigure && (
+              <ModelLoadSettingsAction
+                ariaLabel={`Inference settings for ${m.model_id ?? m.display_name}`}
+                onConfigure={() => onConfigure(m.id, localDirectGgufMeta(m.task))}
+              />
+            )}
+            {!isGguf && onConfigure && (
+              <ModelLoadSettingsAction
+                ariaLabel={`Inference settings for ${m.model_id ?? m.display_name}`}
+                onConfigure={() =>
+                  onConfigure(
+                    m.id,
+                    localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                  )
+                }
+              />
+            )}
+            {renderLocalRowMenu(m, true)}
+          </span>
+        </div>
+        {isGguf && !isDirectGguf && isGgufExpanded(m.id) && (
+          <GgufVariantExpander
+            diffusionLoad={diffusionLoad}
+            hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+            gpuCount={expanderGpuCount}
+            repoId={m.id}
+            loadedQuants={loadedQuantsFor(m.id)}
+            onDevice={true}
+            onSelect={onSelect}
+            resolveDownloadFootprint={resolveDownloadFootprint}
+            onConfigure={onConfigure}
+            parentOptionKey={optionKey}
+            onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
+            onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
+            gpuGb={expanderGpuGb}
+            systemRamGb={expanderRamGb || undefined}
+            budgetKnown={expanderBudgetGpu.budgetKnown}
+          />
+        )}
+      </div>
     );
   };
 
@@ -7420,6 +7564,8 @@ export function HubModelPicker({
                             renderPinnedQuantRow(row.entry)
                           ) : row.model ? (
                             renderDownloadedModelRow(row.model)
+                          ) : row.local ? (
+                            renderCustomFolderModelRow(row.local)
                           ) : (
                             <FineTunedRows
                               adapters={[row.fineTuned]}
@@ -7855,142 +8001,13 @@ export function HubModelPicker({
                     />
 
                     {!customFoldersCollapsed &&
-                      sortedCustomFolderModels.map((m) => {
-                        const isGgufFile = m.path
-                          .toLowerCase()
-                          .endsWith(".gguf");
-                        // Honor the backend model_format hint (suffixless GGUF folders).
-                        const isGguf = localModelIsGguf(m);
-                        // An Ollama manifest names one blob, so it loads directly.
-                        const isDirectGguf =
-                          isGgufFile || m.source === "ollama";
-                        const optionKey = makeModelOptionKey(
-                          "custom-folder",
-                          m.id,
-                        );
-                        return (
-                          <div key={m.id}>
-                            <div
-                              className={downloadedRowShellClassName(
-                                value === m.id,
-                              )}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <ModelRow
-                                  label={m.model_id ?? m.display_name}
-                                  meta={isGguf ? "GGUF" : "Local"}
-                                  tooltipText={localPathTooltip(
-                                    m.model_id ?? m.display_name,
-                                    m.path,
-                                  )}
-                                  selected={value === m.id}
-                                  loaded={isRuntimeLoadedModel(
-                                    loadedModelId,
-                                    activeGgufVariant,
-                                    m.id,
-                                    // Direct loads set no active variant.
-                                    isDirectGguf
-                                      ? "ignore"
-                                      : isGguf
-                                        ? "required"
-                                        : "none",
-                                  )}
-                                  optionProps={hubModelList.getOptionProps(
-                                    optionKey,
-                                    value === m.id,
-                                  )}
-                                  onClick={() => {
-                                    if (isDirectGguf) {
-                                      onSelect(
-                                        m.id,
-                                        localDirectGgufMeta(m.task),
-                                      );
-                                    } else if (isGguf) {
-                                      toggleGgufExpanded(m.id);
-                                    } else {
-                                      onSelect(
-                                        m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
-                                      );
-                                    }
-                                  }}
-                                  onArrowDownIntoChildren={
-                                    isGguf &&
-                                    !isDirectGguf &&
-                                    isGgufExpanded(m.id)
-                                      ? () => {
-                                          const focused =
-                                            focusFirstChildOption(optionKey);
-                                          return focused;
-                                        }
-                                      : undefined
-                                  }
-                                  alignMeta="device"
-                                  vramStatus={null}
-                                  className={downloadedRowButtonClassName}
-                                />
-                              </div>
-                              <span className={ROW_ACTIONS_CLASS}>
-                                {isDirectGguf && onConfigure && (
-                                  <ModelLoadSettingsAction
-                                    ariaLabel={`Inference settings for ${
-                                      m.model_id ?? m.display_name
-                                    }`}
-                                    onConfigure={() =>
-                                      onConfigure(
-                                        m.id,
-                                        localDirectGgufMeta(m.task),
-                                      )
-                                    }
-                                  />
-                                )}
-                                {!isGguf && onConfigure && (
-                                  <ModelLoadSettingsAction
-                                    ariaLabel={`Inference settings for ${
-                                      m.model_id ?? m.display_name
-                                    }`}
-                                    onConfigure={() =>
-                                      onConfigure(
-                                        m.id,
-                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
-                                      )
-                                    }
-                                  />
-                                )}
-                                {renderLocalRowMenu(m)}
-                              </span>
-                            </div>
-                            {isGguf &&
-                              !isDirectGguf &&
-                              isGgufExpanded(m.id) && (
-                                <GgufVariantExpander
-                                  diffusionLoad={diffusionLoad}
-                                  hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-                                  gpuCount={expanderGpuCount}
-                                  repoId={m.id}
-                                  loadedQuants={loadedQuantsFor(m.id)}
-                                  onDevice={true}
-                                  onSelect={onSelect}
-                                  resolveDownloadFootprint={resolveDownloadFootprint}
-                                  onConfigure={onConfigure}
-                                  parentOptionKey={optionKey}
-                                  onNavigatePastStart={() =>
-                                    hubModelList.focusOption(optionKey)
-                                  }
-                                  onNavigatePastEnd={() =>
-                                    hubModelList.moveFocus(optionKey, "next")
-                                  }
-                                  gpuGb={expanderGpuGb}
-                                  systemRamGb={expanderRamGb || undefined}
-                                  budgetKnown={expanderBudgetGpu.budgetKnown}
-                                />
-                              )}
-                          </div>
-                        );
-                      })}
+                      unpinnedCustomFolderModels.map((m) =>
+                        renderCustomFolderModelRow(m),
+                      )}
                     {!customFoldersCollapsed &&
                     showHfSection &&
-                    sortedCustomFolderModels.length === 0 ? (
+                    unpinnedCustomFolderModels.length === 0 &&
+                    pinnedCustomFolderRows.length === 0 ? (
                       <div className="px-2.5 py-2 text-xs text-muted-foreground">
                         No matching models in custom folders.
                       </div>
