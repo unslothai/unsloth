@@ -661,7 +661,6 @@ class CfgBatchRouter:
         """FLUX.3's modular denoise step passes only the kwargs named in ``transformer.forward``'s signature
         (``img_ids``): a bare ``**kwargs`` signature here would drop them."""
         import inspect
-
         try:
             self.__signature__ = inspect.signature(self.orig_forward)
         except (TypeError, ValueError):
