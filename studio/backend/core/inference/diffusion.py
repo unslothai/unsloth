@@ -533,6 +533,37 @@ def _negative_prompt_guidance_threshold(family: DiffusionFamily) -> Optional[flo
     return None
 
 
+# ``{path: (size, mtime_ns)}`` of the adapter files the generation-time path last loaded onto a pipe.
+_LORA_FILE_SIGS_ATTR = "_unsloth_lora_file_sigs"
+
+
+def _lora_file_sigs(loras: Any) -> Optional[dict]:
+    """Size and mtime of each adapter file, or None when one cannot be read."""
+    sigs: dict = {}
+    for _name, path, _weight in loras:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        sigs[path] = (st.st_size, st.st_mtime_ns)
+    return sigs
+
+
+def _lora_weights_only_change(state: Any, pipe: Any, current: Any, desired: Any) -> bool:
+    """Whether ``desired`` is the loaded adapter set with only its weights changed: same names and files in the same
+    order, each file unchanged on disk since it was loaded. ``set_adapters`` then reaches the scales a full reload
+    would set, on the same adapter tensors, so the reload is skipped. A block-streamed graph keeps the reload path."""
+    if not current or len(current) != len(desired):
+        return False
+    if any((n, p) != (dn, dp) for (n, p, _w), (dn, dp, _dw) in zip(current, desired)):
+        return False
+    loaded = getattr(pipe, _LORA_FILE_SIGS_ATTR, None)
+    if not loaded or loaded != _lora_file_sigs(desired):
+        return False
+    handles = getattr(state, "cuda_graphs", ()) or ()
+    return not any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles)
+
+
 def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
     """Recapturing a block-streamed graph after a LoRA weight change fails, and the eager fallback then fails every
     later generate, so such a load keeps its baked weights until a reload."""
@@ -12861,6 +12892,7 @@ class DiffusionBackend:
                 except Exception:  # noqa: BLE001 -- best-effort clear
                     pass
                 pipe._unsloth_loras = ()
+                setattr(pipe, _LORA_FILE_SIGS_ATTR, None)
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
                 invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             return
@@ -12887,9 +12919,25 @@ class DiffusionBackend:
         uniq = list(desired)
         if desired == current:
             return
+        if _lora_weights_only_change(state, pipe, current, desired):
+            try:
+                pipe.set_adapters(
+                    [name for name, _p, _w in uniq], adapter_weights = [w for _n, _p, w in uniq]
+                )
+            except Exception:  # noqa: BLE001 -- the full reload below sets the same scales or fails cleanly
+                pass
+            else:
+                pipe._unsloth_loras = desired
+                # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
+                cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+                return
+        # Read before loading, so a file rewritten during the load reads as changed next time.
+        file_sigs = _lora_file_sigs(desired)
         try:
             if current:
                 pipe.unload_lora_weights()
+            setattr(pipe, _LORA_FILE_SIGS_ATTR, None)
             for name, path, _weight in uniq:
                 pipe.load_lora_weights(path, adapter_name = name)
             pipe.set_adapters(
@@ -12906,6 +12954,7 @@ class DiffusionBackend:
             invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             raise ValueError(f"Failed to apply LoRA: {exc}") from exc
         pipe._unsloth_loras = desired
+        setattr(pipe, _LORA_FILE_SIGS_ATTR, file_sigs)
         # load_lora_weights can re-materialise parameters the graphs baked pointers to.
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
         invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
