@@ -1537,22 +1537,14 @@ class _EagerDecodeSteps:
         return False
 
 
-# Gemma 3 picks flex_attention on sm80+ for training, but one-token decode is slower on flex than on its
-# non-flex path (zoo's SDPA kernel): gemma-3-1b-it on an L4, ~70 vs ~58 ms/token (16-bit), ~74 vs ~63
-# (4-bit). Prefill stays on flex: its block mask skips the tiles a dense prompt x cache mask computes
-# (8k / 16k prompts prefill 1.9x / 2.8x slower off flex). So inside generate() each step picks its path
-# in prepare_inputs_for_generation, where the static cache builds that step's mask: one new token per
-# row runs the non-flex path, anything longer runs flex. Training keeps flex.
-# UNSLOTH_FLEX_ATTENTION_GENERATE=1 keeps flex for every generate step.
+# One-token decode is slower on flex than SDPA, but prefill must stay on flex (its block mask skips tiles a
+# dense mask computes). The path is picked in prepare_inputs_for_generation, where the step's mask is built.
 _FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
 _FLEX_GENERATE_LOCK = threading.Lock()
 
 
-# Per underlying model, outside its state (an RLock in __dict__ breaks deepcopy / pickle): the
-# serialising lock, and how many calls have its configs switched right now.
+# Kept outside the model: an RLock in __dict__ breaks deepcopy / pickle.
 class _ModelMap:
-    """Weakly keyed by model where it can be (nn.Module), else by id()."""
-
     def __init__(self):
         self.weak, self.strong = weakref.WeakKeyDictionary(), {}
 
@@ -1586,7 +1578,6 @@ _NON_FLEX_DECODE = "eager"
 
 
 def _flex_generate_configs(model):
-    """The decoder attention configs to move off flex_attention for decode steps, else []."""
     if os.environ.get(_FLEX_GENERATE_ENV_VAR, "0") == "1":
         return []
     config = getattr(model, "config", None)
@@ -1603,7 +1594,6 @@ def _flex_generate_configs(model):
 
 
 def _step_query_length(model_inputs):
-    """New tokens per row in one prepared generate step, else None."""
     if not isinstance(model_inputs, dict):
         return None
     for key in ("inputs_embeds", "input_ids", "decoder_input_ids"):
@@ -1614,18 +1604,12 @@ def _step_query_length(model_inputs):
 
 
 class _NonFlexGenerate:
-    """One generate() call of a model whose decoder Unsloth put on flex_attention. Prefill steps
-    keep flex; each one-token decode step reads "eager" on the decoder attention configs (Gemma 3's
-    patched attention then runs SDPA, as on cards without flex). Both paths write and read the same
-    KV cache. The configs are restored on exit, including on error. Reference counted per model, so
-    nested calls restore once. A call from another thread waits for the running one: they share one
-    config, which a step switches between its mask build and its forward."""
+    """Threads are serialised per model: they share one config, switched between mask build and forward."""
 
     def __init__(self, model):
         self.model = model
         self.active = False
         self.serial = None
-        # One per underlying model: a PEFT wrapper and its base model share the config.
         self.base = model.get_base_model() if hasattr(model, "get_base_model") else model
 
     def _set(self, decode):
@@ -1642,8 +1626,6 @@ class _NonFlexGenerate:
 
         @functools.wraps(prepare)
         def prepare_inputs_for_generation(*args, **kwargs):
-            # Guess from the step's cache positions (first call = prefill without them), build, and
-            # rebuild on the other path only if the prepared inputs disagree.
             cache_position = kwargs.get("cache_position")
             if isinstance(cache_position, torch.Tensor) and cache_position.dim() == 1:
                 decode = cache_position.shape[0] == 1
@@ -1663,7 +1645,6 @@ class _NonFlexGenerate:
     def __enter__(self):
         state = self.model.__dict__
         with _FLEX_GENERATE_LOCK:
-            # A running call's decode step reads "eager", so its routing count decides too.
             routed = _FLEX_GENERATE_ROUTING.get(self.base, 0) > 0 or bool(
                 _flex_generate_configs(self.model)
             )
@@ -1683,8 +1664,7 @@ class _NonFlexGenerate:
                 if not configs:
                     self._release()
                     return self
-                # Every config in the tree, parents first: the transformers setter also writes
-                # sub-configs, so restoring in this order leaves each one as it was.
+                # Parents first: the transformers setter also writes sub-configs.
                 saved = [
                     (c, field, _config_get(c, field, None))
                     for c in _iter_attention_configs(self.model.config)
@@ -1695,10 +1675,7 @@ class _NonFlexGenerate:
                 state["_unsloth_non_flex_generate_configs"] = configs
                 _FLEX_GENERATE_ROUTING.set(self.base, _FLEX_GENERATE_ROUTING.get(self.base, 0) + 1)
                 self.steps = 0
-                # The generate loop calls prepare_inputs_for_generation on the transformers model that
-                # runs it: for a PEFT model that is the base model (PeftModelForCausalLM.generate hands
-                # off to it), not the wrapper generate() was called on. Wrap both; each is restored on
-                # exit, including an instance attribute that was already there.
+                # PeftModelForCausalLM.generate calls the base model's prepare_inputs_for_generation: wrap both.
                 targets = [self.model]
                 base = (
                     self.model.get_base_model() if hasattr(self.model, "get_base_model") else None

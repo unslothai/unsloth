@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""generate() of a Gemma 3 decoder that Unsloth put on flex_attention: prefill stays on flex, one-token
-decode steps run the non-flex path."""
+"""Gemma 3 generate(): prefill stays on flex, one-token decode steps run the non-flex path."""
 
 import inspect
 import types
@@ -38,8 +37,6 @@ def _text_model(model_type = "gemma3_text", attn = "flex_attention"):
 
 
 def _with_prepare(model):
-    """A stand-in for GenerationMixin.prepare_inputs_for_generation: records the decoder config each
-    call reads (the static cache builds the step mask there), returns that step's input_ids."""
     model.seen = []
 
     def prepare_inputs_for_generation(
@@ -63,7 +60,6 @@ def _steps(
     new_tokens = 3,
     cache_position = True,
 ):
-    """Prefill then one-token steps, as generate() calls prepare_inputs_for_generation."""
     for step in range(new_tokens):
         n = prompt_len + step
         ids = torch.zeros(2, n, dtype = torch.long)
@@ -96,11 +92,9 @@ def test_prefill_on_flex_decode_off_flex_and_restores():
 
 
 def test_step_kind_without_cache_position():
-    # No cache_position: the first call guesses prefill, then the prepared length decides.
     model = _text_model()
     with _NonFlexGenerate(model):
         _steps(model, cache_position = False)
-        # a one-token "prefill" (e.g. a 1-token prompt) is rebuilt on the decode path
         model.prepare_inputs_for_generation(torch.zeros(1, 1, dtype = torch.long))
     assert model.seen == ["flex_attention", "eager", "eager", "eager"]
     assert model.config._attn_implementation == "flex_attention"
@@ -122,7 +116,6 @@ def test_second_generate_prefills_on_flex_again():
 
 
 def test_instance_prepare_is_restored():
-    # PEFT puts its own prepare_inputs_for_generation on the base model during generate().
     model = _text_model()
     mine = model.prepare_inputs_for_generation
     with _NonFlexGenerate(model):
@@ -131,8 +124,7 @@ def test_instance_prepare_is_restored():
 
 
 def test_overlapping_thread_waits_for_the_running_generate():
-    # Thread B starting while A's flex prefill mask is built but not yet run must not switch the
-    # shared config under it: B waits until A exits, then runs its own steps.
+    # B must wait for A to exit, not switch the shared config between A's mask build and forward.
     import threading
 
     model = _text_model()
@@ -158,7 +150,6 @@ def test_overlapping_thread_waits_for_the_running_generate():
 
 
 def test_model_stays_copyable_after_generate():
-    # The serialising lock lives outside the model: deepcopy / pickle must keep working.
     import copy, pickle
 
     model = _text_model()
@@ -290,10 +281,6 @@ def _generate_kwargs(new_tokens = 5):
 
 
 def test_real_generate_prefills_on_flex_and_decodes_off_flex():
-    # A tiny Gemma 3 under transformers' generate() with a static cache: the prefill forward gets a
-    # flex BlockMask, every decode forward a dense tensor mask on the non-flex path, and the ids match
-    # SDPA end to end (left padding, prompt longer than the sliding window), so the decode steps read
-    # the KV cache the flex prefill wrote.
     model = _tiny_gemma3()
     seen = _record_paths(model, model.model.layers[0])
     kw = _generate_kwargs()
@@ -311,9 +298,6 @@ def test_real_generate_prefills_on_flex_and_decodes_off_flex():
 
 @pytest.mark.parametrize("base_patched", [False, True], ids = ["peft-only", "peft-and-base"])
 def test_lora_generate_routes_each_step(base_patched):
-    # Unsloth patches generate() on the PeftModel. PeftModelForCausalLM.generate hands off to the base
-    # model, whose loop calls the base model's prepare_inputs_for_generation, so the scope must route
-    # there too, with or without a second (nested) scope on the base model's own generate().
     peft = pytest.importorskip("peft")
     model = _tiny_gemma3()
     seen = _record_paths(model, model.model.layers[0])
