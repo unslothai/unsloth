@@ -101,3 +101,13 @@ def test_a_replacement_xdist_worker_takes_the_crashed_workers_slot(
     for slot in slots.values():
         other, other_size = engine_port_block(slot, workers)
         assert base + size <= other or other + other_size <= base, (slot, base, other)
+
+
+@pytest.mark.parametrize("workers", [2, 4, 16])
+def test_a_replacement_without_a_controller_slot_avoids_every_survivor(engine_port_block, workers):
+    """`pytest studio -n N` never loads the slot hooks on the controller, so gw<count> falls back to its id."""
+    base, size = engine_port_block(workers, workers)
+    for index in range(workers):
+        other, other_size = engine_port_block(index, workers)
+        assert base + size <= other or other + other_size <= base, (index, base, other)
+

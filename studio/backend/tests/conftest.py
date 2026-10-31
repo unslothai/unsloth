@@ -663,12 +663,13 @@ _engine_port_slots = {}
 
 
 def _engine_port_block(slot, worker_count):
-    """(first port, size); past 40 workers blocks shrink so each stays disjoint inside the span."""
+    """(first port, size); past 40 workers blocks shrink so each stays disjoint inside the span.
+    Without a controller slot a replacement gwN (N >= count) uses the span's spare blocks first."""
     count = max(worker_count, 1)
     size = min(_ENGINE_PORTS_PER_WORKER, _ENGINE_PORT_SPAN // count)
     if size < 1:
         raise RuntimeError(f"{count} xdist workers do not fit {_ENGINE_PORT_SPAN} engine ports")
-    return _ENGINE_PORT_BASE + (slot % count) * size, size
+    return _ENGINE_PORT_BASE + (slot % (_ENGINE_PORT_SPAN // size)) * size, size
 
 
 @pytest.hookimpl(optionalhook = True)
