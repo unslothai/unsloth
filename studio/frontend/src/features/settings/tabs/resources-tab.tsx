@@ -658,7 +658,7 @@ export function ResourcesTab() {
     !unifiedPool &&
     !memoryDisplay.sharedOnly &&
     vram.cards.some((card) => card.shared_memory !== true && card.unified_memory !== true);
-  const models = modelShares(loadedModels, discreteVram);
+  const models = modelShares(loadedModels, discreteVram, separateInferenceGpu !== null);
   const processMb =
     systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
   const unslothRamGb = unslothPoolGb(

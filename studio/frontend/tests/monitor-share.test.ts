@@ -111,7 +111,7 @@ test("the VRAM split counts only models known to sit on the reported GPUs", () =
   assert.deepEqual(modelShares(entries).map((model) => model.id), ["gpu", "other"]);
   for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
     const src = readSrc(file);
-    assert.match(src, /modelShares\(loadedModels, discreteVram\)/);
+    assert.match(src, /modelShares\(loadedModels, discreteVram, separateInferenceGpu !== null\)/);
     // "No model loaded" only when nothing is loaded, not when a model sits outside this pool.
     assert.match(src, /noModels=\{breakdown !== null && loadedModels\.length === 0\}/);
   }
@@ -127,4 +127,15 @@ test("a model size ahead of the memory sample is scaled into the measured share"
   // In step, nothing is rescaled.
   const steady = memorySegments(memoryShare(20, 32, 12)!, modelBreakdown(12, [{ id: "m", name: "A", gb: 8 }], true));
   assert.deepEqual(steady.map((segment) => [segment.kind, segment.gb]), [["model", 8], ["app", 4], ["other", 8], ["free", 12]]);
+});
+
+test("llama.cpp on a separate, other-vendor inference GPU is not billed to the displayed cards", () => {
+  const entries = [
+    { id: "gguf", name: "a/Chat-GGUF", source: "chat", residentMib: 4096, residentOnGpu: true },
+    { id: "img", name: "a/Image", source: "image", residentMib: 2048, residentOnGpu: true },
+  ];
+  assert.deepEqual(modelShares(entries, true, true).map((model) => model.id), ["img"]);
+  assert.deepEqual(modelShares(entries, true, false).map((model) => model.id), ["gguf", "img"]);
+  // The RAM split is untouched.
+  assert.deepEqual(modelShares(entries, false, true).map((model) => model.id), ["gguf", "img"]);
 });

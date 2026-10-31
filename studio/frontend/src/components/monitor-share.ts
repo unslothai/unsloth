@@ -35,19 +35,30 @@ export function memoryShare(
   return { unsloth, other: used - unsloth, free: totalGb - used };
 }
 
-/** Loaded models that report a size, largest first. `gpuOnly`: only models known to sit on the reported GPUs (VRAM split). */
+/**
+ * Loaded models that report a size, largest first. `gpuOnly` (the VRAM split): only models known to sit
+ * on the displayed GPUs, so not llama.cpp's when it runs on a separate, other-vendor inference GPU.
+ */
 export function modelShares(
   entries: readonly {
     id: string;
     name: string;
     label?: string;
+    source?: string;
     residentMib?: number;
     residentOnGpu?: boolean;
   }[],
   gpuOnly = false,
+  inferenceGpuElsewhere = false,
 ): ModelShare[] {
   return entries
-    .filter((entry) => (entry.residentMib ?? 0) > 0 && (!gpuOnly || entry.residentOnGpu === true))
+    .filter(
+      (entry) =>
+        (entry.residentMib ?? 0) > 0 &&
+        (!gpuOnly ||
+          (entry.residentOnGpu === true &&
+            !(inferenceGpuElsewhere && entry.source === "chat"))),
+    )
     .map((entry) => ({
       id: entry.id,
       // "unsloth/Qwen3.5-0.8B-GGUF" -> "Qwen3.5-0.8B-GGUF": the owner only eats the row's width.
