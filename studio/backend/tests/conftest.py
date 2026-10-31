@@ -660,9 +660,10 @@ _engine_port_counter = itertools.count()
 
 
 def _engine_port_block(worker, worker_count):
-    """(first port, size); past 40 workers blocks shrink so each stays disjoint inside the span."""
-    index = int(worker[2:]) if worker[2:].isdigit() else 0
-    count = max(worker_count, index + 1, 1)
+    """(first port, size); past 40 workers blocks shrink so each stays disjoint inside the span.
+    A replacement for a crashed worker (gwN, N >= count) takes slot N % count, the dead worker's."""
+    count = max(worker_count, 1)
+    index = (int(worker[2:]) if worker[2:].isdigit() else 0) % count
     size = min(_ENGINE_PORTS_PER_WORKER, _ENGINE_PORT_SPAN // count)
     if size < 1:
         raise RuntimeError(f"{count} xdist workers do not fit {_ENGINE_PORT_SPAN} engine ports")

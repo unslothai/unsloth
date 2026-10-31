@@ -73,3 +73,13 @@ def test_every_xdist_worker_gets_its_own_engine_port_block(engine_port_block, wo
         assert size >= 1 and not (block & taken), (index, base, size)
         assert 21000 <= base and base + size <= 31000, (index, base, size)
         taken |= block
+
+
+@pytest.mark.parametrize("workers", [4, 40, 64])
+def test_a_replacement_xdist_worker_reuses_the_dead_workers_block(engine_port_block, workers):
+    """xdist names a crashed gw0's replacement gw<count>; it must not overlap the survivors."""
+    base, size = engine_port_block(f"gw{workers}", workers)
+    assert (base, size) == engine_port_block("gw0", workers)
+    for index in range(1, workers):
+        other, other_size = engine_port_block(f"gw{index}", workers)
+        assert base + size <= other or other + other_size <= base, (index, base, other)
