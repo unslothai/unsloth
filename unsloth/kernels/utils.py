@@ -1848,13 +1848,13 @@ def fast_linear_forward(
             # Without out=, mv / mm follow a different autocast dtype; the in-place update does not.
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out.addmv_(B, temp_lora, alpha = lora_S)
+            out = out.addmv_(B, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
             temp_lora = torch_mm(X.view(bsz, in_dim), A.t(), out = temp_lora)
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out.addmm_(temp_lora, B.t(), alpha = lora_S)
+            out = out.addmm_(temp_lora, B.t(), alpha = lora_S)
         out = out.view(bsz, 1, out_dim)
 
     if bias is not None:
@@ -1875,9 +1875,13 @@ def _lora_first_addmm(X, Wt, XA, Bt, alpha):
         out = torch.addmm(XA.new_zeros(1), XA, Bt, beta = 0, alpha = alpha)
         return torch.addmm(out, X, Wt)
     out = torch.empty((X.shape[0], Wt.shape[1]), dtype = X.dtype, device = X.device)
-    out.addmm_(XA, Bt, alpha = alpha, beta = 0)
-    out.addmm_(X, Wt)
-    return out
+    # Both updates mutate the plain buffer; a subclass operand's returned type is kept for the result.
+    return _accumulated(out.addmm_(XA, Bt, alpha = alpha, beta = 0), out.addmm_(X, Wt))
+
+
+def _accumulated(lora_out, base_out):
+    # The more derived of the two returned types, else the base GEMM's.
+    return lora_out if isinstance(lora_out, type(base_out)) else base_out
 
 
 # Traced, x.addmm_ copies x first; this op stays in place. No derivative: grad off only.
@@ -1941,6 +1945,20 @@ if _HAS_ADDMM_OP:
             _HAS_LORA_FIRST_OP = False
 
 
+# Tracing infrastructure (make_fx, export) wraps plain tensors; those are not user subclasses.
+_LORA_PLAIN_TYPES = (torch.Tensor, torch.nn.Parameter)
+try:
+    from torch._subclasses.fake_tensor import FakeTensor as _FakeTensor
+    from torch._subclasses.functional_tensor import FunctionalTensor as _FunctionalTensor
+    _LORA_PLAIN_TYPES += (_FakeTensor, _FunctionalTensor)
+except Exception:
+    pass
+
+
+def _lora_subclass(*tensors):
+    return any(t is not None and type(t) not in _LORA_PLAIN_TYPES for t in tensors)
+
+
 def addmm_(
     out,
     A,
@@ -1953,6 +1971,8 @@ def addmm_(
         and torch.compiler.is_compiling()
         and not torch.is_grad_enabled()
         and type(alpha) in (int, float)
+        # The op returns nothing, so a subclass operand takes the method below, which returns its type.
+        and not _lora_subclass(out, A, B)
     ):
         torch.ops.unsloth.addmm_(out, A, B, alpha, beta)
         return out
@@ -2096,8 +2116,7 @@ def matmul_lora(
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
-            addmm_(out, XA, B, alpha = s, beta = 0)
-            out.addmm_(X, W.t())
+            out = _accumulated(addmm_(out, XA, B, alpha = s, beta = 0), out.addmm_(X, W.t()))
         else:
             W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
             if not _is_compiling():
@@ -2125,6 +2144,6 @@ def matmul_lora(
         A, B = A.t(), B.t()
         if XA is None:
             XA = torch_matmul(X, A.to(dtype))
-        addmm_(out, XA, B.to(dtype), alpha = s)
+        out = addmm_(out, XA, B.to(dtype), alpha = s)
 
     return out.view(batch, seq_len, -1) if reshape else out

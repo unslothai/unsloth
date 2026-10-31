@@ -911,3 +911,189 @@ def test_a_caller_out_sharing_the_quant_state_is_written_after_dequantizing(monk
         return kernel_utils.matmul_lora(X, W, state, A, B, 0.5, out = buf).clone()
 
     torch.testing.assert_close(run(True), run(False), rtol = 0, atol = 0)
+
+
+class _TaggedTensor(torch.Tensor):
+    # A plain storage-backed subclass, as a user library might wrap activations.
+    pass
+
+
+def _tag(t):
+    return t.as_subclass(_TaggedTensor)
+
+
+def _plain(t):
+    return t.as_subclass(torch.Tensor)
+
+
+def _same(got, want, tagged):
+    # The subclass survives every in-place accumulate, and the arithmetic is the plain tensors' bit for bit.
+    assert (type(got) is _TaggedTensor) == tagged, type(got)
+    assert got.dtype == want.dtype
+    torch.testing.assert_close(_plain(got), _plain(want), rtol = 0, atol = 0)
+
+
+def _tag_one(which, X, W, A, B):
+    return tuple(_tag(t) if n == which else t for n, t in zip("XWAB", (X, W, A, B)))
+
+
+def _subclass_inputs():
+    g = torch.Generator().manual_seed(0)
+    X, W = torch.randn(16, 256, generator = g), torch.randn(32, 256, generator = g)
+    A, B = torch.randn(4, 256, generator = g), torch.randn(32, 4, generator = g)
+    return X, W, A, B
+
+
+@pytest.mark.parametrize("on", [True, False])
+@pytest.mark.parametrize("which", ["X", "W", "A", "B", "XA"])
+def test_a_subclass_operand_keeps_its_type_through_matmul_lora(which, on, monkeypatch):
+    X, W, A, B = _subclass_inputs()
+    _set(monkeypatch, on)
+    xa = X @ A.t()
+    want = kernel_utils.matmul_lora(X, W, None, A, B, 0.5, XA = xa if which == "XA" else None)
+    XA = _tag(xa) if which == "XA" else None
+    X, W, A, B = _tag_one(which, X, W, A, B)
+    got = kernel_utils.matmul_lora(X, W, None, A, B, 0.5, XA = XA)
+    _same(got, want, True)
+
+
+@pytest.mark.parametrize("on", [True, False])
+@pytest.mark.parametrize("which", ["X", "A", "out"])
+def test_a_caller_buffer_keeps_its_storage_and_the_subclass(which, on, monkeypatch):
+    X, W, A, B = _subclass_inputs()
+    _set(monkeypatch, on)
+    want = kernel_utils.matmul_lora(X, W, None, A, B, 0.5, out = torch.empty(16, 32))
+    buf = torch.empty(16, 32)
+    buf = _tag(buf) if which == "out" else buf
+    X, W, A, B = _tag_one(which, X, W, A, B)
+    got = kernel_utils.matmul_lora(X, W, None, A, B, 0.5, out = buf)
+    assert got.data_ptr() == buf.data_ptr()
+    _same(got, want, True)
+
+
+class _NoReceiverTensor(torch.Tensor):
+    # A subclass that refuses to be the receiver of an in-place GEMM, though it may be an operand.
+    def addmm_(self, *args, **kwargs):
+        raise RuntimeError("not an addmm_ receiver")
+
+
+@pytest.mark.parametrize("on", [True, False])
+@pytest.mark.parametrize("caller_out", [False, True])
+def test_the_base_gemm_accumulates_on_the_buffer_not_the_adapters_result(
+    caller_out, on, monkeypatch
+):
+    X, W, A, B = _subclass_inputs()
+    _set(monkeypatch, on)
+    kw = (lambda: dict(out = torch.empty(16, 32))) if caller_out else dict
+    want = kernel_utils.matmul_lora(X, W, None, A, B, 0.5, **kw())
+    got = kernel_utils.matmul_lora(X, W, None, A.as_subclass(_NoReceiverTensor), B, 0.5, **kw())
+    torch.testing.assert_close(_plain(got), _plain(want), rtol = 0, atol = 0)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("which", ["X", "W", "B", "XA", "plain"])
+def test_autocast_with_a_precomputed_xa_keeps_fp32_operands_finite(which, dtype, monkeypatch):
+    # XA is computed outside autocast. The in-place fused order is not autocast, so fp32 operands stay fp32
+    # and finite; a functional addmm would autocast and give 10240 in bf16, inf in fp16.
+    X, A = torch.ones(1, 1), torch.ones(1, 1)
+    W, B = torch.full((1, 1), -60000.0), torch.full((1, 1), 35000.0)
+    XA = X @ A.t()
+    if which == "XA":
+        XA = _tag(XA)
+    X, W, A, B = _tag_one(which, X, W, A, B)
+    _set(monkeypatch, True)
+    with torch.autocast("cpu", dtype = dtype):
+        got = kernel_utils.matmul_lora(X, W, None, A, B, 2.0, XA = XA)
+    assert got.dtype == torch.float32 and float(got) == 10000.0
+    assert (type(got) is _TaggedTensor) == (which != "plain")
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("which", ["X", "W", "B", "XA"])
+def test_autocast_with_a_half_xa_over_an_fp32_base_autocasts_the_base(which, dtype, monkeypatch):
+    # Half activations and adapters over an fp32 base weight take the base-then-LoRA order under autocast.
+    X, A, B = (torch.ones(*s, dtype = dtype) for s in ((2, 4), (1, 4), (3, 1)))
+    W = torch.ones(3, 4)
+    XA = X @ A.t()
+    if which == "XA":
+        XA = _tag(XA)
+    X, W, A, B = _tag_one(which, X, W, A, B)
+    _set(monkeypatch, True)
+    with torch.autocast("cpu", dtype = dtype):
+        got = kernel_utils.matmul_lora(X, W, None, A, B, 1.0, XA = XA)
+    assert got.dtype == dtype and (_plain(got) == 8).all()
+    assert type(got) is _TaggedTensor
+
+
+@pytest.mark.parametrize("bias", [False, True])
+@pytest.mark.parametrize("which", ["X_lora", "A", "B"])
+def test_the_dropout_and_bias_route_keeps_a_subclass(which, bias, monkeypatch):
+    g = torch.Generator().manual_seed(0)
+    X, W = torch.randn(2, 8, 64, generator = g), torch.randn(32, 64, generator = g)
+    A, B = torch.randn(4, 64, generator = g), torch.randn(32, 4, generator = g)
+    X_lora = X * 0.5
+    b = torch.randn(32, generator = g) if bias else None
+    want = fast_lora._matmul_lora_ext(X, X_lora, W, None, A, B, 0.5, b)
+    X_lora, A, B = (
+        _tag(t) if n == which else t for n, t in zip(("X_lora", "A", "B"), (X_lora, A, B))
+    )
+    got = fast_lora._matmul_lora_ext(X, X_lora, W, None, A, B, 0.5, b)
+    assert got.shape == want.shape
+    _same(got, want, True)
+
+
+@pytest.mark.parametrize("bsz", [1, 3])
+@pytest.mark.parametrize("which", ["A", "B"])
+def test_decode_keeps_a_subclass_adapter(which, bsz, monkeypatch):
+    g = torch.Generator().manual_seed(0)
+    X, W = torch.randn(bsz, 1, 64, generator = g), torch.randn(32, 64, generator = g)
+    A, B = torch.randn(4, 64, generator = g), torch.randn(32, 4, generator = g)
+    for name in (
+        "_has_non_lora_adapter",
+        "_has_multiple_active_adapters",
+        "_has_active_dora_adapter",
+        "_has_active_lora_bias",
+        "_has_packed_qweight",
+    ):
+        monkeypatch.setattr(kernel_utils, name, lambda proj: False)
+
+    def run(A, B):
+        monkeypatch.setattr(
+            kernel_utils, "get_lora_parameters_bias", lambda proj: (W, None, A, B, 0.5, None)
+        )
+        return kernel_utils.fast_linear_forward(None, X)
+
+    want = run(A, B)
+    got = run(_tag(A), B) if which == "A" else run(A, _tag(B))
+    assert got.shape == want.shape
+    _same(got, want, True)
+
+
+@pytest.mark.parametrize("which", ["A", "B"])
+def test_the_traced_no_grad_accumulate_keeps_a_subclass_result(which, monkeypatch):
+    # The opaque op returns nothing, so a subclass operand takes the in-place method and keeps its type.
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    out, A, B = torch.zeros(3, 4), torch.randn(3, 2), torch.randn(2, 4)
+    want = torch.zeros(3, 4).addmm_(A, B, alpha = 0.5)
+    A, B = (_tag(A), B) if which == "A" else (A, _tag(B))
+    with torch.no_grad():
+        got = kernel_utils.addmm_(out, A, B, alpha = 0.5)
+    assert got.data_ptr() == out.data_ptr()
+    _same(got, want, True)
+
+
+def test_the_traced_no_grad_accumulate_keeps_the_op_for_plain_tensors(monkeypatch):
+    if not kernel_utils._HAS_ADDMM_OP:
+        pytest.skip("torch.library.custom_op is not available")
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    calls = []
+    real = torch.ops.unsloth.addmm_
+
+    def op(*args):
+        calls.append(len(args))
+        return real(*args)
+
+    monkeypatch.setattr(torch.ops.unsloth, "addmm_", op)
+    with torch.no_grad():
+        kernel_utils.addmm_(torch.zeros(3, 4), torch.randn(3, 2), torch.randn(2, 4), alpha = 0.5)
+    assert calls == [5]

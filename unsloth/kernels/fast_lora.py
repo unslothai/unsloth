@@ -314,12 +314,13 @@ def _matmul_lora_ext(X, X_lora, W, W_quant, A, B, S, bias):
     XA = torch.matmul(X_lora.reshape(-1, X_lora.shape[-1]), A.to(dtype).t())
     out2d = out.view(-1, out.shape[-1])
     if bias is None:
-        addmm_(out2d, XA, B.to(dtype).t(), alpha = S)
+        out2d = addmm_(out2d, XA, B.to(dtype).t(), alpha = S)
     else:
         # PEFT's rounding order: (lora_B(x) + bias) * scaling, then + base. No add(alpha = S): Inductor
         # (torch 2.13) miscompiles it traced inside these Functions.
-        out2d.add_(torch.addmm(bias.to(dtype), XA, B.to(dtype).t()).mul_(S))
-    return out
+        out2d = out2d.add_(torch.addmm(bias.to(dtype), XA, B.to(dtype).t()).mul_(S))
+    # A subclass operand comes back from the in-place update as its own type; keep it.
+    return out if type(out2d) is type(out) else out2d.view(out.shape)
 
 
 def _add_lora_dX(dX, y_dB, A, S, mask, p):
