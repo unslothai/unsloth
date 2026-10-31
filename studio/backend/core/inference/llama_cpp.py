@@ -155,6 +155,7 @@ from core.inference.llama_server_args import (
     resolve_reasoning_budget_message_with_env,
     resolve_reasoning_budget_with_env,
     split_policy_starves_devices,
+    merge_chat_template_kwargs_argv,
     strip_context_only,
     strip_shadowing_flags,
     strip_split_mode_only,
@@ -29443,6 +29444,11 @@ class LlamaCppBackend:
                         or _extra_args_requests_mtp(
                             _emit_extra_args, env = _child_spec_env(_emit_extra_args)
                         ),
+                    )
+                    # Extras after managed reasoning kwargs must not emit a second
+                    # --chat-template-kwargs: llama.cpp keeps only the last value (#16317).
+                    cmd, _emit_extra_args = merge_chat_template_kwargs_argv(
+                        cmd, _emit_extra_args
                     )
                     cmd.extend(str(a) for a in _emit_extra_args)
                     logger.info(

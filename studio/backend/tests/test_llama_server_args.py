@@ -1497,6 +1497,37 @@ def test_the_launch_respells_user_ngram_mod_extras_last():
     assert '_caps.get("ngram_mod_flavor")' in emit
     assert emit.index("_strip_device_extra_args") < emit.index("translate_ngram_mod_args(")
     assert "_extra_args_requests_mtp(" in emit[emit.index("translate_ngram_mod_args(") :]
+    assert "merge_chat_template_kwargs_argv(" in emit
+    assert emit.index("translate_ngram_mod_args(") < emit.index(
+        "merge_chat_template_kwargs_argv("
+    )
+
+
+def test_merge_chat_template_kwargs_user_keys_win_and_emit_once():
+    import json
+
+    merge = _lsa.merge_chat_template_kwargs_argv
+    cmd, extras = merge(
+        ["--jinja", "--chat-template-kwargs", '{"reasoning_effort":"high","preserve_thinking":true}'],
+        ["--temp", "0.0", "--chat-template-kwargs", '{"reasoning_effort":"none"}'],
+    )
+    assert cmd.count("--chat-template-kwargs") == 1
+    assert "--chat-template-kwargs" not in extras
+    assert extras == ["--temp", "0.0"]
+    idx = cmd.index("--chat-template-kwargs")
+    assert json.loads(cmd[idx + 1]) == {
+        "reasoning_effort": "none",
+        "preserve_thinking": True,
+    }
+
+
+def test_merge_chat_template_kwargs_leaves_argv_alone_without_extras_flag():
+    merge = _lsa.merge_chat_template_kwargs_argv
+    cmd_in = ["--chat-template-kwargs", '{"reasoning_effort":"high"}']
+    extras_in = ["--temp", "0.0"]
+    cmd, extras = merge(cmd_in, extras_in)
+    assert cmd == cmd_in
+    assert extras == extras_in
 
 
 def test_ngram_mod_underscore_spelling_is_respelled_too():

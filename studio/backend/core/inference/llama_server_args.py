@@ -1951,3 +1951,75 @@ def translate_ngram_mod_args(
             continue
         out.extend([legacy, value])
     return out
+
+
+_CHAT_TEMPLATE_KWARGS_FLAGS: frozenset[str] = frozenset({"--chat-template-kwargs"})
+
+
+def strip_chat_template_kwargs(args: Optional[Iterable[str]]) -> list[str]:
+    """Drop every ``--chat-template-kwargs`` occurrence (and its value)."""
+    tokens = [str(a) for a in (args or [])]
+    out: list[str] = []
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        flag = _flag_name(tok)
+        if flag is None or flag not in _CHAT_TEMPLATE_KWARGS_FLAGS:
+            out.append(tok)
+            i += 1
+            continue
+        if "=" in tok:
+            i += 1
+        elif i + 1 < n and _flag_name(tokens[i + 1]) is None:
+            i += 2
+        else:
+            i += 1
+    return out
+
+
+def _chat_template_kwargs_object(raw: Optional[str]) -> dict:
+    if not raw or not str(raw).strip():
+        return {}
+    try:
+        import json
+
+        parsed = json.loads(raw)
+    except Exception:  # noqa: BLE001 -- a bad JSON value is left for llama-server to reject later
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def merge_chat_template_kwargs_argv(
+    cmd: Iterable[str], extras: Iterable[str]
+) -> tuple[list[str], list[str]]:
+    """Collapse managed + user ``--chat-template-kwargs`` into one flag on *cmd* (user keys win).
+
+    llama.cpp only keeps the last occurrence when the flag is repeated, so appending extras after
+    the managed reasoning kwargs silently drops earlier keys and triggers a deprecation warning
+    (#16317). When extras carry no kwargs flag, both lists are returned unchanged.
+    """
+    import json
+
+    extras_list = [str(a) for a in (extras or [])]
+    try:
+        extras_raw = _last_flag_value(
+            extras_list, _CHAT_TEMPLATE_KWARGS_FLAGS, preserve_raw = True
+        )
+    except ValueError:
+        return [str(a) for a in (cmd or [])], extras_list
+    if extras_raw is None:
+        return [str(a) for a in (cmd or [])], extras_list
+
+    cmd_list = [str(a) for a in (cmd or [])]
+    try:
+        cmd_raw = _last_flag_value(cmd_list, _CHAT_TEMPLATE_KWARGS_FLAGS, preserve_raw = True)
+    except ValueError:
+        cmd_raw = None
+
+    merged = {
+        **_chat_template_kwargs_object(cmd_raw),
+        **_chat_template_kwargs_object(extras_raw),
+    }
+    new_cmd = strip_chat_template_kwargs(cmd_list)
+    new_cmd.extend(["--chat-template-kwargs", json.dumps(merged)])
+    return new_cmd, strip_chat_template_kwargs(extras_list)
