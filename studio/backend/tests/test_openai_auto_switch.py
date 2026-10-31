@@ -12296,7 +12296,9 @@ def test_an_npu_model_named_by_a_request_switches_when_on(monkeypatch):
     assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
 
 
-def test_a_chat_model_that_lands_before_the_npu_gates_still_refuses_a_chat_tools_switch(monkeypatch):
+def test_a_chat_model_that_lands_before_the_npu_gates_still_refuses_a_chat_tools_switch(
+    monkeypatch,
+):
     backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
     # The preflight sees no chat model; one is resident by the time the swap gates are held.
     checks: list = []
