@@ -3478,6 +3478,47 @@ def _read_native_quant_from_cache(
         return {}
 
 
+def _video_native_stream_build(
+    fam: Any,
+    spec: Optional[dict],
+    *,
+    target: Any,
+    dtype: Any,
+    base: Optional[str],
+    source: Optional[str],
+    config_kwargs: dict,
+    skip: tuple = (),
+    cancel_check: Any = None,
+) -> dict[str, Any]:
+    """``{component: module}`` for EVERY denoiser built per shard into the native cache when the dense load would
+    not fit host RAM (``video_native_stream``), or ``{}``. Raises only a cancel or an out-of-memory."""
+    if spec is None:
+        return {}
+    try:
+        import diffusers
+
+        from .video_native_stream import build_into_cache
+        transformer_cls = getattr(diffusers, str(getattr(fam, "transformer_class", "")), None)
+    except Exception as exc:  # noqa: BLE001 - the dense load still runs
+        logger.warning("video.native_stream: skipped (%s)", exc)
+        return {}
+    return build_into_cache(
+        fam,
+        spec,
+        transformer_cls,
+        target = target,
+        dtype = dtype,
+        base = base,
+        source = source,
+        config_kwargs = config_kwargs,
+        skip = skip,
+        # The device the runtime quant would build each host Linear on, so the codes match it bit for bit.
+        host_quant_device = _host_quant_device(target),
+        logger = logger,
+        cancel_check = cancel_check,
+    )
+
+
 # The planner DECIDED against the seed (not "never ran"); a load must not re-take it after teardown.
 DENOISER_SEED_DECLINED = "__declined__"
 
@@ -8919,22 +8960,39 @@ class VideoBackend:
             if kind == "pipeline" and not denoiser_injected
             else None
         )
-        native_cache_hits = _read_native_quant_from_cache(
-            fam,
-            native_cache_spec,
-            base = base,
-            source = _base_local_dir or fetch_base,
-            config_kwargs = {}
+        native_config_kwargs: dict[str, Any] = (
+            {}
             if _base_local_dir
             else {
                 "cache_dir": hub_cache_dir(),
                 "local_files_only": local_files_only,
                 **({"token": hf_token} if hf_token else {}),
                 **_pinned_base_kwargs(),
-            },
+            }
+        )
+        native_cache_hits = _read_native_quant_from_cache(
+            fam,
+            native_cache_spec,
+            base = base,
+            source = _base_local_dir or fetch_base,
+            config_kwargs = native_config_kwargs,
             cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
         )
         self._raise_if_video_load_superseded(_load_token)
+        if not native_cache_hits and native_cache_spec is not None:
+            # A miss whose dense load would not fit host RAM: build the same native experts per shard into the cache.
+            native_cache_hits = _video_native_stream_build(
+                fam,
+                native_cache_spec,
+                target = target,
+                dtype = dtype,
+                base = base,
+                source = _base_local_dir or fetch_base,
+                config_kwargs = native_config_kwargs,
+                skip = tuple(pipe_kwargs),
+                cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+            )
+            self._raise_if_video_load_superseded(_load_token)
         pipe_kwargs.update(native_cache_hits)
         # Injection is best-effort (a missing checkpoint falls back to the dense encoder), but the scoped pre-download
         # already dropped those shards and from_pretrained cannot re-fetch from a local snapshot dir, so top them up
