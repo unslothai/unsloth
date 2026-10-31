@@ -396,6 +396,169 @@ def _image_covers_a_corner(doc, number: int) -> bool:
     return any(box.intersects(corner) for box in boxes for corner in corners)
 
 
+# PyMuPDF releases whose lines_strict table finder _no_lined_table_possible was checked against.
+_TABLE_GUARD_PYMUPDF = ("1.27.2.3", "1.28.2")
+_TABLE_SNAP = 3  # pymupdf.table.DEFAULT_SNAP_TOLERANCE, the snap_x/snap_y fallback
+_TABLE_GUARD_MAX_RECTS = 1000  # past this, grouping costs more than it can save
+
+
+def _table_guard_enabled(pymupdf4llm) -> bool:
+    """True for the legacy pymupdf4llm path on a checked PyMuPDF without the layout
+    analyzer, where find_tables only sees vector line art."""
+    try:
+        import inspect
+
+        import fitz
+
+        to_markdown = pymupdf4llm.to_markdown
+        params = inspect.signature(to_markdown).parameters
+        return (
+            to_markdown.__module__ == "pymupdf4llm.helpers.pymupdf_rag"
+            and params["table_strategy"].default == "lines_strict"
+            and "hdr_info" in params
+            and fitz.__version__ in _TABLE_GUARD_PYMUPDF
+            and getattr(fitz, "_get_layout", None) is None
+        )
+    except Exception:
+        return False
+
+
+def _graphics_bboxes(rects: list) -> list:
+    """The clusters pymupdf.table.make_edges outlines with border lines (its clean_graphics,
+    before the has-text check); kept operation for operation so the boxes match exactly."""
+    import fitz
+
+    snap_x = snap_y = _TABLE_SNAP
+
+    def are_neighbors(r1, r2):
+        if (
+            r2.x0 - snap_x <= r1.x0 <= r2.x1 + snap_x or r2.x0 - snap_x <= r1.x1 <= r2.x1 + snap_x
+        ) and (
+            r2.y0 - snap_y <= r1.y0 <= r2.y1 + snap_y or r2.y0 - snap_y <= r1.y1 <= r2.y1 + snap_y
+        ):
+            return True
+        if (
+            r1.x0 - snap_x <= r2.x0 <= r1.x1 + snap_x or r1.x0 - snap_x <= r2.x1 <= r1.x1 + snap_x
+        ) and (
+            r1.y0 - snap_y <= r2.y0 <= r1.y1 + snap_y or r1.y0 - snap_y <= r2.y1 <= r1.y1 + snap_y
+        ):
+            return True
+        return False
+
+    prects = sorted(set(fitz.Rect(r) for r in rects), key = lambda r: (r.y1, r.x0))
+    boxes = []
+    while prects:
+        prect0 = prects[0]
+        repeat = True
+        while repeat:
+            repeat = False
+            for i in range(len(prects) - 1, 0, -1):
+                if are_neighbors(prect0, prects[i]):
+                    prect0 |= prects[i].tl
+                    prect0 |= prects[i].br
+                    del prects[i]
+                    repeat = True
+        boxes.append(prect0)
+        del prects[0]
+    return boxes
+
+
+def _no_lined_table_possible(page) -> bool:
+    """True when pymupdf4llm's find_tables(strategy="lines_strict") provably yields no table
+    it keeps (2+ rows and 2+ columns), so skipping it leaves the page's Markdown unchanged.
+
+    Such a table has cells at 2+ distinct x0 and 2+ distinct tops, so its intersections sit
+    on 3+ vertical and 3+ horizontal merged edges, each from a base edge of length >= 1.
+    lines_strict builds base edges only from the page's line art: the l/re/qu items of every
+    path that is not a large fill, plus the border of each cluster of those paths. Counting
+    each candidate line once per orientation it could take is an upper bound; below 3 in
+    either orientation, no table survives. Unrotated pages only (find_tables derotates)."""
+    if page.rotation != 0:
+        return False
+    v = h = 0
+
+    def line(a, b):
+        nonlocal v, h
+        if abs(b[1] - a[1]) >= 1:
+            v += 1
+        if abs(b[0] - a[0]) >= 1:
+            h += 1
+
+    rects = []
+    for path in page.get_cdrawings():
+        x0, y0, x1, y1 = path["rect"]
+        # make_edges drops fill-only paths wider and taller than the snap tolerance.
+        if path["type"] == "f" and x1 - x0 > _TABLE_SNAP and y1 - y0 > _TABLE_SNAP:
+            continue
+        rects.append(path["rect"])
+        items = path["items"]
+        for item in items:
+            if item[0] == "l":
+                line(item[1], item[2])
+            elif item[0] == "re":
+                rx0, ry0, rx1, ry1 = item[1]
+                if abs(ry1 - ry0) >= 1:
+                    v += 2
+                if abs(rx1 - rx0) >= 1:
+                    h += 2
+            elif item[0] == "qu":
+                ul, ur, ll, lr = item[1]
+                for a, b in ((ul, ll), (ll, lr), (lr, ur), (ur, ul)):
+                    line(a, b)
+        if path.get("closePath", True) and items and items[0][0] == "l" and items[-1][0] == "l":
+            line(items[-1][2], items[0][1])
+        if v >= 3 and h >= 3:
+            return False
+    if len(rects) > _TABLE_GUARD_MAX_RECTS:
+        return False
+    for box in _graphics_bboxes(rects):
+        if box.y1 - box.y0 >= 1:
+            v += 2
+        if box.x1 - box.x0 >= 1:
+            h += 2
+    return v < 3 or h < 3
+
+
+def _skips_table_search(doc, number: int) -> bool:
+    try:
+        return _no_lined_table_possible(doc[number])
+    except Exception:  # noqa: BLE001 - an unreadable page keeps the full table search
+        return False
+
+
+def _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs) -> list | None:
+    """Runs the same to_markdown calls as the plain path, each split into pages that need the
+    table search and pages where it provably finds nothing (table_strategy=None). Both halves
+    share the header table the single call would build, from the same document state."""
+    # to_markdown bakes forms and annotations first; bake now so the guard sees the same page.
+    if doc.is_form_pdf or (doc.is_pdf and doc.has_annots()):
+        doc.bake()
+    by_page = {}
+    for group, detect in calls:
+        if not group:
+            continue
+        headers = pymupdf4llm.IdentifyHeaders(doc)
+        skip = {i for i in group if _skips_table_search(doc, i)}
+        for part_pages, extra in (
+            ([i for i in group if i not in skip], {}),
+            ([i for i in group if i in skip], {"table_strategy": None}),
+        ):
+            if not part_pages:
+                continue
+            part = pymupdf4llm.to_markdown(
+                doc,
+                pages = part_pages,
+                hdr_info = headers,
+                detect_bg_color = detect,
+                **extra,
+                **kwargs,
+            )
+            if not isinstance(part, list) or len(part) != len(part_pages):
+                return None
+            by_page.update(zip(part_pages, part))
+    return [by_page[i] for i in indices]
+
+
 def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
     i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
@@ -408,7 +571,17 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
         kwargs = {"page_chunks": True, "show_progress": False, "ignore_images": True}
         indices = list(range(doc.page_count) if pages is None else pages)
         scans = {i for i in indices if _image_covers_a_corner(doc, i)}
-        if not scans:
+        if _table_guard_enabled(pymupdf4llm):
+            calls = [(indices, True)]
+            if scans:
+                calls = [
+                    ([i for i in indices if i not in scans], True),
+                    ([i for i in indices if i in scans], False),
+                ]
+            chunks = _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs)
+            if chunks is None:
+                return None
+        elif not scans:
             if pages is not None:
                 kwargs["pages"] = indices
             chunks = pymupdf4llm.to_markdown(doc, **kwargs)
