@@ -4859,8 +4859,8 @@ def _without_instance_bound_methods(obj):
 
 
 def _is_unsloth_fast_backbone(backbone):
-    from .llama import LlamaModel_fast_forward
-    return getattr(type(backbone), "forward", None) is LlamaModel_fast_forward
+    from .llama import LlamaModel_fast_forward, runs_fast_forward
+    return backbone is not None and runs_fast_forward(backbone, LlamaModel_fast_forward)
 
 
 def _text_prepended_position_ids(position_ids):
