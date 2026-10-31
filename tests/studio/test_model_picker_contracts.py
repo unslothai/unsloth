@@ -692,7 +692,16 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert "loadPickerGgufVariants(" in picker
     sole = re.search(r"async function readSoleQuant\(.*?\n}", picker, re.S)
     assert sole and "localOnly: true," in sole.group(0)
-    assert "soleQuantNeedsExpander(" in picker and "hubWithdrawsSoleQuant(" in picker
+    # The collapsed row answers from disk only: no follow-up listing may be issued to decide how
+    # it renders. Hub state (an update, a pending companion) is read by the expander.
+    assert "hubWithdrawsSoleQuant(" not in picker
+    assert "soleQuantNeedsExpander(" not in picker
+    sole_reader = re.search(r"function useSoleDownloadedQuants\(.*?\n}\n", picker, re.S)
+    assert sole_reader, "the sole-quant reader was renamed"
+    assert "listGgufVariantsCached(" not in sole_reader.group(0), (
+        "the collapsed rows list variants directly instead of through readSoleQuant, "
+        "which is the only caller that pins offline=true"
+    )
     assert "cachePath={c.cache_path}" in picker
 
     page = _read("features/chat/chat-page.tsx")
@@ -3173,7 +3182,7 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
     # Inside the parent row: a gear added beside the spacer would invert the driver's inference.
     start = pickers.index("const renderDownloadedGgufRow")
     parent = pickers[start : pickers.index("const renderDownloadedModelRow", start)]
-    parent_row = parent[: parent.index("{expanderOpen && (")]
+    parent_row = parent[: parent.index("{renderGgufExpandRow(")]
     # A partial repo puts a row menu in the gutter instead; the gear invariant is about the
     # branch that expands, so read that one when the row splits on it.
     split = parent_row.find("isPartialRepo ?")
