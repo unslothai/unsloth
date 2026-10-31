@@ -6003,6 +6003,9 @@ def apply_memory_plan(
 UNET_STREAM_ENV = "UNSLOTH_DIFFUSION_UNET_STREAM"
 # activations + workspace of one SDXL-class UNet call at 1024^2 (CFG batch 2, fp16 SDPA), beside the streamed weights
 _UNET_STREAM_RESERVE_MIB = 1536
+# kept free beside the resident leaves for the tiled VAE decode (a decode OOM releases resident groups; leaf-level
+# groups do not survive that round trip)
+_UNET_STREAM_DECODE_MIB = 2048
 
 
 def _stream_unet_instead_of_model_offload(pipe: Any, placement: str, logger: Any = None) -> bool:
@@ -6032,7 +6035,7 @@ def _stream_unet_instead_of_model_offload(pipe: Any, placement: str, logger: Any
         if unet_mib + _UNET_STREAM_RESERVE_MIB <= free_mib:
             return False
         vae_mib = _mib(getattr(pipe, "vae", None))
-        room = max(0, free_mib - vae_mib - _UNET_STREAM_RESERVE_MIB - 512)
+        room = max(0, free_mib - vae_mib - _UNET_STREAM_RESERVE_MIB - _UNET_STREAM_DECODE_MIB - 512)
     except Exception:  # noqa: BLE001 - keep the stock whole-module path
         return False
     _set_group_offload_failure(pipe, None)
