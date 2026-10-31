@@ -12,7 +12,8 @@
   gradient is present, exactly one read when some local gradient is None;
 * end to end through reduce_unsharded_trainable_grads on a fully_shard model, for every
   UNSLOTH_FSDP2_GA_SYNC mode (skip / defer / each / auto), replicated and sharded gradients are
-  bitwise equal to the previous implementation."""
+  bitwise equal to the previous implementation;
+* an fp16 replica summed over unsynced micro-batches does not overflow before the average."""
 
 import multiprocessing
 import os
@@ -272,10 +273,10 @@ def _train(save, native, rank, mode, impl):
 
     save.mesh_all_reduce = counting_all_reduce
     if impl == "old":
-        save._sync_replicated_grads = lambda params, d, mesh = None, buffers = None: _reference_sync(
+        save._sync_replicated_grads = lambda params, d, mesh = None, *_: _reference_sync(
             params, d, mesh
         )
-    if impl in ("old", "nodefer"):
+    if impl in ("old", "nodefer", "oracle"):
         save._fsdp_grad_sync_deferred = lambda *a: False
     if impl == "oracle":
         save._sync_replicated_grads = lambda *a, **k: None
@@ -312,10 +313,16 @@ def _train(save, native, rank, mode, impl):
         save._sync_replicated_grads, save._fsdp_grad_sync_deferred, save.mesh_all_reduce = saved
 
 
-def _diff(a_steps, b_steps):
+def _diff(
+    a_steps,
+    b_steps,
+    skip = (),
+):
     bad, worst = [], 0.0
     for step, (a, b) in enumerate(zip(a_steps, b_steps)):
         for n in a:
+            if n in skip:
+                continue
             x, y = a[n], b[n]
             if (x is None) != (y is None):
                 bad.append((step, n, "none"))
@@ -339,9 +346,45 @@ def _case_modes(rank):
         r["calls"] = {impl: v[2] for impl, v in runs.items()}
         r["nodefer_vs_old"] = _diff(runs["old"][1], runs["nodefer"][1])[0]
         r["new_vs_old"], r["new_vs_old_max"] = _diff(runs["old"][1], runs["new"][1])
-        r["new_vs_oracle"] = _diff(runs["oracle"][1], runs["new"][1])[0]
+        # fp16 replicas sum unsynced micro-batches in float32: norm16 is not bitwise, and from the
+        # second step neither is anything its update feeds.
+        r["new_vs_oracle"] = _diff(runs["oracle"][1][:1], runs["new"][1][:1], skip = ("norm16",))[0]
+        r["new_vs_oracle_max"] = _diff(runs["oracle"][1], runs["new"][1])[1]
         res[mode] = r
     return res
+
+
+class _Fp16Rep(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.body = torch.nn.Linear(4, 4)
+        self.rep = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
+
+    def forward(self, x, scale):
+        return self.body(x).mean() + (self.rep.float() * scale).sum()
+
+
+def _case_fp16_overflow(rank):
+    """Each micro-batch gives `rep` a finite fp16 gradient (40000 on rank 0, 20000 on rank 1); the
+    average of the two-micro-batch sums is 60000, finite in fp16, but rank 0's local sum (80000) is not."""
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+
+    native = _load_native()
+    save = _save()
+    os.environ["UNSLOTH_FSDP2_GA_SYNC"] = "defer"
+    torch.manual_seed(0)
+    model = _Fp16Rep()
+    mesh = init_device_mesh("cpu", (2,))
+    fully_shard(model.body, mesh = mesh)
+    fully_shard(model, mesh = mesh, ignored_params = {model.rep})
+    names = save.reduce_unsharded_trainable_grads(model)
+    scale = 40000.0 if rank == 0 else 20000.0
+    x = torch.randn(2, 4)
+    with native._no_grad_sync(model):
+        model(x, scale).backward()
+    model(x, scale).backward()
+    return {"names": names, "grad": model.rep.grad.float().tolist(), "file": save.__file__}
 
 
 def _worker(rank, world, port, out, case):
@@ -360,7 +403,8 @@ def _worker(rank, world, port, out, case):
         "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 60)
     )
     try:
-        res = _case_unit(rank) if case == "unit" else _case_modes(rank)
+        cases = {"unit": _case_unit, "modes": _case_modes, "fp16_overflow": _case_fp16_overflow}
+        res = cases[case](rank)
         out.put((rank, res))
     except Exception as exc:
         import traceback
@@ -427,6 +471,13 @@ def test_replicated_sync_follows_the_ga_sync_flag():
             if deferred:
                 # Bitwise the accumulated local sum averaged once over the ranks.
                 assert m["new_vs_oracle"] == [], (rank, mode, m)
+                assert m["new_vs_oracle_max"] < 1e-2, (rank, mode, m)
                 assert m["new_vs_old_max"] < 1e-2, (rank, mode, m)
             else:
                 assert m["new_vs_old"] == [], (rank, mode, m)
+
+
+def test_fp16_replica_local_sum_over_micro_batches_does_not_overflow():
+    for rank, r in _run("fp16_overflow").items():
+        assert r["names"] == ["rep"], (rank, r)
+        assert r["grad"] == [60000.0] * 4, (rank, r)
