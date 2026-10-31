@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -1338,11 +1339,24 @@ def _ready_cached_variants(cached: tuple) -> tuple[list[GgufVariantInfo], bool, 
     return whole or variants, has_vision, None
 
 
+# Whether the listing behind the last ``list_gguf_variants`` call in THIS thread came from the Hub.
+# The function falls back to the cache walk when the Hub is unreachable, so its return value alone
+# cannot tell a live answer from a cached one, and the Hub-state record must not be written from the
+# latter. Thread-local because the listing runs in a worker thread, whose context does not flow back.
+_listing_source = threading.local()
+
+
+def listing_came_from_network() -> bool:
+    """Whether this thread's last ``list_gguf_variants`` call was answered by the Hub."""
+    return bool(getattr(_listing_source, "network", False))
+
+
 def list_gguf_variants(
     repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
     from huggingface_hub import HfApi
 
+    _listing_source.network = False
     if _env_offline():
         cached = list_gguf_variants_from_hf_cache(repo_id)
         if cached is not None:
@@ -1358,6 +1372,7 @@ def list_gguf_variants(
             ),
             hf_token,
         )
+        _listing_source.network = True
     except Exception as exc:
         if type(exc).__name__ in (
             "RepositoryNotFoundError",

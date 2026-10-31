@@ -40,6 +40,7 @@ from hub.utils.hf_cache_state import (
 )
 from hub.utils.gguf import (
     GgufVariantInfo,
+    listing_came_from_network,
     extract_quant_label,
     gguf_variant_family,
     gguf_variant_key,
@@ -1586,7 +1587,7 @@ async def _with_lookup_tables(
         return answer
 
 
-async def get_gguf_variants_answer(
+async def _compute_gguf_variants_answer(
     repo_id: str,
     prefer_local_cache: bool = False,
     offline: bool = False,
@@ -1594,7 +1595,7 @@ async def get_gguf_variants_answer(
     hf_token: Optional[str] = None,
     include_cache_locations: bool = False,
 ) -> VariantsAnswer:
-    """Returns each quant with file sizes, vision support and the recommended default; local folders too."""
+    """The listing itself. ``get_gguf_variants_answer`` wraps it for the Hub-state record."""
     access_options = {"offline": True} if offline else {}
     if local_path:
         if account_access.managed_account():
@@ -1628,6 +1629,9 @@ async def get_gguf_variants_answer(
     answered_from: list[Optional[str]] = [None]
     # A repo id naming a directory is answered by that directory alone, or a GGUF-less dir evicts it.
     answered_locally = [False]
+    # Whether the listing came from the Hub. The walk runs in a worker thread, so this travels as a
+    # plain holder rather than a context variable, and the wrapper reads it off the response.
+    hub_listing_live = [False]
     # Read by the route before its own cache walk, which this listing does not cover.
     cache_authorized = [True]
     variant_context_sources: dict[str, str] = {}
@@ -2158,6 +2162,7 @@ async def get_gguf_variants_answer(
             if hub_listing is None:
                 hub_listing = list_gguf_variants(repo_id, hf_token = hf_token)
             variants, has_vision, siblings = hub_listing
+            hub_listing_live[0] = listing_came_from_network()
         except Exception:
             # Ungated: _cache_fallback_response already refuses an unauthorized caller.
             fallback = _cache_fallback_response()
@@ -2545,6 +2550,10 @@ async def get_gguf_variants_answer(
     def _compute_with_cleanables() -> VariantsAnswer:
         # Returned with the answer: coalesced callers must all see the copy it answered from.
         response = _compute_response()
+        # Stamped here, in the worker thread, where the Hub verdict was observed.
+        response = response.model_copy(
+            update = {"hub_state": "live"} if hub_listing_live[0] else {}
+        )
         return VariantsAnswer(
             response, answered_from[0], cache_authorized[0], variant_context_sources
         )
@@ -2762,6 +2771,97 @@ async def get_gguf_variants_answer(
             status_code = 500,
             detail = "Failed to list GGUF variants: " + scrubbed,
         )
+
+
+
+def _hub_state_answer(
+    answer: VariantsAnswer,
+    repo_id: str,
+    hf_token: Optional[str],
+    *,
+    offline: bool,
+) -> VariantsAnswer:
+    """``answer`` with its Hub-derived state recorded (live) or restored (cached).
+
+    A record is written only from an answer the Hub actually produced, and read only for a GGUF
+    answer that could not reach it. Answers from a local path or an MLX precision listing carry no
+    Hub variant state, so they are left alone.
+    """
+    from hub.utils import variant_hub_state
+
+    response = answer.response
+    # A bare local path, an MLX precision listing and an offline request have no Hub variant state to
+    # keep. An On Device row passes local_path for a Hub repo and stays resolved_locally false, so it
+    # is not caught here: that is exactly the case this record exists for.
+    if (
+        offline
+        or response.resolved_locally
+        or response.variant_format is not None
+        or not _is_valid_repo_id(repo_id)
+    ):
+        return answer
+    if response.hub_state == "live":
+        variant_hub_state.record_listing(repo_id, response, hf_token = hf_token)
+        return answer._replace(response = response.model_copy(update = {"hub_state": "live"}))
+    stored = variant_hub_state.stored_listing(repo_id, hf_token = hf_token)
+    if stored is None:
+        return answer
+    return answer._replace(response = variant_hub_state.merged_response(response, stored))
+
+
+async def get_gguf_variants_answer(
+    repo_id: str,
+    prefer_local_cache: bool = False,
+    offline: bool = False,
+    local_path: Optional[str] = None,
+    hf_token: Optional[str] = None,
+    include_cache_locations: bool = False,
+) -> VariantsAnswer:
+    """Returns each quant with file sizes, vision support and the recommended default; local folders too.
+
+    An unreachable Hub costs the update verdict and the pending companion, not the listing: the last
+    listing it published is merged back in and marked ``cached``, so the UI can show what the repo
+    said without offering a download that cannot be carried out.
+    """
+    try:
+        answer = await _compute_gguf_variants_answer(
+            repo_id,
+            prefer_local_cache = prefer_local_cache,
+            offline = offline,
+            local_path = local_path,
+            hf_token = hf_token,
+            include_cache_locations = include_cache_locations,
+        )
+    except Exception as exc:
+        if offline or _is_client_side_failure(exc):
+            raise
+        from hub.utils import variant_hub_state
+
+        stored = variant_hub_state.stored_listing(repo_id, hf_token = hf_token)
+        if stored is None:
+            raise
+        # The record only replaces what the Hub would have said; the rows themselves must still
+        # come from this machine, so ask again with discovery off.
+        try:
+            fallback = await _compute_gguf_variants_answer(
+                repo_id,
+                prefer_local_cache = True,
+                offline = True,
+                local_path = local_path,
+                hf_token = hf_token,
+                include_cache_locations = include_cache_locations,
+            )
+        except Exception:
+            raise exc from None
+        merged = variant_hub_state.merged_response(fallback.response, stored)
+        return fallback._replace(response = merged)
+    return _hub_state_answer(answer, repo_id, hf_token, offline = offline)
+
+
+def _is_client_side_failure(exc: BaseException) -> bool:
+    """A missing, gated or unauthorized repo is an answer, not an outage: never paper over it."""
+    status = hf_error_status(exc)
+    return status is not None and 400 <= int(status) < 500
 
 
 async def get_gguf_variants_response(

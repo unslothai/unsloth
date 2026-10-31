@@ -266,6 +266,17 @@ class GgufVariantsResponse(BaseModel):
             "quants; None for GGUF"
         ),
     )
+    hub_state: str = Field(
+        "none",
+        description = (
+            "'live' when the Hub answered this request, 'cached' when an unreachable Hub left "
+            "the last stored listing to supply update and companion state, 'none' when there "
+            "was none. Only 'live' proves an update can still be downloaded."
+        ),
+    )
+    observed_at: Optional[float] = Field(
+        None, description = "Unix time the Hub state in this answer was observed; null when live or absent"
+    )
 
 
 LocalModelSource = Literal[

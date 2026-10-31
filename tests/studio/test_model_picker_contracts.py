@@ -3738,7 +3738,9 @@ def test_the_backend_keys_the_footprint_on_family_and_text_encoders():
     # Runs once per row inside the listing, so it must never fail it.
     assert "except Exception as e:" in helper
     assert helper.rstrip().endswith("return None")
-    answer = src.split("async def get_gguf_variants_answer(", 1)[1]
+    # The public entry point is a wrapper around the listing (Hub-state record); the rows are built
+    # in the compute function.
+    answer = src.split("async def _compute_gguf_variants_answer(", 1)[1]
     assert answer.count("dependency_key = _variant_dependency_key(") >= 4
     schema = _read_backend("hub/schemas/inventory.py")
     assert "dependency_key: Optional[str] = Field(" in schema
@@ -3893,3 +3895,21 @@ def test_a_download_only_pick_is_allowed_while_the_page_is_busy():
     text = body.group(1)
     assert "if (busy !== null && !downloadOnlyPick) return;" in text
     assert text.index("const downloadOnlyPick =") < text.index("if (busy !== null")
+
+
+def test_a_cached_hub_answer_offers_no_action_it_cannot_carry_out():
+    """An unreachable Hub can still show what it last said, but an update or companion download
+    needs the Hub itself, so only a live answer may offer one."""
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert (
+        'hubLive: res?.hub_state === undefined || res?.hub_state === "live",' in picker
+    ), "an older server sends no hub_state; its answers are live"
+    assert (
+        "variantsAreGguf && hubLive ? variantActions?.onUpdate : undefined" in picker
+    ), "a cached answer still offers an update it cannot fetch"
+    assert (
+        "hubLive ? pendingDrafterPresentation(v) : undefined" in picker
+    ), "a cached answer still offers a companion download it cannot fetch"
+    types = _read("features/chat/types/api.ts")
+    assert 'hub_state?: "live" | "cached" | "none" | string;' in types
+    assert "observed_at?: number | null;" in types

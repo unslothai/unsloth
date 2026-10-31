@@ -4663,6 +4663,10 @@ async def get_gguf_variants(
                 context_length = context_lengths.get(context_model),
                 resolved_locally = bool(getattr(response, "resolved_locally", False)),
                 dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
+                # Stamped by get_gguf_variants_answer: a rebuilt response must not silently read as
+                # live, or a cached answer would offer an update this Hub cannot fetch.
+                hub_state = str(getattr(response, "hub_state", "none") or "none"),
+                observed_at = getattr(response, "observed_at", None),
                 loadable_variants = getattr(response, "loadable_variants", None),
                 loadable = getattr(response, "loadable", None),
                 variant_format = getattr(response, "variant_format", None),

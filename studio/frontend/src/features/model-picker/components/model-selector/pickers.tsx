@@ -1633,6 +1633,7 @@ function normalizeGgufVariantsResponse(
         context_length?: unknown;
         resolved_locally?: unknown;
         dependencies_resolved?: unknown;
+        hub_state?: unknown;
       }
     | null
     | undefined,
@@ -1643,6 +1644,8 @@ function normalizeGgufVariantsResponse(
   contextLength: number | null;
   resolvedLocally: boolean;
   dependenciesResolved: boolean;
+  /** Only a live Hub answer proves an update or companion can still be downloaded. */
+  hubLive: boolean;
 } {
   const contextLength = res?.context_length;
   return {
@@ -1663,6 +1666,8 @@ function normalizeGgufVariantsResponse(
     // The backend's verdict resolves existence-first; an older server leaves the prefix test.
     resolvedLocally: res?.resolved_locally === true,
     dependenciesResolved: res?.dependencies_resolved === true,
+    // An older server sends no hub_state; its answers are live by construction.
+    hubLive: res?.hub_state === undefined || res?.hub_state === "live",
   };
 }
 
@@ -1861,7 +1866,11 @@ function GgufVariantExpander({
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinnedQuant = usePinnedModelsStore((s) => s.togglePinned);
   const [variantsAreGguf, setVariantsAreGguf] = useState(true);
-  const onUpdateVariant = variantsAreGguf ? variantActions?.onUpdate : undefined;
+  // False when an unreachable Hub left a stored listing to supply update/companion state. The row
+  // may still say "update available", but the actions that need the Hub are not offered.
+  const [hubLive, setHubLive] = useState(true);
+  const onUpdateVariant =
+    variantsAreGguf && hubLive ? variantActions?.onUpdate : undefined;
   const updateVariantTitle =
     variantActions?.updateTitle ?? "Update cached model?";
   const renderUpdateVariantDescription =
@@ -1927,6 +1936,7 @@ function GgufVariantExpander({
       setNativeContext(normalized.contextLength);
       setResolvedLocally(normalized.resolvedLocally);
       setVariantsAreGguf(res?.variant_format !== "mlx");
+      setHubLive(normalized.hubLive);
     };
 
     loadPickerGgufVariants(
@@ -2346,7 +2356,7 @@ function GgufVariantExpander({
                 v.filename,
                 v.downloaded,
                 expectedBytes,
-                pendingDrafterPresentation(v),
+                hubLive ? pendingDrafterPresentation(v) : undefined,
                 variantContext,
               )
             }

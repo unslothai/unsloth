@@ -184,6 +184,14 @@ export interface GgufVariantsResponse {
   context_length?: number | null;
   /** "mlx" for precision folders of an MLX repo. */
   variant_format?: string | null;
+  /**
+   * "live" when the Hub answered this request; "cached" when an unreachable Hub left the last
+   * stored listing to supply update and companion state. Only "live" proves a download can
+   * still be carried out, so only "live" offers the update and companion actions.
+   */
+  hub_state?: "live" | "cached" | "none" | string;
+  /** Unix time the cached state was observed; null for a live answer. */
+  observed_at?: number | null;
 }
 
 export function isMultimodalResponse(
