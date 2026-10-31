@@ -33,7 +33,8 @@ import {
 // a local model's layers ended up after it loads.
 // filesPanelCollapsed: on shrinks Chat with files to a header and
 // a row of pills. newChatComposerAtBottom: on docks a new chat's composer at the bottom, as once
-// the chat has messages, instead of under the greeting mid-page.
+// the chat has messages, instead of under the greeting mid-page. richTextPaste: on pastes links,
+// tables, lists and emphasis from web pages and documents as Markdown.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
@@ -71,6 +72,8 @@ export interface ChatPreferencesState {
   setFilesPanelCollapsed: (value: boolean) => void;
   newChatComposerAtBottom: boolean;
   setNewChatComposerAtBottom: (value: boolean) => void;
+  richTextPaste: boolean;
+  setRichTextPaste: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -133,6 +136,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       newChatComposerAtBottom: false,
       setNewChatComposerAtBottom: (newChatComposerAtBottom) =>
         set({ newChatComposerAtBottom }),
+      richTextPaste: true,
+      setRichTextPaste: (richTextPaste) => set({ richTextPaste }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -178,6 +183,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
           notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
           filesPanelCollapsed: saved?.filesPanelCollapsed === true,
+          richTextPaste: saved?.richTextPaste !== false,
           newChatComposerAtBottom: saved?.newChatComposerAtBottom === true,
         };
       },

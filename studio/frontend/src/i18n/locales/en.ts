@@ -612,6 +612,8 @@ export const en = {
     title: "Composer",
     plainText: "Plain text composer",
     plainTextDescription: "Keep code, Markdown, and links as literal text. Turn off to show a formatted preview.",
+    richPaste: "Rich text paste",
+    richPasteDescription: "Keep links, tables, lists and bold or italic text as Markdown when pasting from web pages and documents. {shortcut} always pastes plain text.",
     showContext: "Context window usage",
     sendShortcut: "Send shortcut",
     sendMultiline: "{mod} + Enter for multiline prompts",

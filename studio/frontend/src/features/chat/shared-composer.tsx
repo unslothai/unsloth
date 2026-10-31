@@ -93,6 +93,7 @@ import {
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
+import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
 import {
   composerDraftKey,
   latestDraft,
@@ -624,6 +625,7 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
   const navigate = useNavigate();
   const handleExitCompare = useCallback(() => {
     if (onExitCompare) {
@@ -1358,8 +1360,17 @@ export function SharedComposer({
             description: "Compare supports images and audio within the attachment size limits.",
           }),
       );
+      if (event.defaultPrevented || !richTextPaste) return;
+      const markdown = richPasteMarkdown(event.clipboardData);
+      if (markdown === null) return;
+      event.preventDefault();
+      const input = event.currentTarget;
+      insertAtCaret(input, markdown, (next, caret) => {
+        setCurrentText(next);
+        requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+      });
     },
-    [trackAttaching, addFilesUntracked],
+    [trackAttaching, addFilesUntracked, richTextPaste, setCurrentText],
   );
 
   const removePendingImage = useCallback((id: string) => {

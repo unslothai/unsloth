@@ -143,6 +143,18 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
               onCheckedChange={prefs.setPlainTextComposer}
             />
           </SettingsRow>
+          <SettingsRow
+            label={t("composerSettings.richPaste")}
+            description={t("composerSettings.richPasteDescription", {
+              shortcut: isMacPlatform() ? "\u21e7\u2318V" : "Ctrl+Shift+V",
+            })}
+          >
+            <Switch
+              aria-label={t("composerSettings.richPaste")}
+              checked={prefs.richTextPaste}
+              onCheckedChange={prefs.setRichTextPaste}
+            />
+          </SettingsRow>
           <SettingsRow label={t("composerSettings.showContext")}>
             <Switch
               aria-label={t("composerSettings.showContext")}

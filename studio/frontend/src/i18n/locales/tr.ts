@@ -698,6 +698,8 @@ export const tr = {
     plainText: "Düz metin yazma alanı",
     plainTextDescription:
       "Kod, Markdown ve bağlantılar olduğu gibi metin olarak kalır. Biçimlendirilmiş önizleme göstermek için kapatın.",
+    richPaste: "Biçimli metin yapıştırma",
+    richPasteDescription: "Web sayfalarından ve belgelerden yapıştırırken bağlantıları, tabloları, listeleri ve kalın ya da italik metni Markdown olarak korur. {shortcut} her zaman düz metin yapıştırır.",
     showContext: "Bağlam penceresi kullanımı",
     sendShortcut: "Gönderme kısayolu",
     sendMultiline: "Çok satırlı istemlerde {mod} + Enter",

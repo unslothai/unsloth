@@ -649,6 +649,8 @@ export const he = {
     plainText: "עורך טקסט פשוט",
     plainTextDescription:
       "שמור קוד, Markdown וקישורים כטקסט מילולי. כבה כדי להציג תצוגה מקדימה מעוצבת.",
+    richPaste: "הדבקת טקסט מעוצב",
+    richPasteDescription: "שומר קישורים, טבלאות, רשימות וטקסט מודגש או נטוי כ-Markdown בהדבקה מדפי אינטרנט וממסמכים. {shortcut} תמיד מדביק טקסט רגיל.",
     showContext: "שימוש בחלון ההקשר",
     sendShortcut: "קיצור שליחה",
     sendMultiline: "{mod} + Enter להנחיות מרובות שורות",

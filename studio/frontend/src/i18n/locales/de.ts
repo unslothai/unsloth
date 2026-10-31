@@ -615,6 +615,8 @@ export const de = {
     title: "Nachrichteneingabe",
     plainText: "Eingabe als Klartext",
     plainTextDescription: "Code, Markdown und Links als wörtlichen Text anzeigen. Ausschalten, um eine formatierte Vorschau zu sehen.",
+    richPaste: "Formatiert einfügen",
+    richPasteDescription: "Behält beim Einfügen aus Webseiten und Dokumenten Links, Tabellen, Listen sowie fetten oder kursiven Text als Markdown bei. {shortcut} fügt immer reinen Text ein.",
     showContext: "Auslastung des Kontextfensters anzeigen",
     sendShortcut: "Tastenkürzel zum Senden",
     sendMultiline: "{mod} + Enter bei mehrzeiligen Nachrichten",

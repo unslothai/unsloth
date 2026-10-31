@@ -659,6 +659,8 @@ export const zhTW = {
     plainText: "純文字輸入框",
     plainTextDescription:
       "將程式碼、Markdown 和連結保留為原始文字。關閉後會顯示格式化預覽。",
+    richPaste: "貼上豐富文字",
+    richPasteDescription: "從網頁和文件貼上時，將連結、表格、清單以及粗體或斜體文字保留為 Markdown。{shortcut} 一律貼上純文字。",
     showContext: "上下文視窗用量",
     sendShortcut: "傳送快速鍵",
     sendMultiline: "多行提示詞使用 {mod} + Enter",

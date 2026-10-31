@@ -615,6 +615,8 @@ export const es = {
     title: "Redacción de mensajes",
     plainText: "Redactor de texto sin formato",
     plainTextDescription: "Mantener el código, Markdown y los enlaces como texto literal. Desactívalo para mostrar una vista previa con formato.",
+    richPaste: "Pegar texto con formato",
+    richPasteDescription: "Conserva enlaces, tablas, listas y texto en negrita o cursiva como Markdown al pegar desde páginas web y documentos. {shortcut} siempre pega texto sin formato.",
     showContext: "Mostrar uso de la ventana de contexto",
     sendShortcut: "Atajo para enviar",
     sendMultiline: "{mod} + Enter en mensajes de varias líneas",

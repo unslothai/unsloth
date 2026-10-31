@@ -123,6 +123,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "composerSettings.sendShortcut",
     "composerSettings.followUp",
     "composerSettings.plainText",
+    "composerSettings.richPaste",
     "composerSettings.showContext",
     "settings.chat.pastedTextThreshold",
     "settings.chat.groups.conversations.title",

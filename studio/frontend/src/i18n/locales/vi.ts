@@ -700,6 +700,8 @@ export const vi = {
     plainText: "Khung soạn thảo văn bản thuần",
     plainTextDescription:
       "Giữ mã, Markdown và liên kết dưới dạng văn bản nguyên bản. Tắt để hiển thị bản xem trước có định dạng.",
+    richPaste: "Dán văn bản có định dạng",
+    richPasteDescription: "Giữ liên kết, bảng, danh sách và chữ đậm hoặc nghiêng dưới dạng Markdown khi dán từ trang web và tài liệu. {shortcut} luôn dán văn bản thuần.",
     showContext: "Mức sử dụng cửa sổ ngữ cảnh",
     sendShortcut: "Phím tắt gửi",
     sendMultiline: "{mod} + Enter cho lời nhắc nhiều dòng",
