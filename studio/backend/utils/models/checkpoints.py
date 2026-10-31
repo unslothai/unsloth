@@ -281,7 +281,7 @@ def _scan_checkpoints(
     outputs_path = resolve_output_dir(outputs_dir)
 
     if not outputs_path.exists():
-        logger.warning(f"Outputs directory not found: {outputs_dir}")
+        logger.warning(f"Outputs directory not found: {outputs_path}")
         return models
 
     try:
