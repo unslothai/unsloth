@@ -417,6 +417,60 @@ def test_files_deep_in_the_folder_are_rewound(chat, monkeypatch):
     assert route.read_text(encoding = "utf-8") == helpers.read_text(encoding = "utf-8") == "v1\n"
 
 
+def test_edit_file_changes_inside_dot_folders_are_rewound(chat):
+    workdir, history = chat
+    ci = workdir / ".github" / "workflows" / "ci.yml"
+    ci.parent.mkdir(parents = True)
+    ci.write_text("on: push\n", encoding = "utf-8")
+    file_history.set_turn("chat-1", "u1")
+    _edit(".github/workflows/ci.yml", "on: push", "on: [push, pull_request]")
+    execute_tool("python", {"code": "open('app.py', 'w').write('x = 1')"}, session_id = "s")
+
+    preview = _rewind(history, ["u1"], dry_run = True)
+    assert preview.restored == [".github/workflows/ci.yml"] and preview.deleted == ["app.py"]
+    assert _rewind(history, ["u1"]).restored == [".github/workflows/ci.yml"]
+    assert ci.read_text(encoding = "utf-8") == "on: push\n"
+
+
+def test_a_dot_folder_file_recreated_by_hand_is_a_conflict(chat):
+    workdir, history = chat
+    ci = workdir / ".github" / "ci.yml"
+    ci.parent.mkdir()
+    ci.write_text("a\n", encoding = "utf-8")
+    file_history.set_turn("chat-1", "u1")
+    _edit(".github/ci.yml", "a", "b")
+    file_history.set_turn("chat-1", "u2")
+    execute_tool("python", {"code": "import os; os.remove('.github/ci.yml')"}, session_id = "s")
+    ci.write_text("user\n", encoding = "utf-8")
+
+    assert _rewind(history, ["u2"]).conflicts == [".github/ci.yml"]
+    assert ci.read_text(encoding = "utf-8") == "user\n"
+
+    ci.unlink()
+    report = _rewind(history, ["u2"])
+    assert report.recreated == [".github/ci.yml"]
+    assert _rewind(history, [report.undo_turn_id]).deleted == [".github/ci.yml"]
+    assert not ci.exists()
+    assert _rewind(history, ["u2"]).recreated == [".github/ci.yml"]
+    ci.write_text("user\n", encoding = "utf-8")
+    assert _rewind(history, ["u1"]).conflicts == [".github/ci.yml"]
+    assert ci.read_text(encoding = "utf-8") == "user\n"
+
+
+def test_a_rename_that_only_changes_case_is_rewound(chat):
+    workdir, history = chat
+    file_history.set_turn("chat-1", "u1")
+    execute_tool("python", {"code": "open('Readme.md', 'w').write('keep')"}, session_id = "s")
+    file_history.set_turn("chat-1", "u2")
+    execute_tool(
+        "python", {"code": "import os; os.rename('Readme.md', 'README.md')"}, session_id = "s"
+    )
+
+    _rewind(history, ["u2"])
+    assert [p.name for p in workdir.iterdir() if p.name.lower() == "readme.md"] == ["Readme.md"]
+    assert (workdir / "Readme.md").read_text(encoding = "utf-8") == "keep"
+
+
 @pytest.mark.skipif(os.name != "posix", reason = "uses a POSIX shell")
 def test_a_file_past_the_download_card_walk_is_rewound(chat, monkeypatch):
     workdir, _history = chat

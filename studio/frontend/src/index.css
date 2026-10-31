@@ -55,6 +55,18 @@
 }
 
 @layer components {
+	.media-header-layout {
+		/* Header column, settings rail and resize handle share this boundary. */
+		--media-header-min-width: calc(14rem * var(--ui-space-scale, 1) + var(--studio-chat-header-right-inset, var(--studio-window-control-inset, 0px)));
+	}
+
+	/* Stacked layout: the model selector keeps at least half the header row. */
+	@container (width < 50rem) {
+		.media-header-layout > * {
+			--media-header-min-width: min(calc(14rem * var(--ui-space-scale, 1) + var(--studio-chat-header-right-inset, var(--studio-window-control-inset, 0px))), 50%);
+		}
+	}
+
 	/* The custom Windows/Linux titlebar stays above modal backdrops so native
 	   window actions remain usable. Repeat the standard backdrop over the surface
 	   and page navigation. Window controls paint above it, keeping their glyphs
@@ -6705,3 +6717,96 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
 	to { opacity: 0.85; }
 }
 
+
+.chat-wallpaper { position: absolute; inset: 0; overflow: hidden; pointer-events: none; --wallpaper-safe: 0; }
+.chat-wallpaper-frame { position: absolute; inset: 0; opacity: var(--wallpaper-visibility); }
+.chat-wallpaper-image {
+  position: absolute; inset: 0 0 auto; height: min(72%, 760px);
+  overflow: hidden;
+  mask-image: linear-gradient(#000, transparent);
+}
+.chat-wallpaper-artwork { position: absolute; inset: 0; background-repeat: no-repeat; }
+.chat-wallpaper-image[data-fade="false"] { height: 100%; mask-image: none; }
+.chat-wallpaper-frame[data-entering] { animation: wallpaper-enter 180ms ease-out both; }
+.chat-wallpaper-frame[data-departing] { animation: wallpaper-leave 180ms ease-out both; }
+@keyframes wallpaper-enter { from { opacity: 0; } to { opacity: var(--wallpaper-visibility); } }
+@keyframes wallpaper-leave { from { opacity: var(--wallpaper-visibility); } to { opacity: 0; } }
+.chat-wallpaper[data-reduced] .chat-wallpaper-frame { animation: none; }
+.chat-wallpaper[data-reduced] .chat-wallpaper-frame[data-departing] { display: none; }
+/* Conversations dim the crop; compare dims even an empty pane so both match. */
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper,
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):has([data-tour="chat-compare-view"]) > .chat-wallpaper,
+.wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper { opacity: .4; }
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.aui-thread-viewport, [data-wallpaper-reading-surface]) {
+  background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * 100%), transparent);
+}
+/* No second wash on the welcome view: it crushes mid-tones into a dark horizon. */
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .aui-thread-viewport:has(.aui-thread-welcome-center) {
+  background: transparent;
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-welcome-greeting {
+  position: relative;
+  isolation: isolate;
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-welcome-greeting::before {
+  content: "";
+  position: absolute;
+  inset: -48px -40px;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(ellipse, color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * 70%), transparent) 0%, transparent 72%);
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+.wallpaper-preview-composer {
+  background: color-mix(in srgb, var(--background) max(92%, calc((1 - var(--wallpaper-safe, 0)) * 100%)), transparent);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  /* An outline over the image instead of a drop shadow, through the composer's one shadow variable. */
+  --composer-shadow: inset 0 0 0 1px var(--border);
+  box-shadow: var(--composer-shadow);
+}
+.wallpaper-preview-prose { background: var(--background); }
+
+.chat-wallpaper::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 150px;
+  background: linear-gradient(color-mix(in srgb, var(--background) 48%, transparent), transparent);
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) [data-side-panel-inset]:not(.chat-header-fade),
+html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] {
+  background: transparent;
+  backdrop-filter: none;
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .chat-header-fade,
+html[data-chat-wallpaper-ready] [data-slot="window-titlebar-decoration"] {
+  visibility: hidden;
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) [data-wallpaper-chrome-controls],
+html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] [data-wallpaper-chrome-controls] {
+  background: transparent;
+  backdrop-filter: none;
+  text-shadow: 0 1px 8px var(--background);
+}
+/* The pinned sidebar stays solid, including its segment of the native titlebar. */
+html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wallpaper-sidebar-pinned] > [data-wallpaper-chrome-controls]:first-child {
+  background: var(--sidebar);
+}
+/* One viewport-sized crop, so opening the sidebar does not reframe the image. */
+[data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"],
+[data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) [data-chat-page-root] {
+  background: transparent;
+}
+[data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] {
+  background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * 100%), transparent);
+}
+@supports not (backdrop-filter: blur(1px)) {
+  :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+  .wallpaper-preview-composer { background: var(--background); }
+}
+
+/* Clear only route canvases; cards, menus and reading surfaces retain their fills. */
+[data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) :is(.hub-page, .hub-page .hub-canvas, [data-wallpaper-page-canvas]) { background: transparent; }
+
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
+.wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer { --composer-shadow: none; }

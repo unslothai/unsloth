@@ -348,6 +348,10 @@ try:
     from unsloth_zoo.gradient_checkpointing import non_reentrant_offload_hooks
 except ImportError:  # older unsloth_zoo
     non_reentrant_offload_hooks = None
+try:
+    from unsloth_zoo.gradient_checkpointing import activation_offloader_for
+except ImportError:  # its non_reentrant_offload_hooks takes no owner
+    activation_offloader_for = None
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
@@ -379,6 +383,7 @@ from unsloth_zoo.utils import Version
 
 import types
 import functools
+import weakref
 import importlib.util
 import os
 import copy
@@ -2064,9 +2069,15 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while decoding), so delegate after normalization but before it.
     _clear_generation_caches(self)
+    # Custom-code generate (LFM3) raises on any cache field it lists as unsupported; leave them unset.
+    # Inline, not a helper: tests exec this function's source with a hand-built namespace.
+    unsupported_fields = getattr(self, "_generation_fields_unsupported", None)
+    rejects_cache_fields = (
+        isinstance(unsupported_fields, dict) and "cache_implementation" in unsupported_fields
+    )
     if _uses_flash_attention_for_generation(self.config):
         # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
-        if kwargs.get("past_key_values") is None:
+        if kwargs.get("past_key_values") is None and not rejects_cache_fields:
             kwargs["cache_implementation"] = "dynamic"
         try:
             with _get_inference_mode_context_manager(self), autocaster:
@@ -2118,6 +2129,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if force_dynamic_cache:
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
+    if rejects_cache_fields:
+        cache_implementation = None
+        force_dynamic_cache = False
 
     generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
     compile_decode = (
@@ -3319,9 +3333,130 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
-def _offload_activation_hooks():
+# hf_modeling_utils.checkpoint is shared by every model, so the owner is resolved per call from the layer.
+_GC_CONTAINERS = (torch.nn.ModuleList, torch.nn.ModuleDict)
+_GC_OFFLOAD_ROOTS = weakref.WeakSet()
+# Weak values: a strong one would keep its own key alive.
+_GC_MODULE_PARENTS = weakref.WeakKeyDictionary()
+_GC_UNRESOLVED = weakref.WeakSet()
+_GC_OWNER_DEPTH = weakref.WeakKeyDictionary()
+
+
+def _gc_is_compiling():
+    try:
+        return torch.compiler.is_compiling()
+    except Exception:
+        return False
+
+
+def _gc_owner_pre_hook(module, args):
+    if _gc_is_compiling():
+        return
+    _GC_OWNER_DEPTH[module] = _GC_OWNER_DEPTH.get(module, 0) + 1
+
+
+def _gc_owner_post_hook(module, args, output):
+    if _gc_is_compiling():
+        return
+    depth = _GC_OWNER_DEPTH.get(module, 0)
+    if depth > 0:
+        _GC_OWNER_DEPTH[module] = depth - 1
+
+
+def _gc_track_owner(owner):
+    # Module-level hooks looked up per call: the model stays picklable and a copy tracks only itself.
+    if _gc_owner_pre_hook not in owner._forward_pre_hooks.values():
+        owner.register_forward_pre_hook(_gc_owner_pre_hook)
+        owner.register_forward_hook(_gc_owner_post_hook, always_call = True)
+
+
+def _gc_index_parents(root, track = False):
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except ImportError:
+        GradientCheckpointingLayer = ()
+    for parent in root.modules():
+        if isinstance(parent, _GC_CONTAINERS):
+            continue
+        children = list(parent.children())
+        layered = stacked = False
+        while children:
+            child = children.pop()
+            if isinstance(child, _GC_CONTAINERS):
+                stacked = True
+                layered = layered or any(
+                    isinstance(m, GradientCheckpointingLayer) for m in child.children()
+                )
+                children.extend(child.children())
+                continue
+            if child not in _GC_MODULE_PARENTS:
+                _GC_MODULE_PARENTS[child] = weakref.ref(parent)
+        # Decoder / encoder stacks (old style: the stack carries .gradient_checkpointing) are watched from
+        # the first forward; any other owner from the forward after its first checkpoint.
+        if track and (layered or (stacked and hasattr(parent, "gradient_checkpointing"))):
+            _gc_track_owner(parent)
+
+
+def _register_gc_offload_root(model, offload = True):
+    if not offload:
+        return
+    _GC_OFFLOAD_ROOTS.add(model)
+    _GC_UNRESOLVED.clear()
+    _gc_index_parents(model, track = True)
+
+
+def _gc_checkpointed_module(function):
+    # GradientCheckpointingLayer passes partial(super().__call__, ...); older stacks a bound __call__ or closure.
+    for _ in range(8):
+        if not isinstance(function, functools.partial):
+            break
+        function = function.func
+    module = getattr(function, "__self__", None)
+    if isinstance(module, torch.nn.Module):
+        return module
+    found = []
+    for cell in getattr(function, "__closure__", None) or ():
+        try:
+            value = cell.cell_contents
+        except ValueError:
+            continue
+        if isinstance(value, torch.nn.Module):
+            found.append(value)
+    return found[0] if len(found) == 1 else None
+
+
+def _gc_checkpoint_owner(function):
+    """The module owning this checkpoint's offloader, or None for the shared one."""
+    if activation_offloader_for is None:
+        return None
+    try:
+        layer = _gc_checkpointed_module(function)
+        if layer is None:
+            return None
+        ref = _GC_MODULE_PARENTS.get(layer)
+        if ref is None and layer not in _GC_UNRESOLVED:
+            for root in list(_GC_OFFLOAD_ROOTS):
+                _gc_index_parents(root)
+            ref = _GC_MODULE_PARENTS.get(layer)
+            if ref is None:
+                _GC_UNRESOLVED.add(layer)
+        owner = None if ref is None else ref()
+        if owner is None:
+            return None
+        # An owner whose hooks never fire (bypassed) would pile up records across discarded forwards: share.
+        if _GC_OWNER_DEPTH.get(owner, 0) > 0:
+            return owner
+        _gc_track_owner(owner)
+    except TypeError:  # an unhashable / non-weakrefable module
+        pass
+    return None
+
+
+def _offload_activation_hooks(owner = None):
     # The zoo hooks copy on a side stream; the fallback queues the copy on the compute stream.
     if non_reentrant_offload_hooks is not None:
+        if owner is not None and activation_offloader_for is not None:
+            return non_reentrant_offload_hooks(owner)
         return non_reentrant_offload_hooks()
     return torch.autograd.graph.saved_tensors_hooks(
         _offload_activation_pack, _offload_activation_unpack
@@ -5492,12 +5627,13 @@ class FastBaseModel:
                 torch_checkpoint.checkpoint,
             )
             _offload = use_gradient_checkpointing == "unsloth"
+            _register_gc_offload_root(model, _offload)
 
             def _nonre_checkpoint(function, *args, **kwargs):
                 kwargs["use_reentrant"] = False
                 if not _offload:
                     return _orig_checkpoint(function, *args, **kwargs)
-                with _offload_activation_hooks():
+                with _offload_activation_hooks(_gc_checkpoint_owner(function)):
                     return _orig_checkpoint(function, *args, **kwargs)
 
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
