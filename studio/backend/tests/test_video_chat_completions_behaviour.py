@@ -31,8 +31,14 @@ class _VideoGguf(FakeLlamaCppBackend):
     is_vision = True
     _has_video_input = True
 
-    def __init__(self, *, has_video = True):
+    def __init__(
+        self,
+        *,
+        has_video = True,
+        needs_ffmpeg = False,
+    ):
         self._has_video_input = has_video
+        self._video_needs_ffmpeg = needs_ffmpeg
         self.dispatched: list[dict] = []
 
     def generate_chat_completion(self, **kwargs):
@@ -229,6 +235,17 @@ def test_a_gguf_without_a_video_projector_refuses_either_spelling(monkeypatch, b
         response = client.post("/v1/chat/completions", json = body)
     assert response.status_code == 400
     assert "cannot take video input" in _detail(response)
+
+
+@pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
+def test_a_video_model_without_ffmpeg_is_refused_naming_ffmpeg(monkeypatch, body):
+    """Without the check llama-server answered "Failed to load image or audio file"."""
+    backend = _VideoGguf(has_video = False, needs_ffmpeg = True)
+    with _client(monkeypatch, backend) as client:
+        response = client.post("/v1/chat/completions", json = body)
+    assert response.status_code == 400
+    assert "ffmpeg and ffprobe were not found" in _detail(response)
+    assert backend.dispatched == []
 
 
 @pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
@@ -774,6 +791,7 @@ def test_a_part_carried_clip_is_transcoded_like_the_legacy_field(monkeypatch):
         cap,
         *,
         sampled_fps = None,
+        ffmpeg_dir = None,
     ):
         seen.append(clip)
         return "SHRUNK"
