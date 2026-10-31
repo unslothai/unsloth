@@ -214,6 +214,7 @@ def _wait_for(pred, timeout = 10.0):
 
 
 def test_a_render_pauses_the_compile_between_blocks_and_it_resumes(monkeypatch):
+    monkeypatch.setenv(bg.IDLE_ENV, "0")  # the slice mode (kill switch)
     monkeypatch.delenv(bg.YIELD_ENV, raising = False)
     net = _Blocks(n = 6, compile_s = 0.15)
     job = _armed(net)
@@ -241,6 +242,7 @@ def test_a_render_pauses_the_compile_between_blocks_and_it_resumes(monkeypatch):
 
 
 def test_a_compile_that_ends_inside_the_slice_is_not_paused(monkeypatch):
+    monkeypatch.setenv(bg.IDLE_ENV, "0")  # the slice mode (kill switch)
     monkeypatch.delenv(bg.YIELD_ENV, raising = False)
     net = _Blocks(n = 4, compile_s = 0.3)
     job = _armed(net)
@@ -254,6 +256,7 @@ def test_a_compile_that_ends_inside_the_slice_is_not_paused(monkeypatch):
 
 
 def test_the_pause_is_asked_one_block_graph_before_the_slice_ends(monkeypatch):
+    monkeypatch.setenv(bg.IDLE_ENV, "0")  # the slice mode (kill switch)
     monkeypatch.delenv(bg.YIELD_ENV, raising = False)
     net = _Blocks(n = 12, compile_s = 0.4)
     job = _armed(net)
@@ -268,6 +271,7 @@ def test_the_pause_is_asked_one_block_graph_before_the_slice_ends(monkeypatch):
 
 
 def test_back_to_back_renders_cannot_starve_the_compile(monkeypatch):
+    monkeypatch.setenv(bg.IDLE_ENV, "0")  # the slice mode (kill switch)
     monkeypatch.delenv(bg.YIELD_ENV, raising = False)
     net = _Blocks(n = 5, compile_s = 0.3)
     job = _armed(net)
@@ -285,6 +289,7 @@ def test_back_to_back_renders_cannot_starve_the_compile(monkeypatch):
 
 
 def test_nested_pause_runs_no_second_slice(monkeypatch):
+    monkeypatch.setenv(bg.IDLE_ENV, "0")  # the slice mode (kill switch)
     monkeypatch.delenv(bg.YIELD_ENV, raising = False)
     net = _Blocks(n = 6, compile_s = 0.2)
     job = _armed(net)
@@ -302,6 +307,7 @@ def test_nested_pause_runs_no_second_slice(monkeypatch):
 
 
 def test_close_ends_a_parked_compile(monkeypatch):
+    monkeypatch.setenv(bg.IDLE_ENV, "0")  # the slice mode (kill switch)
     monkeypatch.delenv(bg.YIELD_ENV, raising = False)
     net = _Blocks(n = 6, compile_s = 0.15)
     job = _armed(net)
@@ -316,6 +322,7 @@ def test_close_ends_a_parked_compile(monkeypatch):
 
 @pytest.mark.parametrize("env, flag", [("0", True), (None, False)])
 def test_without_yield_a_pause_waits_for_the_whole_compile(monkeypatch, env, flag):
+    monkeypatch.setenv(bg.IDLE_ENV, "0")  # the slice mode (kill switch)
     if env is None:
         monkeypatch.delenv(bg.YIELD_ENV, raising = False)
     else:
