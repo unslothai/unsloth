@@ -10,6 +10,13 @@ import pytest
 import unsloth  # noqa: F401  (must precede transformers)
 import unsloth.models._utils as u
 
+
+@pytest.fixture(autouse = True)
+def _flex_decoding_available(monkeypatch):
+    # These pin the routing where flex_decoding compiles; test_flex_decode_guard_wrapper.py covers a host where it cannot.
+    monkeypatch.setattr(u, "_flex_decoding_unavailable", lambda: False, raising = False)
+
+
 T4 = ((7, 5), 65536)
 A10 = ((8, 6), 101376)
 RTX3090 = ((8, 6), 101376)
@@ -398,11 +405,20 @@ def test_wrapper_training_calls_add_no_sequence_guard(monkeypatch):
     assert graphs_for(True) == graphs_for(False)
 
 
-def test_wrapper_forced_short_prompt_auto_backend_becomes_triton(monkeypatch):
-    # torch 2.10+ rejects BACKEND with FORCE_USE_FLEX_ATTENTION: AUTO becomes TRITON (the main kernel).
+def test_wrapper_forced_short_prompt_drops_auto_backend(monkeypatch):
+    # torch 2.10+ rejects BACKEND with FORCE_USE_FLEX_ATTENTION and 2.9 has no BACKEND: AUTO is dropped.
     wrapped, seen = _wrapped(monkeypatch)
     monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
     wrapped(_Causal(), *_gqa_qkv(28, 4, 1), object(), kernel_options = {"BACKEND": "AUTO"})
+    assert seen["FORCE_USE_FLEX_ATTENTION"] is True
+    assert "BACKEND" not in seen
+    assert seen["fwd_BLOCK_M"] == 64
+
+
+def test_wrapper_forced_short_prompt_triton_backend_keeps_tiles(monkeypatch):
+    wrapped, seen = _wrapped(monkeypatch)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: False)
+    wrapped(_Causal(), *_gqa_qkv(28, 4, 1), object(), kernel_options = {"BACKEND": "TRITON"})
     assert "FORCE_USE_FLEX_ATTENTION" not in seen
     assert seen["BACKEND"] == "TRITON"
     assert seen["fwd_BLOCK_M"] == 64
