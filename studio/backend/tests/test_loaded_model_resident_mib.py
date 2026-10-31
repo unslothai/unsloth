@@ -169,7 +169,6 @@ def test_a_non_gguf_status_is_not_sized_from_llama(monkeypatch):
     assert _run_status(monkeypatch, backend, is_gguf = False).resident_mib is None
 
 
-
 def test_status_says_whether_the_size_is_gpu_buffers_or_unknown(monkeypatch):
     # RSS (a CPU run) or unparsed buffers (Vulkan) are not known to sit on the reported GPUs.
     on_gpu = SimpleNamespace(
