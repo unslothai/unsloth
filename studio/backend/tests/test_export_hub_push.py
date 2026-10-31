@@ -6,6 +6,8 @@ from __future__ import annotations
 import weakref
 
 import functools
+import os
+import shutil
 import importlib.util
 import sys
 import tempfile
@@ -200,7 +202,9 @@ def test_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp
     backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
     export_dir = tmp_path / "export"
     export_dir.mkdir()
-    (export_dir / "adapter_config.json").write_text("{}")
+    leftover = export_dir / "adapter_config.json"
+    leftover.write_text("{}")
+    os.utime(leftover, ns = (1_600_000_000_000_000_000, 1_600_000_000_123_456_789))
 
     success, message, output_path = backend.export_merged_model(
         str(export_dir),
@@ -211,9 +215,127 @@ def test_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp
 
     assert success is True, message
     assert output_path == str(export_dir.resolve())
+    # One merge: the reused folder is uploaded as is, limited to the files this save wrote.
+    assert backend.current_model.merges == ["merged_16bit"]
+    assert seen["folder"] == output_path
+    assert seen["uploaded"] == ["model.safetensors"]
+    assert leftover.read_text() == "{}"
+    assert leftover.stat().st_mtime_ns == 1_600_000_000_123_456_789
+
+
+def test_merged_export_push_to_a_reused_folder_uploads_overwritten_files(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    (export_dir / "eagle3").mkdir(parents = True)
+    (export_dir / "model.safetensors").write_bytes(b"stale")
+    (export_dir / "eagle3" / "old.json").write_text("{}")
+    (export_dir / "weird[v2].txt").write_text("leftover")
+    save = backend.current_model.save_pretrained_merged
+
+    def save_with_extras(
+        save_directory,
+        tokenizer,
+        save_method = None,
+        token = None,
+    ):
+        save(save_directory, tokenizer, save_method = save_method, token = token)
+        shutil.copy2(export_dir / "eagle3" / "old.json", Path(save_directory, "copied.json"))
+        Path(save_directory, "eagle3", "config.json").write_text("{}")
+        Path(save_directory, "model[v2].bin").write_bytes(b"w")
+
+    backend.current_model.save_pretrained_merged = save_with_extras
+
+    success, message, output_path = backend.export_merged_model(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit"]
+    assert seen["folder"] == output_path
+    assert seen["uploaded"] == [
+        "copied.json",
+        "eagle3/config.json",
+        "model.safetensors",
+        "model[v2].bin",
+    ]
+    assert Path(output_path, "model.safetensors").read_bytes() == b"weights"
+
+
+@pytest.mark.parametrize("why", ["hard_link", "base_model_dir"])
+def test_merged_export_push_stages_a_clean_save_when_the_folder_cannot_be_tracked(
+    tmp_path, monkeypatch, why
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    leftover = export_dir / "adapter_config.json"
+    leftover.write_text("{}")
+    if why == "hard_link":
+        os.link(leftover, tmp_path / "elsewhere.json")
+    else:
+        config = types.SimpleNamespace(_name_or_path = str(export_dir), model_type = "qwen2")
+        monkeypatch.setattr(backend.current_model, "config", config, raising = False)
+    before = leftover.stat().st_mtime_ns
+
+    success, message, output_path = backend.export_merged_model(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+
+    assert success is True, message
     assert backend.current_model.merges == ["merged_16bit", "merged_16bit"]
     assert seen["folder"] != output_path
-    assert not Path(seen["folder"]).exists()
+    assert seen["uploaded"] == ["model.safetensors"]
+    assert leftover.stat().st_mtime_ns == before
+
+
+def test_reused_folder_tracking_restores_leftover_times_when_the_save_fails(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    leftover = export_dir / "adapter_config.json"
+    leftover.write_text("{}")
+    os.utime(leftover, ns = (1_600_000_000_000_000_000, 1_600_000_000_000_000_007))
+
+    def fail(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    backend.current_model.save_pretrained_merged = fail
+    success, message, _ = backend.export_merged_model(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+    assert success is False and "No space left on device" in message
+    assert leftover.stat().st_mtime_ns == 1_600_000_000_000_000_007
+    assert calls == []
+
+
+def test_merged_export_push_into_the_checkpoint_folder_stages_a_clean_save(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    export_dir = tmp_path / "checkpoint"
+    export_dir.mkdir()
+    (export_dir / "adapter_config.json").write_text("{}")
+    backend.current_checkpoint = str(export_dir)
+
+    success, message, output_path = backend.export_merged_model(
+        str(export_dir / "merged"), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit"]  # fresh subfolder, no staging
+
+    (export_dir / "merged" / "leftover.json").write_text("{}")
+    success, message, output_path = backend.export_merged_model(
+        str(export_dir / "merged"), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit"] * 3
+    assert seen["folder"] != output_path
     assert seen["uploaded"] == ["model.safetensors"]
 
 
@@ -234,7 +356,7 @@ def test_whisper_merged_export_is_a_16bit_merge(tmp_path, monkeypatch):
     )
 
     assert success is True, message
-    assert backend.current_model.merges == ["merged_16bit", "merged_16bit"]
+    assert backend.current_model.merges == ["merged_16bit"]
     assert seen["uploaded"] == ["model.safetensors"]
 
 
@@ -251,6 +373,8 @@ def test_merged_export_push_stages_the_clean_save_where_there_is_room(
     export_dir.mkdir()
     (export_dir / "adapter_config.json").write_text("{}")
     export_parent = export_dir.resolve().parent
+    # Only an untracked reused folder is staged.
+    backend._export_dir_overlaps_checkpoint = lambda directory: True
 
     def fake_disk_usage(path):
         under_export = Path(path).resolve() == export_parent
@@ -601,8 +725,8 @@ def test_base_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp_p
     assert success is True, message
     assert output_path == str(export_dir.resolve())
     assert Path(output_path, "model.safetensors").is_file()
-    assert seen["folder"] != output_path
-    assert not Path(seen["folder"]).exists()
+    assert Path(output_path, "old.Q4_K_M.gguf").is_file()
+    assert seen["folder"] == output_path
     assert seen["uploaded"] == ["model.safetensors", "tokenizer.json"]
 
 
@@ -613,6 +737,8 @@ def test_base_export_staging_failure_leaves_the_hub_untouched(tmp_path, monkeypa
     export_dir = tmp_path / "export"
     export_dir.mkdir()
     (export_dir / "old.gguf").write_bytes(b"GGUF")
+    # Only an untracked reused folder is staged.
+    backend._export_dir_overlaps_checkpoint = lambda directory: True
     save = backend.current_model.save_pretrained
     saved_to = []
 

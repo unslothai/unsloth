@@ -605,10 +605,96 @@ def _dir_is_fresh(directory):
     )
 
 
-def _holds_checkpoint_weights(directory):
+def _holds_checkpoint_weights(directory, files = None):
+    if files is not None:
+        return any(
+            "/" not in name and Path(name).suffix in (".safetensors", ".bin") for name in files
+        )
     return Path(directory).is_dir() and any(
         entry.suffix in (".safetensors", ".bin") for entry in Path(directory).iterdir()
     )
+
+
+def _escaped_patterns(names):
+    # glob.escape keeps "model[v2].safetensors" a literal for upload_folder's fnmatch.
+    return None if names is None else [glob.escape(name) for name in names]
+
+
+# 1980-01-01 00:00:02 UTC: no save writes this mtime, and FAT/exFAT can store it.
+_LEFTOVER_MARK_NS = 315_532_802 * 1_000_000_000
+
+
+class _ReusedFolderWrites:
+    """Tells the files one save writes into a reused folder from its leftovers, so that folder
+    can be uploaded as is instead of saving the whole model a second time into a staging dir.
+
+    Every file already there gets a marker mtime; any write (or copy2, which sets the source's
+    mtime) replaces it. Untouched files get their own times back. ``written()`` is None when
+    the folder could not be marked, and the caller stages a clean second save as before."""
+
+    def __init__(self, directory):
+        self._root = Path(directory)
+        self._marks: Optional[dict] = {}
+        self._written: Optional[List[str]] = None
+        self._released = False
+        try:
+            for path in self._root.rglob("*"):
+                if path.is_symlink():
+                    raise OSError(f"{path} is a symlink")
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+                # A hard link shares its times with a file a save may copy from (copy2 keeps them).
+                if stat.st_nlink > 1:
+                    raise OSError(f"{path} is hard linked")
+                os.utime(path, ns = (stat.st_atime_ns, _LEFTOVER_MARK_NS))
+                marked = path.stat().st_mtime_ns
+                self._marks[path.relative_to(self._root).as_posix()] = (
+                    stat.st_atime_ns,
+                    stat.st_mtime_ns,
+                    marked,
+                )
+                if marked == stat.st_mtime_ns:
+                    raise OSError(f"could not mark {path}")
+        except Exception as exception:
+            logger.info(f"Reused folder not tracked, staging a second save: {exception}")
+            self.release()
+            self._marks = None
+
+    def written(self) -> Optional[List[str]]:
+        """Relative posix paths the save wrote; restores the leftovers' times on the first call."""
+        if self._marks is None or self._written is not None or self._released:
+            return self._written
+        written = []
+        try:
+            for path in self._root.rglob("*"):
+                if not path.is_file():
+                    continue
+                name = path.relative_to(self._root).as_posix()
+                mark = self._marks.get(name)
+                if mark is None or path.stat().st_mtime_ns != mark[2]:
+                    written.append(name)
+        except OSError as exception:
+            logger.info(f"Reused folder not tracked, staging a second save: {exception}")
+            self.release()
+            self._marks = None
+            return None
+        self.release()
+        self._written = sorted(written)
+        return self._written
+
+    def release(self) -> None:
+        """Give every file the save left alone its original times back (idempotent)."""
+        if self._released:
+            return
+        self._released = True
+        for name, (atime_ns, mtime_ns, marked) in (self._marks or {}).items():
+            path = self._root / name
+            try:
+                if path.stat().st_mtime_ns == marked:
+                    os.utime(path, ns = (atime_ns, mtime_ns))
+            except OSError:
+                continue
 
 
 def _ensure_hub_repo_private(hf_api, repo_id):
@@ -1315,6 +1401,22 @@ class ExportBackend:
         except Exception as exc:  # noqa: BLE001 - the report never blocks an export
             logger.warning(f"Could not update reap_report.json in {folder}: {exc}")
 
+    def _export_dir_overlaps_checkpoint(self, save_directory) -> bool:
+        """An export into (or around) the checkpoint or a local base model finds some of its
+        files already there, so what the save wrote is not the whole export; that case keeps the
+        staged second save."""
+        config = getattr(self.current_model, "config", None)
+        for source in (self.current_checkpoint, getattr(config, "_name_or_path", None)):
+            if not isinstance(source, (str, os.PathLike)) or not os.path.isdir(source):
+                continue
+            try:
+                export_dir, source = Path(save_directory).resolve(), Path(source).resolve()
+            except OSError:
+                return True
+            if export_dir == source or source in export_dir.parents or export_dir in source.parents:
+                return True
+        return False
+
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""
         try:
@@ -1363,6 +1465,7 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         save_dir_was_empty = False
+        reused_writes: Optional[_ReusedFolderWrites] = None
         # compressed-tensors (NVIDIA-only) vs portable torchao FP8/INT8.
         _LABEL_TO_ALIAS = {
             "FP8 (compressed-tensors)": "fp8",
@@ -1499,6 +1602,13 @@ class ExportBackend:
                 # Reused folders may hold leftovers, so only a fresh one is pushed as is.
                 save_dir_was_empty = _dir_is_fresh(save_directory)
                 ensure_dir(Path(save_directory))
+                if (
+                    push_to_hub
+                    and not _IS_MLX
+                    and not (is_compressed or is_torchao or save_dir_was_empty)
+                    and not self._export_dir_overlaps_checkpoint(save_directory)
+                ):
+                    reused_writes = _ReusedFolderWrites(save_directory)
 
                 # save.py turns None into get_token(), so the merge needs the token spelled out.
                 merged_token_kw = (
@@ -1580,8 +1690,12 @@ class ExportBackend:
                         # Upload the built artifact; push_to_hub_merged would redo the merge and quantization.
                         with contextlib.ExitStack() as stack:
                             upload_dir = output_path
-                            if not (is_compressed or is_torchao or save_dir_was_empty):
-                                # A reused folder can hold leftovers, so upload from a clean staged second save
+                            # A reused folder can hold leftovers: upload only what this save wrote
+                            written = reused_writes.written() if reused_writes else None
+                            if written is None and not (
+                                is_compressed or is_torchao or save_dir_was_empty
+                            ):
+                                # Untracked, so upload from a clean staged second save
                                 upload_dir = stack.enter_context(
                                     _staging_dir(Path(output_path).parent)
                                 )
@@ -1595,7 +1709,7 @@ class ExportBackend:
                                 self._sync_reap_report(upload_dir)
                             # Whatever was built, only weights are worth a repo; without them the
                             # merging push below runs instead, as it did before this was uploaded.
-                            if _holds_checkpoint_weights(upload_dir):
+                            if _holds_checkpoint_weights(upload_dir, written):
                                 hf_api = HfApi(token = hf_token)
                                 repo_url = hf_api.create_repo(
                                     repo_id, private = private, exist_ok = True
@@ -1607,6 +1721,7 @@ class ExportBackend:
                                     folder_path = upload_dir,
                                     repo_id = repo_id,
                                     repo_type = "model",
+                                    allow_patterns = _escaped_patterns(written),
                                     ignore_patterns = _HUB_UPLOAD_IGNORE,
                                     delete_patterns = [_REAP_REPORT],
                                 )
@@ -1656,6 +1771,9 @@ class ExportBackend:
 
             logger.error(traceback.format_exc())
             return False, f"Export failed: {str(e)}", None
+        finally:
+            if reused_writes is not None:
+                reused_writes.release()
 
     def export_base_model(
         self,
@@ -1683,12 +1801,20 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         save_dir_was_empty = False
+        reused_writes: Optional[_ReusedFolderWrites] = None
         try:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving base model locally to: {save_directory}")
                 save_dir_was_empty = _dir_is_fresh(save_directory)
                 ensure_dir(Path(save_directory))
+                if (
+                    push_to_hub
+                    and not _IS_MLX
+                    and not save_dir_was_empty
+                    and not self._export_dir_overlaps_checkpoint(save_directory)
+                ):
+                    reused_writes = _ReusedFolderWrites(save_directory)
 
                 if _IS_MLX:
                     # fuse() is a no-op without LoRA layers, so this handles non-LoRA models too.
@@ -1736,8 +1862,10 @@ class ExportBackend:
 
                     with contextlib.ExitStack() as stack:
                         upload_dir = save_directory
-                        if save_directory and not save_dir_was_empty:
-                            # A reused folder can hold leftovers, so upload from a clean staged second save
+                        # A reused folder can hold leftovers: upload only what this save wrote
+                        written = reused_writes.written() if reused_writes else None
+                        if save_directory and not save_dir_was_empty and written is None:
+                            # Untracked, so upload from a clean staged second save
                             upload_dir = stack.enter_context(
                                 _staging_dir(Path(save_directory).parent)
                             )
@@ -1769,6 +1897,7 @@ class ExportBackend:
                                 folder_path = upload_dir,
                                 repo_id = repo_id,
                                 repo_type = "model",
+                                allow_patterns = _escaped_patterns(written),
                                 ignore_patterns = _HUB_UPLOAD_IGNORE,
                                 delete_patterns = [_REAP_REPORT],
                             )
@@ -1788,6 +1917,9 @@ class ExportBackend:
 
             logger.error(traceback.format_exc())
             return False, f"Export failed: {str(e)}", None
+        finally:
+            if reused_writes is not None:
+                reused_writes.release()
 
     def export_gguf(
         self,
