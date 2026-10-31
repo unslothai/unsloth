@@ -1195,6 +1195,28 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
     )
 
 
+_SCHEMA_ATOMS = (str, int, float, bool, type(None))
+
+
+def _copy_schema(value: Any) -> Any:
+    """A private copy of a JSON tool schema, as copy.deepcopy makes it but without its per-node dispatch and memo.
+
+    Plain dicts and lists are rebuilt in order and plain scalars shared (they are immutable); anything else (a
+    Mapping subclass, a tuple, a custom object) goes through copy.deepcopy, so no caller can reach this ledger's
+    copy through what active_tools() returns."""
+    kind = type(value)
+    if kind is dict:
+        return {
+            key: item if type(item) in _SCHEMA_ATOMS else _copy_schema(item)
+            for key, item in value.items()
+        }
+    if kind is list:
+        return [item if type(item) in _SCHEMA_ATOMS else _copy_schema(item) for item in value]
+    if kind in _SCHEMA_ATOMS:
+        return value
+    return copy.deepcopy(value)
+
+
 class ToolLoopController:
     """Per-response ledger for local agentic tool loops."""
 
@@ -1212,7 +1234,7 @@ class ToolLoopController:
         self._session_id = session_id
         self._thread_id = thread_id
         self._restrict_to_allowed = tools is not None
-        self._tools = [copy.deepcopy(dict(tool)) for tool in (tools or [])]
+        self._tools = [_copy_schema(dict(tool)) for tool in (tools or [])]
         self._allowed_tool_names = {
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
@@ -1251,7 +1273,7 @@ class ToolLoopController:
             name = _tool_name_from_schema(tool)
             if name in self._completed_one_shot_tools:
                 continue
-            active.append(copy.deepcopy(tool))
+            active.append(_copy_schema(tool))
         return active
 
     def prepare_call(
@@ -1425,7 +1447,7 @@ class ToolLoopController:
                 if _tool_name_from_schema(s) not in fresh_names
             ]
         )
-        self._mcp_loaded = [copy.deepcopy(s) for s in reversed(kept)]
+        self._mcp_loaded = [_copy_schema(s) for s in reversed(kept)]
         self._tools = listed + self._mcp_loaded
         self._allowed_tool_names = {
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
