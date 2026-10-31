@@ -5,6 +5,7 @@ import type {
   LiveDecodeProgress,
   LiveGenerationProgress,
   LivePrefillProgress,
+  LivePrefillFit,
 } from "../stores/chat-runtime-store";
 import { formatEta } from "../utils/format-transfer";
 
@@ -41,6 +42,8 @@ export function readGenerationProgress(
         total: total || null,
         cached: count(f.cached),
         tokPerS: rate(f.tok_per_s),
+        elapsedMs: count(f.time_ms),
+        fit: null,
       },
     };
   }
@@ -84,13 +87,91 @@ export function formatPrefillDetails(
 }
 
 const MIN_TOKENS_FOR_PREFILL_RATE = 512;
+const MIN_SAMPLES_FOR_PREFILL_FIT = 4;
 const PREFILL_LABEL_MIN_SECONDS = 2;
 
-/** Seconds left at the rate so far, or null while llama.cpp's first sample (a few tokens in, before
- *  the first batch) is all there is, since its rate is noise. */
-function prefillSecondsLeft(prefill: LivePrefillProgress): number | null {
-  if (!prefill.total || prefill.tokPerS === null) return null;
-  if (prefill.processed - (prefill.cached ?? 0) < MIN_TOKENS_FOR_PREFILL_RATE) return null;
+function samePrefillPass(
+  previous: LiveGenerationProgress | undefined,
+  prefill: LivePrefillProgress,
+): previous is LiveGenerationProgress & { prefill: LivePrefillProgress } {
+  return (
+    previous?.prefill != null &&
+    previous.decode === null &&
+    previous.prefill.total === prefill.total &&
+    previous.prefill.processed <= prefill.processed
+  );
+}
+
+/** A sample past llama.cpp's noisy first one (a few tokens in, before the first batch). */
+function timedSample(prefill: LivePrefillProgress): { done: number; elapsedMs: number } | null {
+  const done = prefill.processed - (prefill.cached ?? 0);
+  return done >= MIN_TOKENS_FOR_PREFILL_RATE && prefill.elapsedMs
+    ? { done, elapsedMs: prefill.elapsedMs }
+    : null;
+}
+
+/** Adds this sample to the pass's sums for the time-left fit; a new pass starts them over. */
+export function withPrefillFit(
+  previous: LiveGenerationProgress | undefined,
+  prefill: LivePrefillProgress,
+): LivePrefillProgress {
+  const kept = samePrefillPass(previous, prefill) ? previous.prefill.fit : null;
+  const now = timedSample(prefill);
+  if (now === null || (kept !== null && now.done <= kept.done)) {
+    return { ...prefill, fit: kept };
+  }
+  const x = now.done / 1000;
+  const y = now.elapsedMs / 1000;
+  const terms = [1, x, x * x, x ** 3, x ** 4, y, x * y, x * x * y];
+  const sums = terms.map((term, i) => (kept?.sums[i] ?? 0) + term);
+  return { ...prefill, fit: { done: now.done, sums } };
+}
+
+function det3(m: number[][]): number {
+  return (
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+    m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+    m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+  );
+}
+
+/** Seconds of prefill from `from` to `to` thousand tokens, by the pass's samples so far: elapsed time
+ *  fit as c + a*x + b*x^2 (each prompt token attends to all before it, so later ones cost more), or a
+ *  straight line when the curve bends the wrong way. Null before MIN_SAMPLES_FOR_PREFILL_FIT samples,
+ *  where one slow batch (warm-up) could swing the estimate up by half, or without a slope. */
+function fittedSeconds(fit: LivePrefillFit, from: number, to: number): number | null {
+  const [n, sx, sx2, sx3, sx4, sy, sxy, sx2y] = fit.sums;
+  if (n < MIN_SAMPLES_FOR_PREFILL_FIT) return null;
+  const normal = [
+    [n, sx, sx2],
+    [sx, sx2, sx3],
+    [sx2, sx3, sx4],
+  ];
+  const d = det3(normal);
+  if (d > 0) {
+    const withColumn = (column: number) =>
+      det3(normal.map((row, i) => row.map((v, j) => (j === column ? [sy, sxy, sx2y][i] : v))));
+    const a = withColumn(1) / d;
+    const b = withColumn(2) / d;
+    if (b > 0 && a + 2 * b * from > 0) return a * (to - from) + b * (to * to - from * from);
+  }
+  const slope = (n * sxy - sx * sy) / (n * sx2 - sx * sx);
+  return Number.isFinite(slope) && slope > 0 ? slope * (to - from) : null;
+}
+
+/** Seconds left, or null while llama.cpp's first sample is all there is, since its rate is noise.
+ *  The rate so far assumes every token costs the same, so it always ran short (~40% on a 30K-token
+ *  prompt); from the pass's fourth timed sample the fit above replaces it. */
+export function prefillSecondsLeft(prefill: LivePrefillProgress): number | null {
+  if (!prefill.total) return null;
+  const cached = prefill.cached ?? 0;
+  const now = timedSample(prefill);
+  if (now !== null && prefill.fit !== null) {
+    const left = fittedSeconds(prefill.fit, now.done / 1000, (prefill.total - cached) / 1000);
+    if (left !== null) return left;
+  }
+  if (prefill.tokPerS === null) return null;
+  if (prefill.processed - cached < MIN_TOKENS_FOR_PREFILL_RATE) return null;
   return (prefill.total - prefill.processed) / prefill.tokPerS;
 }
 
@@ -101,17 +182,12 @@ export function prefillLabelShown(
   previous: LiveGenerationProgress | undefined,
   prefill: LivePrefillProgress,
 ): boolean {
-  const samePass =
-    previous?.prefill != null &&
-    previous.decode === null &&
-    previous.prefill.total === prefill.total &&
-    previous.prefill.processed <= prefill.processed;
-  if (samePass && previous.prefillShown) return true;
+  if (samePrefillPass(previous, prefill) && previous.prefillShown) return true;
   const left = prefillSecondsLeft(prefill);
   return left !== null && left >= PREFILL_LABEL_MIN_SECONDS;
 }
 
-/** "12s left" at the rate so far, like the load toast; null without a trusted rate or under a second. */
+/** "12s left", like the load toast; null without a trusted rate or under a second. */
 export function formatPrefillTimeLeft(prefill: LivePrefillProgress): string | null {
   const left = prefillSecondsLeft(prefill);
   return left !== null && left >= 1 ? `${formatEta(left)} left` : null;

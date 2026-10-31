@@ -129,7 +129,7 @@ import {
   type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
-import { prefillLabelShown } from "../lib/generation-progress";
+import { prefillLabelShown, withPrefillFit } from "../lib/generation-progress";
 import { adoptFirstTurnConfirmations } from "../utils/adopt-first-turn-confirmations";
 import type { MmprojFallbackReason } from "../types/api";
 import type {
@@ -426,11 +426,17 @@ export type LoadedPlacement = {
   /** Set when every routed expert is in RAM with a GPU cache of the busiest (--moe-cache-mib auto). */
   expertCacheMib: number | null;
 };
+/** Least-squares sums over a pass's timed samples, x in thousands of tokens past the cached prefix
+ *  and y in seconds of llama-server's clock: n, then the sums of x, x^2, x^3, x^4, y, x*y and x^2*y. */
+export type LivePrefillFit = { done: number; sums: readonly number[] };
 export type LivePrefillProgress = {
   processed: number;
   total: number | null;
   cached: number | null;
   tokPerS: number | null;
+  elapsedMs: number | null;
+  /** Kept by the store across the pass for the time-left estimate. */
+  fit: LivePrefillFit | null;
 };
 export type LiveDecodeProgress = {
   tokens: number;
@@ -5965,7 +5971,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setLivePrefill: (threadId, prefill) =>
     set((state) => {
       const key = threadId || "__default";
-      const prefillShown = prefillLabelShown(state.liveGenerationByThreadId[key], prefill);
+      const previous = state.liveGenerationByThreadId[key];
+      prefill = withPrefillFit(previous, prefill);
+      const prefillShown = prefillLabelShown(previous, prefill);
       // A new prompt pass (the next round of a tool loop) starts over, so its decode figures go too.
       return {
         liveGenerationByThreadId: {

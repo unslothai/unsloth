@@ -47,6 +47,7 @@ def test_prefill_samples_become_frames_once_each():
         "total": 5316,
         "cached": 0,
         "tok_per_s": 1365.3,
+        "time_ms": 1500,
     }
     # Sent once; the stall loop polls far more often than llama-server reports a batch.
     assert signal.live_frame() is None
@@ -64,6 +65,7 @@ def test_prefill_counts_are_clamped_and_bad_rates_dropped():
     assert frame["processed"] == 100
     assert frame["cached"] == 100
     assert frame["tok_per_s"] is None
+    assert frame["time_ms"] is None, "an older llama-server without time_ms"
 
 
 def test_decode_frames_are_throttled(monkeypatch):
