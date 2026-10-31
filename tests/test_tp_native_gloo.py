@@ -1073,8 +1073,15 @@ def test_fused_lora_functions_read_local_shards():
             )
         assert set(fused["grads"]) == set(plain["grads"]) and plain["grads"]
         for name in plain["grads"]:
+            # The fused order sums in a different order than PEFT, so as for O / dX an element that cancels out of
+            # large terms needs an atol at the tensor's scale; a wrong shard would be off by O(1).
+            ref = plain["grads"][name]
             torch.testing.assert_close(
-                fused["grads"][name], plain["grads"][name], rtol = 1e-4, atol = 1e-6, msg = name
+                fused["grads"][name],
+                ref,
+                rtol = 1e-4,
+                atol = max(1e-6, 1e-5 * ref.abs().max().item()),
+                msg = lambda m, name = name: f"{name}: {m}",
             )
 
 
