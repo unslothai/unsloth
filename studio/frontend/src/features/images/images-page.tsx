@@ -7262,7 +7262,26 @@ export function ImagesPage({
                   )}
                   <button
                     type="button"
+                    aria-pressed={image.id === selected?.id}
                     onClick={() => setSelectedId(image.id)}
+                    onKeyDown={(event) => {
+                      if (
+                        event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+                        (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
+                      ) return;
+
+                      // Keep plain arrow navigation separate from Alt+arrow tile reordering.
+                      event.preventDefault();
+                      const index = images.findIndex((item) => item.id === image.id);
+                      const nextIndex = index + (event.key === "ArrowLeft" ? -1 : 1);
+                      const next = images[nextIndex];
+                      if (!next) return;
+                      setSelectedId(next.id);
+                      stripRef.current
+                        ?.querySelectorAll<HTMLElement>("[data-image-id]")[nextIndex]
+                        ?.querySelector<HTMLButtonElement>(":scope > button")
+                        ?.focus();
+                    }}
                     className="relative size-full overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {(thumbById[image.id] ?? srcById[image.id]) ? (
