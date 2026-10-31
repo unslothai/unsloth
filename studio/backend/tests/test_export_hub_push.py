@@ -216,6 +216,8 @@ def test_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp
     leftover = export_dir / "adapter_config.json"
     leftover.write_text("{}")
     os.utime(leftover, ns = (1_600_000_000_000_000_000, 1_600_000_000_123_456_789))
+    # The value the filesystem kept (NTFS stores 100 ns ticks).
+    kept_ns = leftover.stat().st_mtime_ns
 
     success, message, output_path = backend.export_merged_model(
         str(export_dir),
@@ -231,7 +233,7 @@ def test_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp
     assert seen["folder"] == output_path
     assert seen["uploaded"] == ["model.safetensors"]
     assert leftover.read_text() == "{}"
-    assert leftover.stat().st_mtime_ns == 1_600_000_000_123_456_789
+    assert leftover.stat().st_mtime_ns == kept_ns
 
 
 def test_merged_export_push_to_a_reused_folder_uploads_overwritten_files(tmp_path, monkeypatch):
@@ -315,6 +317,7 @@ def test_reused_folder_tracking_leaves_leftover_times_alone_when_the_save_fails(
     leftover = export_dir / "adapter_config.json"
     leftover.write_text("{}")
     os.utime(leftover, ns = (1_600_000_000_000_000_000, 1_600_000_000_000_000_007))
+    kept_ns = leftover.stat().st_mtime_ns  # NTFS rounds to 100 ns ticks
 
     def fail(*args, **kwargs):
         raise OSError(28, "No space left on device")
@@ -324,7 +327,7 @@ def test_reused_folder_tracking_leaves_leftover_times_alone_when_the_save_fails(
         str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
     )
     assert success is False and "No space left on device" in message
-    assert leftover.stat().st_mtime_ns == 1_600_000_000_000_000_007
+    assert leftover.stat().st_mtime_ns == kept_ns
     assert calls == []
 
 
