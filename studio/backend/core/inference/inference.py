@@ -706,7 +706,12 @@ class _HaltingStreamer:
     """Ends a generate that takes no stopping_criteria: put() raises once a cancel or stop event is
     set, or on a second ``</think>`` with no ``<think>`` since the last one."""
 
-    def __init__(self, streamer, events, think_ids = None):
+    def __init__(
+        self,
+        streamer,
+        events,
+        think_ids = None,
+    ):
         self.streamer = streamer
         self.events = events
         self.think_ids = think_ids
@@ -756,7 +761,11 @@ def _think_tag_ids(tokenizer):
     return None
 
 
-def _supported_generate_kwargs(model, generation_kwargs: dict, tokenizer = None) -> dict:
+def _supported_generate_kwargs(
+    model,
+    generation_kwargs: dict,
+    tokenizer = None,
+) -> dict:
     """Drops kwargs a custom-code generate rejects (no presence penalty there); cancel and stop
     sequences move onto the streamer."""
     if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
@@ -773,7 +782,11 @@ def _supported_generate_kwargs(model, generation_kwargs: dict, tokenizer = None)
     return kept
 
 
-def _generate_supported(model, generation_kwargs: dict, tokenizer = None):
+def _generate_supported(
+    model,
+    generation_kwargs: dict,
+    tokenizer = None,
+):
     """model.generate with _supported_generate_kwargs; None when a cancel or stop ended it early.
     A reply cut at a restating ``</think>`` returns the kept tokens plus an eos, as a natural end."""
     kwargs = _supported_generate_kwargs(model, generation_kwargs, tokenizer)

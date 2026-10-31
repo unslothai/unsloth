@@ -198,7 +198,6 @@ class _ScriptedGenerate:
 
     def generate(self, *, input_ids, streamer, **kwargs):
         import torch
-
         try:
             streamer.put(input_ids)
             for token in self.reply:
@@ -214,7 +213,12 @@ def _scripted(reply, **extra):
     from core.inference.inference import _generate_supported
 
     model, streamer = _ScriptedGenerate(reply), _Recorder()
-    kwargs = {"input_ids": torch.tensor([[1, 2]]), "streamer": streamer, "eos_token_id": [_EOS], **extra}
+    kwargs = {
+        "input_ids": torch.tensor([[1, 2]]),
+        "streamer": streamer,
+        "eos_token_id": [_EOS],
+        **extra,
+    }
     out = _generate_supported(model, kwargs, _THINK_TOKENIZER)
     return model, [int(t) for t in streamer.tokens[1:]], out
 
@@ -228,7 +232,11 @@ def test_a_second_think_close_ends_the_reply_before_its_restatement():
 
 
 def test_one_think_block_and_a_prefilled_close_stream_untouched():
-    for reply in ([_OPEN, 10, _CLOSE, 11, _EOS], [10, _CLOSE, 11, _EOS], [_OPEN, 10, _CLOSE, _OPEN, 12, _CLOSE, 11, _EOS]):
+    for reply in (
+        [_OPEN, 10, _CLOSE, 11, _EOS],
+        [10, _CLOSE, 11, _EOS],
+        [_OPEN, 10, _CLOSE, _OPEN, 12, _CLOSE, 11, _EOS],
+    ):
         model, streamed, out = _scripted(reply)
         assert streamed == reply and out.tolist() == [[1, 2, *reply]]
 
