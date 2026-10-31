@@ -53,7 +53,7 @@ def reload_with(monkeypatch):
     def load(**attrs):
         fake = types.ModuleType("torch.nn.attention.varlen")
         fake.varlen_attn = _varlen_attn
-        fake._should_use_cudnn = lambda device_index: True  # every SM90 / SM100 with cuDNN >= 9.18
+        fake._should_use_cudnn = lambda device_index: True
         for k, v in attrs.items():
             setattr(fake, k, v)
         monkeypatch.setitem(sys.modules, "torch.nn.attention.varlen", fake)
