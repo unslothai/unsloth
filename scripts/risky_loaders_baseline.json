@@ -331,6 +331,14 @@
       "reason": "Iterates two fixed module:attr strings for the active diffusion and video engines."
     },
     {
+      "file": "studio/backend/routes/inference.py",
+      "rule": "trust-remote-code",
+      "sink": "item",
+      "digest": "c47fdb9c09e7e0a3",
+      "count": 1,
+      "reason": "Auto-switch sets it only with a fingerprint of code this account approved, recomputed from disk; the worker consent gate rescans and enforces it."
+    },
+    {
       "file": "studio/backend/routes/training.py",
       "rule": "trust-remote-code",
       "sink": "item",
@@ -519,8 +527,8 @@
       "rule": "dynamic-import",
       "sink": "import_module",
       "digest": "59e72c01edb14c86",
-      "count": 3,
-      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES and the transformers symbol homes); remote code can only name an attribute, which resolves inside an already installed transformers module."
+      "count": 4,
+      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES, _TORCHAO_IMPORT_TIME_MODULES and the transformers symbol homes); remote code can only name an attribute, which resolves inside an already installed transformers module."
     },
     {
       "file": "unsloth/import_fixes.py",

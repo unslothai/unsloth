@@ -67,6 +67,14 @@ def spill_disabled() -> bool:
     return _env(SPILL_ENV) in ("0", "off", "false", "no")
 
 
+# A first load fetches the weights before the host-RAM decision, which reads their headers.
+DOWNLOAD_FIRST_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_DOWNLOAD_FIRST"
+
+
+def download_first_enabled() -> bool:
+    return _env(DOWNLOAD_FIRST_ENV) not in ("0", "off", "false", "no")
+
+
 def spill_forced() -> bool:
     return _env(SPILL_ENV) in ("1", "on", "true", "yes", "force")
 
@@ -253,6 +261,50 @@ def _weight_files(sub: Path) -> list[Path]:
     # ``model.fp16.safetensors`` next to ``model.safetensors`` is a variant from_pretrained does not read
     plain = [f for f in files if "." not in f.name[: -len(".safetensors")]]
     return plain or files
+
+
+def snapshot_weights_complete(
+    snapshot: Any,
+    skip: Any = (),
+    variant: Optional[str] = None,
+) -> bool:
+    """False when a ``model_index.json`` component lacks weights or index-listed shards; True without an index.
+    ``skip`` names caller-supplied components; ``variant`` checks only that layout's files."""
+    try:
+        root = Path(snapshot)
+        index = json.loads((root / "model_index.json").read_text(encoding = "utf-8"))
+    except Exception:  # noqa: BLE001
+        return True
+    for name, entry in index.items():
+        if name.startswith("_") or name in skip:
+            continue
+        if not (isinstance(entry, list) and len(entry) >= 2 and entry[0] and entry[1]):
+            continue
+        sub = root / name
+        if not sub.is_dir():
+            return False
+        files = list(sub.glob("*.safetensors")) + list(sub.glob("*.bin"))
+        shard_indexes = list(sub.glob("*.index.json"))
+        if variant:
+            marks = (f".{variant}.", f".{variant}-")
+            files = [f for f in files if any(m in f.name for m in marks)]
+            shard_indexes = [
+                f for f in sub.glob("*.index*.json") if any(m in f.name for m in marks)
+            ]
+        if not files and (sub / "config.json").is_file():
+            return False  # a model folder without weights; tokenizer / scheduler folders have no config.json
+        for shard_index in shard_indexes:
+            try:
+                shards = set(
+                    json.loads(shard_index.read_text(encoding = "utf-8"))
+                    .get("weight_map", {})
+                    .values()
+                )
+            except Exception:  # noqa: BLE001
+                return False
+            if any(not (sub / shard).is_file() for shard in shards):
+                return False
+    return True
 
 
 def stored_components(snapshot: Any) -> dict[str, StoredComponent]:

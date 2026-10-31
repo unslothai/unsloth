@@ -3344,20 +3344,29 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 # FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
 # MOSS-Image: 2905 MiB worst-phase peak fully streamed (B200 capped at 16 GiB).
 # Qwen-Image-Edit-2511: 6046 MiB whole render (1024^2, one 1024^2 source, 40 steps, true CFG 3), int8 DiT + encoder.
+# Qwen-Image-2512 t2i: 6032 MiB whole render (1024^2, 20 steps, true CFG 4), int8 DiT + encoder, recorded on sm_120.
 _MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image-2.1": 1849,
     "flux.1": 2666,
     "z-image": 2666,
     "moss-image": 2976,
     "qwen-image-edit": 6046,
+    "qwen-image": 6032,
 }
 # "0": Qwen-Image-Edit places from its learned peak only.
 MEASURED_ACTIVATION_QWEN_EDIT_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_EDIT"
+# "0": Qwen-Image / Qwen-Image-2512 text-to-image places from its learned peak only.
+MEASURED_ACTIVATION_QWEN_IMAGE_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_IMAGE"
 # Streamed tier: peak reserved above resident weights AND the prefetch window (the resident seed already pads it).
+# Qwen-Image t2i has its own figure: the borrowed Edit figure (3824) left 3.5 GiB unused at a 16 GiB budget.
 _MEASURED_STREAMED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image-edit": 3824,
+    "qwen-image": 2560,
 }
 MEASURED_ACTIVATION_STREAMED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_STREAMED"
+# "0": Qwen-Image t2i streams with the borrowed Edit figure again.
+QWEN_IMAGE_STREAMED_SEED_ENV = "UNSLOTH_DIFFUSION_QWEN_IMAGE_STREAMED_SEED"
+_QWEN_IMAGE_BORROWED_STREAMED_MIB = 3824
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
@@ -3529,8 +3538,14 @@ def measured_image_runtime_mib(
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
         if streamed and phase is None and not _env_off(MEASURED_ACTIVATION_STREAMED_ENV):
             seed = _MEASURED_STREAMED_IMAGE_PEAK_MIB.get(str(family or "").lower(), seed)
+            if str(family or "").lower() == "qwen-image" and _env_off(QWEN_IMAGE_STREAMED_SEED_ENV):
+                seed = _QWEN_IMAGE_BORROWED_STREAMED_MIB
         if str(family or "").lower() == "qwen-image-edit" and _env_off(
             MEASURED_ACTIVATION_QWEN_EDIT_ENV
+        ):
+            seed = None
+        if str(family or "").lower() == "qwen-image" and _env_off(
+            MEASURED_ACTIVATION_QWEN_IMAGE_ENV
         ):
             seed = None
         if seed is None and phase_seeds:

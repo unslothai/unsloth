@@ -189,7 +189,9 @@ def _make_backend(
         stream = streams.pop(0)
         if isinstance(stream, BaseException):
             raise stream
-        yield type("FakeResponse", (), {"status_code": 200, "chunks": stream})()
+        yield type(
+            "FakeResponse", (), {"status_code": 200, "chunks": stream, "close": lambda self: None}
+        )()
 
     def fake_iter_text_cancellable(
         response,

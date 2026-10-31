@@ -24,6 +24,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { useT } from "@/i18n";
 import { getCachedModelPath, revealCachedModel } from "@/features/chat";
 import {
   formatFootprintBytes,
@@ -44,13 +45,13 @@ import {
   Refresh01Icon,
   Delete02Icon,
   Download01Icon,
-  Folder01Icon,
   HelpCircleIcon,
   InformationCircleIcon,
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -174,6 +175,7 @@ function QuantBadge({
   fit,
   lookupTableBytes = 0,
   showFit = true,
+  unifiedBudget = false,
   variant = "trigger",
   tooltipMode = "eager",
 }: {
@@ -181,9 +183,11 @@ function QuantBadge({
   fit: GgufFitClass;
   lookupTableBytes?: number;
   showFit?: boolean;
+  unifiedBudget?: boolean;
   variant?: "trigger" | "menu";
   tooltipMode?: "eager" | "lazy" | "none";
 }) {
+  const t = useT();
   const meta = FIT_BADGE[fit];
   const [tooltipArmed, setTooltipArmed] = useState(false);
   const [tooltipOpen, setTooltipOpen] = useState(false);
@@ -248,7 +252,9 @@ function QuantBadge({
         {inner}
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={4}>
-        {meta.tooltip}
+        {fit === "marginal" && unifiedBudget
+          ? t("picker.unifiedTightFitHint")
+          : meta.tooltip}
         {lookupTableBytes > 0 && (
           <span className="mt-1 block text-muted-foreground">
             Lookup tables: {formatFootprintBytes(lookupTableBytes)}
@@ -357,6 +363,7 @@ function createGgufVariantMenuItems(
     gpuCount?: number;
     systemRamGb?: number;
     budgetFraction?: number;
+    unifiedLoadBudgetGb?: number | null;
   },
   companionBytesByKey: ReadonlyMap<string, number>,
 ): GgufVariantMenuItem[] {
@@ -548,6 +555,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   mutationBlocked,
   liveActive,
   showFitInfo,
+  unifiedBudget,
   onSelect,
   onDelete,
 }: {
@@ -557,6 +565,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   mutationBlocked: boolean;
   liveActive: boolean;
   showFitInfo: boolean;
+  unifiedBudget: boolean;
   onSelect: (quant: string) => void;
   onDelete: (quant: string) => void;
 }) {
@@ -603,6 +612,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
           fit={item.fit}
           lookupTableBytes={item.lookupTableBytes}
           showFit={showFitInfo}
+          unifiedBudget={unifiedBudget}
           variant="menu"
           tooltipMode="lazy"
         />
@@ -667,6 +677,7 @@ export function GgufDownloadCard({
   gpuGb,
   gpuCount,
   systemRamGb,
+  unifiedLoadBudgetGb,
   cachePath,
   preferLocalCache = false,
   isPartial = false,
@@ -686,6 +697,7 @@ export function GgufDownloadCard({
   gpuGb?: number;
   gpuCount?: number;
   systemRamGb?: number;
+  unifiedLoadBudgetGb?: number | null;
   cachePath?: string | null;
   preferLocalCache?: boolean;
   isPartial?: boolean;
@@ -750,8 +762,16 @@ export function GgufDownloadCard({
       gpuCount,
       systemRamGb,
       budgetFraction,
+      unifiedLoadBudgetGb,
     });
-  }, [variants, gpuGb, gpuCount, systemRamGb, budgetFraction]);
+  }, [
+    variants,
+    gpuGb,
+    gpuCount,
+    systemRamGb,
+    budgetFraction,
+    unifiedLoadBudgetGb,
+  ]);
   const selectLiveGgufVariantStates = useMemo(
     () => createLiveGgufVariantStatesSelector(repoId),
     [repoId],
@@ -804,6 +824,7 @@ export function GgufDownloadCard({
           gpuCount,
           systemRamGb,
           budgetFraction,
+          unifiedLoadBudgetGb,
         },
         companionBytesByKey,
       ),
@@ -813,6 +834,7 @@ export function GgufDownloadCard({
       sortedVariants,
       systemRamGb,
       budgetFraction,
+      unifiedLoadBudgetGb,
       companionBytesByKey,
     ],
   );
@@ -906,6 +928,7 @@ export function GgufDownloadCard({
         gpuCount,
         systemRamGb,
         budgetFraction,
+        unifiedLoadBudgetGb,
       })
     : null;
   const selectedDownloadSizeLabel = selected
@@ -1168,6 +1191,7 @@ export function GgufDownloadCard({
                     fit={selectedFit ?? "oom"}
                     lookupTableBytes={ggufVariantLookupTableBytes(selected)}
                     showFit={showFitInfo}
+                    unifiedBudget={unifiedLoadBudgetGb != null}
                   />
                 ) : (
                   <span className="text-ui-12p5 text-muted-foreground">
@@ -1254,6 +1278,7 @@ export function GgufDownloadCard({
                     }
                     liveActive={liveActive}
                     showFitInfo={showFitInfo}
+                    unifiedBudget={unifiedLoadBudgetGb != null}
                     onSelect={handleSelectVariant}
                     onDelete={handleDeleteVariant}
                   />
@@ -1311,7 +1336,15 @@ export function GgufDownloadCard({
           <button
             type="button"
             disabled={downloadAction.disabled || assets.checking}
-            onClick={() => downloadingThisVariant ? downloadAction.onClick() : void assets.request(downloadAction.onClick)}
+            onClick={() => {
+              if (downloadingThisVariant) {
+                downloadAction.onClick();
+                return;
+              }
+              // The default follows live free memory; pin it so the card keeps this transfer.
+              if (selectedQuant) handleSelectVariant(selectedQuant);
+              void assets.request(downloadAction.onClick);
+            }}
             aria-label={
               selectedScopedLive ? "Downloading" : downloadAction.ariaLabel
             }
