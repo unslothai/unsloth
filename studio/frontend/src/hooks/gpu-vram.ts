@@ -101,7 +101,7 @@ export function gpuMemoryTotalsGb(
 /** Total of the GPUs a training run gets by default: an iGPU counts only when there is no discrete
  *  card beside it, and a card torch cannot run never counts. Training's counterpart to `defaultGpuIds`. */
 export function defaultGpuMemoryTotalGb(devices: MemoryTotalDevice[]): number {
-  // Training never runs on a card torch has no kernels for, even when no other GPU is left.
+  // A card torch has no kernels for never counts, so a host with only those totals 0.
   const usable = devices.filter((device) => device.no_torch_kernels !== true);
   const primary = usable.filter((device) => !sharesHostMemoryDevice(device));
   return gpuMemoryTotalsGb(primary.length ? primary : usable).total;
