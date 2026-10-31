@@ -37,10 +37,11 @@ DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest) and a missing tag falls back to latest. The -u<id> suffix is the mirror's patch set: an unpatched build aborts on the default --cfg-scale and on --vae-on-cpu, and quantizes MiniMax-H3's 1-D norms into an output uncorrelated with its own bf16 reference (leejet/stable-diffusion.cpp#1861, #1862, #1863).
 # The base must carry every family's sd_cpp_arch_marker / sd_cpp_edit_marker: hosts the mirror does
-# not build (ROCm) install it from upstream. master-968, the previous base, predates MOSS-Image (master-975,
-# split-QKV GGUF loading in the same release); master-951 before it predated FLUX.3 Image Klein (master-968), and
-# master-813 Qwen-Image-2.1 (master-883) and its reference-alpha fix (master-896). CUDA bundles carry no CUDA runtime.
-DEFAULT_TAG = "master-982-0518b34-ud331c66"
+# not build (ROCm) install it from upstream. -ud331c66, the previous pin on this base, ignores the MOSS-Image
+# moss_uncond_skip* sample args; master-968 predates MOSS-Image (master-975, split-QKV GGUF loading in the same
+# release); master-951 before it predated FLUX.3 Image Klein (master-968), and master-813 Qwen-Image-2.1 (master-883)
+# and its reference-alpha fix (master-896). CUDA bundles carry no CUDA runtime.
+DEFAULT_TAG = "master-982-0518b34-uaba3a1c"
 
 REPO = DEFAULT_REPO
 
