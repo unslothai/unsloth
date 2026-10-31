@@ -48,6 +48,17 @@ def node_needs(spec: dict, params: dict) -> list[tuple[str, str]]:
                 found.append((cap, provider))
         else:
             found.append((cap, cap))
+    from core.flows.compiler import RECIPE_PARAM
+    from core.flows.recipe_share import uses_mcp
+
+    compiled = params.get(RECIPE_PARAM)
+    # A recipe group's MCP servers come in on its compiled recipe, not the step's own spec.
+    if (
+        isinstance(compiled, dict)
+        and uses_mcp(compiled.get("recipe"))
+        and ("mcp", "mcp") not in found
+    ):
+        found.append(("mcp", "mcp"))
     return found
 
 
@@ -78,6 +89,22 @@ def doc_needs(doc: dict) -> dict:
                 need["providers"].append(detail)
             elif cap == "trigger":
                 need["triggers"] = True
+    # A recipe group's MCP servers live on the group, not on its Recipe Dataset step's params.
+    from core.flows.recipe_import import GENERATE_TYPE
+    from core.flows.recipe_share import uses_mcp
+
+    running = {
+        node.get("group")
+        for node in doc.get("nodes") or []
+        if node.get("type") == GENERATE_TYPE and not node.get("disabled")
+    }
+    for group in doc.get("groups") or []:
+        if (
+            group.get("kind") == "recipe"
+            and group.get("id") in running
+            and uses_mcp(group.get("config"))
+        ):
+            need["mcp"] = True
     return need
 
 

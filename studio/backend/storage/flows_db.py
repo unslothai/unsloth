@@ -99,6 +99,23 @@ def _summary_from_columns(row: sqlite3.Row) -> dict:
     }
 
 
+def recipe_flows() -> dict[str, str]:
+    """Saved Data Recipe id -> the newest flow it was brought into (`meta.from_recipe.id`)."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, json_extract(doc_json, '$.meta.from_recipe.id') AS recipe FROM flows"
+            " WHERE json_extract(doc_json, '$.meta.from_recipe.id') IS NOT NULL"
+            " ORDER BY created_at DESC"
+        ).fetchall()
+        found: dict[str, str] = {}
+        for row in rows:
+            found.setdefault(str(row["recipe"]), row["id"])
+        return found
+    finally:
+        conn.close()
+
+
 def get_flow(flow_id: str) -> Optional[dict]:
     conn = get_connection()
     try:
@@ -167,6 +184,7 @@ def delete_flow(flow_id: str) -> None:
         conn.execute("DELETE FROM flow_capabilities WHERE flow_id = ?", (flow_id,))
         conn.execute("DELETE FROM flow_triggers WHERE flow_id = ?", (flow_id,))
         conn.execute("DELETE FROM flow_runs WHERE flow_id = ?", (flow_id,))
+        conn.execute("DELETE FROM flow_recipe_runs WHERE flow_id = ?", (flow_id,))
         conn.execute(
             "INSERT OR IGNORE INTO flow_tombstones (id, deleted_at) VALUES (?, ?)",
             (flow_id, now_ms()),
@@ -467,6 +485,53 @@ def node_output_history(
     return entries
 
 
+def save_recipe_run(flow_id: str, node_id: str, record: dict) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO flow_recipe_runs (id, flow_id, node_id, created_at, record_json)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json
+            WHERE flow_recipe_runs.flow_id = excluded.flow_id
+            """,
+            (record["id"], flow_id, node_id, int(record["createdAt"]), json.dumps(record)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def recipe_runs(
+    flow_id: str,
+    node_id: str,
+    limit: int = 50,
+) -> list[dict]:
+    conn = get_connection()
+    try:
+        # A preview keeps every row; the list leaves them out and one run is read whole.
+        rows = conn.execute(
+            "SELECT json_remove(record_json, '$.dataset') AS record_json FROM flow_recipe_runs"
+            " WHERE flow_id = ? AND node_id = ? ORDER BY created_at DESC LIMIT ?",
+            (flow_id, node_id, limit),
+        ).fetchall()
+        return [json.loads(r["record_json"]) for r in rows]
+    finally:
+        conn.close()
+
+
+def recipe_run(flow_id: str, node_id: str, run_id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT record_json FROM flow_recipe_runs WHERE id = ? AND flow_id = ? AND node_id = ?",
+            (run_id, flow_id, node_id),
+        ).fetchone()
+        return json.loads(row["record_json"]) if row else None
+    finally:
+        conn.close()
+
+
 def reconcile_orphaned_runs(
     error: str = "Unsloth Studio restarted while this flow was running",
 ) -> int:
@@ -477,6 +542,16 @@ def reconcile_orphaned_runs(
             f"UPDATE flow_runs SET status = 'interrupted', error = ?, finished_at = ?"
             f" WHERE status IN ({', '.join('?' * len(ACTIVE_RUN_STATUSES))})",
             (error, now_ms(), *ACTIVE_RUN_STATUSES),
+        )
+        # Their recipe jobs went with the old process too.
+        conn.execute(
+            """
+            UPDATE flow_recipe_runs SET record_json = json_set(
+                record_json, '$.status', 'error', '$.error', ?, '$.finishedAt', ?)
+            WHERE COALESCE(json_extract(record_json, '$.status'), '')
+                NOT IN ('completed', 'error', 'cancelled')
+            """,
+            (error, now_ms()),
         )
         conn.commit()
         return cur.rowcount

@@ -3,6 +3,11 @@
 
 import type { InternalNode } from "@xyflow/react";
 import { useDocStore } from "../stores/doc-store";
+import {
+  isSetupId,
+  setupLayoutNodes,
+  withLaidOutSetup,
+} from "../recipe/recipe-setup";
 import type { LayoutRequest, LayoutResult } from "./layout-core";
 
 let worker: Worker | null = null;
@@ -49,10 +54,19 @@ export async function autoLayout(
       target: graph.edges[id].target,
     })),
   };
+  // Setup cards take part as nodes, so the layout leaves room for them and saves where they went.
+  const setup = setupLayoutNodes(graph, (id) => getInternalNode(id)?.measured);
+  request.nodes.push(...setup.nodes);
+  request.edges.push(...setup.edges);
   const id = ++nextId;
   const result = await new Promise<LayoutResult>((resolve, reject) => {
     pending.set(id, { resolve, reject });
     getWorker().postMessage({ id, request });
   });
-  useDocStore.getState().moveNodes(result);
+  const nodes = Object.fromEntries(
+    Object.entries(result).filter(([key]) => !isSetupId(key)),
+  );
+  useDocStore.getState().moveNodes(nodes);
+  const groups = withLaidOutSetup(useDocStore.getState().graph, result);
+  if (groups.length) useDocStore.getState().patchGraph({ groups });
 }

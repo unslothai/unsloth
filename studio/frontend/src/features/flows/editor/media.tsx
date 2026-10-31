@@ -97,7 +97,7 @@ export function MediaThumb({
         className={className}
       />
     ) : (
-      <div className={`${className ?? ""} animate-pulse bg-white/5`} />
+      <div className={`${className ?? ""} animate-pulse bg-muted`} />
     );
   }
   if (media.kind === "audio") {
@@ -110,7 +110,7 @@ export function MediaThumb({
         className="nodrag h-8 w-full"
       />
     ) : (
-      <div className="h-8 w-full animate-pulse rounded bg-white/5" />
+      <div className="h-8 w-full animate-pulse rounded bg-muted" />
     );
   }
   return url ? (
@@ -124,6 +124,6 @@ export function MediaThumb({
       className={`nodrag ${className ?? ""}`}
     />
   ) : (
-    <div className={`${className ?? ""} animate-pulse bg-white/5`} />
+    <div className={`${className ?? ""} animate-pulse bg-muted`} />
   );
 }
