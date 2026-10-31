@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from unsloth import FastLanguageModel, FastVisionModel
 from unsloth.chat_templates import get_chat_template
-from transformers import TextIteratorStreamer, TextStreamer
+from transformers import BatchEncoding, TextIteratorStreamer, TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
 import contextlib
@@ -736,12 +736,43 @@ def _prompt_already_has_bos(tokenizer, prompt):
     if bos_token_id is None:
         return False
     try:
-        ids = tok(prompt, add_special_tokens = False)["input_ids"]
+        encoding = tok(prompt, add_special_tokens = False)
+        ids = encoding["input_ids"]
     except Exception:
         return False
     while isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
         ids = ids[0]
-    return bool(len(ids)) and ids[0] == bos_token_id
+    has_bos = bool(len(ids)) and ids[0] == bos_token_id
+    global _BOS_CHECK_ENCODING
+    # A True verdict means the prompt is tokenized next with this exact call; keep it for that.
+    _BOS_CHECK_ENCODING = (tok, prompt, encoding) if has_bos else None
+    return has_bos
+
+
+_BOS_CHECK_ENCODING = None
+
+
+def _tokenize_prompt(tokenizer, prompt, add_special_tokens):
+    """``tokenizer(prompt, return_tensors="pt", add_special_tokens=...)``, reusing the encoding
+    _prompt_already_has_bos just made for the same tokenizer and prompt instead of a second pass."""
+    global _BOS_CHECK_ENCODING
+    held, _BOS_CHECK_ENCODING = _BOS_CHECK_ENCODING, None
+    if (
+        not add_special_tokens
+        and held is not None
+        and held[0] is tokenizer
+        and held[1] == prompt
+        and isinstance(held[2], BatchEncoding)
+        and isinstance(held[2]["input_ids"], list)
+        and not (held[2]["input_ids"] and isinstance(held[2]["input_ids"][0], (list, tuple)))
+    ):
+        encoding = held[2]
+        return BatchEncoding(
+            {key: [value] for key, value in encoding.items()},
+            encoding = encoding.encodings,
+            tensor_type = "pt",
+        )
+    return tokenizer(prompt, return_tensors = "pt", add_special_tokens = add_special_tokens)
 
 
 _MISSING = object()
@@ -2219,10 +2250,10 @@ class InferenceBackend:
             formatted_prompt = self.format_chat_prompt(
                 messages, system_prompt, continue_final_message = continue_final_message
             )
-            inputs = raw_tokenizer(
+            inputs = _tokenize_prompt(
+                raw_tokenizer,
                 formatted_prompt,
-                return_tensors = "pt",
-                add_special_tokens = not _prompt_already_has_bos(raw_tokenizer, formatted_prompt),
+                not _prompt_already_has_bos(raw_tokenizer, formatted_prompt),
             ).to(model.device)
             prompt_text = formatted_prompt
 
@@ -2830,9 +2861,7 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
         try:
-            inputs = tokenizer(
-                prompt, return_tensors = "pt", add_special_tokens = add_special_tokens
-            ).to(model.device)
+            inputs = _tokenize_prompt(tokenizer, prompt, add_special_tokens).to(model.device)
 
             import threading
 
