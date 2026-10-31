@@ -18,6 +18,8 @@ from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 from zipfile import BadZipFile, ZipFile
 
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
+
 __all__ = ["load_ebook_dataset"]
 
 _MAX_MEMBER_BYTES = 32 * 1024 * 1024
@@ -160,7 +162,7 @@ def _html_text(data):
     text = unicodedata.normalize("NFC", "".join(parser.parts))
     text = re.sub(r"[^\S\n]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = _BLANK_LINE_RUN.sub("\n\n", text).strip()
     return re.sub(
         "\ue000(\\d+)\ue001",
         lambda m: unicodedata.normalize("NFC", parser.preformatted[int(m[1])]),

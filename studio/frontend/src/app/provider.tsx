@@ -39,6 +39,7 @@ import {
   applyCustomizationToDocument,
   applyInterfaceScale,
   getAppliedInterfaceZoom,
+  notifyRendererReady,
   subscribeAppliedInterfaceZoom,
   useAppearanceCustomStore,
   useInterfaceScaleStore,
@@ -53,6 +54,7 @@ import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
+import { installDismissClickStreakGuard } from "@/lib/dismiss-click-streak";
 import { useDocumentFlag } from "@/lib/document-flag";
 import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
@@ -346,6 +348,7 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   if (await wasLaunchedHidden()) return;
   if (!isCurrent()) return;
   await win.show();
+  void notifyRendererReady();
 }
 
 async function enforceWindowSizeBounds(
@@ -439,6 +442,7 @@ async function applyAppWindowLayout(
         if (hiddenAtLaunch) return false;
         if (!isCurrent()) return false;
         await win.show();
+        void notifyRendererReady();
         return true;
       },
       waitForSettled: hiddenAtLaunch
@@ -470,6 +474,7 @@ async function showWindowFallback(): Promise<void> {
   await win.setResizable(true);
   if (await wasLaunchedHidden()) return;
   await win.show();
+  void notifyRendererReady();
 }
 
 function getTauriWindowMode(
@@ -1175,6 +1180,7 @@ export function AppProvider({ children }: AppProviderProps) {
   useEffect(() => {
     dismissStartToasts();
   }, [pathname]);
+  useEffect(() => installDismissClickStreakGuard(), []);
   return (
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>

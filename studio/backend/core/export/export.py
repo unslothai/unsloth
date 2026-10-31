@@ -713,6 +713,33 @@ def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
     return None
 
 
+def _with_base_processor(tokenizer, base_model: str, **load_kw):
+    """A text-only VLM adapter saves a bare tokenizer; the export still needs the base's processor (mmproj)."""
+    if tokenizer is None or hasattr(tokenizer, "tokenizer"):
+        return tokenizer
+    try:
+        from transformers import AutoProcessor
+        processor = AutoProcessor.from_pretrained(base_model, **load_kw)
+    except Exception as e:
+        logger.info(f"No processor from base model {base_model}: {e}")
+        return tokenizer
+    if not hasattr(processor, "tokenizer"):
+        return tokenizer
+    processor.tokenizer = tokenizer
+    if getattr(tokenizer, "chat_template", None):
+        processor.chat_template = tokenizer.chat_template
+    return processor
+
+
+def _restore_use_cache(model) -> None:
+    """The load prepares the model for training (use_cache=False on every config); export saves it."""
+    try:
+        from unsloth_zoo.training_utils import restore_use_cache
+    except ImportError:
+        return
+    restore_use_cache(model)
+
+
 def _cached_hub_adapter_commit(checkpoint_path: str) -> Optional[str]:
     """The commit of a Hub adapter's cached snapshot (the one its load just used), else None."""
     if not checkpoint_path or os.path.isdir(checkpoint_path):
@@ -1032,6 +1059,15 @@ class ExportBackend:
                 )
                 if _IS_MLX and adapter_config.exists():
                     processor = load_mlx_adapter_processor(processor, checkpoint_path)
+                elif base_model:
+                    with _offline_window_if(local_files_only):
+                        processor = _with_base_processor(
+                            processor,
+                            base_model,
+                            trust_remote_code = trust_remote_code,
+                            token = token,
+                            local_files_only = local_files_only,
+                        )
                 tokenizer = processor
 
             else:
@@ -1061,6 +1097,7 @@ class ExportBackend:
                 self.is_peft = adapter_config.exists()
             else:
                 self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
+                _restore_use_cache(model)
 
             restored_repo_id = restore_hf_cache_repo_identity(model, base_model)
             if restored_repo_id:

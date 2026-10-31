@@ -6,9 +6,12 @@ never reset per compaction; entry points no-op on failure."""
 
 from __future__ import annotations
 
+import bisect
+import contextvars
+import dataclasses
+import functools
 import hashlib
 import logging
-import bisect
 import json
 import os
 import re
@@ -53,6 +56,97 @@ _MAX_TOOL_ARGS_CHARS = 1000
 _BRANCH_FILTER_OVERFETCH = 4
 # Long abandoned branches can fill any fixed window, so widen and re-ask, up to this bound: a chat request, not a crawl.
 _BRANCH_FILTER_MAX_CANDIDATES = 256
+
+# Bumped after every archive write in this process; a recall session drops its memos when it moves.
+_write_generation = 0
+_write_generation_lock = threading.Lock()
+
+
+def _writes(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        global _write_generation
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            with _write_generation_lock:
+                _write_generation += 1
+
+    return wrapper
+
+
+class _RecallSession:
+    """Lexical results, transcripts and branch decisions shared by the recalls of one compaction."""
+
+    __slots__ = ("generation", "lexical", "matching", "transcripts")
+
+    def __init__(self):
+        self.generation = _write_generation
+        self.lexical: dict = {}
+        self.matching: dict = {}
+        self.transcripts: dict = {}
+
+    def current(self) -> "_RecallSession":
+        if self.generation != _write_generation:
+            self.__init__()
+        return self
+
+
+_session: contextvars.ContextVar[Optional[_RecallSession]] = contextvars.ContextVar(
+    "rag_recall_session", default = None
+)
+
+
+@contextmanager
+def recall_session():
+    """Recalls inside share one session; a nested entry joins the outer one."""
+    if _session.get() is not None:
+        yield
+        return
+    token = _session.set(_RecallSession())
+    try:
+        yield
+    finally:
+        _session.reset(token)
+
+
+def _active_session() -> Optional[_RecallSession]:
+    session = _session.get()
+    return session.current() if session is not None else None
+
+
+class _TranscriptIndex:
+    """Which messages contain a probe, from one C-level scan of the joined transcript."""
+
+    __slots__ = ("texts", "joined", "offsets", "found")
+
+    def __init__(self, texts: list[str]):
+        self.texts = texts
+        self.joined = "\0".join(texts)
+        self.offsets = []
+        at = 0
+        for text in texts:
+            self.offsets.append(at)
+            at += len(text) + 1
+        self.found: dict = {}
+
+    def containing(self, probe: str) -> list[int]:
+        hit = self.found.get(probe)
+        if hit is not None:
+            return hit
+        if "\0" in probe:
+            hit = [i for i, text in enumerate(self.texts) if probe in text]
+        else:
+            hit = []
+            at = self.joined.find(probe)
+            while at >= 0:
+                index = bisect.bisect_right(self.offsets, at) - 1
+                hit.append(index)
+                if index + 1 >= len(self.offsets):
+                    break
+                at = self.joined.find(probe, self.offsets[index + 1])
+        self.found[probe] = hit
+        return hit
 
 
 def _text_of(content, *, include_tool_calls: bool = False) -> str:
@@ -702,6 +796,7 @@ def archive_turns(
         return _archive_turns(thread_id, evicted, live, branch, cancel_check)
 
 
+@_writes
 def _archive_turns(
     thread_id: str,
     evicted: list[dict],
@@ -1706,6 +1801,7 @@ def _retire_surplus(
         return False
 
 
+@_writes
 def _restamp(
     conn,
     scope: str,
@@ -1767,6 +1863,7 @@ def _archived_under(
     return _stale_document(conn, scope, digest, identity, occurrences = occurrences) is _ARCHIVED
 
 
+@_writes
 def _widen_span(conn, scope: str, digest: str, span: int) -> None:
     """Only widens: a stored window is a maximum, so a longer span still matches the shorter turn."""
     try:
@@ -2003,7 +2100,13 @@ def _rendered_message_count(rows) -> int:
     return total
 
 
-def _document_on_live_branch(conn, document_id: str, transcript: list[str], cache: dict) -> bool:
+def _document_on_live_branch(
+    conn,
+    document_id: str,
+    transcript: list[str],
+    cache: dict,
+    index: Optional[_TranscriptIndex] = None,
+) -> bool:
     """Every chunk must still be on the branch: an edit to any part of a turn retires the whole copy."""
     if document_id in cache:
         return cache[document_id]
@@ -2021,7 +2124,7 @@ def _document_on_live_branch(conn, document_id: str, transcript: list[str], cach
         # Never fail a recall on the strictness pass: fall back to what the candidate chunk itself said.
         cache[document_id] = True
         return True
-    cache[document_id] = _document_matches_one_run(rows, transcript, message_count)
+    cache[document_id] = _document_matches_one_run(rows, transcript, message_count, index)
     return cache[document_id]
 
 
@@ -2029,6 +2132,7 @@ def _document_matches_one_run(
     rows,
     transcript: Optional[list[str]],
     message_count: Optional[int] = None,
+    index: Optional[_TranscriptIndex] = None,
 ) -> bool:
     """Every chunk must match within one run of adjacent messages, not be assembled from scattered parts."""
     if not rows or not transcript:
@@ -2068,7 +2172,19 @@ def _document_matches_one_run(
             return False
         return partial_tail or cursor >= len(transcript[position])
 
-    return any(_one_run_from(start) for start in range(len(transcript)))
+    # A run opens on the first message at or after its start that holds the first probe, and must open inside
+    # its window, so only starts within one window before such a message can succeed.
+    first = probe_lists[0][0][0]
+    if index is not None and index.texts is transcript:
+        holders = index.containing(first)
+    else:
+        holders = [i for i, text in enumerate(transcript) if first in text]
+    starts = []
+    previous = -1
+    for holder in holders:
+        starts.extend(range(max(previous + 1, holder - window + 1), holder + 1))
+        previous = holder
+    return any(_one_run_from(start) for start in starts)
 
 
 def _order_key(ordinal, created_at, document_rowid, chunk_index) -> tuple:
@@ -2147,6 +2263,46 @@ def _lexical_pass(
     newest_first: bool = False,
     oldest_first: bool = False,
 ) -> list:
+    session = _active_session()
+    if session is None:
+        return _lexical_pass_uncached(
+            conn,
+            scope,
+            query,
+            model,
+            k,
+            expression,
+            newest_first = newest_first,
+            oldest_first = oldest_first,
+        )
+    key = (scope, query, k, expression, newest_first, oldest_first)
+    hits = session.lexical.get(key)
+    if hits is None:
+        hits = session.lexical[key] = _lexical_pass_uncached(
+            conn,
+            scope,
+            query,
+            model,
+            k,
+            expression,
+            newest_first = newest_first,
+            oldest_first = oldest_first,
+        )
+    # Callers re-rank and refill these lists; hand out copies.
+    return [dataclasses.replace(hit) for hit in hits]
+
+
+def _lexical_pass_uncached(
+    conn,
+    scope: str,
+    query: str,
+    model,
+    k: int,
+    expression,
+    *,
+    newest_first: bool = False,
+    oldest_first: bool = False,
+) -> list:
     if newest_first or oldest_first:
         # Archive legs are always "lexical", so this is the same call with the tie-break reversed.
         return _ends_first_within_ties(
@@ -2179,6 +2335,19 @@ def _both_ends(oldest: list, newest: list) -> list:
     """One candidate list from a run fetched from each end, oldest side first, no repeats."""
     seen = {hit.chunk_id for hit in oldest}
     return oldest + [hit for hit in newest if hit.chunk_id not in seen]
+
+
+def _lexical_matching_ids(conn, chunk_ids: list, expression) -> set:
+    session = _active_session()
+    if session is None:
+        return store.lexical_matching_ids(conn, chunk_ids, expression)
+    key = (tuple(chunk_ids), expression)
+    found = session.matching.get(key)
+    if found is None:
+        found = session.matching[key] = frozenset(
+            store.lexical_matching_ids(conn, chunk_ids, expression)
+        )
+    return set(found)
 
 
 def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
@@ -2235,9 +2404,7 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     # Ask the index for eligibility: the strict pass is capped and arbitrarily ordered.
     eligible = {hit.chunk_id for hit in strict}
     try:
-        eligible |= store.lexical_matching_ids(
-            conn, [hit.chunk_id for hit in loose], expressions[0]
-        )
+        eligible |= _lexical_matching_ids(conn, [hit.chunk_id for hit in loose], expressions[0])
     except Exception:
         # Exact membership is an improvement, not a dependency; on failure the strict rows alone stand.
         logger.warning("conversation_archive.eligibility_probe_failed", exc_info = True)
@@ -2247,6 +2414,26 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     already |= {hit.chunk_id for hit in strict}
     ranked += [hit for hit in loose if hit.chunk_id not in already]
     return ranked
+
+
+def _recall_transcript(branch_messages, thread_id: str):
+    """(transcript, its index, branch decisions per document), shared across a session's recalls."""
+    session = _active_session()
+    if session is None:
+        transcript = branch_message_texts(branch_messages) or _live_transcript(thread_id)
+        return transcript, (_TranscriptIndex(transcript) if transcript else None), {}
+    # Keyed on message identity: the session holds the messages, so ids stay theirs.
+    key = (tuple(map(id, branch_messages or ())), thread_id)
+    entry = session.transcripts.get(key)
+    if entry is None:
+        transcript = branch_message_texts(branch_messages) or _live_transcript(thread_id)
+        entry = session.transcripts[key] = (
+            transcript,
+            _TranscriptIndex(transcript) if transcript else None,
+            {},
+            list(branch_messages or ()),
+        )
+    return entry[0], entry[1], entry[2]
 
 
 def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str) -> list:
@@ -2262,8 +2449,17 @@ def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str)
     if len(hits) < fetch:
         try:
             seen = {hit.chunk_id for hit in hits}
+            # Legs sized to the fetch: at the default 30 each, widening past 60 reads as an exhausted archive.
+            legs = max(fetch, config.TOP_K_LEXICAL, config.TOP_K_DENSE)
             for hit in retrieval.retrieve_hybrid(
-                conn, scope, query, k = fetch, model_name = model, mode = "hybrid"
+                conn,
+                scope,
+                query,
+                k = fetch,
+                model_name = model,
+                mode = "hybrid",
+                lexical_k = legs,
+                dense_k = legs,
             ):
                 if hit.chunk_id not in seen:
                     hits.append(hit)
@@ -2290,6 +2486,26 @@ def recall(
     forced: bool = False,
 ) -> Optional[tuple[str, list[dict]]]:
     """Lexical first, since recall is mostly exact match; no relevance floor, as weak matches beat none."""
+    with retrieval.query_vector_memo(), recall_session():
+        return _recall(
+            thread_id,
+            query,
+            top_k = top_k,
+            branch_messages = branch_messages,
+            extra_queries = extra_queries,
+            forced = forced,
+        )
+
+
+def _recall(
+    thread_id: str,
+    query: str,
+    *,
+    top_k: Optional[int] = None,
+    branch_messages: Optional[list[dict]] = None,
+    extra_queries: Optional[list[str]] = None,
+    forced: bool = False,
+) -> Optional[tuple[str, list[dict]]]:
     query = (query or "").strip()
     if not thread_id or not query or not enabled():
         return None
@@ -2350,11 +2566,10 @@ def recall(
         conn = rag_db.get_connection()
         model = config.effective_embedding_model()
         # Request's branch first; stored rows are the whole DAG, a fallback that still beats no filtering.
-        transcript = branch_message_texts(branch_messages) or _live_transcript(thread_id)
+        transcript, index, live_documents = _recall_transcript(branch_messages, thread_id)
         fetch = limit * _BRANCH_FILTER_OVERFETCH
         rows: dict = {}
         hits: list = []
-        live_documents: dict = {}
         while True:
             fetched = _candidates(conn, scope, query, model, fetch, thread_id)
             if not fetched:
@@ -2381,7 +2596,7 @@ def recall(
                 for hit in candidates
                 if hit.chunk_id in rows
                 and _document_on_live_branch(
-                    conn, rows[hit.chunk_id]["document_id"], transcript, live_documents
+                    conn, rows[hit.chunk_id]["document_id"], transcript, live_documents, index
                 )
             ]
             if len(hits) != len(candidates):
@@ -2430,6 +2645,7 @@ def _scope_select(scope: str, created_before: Optional[str]) -> tuple:
     )
 
 
+@_writes
 def _delete_scope_without_vec(
     scope: str,
     thread_id: str,
@@ -2486,6 +2702,7 @@ def delete_thread_documents(thread_id: str, *, created_before: Optional[str] = N
     return len(removed)
 
 
+@_writes
 def copy_thread_documents(
     source_thread_id: str,
     thread_id: str,
@@ -2554,6 +2771,7 @@ def thread_has_documents(thread_id: str) -> bool:
         conn.close()
 
 
+@_writes
 def _delete_scope(
     scope: str,
     thread_id: str,

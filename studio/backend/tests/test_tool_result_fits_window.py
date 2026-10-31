@@ -2130,3 +2130,78 @@ class TestTheResultIsFittedAsItIsReplayed:
         # At most: the head stops on a line boundary.
         assert len(head) <= int(re.match(r"(\d+) chars", notice).group(1)), len(head)
         assert head == tools._defuse_sentinels(head)
+
+
+class TestAPruneReadsTheRecordOnce:
+    def test_the_rewrite_reuses_the_identity_it_already_read(self, tmp_path, monkeypatch):
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        record = tools._spill_record_path(str(root))
+        before = open(record, encoding = "utf-8").read().splitlines()[0]
+        reads = []
+        real = tools._spill_record
+
+        def _counting(path):
+            reads.append(path)
+            return real(path)
+
+        monkeypatch.setattr(tools, "_spill_record", _counting)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", 5)
+
+        tools._prune_spills(str(root))
+
+        assert len(reads) == 1, reads
+        assert open(record, encoding = "utf-8").read().splitlines()[0] == before
+        assert len(_spills(root)) == 5
+
+    def test_a_record_forgotten_during_the_prune_does_not_get_its_identity_back(
+        self, tmp_path, monkeypatch
+    ):
+        """Sandbox removal drops the record without the spill lock; a recreated directory must not inherit it."""
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        record = tools._spill_record_path(str(root))
+        real = tools._unlink_verified_spill
+
+        def _forget_first(*args, **kwargs):
+            tools._forget_spill_record(record)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(tools, "_unlink_verified_spill", _forget_first)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", 5)
+
+        tools._prune_spills(str(root))
+
+        assert tools._spill_record(str(root))[0] is None
+
+    def test_kept_spills_are_not_hashed_again(self, tmp_path, monkeypatch):
+        for n in range(tools._SPILL_KEEP):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        hashed = []
+        real = tools._file_digest
+        monkeypatch.setattr(
+            tools, "_file_digest", lambda *a, **k: hashed.append(a) or real(*a, **k)
+        )
+
+        tools._prune_spills(str(root))
+
+        assert hashed == []
+        assert len(_spills(root)) == tools._SPILL_KEEP
+
+    def test_a_spill_whose_content_no_longer_matches_is_not_deleted(self, tmp_path, monkeypatch):
+        for n in range(tools._SPILL_KEEP + 1):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        identity, owned = tools._spill_record(str(root))
+        oldest = min(_spills(root), key = os.path.getmtime)
+        name = os.path.relpath(oldest, root).replace(os.sep, "/")
+        owned[name] = (owned[name][0], "0" * 64)
+        tools._write_spill_manifest(str(root), owned, identity = identity)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", tools._SPILL_KEEP - 1)
+
+        tools._prune_spills(str(root))
+
+        assert os.path.exists(oldest)

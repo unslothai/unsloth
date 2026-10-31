@@ -10,37 +10,13 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""PrefixGrouper layout builder + completion-logprob extraction for the Unsloth GRPO
-packed path (all archs that route through the varlen attention dispatch).
+"""GRPO PrefixGrouper: each group of ``num_generations`` rows with a byte-identical prompt becomes
+one flat stream ``[prefix_g, suffix_g_0 .. suffix_g_{G-1}, ...]`` gathered from the original
+(row, col) coordinates, so the shared prefix gets grad once (= sum of the G repeats). Completion
+logprobs are scattered back to ``orig_row * L + orig_col``, byte-compatible with the packed path.
 
-Given the de-padded, LEFT-PACKED input_ids the packed GRPO path already works with, this
-module:
-
-  1. Detects consecutive ``num_generations`` rows that share a prompt prefix (byte-
-     identical prompt precondition; falls back / returns None otherwise).
-  2. Builds ONE flat shared-prefix stream across all groups
-     ``[ prefix_g0, suf_g0_0 .. suf_g0_{G-1}, prefix_g1, ... ]`` with position_ids that
-     continue each prefix positionally, plus a ``PrefixSegInfo`` segment table for the
-     FlexAttention shared-prefix kernel.
-  3. Extracts completion logprobs via the index map (completion pos ``j==0`` predicted
-     from the shared prefix's last token; ``j>=1`` from the preceding suffix token) and
-     scatters them back into ``[total_rows, W]`` EXACTLY where the full-row packed path
-     puts them (dest = ``orig_row*L + orig_col``), so grpo_compute_loss / completion_mask
-     / TIS / metrics are byte-untouched.
-
-The flat stream is built by GATHERING original (row, col) coordinates out of input_ids,
-so the grad path's autograd flows to the same embedding rows as today (the shared prefix
-now contributes grad once = the sum of the G repeats, which is mathematically identical).
-
-``chunked_hidden_states_selective_log_softmax`` (from unsloth_zoo, passed in) is reused
-verbatim over the gathered predicting-position hidden states, so fp32 accumulation,
-logit_scale/softcapping/temperature are all preserved.
-
-Env:
-  UNSLOTH_GRPO_PREFIX_GROUPER=1            engage (default ON; set 0 to disable). Auto-off under vLLM.
-  UNSLOTH_GRPO_PREFIX_GROUPER_TOKR=1.3     tok_r auto-gate threshold (env-overridable)
-  UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY=1     first-step self-verify (default ON)
-  UNSLOTH_GRPO_PREFIX_GROUPER_TOL=0.7      self-verify PASS band (nats)
+Env: UNSLOTH_GRPO_PREFIX_GROUPER (default 1, off under vLLM), _TOKR (1.3), _VERIFY (1),
+_TOL (0.7 nats), _COMPILE_CHECK (1).
 """
 
 from __future__ import annotations
@@ -51,7 +27,13 @@ from typing import List, Optional, Tuple
 
 import torch
 
-from .prefix_grouper_kernel import build_seg_info_multigroup, PrefixSegInfo
+from .prefix_grouper_kernel import (
+    build_seg_info_multigroup,
+    compile_check_failed,
+    PrefixSegInfo,
+    PREFIX_GROUPER_MIN_TORCH,
+    TORCH_SUPPORTS_PREFIX_GROUPER,
+)
 
 
 def env_on(name: str, default: str = "0") -> bool:
@@ -59,15 +41,28 @@ def env_on(name: str, default: str = "0") -> bool:
 
 
 # One-time env reads; the helpers stay callable, since unsloth_zoo imports and calls them.
-_ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "1")
+_ENV_ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on(
+    "UNSLOTH_GRPO_PREFIX_GROUPER", "1"
+)
+_ENABLED = _ENV_ENABLED and TORCH_SUPPORTS_PREFIX_GROUPER
+_OFF_LOGGED = False
 _VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
 _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
 _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
 
 def prefix_grouper_enabled() -> bool:
-    """PrefixGrouper requires seq-packing on (it reuses its de-pad + scatter machinery)."""
-    return _ENABLED
+    """Needs seq-packing, torch >= 2.7 and a flex kernel that passed its compile check."""
+    global _OFF_LOGGED
+    if _ENV_ENABLED and not _ENABLED and not _OFF_LOGGED:
+        _OFF_LOGGED = True
+        print(
+            f"Unsloth: GRPO PrefixGrouper is off on torch {torch.__version__} (needs torch >= "
+            f"{PREFIX_GROUPER_MIN_TORCH[0]}.{PREFIX_GROUPER_MIN_TORCH[1]}: its flex attention kernel "
+            "does not compile there); using the packed path.",
+            flush = True,
+        )
+    return _ENABLED and compile_check_failed() is None
 
 
 def verify_on() -> bool:
@@ -93,7 +88,6 @@ class GroupLayout:
     flat_ids: torch.Tensor  # [1, T]  (T == seg.T)
     position_ids: torch.Tensor  # [1, T]
     prefix_seg_info: PrefixSegInfo
-    # Per completion target token, aligned 1:1.
     tgt_rows: torch.Tensor  # [N] original row index
     tgt_cols: torch.Tensor  # [N] original padded column in that row
     tgt_pred: torch.Tensor  # [N] flat predicting index (into the T stream)
@@ -141,16 +135,10 @@ class GroupLayout:
 
 
 def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows):
-    """CPU-side grouping. Returns group dicts or None. Mirrors the packed _pk_* partition.
+    """CPU-side grouping mirroring the packed _pk_* partition, or None.
 
-    A row's REAL tokens are the columns where input != pad. Its completion region (what
-    the packed path scatters, then completion_mask masks) is the real columns with
-    original col >= cstart_r, where cstart_r = (L - logits_to_keep) - left_pad_r. The
-    prompt is the real columns < cstart_r. Within a GRPO group all G rows share the same
-    prompt => same left_pad => same cstart => the prompt real columns are BYTE-IDENTICAL
-    across the group (the shared prefix). We require that byte-identity (falls back
-    otherwise). No prompt-tail special-casing: every suffix token is scattered exactly
-    like the packed path; completion_mask masks the leading prompt-tail positions.
+    Prompt = real columns < cstart_r = (L - logits_to_keep) - left_pad_r; every row of a group
+    must have a byte-identical prompt. Suffix tokens scatter exactly like the packed path.
     """
     G = num_generations
     if G is None or G < 2 or total_rows % G != 0:
@@ -171,7 +159,6 @@ def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_row
             comp_cols_per_row.append(c_cols)
         if any(len(p) == 0 for p in prompt_toks_per_row):
             return None
-        # Require BYTE-IDENTICAL prompts across the group, the shared-prefix precondition.
         P = len(prompt_toks_per_row[0])
         if any(len(prompt_toks_per_row[k]) != P for k in range(1, G)):
             return None
@@ -207,7 +194,7 @@ def _tok_r(groups) -> float:
     return (tok_full / tok_sp) if tok_sp else 1.0
 
 
-def build_group_layout(
+def _build_group_layout_reference(
     input_ids,
     logits_to_keep,
     pad_id,
@@ -217,13 +204,9 @@ def build_group_layout(
     apply_tokr_gate = True,
     max_segment_cap = None,
 ):
-    """Build the shared-prefix GroupLayout, or return None to fall back to the packed path.
+    """Token-by-token shared-prefix GroupLayout (build_group_layout's fallback), or None.
 
-    input_ids : [B, L]. GRPO's layout is left-padded in the prompt and right-padded in
-        the completion. Real tokens of a row are a contiguous run not necessarily
-        starting at column 0.
-    logits_to_keep : int
-    left_pad_tokens_per_prompt : [B] long tensor (per-row left-pad count in the prompt).
+    input_ids [B, L]: prompt left-padded, completion right-padded.
     """
     device = input_ids.device
     total_rows, L = input_ids.shape
@@ -271,7 +254,6 @@ def build_group_layout(
     if apply_tokr_gate and tok_r < tokr_threshold():
         return None  # low reuse -> not worth it; use the full-row packed path
 
-    # Build flat stream by gathering original (row, col) coordinates.
     group_specs = [(gm["P"], gm["R_list"]) for gm in groups]
     seg, group_meta = build_seg_info_multigroup(group_specs, device)
 
@@ -289,11 +271,9 @@ def build_group_layout(
         r0 = gm["prefix_row"]
         prefix_cols = gm["prefix_cols"]  # ORIGINAL real prompt columns (len P) of row0
         plast = meta["prefix_last_index"]  # base + P - 1
-        # Gather the shared prefix once, from row0.
         flat_src_rows.extend([r0] * P)
         flat_src_cols.extend(prefix_cols)
         pos_list.extend(range(P))
-        # Every suffix token is a completion-region target, scattered like the packed path; completion_mask hides prompt-tail positions.
         for i, r in enumerate(rows):
             cols = gm["suf_cols"][i]
             r_i = len(cols)
@@ -332,6 +312,184 @@ def build_group_layout(
         tgt_cols = torch.tensor(tgt_cols, device = device, dtype = torch.long),
         tgt_pred = torch.tensor(tgt_pred, device = device, dtype = torch.long),
         tgt_flat = torch.tensor(tgt_flat, device = device, dtype = torch.long),
+        total_rows = total_rows,
+        L = L,
+        W = W,
+        tok_r = tok_r,
+        signature = sig,
+    )
+
+
+_INDEX_DTYPES = (torch.int64, torch.int32)
+
+
+def _is_int(x) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def build_group_layout(
+    input_ids,
+    logits_to_keep,
+    pad_id,
+    num_generations,
+    left_pad_tokens_per_prompt,
+    *,
+    apply_tokr_gate = True,
+    max_segment_cap = None,
+):
+    """Build the shared-prefix GroupLayout, or return None to fall back to the packed path.
+
+    input_ids : [B, L]. GRPO's layout is left-padded in the prompt and right-padded in
+        the completion. Real tokens of a row are a contiguous run not necessarily
+        starting at column 0.
+    logits_to_keep : int
+    left_pad_tokens_per_prompt : [B] long tensor (per-row left-pad count in the prompt).
+
+    Same result as _build_group_layout_reference, with one device->host and one
+    host->device copy instead of per-token loops.
+    """
+    args = (input_ids, logits_to_keep, pad_id, num_generations, left_pad_tokens_per_prompt)
+    kwargs = dict(apply_tokr_gate = apply_tokr_gate, max_segment_cap = max_segment_cap)
+    lp = left_pad_tokens_per_prompt
+    if not (
+        isinstance(input_ids, torch.Tensor)
+        and input_ids.dim() == 2
+        and input_ids.shape[0] > 0
+        and input_ids.dtype in _INDEX_DTYPES
+        and isinstance(lp, torch.Tensor)
+        and lp.dim() == 1
+        and lp.shape[0] == input_ids.shape[0]
+        and lp.dtype in _INDEX_DTYPES
+        and lp.device == input_ids.device
+        and _is_int(logits_to_keep)
+        and _is_int(pad_id)
+        and (num_generations is None or _is_int(num_generations))
+        and torch.iinfo(input_ids.dtype).min <= pad_id <= torch.iinfo(input_ids.dtype).max
+    ):
+        return _build_group_layout_reference(*args, **kwargs)
+    device = input_ids.device
+    total_rows, L = input_ids.shape
+    G = num_generations
+    # Completion start column per row, matching create_completion_attention_mask / _pk_cstart.
+    cstart = ((L - logits_to_keep) - lp).to(torch.long)
+    host = torch.cat(
+        [input_ids.to(torch.long), cstart.unsqueeze(1), lp.to(torch.long).unsqueeze(1)], dim = 1
+    ).cpu()
+    ids = host[:, :L]
+    cs = host[:, L]
+    keep = ids != pad_id
+    n_real = keep.sum(dim = 1)
+    first = torch.argmax(keep.to(torch.int8), dim = 1)
+    ar = torch.arange(L, device = "cpu")
+    end = first + n_real
+    if not bool((keep == ((ar >= first.unsqueeze(1)) & (ar < end.unsqueeze(1)))).all()):
+        return _build_group_layout_reference(*args, **kwargs)
+    if G is None or G < 2 or total_rows % G != 0:
+        return None
+    # Prompt real columns [first, pe), completion [pe, end).
+    pe = torch.minimum(torch.maximum(cs, first), end)
+    P_row = pe - first
+    R_row = end - pe
+    num_groups = total_rows // G
+    P_g = P_row.view(num_groups, G)
+    if bool((P_g == 0).any()) or bool((P_g != P_g[:, :1]).any()):
+        return None
+    R_g = R_row.view(num_groups, G)
+    if bool((R_g.sum(dim = 1) == 0).any()):
+        return None
+    first_g = first.view(num_groups, G)
+    P_list = P_g[:, 0].tolist()
+    for gi, P in enumerate(P_list):
+        cols = first_g[gi].unsqueeze(1) + torch.arange(P, device = "cpu")
+        prompts = ids[gi * G : (gi + 1) * G].gather(1, cols)
+        if not bool((prompts == prompts[:1]).all()):
+            return None
+    R_lists = R_g.tolist()
+    groups = [dict(P = P, R_list = R_list) for P, R_list in zip(P_list, R_lists)]
+
+    # Sliding-window guard: a group's PG span is P + max(R), so fall back if it exceeds the window.
+    if max_segment_cap is not None:
+        for gm in groups:
+            if gm["P"] + max(gm["R_list"]) > max_segment_cap:
+                return None
+
+    tok_r = _tok_r(groups)
+    if apply_tokr_gate and tok_r < tokr_threshold():
+        return None  # low reuse -> not worth it; use the full-row packed path
+
+    from .prefix_grouper_kernel import _labels_to_device, _seg_labels_host
+
+    group_specs = [(gm["P"], gm["R_list"]) for gm in groups]
+    labels, T, T_pad, _, sig_parts = _seg_labels_host(group_specs)
+
+    # Flat order per group: shared prefix (from its first row), then one suffix per row.
+    rows_g = torch.arange(total_rows, device = "cpu").view(num_groups, G)
+    P_t = P_g[:, :1]
+    seg_len = torch.cat([P_t, R_g], dim = 1).reshape(-1)
+    seg_row = torch.cat([rows_g[:, :1], rows_g], dim = 1).reshape(-1)
+    seg_col = torch.cat([first_g[:, :1], pe.view(num_groups, G)], dim = 1).reshape(-1)
+    seg_pos = torch.cat([torch.zeros_like(P_t), P_t.expand(num_groups, G)], dim = 1).reshape(-1)
+    seg_is_suffix = torch.ones((num_groups, G + 1), dtype = torch.bool, device = "cpu")
+    seg_is_suffix[:, 0] = False
+    seg_is_suffix = seg_is_suffix.reshape(-1)
+    seg_start = torch.cumsum(seg_len, dim = 0) - seg_len
+    group_base = seg_start.view(num_groups, G + 1)[:, :1]
+    seg_plast = (group_base + P_t - 1).expand(num_groups, G + 1).reshape(-1)
+
+    flat = torch.arange(T, device = "cpu")
+    j = flat - torch.repeat_interleave(seg_start, seg_len, output_size = T)
+    flat_src_rows = torch.repeat_interleave(seg_row, seg_len, output_size = T)
+    flat_src_cols = torch.repeat_interleave(seg_col, seg_len, output_size = T) + j
+    pos = torch.repeat_interleave(seg_pos, seg_len, output_size = T) + j
+    is_tgt = torch.repeat_interleave(seg_is_suffix, seg_len, output_size = T)
+    tgt_flat = flat[is_tgt]
+    tgt_j = j[is_tgt]
+    # Position 0 is predicted from the prefix's last token; j >= 1 from the previous suffix token.
+    tgt_pred = torch.where(
+        tgt_j == 0,
+        torch.repeat_interleave(seg_plast, seg_len, output_size = T)[is_tgt],
+        tgt_flat - 1,
+    )
+    N = int(tgt_flat.numel())
+    table = torch.cat(
+        [
+            flat_src_rows,
+            flat_src_cols,
+            pos,
+            flat_src_rows[is_tgt],
+            flat_src_cols[is_tgt],
+            tgt_pred,
+            tgt_flat,
+            labels.reshape(-1),
+        ]
+    ).to(device)
+    pieces = torch.split(table, [T, T, T, N, N, N, N, 3 * T_pad])
+    fr, fc, position_ids, tgt_rows, tgt_cols, tgt_pred_d, tgt_flat_d, labels_d = pieces
+    group_of_kv, is_prefix, suffix_of_kv = _labels_to_device(labels_d.view(3, T_pad), T_pad, device)
+    seg = PrefixSegInfo(
+        group_of_kv = group_of_kv,
+        is_prefix = is_prefix,
+        suffix_of_kv = suffix_of_kv,
+        signature = ("multi", T_pad, tuple(sig_parts)),
+        T = T,
+        T_pad = T_pad,
+    )
+    flat_ids = input_ids[fr, fc].unsqueeze(0)  # [1, T] (grad-safe gather)
+
+    max_left_pad = int(host[:, L + 1].max().item())
+    W = logits_to_keep + max_left_pad
+
+    # The logic is structural, so key on (num_groups, group_sizes), not exact lengths.
+    sig = (num_groups, tuple(sorted(len(gm["R_list"]) for gm in groups)))
+
+    return GroupLayout(
+        flat_ids = flat_ids,
+        position_ids = position_ids.clone().unsqueeze(0),
+        prefix_seg_info = seg,
+        tgt_rows = tgt_rows.clone(),
+        tgt_cols = tgt_cols.clone(),
+        tgt_pred = tgt_pred_d.clone(),
+        tgt_flat = tgt_flat_d.clone(),
         total_rows = total_rows,
         L = L,
         W = W,

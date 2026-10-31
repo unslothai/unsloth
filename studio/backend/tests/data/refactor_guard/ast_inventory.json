@@ -1108,6 +1108,7 @@
       "_BARE_JSON_NAME_RE": "'\"name\"\\\\s*:\\\\s*\"([^\"]+)\"' flags=32",
       "_BLOCKED_BODY_MASK_RUN_RE": "'\\ue000+' flags=32",
       "_DEEPSEEK_BEGIN_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>' flags=32",
+      "_DEEPSEEK_GLUE_GAP_STOP_RE": "'[`<>\\\\[\\\\]{}]' flags=32",
       "_DEEPSEEK_R1_CLOSE_RE": "'```[\\\\s\\\\r\\\\n]*<｜tool▁call▁end｜>' flags=32",
       "_EMBEDDED_MARKER_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>|<\\\\|tool_calls_section_begin\\\\|>|<\\\\|tool_call_begin\\\\|>' flags=32",
       "_FENCE_ONLY_RE": "'[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*' flags=32",
@@ -1116,6 +1117,8 @@
       "_GEMMA_BARE_TC_RE": "'(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
       "_GEMMA_JSON_NUMBER_RE": "'-?(?:0|[1-9]\\\\d*)(\\\\.\\\\d+)?([eE][+-]?\\\\d+)?' flags=256",
       "_GEMMA_KEY_RE": "'\\\\s*([A-Za-z_][\\\\w.\\\\-]*)\\\\s*:' flags=32",
+      "_GEMMA_QUOTED_VALUE_RE": "'(?:^|[{,\\\\[])\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:\\\\s*<\\\\|\"\\\\|>' flags=32",
+      "_GEMMA_SLOT_RE": "'\\ue000(\\\\d+)\\ue000' flags=32",
       "_GEMMA_TC_RE": "'<\\\\|tool_call>\\\\s*call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
       "_GLM_JSON_NUMERIC_RE": "'-?\\\\d+(?:\\\\.\\\\d+)?(?:[eE][+-]?\\\\d+)?' flags=32",
       "_GLM_TC_OPEN_RE": "'<tool_call>\\\\s*([\\\\w.\\\\-]+)\\\\s*(?=\\\\n|<arg_key>|</tool_call>)' flags=32",
@@ -1129,11 +1132,13 @@
       "_LLAMA3_PY_CALL_RE": "'<\\\\|python_tag\\\\|>\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
       "_LLAMA3_WS_RE": "'\\\\s*' flags=32",
       "_MISTRAL_V11_NAME_RE": "'\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*' flags=32",
+      "_ONE_STRING_ARG_CALL_RE": "'\\\\A\\\\s*\\\\{\\\\s*\"name\"\\\\s*:\\\\s*\"([\\\\w.\\\\-]+)\"\\\\s*,\\\\s*\"(?:arguments|parameters)\"\\\\s*:\\\\s*\\\\{\\\\s*\"([A-Za-z_][\\\\w\\\\-]*)\"\\\\s*:\\\\s*\"(.*)\"\\\\s*\\\\}\\\\s*\\\\}\\\\s*\\\\Z' flags=48",
       "_OPEN_CALL_WS_RE": "'\\\\s*' flags=32",
       "_OUTER_ENVELOPE_CLOSED_PATS[0]": "'<tool_call>(?:(?!<tool_call>).)*</tool_call>' flags=48",
       "_OUTER_ENVELOPE_CLOSED_PATS[1]": "'<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>' flags=48",
       "_OUTER_ENVELOPE_CLOSED_PATS[2]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
       "_OUTER_ENVELOPE_OPEN_RE": "'<tool_call>|<function(?:=|\\\\s+name=\")|<\\\\|tool_call>|<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\())' flags=32",
+      "_SECOND_KEY_RE": "'\"[\\\\s}\\\\]]*,\\\\s*(?:\"[A-Za-z_][\\\\w\\\\-]*\"|\\\\\\'[A-Za-z_][\\\\w\\\\-]*\\\\\\'|[A-Za-z_][\\\\w\\\\-]*)\\\\s*:' flags=32",
       "_TC_END_TAG_RE": "'</(?:tool_call|function)>' flags=32",
       "_TC_FUNC_CLOSE_RE": "'\\\\s*</function>\\\\s*$' flags=32",
       "_TC_FUNC_START_RE": "'<function(?:=([\\\\w\\\\.\\\\-]+)|\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\")>\\\\s*' flags=32",
@@ -1168,7 +1173,9 @@
     },
     "regexes": {
       "re.compile(\"(?im)(\\\\b(i['\\\\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\\\\b(?!\\\\s+(?:not|never)\\\\b)(?!\\\\s+\" + _HELP_OFFER + ')|\\\\b(?:let me|allow me)\\\\b(?!\\\\s+(?:not|never|know)\\\\b)(?!\\\\s+' + _SIGN_OFF + ')(?!\\\\s+to\\\\s+' + _HELP_OFFER + \")|(?:^|[.!?]\\\\s+)\\\\s*(?:the\\\\s+)?first\\\\s+step\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:my|our)\\\\s+(?:plan|approach|step)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:i|we|let['’]?s|let us)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+\" + _ACTION_VERB + \"\\\\b|\\\\bstep \\\\d+[ \\\\t*_]*(?::[ \\\\t*_\\\\r]*$|(?:[:,.)\\\\u2013\\\\u2014-][ \\\\t*_]*)?(?:\\\\r?\\\\n(?:[ \\\\t]*\\\\r?\\\\n)?[ \\\\t*_#>-]*(?:\\\\d+[.)][ \\\\t*_]*)?)?(?:(?:let['’]?s|let us)\\\\b|\" + _ACTION_VERB + \"\\\\b))|\\\\bhere['\\\\u2019]?s (?:my |the |a )?(?:plan|approach)|\\\\b(?:now i|next i)\\\\b)\")": 1,
+      "re.compile('\"[\\\\s}\\\\]]*,\\\\s*(?:\"[A-Za-z_][\\\\w\\\\-]*\"|\\\\\\'[A-Za-z_][\\\\w\\\\-]*\\\\\\'|[A-Za-z_][\\\\w\\\\-]*)\\\\s*:')": 1,
       "re.compile('\"name\"\\\\s*:\\\\s*\"([^\"]+)\"')": 1,
+      "re.compile('(?:^|[{,\\\\[])\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:\\\\s*<\\\\|\"\\\\|>')": 1,
       "re.compile('(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$')": 1,
       "re.compile('(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{')": 1,
       "re.compile('-?(?:0|[1-9]\\\\d*)(\\\\.\\\\d+)?([eE][+-]?\\\\d+)?', re.ASCII)": 1,
@@ -1198,6 +1205,8 @@
       "re.compile('<tool_call>|<function(?:=|\\\\s+name=\")|<\\\\|tool_call>|<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\())')": 1,
       "re.compile('<｜tool▁call▁begin｜>(?=\\\\s*function|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile('[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*')": 1,
+      "re.compile('[`<>\\\\[\\\\]{}]')": 1,
+      "re.compile('\\\\A\\\\s*\\\\{\\\\s*\"name\"\\\\s*:\\\\s*\"([\\\\w.\\\\-]+)\"\\\\s*,\\\\s*\"(?:arguments|parameters)\"\\\\s*:\\\\s*\\\\{\\\\s*\"([A-Za-z_][\\\\w\\\\-]*)\"\\\\s*:\\\\s*\"(.*)\"\\\\s*\\\\}\\\\s*\\\\}\\\\s*\\\\Z', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\](?=\\\\s*(?:[\\\\[{]|[A-Za-z_][\\\\w.\\\\-]*(?:[\\\\[{]|\\\\s*$))|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w\\\\.\\\\-]+\\\\s*(?:\\\\[ARGS\\\\])?\\\\s*\\\\{.*?\\\\}', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*\\\\[.*?\\\\](?:\\\\s*</s>)?', re.DOTALL)": 1,
@@ -1217,7 +1226,8 @@
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '(?=\\\\s*(?:<｜tool▁call▁begin｜>|function)|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '.*?<｜tool▁calls▁end｜>', re.DOTALL)": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '|' + re.escape(_KIMI_SECTION_BEGIN) + '|' + re.escape(_KIMI_CALL_BEGIN))": 1,
-      "re.compile(_DEEPSEEK_OPEN_RE_SRC)": 1
+      "re.compile(_DEEPSEEK_OPEN_RE_SRC)": 1,
+      "re.compile(_GEMMA_SLOT + '(\\\\d+)' + _GEMMA_SLOT)": 1
     },
     "symbols": {
       "BUDGET_EXHAUSTED_NUDGE": {
@@ -1357,6 +1367,9 @@
       "_DEEPSEEK_END": {
         "kind": "assign"
       },
+      "_DEEPSEEK_GLUE_GAP_STOP_RE": {
+        "kind": "assign"
+      },
       "_DEEPSEEK_OPEN_ALT": {
         "kind": "assign"
       },
@@ -1406,6 +1419,15 @@
         "kind": "assign"
       },
       "_GEMMA_KEY_RE": {
+        "kind": "assign"
+      },
+      "_GEMMA_QUOTED_VALUE_RE": {
+        "kind": "assign"
+      },
+      "_GEMMA_SLOT": {
+        "kind": "assign"
+      },
+      "_GEMMA_SLOT_RE": {
         "kind": "assign"
       },
       "_GEMMA_STR_BEGIN": {
@@ -1531,6 +1553,9 @@
       "_MISTRAL_V11_NAME_RE": {
         "kind": "assign"
       },
+      "_ONE_STRING_ARG_CALL_RE": {
+        "kind": "assign"
+      },
       "_OPEN_CALL_OPENER": {
         "kind": "assign"
       },
@@ -1553,6 +1578,9 @@
         "kind": "assign"
       },
       "_REPEAT_TRAIL_PUNCT": {
+        "kind": "assign"
+      },
+      "_SECOND_KEY_RE": {
         "kind": "assign"
       },
       "_SENTINEL_MAX_LEN": {
@@ -1611,10 +1639,15 @@
         "kind": "def",
         "signature": "text: str, enabled_tool_names"
       },
+      "_call_object_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, relaxed: bool=True"
+      },
       "_consume_mistral_call": {
         "decorators": [],
         "kind": "def",
-        "signature": "obj_text: str, out: list[dict], id_offset: int"
+        "signature": "obj_text: str, out: list[dict], id_offset: int, *, relaxed: bool=True"
       },
       "_decoded_key": {
         "decorators": [],
@@ -1625,6 +1658,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str, enabled_tool_names: Optional[set]"
+      },
+      "_escape_bare_quotes": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "raw: str"
       },
       "_escaped_string_content_spans": {
         "decorators": [],
@@ -1650,6 +1688,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, brace_pos: int, hard_stop: int"
+      },
+      "_gemma_bare_body_arguments": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str"
       },
       "_gemma_body_brace_end": {
         "decorators": [],
@@ -1726,6 +1769,9 @@
         "kind": "def",
         "signature": "text: str, found: int"
       },
+      "_json_object_body": {
+        "kind": "assign"
+      },
       "_last_bare_call_word": {
         "decorators": [],
         "kind": "def",
@@ -1740,6 +1786,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "body: str, p: int, n: int"
+      },
+      "_loads_call_object": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, *, relaxed: bool=True"
       },
       "_marker_inside_leading_envelope": {
         "decorators": [],
@@ -1795,6 +1846,16 @@
         "kind": "def",
         "signature": "content: str, *, id_offset: int=0, enabled_tool_names: Optional[set]=None"
       },
+      "_parse_closed_call_unescaped_quotes": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int"
+      },
+      "_parse_deepseek_envelope": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, begin: 're.Match', *, id_offset: int, allow_incomplete: bool"
+      },
       "_parse_deepseek_tool_calls": {
         "decorators": [],
         "kind": "def",
@@ -1814,6 +1875,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_glued_deepseek_envelopes": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, pos: int, *, id_offset: int"
       },
       "_parse_kimi_section_body": {
         "decorators": [],
@@ -1884,6 +1950,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, pos: int"
+      },
+      "_slot_gemma_values": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str"
       },
       "_strictly_inside": {
         "decorators": [],
@@ -2328,6 +2399,11 @@
         "kind": "def",
         "signature": "text: str"
       },
+      "_glued_call_objects": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, pos: int, end: int"
+      },
       "_in_code": {
         "decorators": [],
         "kind": "def",
@@ -2338,10 +2414,25 @@
         "kind": "def",
         "signature": "content: str, pos: int, *, param_start_re=None, param_closers=(_PARAM_CLOSE_TAG,), func_closers=(_FUNC_CLOSE_TAG,)"
       },
+      "_is_strict_json": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
       "_iter_bracket_spans": {
         "decorators": [],
         "kind": "def",
         "signature": "text: str, start: int=0, enabled_tool_names=None"
+      },
+      "_json_object_body": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str"
+      },
+      "_loads_wrapped_call": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, *, relaxed: bool=True"
       },
       "_marker_coverage": {
         "decorators": [],
@@ -2387,6 +2478,16 @@
         "decorators": [],
         "kind": "def",
         "signature": "m, pat, text, spans, enabled_tool_names"
+      },
+      "_relaxed_allowed_at": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, pos: int"
+      },
+      "_relaxed_object_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, start: int"
       },
       "_split_top_level_commas": {
         "decorators": [],
