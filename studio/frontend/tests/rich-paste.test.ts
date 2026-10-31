@@ -64,6 +64,22 @@ test("tables become GFM tables with escaped pipes and ragged rows padded", () =>
   );
 });
 
+test("merged cells keep the other values under their own headers", () => {
+  const body = el(
+    "body",
+    el(
+      "table",
+      el("tr", el("th", "Group"), el("th", "Value"), el("th", "Note")),
+      el("tr", el("td", { rowspan: "2" }, "A"), el("td", "10"), el("td", "x")),
+      el("tr", el("td", { colspan: "2" }, "20")),
+    ),
+  );
+  assert.equal(
+    htmlNodeToMarkdown(body),
+    ["| Group | Value | Note |", "| --- | --- | --- |", "| A | 10 | x |", "|  | 20 |  |"].join("\n"),
+  );
+});
+
 test("lists, nesting, headings, quotes and emphasis", () => {
   const body = el(
     "body",
@@ -80,6 +96,11 @@ test("lists, nesting, headings, quotes and emphasis", () => {
 test("code blocks keep their indentation and language", () => {
   const body = el("body", el("pre", el("code", { class: "language-python" }, "def f():\n    return 1\n")));
   assert.equal(htmlNodeToMarkdown(body), "```python\ndef f():\n    return 1\n```");
+});
+
+test("code inside a list item keeps its blank lines", () => {
+  const body = el("body", el("ul", el("li", "Example", el("pre", el("code", 'message = """first\n\nthird"""')))));
+  assert.equal(htmlNodeToMarkdown(body), '- Example\n  ```\n  message = """first\n\n  third"""\n  ```');
 });
 
 test("Google Docs: the normal-weight wrapper adds nothing, styled spans become emphasis", () => {

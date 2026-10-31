@@ -99,12 +99,19 @@ function list(node: PasteNode, ctx: Ctx, ordered: boolean): string {
       continue;
     }
     const marker = ordered ? `${index++}.` : "-";
+    // Blank lines go, except inside fenced code, where they are part of the copied text.
+    let fenced = false;
     const body = clean(children(item, ctx))
       .split("\n")
-      .filter((line) => line.trim() !== "");
+      .filter((line) => {
+        const keep = fenced || line.trim() !== "";
+        if (line.includes(FENCE_OPEN)) fenced = true;
+        if (line.includes(FENCE_CLOSE)) fenced = false;
+        return keep;
+      });
     const [first = "", ...rest] = body;
     lines.push(`${marker} ${first}`);
-    for (const line of rest) lines.push(`${INDENT.repeat(marker.length + 1)}${line}`);
+    for (const line of rest) lines.push(line ? `${INDENT.repeat(marker.length + 1)}${line}` : "");
   }
   return lines.join("\n");
 }
@@ -119,17 +126,30 @@ function tableRows(node: PasteNode): PasteNode[] {
   return rows;
 }
 
+function span(cell: PasteNode, name: string, max: number): number {
+  const value = Number.parseInt(attr(cell, name), 10);
+  return Number.isFinite(value) && value > 0 ? Math.min(value, max) : 1;
+}
+
 function table(node: PasteNode, ctx: Ctx): string {
-  const rows = tableRows(node).map((row) =>
-    elements(row)
-      .filter((cell) => /^T[DH]$/i.test(cell.nodeName))
-      .map((cell) =>
-        clean(children(cell, ctx))
-          .replace(new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}]`, "g"), "")
-          .replace(/\s*\n\s*/g, " ")
-          .replace(/\|/g, "\\|"),
-      ),
-  );
+  const physical = tableRows(node);
+  // Lay merged cells onto the grid so every value stays under its own header.
+  const rows: string[][] = physical.map(() => []);
+  physical.forEach((row, r) => {
+    let c = 0;
+    for (const cell of elements(row).filter((child) => /^T[DH]$/i.test(child.nodeName))) {
+      while (rows[r][c] !== undefined) c++;
+      const text = clean(children(cell, ctx))
+        .replace(new RegExp(`[${INDENT}${FENCE_OPEN}${FENCE_CLOSE}]`, "g"), "")
+        .replace(/\s*\n\s*/g, " ")
+        .replace(/\|/g, "\\|");
+      const cols = span(cell, "colspan", 1000);
+      const down = span(cell, "rowspan", physical.length - r);
+      for (let dr = 0; dr < down; dr++)
+        for (let dc = 0; dc < cols; dc++) rows[r + dr][c + dc] = dr === 0 && dc === 0 ? text : "";
+      c += cols;
+    }
+  });
   const width = Math.max(0, ...rows.map((row) => row.length));
   if (rows.length === 0 || width === 0) return children(node, ctx);
   const line = (cells: string[]) =>
