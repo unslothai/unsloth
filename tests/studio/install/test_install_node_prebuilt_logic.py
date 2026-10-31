@@ -69,10 +69,10 @@ def _host(node_os: str, node_arch: str) -> HostInfo:
 @pytest.mark.parametrize(
     "system,machine,exp_os,exp_arch,exp_ext",
     [
-        ("Linux", "x86_64", "linux", "x64", ".tar.gz"),
-        ("Linux", "aarch64", "linux", "arm64", ".tar.gz"),
-        ("Darwin", "x86_64", "darwin", "x64", ".tar.gz"),
-        ("Darwin", "arm64", "darwin", "arm64", ".tar.gz"),
+        ("Linux", "x86_64", "linux", "x64", ".tar.xz"),
+        ("Linux", "aarch64", "linux", "arm64", ".tar.xz"),
+        ("Darwin", "x86_64", "darwin", "x64", ".tar.xz"),
+        ("Darwin", "arm64", "darwin", "arm64", ".tar.xz"),
         ("Windows", "AMD64", "win", "x64", ".zip"),
         ("Windows", "ARM64", "win", "arm64", ".zip"),
     ],
@@ -1656,3 +1656,41 @@ def test_swap_into_place_reports_the_managed_parent_when_aside_is_denied(
     parent_takeown = f'takeown /F "{install_dir.parent}"'
     assert any(parent_takeown in line for line in recovery), recovery
     assert not any(parent_takeown in line and " /R " in line for line in recovery), recovery
+
+
+def test_detect_host_without_lzma_keeps_tar_gz(monkeypatch):
+    monkeypatch.setattr(M.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(M.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(M.importlib.util, "find_spec", lambda name: None)
+    assert M.detect_host().archive_ext == ".tar.gz"
+
+
+def test_every_pinned_tar_gz_has_a_tar_xz():
+    for assets in M.load_pins()["versions"].values():
+        for name in assets:
+            if name.endswith(".tar.gz"):
+                assert name.replace(".tar.gz", ".tar.xz") in assets
+
+
+def test_extract_tar_xz(tmp_path):
+    root = tmp_path / "src" / "node"
+    (root / "bin").mkdir(parents = True)
+    (root / "bin" / "node").write_text("x")
+    archive = tmp_path / "node.tar.xz"
+    with tarfile.open(archive, "w:xz") as tar:
+        tar.add(root, arcname = "node")
+    M.extract_archive(archive, tmp_path / "out")
+    assert (tmp_path / "out" / "node" / "bin" / "node").read_text() == "x"
+
+
+def test_tar_gz_install_is_kept_after_the_switch_to_tar_xz(tmp_path, monkeypatch):
+    pins = {"versions": {"1.0.0": {"node-v1.0.0-linux-x64.tar.gz": "a" * 64,
+                                   "node-v1.0.0-linux-x64.tar.xz": "b" * 64,
+                                   "node-v1.0.0-linux-arm64.tar.gz": "c" * 64}}}
+    asset = "node-v1.0.0-linux-x64.tar.xz"
+    monkeypatch.setattr(M, "load_metadata", lambda d: {"asset": "node-v1.0.0-linux-x64.tar.gz"})
+    assert M.pin_to_keep(pins, "1.0.0", asset, tmp_path) == "a" * 64
+    monkeypatch.setattr(M, "load_metadata", lambda d: {"asset": "node-v1.0.0-linux-arm64.tar.gz"})
+    assert M.pin_to_keep(pins, "1.0.0", asset, tmp_path) == "b" * 64
+    monkeypatch.setattr(M, "load_metadata", lambda d: None)
+    assert M.pin_to_keep(pins, "1.0.0", asset, tmp_path) == "b" * 64
