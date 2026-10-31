@@ -1054,12 +1054,11 @@ def _install_tile_batch(vae: Any) -> bool:
     return True
 
 
-# cuda ordinal -> True once the DiT's ConvRot act-quant kernel and fused-dequant int8 GEMM passed their probes there
 _FUSED_DEVICES: dict = {}
 
 
 def _fused_int8_ready(index: Optional[int]) -> bool:
-    """Probe (once per card, never inside a forward) the DiT's rotation + act quant kernel and fused-dequant GEMM."""
+    """Probe once per card, never inside a forward."""
     if index is None or _env(H3_VAE_INT8_FUSED_ENV) in _FALSE:
         return False
     if index not in _FUSED_DEVICES:
@@ -1082,9 +1081,7 @@ def _fused_int8_ready(index: Optional[int]) -> bool:
 def _fused_int8_linear(
     linear: Any, x2: Any, wq: Any, ws: Any, out_dtype: Any, group: int
 ) -> Optional[Any]:
-    """A rotated Linear on the DiT's kernels: one ConvRot rotation + int8 act quant, then the int8 GEMM with the
-    dequant in its epilogue (three passes over the activation fewer than the rotation GEMM + quant + ``_int_mm`` +
-    dequant). None when this card / shape / dtype is not covered."""
+    """ConvRot rotation + int8 act quant, then int8 GEMM with fused dequant. None when unsupported."""
     import torch
 
     bias = linear.bias
@@ -1224,7 +1221,7 @@ def _install_int8_decoder(vae: Any, *, keep_blocks: Optional[tuple] = None) -> i
     if hadamard is not None:
         try:
             if torch.cuda.is_available():
-                # the card holding the weights (it runs the forward), and the current one for weights offloaded to host
+                # weights' card, plus the current one for host-offloaded weights
                 if hadamard.is_cuda:
                     _fused_int8_ready(hadamard.device.index)
                 _fused_int8_ready(torch.cuda.current_device())
