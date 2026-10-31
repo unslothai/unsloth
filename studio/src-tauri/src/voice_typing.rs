@@ -11,6 +11,9 @@
 //! transcript insertion. The settings UI, recording and transcription live in the
 //! frontend, which drives everything through the commands below.
 //!
+//! While the Unsloth window itself is focused the chord is routed to the built-in
+//! composer dictation instead, so the overlay never opens over the app.
+//!
 //! Every step logs at INFO level (never the transcript itself): a chord that produces
 //! no visible reaction must still be traceable in the app log.
 
@@ -885,6 +888,9 @@ mod shortcut_poller {
         // Set at press: a chord pressed inside the Unsloth window drives the
         // composer dictation, and its release must go there even if focus moved.
         let mut press_started_in_app = false;
+        // This press stopped a system session; its release must not send a
+        // second stop into an already-cancelled session.
+        let mut press_cancelled_system = false;
         let mut escape_held = false;
 
         loop {
@@ -901,6 +907,7 @@ mod shortcut_poller {
                 chord_held = false;
                 pressed_at = None;
                 press_started_in_app = false;
+                press_cancelled_system = false;
                 HOOK_MAIN_KEY_DOWN.store(false, Ordering::SeqCst);
                 HOOK_MAIN_KEY_PRESSED.store(false, Ordering::SeqCst);
                 HOOK_ESCAPE_DOWN.store(false, Ordering::SeqCst);
@@ -935,6 +942,7 @@ mod shortcut_poller {
                 chord_held = false;
                 pressed_at = None;
                 press_started_in_app = false;
+                press_cancelled_system = false;
                 HOOK_MAIN_KEY_DOWN.store(false, Ordering::SeqCst);
                 HOOK_MAIN_KEY_PRESSED.store(false, Ordering::SeqCst);
             }
@@ -960,8 +968,18 @@ mod shortcut_poller {
 
             if press_edge {
                 if press_started_in_app {
-                    // The overlay never opens over the app's own composer.
-                    emit_signal(&app, "press", "app", 0);
+                    // A chord that lands while a system-wide session is still
+                    // recording stops it first: the press is the stop gesture.
+                    if SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
+                        super::audio_mute::set_recording_mute(false);
+                        super::hud::hide(&app);
+                        emit_signal(&app, "cancel", "system", 0);
+                        press_started_in_app = false;
+                        press_cancelled_system = true;
+                    } else {
+                        // The overlay never opens over the app's own composer.
+                        emit_signal(&app, "press", "app", 0);
+                    }
                 } else if let Some(action) =
                     edge_signal(mode, Edge::Press, press_started_session, Duration::ZERO)
                 {
@@ -978,7 +996,9 @@ mod shortcut_poller {
                     .map(|start| now.saturating_duration_since(start))
                     .unwrap_or_default();
                 pressed_at = None;
-                if press_started_in_app {
+                if press_cancelled_system {
+                    press_cancelled_system = false;
+                } else if press_started_in_app {
                     press_started_in_app = false;
                     let held_ms = u64::try_from(held_for.as_millis()).unwrap_or(u64::MAX);
                     emit_signal(&app, "release", "app", held_ms);
