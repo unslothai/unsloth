@@ -673,7 +673,7 @@ test("an Audio page already on a workflow the model runs is left there", () => {
   });
 });
 
-test("a CPU-run model is marked as held in host RAM, so the VRAM split can skip it", () => {
+test("only a model known to sit on the reported GPUs counts toward VRAM", () => {
   const gguf = (resident_on_gpu: unknown) =>
     describeInferenceStatus(
       inferenceStatus({
@@ -684,12 +684,13 @@ test("a CPU-run model is marked as held in host RAM, so the VRAM split can skip 
         resident_on_gpu,
       }),
     )[0];
-  assert.equal(gguf(false).residentOnHost, true);
-  assert.equal(gguf(true).residentOnHost, undefined);
-  // An older server sends no flag: unknown stays counted where it was.
-  assert.equal(gguf(undefined).residentOnHost, undefined);
-  const image = (device: string) =>
+  assert.equal(gguf(true).residentOnGpu, true);
+  // A CPU run, a Vulkan run (buffers not parsed) and an older server all stay unknown.
+  assert.equal(gguf(null).residentOnGpu, undefined);
+  assert.equal(gguf(undefined).residentOnGpu, undefined);
+  const image = (device: string | null) =>
     describeDiffusionStatus({ loaded: true, repo_id: "a/b", resident_mib: 2048, device } as never)[0];
-  assert.equal(image("cpu").residentOnHost, true);
-  assert.equal(image("cuda:0").residentOnHost, undefined);
+  assert.equal(image("cuda:0").residentOnGpu, true);
+  assert.equal(image("cpu").residentOnGpu, undefined);
+  assert.equal(image(null).residentOnGpu, undefined);
 });

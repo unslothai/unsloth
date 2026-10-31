@@ -126,9 +126,9 @@ const BACKGROUND_DRAG_EXCLUDED =
 const RESIZE_HANDLES: { edge: string; edges: ResizeEdges; className: string }[] = [
   { edge: "w", edges: { x: -1, y: 0 }, className: "inset-y-0 left-0 w-1.5 cursor-ew-resize" },
   { edge: "e", edges: { x: 1, y: 0 }, className: "inset-y-0 right-0 w-1.5 cursor-ew-resize" },
-  { edge: "nw", edges: { x: -1, y: -1 }, className: "left-0 top-0 z-20 size-4 cursor-nwse-resize" },
+  { edge: "nw", edges: { x: -1, y: -1 }, className: "left-0 top-0 z-20 size-3 cursor-nwse-resize" },
   { edge: "se", edges: { x: 1, y: 1 }, className: "bottom-0 right-0 z-20 size-5 cursor-nwse-resize" },
-  { edge: "ne", edges: { x: 1, y: -1 }, className: "right-0 top-0 z-20 size-4 cursor-nesw-resize" },
+  { edge: "ne", edges: { x: 1, y: -1 }, className: "right-0 top-0 z-20 size-3 cursor-nesw-resize" },
   { edge: "sw", edges: { x: -1, y: 1 }, className: "bottom-0 left-0 z-20 size-5 cursor-nesw-resize" },
 ];
 
@@ -386,7 +386,7 @@ function FloatingMonitorPanel({
             : { width: width ?? undefined }
         }
       >
-        {wantsModels && (
+        {wantsModels && !suppressed && (
           <Suspense fallback={null}>
             <MonitorLoadedModels onEntries={setLoadedModels} />
           </Suspense>
@@ -484,17 +484,13 @@ function FloatingMonitorPanel({
                 unifiedRow &&
                 !ramSegments && (
                   <>
-                    {unifiedRow && !ramSegments && (
-                      <div className="flex justify-between gap-2">
-                        <span>{t("settings.resources.liveMonitor.gpuInUse")}</span>
-                        <span className="shrink-0 font-mono tabular-nums">
-                          {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel}
-                        </span>
-                      </div>
-                    )}
-                    {unifiedRow &&
-                      !ramSegments &&
-                      memoryDisplay.unifiedAvailableGb !== null && (
+                    <div className="flex justify-between gap-2">
+                      <span>{t("settings.resources.liveMonitor.gpuInUse")}</span>
+                      <span className="shrink-0 font-mono tabular-nums">
+                        {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel}
+                      </span>
+                    </div>
+                    {memoryDisplay.unifiedAvailableGb !== null && (
                         <div className="flex justify-between gap-2">
                           <span>
                             {t("settings.resources.liveMonitor.availableForModels")}
@@ -511,7 +507,7 @@ function FloatingMonitorPanel({
               {ramSegments ? (
                 <MemoryShareBar
                   segments={ramSegments}
-                  noModels={!discreteVram && breakdown?.models.length === 0}
+                  noModels={!discreteVram && breakdown !== null && loadedModels.length === 0}
                 />
               ) : (
                 <UsageBar percent={ramKnown ? ramPercent : null} />
@@ -534,7 +530,7 @@ function FloatingMonitorPanel({
                 {vramSegments ? (
                   <MemoryShareBar
                     segments={vramSegments}
-                    noModels={breakdown?.models.length === 0}
+                    noModels={breakdown !== null && loadedModels.length === 0}
                   />
                 ) : (
                   <UsageBar percent={cardsUsedKnown ? cardsPercent : null} />
@@ -771,7 +767,7 @@ export function FloatingMonitor() {
   const [panelKey, setPanelKey] = useState(0);
   const wasOpenRef = useRef(isOpen);
 
-  // Advance the key on close so reopening mid-exit mounts fresh native resize geometry.
+  // Advance the key on close so reopening mid-exit mounts a fresh panel.
   useEffect(() => {
     if (wasOpenRef.current && !isOpen) {
       setPanelKey((current) => current + 1);

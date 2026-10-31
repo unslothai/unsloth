@@ -170,8 +170,8 @@ def test_a_non_gguf_status_is_not_sized_from_llama(monkeypatch):
 
 
 
-def test_status_says_whether_the_size_is_gpu_buffers_or_host_rss(monkeypatch):
-    # A CPU run on a discrete-GPU host reports RSS; the monitor must not bill it to VRAM.
+def test_status_says_whether_the_size_is_gpu_buffers_or_unknown(monkeypatch):
+    # RSS (a CPU run) or unparsed buffers (Vulkan) are not known to sit on the reported GPUs.
     on_gpu = SimpleNamespace(
         is_loaded = True,
         resident_memory_mib = lambda: 4096,
@@ -185,7 +185,7 @@ def test_status_says_whether_the_size_is_gpu_buffers_or_host_rss(monkeypatch):
         reclaimable_gpu_memory_gb = lambda: None,
     )
     status = _run_status(monkeypatch, on_cpu)
-    assert (status.resident_mib, status.resident_on_gpu) == (3072, False)
+    assert (status.resident_mib, status.resident_on_gpu) == (3072, None)
 
 
 def test_an_unknown_size_says_nothing_about_its_pool(monkeypatch):

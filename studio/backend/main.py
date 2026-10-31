@@ -2498,7 +2498,7 @@ def _get_cached_system_gpu_info(
             _SYSTEM_GPU_CACHE_TTL_SECONDS,
             max(max_age_s, _SYSTEM_GPU_PROBE_SPACING * _system_gpu_probe_s),
         )
-        # A read inside the 10 s window only refreshes live readings; past it, everything is re-resolved.
+        # Inside the 10 s window the GGUF pin-support probe is reused; the other probes re-run on every read.
         within_window = (
             not refresh_memory
             and _system_gpu_cache is not None

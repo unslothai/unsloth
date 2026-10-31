@@ -2534,7 +2534,6 @@ export const de = {
         unsloth: "Unsloth",
         otherApps: "Andere Apps",
         otherInUse: "Sonstige Nutzung",
-        otherInUseHint: "Alles, was außer den Modellgewichten belegt ist, einschließlich des KV-Caches von Unsloth, seines GPU-Kontexts und laufenden Trainings.",
         freeLabel: "Frei",
         unslothApp: "Unsloth-App",
         unslothShare: "Anteil von Unsloth anzeigen",

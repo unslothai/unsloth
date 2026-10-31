@@ -2555,7 +2555,6 @@ export const he = {
         unsloth: "Unsloth",
         otherApps: "אפליקציות אחרות",
         otherInUse: "שימוש אחר",
-        otherInUseHint: "כל מה שבשימוש מלבד משקלי המודל, כולל מטמון ה-KV של Unsloth, הקשר ה-GPU שלו וכל אימון.",
         freeLabel: "פנוי",
         unslothApp: "אפליקציית Unsloth",
         unslothShare: "הצגת החלק של Unsloth",

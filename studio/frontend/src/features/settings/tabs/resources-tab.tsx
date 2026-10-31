@@ -869,7 +869,7 @@ export function ResourcesTab() {
               >
                 <MemoryShareBar
                   segments={ramSegments}
-                  noModels={!discreteVram && breakdown?.models.length === 0}
+                  noModels={!discreteVram && breakdown !== null && loadedModels.length === 0}
                 />
               </MetricTile>
             )}
@@ -882,7 +882,7 @@ export function ResourcesTab() {
               >
                 <MemoryShareBar
                   segments={vramSegments}
-                  noModels={breakdown?.models.length === 0}
+                  noModels={breakdown !== null && loadedModels.length === 0}
                 />
               </MetricTile>
             )}

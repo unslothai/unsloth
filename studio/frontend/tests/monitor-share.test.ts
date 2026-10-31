@@ -54,7 +54,8 @@ test("both toggles are off by default and only poll loaded models when one is on
   // Floating monitor: mounted only while a toggle is on, and lazy (a static import breaks the startup chunking).
   const monitor = readSrc("components/floating-monitor.tsx");
   assert.match(monitor, /lazy\(\(\) => import\("\.\/monitor-loaded-models"\)\)/);
-  assert.match(monitor, /\{wantsModels && \(\s*<Suspense/);
+  // Not while suppressed beside Run settings: nothing shows it.
+  assert.match(monitor, /\{wantsModels && !suppressed && \(\s*<Suspense/);
 });
 
 test("Unsloth's share never reads below the models it holds in that pool", () => {
@@ -100,14 +101,18 @@ test("on VRAM the rest is unattributed: Unsloth's KV cache and training land the
   }
 });
 
-test("the VRAM split skips a model held in host RAM, which the RAM bar already counts", () => {
+test("the VRAM split counts only models known to sit on the reported GPUs", () => {
+  // CPU (RSS), Vulkan or a separate inference GPU: not this pool's bytes, and the RAM bar already counts host memory.
   const entries = [
-    { id: "gpu", name: "a/On-GPU", residentMib: 4096 },
-    { id: "cpu", name: "a/On-CPU", residentMib: 3072, residentOnHost: true },
+    { id: "gpu", name: "a/On-GPU", residentMib: 4096, residentOnGpu: true },
+    { id: "other", name: "a/Elsewhere", residentMib: 3072 },
   ];
   assert.deepEqual(modelShares(entries, true).map((model) => model.id), ["gpu"]);
-  assert.deepEqual(modelShares(entries).map((model) => model.id), ["gpu", "cpu"]);
+  assert.deepEqual(modelShares(entries).map((model) => model.id), ["gpu", "other"]);
   for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
-    assert.match(readSrc(file), /modelShares\(loadedModels, discreteVram\)/);
+    const src = readSrc(file);
+    assert.match(src, /modelShares\(loadedModels, discreteVram\)/);
+    // "No model loaded" only when nothing is loaded, not when a model sits outside this pool.
+    assert.match(src, /noModels=\{breakdown !== null && loadedModels\.length === 0\}/);
   }
 });

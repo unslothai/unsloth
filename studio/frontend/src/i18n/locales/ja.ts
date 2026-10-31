@@ -2482,7 +2482,6 @@ export const ja = {
         unsloth: "Unsloth",
         otherApps: "他のアプリ",
         otherInUse: "その他の使用",
-        otherInUseHint: "モデルの重み以外で使用中のすべてです。Unsloth の KV キャッシュ、GPU コンテキスト、学習を含みます。",
         freeLabel: "空き",
         unslothApp: "Unsloth アプリ",
         unslothShare: "Unsloth の使用分を表示",

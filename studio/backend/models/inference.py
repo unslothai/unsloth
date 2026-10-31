@@ -2319,7 +2319,7 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     )
     resident_on_gpu: Optional[bool] = Field(
         None,
-        description = "True when resident_mib is GPU buffers, false when it is host RAM (a CPU run); null when unknown.",
+        description = "True when resident_mib is model buffers on the GPUs /api/system reports; null otherwise (a CPU run, or a backend whose buffers are not parsed, such as Vulkan).",
     )
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"

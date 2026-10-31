@@ -2628,7 +2628,6 @@ export const sv = {
         unsloth: "Unsloth",
         otherApps: "Andra appar",
         otherInUse: "Övrig användning",
-        otherInUseHint: "Allt som används utöver modellvikterna, inklusive Unsloths KV-cache, dess GPU-kontext och eventuell träning.",
         freeLabel: "Ledigt",
         unslothApp: "Unsloth-appen",
         unslothShare: "Visa Unsloths andel",

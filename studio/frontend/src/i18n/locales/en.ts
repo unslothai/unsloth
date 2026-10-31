@@ -2517,7 +2517,6 @@ export const en = {
         unsloth: "Unsloth",
         otherApps: "Other apps",
         otherInUse: "Other in use",
-        otherInUseHint: "Everything in use besides the model weights, including Unsloth's KV cache, its GPU context and any training run.",
         freeLabel: "Free",
         unslothApp: "Unsloth app",
         unslothShare: "Show Unsloth's share",

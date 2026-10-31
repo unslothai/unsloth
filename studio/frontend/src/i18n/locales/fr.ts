@@ -2532,7 +2532,6 @@ export const fr = {
         unsloth: "Unsloth",
         otherApps: "Autres apps",
         otherInUse: "Autre usage",
-        otherInUseHint: "Tout ce qui est utilisé hors poids du modèle, y compris le cache KV d'Unsloth, son contexte GPU et tout entraînement.",
         freeLabel: "Libre",
         unslothApp: "App Unsloth",
         unslothShare: "Afficher la part d'Unsloth",

@@ -2508,7 +2508,6 @@ export const hi = {
         unsloth: "Unsloth",
         otherApps: "अन्य ऐप्स",
         otherInUse: "अन्य उपयोग",
-        otherInUseHint: "मॉडल वेट्स के अलावा उपयोग में सब कुछ, जिसमें Unsloth का KV कैश, उसका GPU कॉन्टेक्स्ट और कोई भी ट्रेनिंग शामिल है।",
         freeLabel: "खाली",
         unslothApp: "Unsloth ऐप",
         unslothShare: "Unsloth का हिस्सा दिखाएं",

@@ -2517,7 +2517,6 @@ export const ptBR = {
         unsloth: "Unsloth",
         otherApps: "Outros apps",
         otherInUse: "Outro uso",
-        otherInUseHint: "Tudo o que está em uso além dos pesos do modelo, incluindo o cache KV do Unsloth, seu contexto de GPU e qualquer treinamento.",
         freeLabel: "Livre",
         unslothApp: "App do Unsloth",
         unslothShare: "Mostrar a parte do Unsloth",
