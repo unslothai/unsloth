@@ -159,6 +159,7 @@ from ..kernels.fused_add_rms_layernorm import (
 )
 from ..kernels import fast_lora as _fast_lora
 from . import _decode_graphs
+from . import _decode_fused_nf4
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
 from ..context_parallel import get_cp_manager
@@ -1726,6 +1727,11 @@ def _LlamaModel_fast_forward_inference(
     mlp_fast_forward_inference = fast_swiglu_inference,
 ):
     # Makes attention and MLP customisable for models like qwen3/cohere.
+    fused_nf4 = (
+        attention_fast_forward_inference is LlamaAttention_fast_forward_inference
+        and mlp_fast_forward_inference is fast_swiglu_inference
+    )
+
     def LlamaModel_fast_forward_inference_custom(
         self,
         input_ids,
@@ -1778,6 +1784,20 @@ def _LlamaModel_fast_forward_inference(
             rotary_seq_len = static.rope_len
         else:
             rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
+
+        if fused_nf4 and bsz == 1 and _decode_fused_nf4.requested():
+            # Opt-in fused 4bit decode (UNSLOTH_DECODE_FUSED_NF4=1); None leaves this step as below.
+            fused = _decode_fused_nf4.decode_forward(
+                self, X, past_key_values, position_ids, attention_mask, rotary_seq_len,
+                _decode_attention_core, KV_CACHE_INCREMENT,
+            )  # fmt: skip
+            if fused is not None:
+                return BaseModelOutputWithPast(
+                    last_hidden_state = fused[0],
+                    past_key_values = fused[1],
+                    hidden_states = [],
+                    attentions = [],
+                )
 
         next_decoder_cache = []
         block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
