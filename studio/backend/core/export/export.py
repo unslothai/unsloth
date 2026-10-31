@@ -744,9 +744,15 @@ def _mlx_kept_sidecars(model, folder, written) -> Optional[List[str]]:
     remote code, ...) only into a folder that lacks them, and writes a fallback card only when
     README.md is missing. A kept sidecar is part of this save when it matches what a fresh save
     would copy; anything else kept that a fresh save would write means staging a second save."""
-    kept = {
-        path.name for path in Path(folder).iterdir() if path.is_file() and path.name not in written
-    }
+    try:
+        kept = {
+            path.name
+            for path in Path(folder).iterdir()
+            if path.is_file() and path.name not in written
+        }
+    except OSError as exception:
+        logger.info(f"Could not list the reused folder, staging a second save: {exception}")
+        return None
     if "README.md" in kept:
         logger.info("Reused folder keeps README.md, staging a second save")
         return None
