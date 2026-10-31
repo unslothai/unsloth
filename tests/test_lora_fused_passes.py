@@ -1035,6 +1035,25 @@ def test_autocast_with_a_precomputed_xa_never_rounds_to_inf(which, dtype, monkey
     assert (type(got) is _TaggedTensor) == (which not in ("plain", "A"))
 
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("which", ["X", "W", "A", "B", "XA"])
+def test_autocast_with_a_half_xa_and_an_fp32_base_still_autocasts_the_base(
+    which, dtype, monkeypatch
+):
+    # Half activations and adapters over an fp32 base weight: the base GEMM needs autocast to mix the dtypes.
+    X, A, B = (torch.ones(*s, dtype = dtype) for s in ((2, 4), (1, 4), (3, 1)))
+    W = torch.ones(3, 4)
+    XA = X @ A.t()
+    if which == "XA":
+        XA = _tag(XA)
+    else:
+        X, W, A, B = (_tag(t) if n == which else t for n, t in zip("XWAB", (X, W, A, B)))
+    _set(monkeypatch, True)
+    with torch.autocast("cpu", dtype = dtype):
+        got = kernel_utils.matmul_lora(X, W, None, A, B, 1.0, XA = XA)
+    assert got.dtype == dtype and (got == 8).all()
+
+
 @pytest.mark.parametrize("on", [True, False])
 @pytest.mark.parametrize("which", ["out", "X", "A", "plain"])
 def test_a_caller_out_with_grad_enabled_is_differentiable(which, on, monkeypatch):

@@ -2144,7 +2144,12 @@ def matmul_lora(
         W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
         # A subclass with a caller's XA in X's dtype: the in-place fused order this replaces is not autocast,
         # so neither is the base GEMM here, keeping the output in the dtype the accumulate below needs.
-        if XA is not None and XA.dtype == dtype and _lora_subclass(X, W, A, B, XA, out):
+        if (
+            XA is not None
+            and XA.dtype == dtype
+            and W.dtype == dtype
+            and _lora_subclass(X, W, A, B, XA, out)
+        ):
             with torch.autocast(X.device.type, enabled = False):
                 out = _base_matmul(X, W, out)
         else:
