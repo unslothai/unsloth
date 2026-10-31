@@ -255,6 +255,32 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         logger.error("Failed to send response: %s", exc)
 
 
+def _exit_after_shutdown(resp_queue: Any) -> None:
+    """Leave the process without running interpreter shutdown.
+
+    Returning from the command loop is not enough: the parent still finds the worker alive after
+    `join(timeout)` and logs "Inference subprocess did not exit gracefully, terminating" before
+    killing it, ten to eighteen seconds after a correct answer. Instrumenting the worker showed it
+    answering `shutdown` in ~0.35s (unload included), so the time goes into the teardown that runs
+    after the loop returns; a watchdog thread that should have reported the stuck stack 6s later
+    never ran, so the main thread is inside a native call holding the GIL.
+
+    The models are already unloaded above, and for GGUF `unload_model` has already killed the
+    server its own atexit handler would have stopped, so there is nothing left to clean up here.
+    """
+    try:
+        resp_queue.close()
+        resp_queue.join_thread()
+    except Exception:
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    os._exit(0)
+
+
 def _encode_share_object(obj: Any) -> bytes:
     data = json.dumps(obj, separators = (",", ":"), ensure_ascii = False).encode("utf-8")
     if len(data) > _SHARE_OBJECT_MAX_BYTES:
@@ -2669,7 +2695,7 @@ def run_inference_process(
                         "type": "shutdown_ack",
                     },
                 )
-                return
+                _exit_after_shutdown(resp_queue)
 
             else:
                 logger.warning("Unknown command type: %s", cmd_type)
