@@ -133,11 +133,9 @@ def test_a_render_freezes_the_compile_mid_trace_without_waiting():
     graphs = _compiled_frames()
     waited, paused = job.pause(budget_s = 5.0, freeze = True)
     assert paused
-    # main waited for the block graph in flight (here ~1 s of tracing); idle-only stops it inside the trace
     assert waited < 0.2, waited
     assert job._frozen and job.freezes == 1
     assert _in_dynamo(job)  # parked inside the trace, not at a block boundary
-    # the event is off once parked: renders pay no per-call callback
     assert sys.monitoring.get_events(bg._FREEZE_TOOL[0]) == 0
     t0 = time.perf_counter()
     _render(net)
@@ -151,7 +149,6 @@ def test_a_render_freezes_the_compile_mid_trace_without_waiting():
     assert job.error is None
     assert _compiled_frames() >= graphs + 1
     assert eager_s < 5.0
-    # compiled output matches eager
     x = torch.randn(2, 8)
     with torch.no_grad():
         compiled = net(x)
@@ -193,7 +190,7 @@ def test_back_to_back_renders_never_wait_and_owe_nothing():
         waited, paused = job.pause(freeze = False)
         assert paused
         waits.append(waited)
-        time.sleep(0.05)  # the render
+        time.sleep(0.05)
         job.resume()
         time.sleep(0.02)  # the client's turnaround, inside the grace
     # without freeze the first pause waits out the block graph in flight; after that nothing is owed
@@ -212,8 +209,7 @@ def test_without_freeze_the_compile_parks_at_the_next_block_boundary():
     job.kick()
     _wait_for(lambda: len(net.compiled_blocks) >= 1)
     waited, paused = job.pause(freeze = False)
-    # the block in flight sleeps (no Python running), yet pause returns only once the compile parked: an
-    # offloaded block must not run beside the render
+    # unfrozen: pause returns only once parked, an offloaded block must not run beside the render
     assert paused and job._parked and waited < 1.0
     held = len(net.compiled_blocks)
     time.sleep(0.5)
@@ -321,8 +317,7 @@ def _studio_like(record):
 
 
 def test_a_studio_frame_is_refused_only_inside_its_lock_block():
-    """The sample replay runs through Studio frames (the CUDA-graph wrapper, the compile guard): refusing every Studio
-    frame kept the compile running beside the render (A100: renders of 30-290 s). Only a frame inside a lock is."""
+    """Refusing every Studio frame kept the compile beside the render (A100: 30-290 s); only a frame in a lock is."""
     lines: list = []
     _studio_like(lines)
     before, held, after = lines
@@ -342,7 +337,7 @@ def test_a_studio_frame_is_refused_only_inside_its_lock_block():
     from core.inference import diffusion_cuda_graph as cg
 
     assert bg._lock_spans(cg.GraphedForward._eager.__code__) == ()
-    assert bg._lock_spans(cg.run_if_capture_idle.__code__) is True  # a bare acquire
+    assert bg._lock_spans(cg.run_if_capture_idle.__code__) is True
 
 
 def test_freeze_refusal_memo_matches_a_fresh_walk():
@@ -363,7 +358,7 @@ def test_compile_lock_proxy_is_the_same_lock():
     if not getattr(lock, "_unsloth_bg_proxy", False):
         assert bg._install_compile_lock_proxy()
     proxy = convert_frame.compile_lock
-    assert proxy._unsloth_bg_proxy and bg._install_compile_lock_proxy()  # idempotent
+    assert proxy._unsloth_bg_proxy and bg._install_compile_lock_proxy()
     with proxy:
         with proxy:  # reentrant, like the RLock it wraps
             assert proxy._is_owned()

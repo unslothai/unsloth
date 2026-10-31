@@ -3757,7 +3757,7 @@ def _wait_or_pause_bg_compile(bg: Any, state: Any, loras: Any, cancel: Any) -> A
     pipe = getattr(state, "pipe", None)
     if bg.yields() and not _has_active_lora(loras) and not getattr(pipe, "_unsloth_loras", ()):
         if getattr(bg, "idle", False):
-            # Idle-only: stop the compile now (mid-trace for a resident denoiser, whose eager forward moves no weight)
+            # Freeze only a resident denoiser: its eager forward moves no weight
             freeze = getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE
             waited, paused = bg.pause(cancel, budget_s = 0.0, freeze = freeze)
             if paused:

@@ -118,8 +118,7 @@ def slice_seconds(eager_render_s: Optional[float]) -> float:
 
 IDLE_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_IDLE_ONLY"
 IDLE_GRACE_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_IDLE_S"
-# Idle seconds after a render before the compile resumes: the response is still being sent, and a client rendering
-# back to back has sent the next request by then (a resumed block graph would hold the GIL beside it).
+# Resume delay after a render: covers sending the response and a back-to-back client's next request.
 _IDLE_GRACE_S = 1.0
 _IDLE_GRACE_MAX_S = 60.0
 # The compile thread's innermost frame unchanged this long = blocked without the GIL: the render stops waiting.
@@ -151,19 +150,16 @@ def idle_grace_seconds() -> float:
     return max(0.0, min(_IDLE_GRACE_MAX_S, value))
 
 
-# Mid-trace freeze: a render that pauses the compile stops its thread at the next Python call, inside a block graph's
-# trace, instead of waiting for the graph to end (0.3-5 s per render on L4). sys.monitoring PY_START (3.12+) fires on
-# every thread; the callback parks only the compile thread, only inside torch's compile machinery, never while a frame
-# of a lock-taking module (or a Studio frame inside a lock block) is on its stack, and turns the event off once parked.
+# Mid-trace freeze via sys.monitoring PY_START (3.12+): park only the compile thread, only inside torch's compile,
+# never with a lock-taking module frame (or a Studio frame inside a lock block) on its stack.
 _FREEZE_TOOL_IDS = (4, 3)
 _FREEZE_TOOL: list = [None]  # None = not tried, False = unavailable, else the tool id
 _FREEZE_TARGET: list = [None]
-# The job frozen mid-trace right now (the event is off by then, so _FREEZE_TARGET is cleared): _CompileLockProxy's target.
+# Job frozen mid-trace now (_FREEZE_TARGET is cleared by then): what _CompileLockProxy thaws.
 _FROZEN_JOB: list = [None]
 _FREEZE_LOCK = threading.Lock()
 _FREEZE_MAX_DEPTH = 5000
-# A frame from one of these may hold a lock a render takes (logging, tqdm, imports, warnings, Studio's config and graph
-# locks) or the compile pool's queue locks: never park there.
+# Frames here may hold a lock a render (or the compile pool) takes: never park there.
 _FREEZE_DENY_ROOTS = frozenset(
     {
         "logging",
@@ -200,12 +196,10 @@ _FREEZE_DENY_MODULES = (
     "core.inference.diffusion_compile_config",
     __name__,
 )
-# Studio frames (the sample replay runs through the CUDA-graph wrapper, the compile guard, ...) are refused only when
-# their own function takes a lock or a lock-holding context: decided once per code object from its source.
+# Studio frames are refused only inside their own lock-holding code, decided once per code object from its source.
 _STUDIO_ROOTS = ("core.", "studio.")
 _LOCKISH = re.compile(r"lock|LOCK|_IDLE\b|_cv\b|hold_off_capture|held_work|capture_hold")
-# code object -> True (holds a lock across the whole function: a bare acquire), or the (first, last) line spans of its
-# lock-holding ``with`` blocks
+# code -> True (bare acquire: whole function) or (first, last) line spans of lock-holding ``with`` blocks
 _LOCK_CODE: dict = {}
 
 
@@ -248,7 +242,6 @@ def _lock_spans(code: Any) -> Any:
 
 
 def _holds_lock(frame: Any) -> bool:
-    """Whether ``frame`` is now inside one of its function's lock-holding blocks."""
     spans = _lock_spans(frame.f_code)
     if spans is True:
         return True
@@ -258,8 +251,7 @@ def _holds_lock(frame: Any) -> bool:
     return any(a <= line <= b for a, b in spans)
 
 
-# Park only inside the compile (trace, AOT, lowering, first-run autotune): outside it the thread runs Studio / diffusers
-# eager code, whose locks this list cannot name.
+# Park only inside the compile: outside it runs eager Studio / diffusers code whose locks no list can name.
 _FREEZE_INSIDE = ("torch._dynamo.", "torch._inductor.", "torch._functorch.")
 
 
@@ -349,9 +341,7 @@ def _frame_refusal(frame: Any) -> Optional[str]:
 
 
 def _freeze_refusal(frame: Any, memo: Optional[dict] = None) -> Optional[str]:
-    """None when the compile thread may park at ``frame`` (inside torch's compile, no lock-holding frame on its
-    stack), else why not. ``memo`` (id(frame) -> (frame, refusal, inside)) keeps the verdict of every frame still on
-    the stack, so a deep trace pays for its new frames only."""
+    """None when the compile thread may park at ``frame``, else why not. ``memo`` caches per-frame verdicts."""
     chain = []
     depth = 0
     run_code = BackgroundCompile._run.__code__
@@ -371,7 +361,6 @@ def _freeze_refusal(frame: Any, memo: Optional[dict] = None) -> Optional[str]:
                 refusal, inside = hit[1], hit[2]
                 break
         if f.f_code is run_code:
-            # the compile thread's own entry: below it only the thread bootstrap
             break
         chain.append(f)
         f = f.f_back
@@ -455,7 +444,6 @@ _COMPILE_LOCK: list = [None]
 
 
 def _compile_lock_owned() -> bool:
-    """Whether the calling thread holds dynamo's compile_lock."""
     lock = _COMPILE_LOCK[0]
     if lock is None:
         return False
@@ -932,8 +920,7 @@ class BackgroundCompile:
         self.graph_s: Optional[float] = None
         self._last_yield: Optional[float] = None
         self._owe_graph = False
-        # Idle-only (idle_only_enabled): a pause stops the compile at once, it resumes idle_grace_seconds() after the
-        # last render ends, and nothing is owed (back-to-back renders run at eager speed; the compile waits for idle).
+        # Idle-only: a pause stops the compile at once; it resumes idle_grace_seconds() after the last render.
         self.idle = idle_only_enabled()
         self._idle_grace_s = idle_grace_seconds()
         self._release_at = 0.0
@@ -967,10 +954,8 @@ class BackgroundCompile:
     ) -> tuple[float, bool]:
         """Let the compile run ``budget_s`` more seconds, then park it at its next yield point. Returns
         ``(seconds waited, paused)``; ``paused`` means a pause is held and the caller MUST ``resume()``. A compile
-        that ends inside the budget returns ``paused=False`` (the render then runs compiled).
-
-        Idle-only (``self.idle``): no budget and no wait for a block boundary; the compile stops at its next yield
-        point, or with ``freeze`` (a resident denoiser) at its next Python call inside the trace."""
+        that ends inside the budget returns ``paused=False`` (the render then runs compiled). Idle-only ignores the
+        budget; ``freeze`` (resident denoiser) stops it at its next Python call inside the trace."""
         t0 = time.perf_counter()
         thread = self._thread
         if thread is None or thread is threading.current_thread() or not thread.is_alive():
@@ -1016,11 +1001,8 @@ class BackgroundCompile:
                     _set_freeze_events(True)
             self._cv.notify_all()
             if not nested:
-                # Running Python, the thread stops within microseconds (frozen) or at its next block boundary (no
-                # freeze: offloaded, or refused). Blocked without the GIL (a Triton / C++ build in the pool, a
-                # subprocess) it costs the render nothing and the armed freeze stops it when it wakes: do not wait
-                # for it then. Without freeze nothing would stop it before the block boundary, and an offloaded
-                # block running beside the render moves the same weights, so wait for the park.
+                # Frozen and blocked without the GIL: costs the render nothing, the armed freeze stops it on wake.
+                # Unfrozen (offloaded): it would move the render's weights, so wait for the block-boundary park.
                 last = _innermost(thread.ident)
                 quiet_since = time.perf_counter()
                 while thread.is_alive() and not self._parked:
@@ -1068,7 +1050,7 @@ class BackgroundCompile:
                         self._thaw_where = None
                     self._thaw = False
                     if not self._frozen:
-                        # never stopped (blocked in C the whole render): no event left on for later renders
+                        # never stopped: leave no event on for later renders
                         self._disarm_freeze()
                 else:
                     # the next pause() waits for a fresh park, after the block graph this release owes
@@ -1076,7 +1058,6 @@ class BackgroundCompile:
             self._cv.notify_all()
 
     def _log_unfrozen(self) -> None:
-        """The compile ran beside a whole render: say where it was and why it did not stop (diagnostic)."""
         if self.logger is None:
             return
         try:
@@ -1130,7 +1111,6 @@ class BackgroundCompile:
                 self._cv.notify_all()
 
     def _maybe_freeze(self) -> None:
-        """PY_START on the compile thread with a pause held: park here, mid-trace, when the stack allows it."""
         if not self._pause_depth or self._parked or self._closed.is_set() or not self._freeze_ok:
             return
         if _LOCK_WAITERS[0] and _compile_lock_owned():
@@ -1147,8 +1127,7 @@ class BackgroundCompile:
         self._park(frozen = True)
 
     def _park(self, frozen: bool) -> None:
-        """Idle-only park: until no pause is held and the last render ended ``_idle_grace_s`` ago (or close; a frozen
-        park also ends on a thaw)."""
+        """Idle-only park until unpaused and the grace elapsed, close, or (frozen) a thaw."""
         now = time.perf_counter()
         with self._cv:
             if not self._pause_depth and now >= self._release_at:
