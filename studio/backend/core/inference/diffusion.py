@@ -12998,6 +12998,12 @@ class DiffusionBackend:
     def _engage_deferred_speed(self, state: _LoadState) -> None:
         """The deferred `default` profile plus its auto static skip; a failed profile takes the skip back off."""
         object.__setattr__(state, "speed_deferred", False)
+        if getattr(getattr(state, "pipe", None), "_unsloth_unet_streamed", False):
+            logger.info(
+                "diffusion.speed: deferred profile skipped (the UNet streams leaf by leaf; its weights must stay "
+                "under the offload hooks)"
+            )
+            return
         plan = state.deferred_static_plan
         object.__setattr__(state, "deferred_static_plan", None)
         tc = (state.resolved or {}).get("transformer_cache")

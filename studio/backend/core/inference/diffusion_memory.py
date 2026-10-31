@@ -6047,6 +6047,13 @@ def _stream_unet_instead_of_model_offload(pipe: Any, placement: str, logger: Any
         resident_transformer_mib = room or None,
         denoiser = "unet",
     )
+    if applied:
+        try:
+            # the deferred speed profile (fused qkv, channels_last, compile) rebuilds UNet weights outside the leaf
+            # hooks: a streamed UNet stays eager (diffusion._engage_deferred_speed reads this)
+            pipe._unsloth_unet_streamed = True
+        except Exception:  # noqa: BLE001
+            pass
     if logger is not None:
         logger.info(
             "diffusion.memory: UNet (%d MiB) does not fit %d MiB free for whole-module offload; %s",
