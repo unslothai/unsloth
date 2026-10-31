@@ -29447,9 +29447,7 @@ class LlamaCppBackend:
                     )
                     # Extras after managed reasoning kwargs must not emit a second
                     # --chat-template-kwargs: llama.cpp keeps only the last value (#16317).
-                    cmd, _emit_extra_args = merge_chat_template_kwargs_argv(
-                        cmd, _emit_extra_args
-                    )
+                    cmd, _emit_extra_args = merge_chat_template_kwargs_argv(cmd, _emit_extra_args)
                     cmd.extend(str(a) for a in _emit_extra_args)
                     logger.info(
                         f"Appending user extra args to llama-server: {list(_emit_extra_args)}"

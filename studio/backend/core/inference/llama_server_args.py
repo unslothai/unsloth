@@ -1982,7 +1982,6 @@ def _chat_template_kwargs_object(raw: Optional[str]) -> dict:
         return {}
     try:
         import json
-
         parsed = json.loads(raw)
     except Exception:  # noqa: BLE001 -- a bad JSON value is left for llama-server to reject later
         return {}
@@ -2002,9 +2001,7 @@ def merge_chat_template_kwargs_argv(
 
     extras_list = [str(a) for a in (extras or [])]
     try:
-        extras_raw = _last_flag_value(
-            extras_list, _CHAT_TEMPLATE_KWARGS_FLAGS, preserve_raw = True
-        )
+        extras_raw = _last_flag_value(extras_list, _CHAT_TEMPLATE_KWARGS_FLAGS, preserve_raw = True)
     except ValueError:
         return [str(a) for a in (cmd or [])], extras_list
     if extras_raw is None:

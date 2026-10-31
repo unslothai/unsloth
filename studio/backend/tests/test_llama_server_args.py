@@ -1498,9 +1498,7 @@ def test_the_launch_respells_user_ngram_mod_extras_last():
     assert emit.index("_strip_device_extra_args") < emit.index("translate_ngram_mod_args(")
     assert "_extra_args_requests_mtp(" in emit[emit.index("translate_ngram_mod_args(") :]
     assert "merge_chat_template_kwargs_argv(" in emit
-    assert emit.index("translate_ngram_mod_args(") < emit.index(
-        "merge_chat_template_kwargs_argv("
-    )
+    assert emit.index("translate_ngram_mod_args(") < emit.index("merge_chat_template_kwargs_argv(")
 
 
 def test_merge_chat_template_kwargs_user_keys_win_and_emit_once():
@@ -1508,17 +1506,18 @@ def test_merge_chat_template_kwargs_user_keys_win_and_emit_once():
 
     merge = _lsa.merge_chat_template_kwargs_argv
     cmd, extras = merge(
-        ["--jinja", "--chat-template-kwargs", '{"reasoning_effort":"high","preserve_thinking":true}'],
+        [
+            "--jinja",
+            "--chat-template-kwargs",
+            '{"reasoning_effort":"high","preserve_thinking":true}',
+        ],
         ["--temp", "0.0", "--chat-template-kwargs", '{"reasoning_effort":"none"}'],
     )
     assert cmd.count("--chat-template-kwargs") == 1
     assert "--chat-template-kwargs" not in extras
     assert extras == ["--temp", "0.0"]
     idx = cmd.index("--chat-template-kwargs")
-    assert json.loads(cmd[idx + 1]) == {
-        "reasoning_effort": "none",
-        "preserve_thinking": True,
-    }
+    assert json.loads(cmd[idx + 1]) == {"reasoning_effort": "none", "preserve_thinking": True}
 
 
 def test_merge_chat_template_kwargs_leaves_argv_alone_without_extras_flag():
