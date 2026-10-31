@@ -234,7 +234,6 @@ export type AppearanceCustomization = {
   reduceMotion: ReduceMotionSetting;
   /** true = the app default (antialiased). */
   fontSmoothing: boolean;
-  /** Chat code blocks: line numbers, wrapped long lines, and the font's ligatures. */
   codeLineNumbers: boolean;
   codeWordWrap: boolean;
   codeLigatures: boolean;

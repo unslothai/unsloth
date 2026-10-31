@@ -2349,7 +2349,6 @@ html[data-code-font-size] .aui-reasoning-code-lines {
 	font-size: var(--custom-code-font-size) !important;
 }
 
-/* Settings > Appearance > Code. */
 html[data-code-wrap] [data-streamdown="code-block"] :is(pre, code) {
 	white-space: pre-wrap !important;
 	overflow-wrap: anywhere;

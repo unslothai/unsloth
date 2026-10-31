@@ -846,7 +846,6 @@ export function CodeFontSizeRow() {
   );
 }
 
-/** The on/off code display settings under Appearance > Code. */
 export function CodeDisplaySwitch({
   field,
   label,
