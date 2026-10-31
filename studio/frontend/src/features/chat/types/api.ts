@@ -277,7 +277,7 @@ export interface LoadModelResponse {
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
   spec_draft_model?: string | null;
-  /** Whether tensor-parallel split (--split-mode tensor) is active. */
+  /** Whether the user's tensor split is active; false for an automatic one. */
   tensor_parallel?: boolean;
   /** Echoes the request, unlike vision_disabled_by_user below. */
   disable_vision?: boolean;
@@ -416,7 +416,7 @@ export interface InferenceStatusResponse {
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
   spec_draft_model?: string | null;
-  /** Whether tensor-parallel split (--split-mode tensor) is active. */
+  /** Whether the user's tensor split is active; false for an automatic one. */
   tensor_parallel?: boolean;
   disable_vision?: boolean;
   vision_disabled_by_user?: boolean;

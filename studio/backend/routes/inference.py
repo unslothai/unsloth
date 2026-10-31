@@ -8138,6 +8138,9 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
             )
         ),
     )
+    # The UI seeds its toggle from this; echoing an auto split as on would skip the auto gates next load.
+    if getattr(llama_backend, "_auto_tensor_live", False) is True:
+        fields["tensor_parallel"] = False
     unresolved = (
         set(_InferenceRuntimeFields.model_fields) - fields.keys() - {"requires_trust_remote_code"}
     )

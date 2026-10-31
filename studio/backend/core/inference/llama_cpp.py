@@ -83,6 +83,14 @@ from core.inference.context_window import (
     turn_is_servable,
 )
 from core.inference.llama_tool_schema import llama_grammar_tools
+from core.inference.split_policy import (
+    GpuInfo as _SplitGpuInfo,
+    SplitDecision as _SplitDecision,
+    auto_tensor_split_enabled as _auto_tensor_split_enabled,
+    binary_supports_tensor_split as _binary_supports_tensor_split,
+    choose_split_mode as _choose_split_mode,
+    mtp_draft_depth_for_split as _mtp_draft_depth_for_split,
+)
 from core.inference.lookup_tables import (
     HOST_FORCED_TABLE_ARCHS as _HOST_FORCED_TABLE_ARCHS,
     HOST_FORCED_TABLE_MARKER as _HOST_FORCED_TABLE_MARKER,
@@ -672,6 +680,15 @@ def _serving_backends_snapshot() -> list:
         return list(_serving_backends)
 
 
+# Every llama-server owner, incl. unregistered helper loads that still hold cards.
+_owned_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
+
+
+def _owned_backends_snapshot() -> list:
+    with _serving_backends_lock:
+        return list(_owned_backends)
+
+
 class GgufDownloadCancelled(RuntimeError):
     """Expected signal from a cancelled GGUF download."""
 
@@ -719,6 +736,136 @@ def _is_gpu_device_lost(exc: BaseException) -> bool:
     """True when llama-server reported a lost GPU device (500 body or SSE error, #11453)."""
     text = str(exc)
     return any(marker in text for marker in _GPU_DEVICE_LOST_MARKERS)
+
+
+def _resident_source(name: str):
+    """``name`` if this process already imported it, else None: a module never imported
+    never ran, so it holds no GPU (and nothing is imported, or executed, to ask)."""
+    return sys.modules.get(name)
+
+
+def _gpus_held_outside_llama() -> Optional[frozenset]:
+    """Physical GPUs held by non-llama.cpp residents, or None when one may hold an unpublished card."""
+    try:
+        held: set = set()
+        gpu_arbiter = _resident_source("core.inference.gpu_arbiter")
+        if gpu_arbiter is not None:
+            for owner, gpus in gpu_arbiter.residents().items():
+                if owner == gpu_arbiter.CHAT:
+                    continue
+                if gpus is None:
+                    return None
+                held.update(gpus)
+
+        orchestrator_module = _resident_source("core.inference.orchestrator")
+        model_slots = _resident_source("core.inference.model_slots")
+        orchestrators = []
+        if orchestrator_module is not None:
+            peek = orchestrator_module.peek_inference_backend
+            orchestrators.append(model_slots.in_slot(None, peek) if model_slots else peek())
+        if model_slots is not None:
+            filling = model_slots.loading
+            orchestrators += [slot.orchestrator for slot in model_slots.resident()]
+            orchestrators += [filling[0].orchestrator] if filling else []
+        for orchestrator in orchestrators:
+            if orchestrator is not None and (
+                orchestrator.active_model_name
+                or orchestrator.loading_models
+                or getattr(orchestrator, "_managed_engine", None) is not None
+                or (
+                    callable(getattr(orchestrator, "is_worker_alive", None))
+                    and orchestrator.is_worker_alive()
+                )
+            ):
+                return None
+
+        stt_registry = _resident_source("core.inference.stt_registry")
+        for engine in stt_registry.STT_ENGINES if stt_registry else ():
+            sidecar = stt_registry.sidecar_for(engine)
+            if sidecar.is_loading():
+                return None
+            if not sidecar.loaded_model:
+                continue
+            disabled = getattr(sidecar, "_gpu_disabled", None)
+            cpu_only = (
+                str(sidecar.device or "").strip().lower() == "cpu"
+                or disabled is True
+                or (disabled is None and getattr(sidecar, "_forced_cpu", False) is True)
+            )
+            if not cpu_only:
+                return None
+
+        # The mask segmenter outside any image model's claim.
+        segment = sys.modules.get("core.inference.diffusion_segment")
+        segmenter = getattr(segment, "_segmenter", None)
+        if segmenter is not None and (
+            segmenter.holds_vram() or segmenter._call_device not in (None, "cpu")
+        ):
+            return None
+
+        # The FLUX.3 prompt upsampler's llama-server, spawned outside _owned_backends.
+        upsampler_module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+        upsampler = getattr(upsampler_module, "_sidecar", None)
+        if upsampler is not None and (upsampler.is_loading() or upsampler.holds_vram()):
+            return None
+
+        # GGUF TTS codecs (SNAC / BiCodec / DAC) sit in this process on its default device, not the child's GPUs.
+        codec_mgr = LlamaCppBackend._codec_mgr
+        if codec_mgr is not None and any(
+            str(device or "").strip().lower().split(":", 1)[0] != "cpu"
+            for device in (getattr(codec_mgr, "_codec_devices", None) or {}).values()
+        ):
+            return None
+
+        embeddings = sys.modules.get("core.rag.embeddings")
+        if embeddings is not None:
+            if embeddings._lock.locked() or embeddings._backend_lock.locked():
+                return None
+            model = embeddings._model
+            if model is not None and str(getattr(model, "device", "")).split(":", 1)[0] != "cpu":
+                return None
+            backend = embeddings._backend
+            if backend is not None and embeddings._is_llama_backend(backend):
+                if backend._lifecycle_lock.locked():
+                    return None
+                if backend._process_alive() and backend._on_gpu is not False:
+                    return None
+
+        laya = sys.modules.get("core.systemone.laya_runtime")
+        if laya is not None and (laya._loading is not None or laya._holds_gpu()):
+            return None
+
+        # Never constructed here: a singleton nobody built has no worker.
+        training = sys.modules.get("core.training.training")
+        trainer = getattr(training, "_training_backend", None)
+        if trainer is not None and trainer.is_training_active():
+            return None
+        diffusion = sys.modules.get("core.training.diffusion_training_service")
+        service = getattr(diffusion, "_service", None)
+        if service is not None and service.is_active():
+            return None
+        export = sys.modules.get("core.export.orchestrator")
+        exporter = getattr(export, "_export_backend", None)
+        if exporter is not None and (exporter.is_export_active() or exporter.is_worker_alive()):
+            return None
+    except Exception:  # noqa: BLE001 - an unreadable resident may hold any card
+        return None
+    return frozenset(held)
+
+
+class _UnloadedSince:
+    """A cancel event set once ``backend`` unloaded after ``epoch`` (load_model clears its own)."""
+
+    __slots__ = ("_backend", "_epoch", "_event")
+
+    def __init__(self, backend, epoch: int, event: Optional[threading.Event]):
+        self._backend, self._epoch, self._event = backend, epoch, event
+
+    def is_set(self) -> bool:
+        if getattr(self._backend, "_unload_epoch", 0) != self._epoch:
+            self._backend._cancel_event.set()
+            return True
+        return bool(self._event is not None and self._event.is_set())
 
 
 class _CombinedCancelEvent:
@@ -3881,7 +4028,7 @@ def _with_gguf_load_marker(load: Callable):
                 raise RuntimeError(
                     f"'{hf_repo}' is currently being downloaded by the download manager"
                 )
-            return load(self, intent, load_cancel_event = load_cancel_event)
+            return _load_with_auto_tensor_layer_retry(self, load, intent, load_cancel_event)
 
     return wrapped
 
@@ -8106,6 +8253,113 @@ def _extra_args_have_tensor_split(
     return bool(str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT", "")).strip())
 
 
+# Placement pass-through: any presence (even -ncmoe 0 / --fit off) keeps the auto policy off.
+_AUTO_SPLIT_USER_PLACEMENT_FLAGS = (
+    _SPLIT_MODE_FLAGS
+    | _TENSOR_SPLIT_FLAGS
+    | _DEVICE_FLAGS
+    | _LAYER_OFFLOAD_FLAGS
+    | _CPU_PLACEMENT_FLAGS
+    | _CPU_FFN_COUNT_FLAGS
+    | _VRAM_FIT_VOIDING_FLAGS
+    # A companion device would join the pair; the MoE cache refuses tensor split.
+    | frozenset().union(*_COMPANION_DEVICE_FLAG_GROUPS)
+    | frozenset({_MOE_CACHE_AUTO_TOKENS[0]})
+)
+_AUTO_SPLIT_USER_PLACEMENT_ENV = (
+    "LLAMA_ARG_SPLIT_MODE",
+    "LLAMA_ARG_TENSOR_SPLIT",
+    "LLAMA_ARG_DEVICE",
+    "LLAMA_ARG_MAIN_GPU",
+    "LLAMA_ARG_N_GPU_LAYERS",
+    "MTMD_BACKEND_DEVICE",
+    "LLAMA_ARG_MOE_CACHE_MIB",
+    "LLAMA_ARG_OVERRIDE_TENSOR",
+    "LLAMA_ARG_CPU_MOE",
+    "LLAMA_ARG_N_CPU_MOE",
+    "LLAMA_ARG_N_CPU_FFN",
+    *_VRAM_FIT_VOIDING_ENV_VARS,
+)
+
+
+def _auto_split_user_placement(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[str]:
+    """Why the user already owns GPU placement, None when nothing does."""
+    if _extra_args_set_any_flag(extra_args, _AUTO_SPLIT_USER_PLACEMENT_FLAGS):
+        return "a placement flag in the extra arguments"
+    if _extra_args_have_tensor_split(extra_args, None):
+        return "a --tensor-split in the extra arguments"
+    source_env = os.environ if env is None else env
+    for name in _AUTO_SPLIT_USER_PLACEMENT_ENV:
+        if str(source_env.get(name) or "").strip():
+            return f"inherited {name}"
+    return None
+
+
+@dataclass
+class _AutoSplitAttempt:
+    """Auto split state for ONE load attempt; nothing long-lived holds auto state, so no path must clear it."""
+
+    allowed: bool = True
+    decision: Optional[_SplitDecision] = None
+    engaged: bool = False
+
+
+class _AutoSplitAbandoned(RuntimeError):
+    """An auto tensor attempt hit a downgrade / fallback / recovery path: redo the load with the policy off."""
+
+
+def _load_with_auto_tensor_layer_retry(
+    self,
+    load: Callable,
+    intent,
+    load_cancel_event: Optional[threading.Event] = None,
+) -> bool:
+    """Run load_model; if an auto tensor attempt is abandoned, fails or raises, retry once with the policy off.
+
+    Both attempts run under the serial load lock, and the intent is not rewritten so a repeat request matches."""
+    if not isinstance(self, LlamaCppBackend):
+        return load(self, intent, load_cancel_event = load_cancel_event)
+
+    def cancelled() -> bool:
+        return (
+            self._cancel_event.is_set()
+            or retry_cancel_event.is_set()
+            or getattr(self, "_health_wait_cancelled", False)
+            or self._spawn_is_stale()
+        )
+
+    with self._serial_load_lock:
+        retry_cancel_event = _UnloadedSince(
+            self, getattr(self, "_unload_epoch", 0), load_cancel_event
+        )
+        previous = self._auto_split_attempt
+        attempt = _AutoSplitAttempt()
+        self._auto_split_attempt = attempt
+        ok = False
+        try:
+            try:
+                # A False is terminal (cancelled, or failed after a healthy start).
+                ok = load(self, intent, load_cancel_event = load_cancel_event)
+                return ok
+            except Exception as exc:
+                if not attempt.engaged:
+                    raise
+                self._clear_split_state()
+                if cancelled():
+                    return False
+                logger.warning(f"Auto tensor split abandoned ({exc}); loading without it")
+            self._auto_split_attempt = _AutoSplitAttempt(allowed = False)
+            ok = load(self, intent, load_cancel_event = retry_cancel_event)
+            return ok
+        finally:
+            self._auto_split_attempt = previous
+            # With no healthy server nothing may report its split.
+            if not ok and not self.is_loaded:
+                self._clear_split_state()
+
+
 @functools.lru_cache(maxsize = 1)
 def _local_ssl_context() -> ssl.SSLContext:
     # httpx loads CA certificates even for loopback HTTP. Share that setup, not streaming sockets.
@@ -8246,6 +8500,9 @@ class LlamaCppBackend:
         self._cache_type_kv: Optional[str] = None
         # Whether --split-mode tensor was applied on the active load.
         self._tensor_parallel: bool = False
+        # See _AutoSplitAttempt.
+        self._auto_split_attempt: Optional[_AutoSplitAttempt] = None
+        self._auto_split: Optional[_AutoSplitAttempt] = None
         # GPU memory strategy applied on the active load ("auto"/"manual").
         self._gpu_memory_mode: str = "auto"
         # Manual-mode load options (echoed back so the UI round-trips them).
@@ -8430,6 +8687,8 @@ class LlamaCppBackend:
                 # Reaped VRAM frees lazily, so the first load waits before ranking GPUs.
                 self._last_kill_monotonic = time.monotonic()
             atexit.register(self._cleanup)
+            with _serving_backends_lock:
+                _owned_backends.add(self)
 
     # ── Properties ────────────────────────────────────────────────
 
@@ -9211,6 +9470,22 @@ class LlamaCppBackend:
         """Whether --split-mode tensor is active on the loaded server."""
         return self._tensor_parallel
 
+    def _clear_split_state(self) -> None:
+        self._tensor_parallel = False
+        self._auto_split = None
+        self._auto_tensor_split = None
+        self._auto_tensor_split_emitted = None
+
+    @property
+    def _auto_tensor_live(self) -> bool:
+        return bool(
+            self._tensor_parallel and self._auto_split is not None and self._auto_split.engaged
+        )
+
+    @property
+    def _auto_split_decision(self):
+        return self._auto_split.decision if self._auto_split is not None else None
+
     @property
     def gpu_memory_mode(self) -> str:
         """Active GPU memory strategy: 'auto' or 'manual' (gpu_layers < 0 = Auto/--fit, >= 0 = pinned)."""
@@ -9369,6 +9644,14 @@ class LlamaCppBackend:
         # Virtualised Metal never launches a tensor split, so judge the normalized request, else an extras -sm tensor the pin leaves in place would never match.
         if _metal_device_is_paravirtual():
             if self._tensor_parallel:
+                return False
+        elif self._auto_tensor_live:
+            # Matched on explicit intent: the idle check is not re-run against the cards it holds.
+            if (
+                _effective_tensor_parallel(extra_args, intent.tensor_parallel)
+                or parse_split_mode_override(extra_args) is not None
+                or intent.gpu_memory_mode == "manual"
+            ):
                 return False
         elif not _tensor_parallel_matches_loaded(
             extra_args, intent.tensor_parallel, self._tensor_parallel
@@ -12498,6 +12781,129 @@ class LlamaCppBackend:
             return saw
         except Exception:
             return False
+
+    @staticmethod
+    def _gpu_names_by_physical_id() -> dict[int, str]:
+        """GPU id -> device name in the planner's index space; nvidia-smi names for PCI ids (torch
+        ordinals can name the wrong card). Empty on ROCm / no CUDA / error, read as "names unknown"."""
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True:
+            try:
+                from utils.hardware import gpu_query
+
+                result = gpu_query.run_nvidia_smi(
+                    ["nvidia-smi", "--query-gpu=index,name", "--format=csv,noheader,nounits"],
+                    cache = False,
+                    capture_output = True,
+                    text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    timeout = 5,
+                    env = child_env_without_native_path_secret(),
+                    **_windows_hidden_subprocess_kwargs(),
+                )
+                names: dict[int, str] = {}
+                if result.returncode == 0:
+                    for line in (result.stdout or "").splitlines():
+                        parts = [p.strip() for p in line.split(",", 1)]
+                        if len(parts) == 2 and parts[0].isdigit() and parts[1]:
+                            names[int(parts[0])] = parts[1]
+                if names:
+                    return names
+            except Exception:
+                pass
+            # nvidia-smi absent or hung: fall back to the PCI-indexed NVML inventory.
+            names = {}
+            for row in LlamaCppBackend._NVML_ROWS or ():
+                try:
+                    if not row.get("mig") and str(row.get("name") or "").strip():
+                        names[int(row["index"])] = str(row["name"]).strip()
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    continue
+            return names
+        try:
+            import torch
+
+            if getattr(torch.version, "hip", None) is not None:
+                return {}
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return {}
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            names: dict[int, str] = {}
+            for ordinal in range(torch.cuda.device_count()):
+                try:
+                    name = torch.cuda.get_device_properties(ordinal).name or ""
+                except Exception:
+                    continue
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                names[pid] = name
+            return names
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _auto_tensor_platform_reason() -> Optional[str]:
+        """None on Linux + NVIDIA CUDA (the measured platform), else why not."""
+        try:
+            if not sys.platform.startswith("linux"):
+                return f"measured on Linux only (this host is {sys.platform})"
+            import torch
+
+            if LlamaCppBackend._torch_is_rocm(torch):
+                return "measured on NVIDIA CUDA only (this is a ROCm / HIP build)"
+            if not getattr(torch.version, "cuda", None):
+                return "measured on NVIDIA CUDA only (no CUDA torch)"
+            return None
+        except Exception as e:
+            return f"platform check failed ({type(e).__name__})"
+
+    @staticmethod
+    def _gpu_utilization_by_physical_id(
+        samples: int = 2, interval_s: float = 0.15
+    ) -> dict[int, float]:
+        """nvidia-smi index -> max utilisation over ``samples`` reads, so a card between kernels is not idle.
+
+        Empty unless the planner's GPU ids are nvidia-smi indices; an error keeps earlier readings."""
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True:
+            return {}
+        util: dict[int, float] = {}
+        try:
+            from utils.hardware import gpu_query
+            for i in range(max(1, samples)):
+                if i:
+                    time.sleep(interval_s)
+                result = gpu_query.run_nvidia_smi(
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=index,utilization.gpu",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    cache = False,
+                    capture_output = True,
+                    text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    timeout = 5,
+                    env = child_env_without_native_path_secret(),
+                    **_windows_hidden_subprocess_kwargs(),
+                )
+                if result.returncode != 0:
+                    return util
+                for line in (result.stdout or "").splitlines():
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) < 2:
+                        continue
+                    try:
+                        idx, pct = int(parts[0]), float(parts[1])
+                    except ValueError:
+                        continue
+                    util[idx] = max(util.get(idx, 0.0), pct)
+            return util
+        except Exception:
+            return util
 
     @staticmethod
     def _is_datacenter_gpu(gpu_indices = None) -> bool:
@@ -19359,11 +19765,9 @@ class LlamaCppBackend:
         self._diffusion_requested_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
         self._n_cpu_moe = 0
         self._tensor_split = None
-        self._auto_tensor_split = None
-        self._auto_tensor_split_emitted = None
         self._spill_plan_flags = []
         # Diffusion is never tensor-parallel: clear prior TP state, since phase 1 only kills the process; else /status misreports TP and re-Apply reloads.
-        self._tensor_parallel = False
+        self._clear_split_state()
         # A diffusion runner holds VRAM; a leftover arch-gate flag would claim it does not, letting the arbiter run a competing workload into it.
         self._arch_gate_forced_cpu = False
         # Record the devices the runner got: the lowest selected GPU, or the split above.
@@ -23612,6 +24016,7 @@ class LlamaCppBackend:
             with self._lock:
                 self._begin_load_warnings()
                 self._kill_process()
+                self._clear_split_state()
                 if not _replaying_cpu_fallback:
                     self._cpu_fallback_reason = None
                     self._cleanup_cpu_fallback_runtime()
@@ -24182,6 +24587,9 @@ class LlamaCppBackend:
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
+                # Outside the wrapper the policy is off.
+                _auto = self._auto_split_attempt or _AutoSplitAttempt(allowed = False)
+                _auto.decision, _auto.engaged = None, False
                 # Reject after the try; raising inside would be swallowed into the --fit-on fallback.
                 _vulkan_explicit_unmatched = False
                 _vulkan_requested_ids: list[int] = []
@@ -24675,7 +25083,12 @@ class LlamaCppBackend:
                     if _mtp_eff_n_max is None:
                         # _detected_gpus, not gpus: manual empties gpus but still uses the GPU draft depth.
                         _mtp_eff_n_max = (
-                            3 if _mtp_effective == "dspark" else (2 if _detected_gpus else 3)
+                            3
+                            if _mtp_effective == "dspark"
+                            else _mtp_draft_depth_for_split(
+                                "tensor" if (tensor_parallel and _detected_gpus) else None,
+                                2 if _detected_gpus else 3,
+                            )
                         )
                     # Size the drafter the launch loads: extras --model-draft (last wins), else Unsloth mtp_draft_path, else env. A wrong one under-reserves and OOMs.
                     _cli_draft_for_budget = _extra_args_mtp_draft_path(extra_args, env = {})
@@ -25024,6 +25437,366 @@ class LlamaCppBackend:
                         explicit_ctx = False
                         _replayed_ctx_refit = True
 
+                    # Normalize the speculative reserve BEFORE anything prices it: a CPU drafter (-ngld 0)
+                    # was charged full GPU footprint, pinning the projector (~8.8x slower image encode).
+                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
+                        # The drafter is CPU-offloaded; only target-context terms (recurrent rollback snapshots,
+                        # verification rows) stay on GPU. Same keywords as the replaced callback so _mtp_bytes re-prices slots.
+                        def _cpu_draft_target_state(
+                            _ctx: int,
+                            _np: int = n_parallel,
+                            _n_ubatch: Optional[int] = _effective_ubatch,
+                            _n: int = _mtp_eff_n_max,
+                            _rollback: bool = _target_rollback,
+                        ) -> int:
+                            if _n <= 0:
+                                return 0
+                            rollback = self._rollback_state_bytes(_np) * _n if _rollback else 0
+                            return rollback + self._spec_verify_rows_bytes(_np, _n)
+
+                        mtp_overhead_fn = (
+                            _cpu_draft_target_state
+                            if _cpu_draft_target_state(effective_ctx) > 0
+                            else None
+                        )
+                        _mtp_kv_unsized = False
+
+                    def _host_input_bytes_now(
+                        weights: int,
+                        subset = None,
+                        *,
+                        tp: Optional[bool] = None,
+                    ) -> int:
+                        # The whole host unless the GPUs are settled: a candidate subset, or the auto tensor pair.
+                        if subset is None and _auto.engaged:
+                            subset = gpus
+                        _scope_ids = None if subset is None else {i for i, _f in subset}
+
+                        def _touches(ids) -> bool:
+                            return (
+                                bool(ids) if _scope_ids is None else not _scope_ids.isdisjoint(ids)
+                            )
+
+                        _scope = gpus if subset is None else subset
+                        _tp = tensor_parallel if tp is None else tp
+                        _cuda_integrated = set(
+                            LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+                                LlamaCppBackend._integrated_cuda_mask_key(), ()
+                            )
+                        )
+                        # CUDA ordinals name planner ids only where the two orders agree; a subset elsewhere
+                        # cannot clear an integrated GPU, so any one voids the credit.
+                        _cuda_integrated_hit = (
+                            bool(_cuda_integrated)
+                            if _scope_ids is not None
+                            and not (
+                                LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
+                                or (
+                                    (os.environ.get("CUDA_DEVICE_ORDER") or "").strip().upper()
+                                    == "PCI_BUS_ID"
+                                    and not self._visibility_mask_is_unmappable()
+                                )
+                            )
+                            else bool(_cuda_integrated.intersection(i for i, _f in _scope))
+                        )
+                        if not (
+                            _scope
+                            and not _touches(_integrated_gpus)
+                            and not _touches(_shared_gpu_ids)
+                            and not _touches(_shared_pool_gpus)
+                            and not _metal_capable_host()
+                            and not self._amd_apu_wants_unified_memory([i for i, _f in _scope])
+                            and not _cuda_integrated_hit
+                        ):
+                            return 0
+                        # A streamed table stays on the host whatever -ot says.
+                        _inp_extras = (
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args
+                        )
+                        _inp_env = dict(os.environ)
+                        if gpu_memory_mode == "manual":
+                            self._clear_manual_placement_env(_inp_env)
+                        if _gpu_ids_own_device_flags:
+                            self._clear_device_placement_env(_inp_env)
+                        self._reconcile_split_mode_env(_inp_env, tensor_parallel = _tp)
+                        if gpu_indices is not None:
+                            _inp_indices = gpu_indices
+                        elif _scope_ids is not None:
+                            _inp_indices = sorted(_scope_ids)
+                        else:
+                            _inp_indices = [int(i) for i in gpu_ids] if gpu_ids else None
+                        try:
+                            _inp_lazy = "off"
+                            if server_caps.get("supports_lazy_mode"):
+                                _inp_lazy = _effective_lazy_mode(
+                                    _inp_extras,
+                                    _inp_env,
+                                    flag = str(server_caps.get("lazy_mode_flag") or "--lazy-mode"),
+                                )
+                            if _inp_lazy == "auto" and self._lazy_auto_resolves_off(
+                                gpu_indices = _inp_indices,
+                                detected_gpus = _detected_gpus,
+                                shared_gpu_ids = _shared_gpu_ids,
+                                is_vulkan_backend = is_vulkan_backend,
+                                extra_args = _inp_extras,
+                                env = _inp_env,
+                                tensor_parallel = _tp,
+                                integrated_gpu_ids = _vulkan_igpu_ids,
+                            ):
+                                _inp_lazy = "off"
+                            found = _host_pinned_input_bytes(
+                                self._gguf_tensor_scan(model_path),
+                                _inp_extras,
+                                _inp_env,
+                                lazy_mode = _inp_lazy,
+                                host_forced = self._host_forced_table_archs(binary),
+                            )
+                        except Exception as e:  # unread header: charge the whole file
+                            logger.debug("Host-pinned input embeddings unpriced: %s", e)
+                            return 0
+                        return min(max(0, found), max(0, int(weights) - 1))
+
+                    # Auto split mode (split_policy.py), decided once MTP is settled and before the tensor -> layer
+                    # downgrades, which are pre-checked on the pair. A downgrade still reaching an auto attempt abandons
+                    # it (_AutoSplitAbandoned) and the load is redone with the policy off.
+                    if (
+                        gpu_memory_mode != "manual"
+                        and not tensor_parallel
+                        and not tensor_split
+                        and not preserve_multi_gpu_on_layer
+                        and not is_vulkan_backend
+                        and len(gpus) >= 2
+                    ):
+                        _split_single = "layer"
+                        _split_excluded = None
+                        # Judged on what the child gets: a GPU pick strips the device flags it owns.
+                        _split_env = dict(os.environ)
+                        if _gpu_ids_own_device_flags:
+                            self._clear_device_placement_env(_split_env)
+                        _split_user_placement = _auto_split_user_placement(
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args,
+                            env = _split_env,
+                        )
+                        if not _auto.allowed:
+                            _split_excluded = (
+                                "an auto tensor attempt was abandoned; loading without it"
+                            )
+                        elif _split_user_placement is not None and split_mode_override is None:
+                            _split_excluded = f"the user owns placement ({_split_user_placement})"
+                        elif _spec_canon == "dflash" or _extra_args_requests_dflash(
+                            extra_args, env = _spec_env
+                        ):
+                            # DFlash2 + --split-mode tensor aborts at startup (#11308).
+                            _split_excluded = "DFlash keeps the layer split"
+                        elif self._tensor_quant_kv_unsupported_binary(binary, _planned_cache_pair):
+                            _split_excluded = (
+                                "this build refused a quantized KV cache with --split-mode tensor"
+                            )
+                        elif self._tensor_split_aborts(
+                            binary, model_identifier, _planned_cache_pair
+                        ):
+                            _split_excluded = "this build aborted on --split-mode tensor earlier"
+                        elif not _replanned_flash_attn(True):
+                            # llama.cpp refuses SPLIT_MODE_TENSOR without flash attention.
+                            _split_excluded = "flash attention is off, which tensor split needs"
+                        _split_held = frozenset()
+                        if (
+                            _split_excluded is None
+                            and split_mode_override is None
+                            and _auto_tensor_split_enabled()
+                        ):
+                            _split_held = self._gpus_held_by_others()
+                            if _split_held is None:
+                                _split_excluded = "another loaded model's GPUs are unknown"
+                        try:
+                            if _split_excluded is not None:
+                                _split_decision = _SplitDecision(
+                                    _split_single,
+                                    False,
+                                    f"auto tensor split off: {_split_excluded}",
+                                )
+                            else:
+                                _split_platform = self._auto_tensor_platform_reason()
+                                _split_probe = bool(
+                                    split_mode_override is None
+                                    and not (os.environ.get("LLAMA_ARG_SPLIT_MODE") or "").strip()
+                                    and not (os.environ.get("LLAMA_ARG_TENSOR_SPLIT") or "").strip()
+                                    and _auto_tensor_split_enabled()
+                                    and not _split_platform
+                                    and _binary_supports_tensor_split(server_caps)
+                                    and (self.n_moe_layers == 0 or _engaged_is_mtp)
+                                )
+                                _split_names = (
+                                    self._gpu_names_by_physical_id() if _split_probe else {}
+                                )
+                                _split_util = (
+                                    self._gpu_utilization_by_physical_id() if _split_probe else {}
+                                )
+                                _split_gpus = [
+                                    _SplitGpuInfo(
+                                        index = idx,
+                                        name = _split_names.get(idx),
+                                        total_mib = int(total_by_idx.get(idx, 0) or 0),
+                                        free_mib = int(free),
+                                        util_pct = _split_util.get(idx),
+                                    )
+                                    for idx, free in gpus
+                                ]
+                                # Price the tensor gates on the pair up front with the planner's terms. A pair that would cut a
+                                # requested context keeps layer split (layer adds GPUs instead); unpriceable = no auto tensor.
+                                _auto_tp_bytes = self._estimate_compute_buffer_bytes(
+                                    n_ubatch = _effective_ubatch,
+                                    n_parallel = n_parallel,
+                                    per_device_tensor = True,
+                                )
+                                _auto_reserve_mib = (
+                                    _auto_tp_bytes // (1024 * 1024)
+                                    if _auto_tp_bytes > 0
+                                    else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+                                )
+                                _auto_ctx = (
+                                    effective_ctx
+                                    if (explicit_ctx and effective_ctx > 0)
+                                    else (min(2048, effective_ctx) if effective_ctx > 0 else 2048)
+                                )
+                                # The planner caps a requested context at native, so a longer one cannot fit.
+                                _auto_ctx_priced = self._can_estimate_kv() and not (
+                                    explicit_ctx
+                                    and self._context_length
+                                    and effective_ctx > self._context_length
+                                )
+                                _auto_mtp_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
+                                _auto_kv_bytes = 0
+                                _auto_cc_mib = 0.0
+                                _auto_mtp_floor = (
+                                    2 * 1024**3
+                                    if _auto_mtp_gpu
+                                    and (mtp_overhead_fn is None or _mtp_kv_unsized)
+                                    else 0
+                                )
+                                # Lookup tables kept in host memory cost no VRAM, as in the fit below: priced like
+                                # main's own placement for one card, on the candidate's cards for a pair.
+                                _auto_host_one = _host_input_bytes_now(model_size)
+                                _auto_layer_fa = planned_flash_attn
+                                planned_flash_attn = _replanned_flash_attn(True)
+                                try:
+                                    if _auto_ctx_priced:
+                                        _auto_kv_bytes = _kv_bytes(_auto_ctx) + _mtp_bytes(
+                                            _auto_ctx
+                                        )
+                                        _auto_cc_mib = _cc_bytes(_auto_ctx) / (1024 * 1024)
+                                finally:
+                                    planned_flash_attn = _auto_layer_fa
+                                _auto_soft = self._CUDA_CONTEXT_RESERVE_BYTES
+                                if effective_is_vision and mmproj_size > 0:
+                                    _auto_soft += int(
+                                        mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0)
+                                    )
+                                if _auto_mtp_gpu:
+                                    _auto_soft += self._MTP_DRAFT_COMPUTE_BYTES
+                                _auto_extra_bytes = _auto_mtp_floor + _auto_soft + _auto_kv_bytes
+                                _auto_per_gpu_mib = _auto_reserve_mib + _auto_cc_mib
+                                # One card priced with the pair's full footprint, discrete first as the placement ranks.
+                                _single_pick, _single_fit = self._select_gpus(
+                                    int(
+                                        model_size
+                                        - _auto_host_one
+                                        + _auto_extra_bytes
+                                        + _auto_per_gpu_mib * 1024 * 1024
+                                    )
+                                    if _auto_ctx_priced
+                                    else max(1, model_size - _auto_host_one),
+                                    gpus,
+                                    usable_fraction = _vram_frac,
+                                    total_by_idx = total_by_idx,
+                                    shared = _shared_gpus,
+                                    integrated = _tier_gpus,
+                                )
+                                _fits_one = (
+                                    not _single_fit
+                                    and _single_pick is not None
+                                    and len(_single_pick) == 1
+                                )
+
+                                def _split_fits_on(_indices):
+                                    _sub = [g for g in gpus if g[0] in set(_indices)]
+                                    if not _auto_ctx_priced:
+                                        return False
+                                    if any(_gpu_usable(g) < _auto_per_gpu_mib for g in _sub):
+                                        return False
+                                    _host_pair = _host_input_bytes_now(model_size, _sub, tp = True)
+                                    if sum(_gpu_usable(g) for g in _sub) - len(
+                                        _sub
+                                    ) * _auto_per_gpu_mib <= (
+                                        model_size - _host_pair + _auto_extra_bytes
+                                    ) / (1024 * 1024):
+                                        return False
+                                    _pick, _use_fit = self._select_gpus(
+                                        max(1, model_size - _host_pair),
+                                        _sub,
+                                        usable_fraction = _vram_frac,
+                                        total_by_idx = total_by_idx,
+                                        shared = _shared_gpus,
+                                    )
+                                    return _pick is not None and not _use_fit
+
+                                _split_decision = _choose_split_mode(
+                                    fits_on = _split_fits_on,
+                                    is_moe = self.n_moe_layers > 0,
+                                    gpus = _split_gpus,
+                                    fits_one_gpu = _fits_one,
+                                    single_gpu_index = _single_pick[0] if _fits_one else None,
+                                    binary_supports_tensor = _binary_supports_tensor_split(
+                                        server_caps
+                                    ),
+                                    draft_active = _engaged_is_mtp,
+                                    split_mode_override = split_mode_override,
+                                    # Unregistered helpers net no reservations; served models' cards are still avoided.
+                                    shared_gpus = _shared_gpus.union(_split_held),
+                                    platform_reason = _split_platform,
+                                )
+                                if (
+                                    _split_decision.auto
+                                    and _split_decision.mode == "tensor"
+                                    and _split_decision.gpu_indices
+                                ):
+                                    # Diagnostic only; the GGML_CUDA_P2P launch gate is separate.
+                                    _pair_veto = self._p2p_veto_reason(
+                                        list(_split_decision.gpu_indices)
+                                    )
+                                    if _pair_veto:
+                                        _split_decision = replace(
+                                            _split_decision,
+                                            reason = f"{_split_decision.reason}; no GPU peer "
+                                            f"path ({_pair_veto}), the AllReduce stages "
+                                            "through host memory",
+                                        )
+                        except Exception as _split_exc:
+                            logger.debug(f"auto split-mode policy failed: {_split_exc}")
+                            _split_decision = None
+                        if _split_decision is not None:
+                            _auto.decision = _split_decision
+                            logger.info(
+                                "Split mode: %s (%s, %s)",
+                                _split_decision.mode,
+                                "auto" if _split_decision.auto else "unchanged",
+                                _split_decision.reason,
+                            )
+                            if (
+                                _split_decision.auto
+                                and _split_decision.mode == "tensor"
+                                and _split_decision.gpu_indices
+                            ):
+                                _auto.engaged = True
+                                tensor_parallel = True
+                                planned_flash_attn = _replanned_flash_attn(tensor_parallel)
+                                _keep = set(_split_decision.gpu_indices)
+                                gpus = [g for g in gpus if g[0] in _keep]
+
                     # Run before the probe, which is gated on not tensor_parallel but must answer for any load that ends layer-split, so the downgrades must come first.
                     if preserve_multi_gpu_on_layer:
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
@@ -25037,6 +25810,8 @@ class LlamaCppBackend:
                             "use a quantized KV cache with --split-mode tensor "
                             "(needs b9455+); loading with a layer split."
                         )
+                        if _auto.engaged:
+                            raise _AutoSplitAbandoned("a tensor -> layer downgrade")
                         tensor_parallel = False
                         # A missing capability says nothing about capacity, so keep multi-GPU.
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
@@ -25052,6 +25827,8 @@ class LlamaCppBackend:
                             "session; using layer split across %d GPU(s).",
                             len(gpus),
                         )
+                        if _auto.engaged:
+                            raise _AutoSplitAbandoned("a tensor -> layer downgrade")
                         tensor_parallel = False
                         # The abort says nothing about capacity, so keep multi-GPU.
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
@@ -25092,6 +25869,8 @@ class LlamaCppBackend:
                             len(tp_gpus),
                             len(gpus),
                         )
+                        if _auto.engaged:
+                            raise _AutoSplitAbandoned("a tensor -> layer downgrade")
                         tensor_parallel = False
                         # Cards below tensor's reserve can still do layer split, so keep multi-GPU.
                         if len(gpus) >= 2:
@@ -25099,30 +25878,9 @@ class LlamaCppBackend:
                         extra_args = strip_split_mode_only(extra_args)
                         planned_flash_attn = _replanned_flash_attn(tensor_parallel)
 
-                    # Normalize before anything prices it: _mtp_bytes reads mtp_overhead_fn at call time.
-                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
-                        # Drafter on CPU: only the target's rollback snapshots and verification rows
-                        # stay on GPU.
-                        def _cpu_draft_target_state(
-                            _ctx: int,
-                            _np: int = n_parallel,
-                            _n_ubatch: Optional[int] = _effective_ubatch,
-                            _n: int = _mtp_eff_n_max,
-                            _rollback: bool = _target_rollback,
-                        ) -> int:
-                            if _n <= 0:
-                                return 0
-                            rollback = self._rollback_state_bytes(_np) * _n if _rollback else 0
-                            return rollback + self._spec_verify_rows_bytes(_np, _n)
-
-                        mtp_overhead_fn = (
-                            _cpu_draft_target_state
-                            if _cpu_draft_target_state(effective_ctx) > 0
-                            else None
-                        )
-                        _mtp_kv_unsized = False
-
                     # Projector goes to host RAM first when the load does not fit, but never drops vision; pin only helps where a device has its own budget (total > 0).
+                    # Applied here, or after the pooled weight-budget check gives
+                    # tensor mode up. One body, so the two sites cannot drift.
                     _mm_pin_deferred = False
 
                     def _apply_mmproj_cpu_pin(floor_ctx: int) -> None:
@@ -25144,68 +25902,6 @@ class LlamaCppBackend:
                             "on the GPU.",
                             floor_ctx,
                         )
-
-                    def _host_input_bytes_now(weights: int) -> int:
-                        if not (
-                            gpus
-                            and not _integrated_gpus
-                            and not _shared_gpu_ids
-                            and not _shared_pool_gpus
-                            and not _metal_capable_host()
-                            and not self._amd_apu_wants_unified_memory([i for i, _f in gpus])
-                            and not set(
-                                LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
-                                    LlamaCppBackend._integrated_cuda_mask_key(), ()
-                                )
-                            ).intersection(i for i, _f in gpus)
-                        ):
-                            return 0
-                        # A streamed table stays on the host whatever -ot says.
-                        _inp_extras = (
-                            self._strip_device_extra_args(extra_args)
-                            if _gpu_ids_own_device_flags
-                            else extra_args
-                        )
-                        _inp_env = dict(os.environ)
-                        if gpu_memory_mode == "manual":
-                            self._clear_manual_placement_env(_inp_env)
-                        if _gpu_ids_own_device_flags:
-                            self._clear_device_placement_env(_inp_env)
-                        self._reconcile_split_mode_env(_inp_env, tensor_parallel = tensor_parallel)
-                        try:
-                            _inp_lazy = "off"
-                            if server_caps.get("supports_lazy_mode"):
-                                _inp_lazy = _effective_lazy_mode(
-                                    _inp_extras,
-                                    _inp_env,
-                                    flag = str(server_caps.get("lazy_mode_flag") or "--lazy-mode"),
-                                )
-                            if _inp_lazy == "auto" and self._lazy_auto_resolves_off(
-                                gpu_indices = (
-                                    gpu_indices
-                                    if gpu_indices is not None or not gpu_ids
-                                    else [int(i) for i in gpu_ids]
-                                ),
-                                detected_gpus = _detected_gpus,
-                                shared_gpu_ids = _shared_gpu_ids,
-                                is_vulkan_backend = is_vulkan_backend,
-                                extra_args = _inp_extras,
-                                env = _inp_env,
-                                tensor_parallel = tensor_parallel,
-                                integrated_gpu_ids = _vulkan_igpu_ids,
-                            ):
-                                _inp_lazy = "off"
-                            found = _host_pinned_input_bytes(
-                                self._gguf_tensor_scan(model_path),
-                                _inp_extras,
-                                _inp_env,
-                                lazy_mode = _inp_lazy,
-                                host_forced = self._host_forced_table_archs(binary),
-                            )
-                        except Exception as e:  # unread header: charge the whole file
-                            logger.debug("Host-pinned input embeddings unpriced: %s", e)
-                            return 0
-                        return min(max(0, found), max(0, int(weights) - 1))
 
                     _mm_budgeted_gpus = [
                         (_idx, _free) for _idx, _free in gpus if total_by_idx.get(_idx, 0) > 0
@@ -25827,6 +26523,8 @@ class LlamaCppBackend:
                                 "budget cannot hold the weights, MTP reserve, and "
                                 "per-device compute buffers; falling back to layer split."
                             )
+                            if _auto.engaged:
+                                raise _AutoSplitAbandoned("a tensor -> layer downgrade")
                             tensor_parallel = False
                             # Weights needed >1 card, so keep multi-GPU across the
                             # usable tensor GPUs.
@@ -25896,8 +26594,58 @@ class LlamaCppBackend:
                             vram_fraction = _vram_frac,
                             explicit_ctx = explicit_ctx,
                         )
+                        # main keeps a requested context; Auto drops a GPU drafter before shortening it.
+                        if (
+                            _auto.engaged
+                            and effective_ctx < target_ctx
+                            and (
+                                explicit_ctx
+                                or (
+                                    _mtp_reserves_gpu
+                                    and (_canonicalize_spec_mode(speculative_type) or "auto")
+                                    == "auto"
+                                )
+                            )
+                        ):
+                            raise _AutoSplitAbandoned("the tensor plan shortened the context")
+
+                        def _tp_plan_fits(ctx: int) -> bool:
+                            # The per-GPU check a user ratio gets, on the split this plan emits.
+                            return self._tensor_split_fits_budget(
+                                list(tp_tensor_split or [1] * len(gpu_indices or ())),
+                                tp_gpus,
+                                list(gpu_indices or ()),
+                                max(1, model_size - _host_input_embd),
+                                ctx,
+                                cache_type_kv = cache_type_kv,
+                                n_parallel = n_parallel,
+                                n_ubatch = _effective_ubatch,
+                                kv_unified = planned_kv_unified,
+                                flash_attn = planned_flash_attn,
+                                swa_full = swa_full,
+                                mtp_engaged = _mtp_reserves_gpu,
+                                mtp_overhead_fn = mtp_overhead_fn,
+                                mtp_flat_reserve_bytes = _tp_unsized_mtp_reserve,
+                                total_by_idx = total_by_idx,
+                                vram_fraction = _vram_frac,
+                                soft_overhead_bytes = _soft_overhead,
+                                scratch_cache_type_kv = _scratch_cache_type_kv,
+                            )
+
+                        if _auto.engaged and not _tp_plan_fits(effective_ctx):
+                            raise _AutoSplitAbandoned("the tensor plan overflows a GPU's budget")
                         use_fit = False
                         _tp_planned = True
+                        # Publish the priced ceiling like the layer cap sweep (explicit toggle unchanged),
+                        # only once it fits every GPU: the planner floors it at 2048 even when that does not.
+                        if (
+                            _auto.engaged
+                            and self._can_estimate_kv()
+                            and max_available_ctx > 0
+                            and _subset_ckpts(tp_gpus) == 0
+                            and _tp_plan_fits(max_available_ctx)
+                        ):
+                            _vram_fit_ctx = max_available_ctx
                         if explicit_ctx and not self._can_estimate_kv():
                             # Tensor mode emits --fit off, so nothing downstream catches it.
                             _unmeasured_ctx_notice = self._unmeasured_context_notice(
@@ -27972,6 +28720,9 @@ class LlamaCppBackend:
                                 _moe_expert_bytes / (1024**3),
                             )
                 except Exception as e:
+                    # Redo the load without the policy rather than patch an auto tensor attempt.
+                    if _auto.engaged:
+                        raise _AutoSplitAbandoned(f"placement: {e}") from e
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
                     _metal_full_offload_pinned = False
@@ -28659,6 +29410,7 @@ class LlamaCppBackend:
                         _emitted_values = [float(x) for x in _emitted_tensor_split.split(",")]
                     self._tensor_parallel = True
                     self._layer_preserves_tensor_intent = False
+                    self._auto_split = _auto
                     # Record the requested ratio, not the emitted one, so identical repeats are reused.
                     if gpu_memory_mode != "manual":
                         self._auto_tensor_split = self._auto_split_fingerprint(tensor_split)
@@ -28671,6 +29423,7 @@ class LlamaCppBackend:
                     )
                 else:
                     self._tensor_parallel = False
+                    self._auto_split = _auto
                     # > 1 only when a tensor request was downgraded but kept multi-GPU.
                     self._layer_preserves_tensor_intent = _layer_min_gpus > 1
 
@@ -28762,6 +29515,7 @@ class LlamaCppBackend:
                     model_identifier = model_identifier,
                     model_path = model_path,
                     gpus = bool(_detected_gpus),
+                    split_mode = "tensor" if tensor_parallel else None,
                     binary = binary,
                     mtp_draft_path = (
                         None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
@@ -30299,10 +31053,16 @@ class LlamaCppBackend:
                         run_cmd = self._drop_moe_cache(
                             run_cmd, f"{label.lstrip('-') or 'unpinned'} launch"
                         )
+                    # An auto tensor attempt never runs a relaunch: it is abandoned and redone without the policy.
+                    if label and _auto.engaged:
+                        self._kill_process()
+                        raise _AutoSplitAbandoned(f"recovery relaunch ({label.lstrip('-')})")
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
                     _did_moe_cache_retry = False
                     for _spawn_attempt in (0, 1, 2, 3):
+                        if _spawn_attempt and _auto.engaged:
+                            return False
                         if _spawn_attempt:
                             run_cmd = self._drop_managed_lazy_mode(run_cmd, "startup")
                         # Defensive kill: drop an orphan Popen a concurrent load may
@@ -30684,6 +31444,8 @@ class LlamaCppBackend:
                         # captured settings while a crashed child leaves is_active false.
                         # Here rather than per rung, so a later rung cannot forget it.
                         self._memory_pending_launch = _mem_settings
+                        if _auto.engaged:
+                            return False
                         # Read once, like the wait itself: a cleared reference is a
                         # teardown, not a startup crash, and re-reading the
                         # attribute per term would race the shutdown thread again.
@@ -31318,6 +32080,9 @@ class LlamaCppBackend:
                 # _process is unset until Popen, so mark the load committed for saves; Popen and every exit below clear it, so a failed spawn cannot leave it stuck.
                 self._memory_pending_launch = _mem_settings
                 self._vram_fraction_pending = _budget_priced_placement()
+                # A launch gate dropped the auto tensor split: redo without the policy.
+                if _auto.engaged and not self._tensor_parallel:
+                    raise _AutoSplitAbandoned("a launch gate dropped the tensor split")
                 healthy = False
                 try:
                     healthy = _spawn_and_wait(cmd)
@@ -31381,6 +32146,10 @@ class LlamaCppBackend:
                             "update llama.cpp to use tensor parallelism with a "
                             "quantized cache."
                         )
+                # A failed auto tensor attempt runs none of the recoveries or their memos below; redo without the policy.
+                if not healthy and _auto.engaged and not _load_cancelled():
+                    self._kill_process()
+                    raise _AutoSplitAbandoned("the tensor split did not start")
                 # Auto-pinned device has no kernels in this binary: retry once on a narrowed set, since the gate cannot see custom builds; explicit picks keep their error.
                 if (
                     not healthy
@@ -32745,8 +33514,13 @@ class LlamaCppBackend:
         mtp_drafter_unloadable: bool = False,
         eagle3_draft_path: Optional[str] = None,
         mtp_trained: Optional[bool] = None,
+        split_mode: Optional[str] = None,
     ) -> List[str]:
-        """Returns spec flags; sets speculative type, requested mode, draft n-max. Auto uses ngram-mod for sub-3B embedded MTP (regresses); separate drafters exempt."""
+        """Returns spec flags; sets speculative type, requested mode, draft n-max. Auto uses ngram-mod for sub-3B embedded MTP (regresses); separate drafters exempt.
+
+        ``split_mode`` ("tensor" / "layer" / None) picks Studio's own MTP depth from
+        split_policy.MTP_DRAFT_DEPTH_BY_SPLIT; a user depth or a trained head's wins.
+        """
         flags: List[str] = []
         # Reset; emit branches re-set on the resolved emission.
         self._spec_draft_n_max = None
@@ -32888,7 +33662,7 @@ class LlamaCppBackend:
                 return n
             if mtp_trained and trained_steps and self._spec_drafter_kind == "mtp":
                 return trained_steps  # the depth the exported head was trained for
-            return 2 if gpus else 3
+            return _mtp_draft_depth_for_split(split_mode if gpus else None, 2 if gpus else 3)
 
         def _emit_dspark() -> None:
             """Appends --model-draft <sidecar> with draft-dspark; callers check the sidecar and
@@ -33574,13 +34348,11 @@ class LlamaCppBackend:
             # Not a bare pid_is_running read: kills are async, so asking right after one answers its own latency.
             self._gpu_ids = None
             self._requested_gpu_ids = None
-            self._tensor_parallel = False
+            self._clear_split_state()
             self._gpu_memory_mode = "auto"
             self._gpu_layers = -1
             self._n_cpu_moe = 0
             self._tensor_split = None
-            self._auto_tensor_split = None
-            self._auto_tensor_split_emitted = None
             self._arch_gate_forced_cpu = False
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None
@@ -33955,11 +34727,34 @@ class LlamaCppBackend:
 
     def _other_planned_vram_mib(self) -> dict[int, int]:
         """MiB per GPU the other serving backends' running servers and the resident image/video models hold."""
+        if self not in _serving_backends_snapshot():
+            return {}
+        return self._vram_reserved_by_others_mib()
+
+    def _gpus_held_by_others(self) -> Optional[frozenset]:
+        """GPUs other servers / resident media models hold, or None when a child's devices are unknown."""
+        outside = _gpus_held_outside_llama()
+        if outside is None:
+            return None
+        # A slot whose teardown failed is out of routing, but its server may still be on a GPU.
+        model_slots = _resident_source("core.inference.model_slots")
+        if model_slots is not None and any(
+            getattr(slot, "llama", None) is not self for slot in list(model_slots.stuck)
+        ):
+            return None
+        held = set(self._vram_reserved_by_others_mib()) | outside
+        for backend in [*_serving_backends_snapshot(), *_owned_backends_snapshot()]:
+            if backend is not self and getattr(backend, "is_active", False):
+                child = getattr(backend, "_child_gpu_physical_ids", None)
+                if child is None:
+                    return None
+                held.update(child)
+        return frozenset(held)
+
+    def _vram_reserved_by_others_mib(self) -> dict[int, int]:
+        """_other_planned_vram_mib without its registration gate."""
         held: dict[int, int] = {}
-        serving = _serving_backends_snapshot()
-        if self not in serving:
-            return held
-        for backend in serving:
+        for backend in _serving_backends_snapshot():
             if backend is self or not getattr(backend, "is_active", False):
                 continue
             # A dead server keeps _process until respawned, but its VRAM is free.

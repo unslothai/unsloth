@@ -1947,7 +1947,11 @@ class _InferenceRuntimeFields(BaseModel):
     )
     tensor_parallel: bool = Field(
         False,
-        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+        description = (
+            "Whether tensor-parallel split (--split-mode tensor) is active. A tensor split "
+            "Studio chose automatically (UNSLOTH_STUDIO_AUTO_TENSOR_SPLIT) reports false: "
+            "this field seeds the Tensor Parallelism toggle, which nobody turned on."
+        ),
     )
     disable_vision: bool = Field(
         False,

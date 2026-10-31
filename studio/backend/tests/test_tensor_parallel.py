@@ -1675,7 +1675,7 @@ class TestLegacyBuildQuantizedKvInTensorMode:
                 "Process",
                 (),
                 {
-                    "pid": 123,
+                    "pid": 2**31 - 1,
                     "stdout": (),
                     "returncode": 1 if doomed else None,
                     "poll": lambda _self, _d = doomed: 1 if _d else None,
@@ -1827,9 +1827,11 @@ class TestLegacyBuildLatchIsBinaryWide:
         """Missing capability says nothing about capacity: the layer fallback must still spread
         across GPUs."""
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        gate = load.find("self._tensor_quant_kv_unsupported_binary(")
+        # The downgrade gate, not the auto policy's earlier check.
+        gate = load.find("tensor_parallelandself._tensor_quant_kv_unsupported_binary(")
         assert gate != -1
-        nxt = load.find("self._tensor_split_aborts(", gate)
+        # The bump sits inside this skip's own body, before the next gate.
+        nxt = load.find("tensor_parallelandself._tensor_split_aborts(", gate)
         assert nxt != -1
         assert "_layer_min_gpus=max(_layer_min_gpus,len(gpus))" in load[gate:nxt]
 
