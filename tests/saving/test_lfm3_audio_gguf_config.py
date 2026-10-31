@@ -102,3 +102,25 @@ def test_a_hub_base_is_read_at_the_loaded_commit(tmp_path, monkeypatch):
     merged = _write(tmp_path / "merged", SAVED)
     assert save_mod._restore_lfm3_audio_release_config(model, str(merged))
     assert calls[0] == ("LiquidAI/LFM3-Audio-2B", "config.json", "cddb56b5ec")
+
+
+def test_a_reloaded_merged_checkpoint_still_exports(tmp_path):
+    # merge_and_overwrite_lora writes the Transformers layout; the merged folder carries the release one,
+    # so a later GGUF export of that folder (loaded with no PEFT base to look up) finds it.
+    base = _write(tmp_path / "base", RELEASE)
+    merged = _write(tmp_path / "merged", {**SAVED, "dtype": "float32"})
+    assert save_mod._release_layout_for_merged_save(_peft_model(base), str(merged), "merged_16bit")
+    assert _saved(merged) == {**RELEASE, "dtype": "float32"}
+
+    reloaded = types.SimpleNamespace(config = types.SimpleNamespace(_name_or_path = str(merged)))
+    staged = _write(tmp_path / "staged", SAVED)
+    assert save_mod._restore_lfm3_audio_release_config(reloaded, str(staged))
+    assert _saved(staged)["lfm"] == RELEASE["lfm"]
+
+
+def test_a_4bit_merge_keeps_its_saved_config(tmp_path):
+    base = _write(tmp_path / "base", RELEASE)
+    quantized = {**SAVED, "quantization_config": {"load_in_4bit": True}}
+    merged = _write(tmp_path / "merged", quantized)
+    assert not save_mod._release_layout_for_merged_save(_peft_model(base), str(merged), "merged_4bit")
+    assert _saved(merged) == quantized

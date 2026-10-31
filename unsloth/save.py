@@ -4054,6 +4054,8 @@ def _restore_lfm3_audio_release_config(model, save_directory):
             continue
         if vocab is not None and release["lfm"].get("vocab_size") != vocab:
             continue  # resized embeddings: the release config no longer describes these weights
+        # The dtype the weights were written in, not the release's.
+        release = {**release, **{k: saved[k] for k in ("dtype", "torch_dtype") if k in saved}}
         with open(path, "w", encoding = "utf-8") as f:
             json.dump(release, f, indent = 2)
         return True
@@ -4062,6 +4064,14 @@ def _restore_lfm3_audio_release_config(model, save_directory):
         "llama.cpp's converter will not recognize it."
     )
     return False
+
+
+def _release_layout_for_merged_save(model, save_directory, save_method):
+    # A merged LFM3-Audio folder is reloaded with no PEFT base to look the release config up from,
+    # so it carries the release layout itself. 4-bit keeps its quantization_config.
+    if "16bit" not in str(save_method) or not os.path.isdir(str(save_directory)):
+        return False
+    return _restore_lfm3_audio_release_config(model, save_directory)
 
 
 def _stamp_saved_config_float32(save_directory):
@@ -6932,6 +6942,7 @@ def unsloth_generic_save(
         print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
         with _internal_mtp_save():
             model.save_pretrained(save_directory, **_save_kwargs)
+        _release_layout_for_merged_save(model, save_directory, save_method)
         if "16bit" in save_method and _requests_float32(dtype):
             _stamp_saved_config_float32(save_directory)
         if (
@@ -7025,6 +7036,7 @@ def unsloth_generic_save(
         # Pushes with an attached head were rerouted to a local save above.
         if not push_to_hub:
             _stitch_mtp_head(model, save_directory)
+            _release_layout_for_merged_save(model, save_directory, save_method)
 
     if push_to_hub and datasets:
         try:
