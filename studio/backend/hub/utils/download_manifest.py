@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from hub.utils.state_dir import (
     variant_key_fragments,
 )
 from utils.paths.path_utils import drop_appledouble_metadata
+from utils.scan_memo import memoized, scan_memo_active
 
 logger = get_logger(__name__)
 
@@ -292,7 +294,7 @@ def _state_read_path(
     )
     for path in scoped:
         try:
-            if path.is_file() and applies(path):
+            if _state_file_may_exist(path) and path.is_file() and applies(path):
                 return path
         except OSError:
             continue
@@ -300,13 +302,43 @@ def _state_read_path(
         if path in scoped:
             continue
         try:
-            if not path.is_file():
+            if not (_state_file_may_exist(path) and path.is_file()):
                 continue
         except OSError:
             continue
         if _legacy_state_applies(path, requested, fail_closed = fail_closed) and applies(path):
             return path
     return None
+
+
+def _state_name_key(name: str) -> str:
+    # Folded wide enough for case-insensitive (Windows, macOS) and normalization-insensitive (APFS) volumes.
+    return os.path.normcase(unicodedata.normalize("NFC", name)).casefold()
+
+
+def _state_dir_name_keys(directory: Path) -> Optional[frozenset[str]]:
+    try:
+        with os.scandir(directory) as entries:
+            return frozenset(_state_name_key(entry.name) for entry in entries)
+    except (FileNotFoundError, NotADirectoryError):
+        return frozenset()
+    except OSError:
+        return None
+
+
+def _state_file_may_exist(path: Path) -> bool:
+    """False only when this inventory scan's one listing of the state dir lacks the name.
+
+    An inventory scan probes up to a dozen candidate state files per repo, nearly all absent;
+    listing each state dir once per scan turns those stats into set lookups. Outside a scan, or
+    when the dir cannot be listed, every candidate is probed as before."""
+    if not scan_memo_active():
+        return True
+    names = memoized(
+        ("hub_state_dir_names", os.fspath(path.parent)),
+        lambda: _state_dir_name_keys(path.parent),
+    )
+    return names is None or _state_name_key(path.name) in names
 
 
 def _state_paths(
