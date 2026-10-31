@@ -1802,6 +1802,52 @@ def test_count_tokens_is_tracked_as_inference_path():
     assert _is_inference_path("/v1/messages") is True
 
 
+@pytest.mark.parametrize("resident_quant", [None, "Q4_K_M"])
+def test_saved_api_quant_is_used_for_a_bare_model_request(monkeypatch, resident_quant):
+    """A saved Q8 default drives a cold load and replaces a resident Q4 of the same repo.
+
+    Only the model loader and inventory boundary are stood in; preferences use
+    the real isolated SQLite store and the request runs through the switch hook.
+    """
+    model = "unsloth/B-GGUF"
+    db.upsert_app_setting_map_entry(
+        "model_gguf_preferences", model.casefold(), {"gguf_variant": "Q8_0"}
+    )
+    settings._cache.clear()
+    real_resolve = resolver.resolve_local_gguf
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(model if resident_quant else "unsloth/A-GGUF", hf_variant = resident_quant),
+        (model, "Q8_0", model),
+    )
+
+    # Replace the inventory scan, not quant resolution: the bare id chooses the
+    # first cached variant while an explicit Q8 suffix selects the second one.
+    monkeypatch.setattr(resolver, "resolve_local_gguf", real_resolve)
+    monkeypatch.setattr(
+        resolver, "_build_index", lambda: {model.lower(): _entry(model, "Q4_K_M", "Q8_0")}
+    )
+    resolver.invalidate_index()
+    _run_hook(model)
+    assert len(rec.calls) == 1
+    assert rec.calls[0].gguf_variant == "Q8_0"
+    assert backend.hf_variant == "Q8_0"
+
+
+def test_explicit_api_quant_wins_over_the_saved_default(monkeypatch):
+    """A client can still request Q4 explicitly after choosing Q8 as the API default."""
+    model = "unsloth/B-GGUF"
+    db.upsert_app_setting_map_entry(
+        "model_gguf_preferences", model.casefold(), {"gguf_variant": "Q8_0"}
+    )
+    settings._cache.clear()
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), (model, "Q4_K_M", model))
+    _run_hook(f"{model}:Q4_K_M")
+    assert len(rec.calls) == 1
+    assert rec.calls[0].gguf_variant == "Q4_K_M"
+    assert backend.hf_variant == "Q4_K_M"
+
+
 def test_bare_id_tolerates_any_loaded_variant(monkeypatch):
     # A bare request for the loaded repo must not reload a different (larger) quant.
     backend, rec = _wired(

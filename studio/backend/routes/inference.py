@@ -10813,6 +10813,17 @@ async def _maybe_auto_switch_model(
     the chat route, the only one an NPU model serves; ``npu_request_check``
     refuses a request an NPU target would reject once loaded, given its catalog entry.
     """
+    # Resolve the account's default before slot routing and resident reuse. Treating
+    # it as an explicit quant reuses admission instead of silently keeping another quant.
+    if (
+        isinstance(requested_model, str)
+        and requested_model
+        and requested_model != _RELOAD_ONLY_MODEL
+        and not _auto_switch_opted_out(fastapi_request)
+    ):
+        from utils.model_gguf_preferences import with_model_gguf_preference
+        requested_model = await asyncio.to_thread(with_model_gguf_preference, requested_model)
+
     # A text-only GGUF reads tool-result images as a note, so only audio or video needs its mmproj.
     gguf_requires_vision = (
         (require_audio_input or require_video) if tool_images_only else require_vision

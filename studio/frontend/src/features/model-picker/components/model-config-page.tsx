@@ -3,6 +3,7 @@
 
 import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
+import { ApiQuantDefault } from "./api-quant-default";
 import { modelDisplayName } from "../model-config/model-identity";
 import { type RunSettingsNaming, RunSettingsPicker } from "./saved-run-settings-row";
 import {
@@ -4136,6 +4137,13 @@ export function ModelConfigPage({
         hasSavedSettings={savedRemember}
       />
       <div className="space-y-5">
+        {target.isGguf && target.ggufVariant && !classifiedIsDiffusion && !target.meta.audioType && (
+          <ApiQuantDefault
+            key={JSON.stringify([configId, target.ggufVariant])}
+            modelId={configId}
+            variant={target.ggufVariant}
+          />
+        )}
         {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
           <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
         )}
