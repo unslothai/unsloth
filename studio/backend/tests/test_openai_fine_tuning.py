@@ -1567,3 +1567,35 @@ def test_batch_probe_unchanged_for_the_owner(batch_queue, monkeypatch):
 
     _run(flow())
     assert touched and len(calls["batch"]) == 1
+
+
+@pytest.mark.parametrize("trains_alone", [False, True])
+@pytest.mark.parametrize("cancelled", [0, 1])
+def test_a_job_cancelled_during_the_batch_model_probe_never_starts(
+    batch_queue, monkeypatch, cancelled, trains_alone
+):
+    client, calls, _live, gpu, _backend = batch_queue
+    jobs = []
+
+    async def probe_then_cancel(request):
+        # The model probe runs in a worker thread; a cancel lands while the starter awaits it.
+        cancelled_job = await client.fine_tuning.jobs.cancel(jobs[cancelled].id)
+        assert cancelled_job.status == "cancelled"
+        return trains_alone
+
+    monkeypatch.setattr(openai_fine_tuning, "_trains_alone", probe_then_cancel)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs.extend([await _create(client, uploaded.id, suffix = s) for s in "ab"])
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        return [(await client.fine_tuning.jobs.retrieve(j.id)).status for j in jobs]
+
+    statuses = _run(flow())
+    started = [r.project_name for r in calls["start"]] + [
+        r.project_name for requests, *_ in calls["batch"] for r in requests
+    ]
+    assert "ab"[cancelled] not in started
+    assert statuses[cancelled] == "cancelled"
+    assert calls["stop"] == []
