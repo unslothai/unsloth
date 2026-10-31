@@ -112,6 +112,8 @@ def stub_sizing(monkeypatch):
     monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
     monkeypatch.setattr(S, "free_bytes", fake_free)
     monkeypatch.setattr(S, "kaggle_tmp_redirect", fake_redirect)
+    # Charge the cache with the export, wherever the host keeps it (a Windows runner: D: vs C:).
+    monkeypatch.setattr(S, "_hub_cache_directory", lambda: None)
     monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
     monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
 
@@ -2081,6 +2083,8 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         monkeypatch.setattr(S, "PeftModel", _FakeAdapterModel)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
+        # Without bf16 the preflight lowers a bf16 first conversion to f16, which adds a quantize pass.
+        monkeypatch.setattr(S.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
         state["directory"] = str(tmp_path / "model")
         return state
 
