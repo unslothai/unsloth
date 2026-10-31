@@ -151,3 +151,17 @@ def canonical_compile_cache_tag(current: str, prefix: str, tag: str | None) -> s
     foreign = [p for p in parts if not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
     owned = sorted(p for p in parts if p.startswith(_STUDIO_CACHE_TAG_PREFIXES))
     return ";".join(foreign + owned)
+
+
+def set_compile_cache_tag(prefix: str, tag: str | None) -> None:
+    """Set ``prefix``'s cache_key_tag token and record it, so contexts that ``apply()`` (renders, background
+    compiles) key on it too."""
+    cfg = _module("torch.compiler.config")
+    if cfg is None:
+        return
+    current = getattr(cfg, "cache_key_tag", None)
+    if not isinstance(current, str):
+        return
+    set_knob(
+        "torch.compiler.config", "cache_key_tag", canonical_compile_cache_tag(current, prefix, tag)
+    )
