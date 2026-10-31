@@ -991,6 +991,14 @@ _FLEX_SMALL_SMEM_ENV_VAR = "UNSLOTH_FLEX_SMALL_SMEM_TILES"
 # unsloth_zoo's suppress_errors hides it, and Dynamo marks flex_attention as skipped for the rest
 # of the process, so every later call, long prompts and decode included, runs the eager fallback.
 _FLEX_SMALL_SMEM_DECODE_MAX_ROWS = 64
+# Before torch 2.14 a short no-grad query whose batch size changed since the first compile (batch 1,
+# then 2) has a dynamic batch dim, which rules flex_decoding out even for one-token decode. The main
+# kernel then takes its default head_dim 256 tile (151552 B), the compile fails, and the process
+# goes eager as above. Short no-grad calls get the tiles there (flex_decoding takes them too while
+# the batch is static); 2.14 compiles it unchanged. Measured at head_dim 256 in bf16 / fp16 only: in
+# fp32 the tiles need 147456 B on flex_decoding, and at head_dim 192 they fail to build on 2.10.
+_FLEX_SMALL_SMEM_DYNAMIC_DECODE_FIXED_TORCH = "2.14"
+_FLEX_SMALL_SMEM_SHORT_QUERY_HEAD_DIM = 256
 
 
 def _flex_decode_rows(query, key):
@@ -1029,6 +1037,25 @@ def _flex_small_smem_device_ok():
         return True
     except Exception:
         return False
+
+
+def _flex_small_smem_short_query_tiles():
+    """Torch before 2.14: short no-grad queries on a small shared memory card always get the tiles,
+    since a batch size change can move them from flex_decoding to the main kernel. Read at wrap time."""
+    try:
+        return Version(torch.__version__.split("+")[0]) < Version(
+            _FLEX_SMALL_SMEM_DYNAMIC_DECODE_FIXED_TORCH
+        )
+    except Exception:
+        return True
+
+
+def _flex_small_smem_short_query_fits(query):
+    """A 16-bit head_dim 256 query, the case the short-query tiles were measured on."""
+    return query.shape[-1] == _FLEX_SMALL_SMEM_SHORT_QUERY_HEAD_DIM and query.dtype in (
+        torch.float16,
+        torch.bfloat16,
+    )
 
 
 def _flex_small_smem_kernel_options(head_dim, device_ok):
@@ -1186,6 +1213,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
     tuned_bwd_device_ok = _flex_tuned_bwd_device_ok()
     small_smem_device_ok = _flex_small_smem_device_ok()
+    small_smem_short_query_tiles = small_smem_device_ok and _flex_small_smem_short_query_tiles()
     # A failed flex_decoding compile makes Dynamo run flex eagerly for the rest of the process (full score matrix).
     decoding_unavailable = _flex_decoding_unavailable()
 
@@ -1239,6 +1267,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and (
                 _flex_call_needs_backward(query, key, value)
                 or _flex_main_kernel_forced(kwargs)
+                or (small_smem_short_query_tiles and _flex_small_smem_short_query_fits(query))
                 or decode_replaced
                 or query.shape[2] >= 128
                 or _flex_decode_rows(query, key) > _FLEX_SMALL_SMEM_DECODE_MAX_ROWS
@@ -1248,16 +1277,21 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         ):
             kernel_options = _flex_small_smem_kernel_options(query.shape[-1], small_smem_device_ok)
-            # Main kernel: flex_decoding with fwd_BLOCK_M 64 below its row count is wrong on 2.10 and
-            # fails to compile on 2.11. Shape last, as above (no training sequence guard).
+            # Over 64 rows the main kernel: flex_decoding with fwd_BLOCK_M 64 below its row count is wrong
+            # on 2.10 and fails to compile on 2.11. Shape last, as above (no training sequence guard).
             if (
                 kernel_options is not None
                 and not _flex_call_needs_backward(query, key, value)
                 and not _flex_main_kernel_forced(kwargs)
                 and query.shape[2] < 128
             ):
-                kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
-                short_forced = True
+                if _flex_decode_rows(query, key) > _FLEX_SMALL_SMEM_DECODE_MAX_ROWS:
+                    kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
+                    short_forced = True
+                else:
+                    # Before 2.14 flex_decoding takes SAFE_M_BOUNDARY from plain BLOCK_M, so without it
+                    # the 64-row tile skips its row masks and overwrites other heads' rowmax / sumexp.
+                    kernel_options["BLOCK_M"] = kernel_options["fwd_BLOCK_M"]
         if (
             kernel_options is None
             and tuned_bwd_device_ok
