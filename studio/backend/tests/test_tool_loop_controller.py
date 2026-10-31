@@ -36,6 +36,7 @@ from core.inference.tool_loop_controller import (
     tool_call_limit_nudge,
     tool_event_provenance,
 )
+from core.inference import tool_facts
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
 from core.inference.tools import (
     ALL_TOOLS,
@@ -182,7 +183,7 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     )
     assert "previous tool request" not in duplicate_nudge.lower()
     assert "already completed successfully" in duplicate_nudge
-    assert "different enabled tool" in duplicate_nudge
+    assert "call a different tool only if" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
     _shared_setup_1(controller)
 
@@ -1005,3 +1006,49 @@ def test_a_hard_cap_below_the_window_cap_leaves_truncated_terminal_output_alone(
         controller.prepare_call(_call("terminal", {"command": "yes t"})), already
     )
     assert completion.tool_message()["content"] == already
+
+
+def test_a_read_only_mcp_result_is_not_new_work_until_its_hint_is_dropped():
+    status, models, generate = (f"mcp__unsloth__{n}" for n in ("status", "models", "generate"))
+    for name in (status, models, generate):
+        tool_facts.note_mcp_tool(name, {"annotations": {"readOnlyHint": name != generate}})
+    controller = ToolLoopController(tools = [_tool(status), _tool(models), _tool(generate)])
+    controller.record_result(controller.prepare_call(_call(status, {})), '{"chat":{}}')
+    controller.record_result(controller.prepare_call(_call(models, {})), '{"models":[]}')
+    duplicate = controller.prepare_call(_call(status, {}))
+    assert duplicate.action == "duplicate" and "Answer from the results" in duplicate.noop_result
+    controller.record_result(controller.prepare_call(_call(generate, {"text": "x"})), "Error: x")
+    assert controller.prepare_call(_call(status, {})).action == "execute"
+    tool_facts.note_mcp_tool(models, {"name": "models"})
+    assert not tool_facts.reads_only(models)
+
+
+def test_only_a_result_the_user_must_unblock_marks_the_turn_as_awaiting_them():
+    name = "mcp__unsloth__generate_audio"
+    controller = ToolLoopController(tools = [_tool(name)])
+    for model, result, awaiting in (
+        ("m", "Error: [needs_user_load kind=audio page=Audio] The music model is off.", True),
+        ("n", "Error: [not_loaded kind=audio] Load one with load_model(kind='tts') first.", False),
+        ("o", "Error: [not_loaded kind=audio] Ask the user to load one on the Audio page.", True),
+        (
+            "p",
+            "Error: [multi_model_always kind=chat] (HTTP 409) Call unload_model(kind='llm').",
+            False,
+        ),
+        ("q", "Error: [multi_model_always kind=chat] (HTTP 409) Ask the user to unload it.", True),
+    ):
+        controller.begin_batch()
+        controller.record_result(controller.prepare_call(_call(name, {"model": model})), result)
+        assert controller.awaiting_user is awaiting, result
+
+
+def test_a_refusal_the_user_must_unblock_survives_a_later_success_in_the_same_batch():
+    load, status = "mcp__unsloth__generate_audio", "mcp__unsloth__status"
+    controller = ToolLoopController(tools = [_tool(load), _tool(status)])
+    refusal = "Error: [needs_user_load kind=audio page=Audio] The music model is off."
+    controller.record_result(controller.prepare_call(_call(load, {"model": "m"})), refusal)
+    controller.record_result(controller.prepare_call(_call(status, {})), '{"chat":{}}')
+    assert controller.awaiting_user
+    controller.begin_batch()
+    controller.record_result(controller.prepare_call(_call(load, {"model": "n"})), "ok")
+    assert not controller.awaiting_user

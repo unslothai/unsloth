@@ -2665,3 +2665,51 @@ def test_controller_without_the_search_tool_never_loads_mcp_tools(tmp_path, monk
     decision = controller.prepare_call({"function": {"name": "mcp__srv1__ping", "arguments": "{}"}})
     assert decision.action == "disabled"
     assert controller.active_tools() == []
+
+
+STUDIO_TOOLS_URL = "http://127.0.0.1/mcp/studio-tools"
+
+
+@pytest.mark.parametrize("credential", ["via_api_key", "no_credential"])
+def test_only_the_ui_can_add_or_repoint_the_studio_tools_row(tmp_path, monkeypatch, credential):
+    import asyncio
+    import routes.mcp_servers as routes
+    from models.mcp_servers import McpServerCreate, McpServerImportRequest, McpServerUpdate
+
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "web", display_name = "Web", url = "https://a/mcp")
+    add = McpServerCreate(display_name = "Unsloth Studio", url = STUDIO_TOOLS_URL)
+    studio = asyncio.run(routes.create_mcp_server(add, current_subject = "u")).id
+    key = {"current_subject": "u", credential: True}
+    for refused in (
+        routes.create_mcp_server(add, **key),
+        routes.update_mcp_server("web", McpServerUpdate(url = STUDIO_TOOLS_URL), **key),
+        routes.update_mcp_server(studio, McpServerUpdate(url = "https://b/mcp"), **key),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(refused)
+        assert exc.value.status_code == 403
+    config = {"mcpServers": {"studio": {"url": "http://localhost:8888/mcp/studio-tools"}}}
+    result = asyncio.run(routes.import_mcp_servers(McpServerImportRequest(config = config), **key))
+    assert result.created == [] and len(result.errors) == 1
+    off = asyncio.run(routes.update_mcp_server(studio, McpServerUpdate(is_enabled = False), **key))
+    assert off.is_enabled is False and off.url == STUDIO_TOOLS_URL
+
+
+def test_the_studio_tools_row_is_reprobed_every_send_and_never_falls_back(tmp_path, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from core.inference import mcp_client, tools as tools_mod
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    for id, url in (("web", "https://x"), ("studio", STUDIO_TOOLS_URL)):
+        mcp_servers_db.create_server(id = id, display_name = id, url = url, is_enabled = True)
+    answers = [_one_tool(), _one_tool("a"), _one_tool("b"), RuntimeError("listing failed")]
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake := AsyncMock(side_effect = answers))
+    for studio_tools in (["mcp__studio__a"], ["mcp__studio__b"], []):
+        listed = asyncio.run(tools_mod.get_enabled_mcp_tools())
+        assert [t["function"]["name"] for t in listed] == ["mcp__web__echo", *studio_tools]
+    assert [c.kwargs["url"] for c in fake.call_args_list] == ["https://x", *[STUDIO_TOOLS_URL] * 3]

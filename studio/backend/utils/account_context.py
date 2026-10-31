@@ -8,7 +8,7 @@ from __future__ import annotations
 import threading
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, Awaitable, Callable, Optional, TypeVar
 
 OWNER_ACCOUNT_ID = "owner"
 OWNER_USERNAME = "unsloth"
@@ -25,8 +25,12 @@ class AccountContext:
     account_id: str
     username: str
     role: str = ROLE_USER
+    # Generation the request authenticated under, for minting a credential later; not identity.
+    credential_gen: Optional[str] = field(default = None, compare = False, repr = False)
     # An sk-unsloth key or keyless API access admitted the request, not a UI session; not part of identity.
     via_api_key: bool = field(default = False, compare = False)
+    # core.inference.load_policy.LoadPolicy value the credential allows; not part of identity.
+    load_policy: str = field(default = "any", compare = False)
 
     @property
     def is_owner(self) -> bool:

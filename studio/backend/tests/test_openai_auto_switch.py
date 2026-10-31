@@ -9,6 +9,8 @@ import os
 import threading
 import time
 import types
+from dataclasses import replace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -17,6 +19,7 @@ import routes.inference as inference_route
 from models.inference import LoadRequest
 from core.inference import local_model_resolver as resolver
 from utils import openai_auto_switch_settings as settings
+from utils.account_context import OWNER, AccountContext, run_as
 from core.inference import llama_cpp as llama_cpp_mod
 from core.inference import llama_keepwarm as kw
 from core.inference.llama_cpp import LlamaCppBackend
@@ -291,6 +294,68 @@ def test_already_loaded_does_not_reload(monkeypatch):
     )
     _run_hook("unsloth/A-GGUF")
     assert rec.calls == []
+
+
+def _as_chat_tools_key(account, fn, *args, **kwargs):
+    if account is None:
+        return fn(*args, **kwargs)
+    key = replace(account, via_api_key = True, load_policy = "beside_only")
+    return run_as(key, fn, *args, **kwargs)
+
+
+def test_a_chat_tools_key_never_replaces_the_loaded_model(monkeypatch):
+    monkeypatch.setattr("utils.multi_model_settings.get_multi_model_enabled", lambda: False)
+    b = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), b)
+    with pytest.raises(HTTPException) as excinfo:
+        _as_chat_tools_key(OWNER, _run_hook, "unsloth/B-GGUF:Q4_K_M")
+    assert excinfo.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=llm")
+    assert rec.calls == [] and backend.model_identifier == "unsloth/A-GGUF"
+    _run_hook("unsloth/B-GGUF:Q4_K_M")  # any other credential still switches
+    assert len(rec.calls) == 1
+
+
+@pytest.mark.parametrize("mode, enabled", [("always", True), ("always", False), ("off", True)])
+def test_a_chat_tools_key_loads_music_beside_the_chat_model_even_with_switch_off_or_says_why(
+    monkeypatch, mode, enabled
+):
+    monkeypatch.setattr("utils.multi_model_settings.get_multi_model_enabled", lambda: mode != "off")
+    monkeypatch.setattr("utils.multi_model_settings.get_multi_model_mode", lambda: mode)
+    music = ("org/Music-GGUF", "Q4_K_M", "org/Music-GGUF")
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), music, enabled = enabled)
+    backend.is_active, backend._is_audio = True, False
+    gated = AsyncMock(side_effect = _Reached())
+    monkeypatch.setattr(inference_route, "load_model_gated", gated)
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "music_type")
+    monkeypatch.setattr(inference_route, "_target_audio_workflows", lambda *_a: {"music"})
+    with pytest.raises(HTTPException if mode == "off" else _Reached) as excinfo:
+        _as_chat_tools_key(OWNER, _run_hook, "org/Music-GGUF:Q4_K_M", **_MUSIC_RUN)
+    assert rec.calls == [] and backend.model_identifier == "unsloth/A-GGUF"
+    assert [c.args[0].alongside for c in gated.await_args_list] == ([] if mode == "off" else [True])
+    if mode == "off":
+        problem = excinfo.value.headers["X-Unsloth-Problem"]
+        assert problem == "needs_user_load kind=audio model=org/Music-GGUF:Q4_K_M page=Audio"
+        assert "Keep multiple models loaded" in excinfo.value.detail  # the reason, for the user
+
+
+AUDIO_CPP_MUSIC = "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF"
+_MUSIC_RUN = dict(claim_resident = False, require_speech = True, require_audio_workflow = "music")
+
+
+@pytest.mark.parametrize(
+    "account, problem",
+    [
+        (None, f"not_loaded kind=audio model={AUDIO_CPP_MUSIC} page=Audio"),
+        (OWNER, "needs_download kind=audio model=audio-cpp/"),  # not on disk: not "would unload"
+        (AccountContext("acct-alice", "alice"), "needs_user_load kind=audio"),  # needs the switch
+    ],
+)
+def test_switch_off_refuses_an_audio_cpp_model_that_is_not_loaded(monkeypatch, account, problem):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None, enabled = False)
+    monkeypatch.setattr(inference_route.account_access, "managed_account", lambda: False)
+    with pytest.raises(HTTPException) as excinfo:
+        _as_chat_tools_key(account, _run_hook, AUDIO_CPP_MUSIC, **_MUSIC_RUN)
+    assert excinfo.value.headers["X-Unsloth-Problem"].startswith(problem) and rec.calls == []
 
 
 def test_known_unloaded_model_switches_once(monkeypatch):
@@ -12229,6 +12294,21 @@ def test_an_npu_model_named_by_a_request_switches_when_on(monkeypatch):
     backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
     _run_hook(_NPU_MODEL, serves_npu = True)
     assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
+
+
+def test_a_chat_model_that_lands_before_the_npu_gates_still_refuses_a_chat_tools_switch(
+    monkeypatch,
+):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    # The preflight sees no chat model; one is resident by the time the swap gates are held.
+    checks: list = []
+    monkeypatch.setattr(
+        inference_route, "_chat_model_resident", lambda **_kw: checks.append(1) or len(checks) > 1
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _as_chat_tools_key(OWNER, _run_hook, _NPU_MODEL, serves_npu = True)
+    assert excinfo.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=llm")
+    assert rec.calls == [] and len(checks) == 2
 
 
 def test_an_npu_switch_loads_with_the_saved_context_length(monkeypatch):
