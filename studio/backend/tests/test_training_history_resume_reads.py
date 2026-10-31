@@ -107,3 +107,31 @@ def test_no_preview_model_skips_the_preview_ref_lookup(monkeypatch, tmp_path):
         "preview_ref": None,
         "preview_sig": None,
     }
+
+
+def test_the_provenance_gate_answers_once_per_listing_for_runs_that_share_its_inputs(
+    reads, tmp_path, monkeypatch
+):
+    asked: list = []
+
+    def blocker(config):
+        asked.append(config.get("resume_model_load_mode"))
+        return None
+
+    monkeypatch.setattr(provenance_mod, "resource_provenance_resume_blocker", blocker)
+    rows = [_row(tmp_path / f"run-{i}", id = f"run-{i}") for i in range(3)]
+    rows.append(
+        _row(
+            tmp_path / "run-3",
+            id = "run-3",
+            config_json = json.dumps({"resume_model_load_mode": "runtime_4bit"}),
+        )
+    )
+
+    summaries = training_history._summaries_from_rows(rows, False)
+
+    assert [s.resume_blocked_reason for s in summaries] == [None] * 4
+    assert asked == [None, "runtime_4bit"]
+    training_history._summary_from_row(rows[0], False)
+    training_history._summary_from_row(rows[0], False)
+    assert asked == [None, "runtime_4bit", None, None]
