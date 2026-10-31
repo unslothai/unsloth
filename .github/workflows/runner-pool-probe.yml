@@ -41,3 +41,15 @@ jobs:
       - name: Report
         shell: bash
         run: echo "label=${{ matrix.label }} runner=$RUNNER_NAME arch=$(uname -m)"
+
+  # The LINUX_TEST_RUNNER pool, dispatched alongside the matrix above so its queue
+  # wait is compared within the same dispatch. Skipped while the variable is unset.
+  probe-override:
+    name: probe (${{ vars.LINUX_TEST_RUNNER }})
+    if: ${{ vars.LINUX_TEST_RUNNER != '' }}
+    runs-on: ${{ vars.LINUX_TEST_RUNNER }}
+    timeout-minutes: 10
+    steps:
+      - name: Report
+        shell: bash
+        run: echo "label=${{ vars.LINUX_TEST_RUNNER }} runner=$RUNNER_NAME arch=$(uname -m) nproc=$(nproc) mem=$(free -g | awk '/Mem:/{print $2}')G"

@@ -157,7 +157,10 @@ jobs:
             transformers_spec: "__from_pyproject__"
             trl_spec: "__from_pyproject__"
     name: "Core (${{ matrix.combo.label }})"
-    runs-on: ubuntu-24.04
+    # Repo variable LINUX_TEST_RUNNER moves the CPU test jobs onto another pool
+    # (e.g. tenki-standard-large-8c-16g) without editing each workflow. Unset, they
+    # stay on GitHub-hosted ubuntu-24.04; the override must also be an Ubuntu 24.04 image.
+    runs-on: ${{ vars.LINUX_TEST_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 35
     env:
       UNSLOTH_ZOO_REF: ${{ needs.resolve-zoo-ref.outputs.sha }}
@@ -1985,7 +1988,8 @@ jobs:
             transformers_spec: "__from_pyproject__"
             trl_spec: "__from_pyproject__"
     name: "Core zoo (${{ matrix.combo.label }})"
-    runs-on: ubuntu-24.04
+    # Pool override: see LINUX_TEST_RUNNER on the first job in this file.
+    runs-on: ${{ vars.LINUX_TEST_RUNNER || 'ubuntu-24.04' }}
     # Same as `consolidated`. The zoo suite (`pytest -n 4` plus the serial files)
     # now takes up to about 23 min on a busy runner, so a 25 min cap cancelled
     # cells that had already passed, while the pip cache was being saved. The cap
@@ -2145,7 +2149,8 @@ jobs:
   llama-cpp-smoke:
     # Built once outside the matrix: the result does not depend on the HF stack version.
     name: llama.cpp build + smoke
-    runs-on: ubuntu-24.04
+    # Pool override: see LINUX_TEST_RUNNER on the first job in this file.
+    runs-on: ${{ vars.LINUX_TEST_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 25
     env:
       UNSLOTH_ZOO_REF: ${{ inputs.unsloth_zoo_ref || 'main' }}
