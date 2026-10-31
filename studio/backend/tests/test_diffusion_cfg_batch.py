@@ -299,6 +299,18 @@ def test_install_uninstall_restores_the_forward_slot(monkeypatch):
     assert cb.cfg_batch_status(pipe) is None
 
 
+def test_the_router_keeps_the_forward_signature(monkeypatch):
+    # FLUX.3's modular denoise step passes only the kwargs named in transformer.forward's signature (img_ids)
+    import inspect
+
+    model = Flux2Transformer2DModel()
+    _, router = _armed(model, monkeypatch)
+    assert model.forward is router
+    params = inspect.signature(model.forward).parameters
+    assert {"hidden_states", "img_ids", "txt_ids", "return_dict"} <= set(params)
+    assert "self" not in params
+
+
 def test_switches_are_independent_of_multi_gpu(monkeypatch):
     pipe = _Pipe(_offloaded(Flux2Transformer2DModel()))
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MULTIGPU", "0")

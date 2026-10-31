@@ -542,6 +542,7 @@ class CfgBatchRouter:
             lambda: False
         )
         self.orig_forward = module.forward
+        self._mirror_signature()
         self.had_override = "forward" in module.__dict__
         self.prev_override = module.__dict__.get("forward")
         self.reason = reason
@@ -656,6 +657,16 @@ class CfgBatchRouter:
         module = self.module_ref()
         return module is None or module.__dict__.get("forward") is not self
 
+    def _mirror_signature(self) -> None:
+        """FLUX.3's modular denoise step passes only the kwargs named in ``transformer.forward``'s signature
+        (``img_ids``): a bare ``**kwargs`` signature here would drop them."""
+        import inspect
+
+        try:
+            self.__signature__ = inspect.signature(self.orig_forward)
+        except (TypeError, ValueError):
+            pass
+
     def _retake_slot(self) -> bool:
         """Back in the forward slot after a diffusers hook removal wrote the class forward over it. A streamed
         (``use_stream``) group offload drops its lazy-prefetch hook from the root after the first forward and restores
@@ -670,6 +681,7 @@ class CfgBatchRouter:
         if getattr(slot, "__func__", None) is not getattr(type(module), "forward", None):
             return False
         self.orig_forward = slot
+        self._mirror_signature()
         module.__dict__["forward"] = self
         self.stats["retaken"] = self.stats.get("retaken", 0) + 1
         if self.logger is not None:
