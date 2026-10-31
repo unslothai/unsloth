@@ -290,7 +290,6 @@ def test_a_module_path_that_reads_as_the_root_but_lands_elsewhere_has_its_index_
     index = {"weight_map": {"w": "../../victim.safetensors"}}
     _write(folder / "deep", {"model.safetensors.index.json": index})
     assert escaping_weight_references(folder) == ["link/../../../victim.safetensors"]
-    # A shard that stays in deep/ still passes.
     _write(
         folder / "deep", {"model.safetensors.index.json": {"weight_map": {"w": "s.safetensors"}}}
     )

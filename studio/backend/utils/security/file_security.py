@@ -200,7 +200,7 @@ def escaping_weight_references(folder) -> list:
             for spelled in spellings:
                 names.extend(_in_subfolder(spelled, name) for name in module_names)
         elif not _same_folder(folder / sub, folder):
-            # "link/.." reads as "." but lands beside the link's target: judge its names as spelled.
+            # "link/.." reads as "." but lands elsewhere: judge names as spelled.
             names.extend(_in_subfolder(sub, name) for name in _weight_names(folder / sub))
     # Spark-TTS / BiCodec load their transformers model from LLM/.
     if (folder / "LLM").is_dir():
