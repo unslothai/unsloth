@@ -686,11 +686,16 @@ def get_run_state(run_id: str) -> dict[str, Any] | None:
 
 
 def get_run_frame(run_id: str) -> tuple[dict[str, Any], str] | None:
-    """get_run_state's fields plus get_run's row as its compact JSON text, without parsing request_json."""
+    """get_run_state's fields plus get_run's row as its compact JSON text, without parsing request_json.
+
+    A request_json SQLite does not see as one line of valid JSON (corrupt, hand edited) takes the old
+    parse and re-encode, so the route never splices text the client cannot parse or that splits the frame."""
     conn = _connect()
     try:
         row = conn.execute(
-            "SELECT * FROM chat_generation_runs WHERE id=?",
+            """SELECT *, json_valid(request_json) AND instr(request_json, char(10))=0
+                         AND instr(request_json, char(13))=0 AS splice_ok
+               FROM chat_generation_runs WHERE id=?""",
             (run_id,),
         ).fetchone()
         if row is None:
@@ -700,7 +705,9 @@ def get_run_frame(run_id: str) -> tuple[dict[str, Any], str] | None:
             "lastEventSeq": int(row["last_event_seq"]),
             "updatedAt": int(row["updated_at"]),
         }
-        return state, _run_json_from_row(row)
+        if row["splice_ok"]:
+            return state, _run_json_from_row(row)
+        return state, json.dumps(_run_from_row(row), ensure_ascii = False, separators = (",", ":"))
     finally:
         conn.close()
 

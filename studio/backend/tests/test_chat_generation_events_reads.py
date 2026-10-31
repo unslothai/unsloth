@@ -139,6 +139,29 @@ def test_run_frame_matches_get_run_for_awkward_values(extra):
     )
 
 
+@pytest.mark.parametrize(
+    "stored",
+    ["not json", '{"model":"local"', '{"model":\n"local"}', '{"model":"local"}\r'],
+)
+def test_run_frame_falls_back_for_a_stored_request_that_is_not_one_line_of_json(
+    running_run, stored
+):
+    conn = runs_db._connect()
+    try:
+        conn.execute("UPDATE chat_generation_runs SET request_json=? WHERE id='run-1'", (stored,))
+        conn.commit()
+    finally:
+        conn.close()
+    runs_db.append_events("run-1", running_run, [("tool.status", {"name": "web"})])
+    runs_db.finish_run("run-1", worker_token = running_run, status = "completed", finish_reason = "stop")
+    run = runs_db.get_run("run-1")
+    _, run_json = runs_db.get_run_frame("run-1")
+    assert run_json == json.dumps(run, ensure_ascii = False, separators = (",", ":"))
+    raw = asyncio.run(_stream())
+    frame = next(line[6:] for line in raw.splitlines() if line.startswith("data: "))
+    assert json.loads(frame)["run"] == run
+
+
 def test_caught_up_wait_reads_events_twice(running_run, monkeypatch):
     calls = []
     original_list = runs_db.list_events
