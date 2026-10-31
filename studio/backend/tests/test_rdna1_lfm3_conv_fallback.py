@@ -103,3 +103,20 @@ def test_unreadable_model_or_props_is_a_noop(remote_modules):
     assert disable_lfm3_triton_conv_on_rdna1(_model("cuda"), torch) == []
     assert disable_lfm3_triton_conv_on_rdna1(object(), _fake_torch(hip = True, arch = "gfx1010")) == []
     assert remote_modules[LFM3].can_use_lfm3_conv is _original
+
+
+def _tensor(index):
+    return types.SimpleNamespace(device = types.SimpleNamespace(type = "cuda", index = index))
+
+
+def test_gate_stays_on_for_a_non_rdna1_card_in_the_same_process(remote_modules):
+    # Mixed host: an RDNA1 model is loaded first, then the same remote code runs on another card.
+    archs = {0: "gfx1010", 1: "gfx1100"}
+    torch = _fake_torch(hip = True, arch = "gfx1010")
+    torch.cuda.get_device_properties = lambda index = None: types.SimpleNamespace(gcnArchName = archs[index])
+    disable_lfm3_triton_conv_on_rdna1(_model("cuda", 0), torch)
+    assert disable_lfm3_triton_conv_on_rdna1(_model("cuda", 0), torch) == []  # no double wrap
+    for name in (LFM3, OMNI_TEXT):
+        gate = remote_modules[name].can_use_lfm3_conv
+        assert gate(_tensor(0), None) is False
+        assert gate(_tensor(1), None) is True
