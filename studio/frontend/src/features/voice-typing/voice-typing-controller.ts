@@ -84,18 +84,29 @@ const MAX_BOOT_RETRIES = 6;
  * fallback so an older desktop backend (or a dev web build) never blocks a
  * transcript.
  */
-async function fixGrammarOnDevice(text: string): Promise<string> {
+async function fixGrammarOnDevice(
+  text: string,
+): Promise<{ text: string; fixes: number }> {
   const { dictationLanguage, dictionary } = useVoiceSettingsStore.getState();
   try {
-    const fixed = await invoke<string>("fix_grammar", {
-      text,
-      language: dictationLanguage,
-      customWords: dictionary,
-    });
-    return fixed.trim() ? fixed : text;
+    const result = await invoke<{ text: string; fixes: number }>(
+      "fix_grammar",
+      {
+        text,
+        language: dictationLanguage,
+        customWords: dictionary,
+      },
+    );
+    if (result?.text?.trim()) {
+      return { text: result.text, fixes: result.fixes ?? 0 };
+    }
+    return { text, fixes: 0 };
   } catch (error) {
     console.warn("[voice typing] native grammar fixer unavailable:", error);
-    return fixGrammar(text, { language: dictationLanguage });
+    return {
+      text: fixGrammar(text, { language: dictationLanguage }),
+      fixes: 0,
+    };
   }
 }
 
@@ -486,6 +497,7 @@ export class VoiceTypingController {
         microphone: warm,
         removeFillerWords: true,
         spokenPunctuation,
+        stripPausePeriods: true,
         // Use a single JSON response per cut segment so system/UI resources are not
         // spent streaming partial tokens and HTTP disconnect aborts the backend immediately.
         stream: false,
@@ -604,10 +616,9 @@ export class VoiceTypingController {
         0.18,
         Math.max(0.015, this.noiseFloorLevel * 0.95 + level * 0.05),
       );
-      const { autoStopSilence, autoStopDelayMs, idleStopMs, mode } =
-        useVoiceTypingStore.getState();
-      // Safety net: a forgotten session ends after a minute of no speech by
-      // default, even when pause auto-stop is off or the mode is hold.
+      const { idleStopMs } = useVoiceTypingStore.getState();
+      // Only one auto-stop exists: the idle timeout. There is no separate
+      // short-pause timer, so the same setting governs hold and toggle modes.
       if (
         idleStopMs > 0 &&
         this.speechHeard &&
@@ -618,11 +629,10 @@ export class VoiceTypingController {
         this.finish();
         return;
       }
-      if (!autoStopSilence || mode === "hold") return;
       if (!this.speechHeard) {
         // User activated voice typing and spoke nothing (only silence or ambient noise):
-        // close the pill automatically after the silence window without transcribing.
-        const silentWaitMs = Math.max(autoStopDelayMs, 2500);
+        // close the pill automatically after a short grace period without transcribing.
+        const silentWaitMs = 2500;
         if (
           this.recordingStartedAt > 0 &&
           now - this.recordingStartedAt >= silentWaitMs
@@ -632,9 +642,6 @@ export class VoiceTypingController {
         }
         return;
       }
-      if (!this.lastVoiceAt || now - this.lastVoiceAt < autoStopDelayMs) return;
-      console.info("[voice typing] auto-stop after silence");
-      this.finish();
     });
   }
 
@@ -755,9 +762,17 @@ export class VoiceTypingController {
     }
     let text = await this.postProcessTranscript(rawText, token);
     const { grammarFixerEnabled } = useVoiceTypingStore.getState();
+    let fixes = 0;
     if (grammarFixerEnabled) {
-      text = await fixGrammarOnDevice(text);
+      const corrected = await fixGrammarOnDevice(text);
+      text = corrected.text;
+      fixes = corrected.fixes;
     }
+    // The dictation adapter records the pre-refinement transcript for the
+    // history; replace it with what was actually inserted.
+    useVoiceSettingsStore
+      .getState()
+      .updateLatestRecentDictation(rawText, text, fixes);
     if (this.disposed || token !== this.cancelToken) return;
     if (!text.trim()) {
       this.setPhase("idle");
@@ -771,9 +786,9 @@ export class VoiceTypingController {
     const {
       appendTrailingSpace,
       copyLastTranscript,
+      insertSubmitKey,
       pasteAutomatically,
       pasteMethod,
-      submitAfterInsert,
     } = useVoiceTypingStore.getState();
     try {
       const outcome = await invoke<string>("voice_typing_insert", {
@@ -783,8 +798,8 @@ export class VoiceTypingController {
         copyLastTranscript: copyLastTranscript || !pasteAutomatically,
         paste: pasteAutomatically,
         pasteMethod,
-        // Enter only makes sense once the text was actually pasted.
-        submit: pasteAutomatically && submitAfterInsert,
+        // The key is only sent after an actual paste.
+        submitKey: pasteAutomatically ? insertSubmitKey : "none",
         trailingSpace: appendTrailingSpace,
       });
       // A cancel during the insert cannot undo the paste, but it must not

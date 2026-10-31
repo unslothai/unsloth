@@ -34,6 +34,7 @@ interface VoiceTypingState {
   soundVolume: number;
   autoStopDelayMs: number;
   idleStopMs: number;
+  insertSubmitKey: string;
   pasteMethod: string;
   hudPosition: string;
   muteWhileRecording: boolean;
@@ -122,6 +123,7 @@ test("a current payload keeps its choices and forces micWarmSeconds off", async 
       micWarmSeconds: -1,
       soundVolume: 0.8,
       idleStopMs: 120_000,
+      submitAfterInsert: true,
     },
   });
   assert.equal(
@@ -131,8 +133,13 @@ test("a current payload keeps its choices and forces micWarmSeconds off", async 
   );
   assert.equal(store.getState().copyLastTranscript, true);
   assert.equal(store.getState().micWarmSeconds, 0, "micWarmSeconds is always 0");
-  assert.equal(store.getState().soundVolume, 0.8);
+  assert.equal(store.getState().soundVolume, 1, "feedback volume is fixed at 100%");
   assert.equal(store.getState().idleStopMs, 120_000);
+  assert.equal(
+    store.getState().insertSubmitKey,
+    "enter",
+    "the old Enter switch migrates to the insert-key choice",
+  );
 });
 
 test("out-of-range values are repaired instead of shown", async () => {
@@ -173,7 +180,7 @@ test("new writes carry the current schema version", async () => {
   assert.ok(!("lastTranscript" in (saved.state ?? {})));
 });
 
-test("default dictation dictionary has 80 base words plus user name words", async () => {
+test("default dictation dictionary has 1000 curated base words plus user name words", async () => {
   const voiceSettingsModule = (await import(
     new URL(
       "../src/features/settings/stores/voice-settings-store.ts",
@@ -187,8 +194,8 @@ test("default dictation dictionary has 80 base words plus user name words", asyn
 
   assert.equal(
     voiceSettingsModule.DEFAULT_DICTATION_DICTIONARY_WORDS.length,
-    80,
-    "exactly 80 quality base words excluding user name",
+    1000,
+    "exactly 1000 quality base words excluding user name",
   );
   assert.ok(
     voiceSettingsModule.DEFAULT_DICTATION_DICTIONARY_WORDS.includes("Unsloth"),
@@ -199,8 +206,70 @@ test("default dictation dictionary has 80 base words plus user name words", asyn
   assert.deepEqual(nameWords, ["Fahad", "Khan"]);
 
   const combined = voiceSettingsModule.buildDefaultDictationDictionary("Fahad Khan");
-  assert.equal(combined.length, 82);
+  assert.equal(combined.length, 1000);
   assert.equal(combined[0], "Fahad");
   assert.equal(combined[1], "Khan");
   assert.equal(combined[2], "Unsloth");
+});
+
+test("turning history off keeps past dictations so they can still be managed", async () => {
+  const settingsModule = (await import(
+    new URL(
+      "../src/features/settings/stores/voice-settings-store.ts",
+      import.meta.url,
+    ).href
+  )) as {
+    useVoiceSettingsStore: {
+      getState: () => {
+        recentDictations: { id: string; text: string }[];
+        setMaxRecentDictations: (value: number) => void;
+        addRecentDictation: (text: string) => void;
+      };
+    };
+  };
+  const store = settingsModule.useVoiceSettingsStore.getState();
+  store.setMaxRecentDictations(5);
+  settingsModule.useVoiceSettingsStore
+    .getState()
+    .addRecentDictation("a saved dictation");
+  const before =
+    settingsModule.useVoiceSettingsStore.getState().recentDictations.length;
+  settingsModule.useVoiceSettingsStore.getState().setMaxRecentDictations(0);
+  assert.equal(
+    settingsModule.useVoiceSettingsStore.getState().recentDictations.length,
+    before,
+    "off stops new entries but does not delete the old ones",
+  );
+});
+
+test("changing the profile name replaces the old name words in the default list", async () => {
+  const settingsModule = (await import(
+    new URL(
+      "../src/features/settings/stores/voice-settings-store.ts",
+      import.meta.url,
+    ).href
+  )) as {
+    useVoiceSettingsStore: {
+      getState: () => {
+        collections: { isDefault?: boolean; words: string[] }[];
+        syncUserNameToDictionary: (
+          displayName?: string,
+          nickname?: string,
+        ) => void;
+      };
+    };
+  };
+  const store = settingsModule.useVoiceSettingsStore.getState();
+  const defaultWords = () => {
+    const collection = settingsModule.useVoiceSettingsStore
+      .getState()
+      .collections.find((entry) => entry.isDefault);
+    assert.ok(collection);
+    return collection.words;
+  };
+  store.syncUserNameToDictionary("Fahad Khan");
+  assert.ok(defaultWords().includes("Fahad"));
+  store.syncUserNameToDictionary("Ali Khan");
+  assert.ok(!defaultWords().includes("Fahad"));
+  assert.ok(defaultWords().includes("Ali"));
 });

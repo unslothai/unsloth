@@ -34,7 +34,9 @@ import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
   cleanDictationText,
   joinTranscriptParts,
+  stripShortPausePeriod,
 } from "./dictation-text";
+import { romanizeToLatin } from "./romanize";
 import type { SpeechSegment } from "./dictation-segmenter";
 import {
   microphoneErrorMessage,
@@ -405,15 +407,42 @@ export async function fetchSttStatus(
 /** The engine block that owns `model`. A curated Whisper prefers whisper.cpp, but without
  *  whisper-server the backend serves it through Transformers, so that is the fallback.
  *  mtmd and audiocpp models run nowhere else. */
+/**
+ * Pick the engine that can actually serve `model` right now. A curated Whisper
+ * model prefers whisper.cpp, but a Transformers snapshot may be the only copy
+ * on disk; loading it through the GGUF sidecar would fail with "not
+ * downloaded" even though the picker showed it as installed.
+ */
+export function resolveSttEngine(
+  status: SttStatus,
+  model: string,
+  engineOverride?: SttEngine,
+): SttEngine {
+  const preferred = engineOverride ?? sttEngineFor(model);
+  if (preferred !== "gguf") return preferred;
+
+  const ggufHas =
+    status.gguf?.downloaded_models?.includes(model) ||
+    status.gguf?.loaded_model === model;
+  const transformersHas =
+    status.transformers?.downloaded_models?.includes(model) ||
+    status.transformers?.loaded_model === model;
+
+  if (status.transformers?.loaded_model === model) return "transformers";
+  if (status.gguf?.available && (ggufHas || !transformersHas)) return "gguf";
+  if (status.transformers?.available && transformersHas) return "transformers";
+  return status.gguf?.available ? "gguf" : "transformers";
+}
+
 export function sttEngineStatusFor(
   status: SttStatus,
   model: string,
   engineOverride?: SttEngine,
 ): SttEngineStatus | undefined {
-  const engine = engineOverride ?? sttEngineFor(model);
+  const engine = resolveSttEngine(status, model, engineOverride);
   if (engine === "mtmd") return status.mtmd;
   if (engine === "audiocpp") return status.audiocpp;
-  if (engine === "gguf" && status.gguf?.available) return status.gguf;
+  if (engine === "gguf") return status.gguf;
   return status.transformers;
 }
 
@@ -643,6 +672,8 @@ export interface StudioModelDictationOptions {
   removeFillerWords?: boolean;
   /** Turn spoken punctuation into marks. */
   spokenPunctuation?: boolean;
+  /** System-wide voice typing: drop the full stop a short pause segment ends with. */
+  stripPausePeriods?: boolean;
   /** Ask the local backend for NDJSON partials. Off for callers that only ever
    *  read the final transcript (system-wide voice typing): the partials are
    *  decoded text they would throw away, and skipping them keeps the response a
@@ -691,6 +722,10 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const sessionLanguage = usesExternalEndpoint
       ? settings.dictationLanguage
       : resolveModelDictationLanguage(sessionModel, settings.dictationLanguage);
+    // "Romanized" is not a language the backend knows: ask it to detect the
+    // spoken language, then transliterate the transcript locally.
+    const sessionRomanize =
+      !usesExternalEndpoint && settings.dictationLanguage === "romanized";
     const sessionEngine = usesExternalEndpoint
       ? undefined
       : sttEngineFor(sessionModel);
@@ -860,11 +895,15 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       if (!trimmed) return "";
       // Not trimmed: a segment can be a spoken "new paragraph", which is
       // whitespace and must survive to the join.
-      return cleanDictationText(applyDictationDictionary(trimmed), {
+      const cleaned = cleanDictationText(applyDictationDictionary(trimmed), {
         language: sessionLanguage,
         removeFillers: this.options.removeFillerWords,
         spokenPunctuation: this.options.spokenPunctuation,
       });
+      const latinized = sessionRomanize ? romanizeToLatin(cleaned) : cleaned;
+      return this.options.stripPausePeriods
+        ? stripShortPausePeriod(latinized)
+        : latinized;
     };
 
     const enqueueSegment = (index: number, segment: SpeechSegment) => {

@@ -94,6 +94,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [pending, setPending] = useState<"delete-list" | "reset" | null>(null);
+  const [visibleLimit, setVisibleLimit] = useState(50);
 
   useEffect(() => {
     syncUserNameToDictionary(displayName, nickname);
@@ -119,6 +120,10 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
       .map((word, index) => ({ word, index }))
       .filter(({ word }) => !needle || word.toLowerCase().includes(needle));
   }, [activeCollection.words, needle]);
+
+  useEffect(() => {
+    setVisibleLimit(50);
+  }, [activeCollection.id, needle]);
 
   const resetTransientState = () => {
     setSearch("");
@@ -380,33 +385,32 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
         </div>
       ) : null}
 
-      <div className="flex items-center gap-2">
-        <Input
-          value={newEntry}
-          onChange={(event) => setNewEntry(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              handleAddEntry();
-            }
-          }}
-          placeholder={t("settings.voice.dictionary.newEntryPlaceholder")}
-          className="h-9 flex-1 text-sm"
-          aria-label={t("settings.voice.dictionary.newEntryAria")}
-        />
-        <Button
-          size="sm"
-          className="h-9 shrink-0"
-          onClick={handleAddEntry}
-          disabled={!newEntry.trim()}
-        >
-          <HugeiconsIcon icon={PlusSignIcon} className="mr-1.5 size-3.5" />
-          {t("settings.voice.dictionary.addEntry")}
-        </Button>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        {t("settings.voice.dictionary.snippetHint")}
-      </p>
+      {!isDefault ? (
+        <div className="flex items-center gap-2">
+          <Input
+            value={newEntry}
+            onChange={(event) => setNewEntry(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                handleAddEntry();
+              }
+            }}
+            placeholder={t("settings.voice.dictionary.newEntryPlaceholder")}
+            className="h-9 flex-1 text-sm"
+            aria-label={t("settings.voice.dictionary.newEntryAria")}
+          />
+          <Button
+            size="sm"
+            className="h-9 shrink-0"
+            onClick={handleAddEntry}
+            disabled={!newEntry.trim()}
+          >
+            <HugeiconsIcon icon={PlusSignIcon} className="mr-1.5 size-3.5" />
+            {t("settings.voice.dictionary.addEntry")}
+          </Button>
+        </div>
+      ) : null}
 
       <div className="relative">
         <HugeiconsIcon
@@ -420,10 +424,11 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
           placeholder={t("settings.voice.dictionary.searchPlaceholder")}
           aria-label={t("settings.voice.dictionary.searchPlaceholder")}
           className="h-8 pl-8 text-sm"
+          disabled={activeCollection.words.length === 0}
         />
       </div>
 
-      <div className="rounded-xl border border-border/60">
+      <div className="border border-border/60">
         {visibleWords.length === 0 ? (
           <p className="px-4 py-8 text-center text-xs text-muted-foreground">
             {activeCollection.words.length === 0
@@ -432,7 +437,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
           </p>
         ) : (
           <div className="divide-y divide-border/40">
-            {visibleWords.map(({ word, index }) => {
+            {visibleWords.slice(0, visibleLimit).map(({ word, index }) => {
               const snippet = SNIPPET_PATTERN.exec(word);
               const editing = editingIndex === index;
               return (
@@ -553,6 +558,20 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
           </div>
         )}
       </div>
+
+      {visibleWords.length > visibleLimit ? (
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setVisibleLimit((limit) => limit + 100)}
+          >
+            {t("settings.voice.dictionary.showMore", {
+              count: visibleWords.length - visibleLimit,
+            })}
+          </Button>
+        </div>
+      ) : null}
 
       <AlertDialog
         open={pending !== null}

@@ -10,7 +10,18 @@ import {
   collapseStutters,
   joinTranscriptParts,
   removeFillerWords,
+  stripShortPausePeriod,
 } from "../src/features/chat/adapters/dictation-text.ts";
+
+test("short pause periods are dropped without touching real sentences", () => {
+  assert.equal(stripShortPausePeriod("Thanks."), "Thanks");
+  assert.equal(stripShortPausePeriod("Okay."), "Okay");
+  assert.equal(
+    stripShortPausePeriod("This is a longer sentence."),
+    "This is a longer sentence.",
+  );
+  assert.equal(stripShortPausePeriod("Are you coming?"), "Are you coming?");
+});
 
 test("filler words go without taking the sentence's capital with them", () => {
   assert.equal(
@@ -112,6 +123,8 @@ test("segments join without a space before leading punctuation", () => {
   assert.equal(joinTranscriptParts([]), "");
   assert.equal(joinTranscriptParts(["Hello", "\n\n", "world"]), "Hello\n\nworld");
   assert.equal(joinTranscriptParts(["\n\n", "Hello"]), "Hello");
+  assert.equal(joinTranscriptParts(["Hello.", "world"]), "Hello world");
+  assert.equal(joinTranscriptParts(["Hello.", "World"]), "Hello. World");
 });
 
 test("a draft keeps the whitespace the user typed", () => {

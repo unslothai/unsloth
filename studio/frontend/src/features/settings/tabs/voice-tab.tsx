@@ -26,7 +26,7 @@ import {
 } from "@/features/audio/audio-cpp-catalog";
 import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
 import { useIsAccountOwner } from "@/features/auth";
-import {
+import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";import {
   type SttDownloadStatus,
   StudioModelDictationAdapter,
   StudioSpeechSynthesisAdapter,
@@ -120,12 +120,10 @@ import {
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
-/** Backends that report a runtime name where a device would go. */
-const STT_RUNTIME_NAMES = new Set(["whisper.cpp", "llama.cpp"]);
-
 // Languages shared by browser speech recognition and local STT.
 const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "auto", label: "" }, // label rendered via i18n
+  { value: "romanized", label: "Romanized (Latin letters)" },
   { value: "en-US", label: "English (US)" },
   { value: "en-GB", label: "English (UK)" },
   { value: "zh-CN", label: "中文 (简体)" },
@@ -589,6 +587,12 @@ export function VoiceTab() {
   const syncUserNameToDictionary = useVoiceSettingsStore(
     (s) => s.syncUserNameToDictionary,
   );
+  const displayName = useUserProfileStore((s) => s.displayName);
+  const nickname = useUserProfileStore((s) => s.nickname);
+  // Keep the default vocabulary's name entries in step with Profile.
+  useEffect(() => {
+    syncUserNameToDictionary(displayName, nickname);
+  }, [displayName, nickname, syncUserNameToDictionary]);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   const setTtsEnabled = useVoiceSettingsStore((s) => s.setTtsEnabled);
   const autoReadAloud = useVoiceSettingsStore((s) => s.autoReadAloud);
@@ -653,6 +657,65 @@ export function VoiceTab() {
   const [selectedDictationId, setSelectedDictationId] = useState<string | null>(
     null,
   );
+
+  // Mouse back/forward navigates the Voice subpages (main -> history/details or
+  // dictionary). The settings dialog handles tab history when this stack is empty.
+  type VoiceView = {
+    subpage: "main" | "recents" | "dictionary";
+    selected: string | null;
+  };
+  const voiceViewRef = useRef<VoiceView>({
+    subpage: "main",
+    selected: null,
+  });
+  const voicePastRef = useRef<VoiceView[]>([]);
+  const voiceFutureRef = useRef<VoiceView[]>([]);
+  const suppressVoiceHistoryRef = useRef(false);
+
+  useEffect(() => {
+    const previous = voiceViewRef.current;
+    if (
+      previous.subpage === subpage &&
+      previous.selected === selectedDictationId
+    ) {
+      return;
+    }
+    if (suppressVoiceHistoryRef.current) {
+      suppressVoiceHistoryRef.current = false;
+      voiceViewRef.current = { subpage, selected: selectedDictationId };
+      return;
+    }
+    voicePastRef.current.push(previous);
+    voiceFutureRef.current = [];
+    voiceViewRef.current = { subpage, selected: selectedDictationId };
+  }, [subpage, selectedDictationId]);
+
+  useEffect(() => {
+    const onAuxClick = (event: MouseEvent) => {
+      if (event.button !== 3 && event.button !== 4) return;
+      if (event.button === 3) {
+        const previous = voicePastRef.current.pop();
+        if (!previous) return;
+        event.preventDefault();
+        suppressVoiceHistoryRef.current = true;
+        voiceFutureRef.current.push(voiceViewRef.current);
+        voiceViewRef.current = previous;
+        setSubpage(previous.subpage);
+        setSelectedDictationId(previous.selected);
+        return;
+      }
+      const next = voiceFutureRef.current.pop();
+      if (!next) return;
+      event.preventDefault();
+      suppressVoiceHistoryRef.current = true;
+      voicePastRef.current.push(voiceViewRef.current);
+      voiceViewRef.current = next;
+      setSubpage(next.subpage);
+      setSelectedDictationId(next.selected);
+    };
+    window.addEventListener("mousedown", onAuxClick, true);
+    return () => window.removeEventListener("mousedown", onAuxClick, true);
+  }, []);
 
   useEffect(() => {
     if (sttProviderId && !hasSelectedSttConnection) {
@@ -757,7 +820,6 @@ export function VoiceTab() {
     | "downloaded"
     | "error";
   const [sttPhase, setSttPhase] = useState<SttPhase>("idle");
-  const [sttDevice, setSttDevice] = useState<string | null>(null);
   const [statusNonce, setStatusNonce] = useState(0);
   const [sttUnloading, setSttUnloading] = useState(false);
   const isLocalEngine = dictationEngine === "model";
@@ -765,9 +827,7 @@ export function VoiceTab() {
   // The model decides the backend: curated ids run GGML through whisper.cpp,
   // custom repos run through Transformers.
   // Progress of the selected engine's model download, from /stt/status.
-  const [sttDownload, setSttDownload] = useState<SttDownloadStatus | null>(
-    null,
-  );
+  const [sttDownload, setSttDownload] = useState<SttDownloadStatus | null>(null);
   // Every engine's downloaded models, for the picker's on-device dots.
   const [downloadedSttModels, setDownloadedSttModels] = useState<
     ReadonlySet<string>
@@ -1008,7 +1068,6 @@ export function VoiceTab() {
           return;
         }
         if (loaded && !engineStatus.loading) {
-          setSttDevice(engineStatus.device);
           setSttPhase("ready");
           if (engineStatus.keep_alive_seconds > 0) {
             schedulePoll(
@@ -1022,7 +1081,6 @@ export function VoiceTab() {
         }
         // Merely opening settings or selecting local STT never downloads or
         // loads a model. Loading begins from Load or when recording starts.
-        setSttDevice(null);
         setSttPhase("on-demand");
       } catch {
         if (!cancelled) setSttPhase("error");
@@ -1042,64 +1100,10 @@ export function VoiceTab() {
     autoLoadSttModel,
   ]);
 
-  const sttStatusText = (() => {
-    switch (sttPhase) {
-      case "checking":
-        return t("settings.voice.dictation.sttChecking");
-      case "loading":
-        return t("settings.voice.dictation.sttLoadingModel");
-      case "on-demand":
-        return t("settings.voice.dictation.sttOnDemand");
-      case "ready":
-        // whisper.cpp, llama.cpp and audio.cpp report a runtime name, not a
-        // device; show a plain "Loaded" rather than surfacing it.
-        return sttDevice &&
-          !STT_RUNTIME_NAMES.has(sttDevice) &&
-          !sttDevice.startsWith("audio.cpp")
-          ? t("settings.voice.dictation.sttReady", {
-              device: sttDevice.toUpperCase(),
-            })
-          : t("settings.voice.dictation.sttLoaded");
-      case "unavailable":
-        return t("settings.voice.dictation.sttUnavailable");
-      case "error":
-        return t("settings.voice.dictation.sttModelFailed");
-      default:
-        return "";
-    }
-  })();
-
   const downloadingThisModel =
     isLocalEngine &&
     sttDownload?.downloading === true &&
     sttDownload.model === sttModel;
-
-  const sttModelStatusText = (() => {
-    if (downloadingThisModel) {
-      const total = sttDownload?.bytes_total ?? 0;
-      const done = sttDownload?.bytes_done ?? 0;
-      return t("settings.voice.dictation.sttDownloading", {
-        progress:
-          total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0,
-      });
-    }
-    if (sttPhase === "unavailable") {
-      return sttStatusText;
-    }
-    switch (effectiveSttDownloadAvailability) {
-      case "checking":
-        return t("settings.voice.dictation.sttDownloadChecking");
-      case "missing":
-        return t("settings.voice.dictation.sttNotDownloaded");
-      case "error":
-        // This state means the download itself failed, not the status check.
-        return t("settings.voice.dictation.sttDownloadFailed");
-      case "downloaded":
-        return sttStatusText;
-      default:
-        return "";
-    }
-  })();
 
   // Pressing Download is the confirmation. The prompt is for the paths that
   // never asked for one, like the mic finding nothing on disk.
@@ -1422,7 +1426,6 @@ export function VoiceTab() {
                 }
                 if (next === "model") {
                   setSttPhase("checking");
-                  setSttDevice(null);
                   setSttDownload(null);
                 }
               }
@@ -1513,25 +1516,6 @@ export function VoiceTab() {
                 sttVariants.length > 1
                   ? t("settings.voice.dictation.sttQuantDescription")
                   : t("settings.voice.dictation.sttModelDescription")
-              }
-              // Progress lives in the shared downloads panel; a second bar here
-              // said the same thing twice.
-              below={
-                <div className="flex min-h-5 w-56 items-center justify-end gap-2 text-xs text-muted-foreground">
-                  {effectiveSttDownloadAvailability === "checking" ||
-                  sttPhase === "loading" ||
-                  sttPhase === "checking" ? (
-                    <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current" />
-                  ) : sttPhase === "ready" ||
-                    (effectiveSttDownloadAvailability === "downloaded" &&
-                      sttPhase === "on-demand") ? (
-                    <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
-                  ) : effectiveSttDownloadAvailability === "error" ||
-                    sttPhase === "error" ? (
-                    <span className="size-1.5 shrink-0 rounded-full bg-destructive" />
-                  ) : null}
-                  <span className="min-w-0 truncate">{sttModelStatusText}</span>
-                </div>
               }
             >
               <div className="flex w-56 flex-col gap-1.5">
@@ -1646,7 +1630,6 @@ export function VoiceTab() {
                     wait: false,
                   }).catch(() => {});
                   setSttPhase("on-demand");
-                  setSttDevice(null);
                   setSttDevicePreference(next);
                 }}
               >
@@ -1763,7 +1746,11 @@ export function VoiceTab() {
 
         <SettingsRow
           label={t("settings.voice.dictation.languageLabel")}
-          description={t("settings.voice.dictation.languageDescription")}
+          description={
+            dictationLanguage === "romanized"
+              ? t("settings.voice.dictation.languageRomanizedDescription")
+              : t("settings.voice.dictation.languageDescription")
+          }
         >
           <Select
             value={dictationLanguage}

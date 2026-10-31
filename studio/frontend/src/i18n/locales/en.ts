@@ -1698,6 +1698,8 @@ export const en = {
         savedMicDisconnected: "Saved microphone (not connected)",
         languageLabel: "Dictation language",
         languageDescription: "Language to recognize",
+        languageRomanizedDescription:
+          "Write any language in Latin letters (best for Urdu, Hindi, Arabic, Russian and Greek)",
         languageAuto: "Auto (browser language)",
         languageAutoDetect: "Auto (detect language)",
       },
@@ -1709,8 +1711,7 @@ export const en = {
         manage: "Manage",
         backToVoice: "Back to Voice",
         title: "Custom spellings",
-        subtitle:
-          "Teach dictation names, jargon and spoken shortcuts. Changes apply from the next dictation.",
+        subtitle: "Teach dictation names, jargon and spoken shortcuts.",
         listLabel: "Vocabulary list",
         newList: "New list",
         newListPlaceholder: "List name",
@@ -1733,6 +1734,7 @@ export const en = {
         empty: "No words yet. Add one above.",
         noMatches: "No words match your search",
         duplicateEntry: "That word is already in this list",
+        showMore: "Show {count} more",
         editEntry: "Edit entry",
         save: "Save",
         cancel: "Cancel",
@@ -1756,7 +1758,9 @@ export const en = {
         seekLabel: "Seek through the recording",
         metaWords: "Words: {count}",
         metaCharacters: "Characters: {count}",
+        metaFixes: "Fixes: {count}",
         metaLinkedChat: "Linked to a chat",
+        copiedShort: "Copied",
         pageDescription:
           "View, replay, copy, or delete saved dictations.",
         searchPlaceholder: "Search dictations",
@@ -1768,7 +1772,7 @@ export const en = {
         detailTitle: "Saved dictation",
         backToVoice: "Back to Voice",
         backToRecents: "Back to recent dictations",
-        view: "View full dictation",
+        view: "View all details",
         empty: "No dictations yet",
         dictationColumn: "Dictation",
         dateColumn: "Date created",
@@ -1855,13 +1859,17 @@ export const en = {
           "Silence duration before auto-stop",
         idleStopLabel: "Stop idle dictation",
         idleStopDescription:
-          "Safety stop after this much silence, even when pause auto-stop is off",
+          "Stop dictation after this much silence",
         idleStopNever: "Never",
         idleStopSeconds: "{seconds} seconds",
         idleStopMinutes: "{minutes} min",
-        submitLabel: "Press Enter after inserting",
+        submitLabel: "After inserting",
         submitDescription:
-          "Send messages automatically after inserting",
+          "Key or shortcut sent in the target app after the transcript is inserted",
+        submitKeyNone: "Do nothing",
+        submitKeyEnter: "Press Enter",
+        submitKeyCtrlEnter: "Press Ctrl + Enter",
+        submitKeyShiftEnter: "Press Shift + Enter (new line)",
         seconds: "{seconds} s",
         micAccessLabel: "Microphone",
         micAccessGrantedDescription: "Unsloth can use the microphone while you dictate",
@@ -1871,10 +1879,13 @@ export const en = {
         micAccessAskAgain: "Ask again",
         micWarmAlwaysDescription: "The microphone stays open while voice typing is on",
         micWarmAlways: "Always",
-        copyTranscriptLabel: "Copy the last transcript",
-        copyTranscriptDescription: "Keep the transcript on the clipboard after pasting",
-        soundsThemeLabel: "Sound",
-        soundsThemeDescription: "Tone played on start and stop",
+        copyTranscriptLabel: "Keep transcript in clipboard",
+        copyTranscriptDescription:
+          "Leave the transcript on the clipboard after pasting. Off restores what you copied before.",
+        soundsThemeLabel: "Feedback sounds",
+        soundsThemeDescription:
+          "Sound played when dictation starts and stops",
+        soundsOff: "Off",
         soundsThemeChime: "Chime",
         soundsThemeMarimba: "Marimba",
         soundsThemePop: "Pop",
@@ -1915,10 +1926,9 @@ export const en = {
         llmPostProcessDescription:
           "Clean up grammar, formatting, and filler words with an LLM",
         llmModelLabel: "Post-processing model",
-        llmModelDescription:
-          "Model used to refine transcripts",
-        llmModelNoActive:
-          "No active model — refining will be skipped.",
+        llmModelDescription: "Model used to refine transcripts",
+        llmModelDescriptionNoActive:
+          "Model used to refine transcripts (no active model)",
         llmModelSearch: "Search models\u2026",
         llmModelNoLocal: "No chat models found on this device",
         llmModelNoMatch: "No matching models",

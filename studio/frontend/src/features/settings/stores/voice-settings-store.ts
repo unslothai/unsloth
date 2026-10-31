@@ -14,8 +14,10 @@ import {
   type SttModel,
   migrateVoiceSettings,
 } from "./stt-model-catalog";
+import { DEFAULT_DICTATION_DICTIONARY_WORDS } from "./default-dictation-dictionary";
 
 export * from "./stt-model-catalog";
+export { DEFAULT_DICTATION_DICTIONARY_WORDS };
 
 // Adapters read these at call time, so changes apply without reloading the chat runtime.
 
@@ -25,13 +27,15 @@ export interface RecentDictation {
   at: number;
   chatId?: string;
   audioDataUrl?: string;
+  /** Number of grammar/formatting corrections applied to the inserted text. */
+  fixes?: number;
 }
 
 // pagination keeps full history; quota failures trim it to QUOTA_TRIM_KEEP.
 const QUOTA_TRIM_KEEP = 50;
 // transcript caps prevent synchronous localStorage quota failures.
 const MAX_RECENT_DICTATION_LENGTH = 2000;
-export const MAX_DICTIONARY_ENTRIES = 300;
+export const MAX_DICTIONARY_ENTRIES = 1200;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 
 export const RECENT_DICTATION_LIMIT_OPTIONS = [0, 5, 10, 25, 50] as const;
@@ -40,92 +44,7 @@ export const DEFAULT_MAX_RECENT_DICTATIONS = 5;
 export const STT_KEEP_ALIVE_OPTIONS = [300, 900, 1800, 3600, 0] as const;
 export const DEFAULT_STT_KEEP_ALIVE_SECONDS = 300;
 
-/**
- * 80 curated default vocabulary words (not including the user's name).
- * Words from the user's profile name are automatically prepended on top of these 80 words.
- */
-export const DEFAULT_DICTATION_DICTIONARY_WORDS: readonly string[] = [
-  "Unsloth",
-  "QLoRA",
-  "LoRA",
-  "GGUF",
-  "GGML",
-  "llama.cpp",
-  "whisper.cpp",
-  "safetensors",
-  "PyTorch",
-  "Transformers",
-  "Hugging Face",
-  "bfloat16",
-  "float16",
-  "FlashAttention",
-  "xFormers",
-  "Triton",
-  "vLLM",
-  "SGLang",
-  "Ollama",
-  "LM Studio",
-  "DeepSeek",
-  "Qwen",
-  "Mistral",
-  "Mixtral",
-  "Llama",
-  "Gemma",
-  "Phi",
-  "Cohere",
-  "Anthropic",
-  "Claude",
-  "OpenAI",
-  "ChatGPT",
-  "Gemini",
-  "Parakeet",
-  "Voxtral",
-  "Whisper",
-  "Kokoro",
-  "Orpheus",
-  "GRPO",
-  "RLHF",
-  "DPO",
-  "ORPO",
-  "SFT",
-  "PEFT",
-  "TRL",
-  "BitsAndBytes",
-  "DeepSpeed",
-  "FSDP",
-  "Megatron",
-  "KV Cache",
-  "RoPE",
-  "SwiGLU",
-  "RMSNorm",
-  "CUDA",
-  "cuDNN",
-  "NVLink",
-  "TensorRT",
-  "ROCm",
-  "ONNX",
-  "Vulkan",
-  "OpenCL",
-  "CoreML",
-  "MLX",
-  "TypeScript",
-  "JavaScript",
-  "Python",
-  "Rust",
-  "Tauri",
-  "React",
-  "Vite",
-  "Zustand",
-  "Tailwind",
-  "FastAPI",
-  "Pydantic",
-  "Uvicorn",
-  "PostgreSQL",
-  "SQLite",
-  "Docker",
-  "Kubernetes",
-  "GitHub",
-] as const;
+
 
 function readStoredUserProfileNames(): { displayName: string; nickname: string } {
   if (typeof localStorage === "undefined") {
@@ -275,11 +194,26 @@ export function normalizeSavedCollections(
         : [];
       if (candidate.isDefault || id === "default") {
         hasDefault = true;
+        // Existing installs carry the old 80-word list; grow those to the
+        // current vocabulary once. After that the saved list wins, so words
+        // the user deleted from the default list stay deleted.
+        const shouldGrow = words.length < 500;
+        const merged: string[] = [];
+        const seenWords = new Set<string>();
+        const source = shouldGrow
+          ? [...words, ...defaultCollectionWords]
+          : words;
+        for (const word of source) {
+          const key = word.toLowerCase();
+          if (seenWords.has(key)) continue;
+          seenWords.add(key);
+          merged.push(word);
+        }
         valid.push({
           id: "default",
           name: "Default Vocabulary",
           isDefault: true,
-          words: Array.from(new Set([...words, ...defaultCollectionWords])),
+          words: merged,
         });
       } else {
         valid.push({ id, name, words });
@@ -354,8 +288,14 @@ export function isSttModelLanguageCompatible(
     return true;
   }
   const normalized = language.trim().replaceAll("_", "-").toLowerCase();
-  // Auto sends no forced language, which every checkpoint accepts.
-  return normalized === "auto" || allowed.includes(normalized.split("-", 1)[0]);
+  // Auto sends no forced language, which every checkpoint accepts. Romanized
+  // also lets the model detect the spoken language; the transcript is
+  // transliterated locally afterwards.
+  return (
+    normalized === "auto" ||
+    normalized === "romanized" ||
+    allowed.includes(normalized.split("-", 1)[0])
+  );
 }
 
 export type DictationEngine = "browser" | "model" | "custom";
@@ -409,6 +349,8 @@ export interface VoiceSettingsState {
   /** Collections of vocabulary words and snippets. */
   collections: DictionaryCollection[];
   activeCollectionId: string;
+  /** Name words added to the default list at the last profile sync. */
+  defaultProfileWords: string[];
   setActiveCollectionId: (id: string) => void;
   addCollection: (name: string) => void;
   removeCollection: (id: string) => void;
@@ -454,6 +396,12 @@ export interface VoiceSettingsState {
     text: string,
     chatId?: string,
     audioDataUrl?: string,
+    fixes?: number,
+  ) => void;
+  updateLatestRecentDictation: (
+    rawText: string,
+    text: string,
+    fixes: number,
   ) => void;
   removeRecentDictation: (id: string) => void;
   clearRecentDictations: () => void;
@@ -581,6 +529,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
 
       collections: buildDefaultCollections(),
       activeCollectionId: "custom",
+      defaultProfileWords: extractUserNameWords(),
       setActiveCollectionId: (activeCollectionId) =>
         set({ activeCollectionId }),
 
@@ -812,21 +761,38 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       syncUserNameToDictionary: (displayName, nickname) =>
         set((state) => {
           const userWords = extractUserNameWords(displayName, nickname);
-          if (userWords.length === 0) return state;
+          const nextKeys = new Set(userWords.map((word) => word.toLowerCase()));
+          const previousKeys = new Set(
+            state.defaultProfileWords.map((word) => word.toLowerCase()),
+          );
           const collections = state.collections.map((col) => {
             if (!col.isDefault) return col;
-            const existingLower = new Set(
-              col.words.map((entry) => entry.toLowerCase()),
-            );
+            // Drop the name words from the previous profile, then prepend the
+            // current ones. Everything else (including deletions) is kept.
+            const kept = col.words.filter((word) => {
+              const key = word.toLowerCase();
+              return !previousKeys.has(key) || nextKeys.has(key);
+            });
+            const existing = new Set(kept.map((word) => word.toLowerCase()));
             const additions = userWords.filter(
-              (word) => !existingLower.has(word.toLowerCase()),
+              (word) => !existing.has(word.toLowerCase()),
             );
-            if (additions.length === 0) return col;
-            return { ...col, words: [...additions, ...col.words] };
+            if (
+              additions.length === 0 &&
+              kept.length === col.words.length &&
+              state.defaultProfileWords.length === userWords.length &&
+              state.defaultProfileWords.every(
+                (word, index) => word === userWords[index],
+              )
+            ) {
+              return col;
+            }
+            return { ...col, words: [...additions, ...kept] };
           });
           return {
             collections,
             dictionary: aggregateCollectionsWords(collections),
+            defaultProfileWords: userWords,
             dictionarySeeded: true,
           };
         }),
@@ -834,6 +800,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         set({
           collections: buildDefaultCollections(),
           activeCollectionId: "custom",
+          defaultProfileWords: extractUserNameWords(),
           dictionary: buildDefaultDictationDictionary(),
           dictionarySeeded: true,
         }),
@@ -851,14 +818,14 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           return {
             maxRecentDictations,
             recentDictations:
-              maxRecentDictations <= 0
-                ? []
-                : state.recentDictations.slice(0, maxRecentDictations),
+              maxRecentDictations > 0
+                ? state.recentDictations.slice(0, maxRecentDictations)
+                : state.recentDictations,
           };
         }),
 
       recentDictations: [],
-      addRecentDictation: (text, chatId, audioDataUrl) =>
+      addRecentDictation: (text, chatId, audioDataUrl, fixes) =>
         set((state) => {
           if (state.maxRecentDictations <= 0) {
             return state;
@@ -876,10 +843,32 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
                 at,
                 ...(chatId ? { chatId } : {}),
                 ...(audioDataUrl ? { audioDataUrl } : {}),
+                ...(fixes ? { fixes } : {}),
               },
               ...state.recentDictations,
             ].slice(0, state.maxRecentDictations),
           };
+        }),
+      updateLatestRecentDictation: (rawText, text, fixes) =>
+        set((state) => {
+          const trimmed = text.trim().slice(0, MAX_RECENT_DICTATION_LENGTH);
+          if (!trimmed) return state;
+          const normalize = (value: string) =>
+            value.trim().replace(/\s+/g, " ");
+          const raw = normalize(rawText);
+          const index = state.recentDictations.findIndex(
+            (dictation) => normalize(dictation.text) === raw,
+          );
+          if (index === -1) return state;
+          const current = state.recentDictations[index];
+          if (current.text === trimmed && current.fixes === fixes) return state;
+          const recentDictations = [...state.recentDictations];
+          recentDictations[index] = {
+            ...current,
+            text: trimmed,
+            fixes,
+          };
+          return { recentDictations };
         }),
       removeRecentDictation: (id) =>
         set((state) => ({
@@ -959,6 +948,12 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           dictationLanguage,
           collections: normalizedCols.collections,
           activeCollectionId: normalizedCols.activeCollectionId,
+          defaultProfileWords: Array.isArray(saved?.defaultProfileWords)
+            ? saved.defaultProfileWords.filter(
+                (word): word is string =>
+                  typeof word === "string" && !!word.trim(),
+              )
+            : [],
           dictionary: aggregateCollectionsWords(normalizedCols.collections),
           dictionarySeeded: true,
           sttKeepAliveSeconds: normalizeSttKeepAliveSeconds(
@@ -969,7 +964,12 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ),
           recentDictations: normalizeRecentDictations(
             saved?.recentDictations,
-          ).slice(0, normalizeMaxRecentDictations(saved?.maxRecentDictations)),
+          ).slice(
+            0,
+            normalizeMaxRecentDictations(saved?.maxRecentDictations) > 0
+              ? normalizeMaxRecentDictations(saved?.maxRecentDictations)
+              : undefined,
+          ),
           ttsEnabled:
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
           autoReadAloud: saved?.autoReadAloud === true,
@@ -1076,6 +1076,11 @@ function normalizeRecentDictations(value: unknown): RecentDictation[] {
       candidate.audioDataUrl.startsWith("data:audio/")
         ? { audioDataUrl: candidate.audioDataUrl }
         : {}),
+      ...(typeof candidate.fixes === "number" &&
+      Number.isFinite(candidate.fixes) &&
+      candidate.fixes > 0
+        ? { fixes: Math.floor(candidate.fixes) }
+        : {}),
     });
   }
   return normalized;
@@ -1093,7 +1098,7 @@ function clampNumber(
 
 export function resolveDictationLanguage(setting?: string): string {
   const value = setting ?? useVoiceSettingsStore.getState().dictationLanguage;
-  if (value && value !== "auto") return value;
+  if (value && value !== "auto" && value !== "romanized") return value;
   return typeof navigator !== "undefined" && navigator.language
     ? navigator.language
     : "en-US";
@@ -1119,6 +1124,9 @@ export function resolveModelDictationLanguage(
   model: SttModel,
   requested: string,
 ): string {
+  // The model should detect the spoken language; the dictation adapter
+  // transliterates the result into Latin letters.
+  if (requested === "romanized") return "auto";
   if (requested !== "auto") return requested;
   const resolved = resolveDictationLanguage(requested);
   const primary = resolved
@@ -1143,16 +1151,19 @@ function escapeRegExp(value: string): string {
  *   expand spoken triggers into their target text.
  * - Longer triggers run first so multi-word phrases win over single-word prefixes.
  */
-export function applyDictationDictionary(
-  transcript: string,
-  dictionary?: string[],
-): string {
-  const entries =
-    dictionary ?? [
-      ...extractUserNameWords(),
-      ...useVoiceSettingsStore.getState().dictionary,
-    ];
-  if (!transcript || entries.length === 0) return transcript;
+interface CompiledDictionaryRule {
+  regex: RegExp;
+  replacement: string;
+}
+
+// The default vocabulary has ~1,000 entries. Compiling that many patterns on
+// every dictation segment is wasteful, so keep them for the life of the
+// dictionary array (Zustand creates a new array whenever it changes).
+const DICTIONARY_RULE_CACHE = new WeakMap<string[], CompiledDictionaryRule[]>();
+
+function compileDictionaryRules(entries: string[]): CompiledDictionaryRule[] {
+  const cached = DICTIONARY_RULE_CACHE.get(entries);
+  if (cached) return cached;
 
   const rules: { trigger: string; replacement: string }[] = [];
   for (const entry of entries) {
@@ -1171,23 +1182,41 @@ export function applyDictationDictionary(
   }
   rules.sort((a, b) => b.trigger.length - a.trigger.length);
 
-  let result = transcript;
+  const compiled: CompiledDictionaryRule[] = [];
   for (const { trigger, replacement } of rules) {
     const pattern = trigger.split(/\s+/).map(escapeRegExp).join("\\s+");
     try {
       // Capture the boundary instead of a lookbehind, which Safari < 16.4 cannot compile.
-      const regex = new RegExp(
-        `(^|[^\\p{L}\\p{N}])(${pattern})(?![\\p{L}\\p{N}])`,
-        "giu",
-      );
-      // Callback form avoids $-pattern expansion.
-      result = result.replace(
-        regex,
-        (_match, prefix: string) => `${prefix}${replacement}`,
-      );
+      compiled.push({
+        regex: new RegExp(
+          `(^|[^\\p{L}\\p{N}])(${pattern})(?![\\p{L}\\p{N}])`,
+          "giu",
+        ),
+        replacement,
+      });
     } catch {
       // Skip entries that produce an invalid pattern.
     }
+  }
+  DICTIONARY_RULE_CACHE.set(entries, compiled);
+  return compiled;
+}
+
+export function applyDictationDictionary(
+  transcript: string,
+  dictionary?: string[],
+): string {
+  const entries =
+    dictionary ?? useVoiceSettingsStore.getState().dictionary;
+  if (!transcript || entries.length === 0) return transcript;
+
+  let result = transcript;
+  for (const { regex, replacement } of compileDictionaryRules(entries)) {
+    // Callback form avoids $-pattern expansion.
+    result = result.replace(
+      regex,
+      (_match, prefix: string) => `${prefix}${replacement}`,
+    );
   }
   return result;
 }

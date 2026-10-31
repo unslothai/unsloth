@@ -41,6 +41,7 @@ import {
   PauseIcon,
   PlayIcon,
   Search01Icon,
+  Tick02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -70,6 +71,17 @@ function formatDictationDate(ms: number): string {
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+  });
+}
+
+function formatDictationDateTime(ms: number): string {
+  return new Date(ms).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
   });
 }
 
@@ -145,7 +157,7 @@ function DictationAudioPlayer({ src }: { src: string }) {
 
   return (
     <div
-      className="flex max-w-md items-center gap-3 rounded-xl border border-border/60 bg-muted/20 p-2.5"
+      className="flex w-full items-center gap-3 rounded-xl border border-border/60 bg-muted/20 p-3"
       data-testid="dictation-audio-player"
     >
       <button
@@ -164,7 +176,10 @@ function DictationAudioPlayer({ src }: { src: string }) {
           className="size-4"
         />
       </button>
-      <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <span className="w-10 shrink-0 text-right text-ui-10 tabular-nums text-muted-foreground">
+          {formatElapsed(current)}
+        </span>
         <Slider
           value={[current]}
           min={0}
@@ -174,12 +189,11 @@ function DictationAudioPlayer({ src }: { src: string }) {
             if (value !== undefined) seek(value);
           }}
           aria-label={t("settings.voice.recents.seekLabel")}
-          className="w-full"
+          className="min-w-0 flex-1"
         />
-        <div className="mt-0.5 flex items-center justify-between text-ui-10 tabular-nums text-muted-foreground">
-          <span>{formatElapsed(current)}</span>
-          <span>{formatElapsed(duration)}</span>
-        </div>
+        <span className="w-10 shrink-0 text-left text-ui-10 tabular-nums text-muted-foreground">
+          {formatElapsed(duration)}
+        </span>
       </div>
     </div>
   );
@@ -208,13 +222,18 @@ export function RecentDictationsView({
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
+      }
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
       }
     };
   }, []);
@@ -296,8 +315,20 @@ export function RecentDictationsView({
     return sorted;
   }, [recentDictations, search, sortOrder]);
 
-  async function handleCopy(text: string) {
+  function markCopied(id: string) {
+    setCopiedId(id);
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = window.setTimeout(() => {
+      copyTimerRef.current = null;
+      setCopiedId(null);
+    }, 1500);
+  }
+
+  async function handleCopy(id: string, text: string) {
     if (await copyToClipboard(text)) {
+      markCopied(id);
       toast.success(t("settings.voice.recents.copied"));
     } else {
       toast.error(t("settings.voice.recents.copyFailed"));
@@ -380,22 +411,30 @@ export function RecentDictationsView({
       </header>
 
       <div className="flex flex-col gap-1">
-        <h2 className="settings-heading text-sm font-semibold">
-          {selected
-            ? t("settings.voice.recents.detailTitle")
-            : t("settings.voice.recents.sectionTitle")}
-        </h2>
-        <p className="text-xs text-muted-foreground">
-          {selected
-            ? formatDictationDate(selected.at)
-            : t("settings.voice.recents.pageDescription")}
-        </p>
+        {selected ? (
+          <div className="flex items-baseline justify-between gap-4">
+            <h2 className="settings-heading text-sm font-semibold">
+              {t("settings.voice.recents.detailTitle")}
+            </h2>
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+              {formatDictationDateTime(selected.at)}
+            </span>
+          </div>
+        ) : (
+          <>
+            <h2 className="settings-heading text-sm font-semibold">
+              {t("settings.voice.recents.sectionTitle")}
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.voice.recents.pageDescription")}
+            </p>
+          </>
+        )}
       </div>
 
       {selected ? (
         <div className="flex min-h-0 flex-col gap-4">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <span>{formatDictationDate(selected.at)}</span>
             <span>
               {t("settings.voice.recents.metaWords", {
                 count: selected.text.trim()
@@ -408,6 +447,11 @@ export function RecentDictationsView({
                 count: selected.text.length,
               })}
             </span>
+            <span>
+              {t("settings.voice.recents.metaFixes", {
+                count: selected.fixes ?? 0,
+              })}
+            </span>
             {selected.chatId ? (
               <span className="inline-flex items-center gap-1">
                 <HugeiconsIcon
@@ -418,14 +462,14 @@ export function RecentDictationsView({
               </span>
             ) : null}
           </div>
-          <article className="rounded-xl border border-border/60 bg-muted/20 p-4">
+          {selected.audioDataUrl ? (
+            <DictationAudioPlayer src={selected.audioDataUrl} />
+          ) : null}
+          <article className="max-h-72 overflow-y-auto rounded-xl border border-border/60 bg-muted/20 p-4">
             <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
               {selected.text}
             </p>
           </article>
-          {selected.audioDataUrl ? (
-            <DictationAudioPlayer src={selected.audioDataUrl} />
-          ) : null}
           <div className="flex justify-end gap-2">
             {selected.chatId ? (
               <Button
@@ -444,11 +488,16 @@ export function RecentDictationsView({
               variant="outline"
               size="sm"
               onClick={async () => {
-                await handleCopy(selected.text);
+                await handleCopy(selected.id, selected.text);
               }}
             >
-              <HugeiconsIcon icon={Copy01Icon} className="mr-1.5 size-3.5" />
-              {t("settings.voice.recents.copy")}
+              <HugeiconsIcon
+                icon={copiedId === selected.id ? Tick02Icon : Copy01Icon}
+                className="mr-1.5 size-3.5"
+              />
+              {copiedId === selected.id
+                ? t("settings.voice.recents.copiedShort")
+                : t("settings.voice.recents.copy")}
             </Button>
             <Button
               variant="destructive"
@@ -538,29 +587,21 @@ export function RecentDictationsView({
                   <span className="size-3.5 shrink-0" />
                   {t("settings.voice.recents.dateColumn")}
                 </span>
-                <span className="w-24 shrink-0" />
+                <span className="w-[calc(7.75rem*var(--ui-space-scale,1))] shrink-0" />
               </div>
               {visible.slice(0, visibleCount).map((dictation) => (
                 <div
                   key={dictation.id}
-                  className="group flex items-stretch gap-2 border-b border-border/40 last:border-0"
+                  className="group flex items-stretch gap-2 border-b border-border/40 transition-colors last:border-0 hover:bg-muted/50"
                 >
                   <button
                     type="button"
-                    onClick={() =>
-                      dictation.chatId
-                        ? openChat(dictation.chatId)
-                        : onSelect(dictation.id)
-                    }
-                    aria-label={
-                      dictation.chatId
-                        ? t("settings.voice.recents.openChat")
-                        : t("settings.voice.recents.view")
-                    }
-                    className="flex min-w-0 flex-1 items-start gap-4 rounded-md px-1 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => onSelect(dictation.id)}
+                    aria-label={t("settings.voice.recents.view")}
+                    className="flex min-w-0 flex-1 items-start gap-4 px-1 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span className="min-w-0 flex-1">
-                      <span className="line-clamp-3 whitespace-pre-wrap break-words text-sm text-foreground">
+                      <span className="line-clamp-1 whitespace-pre-wrap break-words text-sm text-foreground">
                         {dictation.text}
                       </span>
                       <span className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground sm:hidden">
@@ -590,33 +631,35 @@ export function RecentDictationsView({
                       </span>
                     </span>
                   </button>
-                  <span className="flex w-28 shrink-0 items-center justify-end gap-1">
-                    {dictation.audioDataUrl ? (
-                      <button
-                        type="button"
-                        onClick={() => togglePlayAudio(dictation)}
-                        aria-label={
-                          playingId === dictation.id
-                            ? t("settings.voice.recents.pauseAudio")
-                            : t("settings.voice.recents.playAudio")
-                        }
-                        title={
-                          playingId === dictation.id
-                            ? t("settings.voice.recents.pauseAudio")
-                            : t("settings.voice.recents.playAudio")
-                        }
-                        className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        <HugeiconsIcon
-                          icon={
-                            playingId === dictation.id ? PauseIcon : PlayIcon
+                  <span className="grid w-[calc(7.75rem*var(--ui-space-scale,1))] shrink-0 grid-cols-4 items-center">
+                    <span className="flex items-center justify-center">
+                      {dictation.audioDataUrl ? (
+                        <button
+                          type="button"
+                          onClick={() => togglePlayAudio(dictation)}
+                          aria-label={
+                            playingId === dictation.id
+                              ? t("settings.voice.recents.pauseAudio")
+                              : t("settings.voice.recents.playAudio")
                           }
-                          strokeWidth={1.75}
-                          className="size-4"
-                        />
-                      </button>
-                    ) : null}
-                    {dictation.chatId ? (
+                          title={
+                            playingId === dictation.id
+                              ? t("settings.voice.recents.pauseAudio")
+                              : t("settings.voice.recents.playAudio")
+                          }
+                          className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <HugeiconsIcon
+                            icon={
+                              playingId === dictation.id ? PauseIcon : PlayIcon
+                            }
+                            strokeWidth={1.75}
+                            className="size-4"
+                          />
+                        </button>
+                      ) : null}
+                    </span>
+                    <span className="flex items-center justify-center">
                       <button
                         type="button"
                         onClick={() => onSelect(dictation.id)}
@@ -630,40 +673,44 @@ export function RecentDictationsView({
                           className="size-4"
                         />
                       </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await handleCopy(dictation.text);
-                      }}
-                      aria-label={t("settings.voice.recents.copy")}
-                      title={t("settings.voice.recents.copy")}
-                      className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <HugeiconsIcon
-                        icon={Copy01Icon}
-                        strokeWidth={1.75}
-                        className="size-4"
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        {
-                        setDeleteFilesOnDelete(alwaysDeleteChatFiles);
-                        setPendingDelete({ kind: "one", dictation });
-                      }
-                      }
-                      aria-label={t("settings.voice.recents.delete")}
-                      title={t("settings.voice.recents.delete")}
-                      className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <HugeiconsIcon
-                        icon={Delete02Icon}
-                        strokeWidth={1.75}
-                        className="size-4"
-                      />
-                    </button>
+                    </span>
+                    <span className="flex items-center justify-center">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await handleCopy(dictation.id, dictation.text);
+                        }}
+                        aria-label={t("settings.voice.recents.copy")}
+                        title={t("settings.voice.recents.copy")}
+                        className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <HugeiconsIcon
+                          icon={copiedId === dictation.id ? Tick02Icon : Copy01Icon}
+                          strokeWidth={1.75}
+                          className="size-4"
+                        />
+                      </button>
+                    </span>
+                    <span className="flex items-center justify-center">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          {
+                          setDeleteFilesOnDelete(alwaysDeleteChatFiles);
+                          setPendingDelete({ kind: "one", dictation });
+                        }
+                        }
+                        aria-label={t("settings.voice.recents.delete")}
+                        title={t("settings.voice.recents.delete")}
+                        className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <HugeiconsIcon
+                          icon={Delete02Icon}
+                          strokeWidth={1.75}
+                          className="size-4"
+                        />
+                      </button>
+                    </span>
                   </span>
                 </div>
               ))}

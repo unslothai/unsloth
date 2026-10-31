@@ -15,11 +15,13 @@ export {
   VOICE_TYPING_HUD_POSITIONS,
   VOICE_TYPING_IDLE_STOP_OPTIONS,
   VOICE_TYPING_PASTE_METHODS,
+  VOICE_TYPING_SUBMIT_KEYS,
   useVoiceTypingStore,
   type VoiceTypingHudPosition,
   type VoiceTypingMode,
   type VoiceTypingPasteMethod,
   type VoiceTypingReadiness,
+  type VoiceTypingSubmitKey,
 } from "./voice-typing-store";
 export {
   previewVoiceTypingSound,

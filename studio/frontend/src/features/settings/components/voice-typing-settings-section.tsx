@@ -18,7 +18,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -36,10 +35,12 @@ import {
   VOICE_TYPING_IDLE_STOP_OPTIONS,
   VOICE_TYPING_PASTE_METHODS,
   VOICE_TYPING_SOUND_THEMES,
+  VOICE_TYPING_SUBMIT_KEYS,
   type VoiceTypingHudPosition,
   type VoiceTypingMode,
   type VoiceTypingPasteMethod,
   type VoiceTypingSoundTheme,
+  type VoiceTypingSubmitKey,
   chordFromEvent,
   formatShortcut,
   isConflictingShortcut,
@@ -49,7 +50,6 @@ import {
 } from "@/features/voice-typing";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
-import { Volume02Icon } from "@/lib/volume-icons";
 import {
   CheckmarkCircle02Icon,
   Search01Icon,
@@ -80,6 +80,13 @@ const PASTE_METHOD_LABEL: Record<VoiceTypingPasteMethod, TranslationKey> = {
   ctrl_shift_v: "settings.voice.voiceTyping.pasteMethodCtrlShiftV",
   shift_insert: "settings.voice.voiceTyping.pasteMethodShiftInsert",
   direct: "settings.voice.voiceTyping.pasteMethodDirect",
+};
+
+const SUBMIT_KEY_LABEL: Record<VoiceTypingSubmitKey, TranslationKey> = {
+  none: "settings.voice.voiceTyping.submitKeyNone",
+  enter: "settings.voice.voiceTyping.submitKeyEnter",
+  ctrl_enter: "settings.voice.voiceTyping.submitKeyCtrlEnter",
+  shift_enter: "settings.voice.voiceTyping.submitKeyShiftEnter",
 };
 
 const HUD_POSITION_LABEL: Record<VoiceTypingHudPosition, TranslationKey> = {
@@ -260,65 +267,92 @@ function RefiningModelPicker({
   );
 }
 
+type SoundThemeChoice = VoiceTypingSoundTheme | "off";
+
 /**
- * Sound-theme picker with a preview control on every row. Hovering a row
- * previews it; the per-row play button stays visible while that row is hovered
- * or focused, which a nested button inside a Radix Select item cannot do.
+ * One control for feedback sounds: Off plus each theme. Resting the pointer on
+ * a theme for a second previews it; the active choice gets a tick. There is no
+ * separate enable switch, preview button or volume control.
  */
 function SoundThemePicker({
   value,
   onChange,
-  volume,
 }: {
-  value: VoiceTypingSoundTheme;
-  onChange: (theme: VoiceTypingSoundTheme) => void;
-  volume: number;
+  value: SoundThemeChoice;
+  onChange: (choice: SoundThemeChoice) => void;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
+  const hoverTimer = useRef<number | null>(null);
+
+  const clearHover = () => {
+    if (hoverTimer.current !== null) {
+      window.clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+  };
+
+  useEffect(() => clearHover, []);
+
+  const choices: SoundThemeChoice[] = ["off", ...VOICE_TYPING_SOUND_THEMES];
+
   return (
     <Popover
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
+        if (!next) clearHover();
       }}
     >
       <PopoverTrigger asChild={true}>
         <PickerTrigger
-          className="w-44"
+          className="w-56"
           data-testid="voice-typing-sound-theme"
           aria-label={t("settings.voice.voiceTyping.soundsThemeLabel")}
         >
-          <span className="truncate">{t(SOUND_THEME_LABEL[value])}</span>
+          <span className="truncate">
+            {value === "off"
+              ? t("settings.voice.voiceTyping.soundsOff")
+              : t(SOUND_THEME_LABEL[value])}
+          </span>
         </PickerTrigger>
       </PopoverTrigger>
       <PopoverContent align="start" sideOffset={4} className="w-56 p-1">
-        {VOICE_TYPING_SOUND_THEMES.map((theme) => (
-          <div
-            key={theme}
-            className="group flex w-full items-center gap-1 rounded-full pr-1 transition-colors hover:bg-muted"
-            onMouseEnter={() => previewVoiceTypingSound(theme, volume)}
+        {choices.map((choice) => (
+          <PickerRow
+            key={choice}
+            selected={choice === value}
+            onClick={() => {
+              onChange(choice);
+              setOpen(false);
+            }}
+            onMouseEnter={() => {
+              clearHover();
+              if (choice === "off") return;
+              // Preview only after the pointer rests on the row: scrubbing the
+              // menu should not fire a burst of tones.
+              hoverTimer.current = window.setTimeout(() => {
+                hoverTimer.current = null;
+                previewVoiceTypingSound(choice, 1);
+              }, 1000);
+            }}
+            onMouseLeave={clearHover}
+            onFocus={() => {
+              if (choice !== "off") previewVoiceTypingSound(choice, 1);
+            }}
           >
-            <button
-              type="button"
-              onClick={() => {
-                onChange(theme);
-                setOpen(false);
-              }}
-              className="min-w-0 flex-1 truncate rounded-full px-2.5 py-2 text-left text-sm"
-            >
-              {t(SOUND_THEME_LABEL[theme])}
-            </button>
-            <button
-              type="button"
-              onClick={() => previewVoiceTypingSound(theme, volume)}
-              aria-label={t("settings.voice.voiceTyping.soundsPreview")}
-              title={t("settings.voice.voiceTyping.soundsPreview")}
-              className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <HugeiconsIcon icon={Volume02Icon} className="size-3.5" />
-            </button>
-          </div>
+            <span className="truncate">
+              {choice === "off"
+                ? t("settings.voice.voiceTyping.soundsOff")
+                : t(SOUND_THEME_LABEL[choice])}
+            </span>
+            {choice === value ? (
+              <HugeiconsIcon
+                icon={CheckmarkCircle02Icon}
+                className="size-3.5 shrink-0 text-primary"
+              />
+            ) : null}
+          </PickerRow>
         ))}
       </PopoverContent>
     </Popover>
@@ -343,8 +377,6 @@ export function VoiceTypingSettingsSection() {
   const setSoundEnabled = useVoiceTypingStore((state) => state.setSoundEnabled);
   const soundTheme = useVoiceTypingStore((state) => state.soundTheme);
   const setSoundTheme = useVoiceTypingStore((state) => state.setSoundTheme);
-  const soundVolume = useVoiceTypingStore((state) => state.soundVolume);
-  const setSoundVolume = useVoiceTypingStore((state) => state.setSoundVolume);
   const appendTrailingSpace = useVoiceTypingStore(
     (state) => state.appendTrailingSpace,
   );
@@ -357,14 +389,6 @@ export function VoiceTypingSettingsSection() {
   const setCopyLastTranscript = useVoiceTypingStore(
     (state) => state.setCopyLastTranscript,
   );
-  const autoStopSilence = useVoiceTypingStore((state) => state.autoStopSilence);
-  const setAutoStopSilence = useVoiceTypingStore(
-    (state) => state.setAutoStopSilence,
-  );
-  const autoStopDelayMs = useVoiceTypingStore((state) => state.autoStopDelayMs);
-  const setAutoStopDelayMs = useVoiceTypingStore(
-    (state) => state.setAutoStopDelayMs,
-  );
   const idleStopMs = useVoiceTypingStore((state) => state.idleStopMs);
   const setIdleStopMs = useVoiceTypingStore((state) => state.setIdleStopMs);
   const spokenPunctuation = useVoiceTypingStore(
@@ -373,11 +397,11 @@ export function VoiceTypingSettingsSection() {
   const setSpokenPunctuation = useVoiceTypingStore(
     (state) => state.setSpokenPunctuation,
   );
-  const submitAfterInsert = useVoiceTypingStore(
-    (state) => state.submitAfterInsert,
+  const insertSubmitKey = useVoiceTypingStore(
+    (state) => state.insertSubmitKey,
   );
-  const setSubmitAfterInsert = useVoiceTypingStore(
-    (state) => state.setSubmitAfterInsert,
+  const setInsertSubmitKey = useVoiceTypingStore(
+    (state) => state.setInsertSubmitKey,
   );
   const pasteAutomatically = useVoiceTypingStore(
     (state) => state.pasteAutomatically,
@@ -504,9 +528,7 @@ export function VoiceTypingSettingsSection() {
   const [info, setInfo] = useState<VoiceTypingInfo | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [needsModifier, setNeedsModifier] = useState(false);
-  const [draftVolume, setDraftVolume] = useState<number | null>(null);
   const shortcutButtonRef = useRef<HTMLButtonElement | null>(null);
-  const effectiveVolume = draftVolume ?? soundVolume;
 
   useEffect(() => {
     if (!isTauri) return;
@@ -710,16 +732,11 @@ export function VoiceTypingSettingsSection() {
             <>
               <SettingsRow
                 label={t("settings.voice.voiceTyping.llmModelLabel")}
-                description={
-                  <>
-                    {t("settings.voice.voiceTyping.llmModelDescription")}
-                    {!llmPostProcessModel && !activeChatModelLabel ? (
-                      <span className="block text-amber-600 dark:text-amber-400">
-                        {t("settings.voice.voiceTyping.llmModelNoActive")}
-                      </span>
-                    ) : null}
-                  </>
-                }
+                description={t(
+                  !llmPostProcessModel && !activeChatModelLabel
+                    ? "settings.voice.voiceTyping.llmModelDescriptionNoActive"
+                    : "settings.voice.voiceTyping.llmModelDescription",
+                )}
               >
                 <RefiningModelPicker
                   value={llmPostProcessModel}
@@ -778,7 +795,6 @@ export function VoiceTypingSettingsSection() {
             </>
           ) : null}
 
-          <div className="mt-1 border-t border-border/40" />
               <SettingsRow
                 label={t("settings.voice.voiceTyping.hudPositionLabel")}
                 description={t(
@@ -877,12 +893,30 @@ export function VoiceTypingSettingsSection() {
                       "settings.voice.voiceTyping.submitDescription",
                     )}
                   >
-                    <Switch
-                      checked={submitAfterInsert}
-                      onCheckedChange={setSubmitAfterInsert}
-                      data-testid="voice-typing-submit"
-                      aria-label={t("settings.voice.voiceTyping.submitLabel")}
-                    />
+                    <Select
+                      value={insertSubmitKey}
+                      onValueChange={(value) =>
+                        setInsertSubmitKey(value as VoiceTypingSubmitKey)
+                      }
+                    >
+                      <SelectTrigger
+                        size="sm"
+                        className="w-56"
+                        data-testid="voice-typing-submit"
+                        aria-label={t(
+                          "settings.voice.voiceTyping.submitLabel",
+                        )}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {VOICE_TYPING_SUBMIT_KEYS.map((key) => (
+                          <SelectItem key={key} value={key}>
+                            {t(SUBMIT_KEY_LABEL[key])}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </SettingsRow>
                 </>
               ) : null}
@@ -938,77 +972,6 @@ export function VoiceTypingSettingsSection() {
               </SettingsRow>
 
               <SettingsRow
-                label={t("settings.voice.voiceTyping.autoStopLabel")}
-                description={t(
-                  "settings.voice.voiceTyping.autoStopDescription",
-                )}
-              >
-                <Switch
-                  checked={autoStopSilence}
-                  onCheckedChange={setAutoStopSilence}
-                  data-testid="voice-typing-auto-stop"
-                  aria-label={t("settings.voice.voiceTyping.autoStopLabel")}
-                />
-              </SettingsRow>
-
-              {autoStopSilence ? (
-                <SettingsRow
-                  label={t("settings.voice.voiceTyping.autoStopDelayLabel")}
-                  description={t(
-                    "settings.voice.voiceTyping.autoStopDelayDescription",
-                  )}
-                >
-                  <Select
-                    value={String(autoStopDelayMs)}
-                    onValueChange={(value) => setAutoStopDelayMs(Number(value))}
-                  >
-                    <SelectTrigger
-                      size="sm"
-                      className="w-56"
-                      data-testid="voice-typing-auto-stop-delay"
-                      aria-label={t(
-                        "settings.voice.voiceTyping.autoStopDelayLabel",
-                      )}
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="1000">
-                        {t("settings.voice.voiceTyping.seconds", {
-                          seconds: 1,
-                        })}
-                      </SelectItem>
-                      <SelectItem value="1500">
-                        {t("settings.voice.voiceTyping.seconds", {
-                          seconds: "1.5",
-                        })}
-                      </SelectItem>
-                      <SelectItem value="2500">
-                        {t("settings.voice.voiceTyping.seconds", {
-                          seconds: "2.5",
-                        })}
-                      </SelectItem>
-                      <SelectItem value="4000">
-                        {t("settings.voice.voiceTyping.seconds", {
-                          seconds: 4,
-                        })}
-                      </SelectItem>
-                      <SelectItem value="6000">
-                        {t("settings.voice.voiceTyping.seconds", {
-                          seconds: 6,
-                        })}
-                      </SelectItem>
-                      <SelectItem value="10000">
-                        {t("settings.voice.voiceTyping.seconds", {
-                          seconds: 10,
-                        })}
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                </SettingsRow>
-              ) : null}
-
-              <SettingsRow
                 label={t("settings.voice.voiceTyping.idleStopLabel")}
                 description={t(
                   "settings.voice.voiceTyping.idleStopDescription",
@@ -1047,88 +1010,23 @@ export function VoiceTypingSettingsSection() {
               </SettingsRow>
 
               <SettingsRow
-                label={t("settings.voice.voiceTyping.soundsLabel")}
-                description={t("settings.voice.voiceTyping.soundsDescription")}
+                label={t("settings.voice.voiceTyping.soundsThemeLabel")}
+                description={t(
+                  "settings.voice.voiceTyping.soundsThemeDescription",
+                )}
               >
-                <Switch
-                  checked={soundEnabled}
-                  onCheckedChange={setSoundEnabled}
-                  data-testid="voice-typing-sounds"
-                  aria-label={t("settings.voice.voiceTyping.soundsLabel")}
+                <SoundThemePicker
+                  value={soundEnabled ? soundTheme : "off"}
+                  onChange={(choice) => {
+                    if (choice === "off") {
+                      setSoundEnabled(false);
+                      return;
+                    }
+                    setSoundTheme(choice);
+                    setSoundEnabled(true);
+                  }}
                 />
               </SettingsRow>
-
-              {soundEnabled ? (
-                <>
-                  <SettingsRow
-                    label={t("settings.voice.voiceTyping.soundsThemeLabel")}
-                    description={t(
-                      "settings.voice.voiceTyping.soundsThemeDescription",
-                    )}
-                  >
-                    <div className="flex items-center gap-2">
-                      <SoundThemePicker
-                        value={soundTheme}
-                        onChange={setSoundTheme}
-                        volume={effectiveVolume}
-                      />
-                      <Button
-                        variant="outline"
-                        size="icon-sm"
-                        className="size-8 aspect-square shrink-0 rounded-md p-0"
-                        data-testid="voice-typing-sound-preview"
-                        aria-label={t(
-                          "settings.voice.voiceTyping.soundsPreview",
-                        )}
-                        onClick={() =>
-                          previewVoiceTypingSound(soundTheme, effectiveVolume)
-                        }
-                      >
-                        <HugeiconsIcon
-                          icon={Volume02Icon}
-                          className="size-3.5"
-                        />
-                      </Button>
-                    </div>
-                  </SettingsRow>
-
-                  <SettingsRow
-                    label={t("settings.voice.voiceTyping.soundsVolumeLabel")}
-                    description={t(
-                      "settings.voice.voiceTyping.soundsVolumeDescription",
-                    )}
-                  >
-                    <div className="flex w-56 items-center gap-2">
-                      <Slider
-                        value={[effectiveVolume]}
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        onValueChange={([value]) => {
-                          if (value !== undefined) {
-                            const snapped = Math.round(value * 20) / 20;
-                            setDraftVolume(snapped);
-                          }
-                        }}
-                        onValueCommit={([value]) => {
-                          if (value !== undefined) {
-                            const snapped = Math.round(value * 20) / 20;
-                            setSoundVolume(snapped);
-                          }
-                          setDraftVolume(null);
-                        }}
-                        className="min-w-0 flex-1"
-                        aria-label={t(
-                          "settings.voice.voiceTyping.soundsVolumeLabel",
-                        )}
-                      />
-                      <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-                        {Math.round(effectiveVolume * 100)}%
-                      </span>
-                    </div>
-                  </SettingsRow>
-                </>
-              ) : null}
         </>
       ) : null}
     </SettingsSection>

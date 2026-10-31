@@ -25248,6 +25248,22 @@ async def stt_download_cancel(
     return JSONResponse(content = status)
 
 
+def _prefer_downloaded_stt_engine(engine: str, model: Optional[str]) -> str:
+    """A curated Whisper snapshot may be installed for Transformers while the
+    GGUF sidecar is available but has no file for it. Prefer the format that is
+    actually on disk instead of 409ing the load."""
+    if engine != "gguf" or not model:
+        return engine
+    from core.inference import stt_ggml_sidecar, stt_sidecar
+
+    if (
+        stt_ggml_sidecar._cached_model_path(model) is None
+        and stt_sidecar.is_model_downloaded(model)
+    ):
+        return "transformers"
+    return engine
+
+
 @studio_router.post("/audio/stt/load")
 async def stt_load(
     payload: SttLoadRequest,
@@ -25271,6 +25287,7 @@ async def stt_load(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
+    engine = _prefer_downloaded_stt_engine(engine, payload.model)
     await asyncio.to_thread(
         _prepare_runtime_fallback_checkpoint,
         payload.engine,

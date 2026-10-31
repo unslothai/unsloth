@@ -50,6 +50,27 @@ impl PasteMethod {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubmitKey {
+    None,
+    Enter,
+    CtrlEnter,
+    ShiftEnter,
+}
+
+impl SubmitKey {
+    pub fn from_options(raw: Option<&str>, legacy_submit: bool) -> Self {
+        match raw.unwrap_or_default() {
+            "enter" => Self::Enter,
+            "ctrl_enter" => Self::CtrlEnter,
+            "shift_enter" => Self::ShiftEnter,
+            "none" => Self::None,
+            _ if legacy_submit => Self::Enter,
+            _ => Self::None,
+        }
+    }
+}
+
 enum SavedClipboard {
     Text(String),
     Image {
@@ -64,20 +85,22 @@ enum SavedClipboard {
 /// clipboard for a manual paste. With `paste` off the transcript is only copied,
 /// which is the way out of apps that refuse synthesized keystrokes. `copy_last_transcript`
 /// keeps the finished text on the clipboard after an automatic paste, without copying
-/// it a second time. `submit` sends Enter after a successful paste, for chat boxes
-/// that send on Enter.
+/// it a second time. `submit_key` sends Enter, Ctrl+Enter or Shift+Enter after a
+/// successful paste, for chat boxes that send or add a line on that chord.
 #[tauri::command]
 pub async fn voice_typing_insert(
     text: String,
     copy_last_transcript: bool,
     paste: bool,
-    submit: bool,
+    submit: Option<bool>,
+    submit_key: Option<String>,
     trailing_space: bool,
     paste_method: Option<String>,
 ) -> Result<String, String> {
     let text = text.trim_end().to_string();
     let characters = text.chars().count();
     let method = PasteMethod::from_option(paste_method.as_deref());
+    let submit_key = SubmitKey::from_options(submit_key.as_deref(), submit.unwrap_or(false));
 
     // Direct Unicode typing bypasses the clipboard unless the user explicitly asked
     // to keep the last transcript on the clipboard or `paste` is disabled.
@@ -93,9 +116,9 @@ pub async fn voice_typing_insert(
             tokio::time::sleep(MODIFIER_RELEASE_SETTLE).await;
         }
         if direct_type(&direct_payload) {
-            if submit {
+            if submit_key != SubmitKey::None {
                 tokio::time::sleep(SUBMIT_DELAY).await;
-                let _ = enter_key();
+                let _ = send_submit_key(submit_key);
             }
             log::info!("Voice typing insert: direct typed ({characters} characters)");
             return Ok("pasted".to_string());
@@ -161,12 +184,12 @@ pub async fn voice_typing_insert(
         }
     }
 
-    if submit {
+    if submit_key != SubmitKey::None {
         tokio::time::sleep(SUBMIT_DELAY).await;
-        if enter_key() {
-            log::info!("Voice typing insert: submitted with Enter");
+        if send_submit_key(submit_key) {
+            log::info!("Voice typing insert: submitted with {submit_key:?}");
         } else {
-            log::warn!("Voice typing insert: Enter could not be sent");
+            log::warn!("Voice typing insert: {submit_key:?} could not be sent");
         }
     }
 
@@ -398,10 +421,27 @@ fn space_key() -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn enter_key() -> bool {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+fn send_submit_key(key: SubmitKey) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        VK_CONTROL, VK_RETURN, VK_SHIFT,
+    };
 
-    send_virtual_keys(&[(VK_RETURN, false), (VK_RETURN, true)])
+    match key {
+        SubmitKey::None => true,
+        SubmitKey::Enter => send_virtual_keys(&[(VK_RETURN, false), (VK_RETURN, true)]),
+        SubmitKey::CtrlEnter => send_virtual_keys(&[
+            (VK_CONTROL, false),
+            (VK_RETURN, false),
+            (VK_RETURN, true),
+            (VK_CONTROL, true),
+        ]),
+        SubmitKey::ShiftEnter => send_virtual_keys(&[
+            (VK_SHIFT, false),
+            (VK_RETURN, false),
+            (VK_RETURN, true),
+            (VK_SHIFT, true),
+        ]),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -442,9 +482,19 @@ fn space_key() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn enter_key() -> bool {
+fn send_submit_key(key: SubmitKey) -> bool {
+    let script = match key {
+        SubmitKey::None => return true,
+        SubmitKey::Enter => "tell application \"System Events\" to key code 36",
+        SubmitKey::CtrlEnter => {
+            "tell application \"System Events\" to key code 36 using control down"
+        }
+        SubmitKey::ShiftEnter => {
+            "tell application \"System Events\" to key code 36 using shift down"
+        }
+    };
     std::process::Command::new("osascript")
-        .args(["-e", "tell application \"System Events\" to key code 36"])
+        .args(["-e", script])
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
@@ -526,13 +576,32 @@ fn space_key() -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn enter_key() -> bool {
-    let attempts: [(&str, &[&str]); 3] = [
-        ("wtype", &["Return"]),
-        ("xdotool", &["key", "--clearmodifiers", "Return"]),
-        ("ydotool", &["key", "28:1", "28:0"]),
-    ];
-    for (program, args) in attempts {
+fn send_submit_key(key: SubmitKey) -> bool {
+    let attempts: &[(&str, &[&str])] = match key {
+        SubmitKey::None => return true,
+        SubmitKey::Enter => &[
+            ("wtype", &["Return"]),
+            ("xdotool", &["key", "--clearmodifiers", "Return"]),
+            ("ydotool", &["key", "28:1", "28:0"]),
+        ],
+        SubmitKey::CtrlEnter => &[
+            (
+                "wtype",
+                &["-M", "ctrl", "-k", "Return", "-m", "ctrl"],
+            ),
+            ("xdotool", &["key", "--clearmodifiers", "ctrl+Return"]),
+            ("ydotool", &["key", "29:1", "28:1", "28:0", "29:0"]),
+        ],
+        SubmitKey::ShiftEnter => &[
+            (
+                "wtype",
+                &["-M", "shift", "-k", "Return", "-m", "shift"],
+            ),
+            ("xdotool", &["key", "--clearmodifiers", "shift+Return"]),
+            ("ydotool", &["key", "42:1", "28:1", "28:0", "42:0"]),
+        ],
+    };
+    for &(program, args) in attempts {
         if std::process::Command::new(program)
             .args(args)
             .status()
@@ -561,13 +630,13 @@ fn space_key() -> bool {
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn enter_key() -> bool {
+fn send_submit_key(_key: SubmitKey) -> bool {
     false
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{clipboard_text, ends_with_space, PasteMethod};
+    use super::{clipboard_text, ends_with_space, PasteMethod, SubmitKey};
 
     #[test]
     fn copy_only_keeps_the_trailing_space_for_a_manual_paste() {
@@ -587,6 +656,24 @@ mod tests {
         assert!(ends_with_space("hello\n"));
         assert!(!ends_with_space("hello"));
         assert_eq!(clipboard_text("hello ", true, false), "hello ");
+    }
+
+    #[test]
+    fn parses_submit_keys_with_legacy_boolean() {
+        assert_eq!(SubmitKey::from_options(None, false), SubmitKey::None);
+        assert_eq!(SubmitKey::from_options(None, true), SubmitKey::Enter);
+        assert_eq!(
+            SubmitKey::from_options(Some("ctrl_enter"), false),
+            SubmitKey::CtrlEnter
+        );
+        assert_eq!(
+            SubmitKey::from_options(Some("shift_enter"), false),
+            SubmitKey::ShiftEnter
+        );
+        assert_eq!(
+            SubmitKey::from_options(Some("none"), true),
+            SubmitKey::None
+        );
     }
 
     #[test]

@@ -22,13 +22,23 @@ export const VOICE_TYPING_PASTE_METHODS = [
 ] as const;
 export type VoiceTypingPasteMethod = (typeof VOICE_TYPING_PASTE_METHODS)[number];
 
+/** Key chord sent after a successful paste. */
+export const VOICE_TYPING_SUBMIT_KEYS = [
+  "none",
+  "enter",
+  "ctrl_enter",
+  "shift_enter",
+] as const;
+export type VoiceTypingSubmitKey = (typeof VOICE_TYPING_SUBMIT_KEYS)[number];
+
 export const VOICE_TYPING_HUD_POSITIONS = ["bottom", "top"] as const;
 export type VoiceTypingHudPosition = (typeof VOICE_TYPING_HUD_POSITIONS)[number];
 
 /** Idle-dictation safety stop choices, in milliseconds (0 = never). */
 export const VOICE_TYPING_IDLE_STOP_OPTIONS = [
-  0, 15_000, 30_000, 60_000, 120_000, 300_000,
-] as const;export const DEFAULT_VOICE_TYPING_IDLE_STOP_MS = 60_000;
+  6000, 15_000, 30_000, 60_000, 120_000, 300_000, 0,
+] as const;
+export const DEFAULT_VOICE_TYPING_IDLE_STOP_MS = 60_000;
 
 /** What the local dictation stack can do right now; refreshed by the controller. */
 export type VoiceTypingReadiness =
@@ -132,9 +142,10 @@ function repair(
     typeof saved.soundVolume !== "number" ||
     !Number.isFinite(saved.soundVolume)
   ) {
-    saved.soundVolume = 0.55;
+    saved.soundVolume = 1;
   } else {
-    saved.soundVolume = Math.min(1, Math.max(0, saved.soundVolume));
+    // Feedback volume is no longer a setting; keep old payloads at full volume.
+    saved.soundVolume = 1;
   }
   if (
     typeof saved.soundTheme !== "string" ||
@@ -187,6 +198,14 @@ function repair(
   } else {
     saved.idleStopMs = Math.min(10 * 60 * 1000, saved.idleStopMs);
   }
+  if (
+    typeof saved.insertSubmitKey !== "string" ||
+    !VOICE_TYPING_SUBMIT_KEYS.includes(
+      saved.insertSubmitKey as VoiceTypingSubmitKey,
+    )
+  ) {
+    saved.insertSubmitKey = saved.submitAfterInsert === true ? "enter" : "none";
+  }
   return saved;
 }
 
@@ -219,8 +238,8 @@ interface VoiceTypingSettings {
   grammarFixerEnabled: boolean;
   /** Turn spoken punctuation ("comma", "new line") into marks. */
   spokenPunctuation: boolean;
-  /** Press Enter after inserting, for chat boxes that send on Enter. */
-  submitAfterInsert: boolean;
+  /** Enter key or chord sent after inserting, for chat boxes that send on Enter. */
+  insertSubmitKey: VoiceTypingSubmitKey;
   /** Off: the transcript waits on the clipboard for a manual paste. */
   pasteAutomatically: boolean;
   /** Keystroke strategy used when `pasteAutomatically` is on. */
@@ -257,6 +276,7 @@ interface VoiceTypingSettings {
   setGrammarFixerEnabled: (enabled: boolean) => void;
   setSpokenPunctuation: (enabled: boolean) => void;
   setSubmitAfterInsert: (enabled: boolean) => void;
+  setInsertSubmitKey: (key: VoiceTypingSubmitKey) => void;
   setPasteAutomatically: (enabled: boolean) => void;
   setPasteMethod: (method: VoiceTypingPasteMethod) => void;
   setHudPosition: (position: VoiceTypingHudPosition) => void;
@@ -278,7 +298,7 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
       mode: "hybrid",
       soundEnabled: true,
       soundTheme: "chime",
-      soundVolume: 0.55,
+      soundVolume: 1,
       appendTrailingSpace: true,
       copyLastTranscript: false,
       preloadModel: true,
@@ -288,7 +308,7 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
       micWarmSeconds: 0,
       grammarFixerEnabled: true,
       spokenPunctuation: false,
-      submitAfterInsert: false,
+      insertSubmitKey: "none",
       pasteAutomatically: true,
       pasteMethod: "ctrl_v",
       hudPosition: "bottom",
@@ -321,7 +341,9 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
       setGrammarFixerEnabled: (grammarFixerEnabled) =>
         set({ grammarFixerEnabled }),
       setSpokenPunctuation: (spokenPunctuation) => set({ spokenPunctuation }),
-      setSubmitAfterInsert: (submitAfterInsert) => set({ submitAfterInsert }),
+      setSubmitAfterInsert: (submitAfterInsert) =>
+        set({ insertSubmitKey: submitAfterInsert ? "enter" : "none" }),
+      setInsertSubmitKey: (insertSubmitKey) => set({ insertSubmitKey }),
       setPasteAutomatically: (pasteAutomatically) =>
         set({ pasteAutomatically }),
       setPasteMethod: (pasteMethod) => set({ pasteMethod }),
@@ -362,7 +384,7 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
         micWarmSeconds: 0,
         grammarFixerEnabled: state.grammarFixerEnabled,
         spokenPunctuation: state.spokenPunctuation,
-        submitAfterInsert: state.submitAfterInsert,
+        insertSubmitKey: state.insertSubmitKey,
         pasteAutomatically: state.pasteAutomatically,
         pasteMethod: state.pasteMethod,
         hudPosition: state.hudPosition,

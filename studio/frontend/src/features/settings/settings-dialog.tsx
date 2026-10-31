@@ -309,6 +309,53 @@ export function SettingsDialog() {
   const Tab = LAZY_TABS[panelTab];
   const [query, setQuery] = useState("");
 
+  // Mouse back/forward walks the settings tabs when the active panel has no
+  // deeper subpage history of its own (VoiceTab handles its own with capture).
+  const tabHistoryRef = useRef<SettingsTab[]>([]);
+  const tabFutureRef = useRef<SettingsTab[]>([]);
+  const lastTabRef = useRef<SettingsTab>(activeTab);
+  const suppressTabHistoryRef = useRef(false);
+  useEffect(() => {
+    if (lastTabRef.current === activeTab) return;
+    if (suppressTabHistoryRef.current) {
+      suppressTabHistoryRef.current = false;
+      lastTabRef.current = activeTab;
+      return;
+    }
+    tabHistoryRef.current.push(lastTabRef.current);
+    tabFutureRef.current = [];
+    lastTabRef.current = activeTab;
+  }, [activeTab]);
+  useEffect(() => {
+    if (!open) {
+      tabHistoryRef.current = [];
+      tabFutureRef.current = [];
+      lastTabRef.current = activeTab;
+      return;
+    }
+    const onAuxClick = (event: MouseEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.button !== 3 && event.button !== 4) return;
+      if (event.button === 3) {
+        const previous = tabHistoryRef.current.pop();
+        if (!previous) return;
+        event.preventDefault();
+        suppressTabHistoryRef.current = true;
+        tabFutureRef.current.push(activeTab);
+        setActiveTab(previous);
+        return;
+      }
+      const next = tabFutureRef.current.pop();
+      if (!next) return;
+      event.preventDefault();
+      suppressTabHistoryRef.current = true;
+      tabHistoryRef.current.push(activeTab);
+      setActiveTab(next);
+    };
+    window.addEventListener("mousedown", onAuxClick);
+    return () => window.removeEventListener("mousedown", onAuxClick);
+  }, [open, activeTab, setActiveTab]);
+
   // Prefetch other panels on idle once opened; nothing runs while closed.
   useEffect(() => {
     if (!open) {
