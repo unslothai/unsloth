@@ -59,6 +59,12 @@ function Invoke-BoundedPythonProbe {
         try { $out = & $py.Source -S -c $Code 2>&1 | Out-String } finally { $env:PYTHONPATH = $savedPath }
         return @{ Ok = ($LASTEXITCODE -eq 0); Output = $out }
     }
+    if ($Code -like "*XPURT=*") {
+        # The imported triton is the XPU payload (its version and Intel backend), unless the state says otherwise.
+        if (-not $script:State.Imports) { return @{ Ok = $false; Output = "" } }
+        $rt = if ($script:State.ContainsKey('XpuRt')) { [int][bool]$script:State.XpuRt } else { 1 }
+        return @{ Ok = $true; Output = "XPURT=$rt" }
+    }
     if ($Code -like "*HEALTHY=*") {
         if (-not $script:State.Imports) { return @{ Ok = $false; Output = "" } }
         return @{ Ok = $true; Output = "TRITONVER=`nHEALTHY=1`nPAIRED=0" }
@@ -111,14 +117,16 @@ New-Item -ItemType Directory -Path $venvRoot -Force | Out-Null
 $manifestFile = Join-Path $venvRoot "unsloth_install_manifest.json"
 $xpuSpec = "pytorch-triton-xpu==3.5.0"
 $generic = "triton-windows<3.7"
-$xpuOk = @{ XpuDist = "3.5.0"; Imports = $true }
+$xpuOk = @{ XpuDist = "3.5.0"; Imports = $true; XpuRt = $true }
 $backOk = @{ TritonWin = "3.6.0.post25"; Imports = $true }
 
 # Runs the post-stack swap from a venv where triton-windows shadows torch's XPU triton.
 function Invoke-Swap($Exits = @(), $Leaves = @($xpuOk), [string]$TritonWin = "3.9.0.post30", [string]$Spec = $xpuSpec,
                      [int]$UninstallExit = 0, [bool]$UninstallBreaks = $false, [bool]$Imports = $true,
-                     [string]$XpuDist = "", [int]$DownloadExit = 0, [bool]$Managed = $false, [bool]$Offline = $false) {
+                     [string]$XpuDist = "", [int]$DownloadExit = 0, [bool]$Managed = $false, [bool]$Offline = $false,
+                     $Extra = $null) {
     $script:State = @{ TritonWin = $TritonWin; XpuSpec = $Spec; XpuDist = $XpuDist; Imports = $Imports; Readable = $true }
+    if ($Extra) { foreach ($k in $Extra.Keys) { $script:State[$k] = $Extra[$k] } }
     $script:DownloadExit = $DownloadExit
     $script:Offline = $Offline
     $InstallerManagedSetup = $Managed
@@ -223,6 +231,18 @@ Check "installer-managed: a verified swap keeps setup going" ($r -and $r.StackEx
 $r = Try-Scenario "managed, uninstall fails, still imports" { Invoke-Swap -UninstallExit 1 -Managed $true }
 Check "installer-managed: a failed uninstall that left triton importing keeps setup going" ($r -and $r.StackExit -eq 0)
 
+Write-Host "=== swap: generic files under the XPU record ==="
+$r = Try-Scenario "generic payload, XPU record" {
+    Invoke-Swap -TritonWin "" -XpuDist "3.5.0" -Leaves @($xpuOk) -Extra @{ XpuRt = $false }
+}
+Check "an importable generic triton under the XPU dist's record is reinstalled from the XPU wheel" ($r -and $r.Installs.Count -eq 1 -and $r.Calls[0] -like "download *" -and $r.StackExit -eq 0 -and $r.Manifest)
+
+Write-Host "=== swap: installer-managed setup, offline ==="
+$r = Try-Scenario "managed, offline, broken" { Invoke-Swap -TritonWin "" -Imports $false -Offline $true -Managed $true }
+Check "installer-managed, offline: a broken triton left for the next online update still fails setup" ($r -and $r.Calls.Count -eq 0 -and $r.StackExit -ne 0 -and (Has-Error $r))
+$r = Try-Scenario "managed, offline, triton-windows importing" { Invoke-Swap -Offline $true -Managed $true }
+Check "installer-managed, offline: a triton-windows that imports is left in place and setup keeps going" ($r -and $r.Calls.Count -eq 0 -and $r.StackExit -eq 0 -and $r.Manifest)
+
 Write-Host "=== swap: offline ==="
 $r = Try-Scenario "offline, broken" { Invoke-Swap -TritonWin "" -Imports $false -Offline $true }
 Check "offline: a broken triton is left for the next online update, nothing fetched" ($r -and $r.Calls.Count -eq 0 -and $r.StackExit -eq 0)
@@ -249,6 +269,11 @@ try {
     New-Item -ItemType Directory -Path $tl -Force | Out-Null
     Set-Content -LiteralPath (Join-Path (Join-Path $site "triton") "__init__.py") -Value "__version__ = '3.5.0'`ndef jit(f):`n    return f" -Encoding ascii
     Set-Content -LiteralPath (Join-Path $tl "__init__.py") -Value "def program_id(axis):`n    return 0" -Encoding ascii
+    # The XPU payload carries the Intel backend; generic triton / triton-windows files do not.
+    $intel = Join-Path (Join-Path (Join-Path $site "triton") "backends") "intel"
+    New-Item -ItemType Directory -Path $intel -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path (Split-Path $intel) "__init__.py") -Value "" -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $intel "__init__.py") -Value "" -Encoding ascii
     $script:RealProbeDir = $site
     $s = Try-Scenario "runtime probe, payload present" { Get-TritonRuntimeState }
     Check "runtime probe: the fixture triton imports" ($s -and $s.Healthy)
@@ -326,6 +351,35 @@ try {
     $s = Try-Scenario "swap probe, the XPU dist torch requires" { Get-XpuTritonState }
     Check "swap probe: the XPU triton torch requires is XpuOk" ($s -and $s.Known -and $s.XpuOk)
 
+    # The XPU dist's record over generic files: no Intel backend, or another version, is not the XPU payload.
+    $intelGone = Join-Path (Join-Path (Join-Path $site "triton") "backends") "intel_gone"
+    Rename-Item -LiteralPath $intel -NewName "intel_gone"
+    $s = Try-Scenario "swap probe, generic payload" { Get-XpuTritonState }
+    Check "swap probe: triton files without the Intel backend under the XPU dist's record are not XpuOk" ($s -and $s.Known -and -not $s.XpuOk -and $s.XpuDist -eq "3.5.0")
+    $r = Try-Scenario "fast path, generic payload" {
+        $SkipPythonDeps = $true; $_xpuIsReachable = $true; $script:IsIntelXpu = $true; $installedTorchTag = "xpu"
+        Invoke-Expression $fastPath
+        $SkipPythonDeps
+    }
+    Check "fast path: generic triton files under the XPU dist's record force the dependency pass" ($r -eq $false)
+    Rename-Item -LiteralPath $intelGone -NewName "intel"
+    $tinit = Join-Path (Join-Path $site "triton") "__init__.py"
+    Set-Content -LiteralPath $tinit -Value "__version__ = '3.4.0'`ndef jit(f):`n    return f" -Encoding ascii
+    $s = Try-Scenario "swap probe, runtime version" { Get-XpuTritonState }
+    Check "swap probe: a triton reporting 3.4.0 under a 3.5.0 XPU record is not XpuOk" ($s -and $s.Known -and -not $s.XpuOk)
+    Set-Content -LiteralPath $tinit -Value "__version__ = '3.5.0'`ndef jit(f):`n    return f" -Encoding ascii
+    # Same size, same second: the cached bytecode would still say 3.4.0.
+    Remove-Item -LiteralPath (Join-Path (Join-Path $site "triton") "__pycache__") -Recurse -Force -ErrorAction SilentlyContinue
+
+    # A packaging that is found but does not import: the next parser decides, the metadata stays readable.
+    $pkg = Join-Path $site "packaging"
+    New-Item -ItemType Directory -Path $pkg -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $pkg "__init__.py") -Value "" -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $pkg "requirements.py") -Value "raise ImportError('damaged')" -Encoding ascii
+    $s = Try-Scenario "swap probe, damaged packaging" { Get-XpuTritonState }
+    Check "swap probe: a damaged packaging falls back to the next parser" ($s -and $s.Known -and $s.XpuOk -and $s.XpuDist -eq "3.5.0")
+    Remove-Item -LiteralPath $pkg -Recurse -Force
+
     New-DistInfo "triton_windows-3.9.0.post30.dist-info" "triton-windows" "3.9.0.post30"
     $r = Try-Scenario "fast path, active" {
         $SkipPythonDeps = $true; $_xpuIsReachable = $true; $script:IsIntelXpu = $true; $installedTorchTag = "xpu"
@@ -333,6 +387,14 @@ try {
         $SkipPythonDeps
     }
     Check "fast path: an active triton-windows still forces the dependency pass" ($r -eq $false)
+    $script:Offline = $true
+    $r = Try-Scenario "fast path, active, offline" {
+        $SkipPythonDeps = $true; $_xpuIsReachable = $true; $script:IsIntelXpu = $true; $installedTorchTag = "xpu"
+        Invoke-Expression $fastPath
+        $SkipPythonDeps
+    }
+    $script:Offline = $false
+    Check "fast path, offline: an active triton-windows is left for the next online update" ($r -eq $true)
     $s = Try-Scenario "swap probe, active" { Get-XpuTritonState }
     Check "swap probe: an active triton-windows is found" ($s -and $s.TritonWin -eq "3.9.0.post30")
     Remove-Item -LiteralPath (Join-Path $site "triton_windows-3.9.0.post30.dist-info") -Recurse -Force
@@ -356,6 +418,14 @@ try {
         $SkipPythonDeps
     }
     Check "fast path: a bitsandbytes backup alone is missing bitsandbytes" ($r -eq $false)
+    $script:Offline = $true
+    $r = Try-Scenario "fast path, bnb backup only, offline" {
+        $SkipPythonDeps = $true; $_xpuIsReachable = $true; $script:IsIntelXpu = $true; $installedTorchTag = "xpu"
+        Invoke-Expression $fastPath
+        $SkipPythonDeps
+    }
+    $script:Offline = $false
+    Check "fast path, offline: a bitsandbytes backup alone keeps the verified tree" ($r -eq $true)
 } finally {
     $script:RealProbeDir = $null
     Remove-Item -LiteralPath $site -Recurse -Force -ErrorAction SilentlyContinue
