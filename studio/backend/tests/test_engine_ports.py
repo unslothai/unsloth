@@ -110,4 +110,3 @@ def test_a_replacement_without_a_controller_slot_avoids_every_survivor(engine_po
     for index in range(workers):
         other, other_size = engine_port_block(index, workers)
         assert base + size <= other or other + other_size <= base, (index, base, other)
-
