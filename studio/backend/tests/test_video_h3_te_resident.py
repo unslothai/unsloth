@@ -248,7 +248,7 @@ def test_real_group_offload_forward_unchanged(tmp_path, monkeypatch):
 
 
 def test_load_copies_only_for_the_pageable_stream_after_the_vae_copies():
-    src = (Path(te.__file__).parent / "video.py").read_text()
+    src = (Path(te.__file__).parent / "video.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     guards = [
         node
