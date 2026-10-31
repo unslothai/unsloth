@@ -2366,14 +2366,29 @@ class UnslothTrainer:
         def image_list(value):
             return isinstance(value, list) and bool(value) and all(map(_is_image_list_item, value))
 
+        sample = _first_row(dataset) or {}
+
+        def first_value(col, limit = 100):
+            # An untyped column has no schema to fall back on, so look past empty leading rows.
+            if sample.get(col) not in (None, "", []):
+                return sample.get(col)
+            for i, row in enumerate(dataset):
+                if i >= limit:
+                    break
+                if row.get(col) not in (None, "", []):
+                    return row.get(col)
+            return None
+
+        def image_valued(col):
+            value = first_value(col)
+            return _is_image_value(value) or image_list(value)
+
         # The detector also takes a column by its name (file_name), which may hold audio paths;
         # the schema settles it even when row 0 has no image.
-        sample = _first_row(dataset) or {}
         candidates = [
             c
             for c in detect_multimodal_dataset(dataset)["multimodal_columns"]
-            if c != audio_col
-            and (image_typed(c) or _is_image_value(sample.get(c)) or image_list(sample.get(c)))
+            if c != audio_col and (image_typed(c) or image_valued(c))
         ]
         candidates += [c for c in cols if c != audio_col and c not in candidates and image_typed(c)]
         return candidates[0] if candidates else None

@@ -328,3 +328,17 @@ def test_a_messages_column_with_image_parts_is_not_taken_for_images(audio_vlm_tr
     )
 
     assert audio_vlm_trainer._resolve_audio_vlm_image_column(ds, None, "audio") is None
+
+
+def test_an_untyped_path_column_counts_when_row_zero_is_empty(audio_vlm_trainer):
+    ds = _NoAudioCast(
+        datasets.Dataset.from_dict(
+            {
+                "audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * 3,
+                "text": ["one", "two", "three"],
+                "image": [None, None, "pics/a.png"],
+            }
+        )
+    )
+
+    assert audio_vlm_trainer._resolve_audio_vlm_image_column(ds, None, "audio") == "image"
