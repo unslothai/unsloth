@@ -23,7 +23,7 @@ import { DiceIcon, Upload01Icon } from "./icon-data";
 import { MediaThumb, isMediaValue } from "./media";
 import { pickOptions } from "./remote-options";
 
-const FIELD = "text-[13px]";
+const FIELD = "text-ui-13";
 
 export interface FieldProps {
   spec: ParamSpec;
@@ -79,9 +79,9 @@ function JsonField({
             setError(err instanceof Error ? err.message : "Invalid JSON");
           }
         }}
-        className={`${FIELD} font-mono text-[12px] leading-snug`}
+        className={`${FIELD} font-mono text-ui-12 leading-snug`}
       />
-      {error && <p className="text-[11px] text-destructive">{error}</p>}
+      {error && <p className="text-ui-11 text-destructive">{error}</p>}
     </div>
   );
 }
@@ -120,7 +120,7 @@ function ModelField({ spec, value, onChange }: FieldProps) {
   }, []);
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="flex items-center gap-2 text-[12px] text-muted-foreground">
+      <label className="flex items-center gap-2 text-ui-12 text-muted-foreground">
         <Checkbox
           checked={choice === null}
           onCheckedChange={(checked) =>
@@ -187,7 +187,7 @@ function AssetField({ spec, value, onChange }: FieldProps) {
         />
       )}
       {docName !== null && (
-        <p className="truncate rounded-md border border-border px-2 py-1.5 text-[12px] text-foreground">
+        <p className="truncate rounded-md border border-border px-2 py-1.5 text-ui-12 text-foreground">
           {docName}
         </p>
       )}
@@ -407,7 +407,7 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
             className={`${FIELD} leading-snug`}
           />
           {spec.id.includes("prompt") || spec.id === "template" ? (
-            <p className="text-[10.5px] text-muted-foreground">
+            <p className="text-ui-10p5 text-muted-foreground">
               Use <code className="text-foreground">{"{{name}}"}</code> to insert
               a connected input or flow input.
             </p>
@@ -514,7 +514,7 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
       return (
         <div className="flex flex-col gap-1">
           <JsonField value={value} onChange={onChange} rows={4} />
-          <p className="text-[10.5px] leading-snug text-muted-foreground">
+          <p className="text-ui-10p5 leading-snug text-muted-foreground">
             {'{"op": ">", "args": [{"var": "courage"}, 2]}'} · ops: == != &lt;
             &gt; and or not + - * / min max len contains dice
           </p>

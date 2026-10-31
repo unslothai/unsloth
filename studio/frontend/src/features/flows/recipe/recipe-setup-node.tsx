@@ -4,14 +4,7 @@
 import { Badge } from "@/components/ui/badge";
 import { RECIPE_STUDIO_WARNING_BADGE_TONE } from "@/features/recipe-studio/utils/ui-tones";
 import { cn } from "@/lib/utils";
-import {
-  BaseEdge,
-  type EdgeProps,
-  Handle,
-  type NodeProps,
-  Position,
-  getBezierPath,
-} from "@xyflow/react";
+import { Handle, type NodeProps, Position } from "@xyflow/react";
 import { memo } from "react";
 import type { RfNode } from "../editor/derive-rf";
 import {
@@ -77,37 +70,3 @@ function RecipeSetupNodeImpl({ data, selected }: NodeProps<RfNode>) {
 }
 
 export const RecipeSetupNode = memo(RecipeSetupNodeImpl);
-
-/** Which preset or tool profile a column uses: a quiet dashed line, as on Recipe Studio's canvas. */
-function RecipeSetupEdgeImpl({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  sourcePosition,
-  targetPosition,
-}: EdgeProps) {
-  const [path] = getBezierPath({
-    sourceX,
-    sourceY,
-    targetX,
-    targetY,
-    sourcePosition,
-    targetPosition,
-  });
-  return (
-    <BaseEdge
-      id={id}
-      path={path}
-      style={{
-        stroke: "var(--muted-foreground)",
-        strokeWidth: 1.25,
-        strokeDasharray: "5 4",
-        opacity: 0.55,
-      }}
-    />
-  );
-}
-
-export const RecipeSetupEdge = memo(RecipeSetupEdgeImpl);

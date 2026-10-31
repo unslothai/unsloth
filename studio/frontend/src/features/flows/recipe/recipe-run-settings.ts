@@ -72,3 +72,11 @@ export function runWithSettings(
   else delete next.run_name;
   return next;
 }
+
+/** The full run's name: the saved one, else the group's label, as the backend names an unnamed full run. */
+export function fullRunName(
+  group: { label?: string; run?: Run | null } | null | undefined,
+): string {
+  const saved = group?.run?.run_name;
+  return (typeof saved === "string" && saved.trim()) || group?.label?.trim() || "";
+}

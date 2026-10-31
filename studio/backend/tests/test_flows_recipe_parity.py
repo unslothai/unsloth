@@ -79,6 +79,8 @@ def _routes(seen_jobs):
     def routes(method, path, params, body):
         if path == "/api/data-recipe/validate":
             return {"valid": True}
+        if path == "/api/data-recipe/seed/inspect":
+            return {"resolved_path": f"datasets/{body['dataset_name']}/**/*.parquet"}
         if path == "/api/data-recipe/jobs":
             seen_jobs.append(body)
             return {"job_id": "j1"}
@@ -115,7 +117,7 @@ def _fast_poll(monkeypatch):
     ],
 )
 def test_every_seed_kind_reaches_the_job_as_saved(name, seed_type):
-    payload = json.loads((LEARNING / name).read_text())
+    payload = json.loads((LEARNING / name).read_text(encoding = "utf-8"))
     doc = _flow(payload)
     group = doc["groups"][0]
     assert group["config"]["seed_config"] == payload["recipe"]["seed_config"]
@@ -126,6 +128,10 @@ def test_every_seed_kind_reaches_the_job_as_saved(name, seed_type):
             _run(_compiled(doc), mode = "preview", rows = 2)
         group["config"]["seed_config"]["source"]["path"] = "/srv/uploads/book.pdf"
         payload["recipe"]["seed_config"]["source"]["path"] = "/srv/uploads/book.pdf"
+    if seed_type == "hf":
+        # Shipped as the bare repo id; resolved for the reader as Recipe Studio's seed Load does.
+        source = payload["recipe"]["seed_config"]["source"]
+        source["path"] = f"datasets/{source['path']}/**/*.parquet"
     sent = _run(_compiled(doc), mode = "preview", rows = 2)
     assert sent["recipe"]["seed_config"] == payload["recipe"]["seed_config"]
     assert sent["recipe"]["seed_config"]["source"]["seed_type"] == seed_type
@@ -382,7 +388,7 @@ def test_run_settings_change_the_cache_key_of_the_step():
 
 
 def test_sharing_keeps_a_full_hf_seed_path(client):
-    payload = json.loads((LEARNING / "ocr-document-extraction.json").read_text())
+    payload = json.loads((LEARNING / "ocr-document-extraction.json").read_text(encoding = "utf-8"))
     path = payload["recipe"]["seed_config"]["source"]["path"]
     assert path == "datasets/ylecun/mnist/mnist/**/*.parquet"
     payload["recipe"]["seed_config"]["source"]["token"] = "hf_" + "x" * 30
@@ -398,3 +404,33 @@ def test_sharing_keeps_a_full_hf_seed_path(client):
     ).json()
     assert exported["recipe"]["seed_config"]["source"]["path"] == path
     assert "hf_xxx" not in json.dumps(exported)
+
+
+def test_a_recipe_with_mcp_servers_needs_the_flows_mcp_approval():
+    from core.flows import capabilities
+
+    with_web = copy.deepcopy(SQL)
+    with_web["recipe"]["mcp_providers"] = [HTTP]
+    with_web["recipe"]["tool_configs"] = [
+        {"tool_alias": "web", "providers": [HTTP["name"]], "max_tool_call_turns": 3}
+    ]
+    with_web["recipe"]["columns"][4]["tool_alias"] = "web"
+    doc = _flow(with_web)
+    assert capabilities.doc_needs(doc)["mcp"] is True
+    assert capabilities.doc_needs(_flow())["mcp"] is False
+    step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
+    step["disabled"] = True
+    assert capabilities.doc_needs(doc)["mcp"] is False, "a disabled step runs nothing"
+    step["disabled"] = False
+
+    jobs: list = []
+    ctx = _Ctx(_routes(jobs), params = {RECIPE_PARAM: _compiled(doc), "mode": "preview", "rows": 2})
+    ctx.refuse["mcp"] = (
+        "Recipe Dataset only runs when the Studio owner starts this flow in Unsloth Studio"
+    )
+    with pytest.raises(FlowNodeError, match = "Studio owner"):
+        asyncio.run(data.recipe_group(ctx))
+    assert jobs == [], "no job starts without the approval"
+    ctx.refuse.clear()
+    asyncio.run(data.recipe_group(ctx))
+    assert [p["name"] for p in jobs[0]["recipe"]["mcp_providers"]] == [HTTP["name"]]

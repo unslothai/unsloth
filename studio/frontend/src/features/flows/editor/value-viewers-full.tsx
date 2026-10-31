@@ -197,7 +197,7 @@ export function ChartViewer({
             tickFormatter: (v: unknown) => formatCell(v),
           }
         : {})}
-      tick={{ fill: "var(--muted-foreground)", fontSize: 11 }}
+      tick={{ fill: "var(--muted-foreground)", fontSize: "calc(0.6875rem * var(--ui-font-scale, 1))" }}
       label={
         chart.x_label
           ? {
@@ -212,7 +212,7 @@ export function ChartViewer({
     />,
     <YAxis
       key="y"
-      tick={{ fill: "var(--muted-foreground)", fontSize: 11 }}
+      tick={{ fill: "var(--muted-foreground)", fontSize: "calc(0.6875rem * var(--ui-font-scale, 1))" }}
       width={52}
       label={
         yLabel

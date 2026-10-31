@@ -168,7 +168,7 @@ const TimelineRow = memo(function TimelineRow({
                 .getState()
                 .setRecipeRuns({ groupId: recipeGroup, view })
             }
-            className="mr-2 rounded px-1.5 py-0.5 text-[11.5px] capitalize text-sky-700 hover:bg-muted dark:text-sky-300"
+            className="mr-2 rounded px-1.5 py-0.5 text-ui-11p5 capitalize text-sky-700 hover:bg-muted dark:text-sky-300"
           >
             {view}
           </button>

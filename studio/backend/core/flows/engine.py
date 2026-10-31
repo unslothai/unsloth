@@ -1786,6 +1786,14 @@ class FlowEngine:
             return
 
         ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
+        # Before the cache: a run that may not use a capability does not get another run's output of it.
+        for cap, detail in capabilities.node_needs(spec, params):
+            if refused := capabilities.refusal(rs.origin, rs.approvals, cap, detail, spec["title"]):
+                state.error = refused
+                env.values[nid] = SKIPPED
+                rs.set_status(nid, "failed")
+                self._record(rs, nid, "failed", None, refused, iteration)
+                return
         key = None
         choice = params.get("model")
         cacheable = spec["cacheable"] and not (
@@ -1839,10 +1847,6 @@ class FlowEngine:
             self._record(rs, nid, "failed", None, state.error, iteration)
             return
         try:
-            for cap, detail in capabilities.node_needs(spec, params):
-                refused = capabilities.refusal(rs.origin, rs.approvals, cap, detail, spec["title"])
-                if refused:
-                    raise FlowNodeError(refused)
             if spec["lane"] == "gpu":
                 lock = self.gpu_lock()
                 if lock.locked():

@@ -160,3 +160,39 @@ def test_a_rows_to_dataset_output_still_opens_after_a_restart(client):
     response = _rows(client, value, limit = 4)
     assert response.status_code == 200, response.text
     assert response.json()["rows"] == ROWS[:4]
+
+
+def test_an_upload_says_which_block_wrote_it_and_leads_with_the_recipe_columns(client):
+    import asyncio
+
+    from core.flows.nodes import data
+
+    class Ctx:
+        params = {"name": "picked"}
+        inputs = {"rows": [{"seed": "s", "sql": "SELECT 1", "sql_prompt": "q"}]}
+
+        async def call(
+            self,
+            method,
+            path,
+            files = None,
+            **_,
+        ):
+            name, body, _type = files["file"]
+            stored = dataset_uploads_root() / f"0123abcd_{name}"
+            stored.parent.mkdir(parents = True, exist_ok = True)
+            stored.write_bytes(body)
+            return {"filename": name, "stored_path": str(stored)}
+
+    rows = Ctx.inputs["rows"]
+    preview = asyncio.run(
+        data.upload_rows(Ctx(), rows, "p", made_by = "preview", first = ["sql_prompt", "sql"])
+    )
+    assert preview["made_by"] == "preview"
+    assert preview["columns"] == [
+        "sql_prompt",
+        "sql",
+        "seed",
+    ], "generated columns ahead of the seed's"
+    assert asyncio.run(data.rows_to_dataset(Ctx()))["dataset"]["made_by"] == "rows"
+    assert "made_by" not in asyncio.run(data.upload_rows(Ctx(), rows, "plain"))

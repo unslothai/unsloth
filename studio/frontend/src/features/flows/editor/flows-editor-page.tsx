@@ -119,7 +119,7 @@ function EditorBody({
       {readOnly && (
         <Alert className="rounded-none border-x-0 border-t-0 py-2">
           <AlertDescription className="text-xs text-amber-700 dark:text-amber-300">
-            This flow uses blocks this version of Unsloth Studio does not know,
+            This flow uses blocks this version of Unsloth does not know,
             so it opens read-only. Update Studio to edit or run it.
           </AlertDescription>
         </Alert>

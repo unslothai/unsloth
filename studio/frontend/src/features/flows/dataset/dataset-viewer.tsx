@@ -98,7 +98,7 @@ function ExpandableCell({ value, dense }: { value: unknown; dense?: boolean }) {
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="mt-1 text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          className="mt-1 text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-foreground"
         >
           {open ? "Show less" : "Show all"}
         </button>
@@ -123,7 +123,7 @@ export function DatasetViewer({
   const load = useDatasetPage(value, offset, pageSize);
   const page = load.state === "ready" ? load.page : null;
   const rows = page?.rows ?? [];
-  const names = useMemo(() => columnNames(rows), [rows]);
+  const names = useMemo(() => columnNames(rows, value.columns), [rows, value.columns]);
   const dtypes = useMemo(() => columnDtypes(rows), [rows]);
   const total = knownTotal(value, page, pageSize);
   const pages = pageCount(total, page?.view_rows ?? 1000, pageSize, offset);
@@ -137,7 +137,7 @@ export function DatasetViewer({
           header: () => (
             <span className="flex flex-col leading-tight">
               <span>{name}</span>
-              <span className="text-[10.5px] font-normal text-muted-foreground">
+              <span className="text-ui-10p5 font-normal text-muted-foreground">
                 {dtypes[name]}
               </span>
             </span>
@@ -191,7 +191,7 @@ export function DatasetViewer({
         </TabsContent>
         <TabsContent value="columns">
           <ExecutionColumnsTab analysisColumns={columnStats(rows)} />
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 text-ui-11 text-muted-foreground">
             Over the {rows.length} rows on this page.
           </p>
         </TabsContent>
@@ -248,7 +248,8 @@ export function DatasetPanel({ value }: { value: DatasetValue }): ReactElement {
 }
 
 const COMPACT_ROWS = 5;
-const COMPACT_COLUMNS = 3;
+// Wide enough to read a value; the rest of the columns scroll sideways.
+const COMPACT_COLUMN_WIDTH = 96;
 
 /** A node's inline output: the first rows and columns, and Open for the full view. */
 export function DatasetPreview({ value }: { value: DatasetValue }): ReactElement {
@@ -256,34 +257,39 @@ export function DatasetPreview({ value }: { value: DatasetValue }): ReactElement
   const load = useDatasetPage(value, 0, COMPACT_ROWS);
   const page = load.state === "ready" ? load.page : null;
   const rows = page?.rows ?? [];
-  const names = columnNames(rows);
-  const shown = names.slice(0, COMPACT_COLUMNS);
+  const names = columnNames(rows, value.columns);
   const total = knownTotal(value, page, COMPACT_ROWS);
   return (
     <div className="nodrag flex flex-col gap-1" data-testid="flows-dataset-preview">
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-[10.5px] text-muted-foreground">
+        <span className="truncate text-ui-10p5 text-muted-foreground">
           {datasetSummary(value, total)}
-          {names.length > COMPACT_COLUMNS ? ` · ${names.length} columns` : ""}
+          {value.columns?.length ? "" : ` · ${names.length} columns`}
         </span>
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10.5px] text-foreground hover:bg-muted/70"
+          className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-ui-10p5 text-foreground hover:bg-muted/70"
         >
           Open
         </button>
       </div>
       {load.state === "error" ? (
-        <p className="line-clamp-2 text-[10.5px] text-destructive">{load.message}</p>
+        <p className="line-clamp-2 text-ui-10p5 text-destructive">{load.message}</p>
       ) : load.state === "loading" ? (
-        <p className="text-[10.5px] text-muted-foreground">Loading rows…</p>
+        <p className="text-ui-10p5 text-muted-foreground">Loading rows…</p>
       ) : (
-        <div className="overflow-hidden rounded border border-border">
-          <table className="w-full table-fixed text-left text-[10.5px]">
+        <div
+          className="nowheel overflow-x-auto rounded border border-border"
+          data-testid="flows-dataset-preview-table"
+        >
+          <table
+            className="table-fixed text-left text-ui-10p5"
+            style={{ width: "100%", minWidth: names.length * COMPACT_COLUMN_WIDTH }}
+          >
             <thead className="bg-muted/50 text-muted-foreground">
               <tr>
-                {shown.map((name) => (
+                {names.map((name) => (
                   <th key={name} className="truncate px-1.5 py-1 font-medium">
                     {name}
                   </th>
@@ -294,7 +300,7 @@ export function DatasetPreview({ value }: { value: DatasetValue }): ReactElement
               {rows.slice(0, COMPACT_ROWS).map((row, i) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: rows have no id
                 <tr key={i} className={cn("text-foreground", i % 2 && "bg-muted/30")}>
-                  {shown.map((name) => (
+                  {names.map((name) => (
                     <td key={name} className="truncate px-1.5 py-0.5">
                       {formatCellValue(row[name])}
                     </td>

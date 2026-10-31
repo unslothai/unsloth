@@ -616,7 +616,7 @@ async def test_an_unchanged_recipe_group_hands_back_its_last_dataset():
         (
             Path(__file__).resolve().parents[1]
             / "core/flows/examples/learning_recipes/text-to-sql.json"
-        ).read_text()
+        ).read_text(encoding = "utf-8")
     )
     jobs = []
 
@@ -641,3 +641,40 @@ async def test_an_unchanged_recipe_group_hands_back_its_last_dataset():
     column["params"]["column"]["params"]["values"] = ["Retail", "Health"]
     await _run(eng, edited)
     assert len(jobs) == 3, "an edited column runs the recipe again"
+
+
+@run_async
+async def test_a_run_that_may_not_use_mcp_gets_no_cached_mcp_recipe_output(monkeypatch):
+    import json as _json
+    from pathlib import Path
+
+    from core.flows.recipe_import import GENERATE_TYPE, flow_from_recipe
+
+    sql = _json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "core/flows/examples/learning_recipes/text-to-sql.json"
+        ).read_text(encoding = "utf-8")
+    )
+    sql["recipe"]["mcp_providers"] = [
+        {"name": "docs", "provider_type": "streamable_http", "endpoint": "https://mcp.example/mcp"}
+    ]
+    jobs = []
+
+    async def generate(ctx):
+        jobs.append(ctx.node_id)
+        return {"dataset": {"kind": "dataset", "ref": "recipes/r1/parquet-files"}, "preview": []}
+
+    eng = _engine({**BASE, GENERATE_TYPE: generate})
+    d, _ = flow_from_recipe(sql, name = "Text to SQL")
+    step = next(n for n in d["nodes"] if n["type"] == GENERATE_TYPE)
+    monkeypatch.setattr(flows_db, "get_capabilities", lambda flow_id: {"mcp": True})
+    monkeypatch.setattr(engine_mod, "_origin", lambda account, kind: {"kind": "ui", "owner": True})
+    owner = await _run(eng, d)
+    assert _status(owner, step["id"]) == "done" and jobs == [step["id"]]
+    monkeypatch.setattr(
+        engine_mod, "_origin", lambda account, kind: {"kind": "api_key", "owner": False}
+    )
+    api = await _run(eng, d)
+    assert _status(api, step["id"]) == "failed", "the owner's cached MCP rows are not handed out"
+    assert "Studio owner" in api.nodes[step["id"]].error and jobs == [step["id"]]

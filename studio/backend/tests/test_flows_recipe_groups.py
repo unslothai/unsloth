@@ -25,7 +25,7 @@ from .test_flows_recipes import _Ctx
 
 BACKEND = Path(__file__).resolve().parents[1]
 LEARNING = BACKEND.parent / "frontend" / "src" / "features" / "data-recipes" / "learning-recipes"
-SQL = json.loads((LEARNING / "text-to-sql.json").read_text())
+SQL = json.loads((LEARNING / "text-to-sql.json").read_text(encoding = "utf-8"))
 
 
 def _flow(payload = SQL) -> dict:
@@ -55,7 +55,7 @@ def test_the_backend_learning_recipes_are_the_frontend_files():
         p.name for p in LEARNING.glob("*.json")
     )
     for path in LEARNING.glob("*.json"):
-        assert json.loads((copies / path.name).read_text()) == json.loads(path.read_text())
+        assert json.loads((copies / path.name).read_text(encoding = "utf-8")) == json.loads(path.read_text(encoding = "utf-8"))
 
 
 def test_a_recipe_group_survives_a_save_and_a_plain_group_saves_as_before():
@@ -284,6 +284,41 @@ def test_the_dataset_counts_every_batch_not_the_last_one():
     assert out["dataset"]["rows"] == 6
 
 
+def test_a_bare_hub_seed_is_resolved_before_validate_like_recipe_studios_load():
+    payload = json.loads((LEARNING / "instruction-from-answer.json").read_text(encoding = "utf-8"))
+    assert payload["recipe"]["seed_config"]["source"]["path"] == "unsloth/alpaca-cleaned"
+    resolved = "datasets/unsloth/alpaca-cleaned/**/*.parquet"
+    sent = {}
+
+    def routes(method, path, params, body):
+        if path.endswith("/seed/inspect"):
+            sent["inspect"] = body
+            return {"resolved_path": resolved, "columns": ["output"]}
+        if path.endswith("/validate"):
+            sent["validate"] = body["recipe"]["seed_config"]["source"]["path"]
+            return {"valid": True}
+        if path.endswith("/jobs"):
+            sent["job"] = body["recipe"]["seed_config"]["source"]["path"]
+            return {"job_id": "job3"}
+        if path.endswith("/status"):
+            return {"status": "completed", "rows": 1, "artifact_path": "/x/recipes/r3"}
+        if path.endswith("/dataset"):
+            return {"dataset": [{"output": "x"}], "total": 1}
+        raise AssertionError(path)
+
+    ctx = _Ctx(
+        routes, params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "preview"}
+    )
+    asyncio.run(data.recipe_group(ctx))
+    assert sent["inspect"]["dataset_name"] == "unsloth/alpaca-cleaned"
+    assert sent["validate"] == resolved and sent["job"] == resolved
+    # A path the reader already takes is left alone.
+    assert (
+        data.bare_hub_seed({"seed_config": {"source": {"seed_type": "hf", "path": resolved}}})
+        is None
+    )
+
+
 def test_an_invalid_recipe_never_starts_a_job():
     routes, seen = _routes([], valid = False)
     ctx = _Ctx(routes, params = {RECIPE_PARAM: _compiled(_flow())})
@@ -409,6 +444,28 @@ def test_a_failed_run_is_kept_with_its_error(monkeypatch):
     with pytest.raises(FlowNodeError, match = "went away"):
         asyncio.run(data.recipe_group(ctx))
     assert saved[-1]["status"] == "error" and saved[-1]["error"] == "llama-server went away"
+    assert saved[-1]["finishedAt"]
+
+
+def test_a_run_whose_rows_cannot_be_read_is_kept_as_failed(monkeypatch):
+    saved = []
+    from storage import flows_db
+
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda f, n, record: saved.append(record))
+    inner = _job_routes("completed")
+
+    def routes(method, path, params, body):
+        out = inner(method, path, params, body)
+        if path.endswith("/status"):
+            out["artifact_path"] = None  # no saved artifact: the rows are read back from the job
+        if path.endswith("/dataset") and params.get("limit") == 500:
+            raise FlowNodeError("dataset fetch failed")
+        return out
+
+    ctx = _FlowCtx(routes, params = {RECIPE_PARAM: _compiled(_flow())})
+    with pytest.raises(FlowNodeError, match = "dataset fetch failed"):
+        asyncio.run(data.recipe_group(ctx))
+    assert saved[-1]["status"] == "error" and saved[-1]["error"] == "dataset fetch failed"
     assert saved[-1]["finishedAt"]
 
 
@@ -551,3 +608,44 @@ def test_a_full_run_keeps_its_run_name(monkeypatch):
     )
     asyncio.run(data.recipe_group(ctx))
     assert saved and all(r["run_name"] == "nightly sql" for r in saved)
+
+
+def test_a_recipe_dataset_lists_its_generated_columns_first(monkeypatch):
+    from storage import flows_db
+
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda flow, node, record: None)
+    compiled = _compiled(_flow())
+    generated = data.generated_columns(compiled["recipe"])
+    base = _job_routes("completed")
+
+    def routes(method, path, params, body):
+        if path.endswith("/dataset"):
+            return {"dataset": [{"a_seed": 1, **{name: 1 for name in generated}}], "total": 1}
+        return base(method, path, params, body)
+
+    ctx = _FlowCtx(routes, params = {RECIPE_PARAM: compiled, "rows": 1, "mode": "preview"})
+    columns = asyncio.run(data.recipe_group(ctx))["dataset"]["columns"]
+    assert columns == generated + ["a_seed"]
+
+
+def test_an_unnamed_full_run_is_named_after_its_group(monkeypatch):
+    saved = []
+    from storage import flows_db
+
+    monkeypatch.setattr(
+        flows_db, "save_recipe_run", lambda flow, node, record: saved.append(record)
+    )
+    doc = _flow()
+    step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
+
+    class Ctx(_FlowCtx):
+        node_id = step["id"]
+
+    for mode, name in (("full", "Text to SQL"), ("preview", None)):
+        saved.clear()
+        ctx = Ctx(
+            _job_routes("completed"), params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": mode}
+        )
+        ctx.doc = doc
+        asyncio.run(data.recipe_group(ctx))
+        assert saved and all(r["run_name"] == name for r in saved), mode

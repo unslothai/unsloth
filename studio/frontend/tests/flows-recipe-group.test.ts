@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -249,6 +249,35 @@ test("deleting a column from the inspector or Ctrl+X takes its {{ reference }} o
   assert.ok(Object.values(graph.edges).every((e) => e.source !== prompt.id));
 });
 
+test("deleting reference wires from two recipe frames at once clears both frames' wires", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { disconnectColumns } = await import("../src/features/flows/recipe/recipe-actions.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const a = sqlGroup();
+  const b = sqlGroup();
+  const other = b.nodes.map((n) => ({ ...n, id: `b_${n.id}`, group: "recipe_b" }));
+  const edges = [...referenceEdges(a.nodes), ...referenceEdges(other)];
+  useDocStore.getState().load({
+    ...doc([...a.nodes, ...other], edges),
+    groups: [a.group, { ...b.group, id: "recipe_b" }],
+  });
+  const graph = useDocStore.getState().graph;
+  const wire = (nodes: FlowNode[]) => {
+    const target = byName(nodes, "sql").id;
+    const id = graph.edgeOrder.find(
+      (e) => graph.edges[e].target === target && graph.edges[e].source === byName(nodes, "sql_prompt").id,
+    );
+    assert.ok(id);
+    return id;
+  };
+  const picked = [wire(a.nodes), wire(other)];
+  assert.deepEqual(disconnectColumns(picked).sort(), [...picked].sort());
+  const after = useDocStore.getState().graph;
+  for (const id of picked) assert.equal(after.edges[id], undefined, id);
+  for (const nodes of [a.nodes, other])
+    assert.doesNotMatch(JSON.stringify(after.nodes[byName(nodes, "sql").id].params.column), /sql_prompt/);
+});
+
 async function loadCatalog() {
   const { useCatalogStore } = await import("../src/features/flows/stores/catalog-store.ts");
   const catalog = JSON.parse(
@@ -439,4 +468,235 @@ test("Check leaves disabled columns and a disabled Recipe Dataset out, like the 
   assert.ok(checked.every((n) => !off.has(columnName(n))));
   assert.deepEqual(clientErrors(group, checked), []);
   assert.ok(clientErrors(group, columns).some((e) => /model is required/.test(e)));
+});
+
+test("a Hub seed still named by its repo id is picked out for resolving, a reader path is not", async () => {
+  const { bareHubSeed, hubSeedInspect } = await import(
+    "../src/features/flows/recipe/recipe-group-actions.ts"
+  );
+  const seed = (path: string, type = "hf") => ({
+    // biome-ignore lint/style/useNamingConvention: api schema
+    seed_config: { source: { seed_type: type, path } },
+  });
+  assert.ok(bareHubSeed(seed("unsloth/alpaca-cleaned")));
+  assert.equal(bareHubSeed(seed("datasets/unsloth/alpaca-cleaned/**/*.parquet")), null);
+  assert.equal(bareHubSeed(seed("unsloth/alpaca-cleaned", "local")), null);
+  assert.equal(bareHubSeed(seed("")), null);
+  assert.equal(bareHubSeed({}), null);
+  // Check asks with what the run sends, token included, so a gated seed checks like it runs.
+  const gated = bareHubSeed({
+    // biome-ignore lint/style/useNamingConvention: api schema
+    seed_config: { source: { seed_type: "hf", path: "org/gated", token: "hf_x", subset: "a" } },
+  });
+  assert.deepEqual(hubSeedInspect(gated ?? {}), {
+    // biome-ignore lint/style/useNamingConvention: api schema
+    dataset_name: "org/gated",
+    split: "train",
+    subset: "a",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    hf_token: "hf_x",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    preview_size: 1,
+  });
+});
+
+test("setup links are the flow's own edge type, dashed as references, so they follow the wire style", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { recipeSetup, setupEdges, REFERENCE_EDGE_CLASS } = await import(
+    "../src/features/flows/recipe/recipe-setup.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  const sql = byName(nodes, "sql");
+  const folded = nodes.map((n) => (n.id === sql.id ? { ...n, collapsed: true } : n));
+  useDocStore.getState().load({ ...doc(folded), groups: [group] });
+  const graph = useDocStore.getState().graph;
+  const { links } = recipeSetup(graph, group);
+  const edges = setupEdges(links, graph, { source: "out", target: "in" });
+  assert.ok(edges.length > 0);
+  for (const edge of edges) {
+    // flowEdge: Curved or bus-routed with every other wire; the class keeps it a dashed reference.
+    assert.equal(edge.type, "flowEdge");
+    assert.equal(edge.className, REFERENCE_EDGE_CLASS);
+    assert.deepEqual([edge.sourceHandle, edge.targetHandle], ["out", "in"]);
+    assert.equal(edge.selectable, false);
+    assert.equal(edge.deletable, false);
+  }
+  assert.ok(!edges.some((e) => e.target === sql.id), "a collapsed column draws no link");
+  const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+  assert.match(css, new RegExp(`\\.${REFERENCE_EDGE_CLASS} \\.react-flow__edge-path[^}]*stroke-dasharray`));
+});
+
+test("a note keeps the size it was given whatever its text; long text scrolls inside", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { RfDeriver } = await import("../src/features/flows/editor/derive-rf.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  useDocStore.getState().load({
+    ...doc([]),
+    notes: [{ id: "n1", text: "a long note", rect: [0, 0, 320, 200] }],
+  });
+  const note = new RfDeriver()
+    .nodes(useDocStore.getState().graph, new Set(), null)
+    .find((n) => n.type === "flowNote");
+  assert.deepEqual(note?.style, { width: 320, height: 200 });
+  const frames = readSrc("features/flows/editor/frame-nodes.tsx");
+  assert.match(frames, /fieldSizing="fixed"/);
+  assert.match(frames, /<BaseNodeContent className="nowheel h-full overflow-y-auto px-3 py-2">/);
+});
+
+async function recipeOverlaps(sizes: Map<string, { width: number; height: number }>) {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { setupLayout, NODE_SIZE, CARD_SIZE } = await import(
+    "../src/features/flows/recipe/recipe-setup.ts"
+  );
+  const graph = useDocStore.getState().graph;
+  const boxes = [
+    ...graph.nodeOrder.map((id) => ({
+      id,
+      x: graph.nodes[id].pos[0],
+      y: graph.nodes[id].pos[1],
+      ...(sizes.get(id) ?? NODE_SIZE),
+    })),
+    ...setupLayout(graph, null, sizes).elements.map(({ card, x, y }) => ({
+      id: card.id,
+      x,
+      y,
+      ...(sizes.get(card.id) ?? CARD_SIZE),
+    })),
+  ];
+  const hits: string[] = [];
+  for (const [i, a] of boxes.entries())
+    for (const b of boxes.slice(i + 1))
+      if (a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height)
+        hits.push(`${a.id} x ${b.id}`);
+  return hits;
+}
+
+test("no two nodes of a recipe group overlap after import, after adding setup blocks, or after Tidy up", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { addRecipeBlock } = await import("../src/features/flows/recipe/recipe-blocks.ts");
+  const { setupLayoutNodes, withLaidOutSetup, isSetupId, withSetupPosition, setupLayout } =
+    await import("../src/features/flows/recipe/recipe-setup.ts");
+  const { computeLayout } = await import("../src/features/flows/editor/layout-core.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  // As the importer lays it out: a 320 x 180 grid, the Recipe Dataset step at the end of row 0,
+  // plus a column left in the step's lane from an older layout (the ticket-router report).
+  const placed = nodes.map((n, i) => ({ ...n, pos: [(i % 4) * 320, Math.floor(i / 4) * 180] as [number, number] }));
+  const step: FlowNode = {
+    id: "step",
+    type: GENERATE_TYPE,
+    v: 1,
+    params: { rows: 5, mode: "preview" },
+    pos: [1280, 0],
+    group: "recipe",
+  };
+  const stray = { ...placed[0], id: "stray", pos: [1280, 460] as [number, number] };
+  stray.params = { column: { ...(placed[0].params.column as object), name: "stray" } };
+  useDocStore.getState().load({
+    ...doc([...placed, step, stray]),
+    groups: [{ ...group, rect: [-40, -60, 1600, 700] }],
+  });
+  // A finished run makes the step tall (Done, a dataset table).
+  const sizes = new Map([["step", { width: 260, height: 420 }]]);
+  assert.deepEqual(await recipeOverlaps(sizes), [], "after import");
+
+  const before = setupLayout(useDocStore.getState().graph, null, sizes).elements.length;
+  for (const type of ["model_provider", "model_config", "tool_config"])
+    addRecipeBlock("recipe", "llm", type);
+  assert.equal(setupLayout(useDocStore.getState().graph, null, sizes).elements.length, before + 3);
+  assert.deepEqual(await recipeOverlaps(sizes), [], "after adding setup blocks");
+
+  // A card dragged into the column grid: the next column goes around it.
+  const first = setupLayout(useDocStore.getState().graph, null, sizes).elements[0];
+  const g = useDocStore.getState().graph.groups.recipe;
+  useDocStore.getState().upsertGroup(withSetupPosition(g, first.card.id, [320, 360]));
+  const columns = useDocStore.getState().graph.nodeOrder.length;
+  addRecipeBlock("recipe", "sampler", "uuid");
+  assert.equal(useDocStore.getState().graph.nodeOrder.length, columns + 1);
+  assert.deepEqual(await recipeOverlaps(sizes), [], "a new column keeps clear of a moved card");
+
+  const graph = useDocStore.getState().graph;
+  const setup = setupLayoutNodes(graph, (id) => sizes.get(id));
+  const result = computeLayout({
+    direction: "LR",
+    nodes: [
+      ...graph.nodeOrder.map((id) => ({ id, ...(sizes.get(id) ?? { width: 260, height: 140 }) })),
+      ...setup.nodes,
+    ],
+    edges: [
+      ...graph.edgeOrder.map((id) => ({ source: graph.edges[id].source, target: graph.edges[id].target })),
+      ...setup.edges,
+    ],
+  });
+  assert.ok(Object.keys(result).some(isSetupId), "Tidy up lays out the setup cards too");
+  useDocStore.getState().moveNodes(
+    Object.fromEntries(Object.entries(result).filter(([k]) => !isSetupId(k))),
+  );
+  useDocStore.getState().patchGraph({ groups: withLaidOutSetup(useDocStore.getState().graph, result) });
+  assert.deepEqual(await recipeOverlaps(sizes), [], "after Tidy up");
+});
+
+test("a starter recipe and a new column both keep clear of setup cards, even dragged ones", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { freeSpot, nextColumnSlot } = await import("../src/features/flows/recipe/recipe-actions.ts");
+  const { withSetupPosition, setupLayout, CARD_SIZE } = await import(
+    "../src/features/flows/recipe/recipe-setup.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  // Every cell of a two-row frame is full, so a new column needs a new row.
+  const extra = { ...nodes[0], id: "extra", params: { column: { ...(nodes[0].params.column as object), name: "extra" } } };
+  const placed = [...nodes, extra].map((n, i) => ({ ...n, pos: [(i % 4) * 320, Math.floor(i / 4) * 180] as [number, number] }));
+  assert.equal(placed.length, 8);
+  const frame = { ...group, rect: [-40, -60, 1280, 400] as [number, number, number, number] };
+  const card = setupLayout({ ...useDocStore.getState().graph, groups: {}, groupOrder: [] }, null, new Map());
+  assert.equal(card.elements.length, 0);
+  useDocStore.getState().load({ ...doc(placed), groups: [frame] });
+  const first = setupLayout(useDocStore.getState().graph, null, new Map()).elements[0];
+  // Dragged to where the next row would start, and to the empty canvas below the frame.
+  const g = useDocStore.getState().graph.groups.recipe;
+  useDocStore.getState().upsertGroup(withSetupPosition(g, first.card.id, [0, 360]));
+  const { pos } = nextColumnSlot(useDocStore.getState().graph, "recipe");
+  const hit = (p: [number, number], at: { x: number; y: number }) =>
+    p[0] < at.x + CARD_SIZE.width && at.x < p[0] + 280 && p[1] < at.y + CARD_SIZE.height && at.y < p[1] + 140;
+  const moved = setupLayout(useDocStore.getState().graph, null, new Map()).elements.find(
+    (e) => e.card.id === first.card.id,
+  );
+  assert.ok(moved);
+  assert.ok(!hit(pos, moved), `column at ${pos} sits on the card at ${moved.x},${moved.y}`);
+  useDocStore.getState().upsertGroup(
+    withSetupPosition(useDocStore.getState().graph.groups.recipe, first.card.id, [0, 900]),
+  );
+  const below = setupLayout(useDocStore.getState().graph, null, new Map()).elements.find(
+    (e) => e.card.id === first.card.id,
+  );
+  assert.ok(below);
+  const spot = freeSpot(useDocStore.getState().graph, [below.x + 40, below.y + 60], [600, 400]);
+  assert.notDeepEqual(spot, [below.x + 40, below.y + 60], "the starter does not land on the card");
+});
+
+test("the run dialogs' check leaves disabled columns out, like the frame's Check", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { checkRecipeGroupDetail } = await import(
+    "../src/features/flows/recipe/recipe-group-actions.ts"
+  );
+  const editor = readFileSync(
+    new URL("../src/features/flows/recipe/recipe-editor.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(editor, /const checkGroup = checkRecipeGroupDetail;/);
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  (group.config as { model_providers: Record<string, unknown>[] }).model_providers[0].endpoint =
+    "http://localhost:8000/v1";
+  const off = new Set(["sql_prompt", "sql", "sql-validator"]);
+  useDocStore.getState().load({
+    ...doc(nodes.map((n) => (off.has(columnName(n)) ? { ...n, disabled: true } : n))),
+    groups: [group],
+  });
+  // Past the client checks (the blank-model preset is only used by disabled columns); the server
+  // half cannot load under node, which is fine: the point is the client half did not stop it.
+  const result = await checkRecipeGroupDetail("recipe");
+  assert.ok(!result.errors.some((e) => /model is required/.test(e)), result.errors.join("; "));
 });

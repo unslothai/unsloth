@@ -15,31 +15,12 @@ import { useRuntimeStore } from "../stores/runtime-store";
 import { type RecipeEditorTarget, useUiStore } from "../stores/ui-store";
 import { commitRecipe } from "./recipe-actions";
 import { applyConfigPatch, commitStudioEdit, studioView } from "./recipe-adapter";
-import { groupColumns, groupGenerate, groupPayload } from "./recipe-columns";
-import { runWithSettings, settingsFromRun } from "./recipe-run-settings";
+import { groupColumns, groupGenerate } from "./recipe-columns";
+import { type RecipeCheck, checkRecipeGroupDetail } from "./recipe-group-actions";
+import { fullRunName, runWithSettings, settingsFromRun } from "./recipe-run-settings";
 
-type Check = { valid: boolean; errors: string[]; rawDetail: string | null };
-
-async function checkGroup(groupId: string): Promise<Check> {
-  const graph = useDocStore.getState().graph;
-  const group = graph.groups[groupId];
-  try {
-    const result = await validateRecipe({
-      recipe: groupPayload(group, groupColumns(graph, groupId)).recipe,
-    });
-    return {
-      valid: result.valid,
-      errors: (result.errors ?? []).map((e) => e.message),
-      rawDetail: result.raw_detail ?? null,
-    };
-  } catch (error) {
-    return {
-      valid: false,
-      errors: [error instanceof Error ? error.message : String(error)],
-      rawDetail: null,
-    };
-  }
-}
+// The same check as the frame's Check: disabled columns left out, a bare Hub seed resolved.
+const checkGroup = checkRecipeGroupDetail;
 
 function setGenerate(groupId: string, patch: Record<string, unknown>) {
   const generate = groupGenerate(useDocStore.getState().graph, groupId);
@@ -55,10 +36,8 @@ function RecipeRunSettings({ target }: { target: RecipeEditorTarget }) {
   const generate = useDocStore((s) => groupGenerate(s.graph, target.groupId));
   const running = useRuntimeStore((s) => s.runStatus === "running");
   const [settings, setSettings] = useState(() => settingsFromRun(group?.run));
-  const [runName, setRunName] = useState(() =>
-    typeof group?.run?.run_name === "string" ? group.run.run_name : "",
-  );
-  const [check, setCheck] = useState<Check | null>(null);
+  const [runName, setRunName] = useState(() => fullRunName(group));
+  const [check, setCheck] = useState<RecipeCheck | null>(null);
   const [checking, setChecking] = useState(false);
   const close = () => useUiStore.getState().setRecipeEditor(null);
   if (!group || !generate) return null;

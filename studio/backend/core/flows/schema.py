@@ -174,6 +174,8 @@ class DatasetValue(_Strict):
     ref: str
     rows: Optional[int] = None
     columns: Optional[list[str]] = None
+    # Which block wrote a local upload, for its label: a recipe preview, a full recipe, Rows to Dataset.
+    made_by: Optional[Literal["preview", "recipe", "rows"]] = None
 
 
 class ModelValue(_Strict):

@@ -15,7 +15,7 @@ const { applyConfigPatch, commitStudioEdit, studioView } = await import(
 const { COLUMN_TYPE } = await import(
   "../src/features/flows/recipe/recipe-columns.ts"
 );
-const { runWithSettings, settingsFromRun } = await import(
+const { fullRunName, runWithSettings, settingsFromRun } = await import(
   "../src/features/flows/recipe/recipe-run-settings.ts"
 );
 const { parseRecipeJson, recipeFileName } = await import(
@@ -238,4 +238,15 @@ test("recipe JSON is told apart from a flow and from junk", () => {
   assert.ok("error" in parseRecipeJson('{"recipe": {}}'));
   assert.equal(recipeFileName("Text to SQL"), "text-to-sql.recipe.json");
   assert.equal(recipeFileName(""), "recipe.recipe.json");
+});
+
+test("a full run is named after its group unless it has a name, like the Run button's run", () => {
+  assert.equal(fullRunName({ label: "Text to SQL", run: null }), "Text to SQL");
+  assert.equal(fullRunName({ label: "Text to SQL", run: { run_name: " nightly " } }), "nightly");
+  assert.equal(fullRunName({ label: "Text to SQL", run: { run_name: "  " } }), "Text to SQL");
+  const editor = readFileSync(
+    new URL("../src/features/flows/recipe/recipe-editor.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(editor, /useState\(\(\) => fullRunName\(group\)\)/);
 });

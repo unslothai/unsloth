@@ -4,6 +4,7 @@
 // A recipe group's seed, provider connections, model presets and tool profiles as canvas cards. They are not
 // flow nodes: the group's recipe config is their source, and a dragged card keeps its spot in the group's `ui`.
 
+import type { RfEdge } from "../editor/derive-rf";
 import type { DocGraph } from "../stores/doc-store";
 import { GROUP_KEY } from "../stores/doc-store";
 import type { FlowGroup } from "../types";
@@ -147,7 +148,7 @@ export function recipeSetup(
       title: name,
       subtitle: "Provider connection",
       fields: local
-        ? [{ label: "Uses", value: "Unsloth Studio's chat model" }]
+        ? [{ label: "Uses", value: "Unsloth's chat model" }]
         : [
             { label: "Endpoint", value: text(provider.endpoint) || "not set" },
           ],
@@ -226,6 +227,11 @@ export function recipeSetup(
 
 type Size = { width: number; height: number };
 type Point = { x: number; y: number };
+type Box = { x: number; y: number; width: number; height: number };
+
+/** A node's size before it is measured: about a recipe column card. */
+export const NODE_SIZE: Size = { width: 260, height: 140 };
+export const CARD_SIZE: Size = { width: 240, height: CARD_HEIGHT };
 
 function savedPositions(group: FlowGroup): Record<string, [number, number]> {
   const saved = group.ui?.[SETUP_POSITIONS];
@@ -234,7 +240,35 @@ function savedPositions(group: FlowGroup): Record<string, [number, number]> {
     : {};
 }
 
-/** Where each card sits: its saved spot in the group, else stacked under the group's Recipe Dataset step. */
+function overlaps(a: Box, b: Box, gap = 0): boolean {
+  return (
+    a.x < b.x + b.width + gap &&
+    b.x < a.x + a.width + gap &&
+    a.y < b.y + b.height + gap &&
+    b.y < a.y + a.height + gap
+  );
+}
+
+/** Every node and note on the canvas as a box, where it is drawn now. */
+function canvasBoxes(
+  graph: DocGraph,
+  drag: Record<string, Point> | null,
+  sizes: ReadonlyMap<string, Size>,
+): Box[] {
+  const boxes: Box[] = graph.nodeOrder.map((id) => {
+    const node = graph.nodes[id];
+    const at = drag?.[id] ?? { x: node.pos[0], y: node.pos[1] };
+    return { ...at, ...(sizes.get(id) ?? NODE_SIZE) };
+  });
+  for (const id of graph.noteOrder) {
+    const [x, y, width, height] = graph.notes[id].rect;
+    boxes.push({ x, y, width, height });
+  }
+  return boxes;
+}
+
+/** Where each card sits: its saved spot in the group, else under the group's Recipe Dataset step, in the
+ * first free space (clear of every node, note and earlier card). */
 export function setupLayout(
   graph: DocGraph,
   drag: Record<string, Point> | null,
@@ -248,6 +282,8 @@ export function setupLayout(
   const elements: SetupElement[] = [];
   const links: SetupLink[] = [];
   const heights: Record<string, number> = {};
+  const taken = canvasBoxes(graph, drag, sizes);
+  const pending: { card: SetupCard; origin: Point; anchor: Point; groupId: string }[] = [];
   for (const groupId of graph.groupOrder) {
     const group = graph.groups[groupId];
     if (!isRecipeGroup(group)) continue;
@@ -261,34 +297,89 @@ export function setupLayout(
     const saved = savedPositions(group);
     const generate = groupGenerate(graph, groupId);
     const anchor = generate
-      ? (drag?.[generate.id] ?? { x: generate.pos[0], y: generate.pos[1] })
+      ? {
+          ...(drag?.[generate.id] ?? { x: generate.pos[0], y: generate.pos[1] }),
+        }
       : { x: origin.x + 40, y: origin.y + 60 };
-    let nextY =
-      anchor.y +
-      (generate ? (sizes.get(generate.id)?.height ?? 140) : 0) +
-      GAP;
-    let bottom = 0;
     for (const card of cards) {
+      // A card the user placed stays put, and the cards placed after it keep clear of it.
       let pos = drag?.[card.id];
-      if (!pos) {
-        const rel = saved[card.id.slice(SETUP_PREFIX.length)];
-        if (Array.isArray(rel))
-          pos = { x: origin.x + rel[0], y: origin.y + rel[1] };
-      }
-      if (!pos) {
-        pos = { x: anchor.x, y: nextY };
-        nextY += (sizes.get(card.id)?.height ?? CARD_HEIGHT) + GAP / 2;
-      }
-      elements.push({ card, x: pos.x, y: pos.y });
-      bottom = Math.max(
-        bottom,
-        pos.y + (sizes.get(card.id)?.height ?? CARD_HEIGHT),
-      );
+      const rel = saved[card.id.slice(SETUP_PREFIX.length)];
+      if (!pos && Array.isArray(rel))
+        pos = { x: origin.x + rel[0], y: origin.y + rel[1] };
+      if (pos) {
+        elements.push({ card, x: pos.x, y: pos.y });
+        taken.push({ ...pos, ...(sizes.get(card.id) ?? CARD_SIZE) });
+      } else pending.push({ card, origin, anchor, groupId });
     }
-    const needed = bottom - origin.y + GAP;
+  }
+  for (const { card, anchor } of pending) {
+    const size = sizes.get(card.id) ?? CARD_SIZE;
+    const box: Box = { x: anchor.x, y: anchor.y, ...size };
+    // Down the Recipe Dataset step's lane until nothing is in the way.
+    for (let i = 0; i < 500; i++) {
+      const hit = taken.filter((other) => overlaps(box, other, GAP / 2));
+      if (!hit.length) break;
+      box.y = Math.max(...hit.map((o) => o.y + o.height)) + GAP / 2;
+    }
+    taken.push(box);
+    elements.push({ card, x: box.x, y: box.y });
+  }
+  for (const groupId of graph.groupOrder) {
+    const group = graph.groups[groupId];
+    const mine = elements.filter((e) => e.card.groupId === groupId);
+    if (!mine.length) continue;
+    const top = drag?.[GROUP_KEY + groupId]?.y ?? group.rect[1];
+    const bottom = Math.max(
+      ...mine.map((e) => e.y + (sizes.get(e.card.id) ?? CARD_SIZE).height),
+    );
+    const needed = bottom - top + GAP;
     if (needed > group.rect[3]) heights[groupId] = Math.round(needed);
   }
   return { elements, links, heights };
+}
+
+/** The boxes setup cards take, for placing a new column clear of them. */
+export function setupBoxes(graph: DocGraph): Box[] {
+  return setupLayout(graph, null, new Map()).elements.map((e) => ({
+    x: e.x,
+    y: e.y,
+    ...CARD_SIZE,
+  }));
+}
+
+/** Tidy up's view of the setup cards: laid out like nodes, joined by their links. */
+export function setupLayoutNodes(
+  graph: DocGraph,
+  measured: (id: string) => Partial<Size> | undefined,
+): {
+  nodes: { id: string; width: number; height: number }[];
+  edges: { source: string; target: string }[];
+} {
+  const { elements, links } = setupLayout(graph, null, new Map());
+  return {
+    nodes: elements.map(({ card }) => ({
+      id: card.id,
+      width: measured(card.id)?.width ?? CARD_SIZE.width,
+      height: measured(card.id)?.height ?? CARD_SIZE.height,
+    })),
+    edges: links.map(({ source, target }) => ({ source, target })),
+  };
+}
+
+/** The groups with Tidy up's card spots saved, relative to each frame. */
+export function withLaidOutSetup(
+  graph: DocGraph,
+  positions: Record<string, [number, number]>,
+): FlowGroup[] {
+  const groups = new Map<string, FlowGroup>();
+  for (const [id, pos] of Object.entries(positions)) {
+    const parsed = parseSetupId(id);
+    if (!parsed) continue;
+    const group = groups.get(parsed.groupId) ?? graph.groups[parsed.groupId];
+    if (group) groups.set(group.id, withSetupPosition(group, id, pos));
+  }
+  return [...groups.values()];
 }
 
 /** The group with a dragged card's spot saved relative to its frame. */
@@ -310,4 +401,34 @@ export function withSetupPosition(
       },
     },
   };
+}
+
+/** Reference edge class: dashed and neutral (styled in index.css), so a link to a preset never reads as data. */
+export const REFERENCE_EDGE_CLASS = "flows-reference-edge";
+
+/**
+ * Setup links as canvas edges of the flow's own edge type, so they follow the wire style like every
+ * other edge (Curved, or routed on the bus lanes where the router is present). Not selectable or
+ * deletable: the recipe config is their source.
+ */
+export function setupEdges(
+  links: SetupLink[],
+  graph: DocGraph,
+  handles: { source: string; target: string },
+): RfEdge[] {
+  return links
+    .filter((link) => !graph.nodes[link.target]?.collapsed)
+    .map((link) => ({
+      id: link.id,
+      source: link.source,
+      target: link.target,
+      sourceHandle: handles.source,
+      targetHandle: handles.target,
+      type: "flowEdge",
+      className: REFERENCE_EDGE_CLASS,
+      data: { kind: "data", portType: "any" },
+      selectable: false,
+      deletable: false,
+      focusable: false,
+    }));
 }
