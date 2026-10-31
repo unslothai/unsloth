@@ -1061,6 +1061,7 @@ class ModelOverridePayload(BaseModel):
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
     mlx_ane_prefill: bool = False
+    mlx_fast_verify: bool = False
     # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
     mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
     mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
@@ -2690,6 +2691,7 @@ def update_openai_auto_switch_override(
                 and not payload.disable_vision
                 and not payload.mlx_int8_prefill
                 and not payload.mlx_ane_prefill
+                and not payload.mlx_fast_verify
                 and payload.load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
                 and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
@@ -2702,6 +2704,7 @@ def update_openai_auto_switch_override(
                         "disable_vision",
                         "mlx_int8_prefill",
                         "mlx_ane_prefill",
+                        "mlx_fast_verify",
                         "load_in_4bit",
                     )
                 }
@@ -2928,6 +2931,7 @@ def update_openai_auto_switch_override(
                 disable_vision = payload.disable_vision,
                 mlx_int8_prefill = payload.mlx_int8_prefill,
                 mlx_ane_prefill = payload.mlx_ane_prefill,
+                mlx_fast_verify = payload.mlx_fast_verify,
                 load_in_4bit = payload.load_in_4bit,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,

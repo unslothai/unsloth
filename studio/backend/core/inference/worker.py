@@ -778,6 +778,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["int8_prefill"] = bool(config.get("mlx_int8_prefill"))
                 load_kwargs["ane_prefill"] = bool(config.get("mlx_ane_prefill"))
+                load_kwargs["fast_verify"] = bool(config.get("mlx_fast_verify"))
                 load_kwargs["offload"] = tuple(config.get("mlx_offload") or (None, None))
                 load_kwargs["speculative_type"] = config.get("speculative_type")
                 load_kwargs["spec_draft_n_max"] = config.get("spec_draft_n_max")
@@ -889,6 +890,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_ane_prefill",
                         "mlx_ane_prefill_requested",
                         "mlx_ane_prefill_reason",
+                        "mlx_fast_verify",
+                        "mlx_fast_verify_requested",
+                        "mlx_fast_verify_reason",
                         "mlx_offload",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
