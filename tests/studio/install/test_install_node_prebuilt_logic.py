@@ -1684,9 +1684,15 @@ def test_extract_tar_xz(tmp_path):
 
 
 def test_tar_gz_install_is_kept_after_the_switch_to_tar_xz(tmp_path, monkeypatch):
-    pins = {"versions": {"1.0.0": {"node-v1.0.0-linux-x64.tar.gz": "a" * 64,
-                                   "node-v1.0.0-linux-x64.tar.xz": "b" * 64,
-                                   "node-v1.0.0-linux-arm64.tar.gz": "c" * 64}}}
+    pins = {
+        "versions": {
+            "1.0.0": {
+                "node-v1.0.0-linux-x64.tar.gz": "a" * 64,
+                "node-v1.0.0-linux-x64.tar.xz": "b" * 64,
+                "node-v1.0.0-linux-arm64.tar.gz": "c" * 64,
+            }
+        }
+    }
     asset = "node-v1.0.0-linux-x64.tar.xz"
     monkeypatch.setattr(M, "load_metadata", lambda d: {"asset": "node-v1.0.0-linux-x64.tar.gz"})
     assert M.pin_to_keep(pins, "1.0.0", asset, tmp_path) == "a" * 64
