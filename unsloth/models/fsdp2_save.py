@@ -669,7 +669,7 @@ def _share_from_writer(
 ):
     """The writer's `payload` on every rank, passed through the default store (not a collective,
     so a rank may wait for it as long as an export takes). Without a store, None off the writer."""
-    import pickle
+    from . import _store_codec
 
     try:
         store = dist.distributed_c10d._get_default_store()
@@ -681,14 +681,17 @@ def _share_from_writer(
     counter[tag] = counter.get(tag, 0) + 1
     key = f"unsloth_fsdp2_export_r{writer_rank}_{tag}_{counter[tag]}"
     if writer:
-        try:
-            data = pickle.dumps(payload)
-        except Exception:
-            data = pickle.dumps(None)
-        store.set(key, data)
+        store.set(key, _store_codec.encode(payload))
         return payload
     store.wait([key], _save_timeout())
-    return pickle.loads(store.get(key))
+    try:
+        return _store_codec.decode(store.get(key))
+    except ValueError:
+        return (
+            ("error", "the writer left an unreadable result in the store")
+            if tag == "result"
+            else None
+        )
 
 
 @contextlib.contextmanager
