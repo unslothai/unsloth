@@ -4885,7 +4885,6 @@ class _VLMRowPlan:
         "max_tokens",
         "processors",
         "streamed",
-        "speculates",
     )
 
     def __init__(
@@ -4900,7 +4899,6 @@ class _VLMRowPlan:
         max_tokens,
         processors = None,
         streamed = None,
-        speculates = True,
         videos = None,
     ):
         self.prompt = prompt
@@ -4913,7 +4911,6 @@ class _VLMRowPlan:
         self.max_tokens = max_tokens
         self.processors = processors
         self.streamed = streamed
-        self.speculates = speculates
 
 
 class _VisionBatchRow:
@@ -5079,7 +5076,6 @@ class _VisionBatchSession:
                     sampling = SamplingParams(**plan.sampling),
                     logits_processors = plan.processors and _failing_alone(row, plan.processors),
                     **resume,
-                    **({} if self._speculative is None or plan.speculates else {"drafts": False}),
                 )
             )
         except BatchRowRefused as refusal:
@@ -7845,8 +7841,6 @@ class MLXInferenceBackend:
             max_tokens = vlm_kwargs["max_tokens"],
             processors = processors,
             streamed = streamed,
-            # As _generate_vlm, which drops the draft for tool turns.
-            speculates = not (tools or tool_protocol_active),
         )
 
     def _generate_vlm(
@@ -8068,11 +8062,9 @@ class MLXInferenceBackend:
         session_scope = session if session is not None else nullcontext()
         processors = vlm_kwargs.get("logits_processors") or ()
         # The draft is told these processors, and takes only ones that read just the history (a grammar's
-        # matcher advances per call); tool turns decode as before; a clip is nothing a drafter was built for.
+        # matcher advances per call); a clip is nothing a drafter was built for.
         if (
             draft is None
-            or tools
-            or tool_protocol_active
             or videos
             or not all(getattr(processor, "history_only", False) for processor in processors)
             or _vlm_generation_is_diffusion(self._model)

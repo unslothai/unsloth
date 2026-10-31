@@ -7595,16 +7595,15 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
     )
     timings = backend.last_generation_stats["timings"]
     assert (timings["draft_n"], timings["draft_n_accepted"]) == (6, 4)
-    for request in (
-        {"repetition_penalty": 1.1},
-        {"tools": [{"type": "function"}]},
-        {"tool_protocol_active": True},
-    ):
+    for request in ({"repetition_penalty": 1.1},):
         seen = _drive_vlm_generation(backend, monkeypatch, **request)
         assert "max_tokens" in seen and "draft_model" not in seen
         assert "draft_n" not in backend.last_generation_stats["timings"]
     # Only the drafted reply entered the verify scope: open from preparing the draft through decoding.
     assert len(prepared) == 1 and scopes == [["open"]] * 2 and verify_scope == ["open", "closed"]
+    # A tool reply drafts like any other: the target verifies every token the call is parsed from.
+    for request in ({"tools": [{"type": "function"}]}, {"tool_protocol_active": True}):
+        assert _drive_vlm_generation(backend, monkeypatch, **request)["draft_model"] is draft
     opened, backend._is_vlm, backend._vlm_batch_unavailable_reason = [], True, lambda r, **_k: None
     backend._vlm_resident_unavailable_reason = lambda r, gaps = iter(["no stream"]): next(gaps, None)
     assert backend.batch_unavailable_reason([{}, {}]) == "no stream"
@@ -8792,7 +8791,6 @@ def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, 
         think_prefix = "",
         stream = _vlm_row(backend),
         streamed = None,
-        speculates = True,
     )
     backend._plan_vlm_request = lambda request, **_k: plan
     backend._reads_vision = False
