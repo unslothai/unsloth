@@ -922,6 +922,31 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_finished"
         " ON scheduled_task_runs(finished_at)"
     )
+    # A one-off training start. The request itself is encrypted in credential_secrets under
+    # training_schedules_db.PAYLOAD_KIND, so tokens never sit in this row.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS training_schedules (
+            id TEXT NOT NULL PRIMARY KEY,
+            owner_subject TEXT NOT NULL,
+            status TEXT NOT NULL,
+            start_at INTEGER NOT NULL,
+            start_at_local TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            project_name TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            claimed_at INTEGER,
+            job_id TEXT,
+            error TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_training_schedules_due"
+        " ON training_schedules(status, start_at)"
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS research_runs (

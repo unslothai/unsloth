@@ -42,6 +42,13 @@ import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
+import {
+  browserTimeZone,
+  formatClock,
+  localDateKey,
+  timeChoices,
+  zoneLabel,
+} from "@/lib/schedule-time.ts";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import type { ScheduledTask, ScheduledTaskPatch, TaskNotify, TaskReasoningEffort } from "./api";
@@ -50,18 +57,13 @@ import {
   REPEAT_KINDS,
   type RepeatKind,
   type ScheduleForm,
-  browserTimeZone,
   defaultScheduleForm,
   formFromSchedule,
-  formatClock,
-  localDateKey,
   sameSchedule,
   scheduleFormComplete,
   scheduleFromForm,
-  timeChoices,
   titleFromPrompt,
   weekdayName,
-  zoneLabel,
 } from "./schedule";
 import { useScheduledTasksStore } from "./store";
 
