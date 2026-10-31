@@ -431,6 +431,7 @@ def _format_dataset(
     custom_format_mapping = None,
     split_name = None,
     raw_text_column = None,
+    row_statistics = None,
 ):
     """Formats dataset and returns {dataset, detected_format, final_format, chat_column, is_standardized, requires_manual_mapping, warnings}."""
 
@@ -704,6 +705,7 @@ def _format_dataset(
                     batch_size,
                     num_proc,
                     chat_column = detected["chat_column"],
+                    row_statistics = row_statistics,
                 )
                 return {
                     "dataset": converted,
@@ -890,6 +892,7 @@ def format_and_template_dataset(
     progress_callback = None,
     split_name = None,
     raw_text_column = None,
+    row_statistics = None,
 ):
     """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
     from .tokenizer_fingerprint import install_tokenizer_fingerprint
@@ -1136,6 +1139,7 @@ def format_and_template_dataset(
             num_proc = num_proc,
             split_name = split_name,
             raw_text_column = raw_text_column,
+            row_statistics = row_statistics,
         )
 
         if dataset_info["final_format"] in ("raw_text", PRETOKENIZED_FORMAT):

@@ -275,9 +275,15 @@ def convert_chatml_to_alpaca(
     batch_size = 1000,
     num_proc = None,
     chat_column: str | None = None,
+    row_statistics = None,
 ):
     """Convert ChatML to Alpaca format. Accepts a "messages" or "conversations" column with either standard "role"/"content" or ShareGPT "from"/"value" keys."""
     is_iterable = is_streaming_dataset(dataset)
+    if row_statistics is not None and is_iterable:
+        raise ValueError("Conversion row statistics require a finite dataset.")
+    source_column = "__unsloth_conversion_source"
+    while source_column in (dataset.column_names or []):
+        source_column += "_"
     roles = {
         "system": "system",
         "user": "user",
@@ -288,7 +294,7 @@ def convert_chatml_to_alpaca(
         "output": "assistant",
     }
 
-    def _convert(examples):
+    def _convert(examples, indices = None):
         chatml_data = examples.get(chat_column) if chat_column else None
         if chatml_data is None:
             chatml_data = (
@@ -301,9 +307,10 @@ def convert_chatml_to_alpaca(
         instructions = []
         outputs = []
         inputs = []
+        sources = []
         column_systems = examples.get("system") or [None] * len(chatml_data)
 
-        for convo, column_system in zip(chatml_data, column_systems):
+        for index, (convo, column_system) in enumerate(zip(chatml_data, column_systems)):
             turns = []
             for msg in convo or []:
                 role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
@@ -336,16 +343,23 @@ def convert_chatml_to_alpaca(
                         "\n\n".join(part for part in (system, "\n".join(context)) if part)
                     )
                     outputs.append(content)
+                    if row_statistics is not None:
+                        sources.append(indices[index])
                     context += [f"User: {instruction}", f"Assistant: {content}"]
                     instruction = None
 
-        return {"instruction": instructions, "input": inputs, "output": outputs}
+        result = {"instruction": instructions, "input": inputs, "output": outputs}
+        if row_statistics is not None:
+            result[source_column] = sources
+        return result
 
     dataset_map_kwargs = {
         "batched": True,
         "batch_size": batch_size,
         "remove_columns": dataset.column_names or list(next(iter(dataset), {})),
     }
+    if row_statistics is not None:
+        dataset_map_kwargs["with_indices"] = True
 
     if not is_iterable:
         from utils.hardware import dataset_map_num_proc
@@ -359,6 +373,20 @@ def convert_chatml_to_alpaca(
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
 
     result = dataset.map(_convert, **dataset_map_kwargs)
+    if row_statistics is not None:
+        emitted_sources, previous = 0, None
+        if len(result):
+            # Batched map preserves source order, including across worker shards.
+            for batch in result.select_columns([source_column]).iter(batch_size = 10000):
+                for source in batch[source_column]:
+                    emitted_sources += source != previous
+                    previous = source
+        row_statistics.update(
+            dropped_source_rows = len(dataset) - emitted_sources,
+            expanded_rows = len(result) - emitted_sources,
+        )
+        if source_column in result.column_names:
+            result = result.remove_columns(source_column)
 
     # For streaming, force the first mapped row through now so column/format errors surface before training rather than mid-iteration; IterableDataset re-iterates from the generator source, so this is safe.
     if is_iterable:
