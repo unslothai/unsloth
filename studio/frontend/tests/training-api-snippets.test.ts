@@ -358,7 +358,7 @@ test("the placeholder example and the cancel example render for every language",
   }
 });
 
-test("the Train header leads its page links with the API button, and the API tab has a Training kind", () => {
+test("the Train header leads its page links with the API button, which alone opens the Training example", () => {
   const page = readSrc("features/studio/studio-page.tsx");
   assert.match(page, /<div className="ml-auto flex items-center gap-2">\s*<TrainingApiButton \/>\s*<MediaPageLink\b[^]*?to="\/library"/);
   const button = readSrc("features/studio/training-api-button.tsx");
@@ -368,8 +368,11 @@ test("the Train header leads its page links with the API button, and the API tab
   const tabs = readSrc("features/settings/components/api-example-tabs.tsx");
   assert.match(tabs, /"api-keys-training-api": "training"/);
   assert.match(tabs, /<TrainingApiExamples[^>]*showHeading=\{false\}/);
+  // No Training chip in the tab row unless the Train page asked for it.
+  assert.match(tabs, /current === "training"\s*\?/);
+  assert.match(tabs, /useApiExampleKinds\(kind\)/);
   const monitor = readSrc("features/api-monitor/api-monitor-page.tsx");
-  assert.match(monitor, /kind === "training" \? \(\s*<TrainingApiExamples/);
+  assert.doesNotMatch(monitor, /TrainingApiExamples/);
 });
 
 // studio/backend/tests/test_training_api_snippet_contract.py sends these bodies through the fine-tuning
