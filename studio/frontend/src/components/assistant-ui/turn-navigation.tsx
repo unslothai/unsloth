@@ -729,7 +729,8 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     <div
       ref={anchorRef}
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
-      className="aui-turn-navigator-anchor pointer-events-none select-none sticky top-1/2 z-10 h-0 w-full shrink-0"
+      // Sticky top-1/2 measures below the viewport's top padding; take half back to centre on the page.
+      className="aui-turn-navigator-anchor pointer-events-none select-none sticky top-[calc(50%_-_var(--thread-header-offset,1rem)/2)] z-10 h-0 w-full shrink-0"
     >
       <div
         style={{
@@ -738,7 +739,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
         }}
         className="aui-turn-navigator-gutter @container/turn-gutter absolute top-0 left-0 h-0"
       >
-        <div className="absolute top-0 left-[-0.75rem] flex w-9 -translate-y-1/2 flex-col items-start opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 @min-[2.25rem]/turn-gutter:opacity-100">
+        <div className="absolute top-0 left-[-0.5rem] flex w-9 -translate-y-1/2 flex-col items-start opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 @min-[2.25rem]/turn-gutter:opacity-100">
           <nav
             aria-label={t("turns.navigator")}
             style={{
@@ -772,7 +773,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           onPointerEnter={cancelHide}
           onPointerLeave={hidePreview}
           className={cn(
-            "aui-turn-preview pointer-events-auto fixed z-50 flex w-80 select-none flex-col gap-1 rounded-xl border border-border bg-popover py-3 pr-2.5 pl-3.5 text-popover-foreground text-ui-13 shadow-xl shadow-black/20",
+            "aui-turn-preview dropdown-surface pointer-events-auto fixed z-50 flex w-80 select-none flex-col gap-1 rounded-xl bg-popover py-3 pr-2.5 pl-3.5 text-popover-foreground text-ui-13 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]",
             !previewOpen && "invisible",
           )}
         >
@@ -790,12 +791,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
                 onClick={() =>
                   preview && toggleBookmarkedTurn(threadId, preview.openerId)
                 }
-                className={cn(
-                  "flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md hover:bg-accent",
-                  previewBookmarked
-                    ? "text-primary"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
+                className="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md hover:bg-accent"
               >
                 <HugeiconsIcon
                   icon={Bookmark02Icon}
