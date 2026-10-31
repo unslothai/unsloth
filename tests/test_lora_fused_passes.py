@@ -524,8 +524,22 @@ def test_multi_token_inference_follows_the_training_order(dropout, monkeypatch):
 _DYNAMIC_RANK_CASE = """
 import sys
 import torch
+import importlib.util
 import unsloth  # noqa: F401
-from unsloth.kernels import fast_lora
+
+if importlib.util.find_spec("triton") is None:
+    # The CPU path never loads the kernels: define them against the stub as the GPU path does, then drop it.
+    from unsloth_zoo.stubs import triton_stub
+
+    meta_path, modules = list(sys.meta_path), set(sys.modules)
+    triton_stub.inject_into_sys_modules()
+    from unsloth.kernels import fast_lora
+
+    sys.meta_path[:] = meta_path
+    for key in [k for k in sys.modules if k.split(".")[0] == "triton" and k not in modules]:
+        del sys.modules[key]
+else:
+    from unsloth.kernels import fast_lora
 
 torch.manual_seed(0)
 weights = []
