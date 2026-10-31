@@ -2319,7 +2319,13 @@ def backfill_fp8_modules_to_convert(
         return None
     try:
         weight_map = _load_fp8_weight_map(
-            model_name, local_files_only, token, revision, subfolder, cache_dir, variant = variant,
+            model_name,
+            local_files_only,
+            token,
+            revision,
+            subfolder,
+            cache_dir,
+            variant = variant,
             index_only = True,  # runs before the guarded weight download: never fetch the weights here
         )
     except Exception:
