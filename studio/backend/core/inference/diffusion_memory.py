@@ -6001,16 +6001,12 @@ def apply_memory_plan(
 
 
 UNET_STREAM_ENV = "UNSLOTH_DIFFUSION_UNET_STREAM"
-# SDXL base, 1024^2, 25 steps, CFG 7, MiB above the weights on the card (diffusers 0.41, L4 bf16 + T4 fp16).
-# Whole-module offload: reserved peak of the denoise above the 4897 MiB UNet (L4 5714, T4 5694 reserved).
+# Measured SDXL 1024^2, 25 steps, diffusers 0.41, L4 bf16 / T4 fp16; MiB above weights.
 _MEASURED_UNET_OFFLOAD_DENOISE_MIB = 817
-# Streamed (leaf level, encoders streamed, VAE resident + tiled, prefetch window included): the worst phase of one render
-# (max_memory_allocated) is the VAE decode. L4 bf16: encode 121, denoise 333, decode 2435 (SDXL-Turbo at 512^2: 610).
+# Streamed: worst phase is the VAE decode (L4 bf16).
 _MEASURED_UNET_STREAMED_PEAK_MIB = 2435
-# A force_upcast fp16 VAE (T4 and other pre-Ampere cards) decodes in fp32 (diffusers' upcast). T4 fp16: encode 121,
-# denoise 333, decode 3228 (SDXL-Turbo at 512^2: 923).
+# force_upcast fp16 VAE (T4) decodes in fp32.
 _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB = 3228
-# allocator fragmentation beside the reserve
 _UNET_STREAM_SLACK_MIB = 512
 
 
@@ -6026,9 +6022,8 @@ def unet_stream_room_mib(
     *,
     fp32_decode: bool = False,
 ) -> Optional[int]:
-    """None when whole-module offload fits the UNet (its weights plus the measured denoise peak); else the MiB of
-    UNet leaves a streamed UNet keeps resident beside the VAE and the measured worst phase of a render (a decode OOM
-    releases resident groups, and leaf-level groups do not survive that round trip, so the decode must fit too)."""
+    """None if whole-module offload fits; else MiB of UNet leaves to keep resident. The decode must fit too: leaf
+    groups released by a decode OOM do not survive the round trip."""
     if unet_mib + _measured_reserve_mib(_MEASURED_UNET_OFFLOAD_DENOISE_MIB) <= free_mib:
         return None
     peak = (
@@ -6041,7 +6036,6 @@ def unet_stream_room_mib(
 
 
 def _vae_decodes_in_fp32(vae: Any) -> bool:
-    """diffusers' SDXL pipelines upcast a force_upcast fp16 VAE to fp32 for the decode (bf16 decodes as is)."""
     try:
         import torch
         first = next(iter(vae.parameters()), None)
@@ -6050,7 +6044,7 @@ def _vae_decodes_in_fp32(vae: Any) -> bool:
             and first.dtype == torch.float16
             and bool(getattr(getattr(vae, "config", None), "force_upcast", False))
         )
-    except Exception:  # noqa: BLE001 - duck-typed VAE: price the larger fp32 decode
+    except Exception:  # noqa: BLE001
         return True
 
 
@@ -6059,10 +6053,7 @@ def _stream_unet_instead_of_model_offload(
     placement: str,
     logger: Any = None,
 ) -> bool:
-    """Whole-module offload moves the whole UNet onto the card for every call: a UNet larger than the free VRAM
-    (SDXL's 4.8 GiB fp16 UNet on a 4-6 GiB card) then OOMs on the first step. Stream it leaf by leaf instead (text
-    encoders streamed too, the VAE resident), keeping as many leaves resident as the free VRAM holds. Only when the
-    whole-module path cannot fit; ``UNSLOTH_DIFFUSION_UNET_STREAM=0`` keeps whole-module offload."""
+    """Stream a UNet too large for whole-module offload (which OOMs on step one) leaf by leaf."""
     if _env_off(UNET_STREAM_ENV):
         return False
     try:
@@ -6090,7 +6081,7 @@ def _stream_unet_instead_of_model_offload(
         )
         if room is None:
             return False
-    except Exception:  # noqa: BLE001 - keep the stock whole-module path
+    except Exception:  # noqa: BLE001
         return False
     _set_group_offload_failure(pipe, None)
     applied = _apply_group_offload(
@@ -6103,8 +6094,7 @@ def _stream_unet_instead_of_model_offload(
     )
     if applied:
         try:
-            # the deferred speed profile (fused qkv, channels_last, compile) rebuilds UNet weights outside the leaf
-            # hooks: a streamed UNet stays eager (diffusion._engage_deferred_speed reads this)
+            # deferred speed profile would rebuild weights outside the leaf hooks; read by _engage_deferred_speed
             pipe._unsloth_unet_streamed = True
         except Exception:  # noqa: BLE001
             pass
@@ -7570,7 +7560,7 @@ def _apply_group_offload(
     denoiser: str = "transformer",
 ) -> bool:
     """Streams transformer blocks in groups; encoders stay resident unless stream_text_encoders is set; returns False on any failure, caller falls back.
-    ``denoiser="unet"`` streams a UNet leaf by leaf instead (its down / up blocks are too coarse to be groups)."""
+    ``denoiser="unet"`` streams leaf by leaf (UNet blocks are too coarse for groups)."""
     transformer = getattr(pipe, denoiser, None)
     if transformer is None:
         return False

@@ -73,13 +73,11 @@ def test_sdxl_streams_where_whole_module_offload_cannot_fit(budget_mib, free_mib
         dm._measured_reserve_mib(dm._MEASURED_UNET_STREAMED_PEAK_MIB) + dm._UNET_STREAM_SLACK_MIB
     )
     assert room == max(0, free_mib - SDXL_VAE_MIB - reserve)
-    # the reserve covers the measured worst phase of a streamed render with margin
     assert reserve >= dm._MEASURED_UNET_STREAMED_PEAK_MIB * dm._MEASURED_PEAK_MARGIN
 
 
 @pytest.mark.parametrize("free_mib", [7700, 15000, 22000])
 def test_sdxl_keeps_whole_module_offload_when_it_fits(free_mib):
-    # 8 GiB budget and up: main's whole-module offload (or the resident plan) stays as it was
     assert dm.unet_stream_room_mib(free_mib, SDXL_UNET_MIB, SDXL_VAE_MIB) is None
 
 
@@ -91,7 +89,6 @@ def test_more_free_vram_keeps_more_leaves_resident():
 
 
 def test_fp32_decode_of_an_fp16_vae_keeps_fewer_leaves_resident():
-    # T4: diffusers decodes a force_upcast fp16 VAE in fp32, a larger measured peak than a bf16 decode
     for free_mib in (5700, 8000 - 1):
         r16 = dm.unet_stream_room_mib(free_mib, 7000, SDXL_VAE_MIB)
         r32 = dm.unet_stream_room_mib(free_mib, 7000, SDXL_VAE_MIB, fp32_decode = True)
@@ -112,7 +109,6 @@ def test_vae_decode_dtype_follows_the_pipeline_upcast(dtype, force_upcast, fp32)
 def test_streamed_room_is_passed_to_group_offload(cuda_free):
     pipe = _pipe(unet_mib = 4)
     cuda_free["free"] = 8000
-    # an 8000 MiB (meta) UNet on 8000 MiB free: whole-module offload cannot fit it, the leftover stays resident
     pipe.unet = pipe.components["unet"] = torch.nn.Linear(
         512, 512 * 8000, bias = False, device = "meta"
     )
@@ -129,7 +125,6 @@ def test_vram_budget_reserve_is_kept_out_of_the_resident_leaves(cuda_free, monke
         512, 512 * 8000, bias = False, device = "meta"
     )
     cuda_free["free"] = 12000
-    # 24 GiB card, budget 0.75: the setting keeps 6144 MiB free, so only 5856 of the 12000 count
     monkeypatch.setattr(dm, "_vram_budget_fraction", lambda: 0.75)
     reserve_mib = dm.user_budget_reserve_bytes(torch.device("cuda"), 24 << 30) >> 20
     assert reserve_mib == 6144
@@ -141,7 +136,7 @@ def test_vram_budget_reserve_is_kept_out_of_the_resident_leaves(cuda_free, monke
 
 def test_model_offload_plan_streams_a_unet_that_cannot_fit(cuda_free):
     pipe = _pipe(unet_mib = 4)
-    cuda_free["free"] = 2  # MiB: below the UNet plus the measured denoise reserve
+    cuda_free["free"] = 2
     policy, _ = dm.apply_memory_plan(pipe, _plan(), device = "cuda")
     assert policy == dm.OFFLOAD_GROUP
     assert pipe.model_offload_calls == []
@@ -219,5 +214,4 @@ def test_deferred_speed_profile_skipped_only_for_a_streamed_unet(monkeypatch):
         )
         dmod.DiffusionBackend._engage_deferred_speed(backend, states[streamed])
         assert states[streamed].speed_deferred is False
-    # the streamed UNet stays eager (its weights must stay under the leaf hooks); every other load still compiles
     assert ran == [states[False]]
