@@ -16,6 +16,15 @@ from core.rag.chunking import chunk_pages
 from core.rag.parsers import Page
 from storage import rag_db
 
+import sqlite3
+
+# Same gate as the rag_conn fixture: an interpreter whose sqlite3 cannot load extensions (the
+# macos-15 runner's) never has RAG, so the end-to-end ingestion tests skip there.
+needs_sqlite_vec = pytest.mark.skipif(
+    not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"),
+    reason = "sqlite-vec cannot be loaded by this Python's sqlite3",
+)
+
 _REAL_TOKEN_COUNTER = embeddings.token_counter
 
 
@@ -183,6 +192,7 @@ def _ingest_with(monkeypatch, tmp_path, counter_factory, name):
     return chunks, fts, vectors
 
 
+@needs_sqlite_vec
 def test_ingestion_stores_the_same_rows_batched_or_not(
     rag_home, stub_embeddings, tmp_path, monkeypatch
 ):
@@ -210,6 +220,7 @@ def test_ingestion_stores_the_same_rows_batched_or_not(
     assert batched_calls < 40
 
 
+@needs_sqlite_vec
 def test_ingestion_tokenizes_a_document_in_few_calls(
     rag_home, stub_embeddings, tmp_path, monkeypatch
 ):
@@ -227,6 +238,7 @@ def test_ingestion_tokenizes_a_document_in_few_calls(
     assert tok.encodes + tok.batches < 40
 
 
+@needs_sqlite_vec
 def test_delete_during_batched_chunking_cancels_and_stores_nothing(
     rag_home, stub_embeddings, tmp_path, monkeypatch
 ):
