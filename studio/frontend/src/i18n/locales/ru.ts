@@ -2482,7 +2482,7 @@ export const ru = {
         apiDescription: "Смотрите, что другие приложения отправляют в API этого сервера, по мере поступления.",
         summary: "Активные запросы, ошибки и использование токенов",
         status: "активных: {active} · недавних: {recent} · {model}",
-        noModelLoaded: "модель не загружена",
+        noModelLoaded: "Модель не загружена",
         autoOpen: "Автоматически показывать плавающий монитор",
         autoOpenDescription:
           "Открывает небольшую панель при появлении трафика API.",
@@ -2504,6 +2504,21 @@ export const ru = {
         gpuLoad: "Загрузка GPU",
         temperature: "Температура",
         power: "Мощность",
+        memory: "Память",
+        gpuInUse: "Используется GPU",
+        availableForModels: "Доступно для моделей",
+        refreshRate: "Частота обновления",
+        refreshRateDescription: "Как часто плавающий монитор считывает использование памяти и GPU, пока он открыт.",
+        refreshEvery: "Каждые {seconds} с",
+        unsloth: "Unsloth",
+        otherApps: "Другие приложения",
+        otherInUse: "Прочее",
+        freeLabel: "Свободно",
+        unslothApp: "Приложение Unsloth",
+        unslothShare: "Показывать долю Unsloth",
+        unslothShareDescription: "Делит память на занятую Unsloth, другими приложениями и свободную.",
+        modelBreakdown: "Разбивка по моделям",
+        modelBreakdownDescription: "Делит долю Unsloth на полосе памяти между загруженными моделями и остальной частью приложения.",
       },
       gpu: {
         title: "Устройства GPU",
@@ -5119,6 +5134,7 @@ export const ru = {
     monitor: {
       dragHandleLabel: "Переместить живой монитор. Стрелки сдвигают его понемногу, двойной щелчок сбрасывает положение.",
       reconnecting: "Повторное подключение…",
+      resizeHint: "Потяните за сторону или угол, чтобы изменить ширину. Двойной щелчок сбрасывает её.",
     },
   },
   projectsPage: {

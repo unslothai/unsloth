@@ -2498,7 +2498,7 @@ export const es = {
         apiDescription: "Mira lo que otras apps envían a la API de este servidor en cuanto llega.",
         summary: "Solicitudes en curso, errores y uso de tokens",
         status: "{active} activas · {recent} recientes · {model}",
-        noModelLoaded: "ningún modelo cargado",
+        noModelLoaded: "Ningún modelo cargado",
         autoOpen: "Mostrar automáticamente el monitor flotante",
         autoOpenDescription:
           "Abre un panel pequeño cuando llega tráfico de la API.",
@@ -2520,6 +2520,21 @@ export const es = {
         gpuLoad: "Carga de GPU",
         temperature: "Temperatura",
         power: "Consumo",
+        memory: "Memoria",
+        gpuInUse: "En uso por la GPU",
+        availableForModels: "Disponible para modelos",
+        refreshRate: "Frecuencia de actualización",
+        refreshRateDescription: "Con qué frecuencia el monitor flotante lee el uso de memoria y GPU mientras está abierto.",
+        refreshEvery: "Cada {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Otras apps",
+        otherInUse: "Otro uso",
+        freeLabel: "Libre",
+        unslothApp: "App de Unsloth",
+        unslothShare: "Mostrar la parte de Unsloth",
+        unslothShareDescription: "Divide la memoria entre lo que usa Unsloth, lo que usan otras apps y lo libre.",
+        modelBreakdown: "Desglosar por modelo",
+        modelBreakdownDescription: "Divide la parte de Unsloth en la barra de memoria entre cada modelo cargado y el resto de la app.",
       },
       gpu: {
         title: "Dispositivos GPU",
@@ -5165,6 +5180,7 @@ export const es = {
     monitor: {
       dragHandleLabel: "Mover el monitor en vivo. Las teclas de flecha lo desplazan un poco; con doble clic se restablece.",
       reconnecting: "Reconectando...",
+      resizeHint: "Arrastra un lado o una esquina para cambiar el ancho. Doble clic lo restablece.",
     },
   },
   projectsPage: {

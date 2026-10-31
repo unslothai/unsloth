@@ -672,3 +672,25 @@ test("an Audio page already on a workflow the model runs is left there", () => {
     label: "Audio",
   });
 });
+
+test("only a model known to sit on the reported GPUs counts toward VRAM", () => {
+  const gguf = (resident_on_gpu: unknown) =>
+    describeInferenceStatus(
+      inferenceStatus({
+        active_model: "unsloth/gemma-3-4b-it-GGUF",
+        is_gguf: true,
+        loaded: ["unsloth/gemma-3-4b-it-GGUF"],
+        resident_mib: 3072,
+        resident_on_gpu,
+      }),
+    )[0];
+  assert.equal(gguf(true).residentOnGpu, true);
+  // A CPU run, a Vulkan run (buffers not parsed) and an older server all stay unknown.
+  assert.equal(gguf(null).residentOnGpu, undefined);
+  assert.equal(gguf(undefined).residentOnGpu, undefined);
+  const image = (device: string | null) =>
+    describeDiffusionStatus({ loaded: true, repo_id: "a/b", resident_mib: 2048, device } as never)[0];
+  assert.equal(image("cuda:0").residentOnGpu, true);
+  assert.equal(image("cpu").residentOnGpu, undefined);
+  assert.equal(image(null).residentOnGpu, undefined);
+});

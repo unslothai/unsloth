@@ -445,8 +445,12 @@ export const BUDGET = {
   // the eager English catalog and its search rows. Raised by that.
   // Chat wallpaper prefs, reset and English strings: +6,365 B raw / +3,589 B transfer (Node 24,
   // 85 -> 89 eager chunks). Renderer, contrast and pixel worker stay lazy.
-  transferBytes: 1_853_999,
-  rawBytes: 5_997_755,
+  // The Live monitor redesign (#15630: CPU / memory / per-GPU rows, Unsloth's share and per-model split, refresh
+  // rate, width resize, their strings in the eager en locale) adds 13,218 B raw / 4,538 B transfer (5,387,988 ->
+  // 5,401,206 B raw, 1,681,320 -> 1,685,858 B transfer against 91989b1a9b, one machine and build, Node 26, 120 -> 121
+  // chunks). Raised by that growth.
+  transferBytes: 1_858_537,
+  rawBytes: 6_010_973,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

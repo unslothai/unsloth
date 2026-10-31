@@ -96,8 +96,13 @@ export function formatTemperature(celsius: number): string {
   return `${Math.round(celsius)}°C`;
 }
 
+// An idle Apple GPU really draws under 1 W; "0 W" reads as a broken sensor, so keep a decimal there.
+function watts(value: number): string {
+  return value < 10 ? value.toFixed(1) : String(Math.round(value));
+}
+
 export function formatPower(drawW: number, limitW: number | null): string {
   return limitW !== null && limitW > 0
-    ? `${Math.round(drawW)} / ${Math.round(limitW)} W`
-    : `${Math.round(drawW)} W`;
+    ? `${watts(drawW)} / ${Math.round(limitW)} W`
+    : `${watts(drawW)} W`;
 }
