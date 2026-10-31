@@ -55,6 +55,11 @@ export const th = {
     materialMenus: "เมนูกระจก",
     materialMenusDescription: "ดรอปดาวน์ เมนู และตัวเลือกก็ใช้กระจกด้วย",
     materialStrength: "ความเข้มของกระจก",
+    lens: "เลนส์กระจก",
+    lensDescription: "หักเหภาพใต้ช่องพิมพ์ข้อความเหมือนกระจกจริง",
+    lensOff: "ปิด",
+    lensMagnify: "ขยาย",
+    lensShrink: "ย่อ",
   },
   linkMenu: {
     openInBrowser: "เปิดในเบราว์เซอร์ Unsloth",

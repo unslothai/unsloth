@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useMaterialStore } from "./material";
+import { LENS_SCALE } from "./model";
+
+const COMPOSER = ".unsloth-composer-surface";
+
+/**
+ * Glass that refracts. Each composer over the wallpaper gets a copy of the wallpaper behind its content,
+ * lined up with the real one and scaled about the composer's centre, plus a brightened ring of the same
+ * copy so the outline takes the colours behind it. A copy because backdrop-filter cannot scale, and SVG
+ * backdrop filters are Chromium only (not the macOS app's WebKit).
+ */
+export function ComposerGlassLenses({
+  wallpaper,
+}: {
+  wallpaper: HTMLElement | null;
+}) {
+  const material = useMaterialStore((s) => s.material);
+  const [hosts, setHosts] = useState<HTMLElement[]>([]);
+  const workspace = wallpaper?.parentElement ?? null;
+  const on = Boolean(workspace) && material !== "solid";
+  useEffect(() => {
+    if (!workspace || !on) return;
+    let frame = 0;
+    const scan = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const found = [...workspace.querySelectorAll<HTMLElement>(COMPOSER)];
+        setHosts((prev) =>
+          prev.length === found.length && prev.every((h, i) => h === found[i])
+            ? prev
+            : found,
+        );
+      });
+    };
+    const observer = new MutationObserver(scan);
+    observer.observe(workspace, { childList: true, subtree: true });
+    scan();
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      setHosts([]);
+    };
+  }, [workspace, on]);
+  if (!wallpaper || !on) return null;
+  return hosts.map((host, i) =>
+    createPortal(
+      <Lens host={host} wallpaper={wallpaper} />,
+      host,
+      `glass-lens-${i}`,
+    ),
+  );
+}
+
+function Lens({
+  host,
+  wallpaper,
+}: {
+  host: HTMLElement;
+  wallpaper: HTMLElement;
+}) {
+  const lens = useMaterialStore((s) => s.lens);
+  const scale = LENS_SCALE[lens];
+  const root = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = root.current;
+    if (!el) return;
+    const copies = [...el.querySelectorAll<HTMLElement>("[data-lens-copy]")];
+    const wash = el.querySelector<HTMLElement>("[data-lens-wash]");
+    const tint = el.querySelector<HTMLElement>("[data-lens-tint]");
+    const workspace = wallpaper.parentElement;
+    let last = "";
+    const place = () => {
+      const w = wallpaper.getBoundingClientRect();
+      const h = host.getBoundingClientRect();
+      const opacity = getComputedStyle(wallpaper).opacity;
+      const key = [
+        w.left,
+        w.top,
+        w.width,
+        w.height,
+        h.left,
+        h.top,
+        h.width,
+        h.height,
+        opacity,
+      ].join();
+      if (key === last) return;
+      last = key;
+      for (const copy of copies) {
+        copy.style.left = `${w.left - h.left}px`;
+        copy.style.top = `${w.top - h.top}px`;
+        copy.style.width = `${w.width}px`;
+        copy.style.height = `${w.height}px`;
+        copy.style.opacity = opacity;
+        copy.style.transformOrigin = `${h.left - w.left + h.width / 2}px ${h.top - w.top + h.height / 2}px`;
+        copy.style.transform = `scale(${scale})`;
+      }
+      // What sits between the wallpaper and the composer (the conversation's reading wash), then the
+      // composer's own fill, which the copy covers.
+      if (wash) {
+        const fills: string[] = [];
+        for (
+          let node = host.parentElement;
+          node && node !== workspace;
+          node = node.parentElement
+        ) {
+          const color = getComputedStyle(node).backgroundColor;
+          if (color !== "rgba(0, 0, 0, 0)" && color !== "transparent")
+            fills.push(`linear-gradient(${color}, ${color})`);
+        }
+        wash.style.backgroundImage = fills.join(", ");
+      }
+      if (tint) {
+        const style = getComputedStyle(host);
+        tint.style.backgroundColor = style.backgroundColor;
+        tint.style.backgroundImage = style.backgroundImage;
+      }
+    };
+    const copy = () => {
+      for (const target of copies)
+        target.replaceChildren(wallpaper.cloneNode(true));
+      last = "";
+      place();
+    };
+    let frame = 0;
+    const recopy = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(copy);
+    };
+    copy();
+    const resize = new ResizeObserver(place);
+    resize.observe(host);
+    resize.observe(wallpaper);
+    // New frames, effects and adjustments re-render the wallpaper; a copy has to follow.
+    const mutations = new MutationObserver(recopy);
+    mutations.observe(wallpaper, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+    });
+    // Moves without a resize (the welcome composer docking) and the conversation dim have no event.
+    const poll = window.setInterval(place, 300);
+    window.addEventListener("resize", place);
+    return () => {
+      resize.disconnect();
+      mutations.disconnect();
+      window.clearInterval(poll);
+      window.removeEventListener("resize", place);
+      cancelAnimationFrame(frame);
+    };
+    // Each mode has its own scale, so a mode change (which adds or drops the fill) re-runs this.
+  }, [host, wallpaper, scale]);
+  return (
+    <div ref={root} aria-hidden="true" className="glass-lens" data-lens={lens}>
+      {lens !== "off" && (
+        <div className="glass-lens-fill">
+          <div data-lens-copy="" className="glass-lens-copy" />
+          <div data-lens-wash="" className="glass-lens-layer" />
+          <div data-lens-tint="" className="glass-lens-layer" />
+        </div>
+      )}
+      <div className="glass-lens-rim">
+        <div data-lens-copy="" className="glass-lens-copy" />
+      </div>
+    </div>
+  );
+}

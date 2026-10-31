@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
 	MATERIALS,
+	LENS_SCALE,
+	sanitizeLens,
 	sanitizeMaterial,
 	sanitizeStrength,
 } from "../src/features/chat-background/model.ts";
@@ -96,4 +98,16 @@ test("other pages under glass read over one tinted pane with a readable floor", 
 	const pane = /html\[data-glass\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{([^}]*)\}/.exec(css)?.[1] ?? "";
 	assert.doesNotMatch(pane, /backdrop-filter/);
 	assert.match(css, /\[data-wallpaper-route="page"\] > \.chat-wallpaper\[data-ready\] \.chat-wallpaper-artwork \{\n  filter: blur\(/);
+});
+
+test("glass lens modes repair malformed data and scale the right way", () => {
+	assert.equal(sanitizeLens("fisheye"), "off");
+	assert.equal(sanitizeLens(undefined), "off");
+	for (const mode of ["off", "magnify", "shrink"]) assert.equal(sanitizeLens(mode), mode);
+	assert.equal(LENS_SCALE.off, 1);
+	assert.ok(LENS_SCALE.magnify > 1 && LENS_SCALE.shrink < 1);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	// The copy sits behind the composer's content, inside its stacking context.
+	assert.match(css, /\.glass-lens \{\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
+	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
 });

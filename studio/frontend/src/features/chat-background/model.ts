@@ -28,6 +28,17 @@ export function sanitizeMaterial(value: unknown): WindowMaterial {
 		? (value as WindowMaterial)
 		: "solid";
 }
+/** How glass bends the image under the composer: like a lens that magnifies or shrinks it. */
+export const LENS_MODES = ["off", "magnify", "shrink"] as const;
+export type LensMode = (typeof LENS_MODES)[number];
+export const LENS_SCALE: Record<LensMode, number> = {
+	off: 1,
+	magnify: 1.22,
+	shrink: 0.84,
+};
+export function sanitizeLens(value: unknown): LensMode {
+	return LENS_MODES.includes(value as LensMode) ? (value as LensMode) : "off";
+}
 /** 0-100; 50 is each material's own tint and blur. */
 export function sanitizeStrength(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value)

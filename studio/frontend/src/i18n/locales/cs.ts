@@ -55,6 +55,11 @@ export const cs = {
     materialMenus: "Skleněné nabídky",
     materialMenusDescription: "Rozbalovací seznamy, nabídky a výběry také používají sklo.",
     materialStrength: "Síla skla",
+    lens: "Skleněná čočka",
+    lensDescription: "Ohýbá obraz pod polem pro psaní jako skutečné sklo.",
+    lensOff: "Vypnuto",
+    lensMagnify: "Zvětšit",
+    lensShrink: "Zmenšit",
   },
   linkMenu: {
     openInBrowser: "Otevřít v prohlížeči Unsloth",

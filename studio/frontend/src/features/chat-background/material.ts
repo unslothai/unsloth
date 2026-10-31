@@ -12,7 +12,9 @@ import {
   persist,
 } from "zustand/middleware";
 import {
+  type LensMode,
   type WindowMaterial,
+  sanitizeLens,
   sanitizeMaterial,
   sanitizeStrength,
 } from "./model";
@@ -55,9 +57,11 @@ export const useMaterialStore = create<{
   /** Dropdowns, menus and pickers take the glass too. */
   menus: boolean;
   strength: number;
+  lens: LensMode;
   setMaterial: (material: WindowMaterial) => void;
   setMenus: (menus: boolean) => void;
   setStrength: (strength: number) => void;
+  setLens: (lens: LensMode) => void;
 }>()(
   persist(
     (set) => ({
@@ -65,10 +69,12 @@ export const useMaterialStore = create<{
       nativeFailed: false,
       menus: false,
       strength: 50,
+      lens: "off",
       setMaterial: (material) =>
         set({ material: sanitizeMaterial(material), nativeFailed: false }),
       setMenus: (menus) => set({ menus }),
       setStrength: (strength) => set({ strength: sanitizeStrength(strength) }),
+      setLens: (lens) => set({ lens: sanitizeLens(lens) }),
     }),
     {
       name: MATERIAL_STORAGE_KEY,
@@ -77,6 +83,7 @@ export const useMaterialStore = create<{
         material: s.material,
         menus: s.menus,
         strength: s.strength,
+        lens: s.lens,
       }),
       merge: (persisted, current) => {
         const stored = persisted as
@@ -84,6 +91,7 @@ export const useMaterialStore = create<{
               material?: unknown;
               menus?: unknown;
               strength?: unknown;
+              lens?: unknown;
             }
           | undefined;
         return {
@@ -91,6 +99,7 @@ export const useMaterialStore = create<{
           material: sanitizeMaterial(stored?.material),
           menus: stored?.menus === true,
           strength: sanitizeStrength(stored?.strength),
+          lens: sanitizeLens(stored?.lens),
         };
       },
     },

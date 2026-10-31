@@ -52,6 +52,11 @@ export const en = {
     materialMenus: "Glass menus",
     materialMenusDescription: "Dropdowns, menus and pickers use the glass too.",
     materialStrength: "Glass strength",
+    lens: "Glass lens",
+    lensDescription: "Bends the image under the composer like real glass.",
+    lensOff: "Off",
+    lensMagnify: "Magnify",
+    lensShrink: "Shrink",
   },
 
   linkMenu: {

@@ -55,6 +55,11 @@ export const ar = {
     materialMenus: "قوائم زجاجية",
     materialMenusDescription: "تستخدم القوائم المنسدلة والقوائم وأدوات الاختيار الزجاج أيضًا.",
     materialStrength: "قوة الزجاج",
+    lens: "عدسة الزجاج",
+    lensDescription: "تحني الصورة تحت مربع الكتابة كالزجاج الحقيقي.",
+    lensOff: "إيقاف",
+    lensMagnify: "تكبير",
+    lensShrink: "تصغير",
   },
 
   linkMenu: {

@@ -55,6 +55,11 @@ export const de = {
     materialMenus: "Glasmenüs",
     materialMenusDescription: "Auch Dropdowns, Menüs und Auswahlfelder verwenden Glas.",
     materialStrength: "Glasstärke",
+    lens: "Glaslinse",
+    lensDescription: "Krümmt das Bild unter dem Eingabefeld wie echtes Glas.",
+    lensOff: "Aus",
+    lensMagnify: "Vergrößern",
+    lensShrink: "Verkleinern",
   },
 
   linkMenu: {

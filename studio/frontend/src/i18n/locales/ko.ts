@@ -55,6 +55,11 @@ export const ko = {
     materialMenus: "유리 메뉴",
     materialMenusDescription: "드롭다운, 메뉴 및 선택기에도 유리를 사용합니다.",
     materialStrength: "유리 강도",
+    lens: "유리 렌즈",
+    lensDescription: "입력창 아래의 이미지를 실제 유리처럼 굴절시킵니다.",
+    lensOff: "끄기",
+    lensMagnify: "확대",
+    lensShrink: "축소",
   },
 
   linkMenu: {

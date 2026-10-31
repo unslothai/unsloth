@@ -55,6 +55,11 @@ export const tr = {
     materialMenus: "Cam menüler",
     materialMenusDescription: "Açılır listeler, menüler ve seçiciler de camı kullanır.",
     materialStrength: "Cam yoğunluğu",
+    lens: "Cam mercek",
+    lensDescription: "Yazma alanının altındaki görüntüyü gerçek cam gibi büker.",
+    lensOff: "Kapalı",
+    lensMagnify: "Büyüt",
+    lensShrink: "Küçült",
   },
   linkMenu: {
     openInBrowser: "Unsloth tarayıcısında aç",

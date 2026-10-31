@@ -55,6 +55,11 @@ export const hi = {
     materialMenus: "ग्लास मेनू",
     materialMenusDescription: "ड्रॉपडाउन, मेनू और पिकर भी ग्लास का उपयोग करते हैं।",
     materialStrength: "ग्लास की तीव्रता",
+    lens: "ग्लास लेंस",
+    lensDescription: "कंपोज़र के नीचे की इमेज को असली कांच की तरह मोड़ता है।",
+    lensOff: "बंद",
+    lensMagnify: "बड़ा करें",
+    lensShrink: "छोटा करें",
   },
 
   linkMenu: {

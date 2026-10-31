@@ -55,6 +55,11 @@ export const he = {
     materialMenus: "תפריטי זכוכית",
     materialMenusDescription: "גם תפריטים נפתחים, תפריטים ובוררים משתמשים בזכוכית.",
     materialStrength: "עוצמת הזכוכית",
+    lens: "עדשת זכוכית",
+    lensDescription: "מעקמת את התמונה מתחת לתיבת הכתיבה כמו זכוכית אמיתית.",
+    lensOff: "כבוי",
+    lensMagnify: "הגדלה",
+    lensShrink: "הקטנה",
   },
 
   linkMenu: {

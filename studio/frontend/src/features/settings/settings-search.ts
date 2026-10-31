@@ -62,6 +62,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "chatBackground.material",
     "chatBackground.materialMenus",
     "chatBackground.materialStrength",
+    "chatBackground.lens",
     "chatBackground.fade",
     "chatBackground.sizing",
     "chatBackground.zoom",
