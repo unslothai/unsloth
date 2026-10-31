@@ -7,6 +7,8 @@ import queue
 import threading
 import time
 
+import pytest
+
 import core.inference.orchestrator as orch_mod
 from core.inference.orchestrator import InferenceOrchestrator
 
@@ -21,11 +23,14 @@ def _worker(cmd_queue, resp_queue, cancel_event, unload_s, ignore_cancel_s, tok_
         kind = cmd.get("type")
         if kind == "generate":
             cancel_event.clear()
+            rid = cmd.get("request_id")
             started = time.monotonic()
+            sent = 0
             while not cancel_event.is_set() or time.monotonic() - started < ignore_cancel_s:
-                resp_queue.put({"type": "token", "text": "x" * tok_bytes})
+                resp_queue.put({"type": "token", "request_id": rid, "text": "x" * tok_bytes})
+                sent += 1
                 time.sleep(0.005)
-            resp_queue.put({"type": "gen_done"})
+            resp_queue.put({"type": "gen_done", "request_id": rid, "stats": {"tokens": sent}})
         elif kind == "shutdown":
             time.sleep(unload_s)
             resp_queue.put({"type": "shutdown_ack"})
@@ -194,3 +199,80 @@ def test_source_has_no_fixed_switch_sleeps():
     assert "time.sleep" not in shutdown_src
     load_src = inspect.getsource(InferenceOrchestrator.load_model)
     assert "time.sleep(0.3)" not in load_src
+
+
+@pytest.mark.parametrize("reader", ["direct", "dispatched"])
+def test_streaming_reader_keeps_its_tail_across_a_switch(monkeypatch, reader):
+    # A stream reading slower than the worker writes still holds unread tokens and gen_done when
+    # the switch cancels; teardown must neither drop them nor swap the handle before it reads them.
+    _Recorder(monkeypatch)
+    o = _live()
+    proc = o._proc
+    cancel_event = threading.Event()
+    if reader == "direct":
+        read_one, drain, release = o._direct_reader("r1", cancel_event)
+    else:
+        o._start_dispatcher()
+        mailbox = orch_mod._WorkerMailbox(proc)
+        with o._mailbox_lock:
+            o._mailboxes["r1"] = mailbox
+
+        def read_one(timeout):
+            try:
+                return o._read_mailbox(mailbox, timeout)
+            except queue.Empty:
+                return None
+
+        def drain():
+            o._drain_mailbox(mailbox, timeout = 5.0)
+
+        def release():
+            with o._mailbox_lock:
+                o._mailboxes.pop("r1", None)
+
+    o._cmd_queue.put({"type": "generate", "request_id": "r1"})
+    seen = {"tokens": 0, "error": None, "finished": False}
+    stats = {}
+
+    def consume():
+        try:
+            for item in o._consume_token_stream(
+                read_one,
+                drain,
+                crash_context = "generation",
+                request_id = "r1",
+                cancel_event = cancel_event,
+                stats_holder = stats,
+                read_timeout = 2.0,
+            ):
+                if isinstance(item, orch_mod.GenStreamError):
+                    seen["error"] = str(item)
+                    return
+                seen["tokens"] += 1
+                time.sleep(0.02)  # real thread sleep: slower than the worker's 5 ms tokens
+            seen["finished"] = True
+        finally:
+            release()
+
+    reader = threading.Thread(target = consume, daemon = True)
+    reader.start()
+    deadline = time.monotonic() + 30
+    while seen["tokens"] == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)  # worker spawned and streaming: cancel must not land before it clears
+    time.sleep(0.2)
+    assert o._shutdown_subprocess() is True
+    reader.join(5)
+    assert not proc.is_alive()
+    assert seen["error"] is None, seen
+    assert seen["finished"] and seen["tokens"] > 0, seen
+    # Every token the worker sent before gen_done reached the stream.
+    assert stats["stats"]["tokens"] == seen["tokens"], (stats, seen)
+
+
+def test_idle_switch_does_not_wait_for_readers(monkeypatch):
+    rec = _Recorder(monkeypatch)
+    o = _live()
+    started = time.monotonic()
+    assert o._shutdown_subprocess() is True
+    assert time.monotonic() - started < orch_mod._SHUTDOWN_READER_GRACE_S
+    assert rec.sleeps == []

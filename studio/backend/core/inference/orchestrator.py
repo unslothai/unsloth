@@ -217,6 +217,8 @@ _CANCELLED_ROWS_GRACE = 5.0
 # Old fixed post-cancel sleep, now added to the exit wait so a slow cancel keeps its full budget.
 _SHUTDOWN_CANCEL_GRACE_S = 0.5
 _SHUTDOWN_JOIN_SLICE_S = 0.05
+# Old fixed sleeps on a switch (0.3 + 0.5): now only a live stream waits, to read its own tail.
+_SHUTDOWN_READER_GRACE_S = 0.8
 
 # Transformers TTS only; generous since _ensure_subprocess_alive already catches dead workers.
 _AUDIO_GENERATION_TIMEOUT = 900.0
@@ -860,7 +862,8 @@ class InferenceOrchestrator:
 
         self._teardown_going_out()
         self._cancel_generation()
-        self._drain_queue()
+        cancelled_at = time.monotonic()
+        self._drain_unread_replies()
 
         # The worker reads commands in order, so shutdown runs once the cancelled reply ends.
         try:
@@ -901,6 +904,7 @@ class InferenceOrchestrator:
             )
             return False
 
+        self._let_readers_finish(cancelled_at + _SHUTDOWN_READER_GRACE_S)
         # Without this flag every model switch replayed a healthy worker's stderr at ERROR.
         self._worker_stopped_deliberately = True
         self._proc = None
@@ -928,11 +932,37 @@ class InferenceOrchestrator:
                 if remaining <= 0:
                     break
                 proc.join(timeout = min(_SHUTDOWN_JOIN_SLICE_S, remaining))
-                self._drain_queue()
+                self._drain_unread_replies()
                 if not proc.is_alive():
                     break
         except Exception:
             pass
+
+    def _drain_unread_replies(self) -> None:
+        """Route the reply queue to the dispatched mailboxes still waiting on it, standing in for the
+        stopped dispatcher; without the old sleeps a cancelled stream's tail and gen_done would be
+        discarded. A direct reader reads (and routes) the queue itself, so leave it to that reader."""
+        with self._mailbox_lock:
+            if self._direct_mailboxes:
+                return
+        for resp in self._drain_queue():
+            rid = resp.get("request_id") if isinstance(resp, dict) else None
+            if not rid:
+                continue
+            with self._mailbox_lock:
+                mbox = self._mailboxes.get(rid)
+            if mbox is not None:
+                mbox.put(resp)
+
+    def _let_readers_finish(self, deadline: float) -> None:
+        """A stream bails with a worker-crash error once the handle swaps, so give one still reading
+        its cancelled reply's tail until ``deadline``; an idle switch does not wait at all."""
+        while time.monotonic() < deadline:
+            with self._mailbox_lock:
+                if not self._mailboxes and not self._direct_mailboxes:
+                    return
+            self._drain_unread_replies()
+            time.sleep(min(0.02, max(deadline - time.monotonic(), 0.0)))
 
     @staticmethod
     def _wait_for_worker_vram_settle(
