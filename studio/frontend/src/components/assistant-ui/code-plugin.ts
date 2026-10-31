@@ -8,18 +8,29 @@ import type {
   HighlightResult,
   ThemeInput,
 } from "@streamdown/code";
-import {
-  type BundledLanguage,
-  bundledLanguages,
-  bundledLanguagesInfo,
-  createHighlighter,
-  type GrammarState,
-  type ThemedToken,
-} from "shiki";
+import type { GrammarState, ThemedToken } from "shiki";
+import { createBundledHighlighter } from "shiki/core";
 import {
   createJavaScriptRegexEngine,
   defaultJavaScriptRegexConstructor,
 } from "shiki/engine/javascript";
+import {
+  type BundledLanguage,
+  bundledLanguages,
+  bundledLanguagesInfo,
+} from "shiki/langs";
+import { type BundledTheme, bundledThemes } from "shiki/themes";
+
+// shiki's own createHighlighter, minus its default Oniguruma engine: every call below passes the
+// JavaScript engine, so the WASM engine never ran and only cost startup bytes.
+const createHighlighter = createBundledHighlighter<
+  BundledLanguage,
+  BundledTheme
+>({
+  langs: bundledLanguages,
+  themes: bundledThemes,
+  engine: () => createJavaScriptRegexEngine({ forgiving: true }),
+});
 
 // Fence tags shiki does not alias: lower-cased input to canonical shiki id.
 const LANGUAGE_ALIAS_OVERRIDES: Record<string, BundledLanguage> = {
