@@ -955,15 +955,22 @@ export function ChatSettingsPanel({
       : trimmed;
     const next = customPresets.filter((p) => p.name !== saveName);
     const loadConfig = capturePresetLoadConfig();
+    // Read live, as set() does: a number box this click blurred has committed to the store, but not
+    // to this render's `params`, and writing those back below would undo the entry.
+    const live = useChatRuntimeStore.getState().params;
+    const saved = seedDraft === null ? live : { ...live, seed: committedSeed };
     const merged = [
       ...next,
       {
         name: saveName,
-        params: toPresetParams(paramsWithCommittedSeed),
+        params: toPresetParams(saved),
         ...(loadConfig ? { loadConfig } : {}),
       },
     ];
     setCustomPresets(merged);
+    // The screen is the preset's now, as after a pick: the hand edits that built it were filed as the
+    // loaded model's own, and would bring the preset back on that model after Default.
+    setParams(saved, { fromPreset: true });
     setActivePreset(saveName);
     setActivePresetSource("custom");
     setPresetNameInput(saveName);

@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 const { store: localStorageFake } = installLocalStorageFake();
 localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
@@ -74,6 +74,14 @@ function pickPreset(preset: Preset): void {
   } as never);
   store.setActivePreset(preset.name);
   store.setActivePresetSource(getPresetSource(preset.name));
+}
+
+/** chat-settings-sheet's savePresetWithName: the screen as it is becomes the custom preset. */
+function savePreset(name: string): void {
+  const store = useChatRuntimeStore.getState();
+  store.setParams(store.params, { fromPreset: true });
+  store.setActivePreset(name);
+  store.setActivePresetSource("custom");
 }
 
 function sampling() {
@@ -338,6 +346,43 @@ test("a preset pick writes the whole preset to the installation defaults", async
   assert.equal(written.temperature, 0.3);
   assert.equal(written.topK, 10);
   assert.equal(written.systemPrompt, "Talk like a pirate.");
+});
+
+// The report's own steps: the preset is built by hand on the loaded model, so every edit is filed as
+// that model's before the save turns the screen into a preset.
+test("a preset saved from hand edits does not come back after ejecting and picking Default", async () => {
+  loadOrPoll(GEMMA);
+  const store = useChatRuntimeStore.getState();
+  store.setActivePresetSource("modified");
+  store.setParams({
+    ...store.params,
+    temperature: 0.3,
+    topP: 0.7,
+    topK: 10,
+    systemPrompt: "Talk like a pirate.",
+  });
+  savePreset("Pirate");
+  useChatRuntimeStore.getState().clearCheckpoint();
+  pickPreset(DEFAULT);
+  loadOrPoll(GEMMA);
+  assert.deepEqual(sampling(), AUTOMATIC);
+  await settled();
+  const byModel = stored().inferenceParamsByModel as Record<string, Record<string, unknown>>;
+  assert.deepEqual(presetOwnedKeys(byModel[GEMMA]), [], "nothing comes back on the next launch");
+});
+
+// Source-level, since the sheet needs a DOM: savePreset above stands in for this call. Clicking Save
+// blurs a number box during mousedown, and onClick runs before React re-renders, so the render's
+// `params` is the screen from before that entry: the save reads the store, as set() does.
+test("saving a preset hands the loaded model's sampling to it, as a pick does", () => {
+  const save = readSrc("features/chat/chat-settings-sheet.tsx").match(
+    /function savePresetWithName\([^)]*\) \{[\s\S]*?\n {2}\}\n/,
+  )?.[0];
+  assert.ok(save, "savePresetWithName");
+  assert.match(save, /const live = useChatRuntimeStore\.getState\(\)\.params;/);
+  assert.match(save, /params: toPresetParams\(saved\),/);
+  assert.match(save, /setParams\(saved, \{ fromPreset: true \}\);/);
+  assert.doesNotMatch(save, /paramsWithCommittedSeed/);
 });
 
 // Last: the open chat's pairing stays for the rest of the module.
