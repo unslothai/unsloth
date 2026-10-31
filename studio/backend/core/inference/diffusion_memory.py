@@ -6074,7 +6074,8 @@ def _stream_unet_instead_of_model_offload(
         onload = torch.device(placement)
         if onload.type != "cuda" or not torch.cuda.is_available():
             return False
-        free_mib = int(torch.cuda.mem_get_info(onload)[0]) >> 20
+        free, total = (int(x) for x in torch.cuda.mem_get_info(onload))
+        free_mib = max(0, free - user_budget_reserve_bytes(onload, total)) >> 20
 
         def _mib(m: Any) -> int:
             if not isinstance(m, torch.nn.Module):

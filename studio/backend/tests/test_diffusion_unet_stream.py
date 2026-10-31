@@ -123,6 +123,22 @@ def test_streamed_room_is_passed_to_group_offload(cuda_free):
     assert expected and kw["resident_transformer_mib"] == expected
 
 
+def test_vram_budget_reserve_is_kept_out_of_the_resident_leaves(cuda_free, monkeypatch):
+    pipe = _pipe(unet_mib = 4)
+    pipe.unet = pipe.components["unet"] = torch.nn.Linear(
+        512, 512 * 8000, bias = False, device = "meta"
+    )
+    cuda_free["free"] = 12000
+    # 24 GiB card, budget 0.75: the setting keeps 6144 MiB free, so only 5856 of the 12000 count
+    monkeypatch.setattr(dm, "_vram_budget_fraction", lambda: 0.75)
+    reserve_mib = dm.user_budget_reserve_bytes(torch.device("cuda"), 24 << 30) >> 20
+    assert reserve_mib == 6144
+    policy, _ = dm.apply_memory_plan(pipe, _plan(), device = "cuda")
+    assert policy == dm.OFFLOAD_GROUP
+    ((_, kw),) = cuda_free["group"]
+    assert kw["resident_transformer_mib"] == dm.unet_stream_room_mib(12000 - reserve_mib, 8000, 0)
+
+
 def test_model_offload_plan_streams_a_unet_that_cannot_fit(cuda_free):
     pipe = _pipe(unet_mib = 4)
     cuda_free["free"] = 2  # MiB: below the UNet plus the measured denoise reserve
