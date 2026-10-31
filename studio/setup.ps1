@@ -7585,11 +7585,12 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
                 $_xpuTritonRepair = (-not $_xpuTritonNow.Known) -or ($_xpuTritonNow.XpuSpec -match '(?i)xpu' -and
                     (-not $_xpuTritonNow.XpuOk -or -not (Get-TritonRuntimeState).Healthy))
             }
-            # Every trigger needs the index, so an offline run keeps the verified tree, as the ROCm pairing does.
+            # A stale bitsandbytes runs the dependency pass as before. The triton repairs need the index, so an
+            # offline run keeps the verified tree for them, as the ROCm pairing does.
             $_xpuDepsWhy = if ($_bnbStale -or $_tritonWinPresent) { "Intel XPU dependencies are stale" }
                 elseif ($_xpuTritonRepair) { "torch's Intel XPU triton is missing, the wrong version or does not import" }
                 else { "" }
-            if ($_xpuDepsWhy -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))) {
+            if ($_xpuDepsWhy -and -not $_bnbStale -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))) {
                 substep "$_xpuDepsWhy but UV_OFFLINE is set -- left for the next online update" "Yellow"
             } elseif ($_xpuDepsWhy) {
                 substep "$_xpuDepsWhy -- running the dependency pass" "Cyan"

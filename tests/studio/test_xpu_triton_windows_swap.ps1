@@ -425,7 +425,7 @@ try {
         $SkipPythonDeps
     }
     $script:Offline = $false
-    Check "fast path, offline: a bitsandbytes backup alone keeps the verified tree" ($r -eq $true)
+    Check "fast path, offline: a missing bitsandbytes still runs the dependency pass, as on main" ($r -eq $false)
 } finally {
     $script:RealProbeDir = $null
     Remove-Item -LiteralPath $site -Recurse -Force -ErrorAction SilentlyContinue
