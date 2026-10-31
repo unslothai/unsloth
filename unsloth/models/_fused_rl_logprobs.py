@@ -184,12 +184,67 @@ def _right_pad_cat(tensors, value):
     )
 
 
+def _ppo_scores_are_tempered_logits(model, queries, generation_config):
+    """True when generate's scores are only ``logits / temperature`` (incl. processors inherited from
+    ``model.generation_config``), so the old log-probs can be recomputed by a forward."""
+    from transformers import LogitsProcessorList, TemperatureLogitsWarper
+    from unsloth.models.rl import _caller_sampling_only
+
+    kwargs = {"generation_config": generation_config}
+    if getattr(getattr(model, "generate", None), "_unsloth_caller_sampling_only", False):
+        # Match Unsloth's patched generate (transformers 4.x: TRL's sampling, not the model's).
+        kwargs = _caller_sampling_only(model, kwargs)
+    config, model_kwargs = model._prepare_generation_config(
+        kwargs.pop("generation_config"), **kwargs
+    )
+    model._prepare_special_tokens(config, True, device = queries.device)
+    processors = model._get_logits_processor(
+        generation_config = config,
+        input_ids_seq_length = queries.shape[1],
+        encoder_input_ids = queries,
+        prefix_allowed_tokens_fn = None,
+        logits_processor = LogitsProcessorList(),
+        device = queries.device,
+        model_kwargs = model_kwargs,
+    )
+    temperature = getattr(generation_config, "temperature", None)
+    if len(processors) == 0:
+        return temperature == 1.0
+    return (
+        len(processors) == 1
+        and type(processors[0]) is TemperatureLogitsWarper
+        and processors[0].temperature == temperature
+    )
+
+
 @torch.no_grad()
 def ppo_batch_generation(
-    model, queries, local_rollout_forward_batch_size, pad_token_id, generation_config
+    route,
+    batch_generation,
+    model,
+    queries,
+    local_rollout_forward_batch_size,
+    pad_token_id,
+    generation_config,
 ):
     """TRL's ``batch_generation`` without ``output_scores``: the rollout log-probs are scored from hidden states, so
-    the stacked float32 [batch, response, vocab] scores are never built. Returns ``(query_responses, None)``."""
+    the stacked float32 [batch, response, vocab] scores are never built. Falls back to TRL when
+    other logits processors shape the scores."""
+    if route is not None:
+        try:
+            tempered = _ppo_scores_are_tempered_logits(model, queries, generation_config)
+        except Exception:
+            tempered = False
+        if not tempered:
+            _note(
+                route.trainer,
+                "_unsloth_ppo_fused_fallbacks",
+                "generation logits processors besides temperature",
+            )
+    if route is None or not tempered:
+        return batch_generation(
+            model, queries, local_rollout_forward_batch_size, pad_token_id, generation_config
+        )
     query_responses = []
     for i in range(0, queries.shape[0], local_rollout_forward_batch_size):
         query = queries[i : i + local_rollout_forward_batch_size]
