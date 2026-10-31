@@ -6403,6 +6403,11 @@ def patch_gradient_accumulation_fix(Trainer):
                 if not keep_fused:
                     from .llama import _decline_fused_lora_for_fsdp
                     _decline_fused_lora_for_fsdp(getattr(self, "model", None), reason)
+            try:
+                from ..tiling import revalidate_for_trainer
+                revalidate_for_trainer(self)
+            except Exception as e:
+                logger.warning_once(f"Unsloth: tiled MLP revalidation skipped ({e})")
             _replan_auto_offload_safely(self)
             _size_auto_checkpoint_skip_for_trainer(self)
             _block_swap_for_trainer_backend(self)
@@ -6431,6 +6436,11 @@ def patch_gradient_accumulation_fix(Trainer):
             model = _original_call_model_init(self, *args, **kwargs)
             _refuse_tensor_parallel_for_trainer(model)
             _tensor_subclass_weights_for_ddp(self, model)
+            try:
+                from ..tiling import revalidate_for_trainer
+                revalidate_for_trainer(self, model)
+            except Exception as e:
+                logger.warning_once(f"Unsloth: tiled MLP revalidation skipped ({e})")
             return model
 
         _unsloth_call_model_init._unsloth_marks_ddp_ignores = True
@@ -8409,13 +8419,23 @@ def save_lora_adapter(model, save_directory, *args, **kwargs):
     """`save_pretrained` over the adapter, cast to the embedding dtype. PEFT's own selection decides what an adapter contains, so it is handed the whole state dict and only the adapter tensors are cast: filtering down to `.lora_A.`/`.lora_B.` first, as the Zoo helper does, makes PEFT raise `KeyError` looking up `modules_to_save.<adapter>.weight`, and a DoRA run loses its `lora_magnitude_vector` the same way. Both are reachable without vLLM, since `get_peft_model` adds `embed_tokens` and `lm_head` to `modules_to_save` once new tokens are trained. Non-adapter entries pass through by reference."""
     from .compressed_tensors_int4 import adapter_only_state_dict
 
-    dtype = model.get_input_embeddings().weight.dtype
-    with adapter_only_state_dict():
-        kwargs["state_dict"] = {
-            key: (value.to(dtype) if "lora_" in key else value)
-            for key, value in model.state_dict().items()
-        }
-    return model.save_pretrained(save_directory, *args, **kwargs)
+    def write():
+        dtype = model.get_input_embeddings().weight.dtype
+        with adapter_only_state_dict():
+            kwargs["state_dict"] = {
+                key: (value.to(dtype) if "lora_" in key else value)
+                for key, value in model.state_dict().items()
+            }
+        return model.save_pretrained(save_directory, *args, **kwargs)
+
+    if _is_unsloth_tensor_parallel(model):
+        # A state_dict built here would hold the sharded DTensors (safetensors cannot read their storage) and
+        # bypass the tensor parallel save: build it on rank 0 from the gathered adapter instead.
+        from .tp_replica import collective_applies, tp_collective
+        if collective_applies(model):
+            return tp_collective(model, "save_lora", write, "adapters")
+        return model.save_pretrained(save_directory, *args, **kwargs)
+    return write()
 
 
 def patch_peft_fast_inference(model):
