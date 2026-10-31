@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 import re
+import stat
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,6 +29,7 @@ from hub.utils.state_dir import (
     marker_path,
     normalize_hub_cache,
     state_filename_is_ambiguous,
+    state_root,
     variant_filename_prefix,
     variant_key_fragments,
 )
@@ -45,6 +48,12 @@ _MANIFEST_MIGRATION_MAX_FILES = 10_000
 _MANIFEST_MIGRATION_MAX_BYTES = 32 * 1024 * 1024
 _MANIFEST_MIGRATION_PREFIX_BYTES = 256
 _V2_MANIFEST_PREFIX = re.compile(rb'^\s*\{\s*"version"\s*:\s*2\s*,')
+# Bump when the migration's selection rules change, so a recorded clean pass no longer applies.
+_MANIFEST_MIGRATION_ID = "ordinary-v2-to-v1:1"
+_MANIFEST_MIGRATION_MARKER = "manifest_migration.json"
+# A directory changed this recently may still be inside the filesystem's mtime granularity, so a
+# clean pass over it is not recorded (the same "racy" rule git uses for its index).
+_MANIFEST_MIGRATION_SETTLE_NS = 2_000_000_000
 
 # Verbatim phrase the worker emits on a degraded completion; shared so emit and match stay coupled.
 MANIFEST_DEGRADED_MARKER = "completed without a manifest so partial detection is degraded"
@@ -631,17 +640,102 @@ def _migration_manifest_paths(parent: Path) -> Iterator[Path]:
         yield from scoped.glob("*.json")
 
 
+def _migration_fingerprint(parent: Path, scopes: Optional[Iterable[str]] = None) -> Optional[dict]:
+    """Directory mtimes plus the active cache setting the selection depends on. Every manifest write is
+    ``tmp + os.replace``, so any added or replaced manifest moves the mtime of the directory holding it,
+    and a new ``cache-*`` scope moves the parent's. ``scopes`` given: stat just those (the parent's mtime
+    vouches that the set is unchanged); else enumerate them. ``None`` when anything cannot be read."""
+    try:
+        active, raw = _hub_cache_spellings(None)
+        dirs = {".": os.stat(parent).st_mtime_ns}
+        if scopes is None:
+            scopes = [
+                entry.name
+                for entry in os.scandir(parent)
+                if entry.name.startswith("cache-") and entry.is_dir(follow_symlinks = False)
+            ]
+        for name in scopes:
+            st = os.lstat(parent / name)
+            if not stat.S_ISDIR(st.st_mode):
+                return None
+            dirs[name] = st.st_mtime_ns
+    except (OSError, TypeError, ValueError):
+        return None
+    return {
+        "migration": _MANIFEST_MIGRATION_ID,
+        "manifest_version": _MANIFEST_VERSION,
+        "legacy_version": _LEGACY_MANIFEST_VERSION,
+        "active_hub_cache": active,
+        "active_hub_cache_raw": None if raw is None else str(raw),
+        "dirs": dirs,
+    }
+
+
+def _migration_marker_path() -> Optional[Path]:
+    # Beside manifests/, not inside it: writing the marker must not move the mtime it records.
+    root = state_root()
+    return None if root is None else root / _MANIFEST_MIGRATION_MARKER
+
+
+def _migration_already_clean(parent: Path) -> bool:
+    marker = _migration_marker_path()
+    if marker is None:
+        return False
+    try:
+        with marker.open("rb") as handle:
+            raw = handle.read(64 * 1024 + 1)
+        if len(raw) > 64 * 1024:
+            return False
+        recorded = json.loads(raw)
+        if not isinstance(recorded, dict) or not isinstance(recorded.get("dirs"), dict):
+            return False
+        scopes = [name for name in recorded["dirs"] if name != "."]
+    # RecursionError: a corrupt marker of deeply nested brackets must not abort the migration itself.
+    except (OSError, ValueError, RecursionError):
+        return False
+    current = _migration_fingerprint(parent, scopes)
+    return current is not None and current == recorded
+
+
+def _record_clean_migration(parent: Path, before: Optional[dict], started_ns: int) -> None:
+    if before is None:
+        return
+    after = _migration_fingerprint(parent)
+    if after != before:
+        return
+    if any(mtime > started_ns - _MANIFEST_MIGRATION_SETTLE_NS for mtime in after["dirs"].values()):
+        return
+    marker = _migration_marker_path()
+    if marker is not None:
+        _atomic_write_json(marker, after)
+
+
 def migrate_ordinary_v2_manifests_for_downgrade() -> int:
+    """Rewrite ordinary v2 manifests as v1 so an older Studio can still read them. A complete pass that
+    found nothing left to do is recorded (directory mtimes + active cache), and the next start skips the
+    scan while none of that has changed since; any manifest write, a new cache scope, a cache setting
+    change or a new migration id re-runs it."""
     parent = manifests_dir()
     if parent is None:
         return 0
+    # The skip is an optimisation only: anything unexpected while checking it falls back to the full scan.
+    try:
+        if _migration_already_clean(parent):
+            return 0
+        started_ns = time.time_ns()
+        before = _migration_fingerprint(parent)
+    except Exception as exc:
+        logger.debug("Could not check the Hub manifest migration marker: %s", exc)
+        started_ns, before = time.time_ns(), None
 
     migrated = 0
+    clean = True
     try:
         candidates = _migration_manifest_paths(parent)
         for index, path in enumerate(candidates):
             if index >= _MANIFEST_MIGRATION_MAX_FILES:
                 logger.debug("Stopped Hub manifest migration at the file limit")
+                clean = False
                 break
             try:
                 if path.is_symlink() or not path.is_file():
@@ -651,6 +745,8 @@ def migrate_ordinary_v2_manifests_for_downgrade() -> int:
                     continue
                 if _is_reserved_dataset_completion_payload(data):
                     continue
+                # An ordinary v2 record: from here on this pass is not a clean one, whatever happens to it.
+                clean = False
 
                 repo_type = data.get("repo_type")
                 repo_id = data.get("repo_id")
@@ -703,9 +799,16 @@ def migrate_ordinary_v2_manifests_for_downgrade() -> int:
                 if _atomic_write_json(path, migrated_payload):
                     migrated += 1
             except Exception as exc:
+                clean = False
                 logger.debug("Could not migrate Hub manifest %s: %s", path, exc)
     except Exception as exc:
         logger.debug("Could not enumerate Hub manifests for migration: %s", exc)
+        return migrated
+    if clean:
+        try:
+            _record_clean_migration(parent, before, started_ns)
+        except Exception as exc:
+            logger.debug("Could not record the Hub manifest migration pass: %s", exc)
     return migrated
 
 
