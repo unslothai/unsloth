@@ -8354,7 +8354,11 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
     event_loop_thread = threading.get_ident()
     calls = []
 
-    def _add(path, recursive = None):
+    def _add(
+        path,
+        recursive = None,
+        label = None,
+    ):
         calls.append(("add", threading.get_ident()))
         return {"id": 7, "path": path, "created_at": "fake"}, True
 
@@ -8372,7 +8376,8 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
 
     async def _run():
         folder = await model_routes.add_scan_folder_endpoint(
-            SimpleNamespace(path = "/models/custom", recursive = None), current_subject = "tester"
+            SimpleNamespace(path = "/models/custom", recursive = None, label = None),
+            current_subject = "tester",
         )
         removed = await model_routes.remove_scan_folder_endpoint(7, current_subject = "tester")
         return folder, removed
