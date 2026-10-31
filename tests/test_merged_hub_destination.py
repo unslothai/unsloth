@@ -146,6 +146,7 @@ def saving(monkeypatch, tmp_path):
 
     env = dict(
         os = os,
+        json = json,
         sys = sys,
         gc = gc,
         Path = Path,
@@ -197,6 +198,11 @@ def saving(monkeypatch, tmp_path):
         "_cast_state_dict_16bit",
         "_requests_float32",
         "_collect_garbage",
+        # Real code: a non-LFM3-Audio save leaves config.json alone and pushes nothing extra.
+        "_base_config_dicts",
+        "_restore_lfm3_audio_release_config",
+        "_release_layout_for_merged_save",
+        "_push_lfm3_audio_release_config",
     }
     nodes = []
     for node in tree.body:
