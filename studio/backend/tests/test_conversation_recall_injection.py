@@ -944,7 +944,7 @@ def test_conversation_search_refuses_a_result_the_budget_cannot_hold(archived, m
         {"thread_id": THREAD, "budget_tokens": rag_config.CHUNK_TOKENS * 4},
     )
 
-    assert asked == [4, 2, 1]
+    assert asked == [4, 3, 2, 1]
     assert "no room" in answer.lower()
 
 
@@ -969,6 +969,41 @@ def test_conversation_search_returns_what_the_budget_does_hold(archived, monkeyp
     )
 
     assert "an earlier turn" in answer
+
+
+def test_conversation_search_prices_only_what_the_model_reads(archived, monkeypatch):
+    from core.inference.tool_loop_controller import strip_result_for_model
+    from core.rag import config as rag_config
+    from core.rag import tool as rag_tool
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
+        sources = [
+            {"filename": "conversation", "text": "y" * 4 * rag_config.CHUNK_TOKENS, "turn": n}
+            for n in range(1, top_k + 1)
+        ]
+        return rag_tool.render_conversation_sources(sources), sources
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+
+    def model_chunks(budget, top_k):
+        answer = tools_mod._search_conversation(
+            {"query": "pelicans", "top_k": top_k},
+            {"thread_id": THREAD, "budget_tokens": budget, "token_counter": lambda t: len(t) // 4},
+        )
+        # The source card still receives the citation data the model does not read.
+        assert tools_mod.RAG_SOURCES_SENTINEL in answer
+        return strip_result_for_model(answer, "search_conversation").count("<chunk ")
+
+    assert model_chunks(rag_config.CHUNK_TOKENS * 5, 4) == 4
+    assert model_chunks(rag_config.CHUNK_TOKENS * 3 // 2, 1) == 1
+    # Markup pushes four full chunks past four chunks of room; three still fit.
+    assert model_chunks(rag_config.CHUNK_TOKENS * 4, 8) == 3
 
 
 def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):

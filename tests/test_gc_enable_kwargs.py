@@ -244,6 +244,7 @@ def _vision_nonre_checkpoint(offload_hooks):
             "_orig_checkpoint": torch.utils.checkpoint.checkpoint,
             "_offload": True,
             "_offload_activation_hooks": offload_hooks,
+            "_gc_checkpoint_owner": lambda function: None,
         }
         for n in body:
             if isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint":
@@ -272,7 +273,7 @@ def test_native_offload_dropped_under_vision_non_reentrant_offload(patched, monk
             return super().__enter__()
 
     @contextlib.contextmanager
-    def offload_hooks():
+    def offload_hooks(owner = None):
         hooked.append(1)
         yield
 

@@ -418,9 +418,12 @@ def run_diffusion_lora_training(
             )
             return str(out_dir)
 
-        pipe = StableDiffusionXLPipeline.from_pretrained(
-            cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
-        )
+        from core.training.diffusion_load_progress import report_model_load_progress
+
+        with report_model_load_progress(on_event):
+            pipe = StableDiffusionXLPipeline.from_pretrained(
+                cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
+            )
         unet, vae = pipe.unet, pipe.vae
         tokenizers = [pipe.tokenizer, pipe.tokenizer_2]
         text_encoders = [pipe.text_encoder, pipe.text_encoder_2]

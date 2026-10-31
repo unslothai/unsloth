@@ -87,9 +87,8 @@ function permissionUi(
       },
       "lucide-react": {
         ChevronDown: "ChevronDown",
-        Hand: "Hand",
-        ShieldCheck: "ShieldCheck",
       },
+      "@/lib/hugeicons-derived": { HandIcon: "HandIcon", ShieldCheckIcon: "ShieldCheckIcon" },
       "radix-ui": {
         DropdownMenu: {
           Item: "DropdownMenuPrimitive.Item",
@@ -137,6 +136,7 @@ function permissionUi(
       "@/lib/sparkles-icon": { SparklesGlyph: "SparklesGlyph" },
       "@/lib/shield-alert-icon": { ShieldAlertGlyph: "ShieldAlertGlyph" },
       "@hugeicons/core-free-icons": {},
+      "@/lib/folder-icons": {},
       "@/lib/tick-icon": {},
       "@/lib/open-link": { openExternalLink: (url: string) => links.push(url) },
       "@/lib/utils": { cn: () => "" },
