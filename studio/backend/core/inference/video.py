@@ -11010,6 +11010,7 @@ class VideoBackend:
         denoiser_streamed: Optional[str] = None
         denoiser_single_host_copy = False
         te_streamed: Optional[str] = None
+        block_pinner = None
         residency = None
         # Token fence before placement, or a superseded worker loads 66.3 GB onto another load's GPU.
         if _load_token is not None and _load_token != self._load_token:
@@ -11495,6 +11496,13 @@ class VideoBackend:
                     )
                 except Exception as exc:  # noqa: BLE001 -- stock moves
                     logger.warning("video.h3_pinned_swap: %s: %s", vae_name, exc)
+        if te_streamed == "stream_lazy":
+            # After every load-time host copy, so the available RAM it sizes against is final.
+            from .video_minimax_h3_te import h3_te_resident_enabled, keep_h3_te_resident
+            if h3_te_resident_enabled():
+                if block_pinner is not None:
+                    block_pinner.join()
+                keep_h3_te_resident(getattr(pipe, "text_encoder", None), logger = logger)
         resolved = build_resolved_record(
             {
                 "family_override": _family_override_resolved(family_override, fam),

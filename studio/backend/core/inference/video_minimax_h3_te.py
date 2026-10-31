@@ -645,3 +645,149 @@ def stream_h3_text_encoder(
             "pinned" if pin else "pageable",
         )
     return mode
+
+
+# A pageable streamed conditioner reads its safetensors mapping every new prompt; when it is larger than the page cache
+# left beside the pinned denoiser, every new prompt re-reads it from disk (L4, 53 GB: 25 GB file, ~20 GB available,
+# ~48 GiB read and +78-84 s per prompt). Anonymous pages are not reclaimed by that read.
+H3_TE_RESIDENT_ENV = "UNSLOTH_H3_TE_RESIDENT"
+# A smaller share would not save a measurable part of the re-read.
+_H3_TE_RESIDENT_MIN_MIB = 1024
+_H3_TE_COPY_THREADS = 4
+
+
+def h3_te_resident_enabled() -> bool:
+    """``UNSLOTH_H3_TE_RESIDENT=0`` leaves the streamed conditioner on its memory mapping."""
+    import os
+    return str(os.environ.get(H3_TE_RESIDENT_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _streamed_host_tensors(target: Any, groups: Optional[list] = None) -> list:
+    """(group, tensor, host) of every pageable CPU tensor the offload groups under ``target`` onload from, language
+    model first: the vision tower is only read for image prompts."""
+    import torch
+
+    if groups is None:
+        from .diffusion_memory import _offload_groups
+        groups = _offload_groups(target)
+    names = {id(m): n for n, m in target.named_modules()}
+
+    def _late(group: Any) -> bool:
+        mods = list(getattr(group, "modules", None) or ())
+        leader = getattr(group, "onload_leader", None)
+        name = names.get(id(mods[0] if mods else leader), "")
+        return "visual" in name.split(".")
+
+    out: list = []
+    seen: set = set()
+    for group in sorted(groups, key = _late):
+        cpu = getattr(group, "cpu_param_dict", None) or {}
+        tensors = (
+            [t for m in getattr(group, "modules", None) or () for t in m.parameters()]
+            + [t for m in getattr(group, "modules", None) or () for t in m.buffers()]
+            + list(getattr(group, "parameters", None) or ())
+            + list(getattr(group, "buffers", None) or ())
+        )
+        for tensor in tensors:
+            host = cpu.get(tensor, tensor)
+            if id(tensor) in seen or host is None or host.device.type != "cpu":
+                continue
+            seen.add(id(tensor))
+            if type(host) is not torch.Tensor and type(host) is not torch.nn.Parameter:
+                continue  # tensor subclasses keep their own storage layout
+            if host.numel() == 0 or host.is_pinned():
+                continue
+            out.append((group, tensor, host))
+    return out
+
+
+def keep_h3_te_resident(
+    text_encoder: Any,
+    *,
+    logger: Any = None,
+    groups: Optional[list] = None,
+    host_ram: Any = None,
+) -> int:
+    """Copy the share of a pageable streamed conditioner that fits beside the reserve into anonymous host RAM; the
+    rest keeps streaming from the mapping. Run after every load-time host allocation (the denoiser's pin, the VAE
+    copies). ``host_ram``: ``(total, available, commit)`` MiB, read when None. Returns MiB copied. Never raises."""
+    try:
+        target = getattr(text_encoder, "model", None)
+        if target is None or not h3_te_resident_enabled():
+            return 0
+        entries = _streamed_host_tensors(target, groups)
+        need = -(-sum(h.numel() * h.element_size() for _g, _t, h in entries) // (1 << 20))
+        if need <= 0:
+            return 0
+        from .diffusion_small_host import (
+            encoder_resident_share_mib,
+            host_commit_mib,
+            host_ram_mib,
+        )
+
+        if host_ram is None:
+            total, available = host_ram_mib()
+            commit = host_commit_mib()
+        else:
+            total, available, commit = host_ram
+        share, why = encoder_resident_share_mib(
+            need,
+            host_total_mib = total,
+            host_available_mib = available,
+            host_commit_mib = commit,
+            min_share_mib = min(need, _H3_TE_RESIDENT_MIN_MIB),
+        )
+        if share <= 0:
+            if logger is not None:
+                logger.info("video.h3_te_resident: the conditioner stays memory-mapped (%s)", why)
+            return 0
+        budget = share << 20
+        chosen = []
+        for entry in entries:
+            nbytes = entry[2].numel() * entry[2].element_size()
+            if nbytes <= budget:
+                chosen.append(entry)
+                budget -= nbytes
+        copied = _copy_host_tensors_(chosen)
+        mib = copied >> 20
+        if logger is not None:
+            logger.info(
+                "video.h3_te_resident: %d of %d MiB of the streamed conditioner copied into host RAM (%s)",
+                mib,
+                need,
+                why,
+            )
+        return mib
+    except Exception as exc:  # noqa: BLE001 -- the mapping still works
+        if logger is not None:
+            logger.warning("video.h3_te_resident: kept the mapping: %s", exc)
+        return 0
+
+
+def _copy_host_tensors_(entries: list) -> int:
+    """Re-point each group's host copy (and the offloaded tensor) at a fresh anonymous copy. Returns bytes copied."""
+    import torch
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fresh(host: Any) -> Any:
+        out = torch.empty_like(host, memory_format = torch.contiguous_format)
+        out.copy_(host)  # releases the GIL: parallel page faults keep the disk queue full
+        return out
+
+    with torch.no_grad(), ThreadPoolExecutor(_H3_TE_COPY_THREADS) as pool:
+        fresh = list(pool.map(lambda e: _fresh(e[2]), entries))
+    copied = 0
+    with torch.no_grad():
+        for (group, tensor, host), new in zip(entries, fresh):
+            cpu = getattr(group, "cpu_param_dict", None)
+            if cpu is not None and tensor in cpu:
+                cpu[tensor] = new
+            if tensor.device.type == "cpu" and tensor.data_ptr() == host.data_ptr():
+                tensor.data = new
+            copied += new.numel() * new.element_size()
+    return copied
