@@ -654,12 +654,53 @@ def real_apple_metal_budget(monkeypatch):
 
 # Below the ephemeral range on Linux (32768+), macOS and Windows (49152+), one block per xdist worker.
 _ENGINE_PORT_BASE = 21000
+_ENGINE_PORT_SPAN = 10000
 _ENGINE_PORTS_PER_WORKER = 250
 _engine_port_counter = itertools.count()
 
 
+_engine_port_slots = {}
+
+
+def _engine_port_block(slot, worker_count):
+    """(first port, size); past 40 workers blocks shrink so each stays disjoint inside the span.
+    Without a controller slot a replacement gwN (N >= count) uses the span's spare blocks first."""
+    count = max(worker_count, 1)
+    size = min(_ENGINE_PORTS_PER_WORKER, _ENGINE_PORT_SPAN // count)
+    if size < 1:
+        raise RuntimeError(f"{count} xdist workers do not fit {_ENGINE_PORT_SPAN} engine ports")
+    return _ENGINE_PORT_BASE + (slot % (_ENGINE_PORT_SPAN // size)) * size, size
+
+
+@pytest.hookimpl(optionalhook = True)
+def pytest_configure_node(node):
+    """xdist controller: a replacement worker gets a new gwN, so hand it the lowest slot no live
+    worker holds (the crashed one's) instead of deriving the slot from N."""
+    taken = set(_engine_port_slots.values())
+    slot = next(i for i in itertools.count() if i not in taken)
+    _engine_port_slots[node.gateway.id] = slot
+    node.workerinput["engine_port_slot"] = slot
+
+
+@pytest.hookimpl(optionalhook = True)
+def pytest_testnodedown(node, error):
+    _engine_port_slots.pop(node.gateway.id, None)
+
+
+@pytest.fixture
+def engine_port_block():
+    return _engine_port_block
+
+
+@pytest.fixture
+def engine_port_slot_hooks(monkeypatch):
+    """The controller-side slot hooks, on an empty slot table."""
+    monkeypatch.setitem(globals(), "_engine_port_slots", {})
+    return pytest_configure_node, pytest_testnodedown
+
+
 @pytest.fixture(autouse = True)
-def _engine_ports_no_other_worker_can_take(monkeypatch):
+def _engine_ports_no_other_worker_can_take(monkeypatch, request):
     """managed_engine._free_port releases an ephemeral port that the engine binds later. In that
     gap any bind(0) on the runner, such as another worker's test server, can be handed the same
     port and answer /health, and a start that should time out returns ready. Each worker gets its
@@ -669,13 +710,16 @@ def _engine_ports_no_other_worker_can_take(monkeypatch):
         return
     import socket
 
-    worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
-    index = int(worker[2:]) if worker[2:].isdigit() else 0
-    base = _ENGINE_PORT_BASE + (index % 40) * _ENGINE_PORTS_PER_WORKER
+    count = os.environ.get("PYTEST_XDIST_WORKER_COUNT", "")
+    slot = getattr(request.config, "workerinput", {}).get("engine_port_slot")
+    if slot is None:
+        worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")[2:]
+        slot = int(worker) if worker.isdigit() else 0
+    base, size = _engine_port_block(slot, int(count) if count.isdigit() else 1)
 
     def _worker_port(limit = None):
-        for _ in range(_ENGINE_PORTS_PER_WORKER):
-            port = base + next(_engine_port_counter) % _ENGINE_PORTS_PER_WORKER
+        for _ in range(size):
+            port = base + next(_engine_port_counter) % size
             with socket.socket() as sock:
                 try:
                     sock.bind(("127.0.0.1", port))
