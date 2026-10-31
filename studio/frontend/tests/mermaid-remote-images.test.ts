@@ -148,6 +148,34 @@ test("a style statement after a semicolon cannot fetch either", () => {
   }
 });
 
+test("a quoted stateDiagram state label is text, not a style statement", () => {
+  const url = "url(https://attacker.example/x)";
+  for (const source of [
+    'stateDiagram-v2\n  state "Use style C:\\temp" as A\n  A --> B',
+    'stateDiagram-v2\n  state "Apply style url(parameter)" as A\n  A --> B',
+    'stateDiagram-v2\n  state Outer {\n    state "a classDef b" as A\n  }',
+  ]) {
+    assert.equal(stripRemoteDiagramImages(source), source);
+  }
+  for (const [source, kept] of [
+    [`stateDiagram-v2\n  state "a style b" as A classDef x fill:${url}`, 'stateDiagram-v2\n  state "a style b" as A '],
+    [`stateDiagram-v2\n  state "a" as A\n  A --> B classDef x fill:${url}`, 'stateDiagram-v2\n  state "a" as A\n  A --> B '],
+    // An earlier `"` or `accDescr {` could end inside the label.
+    [`stateDiagram-v2\n  A --> B "x\n  state "y classDef x fill:${url}"`, 'stateDiagram-v2\n  A --> B "x\n  state "y '],
+    [`stateDiagram-v2\n  accDescr {\n  state "y classDef x fill:${url}"`, 'stateDiagram-v2\n  accDescr {\n  state "y '],
+    [`erDiagram\n  state "y classDef x fill:${url}"`, 'erDiagram\n  state "y '],
+    [`erDiagram\n  A ||--o{ B : x\nstateDiagram-v2\n  state "y classDef x fill:${url}"`, 'erDiagram\n  A ||--o{ B : x\nstateDiagram-v2\n  state "y '],
+    ...["<<fork>>", "<<JOIN>>", "<<choice>>", "[[fork]]", "[[join]]", "[[Choice]]"].map((marker) => [
+      `stateDiagram-v2\nA --> B\nstate "foo ${marker} style A fill:${url};stroke:red" as C`,
+      `stateDiagram-v2\nA --> B\nstate "foo ${marker} `,
+    ]),
+  ]) {
+    const out = stripRemoteDiagramImages(source);
+    assert.equal(out, kept);
+    assert.equal(stripRemoteDiagramImages(out), out);
+  }
+});
+
 test("many unclosed `@{` markers are scanned in linear time", () => {
   const source = `sequenceDiagram\n  Alice->>Bob: ${"@{ ".repeat(16000)}`;
   const started = performance.now();
