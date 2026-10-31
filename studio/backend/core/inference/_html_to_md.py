@@ -77,9 +77,11 @@ def _is_hidden_element(attr_dict: dict) -> bool:
     """Any present hidden attribute counts, even hidden=false, since presence means not rendered; aria-hidden=true and inline hiding styles count too"""
     if "hidden" in attr_dict:
         return True
-    if (attr_dict.get("aria-hidden") or "").strip().lower() == "true":
+    aria_hidden = attr_dict.get("aria-hidden")
+    if aria_hidden and aria_hidden.strip().lower() == "true":
         return True
-    return _style_hides_element(attr_dict.get("style") or "")
+    style = attr_dict.get("style")
+    return bool(style) and _style_hides_element(style)
 
 
 def _span_attr(attr_dict: dict, name: str) -> int:
@@ -92,7 +94,8 @@ def _span_attr(attr_dict: dict, name: str) -> int:
 
 def _is_aria_heading(attr_dict: dict) -> bool:
     """Any role token counts: WAI-ARIA's first-token rule needs the full role table, so match loosely."""
-    return "heading" in (attr_dict.get("role") or "").lower().split()
+    role = attr_dict.get("role")
+    return bool(role) and "heading" in role.lower().split()
 
 
 # HTML5 optional end tags: a listed start tag implicitly closes an open element of the key type, else an unclosed p hidden swallows later siblings
@@ -150,6 +153,8 @@ _IMPLICIT_CLOSERS: dict = {
     "option": frozenset({"option", "optgroup"}),
     "optgroup": frozenset({"optgroup"}),
 }
+# a start tag outside every closer set can close nothing, so implicit-close recovery skips its scan
+_ANY_IMPLICIT_CLOSER = frozenset().union(*_IMPLICIT_CLOSERS.values())
 
 
 # A nested container makes an inner item a descendant, so recovery must stop there.
@@ -335,6 +340,7 @@ _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 _BLANK_LINE_RUN = re.compile(r"\n\n\n+")
+_WHITESPACE_RUN = re.compile(r"\s+")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -661,22 +667,35 @@ class _TitleButtonScan:
         # per open heading: [open-tag index, candidate position or None, candidate has text, _text_seq at open]
         self._headings: list[list] = []
 
-    def starttag(self, tag: str, attrs: list[tuple[str, str | None]], pos: tuple[int, int]) -> None:
-        attr_dict = dict(attrs)
-        self._prepare_foreign_html_start(tag, attr_dict)
-        self._close_implicit(tag)
+    def starttag(
+        self, tag: str, attr_dict: dict, pos: tuple[int, int], hidden: bool, aria_heading: bool
+    ) -> None:
+        """``hidden`` / ``aria_heading``: ``_is_hidden_element`` / ``_is_aria_heading`` of ``attr_dict``,
+        which the renderer computes once for both of them."""
+        namespaces = self._namespaces
+        if namespaces and namespaces[-1] != "html":
+            self._prepare_foreign_html_start(tag, attr_dict)
+        if self._closable_open and tag in _ANY_IMPLICIT_CLOSER:
+            self._close_implicit(tag)
         if tag in _VOID_TAGS:
             return
-        namespace = self._next_namespace(tag)
+        # _next_namespace's HTML-parent branch, inlined; an HTML element is never an integration point
+        if not namespaces or namespaces[-1] == "html":
+            namespace = "svg" if tag == "svg" else "math" if tag == "math" else "html"
+        else:
+            namespace = self._next_namespace(tag)
+        integration = namespace != "html" and self._is_html_integration_point(
+            tag, namespace, attr_dict
+        )
         self._open.append(tag)
-        self._namespaces.append(namespace)
-        self._html_integration.append(self._is_html_integration_point(tag, namespace, attr_dict))
+        namespaces.append(namespace)
+        self._html_integration.append(integration)
         if tag in _IMPLICIT_CLOSERS:
             self._closable_open += 1
         index = len(self._open) - 1
-        if _is_hidden_element(attr_dict) or (tag in _SKIP_TAGS and tag != "button"):
+        if hidden or (tag in _SKIP_TAGS and tag != "button"):
             self._muted.append(index)
-        if tag in _HEADING_TAGS or _is_aria_heading(attr_dict):
+        if tag in _HEADING_TAGS or aria_heading:
             self._headings.append([index, None, False, self._text_seq])
         elif tag == "button" and self._button_at is None:
             self._button_at = index
@@ -686,10 +705,9 @@ class _TitleButtonScan:
                 self._button_frame = frame
 
     def endtag(self, tag: str) -> None:
-        for i in range(len(self._open) - 1, -1, -1):
-            if self._open[i] == tag:
-                self._pop_to(i)
-                return
+        open_tags = self._open
+        if tag in open_tags:
+            self._pop_to(len(open_tags) - 1 - open_tags[::-1].index(tag))
 
     def data(self, data: str) -> None:
         if self._muted or not data.strip():
@@ -763,8 +781,10 @@ class _TitleButtonScan:
             self._button_frame = None
         while self._muted and self._muted[-1] >= i:
             self._muted.pop()
-        self._close_headings(i)
-        self._closable_open -= sum(1 for name in self._open[i:] if name in _IMPLICIT_CLOSERS)
+        if self._headings and self._headings[-1][0] >= i:
+            self._close_headings(i)
+        if self._closable_open:
+            self._closable_open -= sum(1 for name in self._open[i:] if name in _IMPLICIT_CLOSERS)
         del self._open[i:]
         del self._namespaces[i:]
         del self._html_integration[i:]
@@ -911,6 +931,10 @@ class _MarkdownRenderer(HTMLParser):
         if text:
             self._li_marker_pending = False
         frame = self._header_stack[-1] if self._header_stack else None
+        # outside header frames and headings no tee or tally below applies: only the routing does
+        if frame is None and not self._heading_marks and not self._emit_as_heading:
+            self._emit_target().append(text)
+            return
         # Tee wherever text routes; a link inside the frame arrives twice, so tee only its formatted form
         in_nested_link = (
             self._in_link and self._link_seq != frame.outer_link_seq if frame else False
@@ -919,7 +943,12 @@ class _MarkdownRenderer(HTMLParser):
         as_heading = (
             self._heading_marks and not in_nested_link and not self._replaying
         ) or self._emit_as_heading
-        measured = self._site_links.clean(text) if self._site_links is not None else text
+        # only a header frame measures text; clean() is pure, so pages outside frames skip it
+        measured = (
+            self._site_links.clean(text)
+            if frame is not None and self._site_links is not None
+            else text
+        )
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(measured.strip())
@@ -1261,7 +1290,7 @@ class _MarkdownRenderer(HTMLParser):
 
     def _close_implicit(self, tag: str) -> None:
         """Recovery stops at _CLOSE_BARRIERS containers so an outer item hidden content cannot leak; runs even for skipped nav and footer, which also close p"""
-        if not self._closable_open:
+        if not self._closable_open or tag not in _ANY_IMPLICIT_CLOSER:
             return
         barriers = _IMPLICIT_CLOSE_BARRIERS.get(tag, frozenset())
         while True:
@@ -1407,17 +1436,30 @@ class _MarkdownRenderer(HTMLParser):
         self._skip_html_at.clear()
         self._skip_html_integration.clear()
 
-    def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
-        """track tag state; run ``_close_implicit`` first so skipped tags trigger recovery."""
+    def _enter_tag(
+        self,
+        tag: str,
+        attr_dict: dict,
+        hidden: bool | None = None,
+        aria_heading: bool | None = None,
+    ) -> bool:
+        """track tag state; run ``_close_implicit`` first so skipped tags trigger recovery.
+        ``hidden`` / ``aria_heading`` are the precomputed attribute checks, or None to compute them."""
+        if hidden is None:
+            hidden = _is_hidden_element(attr_dict)
         if tag not in _VOID_TAGS:
             if tag in _INDEXED_OPEN_TAGS:
                 self._open_at.setdefault(tag, []).append(len(self._open_tags))
             self._open_tags.append(tag)
             if tag in _IMPLICIT_CLOSERS:
                 self._closable_open += 1
-            if _is_hidden_element(attr_dict):
+            if hidden:
                 self._hidden_marks.append(len(self._open_tags) - 1)
-            if tag in _HEADING_TAGS or tag == "hgroup" or _is_aria_heading(attr_dict):
+            if (
+                tag in _HEADING_TAGS
+                or tag == "hgroup"
+                or (_is_aria_heading(attr_dict) if aria_heading is None else aria_heading)
+            ):
                 self._heading_marks.append(len(self._open_tags) - 1)
                 if self._in_link:
                     self._link_had_heading = True
@@ -1439,7 +1481,7 @@ class _MarkdownRenderer(HTMLParser):
                         self._table_depth(),
                     )
                 )
-        elif _is_hidden_element(attr_dict):
+        elif hidden:
             return False
         if self._scope_tags is not None and tag in self._scope_tags:
             self._flush_header_frames()
@@ -1470,16 +1512,18 @@ class _MarkdownRenderer(HTMLParser):
         # Flush the heading here while the tee still recognises it; it emits only after its mark pops
         if self._in_link and tag == "a" and self._heading_marks:
             self._finish_link()
-        if tag not in _VOID_TAGS:
-            for i in range(len(self._open_tags) - 1, -1, -1):
-                if self._open_tags[i] == tag:
-                    self._truncate_open_tags(i)
-                    while self._hidden_marks and self._hidden_marks[-1] >= i:
-                        self._hidden_marks.pop()
-                    while self._heading_marks and self._heading_marks[-1] >= i:
-                        self._heading_marks.pop()
-                    self._close_header_frames(i, own_tag = tag == "header")
-                    break
+        open_tags = self._open_tags
+        # the innermost open element of this name, found at C speed
+        if tag not in _VOID_TAGS and tag in open_tags:
+            i = len(open_tags) - 1 - open_tags[::-1].index(tag)
+            self._truncate_open_tags(i)
+            while self._hidden_marks and self._hidden_marks[-1] >= i:
+                self._hidden_marks.pop()
+            while self._heading_marks and self._heading_marks[-1] >= i:
+                self._heading_marks.pop()
+            # _close_header_frames' own loop test: only a frame at or above i has anything to close
+            if self._header_stack and self._header_stack[-1].depth >= i:
+                self._close_header_frames(i, own_tag = tag == "header")
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
             if self._scope_depth == 0 and self._scope_seg_start is not None:
@@ -1569,10 +1613,17 @@ class _MarkdownRenderer(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if self._record is not None:
-            self._record.append((0, (tag, tuple(attrs), *self.getpos())))
+            # HTMLParser builds a fresh attrs list per tag and nothing here mutates it, so it is kept uncopied
+            self._record.append((0, (tag, attrs, self.lineno, self.offset)))
         tag = tag.lower()
+        # one dict and one pair of attribute checks serve the title scan and this pass
+        attr_dict = dict(attrs)
+        hidden = aria_heading = None
         if self._title_scan is not None:
-            self._title_scan.starttag(tag, attrs, self.getpos())
+            # an element without attributes is never hidden and never an ARIA heading
+            hidden = bool(attr_dict) and _is_hidden_element(attr_dict)
+            aria_heading = bool(attr_dict) and _is_aria_heading(attr_dict)
+            self._title_scan.starttag(tag, attr_dict, self.getpos(), hidden, aria_heading)
         title_button = (
             tag == "button" and bool(self.title_buttons) and self.getpos() in self.title_buttons
         )
@@ -1580,7 +1631,9 @@ class _MarkdownRenderer(HTMLParser):
             button = self._last_skip_position("button", "html")
             if button >= 0 and self._skip_target_in_scope(tag, button):
                 self._truncate_skip_tags(button)
-        self._prepare_foreign_html_start(tag, attrs)
+        # each _prepare_* / _close_implicit call below is guarded by that helper's own early-return test
+        if self._skip_tags and self._skip_namespaces[-1] != "html":
+            self._prepare_foreign_html_start(tag, attrs)
         if tag in _TABLE_ONLY_START_TAGS and not self._in_table:
             return
         if tag == "table" and self._prepare_sibling_table_start():
@@ -1594,7 +1647,6 @@ class _MarkdownRenderer(HTMLParser):
 
         if self._skip_tags:
             if tag not in _VOID_TAGS:
-                attr_dict = dict(attrs)
                 namespace = self._skipped_tag_namespace(tag)
                 template = self._last_skip_position("template", "html")
                 if tag == "form" and namespace == "html" and template < 0:
@@ -1617,9 +1669,12 @@ class _MarkdownRenderer(HTMLParser):
             return
 
         # close optional tags before skipping so skipped <nav>/<footer> releases an open <p> marker
-        self._close_implicit(tag)
-        self._prepare_heading_start(tag)
-        self._prepare_table_start(tag)
+        if self._closable_open and tag in _ANY_IMPLICIT_CLOSER:
+            self._close_implicit(tag)
+        if tag in _HEADING_TAGS:
+            self._prepare_heading_start(tag)
+        if self._in_table:
+            self._prepare_table_start(tag)
 
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
             self._skip_tags.append(tag)
@@ -1629,14 +1684,13 @@ class _MarkdownRenderer(HTMLParser):
             self._skip_namespaces = [namespace]
             self._skip_html_at = [0] if namespace == "html" else []
             self._skip_html_integration = [
-                self._is_html_integration_point(tag, namespace, dict(attrs))
+                self._is_html_integration_point(tag, namespace, attr_dict)
             ]
             return
 
-        attr_dict = dict(attrs)
         if tag == "form":
             self._form_pointer = True
-        if not self._enter_tag(tag, attr_dict):
+        if not self._enter_tag(tag, attr_dict, hidden, aria_heading):
             return
 
         if tag in _HEADING_TAGS:
@@ -1957,7 +2011,7 @@ class _MarkdownRenderer(HTMLParser):
             self._record.append((2, data))
         if self._title_scan is not None:
             self._title_scan.data(data)
-        if self._text_suppressed():
+        if self._skip_tags or self._hidden_marks or self._text_suppressed():
             return
         if self._in_pre:
             self._count_header_text(data)
@@ -1969,7 +2023,7 @@ class _MarkdownRenderer(HTMLParser):
             self._emit(data)
             return
         # Collapse all whitespace (including newlines) per HTML rules.
-        text = re.sub(r"\s+", " ", data)
+        text = _WHITESPACE_RUN.sub(" ", data)
         # Count after collapsing: raw spaces in a link inflated it past the floor.
         self._count_header_text(text)
         # Suppress whitespace-only nodes between table elements (source indentation).
