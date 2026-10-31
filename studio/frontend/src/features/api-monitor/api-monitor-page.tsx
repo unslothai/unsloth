@@ -44,7 +44,6 @@ import {
 import { AudioApiExamples } from "@/features/settings/components/audio-api-examples";
 import { DecisionApiSection } from "@/features/settings/components/decision-api-section";
 import { MediaApiExamples } from "@/features/settings/components/media-api-examples";
-import { TrainingApiExamples } from "@/features/settings/components/training-api-examples";
 import { useApiTunnelPref } from "@/features/settings/components/usage-examples";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
@@ -964,12 +963,6 @@ function QuickStart({
             />
           ) : kind === "audio" ? (
             <AudioApiExamples
-              apiKey={freshKey}
-              useTunnel={useTunnel}
-              showHeading={false}
-            />
-          ) : kind === "training" ? (
-            <TrainingApiExamples
               apiKey={freshKey}
               useTunnel={useTunnel}
               showHeading={false}

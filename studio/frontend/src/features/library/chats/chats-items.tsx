@@ -1231,18 +1231,26 @@ const TILELESS_ROW_NAME = "min-h-10";
 const CARD_TITLE =
   "block w-full rounded-md text-left font-medium text-ui-12p5 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
+/** The rule under the heading lines up list rows; grid cards carry their own edges, so it is off there. */
 export function GroupHeading({
   children,
   count,
   countLabel,
+  divider = true,
 }: {
   children: ReactNode;
   count: number;
   countLabel?: string;
+  divider?: boolean;
 }) {
   const t = useT();
   return (
-    <h3 className="mb-2 mt-3 flex items-baseline gap-2 border-b border-border pb-2 pl-4 font-sans text-ui-12">
+    <h3
+      className={cn(
+        "mb-2 mt-3 flex items-baseline gap-2 pb-2 pl-4 font-sans text-ui-12",
+        divider && "border-b border-border",
+      )}
+    >
       <span className="font-medium text-muted-foreground">{children}</span>
       <span className="text-ui-11 text-muted-foreground/70">
         {countLabel ?? chatCount(count, t)}
