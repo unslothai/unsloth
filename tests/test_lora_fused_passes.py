@@ -974,6 +974,8 @@ def test_a_tensor_subclass_operand_keeps_mains_order_and_type(which, monkeypatch
         _set(monkeypatch, on)
         out[on] = kernel_utils.matmul_lora(X, W, None, A, B, 0.5, XA = XA)
     assert calls == [], calls
+    # The in-place LoRA accumulate returns the subclass, in both orders.
+    assert type(out[True]) is _TaggedTensor
     _bitwise(out[True], out[False])
 
 
@@ -997,37 +999,65 @@ def test_a_caller_out_with_a_subclass_keeps_mains_order(which, monkeypatch):
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-@pytest.mark.parametrize("which", ["X", "W", "plain"])
+@pytest.mark.parametrize("which", ["X", "W", "A", "B", "XA", "plain"])
 def test_autocast_with_a_precomputed_xa_never_rounds_to_inf(which, dtype, monkeypatch):
-    # XA is computed outside autocast. The in-place fused order is not autocast, so plain fp32 operands
-    # stay fp32 and finite; a functional addmm would autocast and give 10240 in bf16, inf in fp16. A
-    # subclass operand behaves exactly as with UNSLOTH_LORA_FUSED_PASSES=0 (the autocast base GEMM
-    # then meets the fp32 adapter product, which that order has always rejected).
+    # XA is computed outside autocast. The in-place fused order is not autocast, so fp32 operands stay fp32
+    # and finite; a functional addmm would autocast and give 10240 in bf16, inf in fp16. A subclass operand
+    # takes the base-then-LoRA order, whose base GEMM then runs outside autocast too: the same fp32 result.
     X, A = torch.ones(1, 1), torch.ones(1, 1)
     W, B = torch.full((1, 1), -60000.0), torch.full((1, 1), 35000.0)
     XA = X @ A.t()
-    if which != "plain":
-        X, W = (_tag(t) if n == which else t for n, t in zip("XW", (X, W)))
+    if which == "XA":
+        XA = _tag(XA)
+    elif which != "plain":
+        X, W, A, B = (_tag(t) if n == which else t for n, t in zip("XWAB", (X, W, A, B)))
+    _set(monkeypatch, True)
+    with torch.autocast("cpu", dtype = dtype):
+        got = kernel_utils.matmul_lora(X, W, None, A, B, 2.0, XA = XA)
+    assert got.dtype == torch.float32 and float(got) == 10000.0
+    # A is not read when XA is given.
+    assert (type(got) is _TaggedTensor) == (which not in ("plain", "A"))
 
-    def run(on):
-        _set(monkeypatch, on)
-        try:
-            with torch.autocast("cpu", dtype = dtype):
-                return kernel_utils.matmul_lora(X, W, None, A, B, 2.0, XA = XA)
-        except RuntimeError as e:
-            return str(e)
 
-    got = run(True)
-    if which == "plain":
-        assert isinstance(got, torch.Tensor), got
-        assert got.dtype == torch.float32 and float(got) == 10000.0
-        return
-    want = run(False)
-    if isinstance(want, str):
-        assert got == want
-    else:
-        assert torch.isfinite(got).all()
-        _bitwise(got, want)
+@pytest.mark.parametrize("on", [True, False])
+@pytest.mark.parametrize("which", ["out", "X", "A", "plain"])
+def test_a_caller_out_with_grad_enabled_is_differentiable(which, on, monkeypatch):
+    # matmul(out = ...) rejects inputs that require grad: the base product is copied into the buffer instead.
+    def run(tagged):
+        g = torch.Generator().manual_seed(0)
+        X = torch.randn(8, 16, generator = g).requires_grad_()
+        W = torch.randn(12, 16, generator = g)
+        A = torch.randn(4, 16, generator = g).requires_grad_()
+        B = torch.randn(12, 4, generator = g).requires_grad_()
+        buf = torch.empty(8, 12)
+        tag = lambda n, t: _tag(t) if tagged and n == which else t
+        buf = tag("out", buf)
+        y = kernel_utils.matmul_lora(tag("X", X), W, None, tag("A", A), B, 0.5, out = buf)
+        assert y.data_ptr() == buf.data_ptr()
+        y.sum().backward()
+        return y, (X.grad, A.grad, B.grad)
+
+    _set(monkeypatch, on)
+    out, grads = run(True)
+    ref_out, ref_grads = run(False)
+    assert (type(out) is _TaggedTensor) == (which != "plain")
+    for a, b in zip((out, *grads), (ref_out, *ref_grads)):
+        torch.testing.assert_close(a.as_subclass(torch.Tensor), b.as_subclass(torch.Tensor))
+
+
+@pytest.mark.parametrize("which", ["A", "B"])
+def test_the_traced_no_grad_accumulate_keeps_a_subclass_result(which, monkeypatch):
+    # The opaque op returns nothing, so a subclass operand takes the in-place method and keeps its type.
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    out, A, B = torch.zeros(3, 4), torch.randn(3, 2), torch.randn(2, 4)
+    A, B = (_tag(A), B) if which == "A" else (A, _tag(B))
+    with torch.no_grad():
+        got = kernel_utils.addmm_(out, A, B, alpha = 0.5)
+    assert type(got) is _TaggedTensor
+    assert got.data_ptr() == out.data_ptr()
+    torch.testing.assert_close(
+        got.as_subclass(torch.Tensor), 0.5 * (A @ B).as_subclass(torch.Tensor)
+    )
 
 
 def test_an_active_function_mode_keeps_the_in_place_fused_order(monkeypatch):

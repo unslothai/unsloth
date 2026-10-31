@@ -1953,6 +1953,8 @@ def addmm_(
         and torch.compiler.is_compiling()
         and not torch.is_grad_enabled()
         and type(alpha) in (int, float)
+        # The opaque op returns nothing, so a subclass result type would be lost.
+        and not _lora_subclass(out, A, B)
     ):
         torch.ops.unsloth.addmm_(out, A, B, alpha, beta)
         return out
@@ -2040,6 +2042,13 @@ def _shares_storage(out, *tensors):
         )
     except RuntimeError:
         return True
+
+
+def _base_matmul(X, W, out):
+    if out is not None and torch.is_grad_enabled() and (X.requires_grad or W.requires_grad):
+        # matmul(out = ...) does not support autograd.
+        return out.copy_(torch_matmul(X, W.t()))
+    return torch_matmul(X, W.t(), out = out)
 
 
 def matmul_lora(
@@ -2133,7 +2142,13 @@ def matmul_lora(
         A = None
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
-        out = torch_matmul(X, W.t(), out = out)
+        # A subclass with a caller's XA in X's dtype: the in-place fused order this replaces is not autocast,
+        # so neither is the base GEMM here, keeping the output in the dtype the accumulate below needs.
+        if XA is not None and XA.dtype == dtype and _lora_subclass(X, W, A, B, XA, out):
+            with torch.autocast(X.device.type, enabled = False):
+                out = _base_matmul(X, W, out)
+        else:
+            out = _base_matmul(X, W, out)
     if W_quant is not None:
         del W
 
@@ -2141,6 +2156,7 @@ def matmul_lora(
         A, B = A.t(), B.t()
         if XA is None:
             XA = torch_matmul(X, A.to(dtype))
-        addmm_(out, XA, B.to(dtype), alpha = s)
+        # Keep the returned tensor: a subclass A, B or XA returns its own type from the in-place op.
+        out = addmm_(out, XA, B.to(dtype), alpha = s)
 
     return out.view(batch, seq_len, -1) if reshape else out
