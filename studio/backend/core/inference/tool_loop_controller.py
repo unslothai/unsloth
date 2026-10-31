@@ -1185,8 +1185,11 @@ class ToolLoopController:
 
     @property
     def awaiting_user(self) -> bool:
-        """The last tool result said only the user can unblock this turn."""
+        """A result in the latest batch said only the user can unblock this turn."""
         return self._awaiting_user
+
+    def begin_batch(self) -> None:
+        self._awaiting_user = False
 
     @property
     def history(self) -> tuple[_ToolCallRecord, ...]:
@@ -1309,7 +1312,8 @@ class ToolLoopController:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
         failed = is_tool_error(result_text)
-        self._awaiting_user = awaits_user(result_text)
+        # Sticky for the batch: a parallel call that succeeds does not unblock the user.
+        self._awaiting_user = self._awaiting_user or awaits_user(result_text)
         result_text = self._cap_result(result_text, decision.tool_name)
         self._history.append(
             _ToolCallRecord(

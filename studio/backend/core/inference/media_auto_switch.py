@@ -328,6 +328,12 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
             ):
                 raise busy(kind, openai_errors)
+            # Again under the gates: a chat model can have loaded since the precheck.
+            from core.inference.ensure_model import ensure_media_load
+
+            await asyncio.to_thread(
+                functools.partial(ensure_media_load, owner, kind, name, openai_errors = openai_errors)
+            )
             # Ranked once: the check below and the load it starts both use this card.
             planned = media_locality.pin_planned_gpu_ordinal(
                 await bounded(

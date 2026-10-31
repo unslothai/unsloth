@@ -1037,5 +1037,18 @@ def test_only_a_result_the_user_must_unblock_marks_the_turn_as_awaiting_them():
         ),
         ("q", "Error: [multi_model_always kind=chat] (HTTP 409) Ask the user to unload it.", True),
     ):
+        controller.begin_batch()
         controller.record_result(controller.prepare_call(_call(name, {"model": model})), result)
         assert controller.awaiting_user is awaiting, result
+
+
+def test_a_refusal_the_user_must_unblock_survives_a_later_success_in_the_same_batch():
+    load, status = "mcp__unsloth__generate_audio", "mcp__unsloth__status"
+    controller = ToolLoopController(tools = [_tool(load), _tool(status)])
+    refusal = "Error: [needs_user_load kind=audio page=Audio] The music model is off."
+    controller.record_result(controller.prepare_call(_call(load, {"model": "m"})), refusal)
+    controller.record_result(controller.prepare_call(_call(status, {})), '{"chat":{}}')
+    assert controller.awaiting_user
+    controller.begin_batch()
+    controller.record_result(controller.prepare_call(_call(load, {"model": "n"})), "ok")
+    assert not controller.awaiting_user

@@ -39119,6 +39119,7 @@ class LlamaCppBackend:
                 # the card's id for the first matching call (same tool name) to reconcile.
                 _text_provisional_id = _text_args_id if not has_structured_tc else ""
 
+                tool_controller.begin_batch()
                 for _call_index, tc in enumerate(tool_calls or []):
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")

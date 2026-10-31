@@ -1386,6 +1386,7 @@ def run_safetensors_tool_loop(
         # Where this batch's results start, for the image turn\'s wording.
         batch_conversation_start = len(conversation)
 
+        tool_controller.begin_batch()
         for _call_index, tc in enumerate(tool_calls or []):
             func = tc.get("function", {}) or {}
             tool_name = func.get("name", "") or ""
