@@ -166,6 +166,7 @@ import {
   type QueuedModelCapabilities,
 } from "../utils/queued-model-capabilities";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
+import { withPriorServerTimings, withPriorTiming } from "../utils/continued-timing";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
@@ -5723,6 +5724,9 @@ export function createOpenAIStreamAdapter(
       // A seed that ends inside the thought: the next reasoning delta extends it.
       const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
       let cumulativeText = continuationPartial;
+      // What this request appended, for counting its own tokens.
+      const passText = () => cumulativeText.slice(continuationPartial.length);
+      const priorTiming = continuation?.priorTiming;
       const geminiContinuationReplay = (
         final: boolean,
       ): GeminiContinuationReplay | undefined =>
@@ -6468,9 +6472,13 @@ export function createOpenAIStreamAdapter(
             externalProvider?.name ??
             (isExternalRequest ? "External provider" : "Local model"),
           providerType: externalProvider?.providerType ?? "local",
-          startedAt: streamStartTime,
+          startedAt: priorTiming?.startedAt ?? streamStartTime,
           finishedAt,
-          durationMs: finishedAt - streamStartTime,
+          // The passes' own time; a manual Continue's wait between them is not the reply's.
+          durationMs:
+            (priorTiming ? (priorTiming.durationMs ?? priorTiming.totalStreamTime) : 0) +
+            finishedAt -
+            streamStartTime,
           ...(sandboxSessionId ? { sessionId: sandboxSessionId } : {}),
           cancelId,
           toolCalls: Array.from(
@@ -8604,9 +8612,14 @@ export function createOpenAIStreamAdapter(
         });
 
         const meta = serverMetadata;
+        // This pass's own output; withPriorTiming adds what the resumed reply already had.
         const finalTokenCount =
-          meta?.usage?.completion_tokens ?? estimateTokenCount(cumulativeText);
-        const finalTokPerSec = meta?.timings?.predicted_per_second;
+          meta?.usage?.completion_tokens ?? estimateTokenCount(passText());
+        const finalServerTimings = withPriorServerTimings(
+          meta?.timings,
+          priorTiming?.serverTimings,
+        );
+        const finalTokPerSec = finalServerTimings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
         // Prefer llama-server timings; fall back to provider usage envelope.
@@ -8751,14 +8764,18 @@ export function createOpenAIStreamAdapter(
               "Compaction needs the conversation archive and the default checkpoint policy.",
           });
         }
-        const finalTiming = buildTiming(
-          streamStartTime,
-          totalChunks,
-          // What the user waited, as a resumed run records it. Server prompt eval has its own row.
-          firstTokenTime ?? serverPromptEvalTime,
-          finishedAt - streamStartTime,
-          finalTokenCount,
-          toolCallParts.length,
+        const finalTiming = withPriorTiming(
+          buildTiming(
+            streamStartTime,
+            totalChunks,
+            // What the user waited, as a resumed run records it. Server prompt eval has its own row.
+            firstTokenTime ?? serverPromptEvalTime,
+            finishedAt - streamStartTime,
+            finalTokenCount,
+            toolCallParts.length,
+            finalTokPerSec,
+          ),
+          priorTiming,
           finalTokPerSec,
         );
 
@@ -8802,7 +8819,7 @@ export function createOpenAIStreamAdapter(
                 : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
-              serverTimings: meta?.timings ?? undefined,
+              serverTimings: finalServerTimings ?? undefined,
               stopReason: lastFinishReason ?? undefined,
               contextUsage: meta?.usage
                 ? {
@@ -8953,13 +8970,16 @@ export function createOpenAIStreamAdapter(
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
-          const partialTiming = buildTiming(
-            streamStartTime,
-            totalChunks,
-            firstTokenTime,
-            Date.now() - streamStartTime,
-            estimateTokenCount(partialText),
-            toolCallParts.length,
+          const partialTiming = withPriorTiming(
+            buildTiming(
+              streamStartTime,
+              totalChunks,
+              firstTokenTime,
+              Date.now() - streamStartTime,
+              estimateTokenCount(continuation ? passText() : partialText),
+              toolCallParts.length,
+            ),
+            priorTiming,
           );
           yield {
             content: partialContent,

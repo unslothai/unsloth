@@ -10,6 +10,7 @@ import {
   parseGeminiThoughtReplayParts,
 } from "../gemini-thought-replay.ts";
 import type { ProviderCompactionContentPart } from "../types/api";
+import { type PriorPassTiming, readPriorPassTiming } from "./continued-timing.ts";
 import { providerCompactionPart } from "./provider-compaction.ts";
 
 /** Resuming a response that stopped early (`length`, `cancelled`, `interrupted`): the conversation is re-sent
@@ -366,6 +367,8 @@ export type ContinuationRequest = {
   providerCompactionProviderType?: string;
   providerCompactionModelId?: string;
   providerCompactionConnectionKey?: string;
+  /** The resumed reply's own figures, so the continued one's timing covers the whole answer. */
+  priorTiming?: PriorPassTiming;
 };
 
 type ProviderCompactionContinuationFields = Pick<
@@ -443,6 +446,7 @@ export function readContinuationRequest(
         providerCompactionProviderType?: unknown;
         providerCompactionModelId?: unknown;
         providerCompactionConnectionKey?: unknown;
+        priorTiming?: unknown;
       }
     | undefined;
   const partial = typeof request?.partial === "string" ? request.partial : "";
@@ -466,6 +470,7 @@ export function readContinuationRequest(
     return null;
   }
   const duration = request?.reasoningDuration;
+  const priorTiming = readPriorPassTiming(request?.priorTiming);
   return {
     partial,
     ...(reasoning ? { reasoning } : {}),
@@ -482,6 +487,7 @@ export function readContinuationRequest(
     ...(answerParts.length > 0 ? { answerParts } : {}),
     ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
     ...providerCompactionFields(request),
+    ...(priorTiming ? { priorTiming } : {}),
   };
 }
 

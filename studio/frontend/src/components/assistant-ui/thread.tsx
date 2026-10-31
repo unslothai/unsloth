@@ -253,6 +253,7 @@ import {
   holdAutoContinueRun,
   watchAutoContinueRun,
 } from "@/features/chat/utils/auto-continue-run-keeper";
+import { priorPassTiming } from "@/features/chat/utils/continued-timing";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import {
   SkillsComposerButton,
@@ -7869,6 +7870,8 @@ function useContinuation() {
       ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
       ...providerCompactionContinuationFields(metadata),
     };
+    const priorTiming = priorPassTiming(metadata);
+    if (priorTiming) request.priorTiming = priorTiming;
     return aui.thread().startRun({
       parentId: parent,
       runConfig: {
