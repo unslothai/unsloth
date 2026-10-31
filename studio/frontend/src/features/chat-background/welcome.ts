@@ -15,7 +15,6 @@ function subscribe(listener: () => void) {
 	};
 }
 
-/** Marks the new chat welcome as on screen for as long as the caller is mounted. */
 export function useMarkChatWelcome(): void {
 	useEffect(() => {
 		shown++;
