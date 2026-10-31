@@ -7695,24 +7695,25 @@ const GeneratingStatus: FC = () => {
   );
   const showDetails = useChatPreferencesStore((s) => s.showGenerationDetails);
   const locale = useLocale();
+  const t = useT();
   const percent = prefill ? prefillPercent(prefill) : null;
   // Held at 100% until the first token: going back to Working... for that moment would flash too.
   if (prefill === null || !labelShown || percent === null || decoding) {
     return (
       <span className="generating-glint text-sm text-muted-foreground">
-        Working...
+        {t("generationStats.working")}
       </span>
     );
   }
-  const timeLeft = formatPrefillTimeLeft(prefill);
+  const timeLeft = formatPrefillTimeLeft(prefill, t);
   return (
     <span
       data-slot="prefill-progress"
       className="generating-glint text-sm text-muted-foreground tabular-nums whitespace-normal!"
     >
-      Processing prompt {percent}%
+      {t("generationStats.processingPrompt", { percent })}
       {timeLeft ? ` · ${timeLeft}` : null}
-      {showDetails ? ` · ${formatPrefillDetails(prefill, locale)}` : null}
+      {showDetails ? ` · ${formatPrefillDetails(prefill, t, locale)}` : null}
     </span>
   );
 };

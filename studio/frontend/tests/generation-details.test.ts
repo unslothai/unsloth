@@ -30,6 +30,19 @@ const { normalizeChatGenerationChunkPayload } = await import(
 const { generationChunkCountsTowardTiming } = await import(
   "../src/features/chat/utils/chat-generation-recovery.ts"
 );
+const { en } = await import("../src/i18n/locales/en.ts");
+const { de } = await import("../src/i18n/locales/de.ts");
+
+/** useT() over a real catalog, falling back to English like translate(), so a reworded key fails here. */
+function translator(catalog: object) {
+  const read = (tree: object, key: string) =>
+    key.split(".").reduce<unknown>((node, part) => (node as Record<string, unknown> | undefined)?.[part], tree);
+  return (key: string, values: Record<string, unknown> = {}): string => {
+    const message = (read(catalog, key) ?? read(en, key)) as string;
+    return message.replace(/\{([^}]+)\}/g, (_match, name: string) => String(values[name] ?? ""));
+  };
+}
+const t = translator(en);
 
 test("prefill frames read into store shape, clamped, and give a whole percent", () => {
   const update = readGenerationProgress({
@@ -51,17 +64,17 @@ test("a follow-up in a long chat counts only the part the cache did not cover", 
   // 29,000 of 30,000 tokens reused: halfway through the new 1,000, not 98% of the whole prompt.
   const followUp = { processed: 29500, total: 30000, cached: 29000, tokPerS: 1000 };
   assert.equal(prefillPercent(followUp), 50);
-  assert.equal(formatPrefillDetails(followUp, "en-US"), "500 / 1,000 tokens · 1,000 tok/s");
+  assert.equal(formatPrefillDetails(followUp, t, "en-US"), "500 / 1,000 tokens · 1,000 tok/s");
   // llama.cpp evaluates at least one token, but a cache that covers it all is done, not NaN.
   assert.equal(prefillPercent({ processed: 30000, total: 30000, cached: 30000, tokPerS: null }), 100);
 });
 
 test("the time left follows the rate so far and drops out under a second", () => {
-  assert.equal(formatPrefillTimeLeft({ processed: 4118, total: 18880, cached: 0, tokPerS: 1401.2 }), "11s left");
-  assert.equal(formatPrefillTimeLeft({ processed: 5000, total: 200000, cached: 0, tokPerS: 1500 }), "2m 10s left");
+  assert.equal(formatPrefillTimeLeft({ processed: 4118, total: 18880, cached: 0, tokPerS: 1401.2 }, t), "11s left");
+  assert.equal(formatPrefillTimeLeft({ processed: 5000, total: 200000, cached: 0, tokPerS: 1500 }, t), "2m 10s left");
   // The first sample's rate is noise, and at the end there is nothing worth counting down.
-  assert.equal(formatPrefillTimeLeft({ processed: 22, total: 18844, cached: 0, tokPerS: 242 }), null);
-  assert.equal(formatPrefillTimeLeft({ processed: 18500, total: 18880, cached: 0, tokPerS: 1400 }), null);
+  assert.equal(formatPrefillTimeLeft({ processed: 22, total: 18844, cached: 0, tokPerS: 242 }, t), null);
+  assert.equal(formatPrefillTimeLeft({ processed: 18500, total: 18880, cached: 0, tokPerS: 1400 }, t), null);
 });
 
 test("malformed frames are dropped rather than drawn as NaN", () => {
@@ -80,10 +93,10 @@ test("decode frames keep draft acceptance only when both counts are there", () =
 
 test("the prefill details give the rate when there is one", () => {
   assert.equal(
-    formatPrefillDetails({ processed: 4118, total: 18880, cached: 0, tokPerS: 1401.2 }, "en-US"),
+    formatPrefillDetails({ processed: 4118, total: 18880, cached: 0, tokPerS: 1401.2 }, t, "en-US"),
     "4,118 / 18,880 tokens · 1,401 tok/s",
   );
-  assert.equal(formatPrefillDetails({ processed: 900, total: null, cached: null, tokPerS: null }, "en-US"), "900 tokens");
+  assert.equal(formatPrefillDetails({ processed: 900, total: null, cached: null, tokPerS: null }, t, "en-US"), "900 tokens");
 });
 
 test("the prefill label shows only for a pass expected to keep it up, then stays for that pass", () => {
@@ -119,14 +132,56 @@ test("the prefill label shows only for a pass expected to keep it up, then stays
 test("the live line writes every number in the reader's locale", () => {
   const decode = { tokens: 3060, tokPerS: 58.25, draftN: 5030, draftAccepted: 1791 };
   assert.equal(
-    formatLiveDecode(decode, "en-US"),
+    formatLiveDecode(decode, t, "en-US"),
     "3,060 tokens · 58.3 tok/s · draft 1,791/5,030 accepted (36%)",
   );
   // A locale that groups with "." must not get "." as the rate's decimal point too.
   assert.equal(
-    formatLiveDecode(decode, "de-DE"),
+    formatLiveDecode(decode, t, "de-DE"),
     "3.060 tokens · 58,3 tok/s · draft 1.791/5.030 accepted (36%)",
   );
+});
+
+test("the live figures and the placement read in the reader's language", () => {
+  const tDe = translator(de);
+  const g = de.generationStats;
+  const decode = { tokens: 3060, tokPerS: 58.25, draftN: 5030, draftAccepted: 1791 };
+  assert.equal(
+    formatLiveDecode(decode, tDe, "de-DE"),
+    [
+      g.tokens.replace("{count}", "3.060"),
+      "58,3 tok/s",
+      g.draftAccepted.replace("{accepted}", "1.791").replace("{drafted}", "5.030").replace("{percent}", "36"),
+    ].join(" · "),
+  );
+  assert.equal(formatLiveDecode({ ...decode, tokens: 1, tokPerS: null, draftN: null }, tDe, "de-DE"), g.tokensOne.replace("{count}", "1"));
+  const prompt = { processed: 4118, total: 18880, cached: 0, tokPerS: 1401.2 };
+  assert.equal(formatPrefillTimeLeft(prompt, tDe), g.timeLeft.replace("{eta}", "11s"));
+  assert.equal(
+    formatPrefillDetails(prompt, tDe, "de-DE"),
+    `${g.tokensOf.replace("{done}", "4.118").replace("{total}", "18.880")} · 1.401 tok/s`,
+  );
+  const metal = { offloaded: 33, total: 33, overflowLayers: null, gpuWeightsMib: 2603.5, hostWeightsMib: 497.31, expertCacheMib: null };
+  assert.deepEqual(describePlacement(metal, tDe, "unified"), {
+    layers: g.placement.allOnGpu.replace("{total}", "33"),
+    memory: g.placement.inUnifiedMemory.replace("{amount}", "3.0 GiB"),
+  });
+  assert.notEqual(g.placement.allOnGpu, en.generationStats.placement.allOnGpu);
+});
+
+test("the prompt line, live line, timing tooltip and placement row hold no English of their own", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const status = thread.slice(thread.indexOf("const GeneratingStatus"), thread.indexOf("// Placeholder when stop fires"));
+  assert.doesNotMatch(status, />\s*(Working\.\.\.|Processing prompt)/);
+  assert.match(status, /t\("generationStats\.processingPrompt", \{ percent \}\)/);
+  const timing = readSrc("components/assistant-ui/message-timing.tsx");
+  assert.doesNotMatch(timing, /text-muted-foreground">[A-Za-z]/, "a tooltip row label left as a literal");
+  assert.doesNotMatch(timing, /"(End of turn|Length limit|Tool call|Content filter|Stopped by you|Message timing)"/);
+  const row = readSrc("features/model-picker/components/loaded-placement-row.tsx");
+  assert.doesNotMatch(row, /Weight placement/);
+  const progress = readSrc("features/chat/lib/generation-progress.ts");
+  // The sentences main built around localized numbers: "} tokens`", "} left`", "draft ${…} accepted (".
+  assert.doesNotMatch(progress, /\} tokens`|\} left`|`draft \$\{|"token" : "tokens"/);
 });
 
 test("both live lines wrap instead of clipping on a narrow chat column", () => {
@@ -184,20 +239,20 @@ test("live progress is per thread, transient, and re-keyed with the thread's oth
 test("the placement readout names expert weights and gives both memory figures", () => {
   // gemma-4-26B-A4B Q8_0 on a 3090: --fit's verdict "31 layers ( 8 overflowing)", the first of them GATE-only.
   assert.deepEqual(
-    describePlacement({ offloaded: 31, total: 31, overflowLayers: 8, gpuWeightsMib: 20709.15, hostWeightsMib: 5639.4, expertCacheMib: null }),
+    describePlacement({ offloaded: 31, total: 31, overflowLayers: 8, gpuWeightsMib: 20709.15, hostWeightsMib: 5639.4, expertCacheMib: null }, t),
     { layers: "All 31 layers on the GPU, expert weights of 8 layers in RAM", memory: "20 GiB in VRAM · 5.5 GiB in RAM" },
   );
   assert.equal(
-    describePlacement({ offloaded: 31, total: 31, overflowLayers: 1, gpuWeightsMib: 20000, hostWeightsMib: 900, expertCacheMib: null })
+    describePlacement({ offloaded: 31, total: 31, overflowLayers: 1, gpuWeightsMib: 20000, hostWeightsMib: 900, expertCacheMib: null }, t)
       .layers,
     "All 31 layers on the GPU, expert weights of 1 layer in RAM",
   );
   assert.deepEqual(
-    describePlacement({ offloaded: 41, total: 41, overflowLayers: 0, gpuWeightsMib: 8161.75, hostWeightsMib: 417.3, expertCacheMib: null }),
+    describePlacement({ offloaded: 41, total: 41, overflowLayers: 0, gpuWeightsMib: 8161.75, hostWeightsMib: 417.3, expertCacheMib: null }, t),
     { layers: "All 41 layers on the GPU", memory: "8.0 GiB in VRAM · 0.4 GiB in RAM" },
   );
   assert.deepEqual(
-    describePlacement({ offloaded: 20, total: 31, overflowLayers: null, gpuWeightsMib: 12288, hostWeightsMib: 5120, expertCacheMib: null }),
+    describePlacement({ offloaded: 20, total: 31, overflowLayers: null, gpuWeightsMib: 12288, hostWeightsMib: 5120, expertCacheMib: null }, t),
     { layers: "20 of 31 layers on the GPU, 11 on the CPU", memory: "12 GiB in VRAM · 5.0 GiB in RAM" },
   );
   // A Manual load reports its expert offload as n_cpu_moe, not through --fit.
@@ -218,7 +273,7 @@ test("the placement readout names expert weights and gives both memory figures",
 test("a GPU build that fell back to the CPU is not reported as GPU layers", () => {
   // CUDA build, no usable device: llama.cpp still logs "offloaded 29/29 layers to GPU", buffers AMX + CPU_Mapped.
   assert.deepEqual(
-    describePlacement({ offloaded: 29, total: 29, overflowLayers: null, gpuWeightsMib: 0, hostWeightsMib: 499.8, expertCacheMib: null }),
+    describePlacement({ offloaded: 29, total: 29, overflowLayers: null, gpuWeightsMib: 0, hostWeightsMib: 499.8, expertCacheMib: null }, t),
     { layers: "All 29 layers on the CPU", memory: "0.5 GiB in RAM" },
   );
 });
@@ -235,7 +290,7 @@ test("--moe-cache-mib auto reads as every expert in RAM with a GPU cache", () =>
     expert_cache_mib: 6144,
   });
   assert.ok(placement);
-  assert.deepEqual(describePlacement(placement), {
+  assert.deepEqual(describePlacement(placement, t), {
     layers: "All 31 layers on the GPU, all experts in RAM (6.0 GiB expert cache on the GPU)",
     memory: "3.8 GiB in VRAM · 22 GiB in RAM",
   });
@@ -244,14 +299,14 @@ test("--moe-cache-mib auto reads as every expert in RAM with a GPU cache", () =>
 test("one memory pool gets one figure, and amounts under 0.1 GiB read in MiB", () => {
   // Qwen3.5-4B Q4_K_M under Metal on an M1 Mac mini: MTL0 2,603.5 MiB and CPU 497.3 MiB, one pool.
   const metal = { offloaded: 33, total: 33, overflowLayers: null, gpuWeightsMib: 2603.5, hostWeightsMib: 497.31, expertCacheMib: null };
-  assert.deepEqual(describePlacement(metal, "unified memory"), {
+  assert.deepEqual(describePlacement(metal, t, "unified"), {
     layers: "All 33 layers on the GPU",
     memory: "3.0 GiB in unified memory",
   });
-  assert.equal(describePlacement(metal).memory, "2.5 GiB in VRAM · 0.5 GiB in RAM");
+  assert.equal(describePlacement(metal, t).memory, "2.5 GiB in VRAM · 0.5 GiB in RAM");
   // A small model's token embeddings would otherwise print as "0.0 GiB in RAM".
   assert.equal(
-    describePlacement({ offloaded: 31, total: 31, overflowLayers: 0, gpuWeightsMib: 112.6, hostWeightsMib: 28.7, expertCacheMib: null }).memory,
+    describePlacement({ offloaded: 31, total: 31, overflowLayers: 0, gpuWeightsMib: 112.6, hostWeightsMib: 28.7, expertCacheMib: null }, t).memory,
     "0.1 GiB in VRAM · 29 MiB in RAM",
   );
 });
