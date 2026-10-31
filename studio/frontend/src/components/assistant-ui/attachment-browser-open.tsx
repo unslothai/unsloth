@@ -8,6 +8,7 @@ import { authFetch } from "@/features/auth";
 import { attachmentBodyText, fetchChatAttachmentBlob, parseAttachmentText } from "@/features/chat";
 import { openFileInBrowser } from "@/features/browser";
 import { isStudioUrl } from "@/lib/api-base";
+import { decodeDataUri, isDataUri } from "@/lib/data-uri";
 import { toast } from "@/lib/toast";
 import { useAuiState } from "@assistant-ui/react";
 import { Slot } from "radix-ui";
@@ -38,6 +39,16 @@ function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
       const { video, src } = source;
       const url = video ? (video.data.startsWith("data:") ? video.data : `data:${video.mimeType};base64,${video.data}`) : src;
       if (!url) return null;
+      // Decoded here rather than fetched: the packaged app's CSP allows no data: or blob: in
+      // connect-src, so fetch() on a data URL rejects while the same code works under `tauri dev`.
+      if (isDataUri(url)) {
+        return () =>
+          Promise.resolve().then(() => {
+            const { bytes, mimeType } = decodeDataUri(url);
+            // A fresh view, so the bytes are ArrayBuffer-backed as BlobPart requires.
+            return { blob: new Blob([new Uint8Array(bytes)], { type: video?.mimeType || mimeType }) };
+          });
+      }
       return () =>
         fetch(url).then(async (response) => {
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
