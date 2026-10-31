@@ -310,4 +310,6 @@ def test_heuristic_dw_widens_all_dtypes_on_sm89(ac, monkeypatch, dtype):
     monkeypatch.setattr(ac, "_wide_dw_device_ok", lambda device = None: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 9))
     for n_dim, k_dim in ((5760, 2880), (1024, 960)):
-        assert ac._get_heuristic_configs(n_dim = n_dim, k_dim = k_dim, dtype = dtype)[2].BLOCK_SIZE_N == 128
+        assert (
+            ac._get_heuristic_configs(n_dim = n_dim, k_dim = k_dim, dtype = dtype)[2].BLOCK_SIZE_N == 128
+        )
