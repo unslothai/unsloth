@@ -32,17 +32,24 @@ except ImportError:
 # Without bnb, peft stops exporting its 4bit LoRA layer too. Both names only feed isinstance checks, so placeholders nothing can match are exact stand-ins.
 try:
     from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 except Exception:
 
-    class Bnb_Linear4bit:
-        pass
-
-    class Peft_Linear4bit:
+    class Bnb_Linear4bit:  # noqa: N801 - matches the imported name
         pass
 
 
 from peft.tuners.lora import Linear as Peft_Linear
+# peft may not re-export Linear4bit when bnb is absent; sentinel keeps the
+# import working while preserving the isinstance checks below.
+
+try:
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+except Exception:
+
+    class Peft_Linear4bit:  # noqa: N801 - matches the imported name
+        pass
+
+
 from typing import Optional, Callable, Union, List
 import sys
 import math
@@ -56,7 +63,8 @@ import gc
 import contextvars
 import functools
 from transformers.models.llama.modeling_llama import logger
-from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
+from .kernels import fast_dequantize, _dequantize_for_lora, QUANT_STATE, get_lora_parameters_bias
+from .kernels.utils import _is_exl3_quant_state
 import subprocess
 import traceback
 import psutil
@@ -916,7 +924,10 @@ def _merge_lora(
                 W, quant_state = W.data.to(stage), quant_state_copy(quant_state, stage)
                 A = None if A is None else A.to(stage)
                 B = None if B is None else B.to(stage)
-            W = fast_dequantize(W, quant_state)
+            if _is_exl3_quant_state(quant_state):
+                W = _dequantize_for_lora(W, quant_state)
+            else:
+                W = fast_dequantize(W, quant_state)
         else:
             dtype = W.dtype
         W = W.to(torch.float32).t()
@@ -1364,6 +1375,18 @@ def _model_parallel_refuses_save(method):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             model = args[0] if args else kwargs.get("model", kwargs.get("self"))
+            import inspect
+
+            save_method = (
+                inspect.signature(fn).bind_partial(*args, **kwargs).arguments.get("save_method")
+            )
+            if (
+                model is not None
+                and isinstance(save_method, str)
+                and save_method.lower().strip() in _TP_IN_PLACE_MERGES
+            ):
+                from .exllama.quant_linear import refuse_exl3_inplace_merge
+                refuse_exl3_inplace_merge(model)
             if model is not None and _is_unsloth_tensor_parallel(model):
                 from .models.tp_replica import collective_applies, tp_collective
                 if collective_applies(model):

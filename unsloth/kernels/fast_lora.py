@@ -21,6 +21,8 @@ from .utils import (
     addmm_,
     fast_dequantize,
     _base_quant_state,
+    _dequantize_for_lora,
+    _is_exl3_quant_state,
     get_lora_parameters,
     get_lora_parameters_bias,
     _lora_fused_ok,
@@ -29,6 +31,14 @@ from .utils import (
     torch_amp_custom_bwd,
 )
 from . import rms_layernorm as _rms_layernorm
+
+
+def _dequantize_t(W, quant_state, dtype):
+    """Transposed dense base weight for the backward pass (EXL3 has its own kernel)."""
+    if _is_exl3_quant_state(quant_state):
+        return _dequantize_for_lora(W, quant_state, transpose = True, dtype = dtype)
+    return fast_dequantize(W.t(), quant_state, dtype = dtype)
+
 
 _is_compiling = torch.compiler.is_compiling
 
@@ -650,10 +660,10 @@ class LoRA_MLP(torch.autograd.Function):
                 gateS,
                 X if ctx.inplace and not _is_compiling() else None,
             )
-            upW = fast_dequantize(upW.t(), upW_quant, dtype = df.dtype)
+            upW = _dequantize_t(upW, upW_quant, df.dtype)
             addmm_(dX, df, upW.t())
             del upW
-            gateW = fast_dequantize(gateW.t(), gateW_quant, dtype = de.dtype)
+            gateW = _dequantize_t(gateW, gateW_quant, de.dtype)
             addmm_(dX, de, gateW.t())
             del gateW
             d_gateBias = d_upBias = None
@@ -713,13 +723,13 @@ class LoRA_MLP(torch.autograd.Function):
         d_downBias = _lora_bias_grad(dY, downS) if down_has_bias else None
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
-        upW = fast_dequantize(upW.t(), upW_quant, dtype = df.dtype)
+        upW = _dequantize_t(upW, upW_quant, df.dtype)
         # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del upW
         _add_lora_dX(dX, up_dB, upA, upS, up_mask, up_p)
 
-        gateW = fast_dequantize(gateW.t(), gateW_quant, dtype = de.dtype)
+        gateW = _dequantize_t(gateW, gateW_quant, de.dtype)
         addmm_(dX, de, gateW.t())
         del gateW
         _add_lora_dX(dX, gate_dB, gateA, gateS, gate_mask, gate_p)
@@ -1079,7 +1089,7 @@ class LoRA_QKV(torch.autograd.Function):
                 X if ctx.inplace and not _is_compiling() else None,
             )
             for W_, W_quant_, dY_ in ((QW, QW_quant, dQ), (KW, KW_quant, dK), (VW, VW_quant, dV)):
-                W_ = fast_dequantize(W_.t(), W_quant_, dtype = dY_.dtype)
+                W_ = _dequantize_t(W_, W_quant_, dY_.dtype)
                 addmm_(dX, dY_, W_.t())
                 del W_
             return (
@@ -1141,17 +1151,17 @@ class LoRA_QKV(torch.autograd.Function):
         d_VBias = _lora_bias_grad(dV, VS) if V_has_bias else None
 
         # Combine the per-projection derivatives into dX.
-        QW = fast_dequantize(QW.t(), QW_quant, dtype = dQ.dtype)
+        QW = _dequantize_t(QW, QW_quant, dQ.dtype)
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del QW
         _add_lora_dX(dX, q_dB, QA, QS, Q_mask, Q_p)
 
-        KW = fast_dequantize(KW.t(), KW_quant, dtype = dK.dtype)
+        KW = _dequantize_t(KW, KW_quant, dK.dtype)
         addmm_(dX, dK, KW.t())
         del KW
         _add_lora_dX(dX, k_dB, KA, KS, K_mask, K_p)
 
-        VW = fast_dequantize(VW.t(), VW_quant, dtype = dV.dtype)
+        VW = _dequantize_t(VW, VW_quant, dV.dtype)
         addmm_(dX, dV, VW.t())
         del VW
         _add_lora_dX(dX, v_dB, VA, VS, V_mask, V_p)
@@ -1320,11 +1330,11 @@ class LoRA_W(torch.autograd.Function):
         if getattr(ctx, "fused", False) and _lora_fused_ok(W, W_quant, dY.dtype):
             # dX starts as the rank-r term; the base GEMM accumulates onto it in its epilogue.
             dX = torch.addmm(y_dB.new_zeros(1), y_dB, A.t(), beta = 0, alpha = S)
-            W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
+            W = _dequantize_t(W, W_quant, dY.dtype)
             addmm_(dX, dY, W.t())
             del W
         else:
-            W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
+            W = _dequantize_t(W, W_quant, dY.dtype)
             dX = dY @ W.t()
             del W
             _add_lora_dX(dX, y_dB, A, S, mask, ctx.dropout_p)

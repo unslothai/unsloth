@@ -204,6 +204,7 @@ if bnb is not None:
 else:
     get_ptr = _bnb_required
 
+
 if DEVICE_TYPE == "xpu":
     HAS_XPU_STREAM = True
 
@@ -501,8 +502,11 @@ def get_lora_parameters(proj):
     packed = _packed_base(base_layer)
     W = base_layer.weight if packed is None else packed[0]
 
-    # Optionally apply fake quantization to base layer weights for QAT.
-    if hasattr(base_layer, "weight_fake_quantizer"):
+    # Optionally apply fake quantization to base layer weights for QAT
+    # (skipped for EXL3: its weight is a placeholder, already quantized+frozen).
+    if hasattr(base_layer, "weight_fake_quantizer") and not _is_exl3_quant_state(
+        getattr(W, "quant_state", None)
+    ):
         weight_fake_quantizer = getattr(base_layer, "weight_fake_quantizer", None)
         if weight_fake_quantizer is not None:
             W = weight_fake_quantizer(W)
@@ -1465,6 +1469,7 @@ else:
     pass
 
 
+# Backend dispatch for packed quantized LoRA base weights.
 from .int4_packed import (
     Int4QuantState,
     int4_dequantize_weight as _int4_dequantize_weight,
@@ -1764,6 +1769,52 @@ def _fast_lora_weights(lora_A, lora_B, dtype):
     return cache[1], cache[2]
 
 
+# EXL3 dispatch for LoRA math remains local to the weight materialization
+# boundary, leaving the device-specific bitsandbytes hot path intact.
+try:
+    from ..exllama.quant_linear import Exl3QuantState as _Exl3QuantState
+    from ..exllama.quant_linear import exl3_fast_dequantize as _exl3_fast_dequantize
+except Exception:
+    _Exl3QuantState = None
+    _exl3_fast_dequantize = None
+
+
+def _is_exl3_quant_state(quant_state) -> bool:
+    return _Exl3QuantState is not None and isinstance(quant_state, _Exl3QuantState)
+
+
+def _dequantize_for_lora(
+    W,
+    quant_state = None,
+    *,
+    transpose = False,
+    out = None,
+    use_global_buffer = False,
+    dtype = None,
+):
+    """Materialize a LoRA base weight through its selected quant backend."""
+    if _is_exl3_quant_state(quant_state):
+        if dtype is None:
+            dtype = getattr(quant_state, "dtype", None)
+        result = _exl3_fast_dequantize(quant_state, transpose = transpose, dtype = dtype)
+        # Keep the weight on the placeholder's device (multi-GPU device_map).
+        if W is not None and getattr(W, "device", None) is not None and result.device != W.device:
+            result = result.to(W.device)
+        if out is not None:
+            out.copy_(result)
+            return out
+        return result
+    # Forward out only when given, so non-EXL3 calls match upstream's exactly.
+    extra = {} if out is None else {"out": out}
+    return fast_dequantize(
+        W.t() if transpose else W,
+        quant_state,
+        use_global_buffer = use_global_buffer,
+        dtype = dtype,
+        **extra,
+    )
+
+
 def fast_linear_forward(
     proj,
     X,
@@ -1787,7 +1838,10 @@ def fast_linear_forward(
             X, W, W_quant, lora_A, lora_B, lora_S, fused = not _has_lora_dropout_module(proj)
         )
 
-    if W_quant is None:
+    if _is_exl3_quant_state(W_quant):
+        W = _dequantize_for_lora(W, W_quant, transpose = True, dtype = X.dtype)
+        out = torch_matmul(X, W, out = out)
+    elif W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
     elif type(W_quant) is NVFP4QuantState:
         # Bias is added once below.
@@ -1825,7 +1879,7 @@ def fast_linear_forward(
     ):
         out = bnb.matmul_4bit(X, W.t(), quant_state = W_quant, out = out)
     else:
-        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True, dtype = X.dtype)
+        W = _dequantize_for_lora(W, W_quant, transpose = True, use_global_buffer = True, dtype = X.dtype)
         out = torch_matmul(X, W, out = out)
 
     if out.dtype != X.dtype:
@@ -2115,10 +2169,10 @@ def matmul_lora(
         if out is not None:
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
-            W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+            W = _dequantize_for_lora(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
             out = _accumulated(addmm_(out, XA, B, alpha = s, beta = 0), out.addmm_(X, W.t()))
         else:
-            W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+            W = _dequantize_for_lora(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
             if not _is_compiling():
                 out = _lora_first_addmm(X, W.t(), XA, B, s)
             elif (
@@ -2135,7 +2189,7 @@ def matmul_lora(
                 out = torch.addmm(out, X, W.t())
         A = None
     else:
-        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+        W = _dequantize_for_lora(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
