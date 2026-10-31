@@ -455,7 +455,9 @@ def test_a_chat_model_that_lands_before_the_gates_still_refuses_a_chat_tools_swi
     key = replace(OWNER, via_api_key = True, load_policy = "beside_only")
     # The precheck sees no chat model; one is resident by the time the media gates are held.
     checks: list = []
-    monkeypatch.setattr(arb, "would_evict", lambda owner, **_kw: checks.append(owner) or len(checks) > 1)
+    monkeypatch.setattr(
+        arb, "would_evict", lambda owner, **_kw: checks.append(owner) or len(checks) > 1
+    )
     with pytest.raises(HTTPException) as excinfo:
         run_as(key, _switch, "black-forest-labs/FLUX.1-dev")
     assert excinfo.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=image")
