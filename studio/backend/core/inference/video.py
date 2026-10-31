@@ -3068,8 +3068,7 @@ def _video_auto_denoiser_scheme(
     speed_mode: Optional[str] = None,
     hf_token: Optional[str] = None,
 ) -> Optional[str]:
-    """The scheme a CONVENTIONAL video load seeds its denoiser from: a hosted checkpoint, else (auto only) this
-    machine's prequant cache of the resident build auto would quantise anyway; None keeps the dense shards."""
+    """Seed scheme: a hosted checkpoint, else (auto only) the local cached resident build; None = dense shards."""
     scheme = _video_hosted_denoiser_scheme(
         fam,
         target = target,
@@ -3162,8 +3161,7 @@ def _save_runtime_quant_to_cache(
     defer: bool = False,
 ) -> Any:
     """Cache a runtime-quantized single denoiser; MoE is skipped (no lookup slot for the second expert).
-    ``defer``: snapshot a resident build to the host now and return a ``PendingWrite`` to start after publish (or
-    None: skipped, never written inside the load). Never raises."""
+    ``defer``: return a ``PendingWrite`` to start after publish, or None. Never raises."""
     try:
         from .video_denoiser_prequant import denoiser_components
 
@@ -3188,8 +3186,7 @@ def _save_runtime_quant_to_cache(
         return None
 
 
-# "0": an AUTO resident runtime-quantized (torchao) DiT is neither written to nor read from the local prequant cache;
-# explicit schemes keep their own cache behaviour. UNSLOTH_DIFFUSION_PREQUANT_CACHE=0 turns every cache off.
+# "0": no local prequant cache for AUTO resident torchao DiTs (explicit schemes unaffected).
 VIDEO_RESIDENT_QUANT_CACHE_ENV = "UNSLOTH_VIDEO_RESIDENT_QUANT_CACHE"
 _RESIDENT_QUANT_WRITE_ATTR = "_unsloth_resident_quant_write"
 
@@ -3206,7 +3203,6 @@ def _resident_quant_cache_enabled() -> bool:
 
 
 def _is_prequant_cache_source(source: Any) -> bool:
-    """A source resolved from Studio's local pre-quant cache, not a hosted repo or an operator's file."""
     if getattr(source, "kind", None) != "path":
         return False
     try:
@@ -3225,15 +3221,10 @@ def _video_cached_resident_scheme(
     speed_mode: Optional[str] = None,
     hf_token: Optional[str] = None,
 ) -> Optional[str]:
-    """AUTO's resident runtime pick when this machine's prequant cache holds that exact build, else None.
-
-    Replays the pick, never makes it: the scheme is ``quantize_transformer``'s own auto selection (same call, no
-    base / prequant probe), and only a cache entry of THAT scheme is served, so an explicit int8 load cannot turn
-    later auto loads into int8. Whether the DiT stays resident and whether auto keeps bf16 is decided by the
-    caller's seed checks, the same ones a hosted seed passes. Without an entry nothing is asked. Never raises."""
+    """AUTO's own resident pick if the local cache holds exactly that build, else None. Only that scheme is
+    served, so an explicit int8 entry cannot turn later auto loads into int8. Never raises."""
     try:
-        # Unset is auto (the Studio page omits the field for the hardware ladder; load_pipeline maps it to auto), as
-        # in ``_video_hosted_denoiser_scheme``; "none" / "off" and explicit schemes never replay here.
+        # Unset is auto: the Studio page omits the field.
         auto = requested is None or str(requested).strip().lower() in ("", "auto")
         if not auto:
             return None
@@ -3269,7 +3260,6 @@ def _video_cached_resident_scheme(
 
 
 def _discard_resident_quant_write(owner: Any, token: Any = None) -> None:
-    """Drop a prepared resident-build cache write that was never started (a failed or superseded load)."""
     slot = getattr(owner, "_resident_quant_write", None)
     if slot is None or (token is not None and slot[0] != token):
         return
@@ -3281,7 +3271,6 @@ def _discard_resident_quant_write(owner: Any, token: Any = None) -> None:
 
 
 def _start_resident_quant_write(owner: Any, pipe: Any, token: Any) -> None:
-    """Start this load's prepared resident-build cache write now that the load is published."""
     slot = getattr(owner, "_resident_quant_write", None)
     if slot is None or slot[0] != token:
         return
@@ -3298,7 +3287,7 @@ def _start_resident_quant_write(owner: Any, pipe: Any, token: Any) -> None:
 
 
 def _finish_resident_quant_write(pipe: Any) -> None:
-    """Teardown: let a running write finish (bounded), then cancel; it holds host tensors only."""
+    """Teardown: let a running write finish (bounded), then cancel."""
     write = getattr(pipe, _RESIDENT_QUANT_WRITE_ATTR, None)
     if write is None:
         return
@@ -9746,7 +9735,6 @@ class VideoBackend:
                             cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
                         )
                     self._raise_if_video_load_superseded(_load_token)
-                # Explicit schemes write inside the load, as before.
                 elif transformer_quant_pinned is not None:
                     _save_runtime_quant_to_cache(
                         fam,
@@ -9756,8 +9744,7 @@ class VideoBackend:
                         cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
                     )
                     self._raise_if_video_load_superseded(_load_token)
-                # Auto's resident torchao build: read back by _video_cached_resident_scheme; host copy now, write
-                # after publish, so the first render never waits on the disk.
+                # Auto resident build: write after publish so the first render never waits on disk.
                 elif (
                     not video_offload
                     and native_scheme is None

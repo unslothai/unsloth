@@ -1131,8 +1131,7 @@ def save_runtime_quant(
     ``base_repo`` is recorded as ``base_model_id``; ``source_base`` is where the dense weights were read (a mirror).
     ``defer`` runs every check now and returns a ``PendingWrite`` owning host tensors only; falls back to the
     synchronous write when the build is off-host, RAM is short, another write runs, or ASYNC=0.
-    ``host_snapshot`` (with ``defer``): a device-resident build is copied to host RAM now and written after the
-    load; when that cannot be deferred the save is skipped, never written inside the load (ASYNC=0 still writes)."""
+    ``host_snapshot``: copy a device build to host now and write after the load; if it cannot defer, skip it."""
     if not enabled():
         return None
     t0 = time.perf_counter()
@@ -1404,8 +1403,7 @@ class _WriteJob:
         return _FileSlice(fd, file_offset + int(t.data_ptr()) - lo, t, stamp)
 
     def snapshot_to_host(self, cancel_check: Optional[Any] = None) -> None:
-        """Copy every off-host tensor to host RAM, one at a time, so the writer thread never touches the device
-        (a render may be capturing a CUDA graph) and the job keeps no reference to the live module."""
+        """Copy to host so the writer never touches the device (a render may be capturing a CUDA graph)."""
         out: dict = {}
         for name, t in self.flat.items():
             if cancel_check is not None:
@@ -1529,8 +1527,7 @@ def _defer_blocker(
     host_snapshot: bool = False,
     cancel_check: Optional[Any] = None,
 ) -> Optional[str]:
-    """Why ``job`` must be written now, or None: it must be wholly on the host and what it keeps alive must fit.
-    ``host_snapshot`` copies an off-host build to the host first, when that copy fits beside the reserve."""
+    """Why ``job`` must be written now, or None: it must be wholly on the host and what it keeps alive must fit."""
     if not async_enabled():
         return f"{ENV_ASYNC}=0"
     with _lock:

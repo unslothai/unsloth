@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AUTO resident runtime-quantized video DiT (HunyuanVideo-1.5 on a 22-24 GB card) and the local prequant cache.
-
-Before: an auto load quantised the dense shards on every load (no hosted int8 for the family) and never wrote or
-read the cache. Now: the resident torchao build is copied to host RAM in the load, written after publish, and a
-returning auto load whose own pick is that scheme seeds it instead of reading + quantising the dense shards.
-
-Hermetic, CPU only: a tiny random HunyuanVideo15Transformer3DModel saved as a local base dir, quantised through
-``quantize_transformer``'s torchao branch, a private cache root per test.
-"""
+"""AUTO resident runtime-quantized video DiT and the local prequant cache (CPU only, tiny random model)."""
 
 from __future__ import annotations
 
@@ -46,7 +38,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv("UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH", raising = False)
     C._HEADER_MEMO.clear()
     getattr(C, "_UNREACHABLE", {}).clear()
-    # Local base dirs only: never ask the Hub whether a snapshot moved.
     monkeypatch.setattr(C, "_hub_source_stale", lambda shards, logger = None: False)
     yield root
     C.cancel_background_writes(timeout = 10.0)
@@ -122,7 +113,6 @@ def scheme() -> str:
 
 
 def _quantize(model, scheme: str, monkeypatch):
-    """``quantize_transformer``'s own torchao branch (what a resident CUDA load runs), with the device gate opened."""
     from core.inference import diffusion_transformer_quant as tq
 
     monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda *a, **k: scheme)
@@ -162,7 +152,6 @@ def _bf16_target():
     return types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
 
 
-# ------------------------------------------------------------------------------------------------ round trip
 def test_the_deferred_resident_write_reads_back_bit_identically(env, tmp_path, scheme, monkeypatch):
     from core.inference.diffusion_prequant import PrequantSource, load_prequantized_transformer
 
@@ -197,7 +186,6 @@ def test_the_deferred_resident_write_reads_back_bit_identically(env, tmp_path, s
     assert loaded is not None
     assert _flat_equal(fresh.state_dict(), loaded.state_dict()) == []
     assert {n for n, _ in fresh.named_buffers()} == {n for n, _ in loaded.named_buffers()}
-    # And the denoiser computes the same bits as the build it replaces.
     g = torch.Generator().manual_seed(1)
     inputs = dict(
         hidden_states = torch.randn(1, 9, 1, 4, 4, generator = g).to(torch.bfloat16),
@@ -221,7 +209,6 @@ def test_a_returning_auto_load_seeds_exactly_that_build(env, tmp_path, scheme, m
     monkeypatch.setattr(vid, "select_transformer_quant_scheme", lambda *a, **k: scheme)
     kw = dict(target = _bf16_target(), requested = "auto", base_repo = str(base), speed_mode = None)
     unset = dict(kw, requested = None)
-    # First load: no entry, nothing to seed (and auto's pick is never asked for).
     assert vid._video_auto_denoiser_scheme(fam, **kw) is None
     assert vid._video_auto_denoiser_scheme(fam, **unset) is None
 
@@ -241,7 +228,6 @@ def test_a_returning_auto_load_seeds_exactly_that_build(env, tmp_path, scheme, m
     assert sources and all(vid._is_prequant_cache_source(s) for s in sources.values())
 
 
-# ------------------------------------------------------------------------------------------------ decision
 def _stub_decision(
     monkeypatch,
     *,
@@ -332,7 +318,7 @@ def test_no_entry_asks_nothing_and_changes_nothing(env, monkeypatch):
 
 def test_explicit_unset_speed_off_modular_moe_and_non_bf16_never_replay(env, monkeypatch):
     _stub_decision(monkeypatch)
-    assert _decide(requested = "int8") is None  # explicit schemes keep their own seed path
+    assert _decide(requested = "int8") is None
     assert _decide(requested = "off") is None
     assert _decide(requested = "none") is None
     assert _decide(speed_mode = "off") is None
@@ -390,7 +376,6 @@ def test_the_hosted_seed_wins_and_the_cache_is_only_a_fallback(env, monkeypatch)
     assert vid._video_auto_denoiser_scheme(None, **kw) == "int8" and seen == [1]
 
 
-# ------------------------------------------------------------------------------------------------ host snapshot
 class _FakeDeviceTensor:
     """Reports a CUDA device; ``.to('cpu')`` hands back the real host tensor (a CPU-only host has no device)."""
 
@@ -445,7 +430,7 @@ def test_a_snapshot_that_does_not_fit_host_ram_is_refused(env, tmp_path, monkeyp
     monkeypatch.setattr(C, "_host_memory_bytes", lambda: (8 << 30, 1 << 30))
     why = C._defer_blocker(job, host_snapshot = True)
     assert why is not None and "host RAM short" in why
-    assert isinstance(job.flat["a"], _FakeDeviceTensor)  # nothing copied
+    assert isinstance(job.flat["a"], _FakeDeviceTensor)
 
 
 def test_a_resident_write_that_cannot_defer_is_skipped_not_written_in_the_load(
@@ -464,7 +449,6 @@ def test_a_resident_write_that_cannot_defer_is_skipped_not_written_in_the_load(
         is None
     )
     assert C.lookup(fam, scheme, base_repo = str(base)) is None
-    # ASYNC=0 is the operator asking for the synchronous write: honoured.
     monkeypatch.setenv(C.ENV_ASYNC, "0")
     monkeypatch.setattr(C, "_defer_blocker", lambda job, **kw: f"{C.ENV_ASYNC}=0")
     out = vid._save_runtime_quant_to_cache(
@@ -521,7 +505,6 @@ def test_publish_starts_only_this_loads_write_and_teardown_finishes_it(env):
     assert events == ["start", "wait"] and getattr(pipe, vid._RESIDENT_QUANT_WRITE_ATTR) is None
 
 
-# ------------------------------------------------------------------------------------------------ wiring
 def test_the_load_writes_auto_resident_builds_deferred_and_keeps_explicit_writes_inline():
     src = inspect.getsource(vid.VideoBackend.load_pipeline)
     explicit_at = src.index("_save_runtime_quant_to_cache(")
