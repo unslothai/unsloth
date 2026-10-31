@@ -5465,6 +5465,18 @@ export const sv = {
     flaggedIntro: "Vår automatiska skanner flaggade problem, bland annat:",
     nothingFlagged:
       "Vår automatiska skanner flaggade inga oroande filer, men dubbelkolla ändå.",
+    unscannedTitle: "Modellfilerna kunde inte genomsökas",
+    unscannedBody: "{model} innehåller pickle-vikter, som kan köra kod när de läses in, och ingen genomsökning efter skadlig kod finns tillgänglig för dem, så modellen kan inte läsas in. {note}",
+    unscannedIntro: "Filer som inte kunde genomsökas:",
+    switchSourceNote: "Byt modellkälla till Hugging Face i Inställningar för att läsa in den.",
+    reconnectNote: "Anslut till Hugging Face så att genomsökningen kan läsas och försök igen.",
+    managedTitle: "Anpassad kod är avstängd för det här kontot",
+    managedNote: "Den är avstängd för hanterade konton. Be installationens ägare att aktivera den.",
+    notFoundTitle: "Hittades inte på {source}",
+    notFoundBody: "{model} hittades inte på {source}, så säkerhetskontrollerna kunde inte köras. Kontrollera namnet eller ange en token med åtkomst om förrådet är privat.",
+    notOnModelScopeBody: "{model} är inte tillgänglig på ModelScope, så säkerhetskontrollerna kunde inte köras och den kan inte läsas in därifrån. Byt modellkälla till Hugging Face i Inställningar för att använda den.",
+    checksFailedTitle: "Säkerhetskontrollerna kunde inte köras",
+    checksFailedBody: "{model} kunde inte läsas från {source}, så säkerhetskontrollerna kunde inte slutföras och den kan inte läsas in. Kontrollera anslutningen och din token och försök igen. {note}",
     enableAndContinue: "Aktivera och fortsätt",
   },
   tour: {

@@ -5258,6 +5258,18 @@ export const en = {
     flaggedIntro: "Our automatic scanner flagged issues including:",
     nothingFlagged:
       "Our automatic scanner did not flag any worrying files, but please double check.",
+    unscannedTitle: "Model files could not be scanned",
+    unscannedBody: "{model} ships pickle weights, which can run code when they load, and no malware scan is available for them, so it cannot be loaded. {note}",
+    unscannedIntro: "Files that could not be scanned:",
+    switchSourceNote: "Switch the model source to Hugging Face in Settings to load it.",
+    reconnectNote: "Connect to Hugging Face so its scan can be read, then try again.",
+    managedTitle: "Custom code is off for this account",
+    managedNote: "It is turned off for managed accounts. Ask the installation owner to enable it.",
+    notFoundTitle: "Not found on {source}",
+    notFoundBody: "{model} was not found on {source}, so its security checks could not run. Check the name, or set a token with access if the repository is private.",
+    notOnModelScopeBody: "{model} is not available on ModelScope, so its security checks could not run and it cannot be loaded from there. Switch the model source to Hugging Face in Settings to use it.",
+    checksFailedTitle: "Security checks could not run",
+    checksFailedBody: "{model} could not be read from {source}, so its security checks could not finish and it cannot be loaded. Check your connection and token, then try again. {note}",
     enableAndContinue: "Enable and continue",
   },
   tour: {

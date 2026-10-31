@@ -5683,6 +5683,18 @@ export const nl = {
       "Onze automatische scanner heeft onder andere deze problemen gevonden:",
     nothingFlagged:
       "Onze automatische scanner heeft geen verdachte bestanden gevonden, maar controleer het zelf nog even.",
+    unscannedTitle: "Modelbestanden konden niet worden gescand",
+    unscannedBody: "{model} bevat pickle-gewichten, die bij het laden code kunnen uitvoeren, en er is geen malwarescan voor beschikbaar. Het kan daarom niet worden geladen. {note}",
+    unscannedIntro: "Bestanden die niet konden worden gescand:",
+    switchSourceNote: "Stel in Instellingen Hugging Face in als modelbron om het te laden.",
+    reconnectNote: "Maak verbinding met Hugging Face zodat de scan kan worden gelezen en probeer het opnieuw.",
+    managedTitle: "Aangepaste code staat uit voor dit account",
+    managedNote: "Dit staat uit voor beheerde accounts. Vraag de eigenaar van de installatie om het in te schakelen.",
+    notFoundTitle: "Niet gevonden op {source}",
+    notFoundBody: "{model} is niet gevonden op {source}, dus de beveiligingscontroles konden niet worden uitgevoerd. Controleer de naam of stel een token met toegang in als de repository privé is.",
+    notOnModelScopeBody: "{model} is niet beschikbaar op ModelScope, dus de beveiligingscontroles konden niet worden uitgevoerd en het kan daar niet worden geladen. Stel in Instellingen Hugging Face in als modelbron om het te gebruiken.",
+    checksFailedTitle: "Beveiligingscontroles konden niet worden uitgevoerd",
+    checksFailedBody: "{model} kon niet worden gelezen van {source}, dus de beveiligingscontroles konden niet worden voltooid en het kan niet worden geladen. Controleer je verbinding en token en probeer het opnieuw. {note}",
     enableAndContinue: "Inschakelen en doorgaan",
   },
   tour: {

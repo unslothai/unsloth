@@ -25,7 +25,19 @@ export interface UnsafeFile {
   level: string;
 }
 
+export type RemoteCodeBlockCause =
+  | "unsafe_files"
+  | "critical_findings"
+  | "unscanned_weights"
+  | "managed_refused"
+  | "not_on_source"
+  | "unscannable";
+
 export interface RemoteCodeScan {
+  blockCause: RemoteCodeBlockCause | null;
+  // The active model source, and the repo it lacks when that is the block.
+  blockSource: string;
+  blockTarget: string | null;
   requiresTrustRemoteCode: boolean;
   approvable: boolean;
   maxSeverity: RemoteCodeSeverity | null;

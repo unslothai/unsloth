@@ -10,6 +10,12 @@ from typing import Optional
 from loggers import get_logger
 
 from utils.account_context import is_owner_context
+from utils.security.file_security import (
+    CRITICAL_FINDINGS,
+    MANAGED_REFUSED,
+    NOT_ON_SOURCE,
+    UNSCANNABLE,
+)
 from utils.security.remote_code_scan import (
     CRITICAL,
     HIGH,
@@ -51,11 +57,22 @@ class RemoteCodeDecision:
     findings_summary: str
     reason: str
     findings: list = field(default_factory = list)
-    approvable: bool = True  # False only for CRITICAL (user cannot override)
+    approvable: bool = True  # False for a hard block (user cannot override)
+    block_cause: Optional[str] = None
+
+    def blocked_message(self, subject: str = "Model") -> str:
+        """Only a scan that ran can have flagged anything; other blocks state their own cause."""
+        if self.max_severity:
+            return (
+                f"{subject} '{self.model_name}' ships custom code flagged as "
+                f"{self.max_severity} by the security scan. Review and approve it to proceed."
+            )
+        return self.findings_summary or self.reason
 
     def response_payload(self) -> dict:
-        """Machine-readable detail for the frontend. ``error_kind`` splits a user-approvable prompt (``remote_code_consent_required``) from a CRITICAL hard block (``remote_code_blocked``)."""
+        """Machine-readable detail for the frontend. ``error_kind`` splits a user-approvable prompt (``remote_code_consent_required``) from a hard block (``remote_code_blocked``), whose ``block_cause`` says why."""
         return {
+            "block_cause": self.block_cause,
             "error_kind": (
                 "remote_code_consent_required" if self.approvable else "remote_code_blocked"
             ),
@@ -165,6 +182,55 @@ def _load_remote_code_configs(
         return None
 
 
+def _unscannable_decision(
+    target: str, hf_token: Optional[str], *, declared: bool
+) -> RemoteCodeDecision:
+    """Fails closed either way; only a declaration read from a config says the repo has code."""
+    from utils.hf_probe import hub_repo_not_found, repo_not_found_message
+    from utils.hub_settings import active_source_label
+    from utils.paths import is_local_path
+
+    if not declared and not is_local_path(target) and hub_repo_not_found(target, hf_token):
+        logger.warning(
+            "Blocking load of '%s': the repo was not found on %s, so it could not be scanned.",
+            target,
+            active_source_label(),
+        )
+        return RemoteCodeDecision(
+            target,
+            False,
+            True,
+            None,
+            None,
+            repo_not_found_message(target),
+            "blocked: repo not found on the model source",
+            approvable = False,
+            block_cause = NOT_ON_SOURCE,
+        )
+    logger.warning(
+        "Blocking trust_remote_code load of '%s': %s could not be downloaded and scanned.",
+        target,
+        "remote code present (auto_map) but it" if declared else "its configs or code",
+    )
+    return RemoteCodeDecision(
+        target,
+        True,
+        True,
+        None,
+        None,
+        (
+            "Remote code is present (auto_map) but could not be downloaded and scanned."
+            if declared
+            else f"Could not read this model from {active_source_label()} to check it for "
+            "custom code, so it could not be downloaded and scanned."
+        )
+        + " Retry when the repo is reachable and the correct token is set.",
+        "blocked: remote code could not be scanned",
+        approvable = False,
+        block_cause = UNSCANNABLE,
+    )
+
+
 def evaluate_remote_code_consent(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -237,29 +303,25 @@ def evaluate_remote_code_consent_for_targets(
     for target in targets:
         load_subdirs = tuple(load_subdirs_by_target.get(target, ()))
         scan_kwargs = {"load_subdirs": load_subdirs} if load_subdirs else {}
-        if _config_has_auto_map(target, hf_token, **scan_kwargs) is False:
+        declares_code = _config_has_auto_map(target, hf_token, **scan_kwargs)
+        if declares_code is False:
             continue
-        has_remote_code = True
         try:
             files = repo_remote_code_files(target, hf_token = hf_token, **scan_kwargs)
         except RemoteCodeUnscannable:
-            logger.warning(
-                "Blocking trust_remote_code load of '%s': remote code present (auto_map) "
-                "but could not be downloaded and scanned.",
-                target,
-            )
-            return RemoteCodeDecision(
-                target,
-                True,
-                True,
-                None,
-                None,
-                "Remote code is present (auto_map) but could not be downloaded and "
-                "scanned. Retry when the repo is reachable and the correct Hugging Face "
-                "token is set.",
-                "blocked: remote code could not be scanned",
-                approvable = False,
-            )
+            from utils.hf_probe import cached_snapshot_missing_from_source
+
+            snapshot = cached_snapshot_missing_from_source(target, hf_token)
+            if snapshot is None:
+                return _unscannable_decision(target, hf_token, declared = declares_code is True)
+            # The hub loads this snapshot now, so judge what it holds, not the source's 404.
+            if _config_has_auto_map(str(snapshot), hf_token, **scan_kwargs) is False:
+                continue
+            try:
+                files = repo_remote_code_files(str(snapshot), hf_token = hf_token, **scan_kwargs)
+            except RemoteCodeUnscannable:
+                return _unscannable_decision(target, hf_token, declared = True)
+        has_remote_code = True
         # Namespace filenames by (casing-normalized) target so two repos' same-named files stay distinct.
         target_key = _fingerprint_target_key(target)
         for filename, body in files.items():
@@ -284,7 +346,15 @@ def evaluate_remote_code_consent_for_targets(
 
     if managed_remote_code_refused():
         return RemoteCodeDecision(
-            primary, True, True, None, None, "", MANAGED_REMOTE_CODE_REFUSAL, approvable = False
+            primary,
+            True,
+            True,
+            None,
+            None,
+            "",
+            MANAGED_REMOTE_CODE_REFUSAL,
+            approvable = False,
+            block_cause = MANAGED_REFUSED,
         )
 
     result = scan_remote_code_files(combined)
@@ -340,4 +410,5 @@ def evaluate_remote_code_consent_for_targets(
         reason,
         findings = result.findings_payload(),
         approvable = approvable,
+        block_cause = CRITICAL_FINDINGS if sev == CRITICAL else None,
     )

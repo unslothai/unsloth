@@ -1127,9 +1127,9 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
         return None
     return {
         "error": (
-            f"Model '{decision.model_name}' ships custom code flagged as "
-            f"{decision.max_severity} by the security scan. Review it and "
-            f"re-run with approval to proceed.\n\n{decision.findings_summary}"
+            f"{decision.blocked_message()}\n\n{decision.findings_summary}"
+            if decision.max_severity
+            else decision.blocked_message()
         ),
         "error_kind": "remote_code_blocked",
         "remote_code": decision.response_payload(),

@@ -5251,6 +5251,18 @@ export const ptBR = {
     flaggedIntro: "Nosso verificador automático encontrou problemas, incluindo:",
     nothingFlagged:
       "Nosso verificador automático não encontrou arquivos preocupantes, mas confira mesmo assim.",
+    unscannedTitle: "Não foi possível verificar os arquivos do modelo",
+    unscannedBody: "{model} inclui pesos pickle, que podem executar código ao carregar, e não há verificação de malware disponível para eles, então não pode ser carregado. {note}",
+    unscannedIntro: "Arquivos que não puderam ser verificados:",
+    switchSourceNote: "Mude a fonte de modelos para Hugging Face em Configurações para carregá-lo.",
+    reconnectNote: "Conecte-se ao Hugging Face para que a verificação possa ser lida e tente novamente.",
+    managedTitle: "O código personalizado está desativado nesta conta",
+    managedNote: "Ele está desativado em contas gerenciadas. Peça ao proprietário da instalação para ativá-lo.",
+    notFoundTitle: "Não encontrado em {source}",
+    notFoundBody: "{model} não foi encontrado em {source}, então as verificações de segurança não puderam ser executadas. Confira o nome ou defina um token com acesso se o repositório for privado.",
+    notOnModelScopeBody: "{model} não está disponível no ModelScope, então as verificações de segurança não puderam ser executadas e ele não pode ser carregado de lá. Mude a fonte de modelos para Hugging Face em Configurações para usá-lo.",
+    checksFailedTitle: "Não foi possível executar as verificações de segurança",
+    checksFailedBody: "Não foi possível ler {model} de {source}, então as verificações de segurança não puderam ser concluídas e ele não pode ser carregado. Verifique sua conexão e seu token e tente novamente. {note}",
     enableAndContinue: "Ativar e continuar",
   },
   tour: {

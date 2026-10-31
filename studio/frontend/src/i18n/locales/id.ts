@@ -5625,6 +5625,18 @@ export const id = {
     flaggedIntro: "Pemindai otomatis kami menandai masalah, termasuk:",
     nothingFlagged:
       "Pemindai otomatis kami tidak menandai file yang mengkhawatirkan, tetapi harap periksa kembali.",
+    unscannedTitle: "File model tidak dapat dipindai",
+    unscannedBody: "{model} berisi bobot pickle, yang dapat menjalankan kode saat dimuat, dan tidak ada pemindaian malware yang tersedia untuknya, sehingga tidak dapat dimuat. {note}",
+    unscannedIntro: "File yang tidak dapat dipindai:",
+    switchSourceNote: "Ubah sumber model ke Hugging Face di Pengaturan untuk memuatnya.",
+    reconnectNote: "Hubungkan ke Hugging Face agar hasil pemindaiannya dapat dibaca, lalu coba lagi.",
+    managedTitle: "Kode kustom dinonaktifkan untuk akun ini",
+    managedNote: "Fitur ini dinonaktifkan untuk akun terkelola. Minta pemilik instalasi untuk mengaktifkannya.",
+    notFoundTitle: "Tidak ditemukan di {source}",
+    notFoundBody: "{model} tidak ditemukan di {source}, sehingga pemeriksaan keamanannya tidak dapat dijalankan. Periksa namanya, atau atur token dengan akses jika repositorinya privat.",
+    notOnModelScopeBody: "{model} tidak tersedia di ModelScope, sehingga pemeriksaan keamanannya tidak dapat dijalankan dan tidak dapat dimuat dari sana. Ubah sumber model ke Hugging Face di Pengaturan untuk menggunakannya.",
+    checksFailedTitle: "Pemeriksaan keamanan tidak dapat dijalankan",
+    checksFailedBody: "{model} tidak dapat dibaca dari {source}, sehingga pemeriksaan keamanannya tidak dapat diselesaikan dan tidak dapat dimuat. Periksa koneksi dan token Anda, lalu coba lagi. {note}",
     enableAndContinue: "Aktifkan dan lanjutkan",
   },
   tour: {

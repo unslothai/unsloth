@@ -5171,6 +5171,18 @@ export const ja = {
     flaggedIntro: "自動スキャナーが次のような問題を検出しました:",
     nothingFlagged:
       "自動スキャナーは懸念のあるファイルを検出しませんでしたが、念のためご自身でも確認してください。",
+    unscannedTitle: "モデルファイルをスキャンできませんでした",
+    unscannedBody: "{model} には読み込み時にコードを実行できる pickle 重みが含まれており、マルウェアスキャンの結果もないため読み込めません。{note}",
+    unscannedIntro: "スキャンできなかったファイル:",
+    switchSourceNote: "設定でモデルソースを Hugging Face に切り替えると読み込めます。",
+    reconnectNote: "Hugging Face に接続してスキャン結果を読み取れるようにしてから、もう一度お試しください。",
+    managedTitle: "このアカウントではカスタムコードが無効です",
+    managedNote: "管理対象アカウントでは無効になっています。インストールの所有者に有効化を依頼してください。",
+    notFoundTitle: "{source} に見つかりません",
+    notFoundBody: "{model} は {source} に見つからないため、セキュリティチェックを実行できませんでした。名前を確認するか、非公開リポジトリの場合はアクセス権のあるトークンを設定してください。",
+    notOnModelScopeBody: "{model} は ModelScope で利用できないため、セキュリティチェックを実行できず、そこから読み込むこともできません。設定でモデルソースを Hugging Face に切り替えてください。",
+    checksFailedTitle: "セキュリティチェックを実行できませんでした",
+    checksFailedBody: "{source} から {model} を読み取れなかったため、セキュリティチェックを完了できず、読み込めません。接続とトークンを確認して、もう一度お試しください。{note}",
     enableAndContinue: "有効にして続行",
   },
   tour: {

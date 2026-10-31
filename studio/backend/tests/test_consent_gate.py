@@ -479,6 +479,155 @@ class TestConsentGate:
             )
         assert d1.fingerprint != d2.fingerprint
 
+    @staticmethod
+    def _gate_with_unreachable_repo(
+        config_state = None,
+        probe_error = None,
+        snapshot = None,
+    ):
+        """``x/y`` cannot be listed; its configs read as ``config_state``, anything else is real."""
+        real_config, real_files = consent._config_has_auto_map, consent.repo_remote_code_files
+
+        def files(name, **kwargs):
+            if name == "x/y":
+                raise RemoteCodeUnscannable("404")
+            return real_files(name, **kwargs)
+
+        with (
+            patch.object(
+                consent,
+                "_config_has_auto_map",
+                side_effect = lambda n, *a, **k: config_state
+                if n == "x/y"
+                else real_config(n, *a, **k),
+            ),
+            patch.object(consent, "repo_remote_code_files", side_effect = files),
+            patch("huggingface_hub.HfApi.model_info", side_effect = probe_error or OSError("down")),
+            patch("utils.utils.hf_cache_snapshot_dir_for_repo", return_value = snapshot),
+        ):
+            return evaluate_remote_code_consent("x/y", trust_remote_code = True)
+
+    @staticmethod
+    def _repo_not_found():
+        from huggingface_hub.errors import RepositoryNotFoundError
+        response = SimpleNamespace(status_code = 404, headers = {}, url = "u", request = None)
+        return RepositoryNotFoundError("404", response = response)
+
+    def test_repo_missing_from_source_is_blocked_without_claiming_code(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
+        d = self._gate_with_unreachable_repo(probe_error = self._repo_not_found())
+        assert d.has_remote_code is False
+        assert d.blocked is True and d.approvable is False
+        assert d.block_cause == "not_on_source"
+        assert "not on ModelScope" in d.blocked_message()
+        assert "flagged" not in d.blocked_message()
+
+    @pytest.mark.parametrize(
+        ("source", "has_code", "expected"),
+        [
+            # What the snapshot holds decides, on ModelScope only.
+            ("modelscope", False, (False, False, None)),
+            ("modelscope", True, (True, True, "critical_findings")),
+            ("huggingface", False, (False, True, "not_on_source")),
+        ],
+    )
+    def test_repo_missing_from_source_judges_the_cached_snapshot(
+        self, monkeypatch, tmp_path, source, has_code, expected
+    ):
+        config = {"auto_map": {"AutoModel": "modeling_backdoor.M"}} if has_code else {}
+        (tmp_path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+        if has_code:
+            (tmp_path / "modeling_backdoor.py").write_text(
+                _CRITICAL["modeling_backdoor.py"], encoding = "utf-8"
+            )
+        monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", source)
+        d = self._gate_with_unreachable_repo(probe_error = self._repo_not_found(), snapshot = tmp_path)
+        assert (d.has_remote_code, d.blocked, d.block_cause) == expected
+
+    def test_declared_code_stays_code_even_when_the_repo_answers_404(self):
+        d = self._gate_with_unreachable_repo(True, self._repo_not_found())
+        assert d.has_remote_code is True and d.blocked is True
+        assert d.block_cause == "unscannable"
+        assert "present" in d.findings_summary
+
+    def test_unreadable_repo_does_not_claim_declared_code(self):
+        d = self._gate_with_unreachable_repo()
+        assert d.has_remote_code is True and d.blocked is True and d.approvable is False
+        assert d.block_cause == "unscannable"
+        assert "present" not in d.findings_summary
+        assert "flagged" not in d.blocked_message()
+
+    def test_block_cause_and_message_follow_the_scan(self):
+        a, b = _with_auto_map(_CRITICAL)
+        with a, b:
+            d = evaluate_remote_code_consent("x/y", trust_remote_code = True)
+        assert d.max_severity == "CRITICAL" and d.block_cause == "critical_findings"
+        assert d.blocked_message("Checkpoint").startswith("Checkpoint 'x/y' ships custom code")
+
+    def test_managed_refusal_says_so_rather_than_flagged(self):
+        a, b = _with_auto_map({"a.py": "x = 1\n"})
+        with a, b, patch.object(consent, "managed_remote_code_refused", return_value = True):
+            d = evaluate_remote_code_consent("x/y", trust_remote_code = True)
+        assert d.block_cause == "managed_refused"
+        assert d.blocked_message() == consent.MANAGED_REMOTE_CODE_REFUSAL
+
+    def test_scan_route_reports_the_cause_and_keeps_the_dialog_open(self, monkeypatch):
+        import asyncio
+
+        models_route = _load_models_route(monkeypatch)
+        import utils.models.model_config as model_config
+        import utils.security as security
+        import utils.security.remote_code_scan as remote_code_scan
+
+        monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
+        monkeypatch.setattr(models_route, "is_local_path", lambda _v: False)
+        monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda v: v)
+        monkeypatch.setattr(models_route, "cached_read_refused", lambda *_a, **_k: False)
+        monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda *_a: False)
+        monkeypatch.setattr(models_route, "anonymous_and_offline", lambda *_a, **_k: False)
+        monkeypatch.setattr(
+            model_config, "get_base_model_from_lora_identifier", lambda *_a, **_k: None
+        )
+        monkeypatch.setattr(remote_code_scan, "external_auto_map_repos", lambda *_a, **_k: set())
+        monkeypatch.setattr(security, "security_load_subdirs", lambda *_a: ())
+
+        def scan(has_code, severity, code_cause, file_cause):
+            rc = consent.RemoteCodeDecision(
+                "x/y",
+                has_code,
+                bool(code_cause),
+                None,
+                severity,
+                "",
+                "r",
+                approvable = not code_cause,
+                block_cause = code_cause,
+            )
+            files = security.FileSecurityDecision("x/y", bool(file_cause), block_cause = file_cause)
+            monkeypatch.setattr(
+                security, "preflight_remote_code_consent_for_targets", lambda *_a, **_k: rc
+            )
+            monkeypatch.setattr(security, "evaluate_file_security", lambda *_a, **_k: files)
+            return asyncio.run(
+                models_route.scan_model_remote_code(
+                    model_name = "x/y", hf_token = None, current_subject = "tester"
+                )
+            )
+
+        payload = scan(False, None, "not_on_source", None)
+        assert payload["requires_trust_remote_code"] is True and payload["approvable"] is False
+        assert payload["block_cause"] == "not_on_source"
+        assert payload["block_source"] == "ModelScope" and payload["block_target"] == "x/y"
+
+        payload = scan(True, "CRITICAL", "critical_findings", "not_on_source")
+        assert payload["block_cause"] == "critical_findings" and payload["block_target"] is None
+
+        payload = scan(False, None, None, "not_on_source")
+        assert payload["block_cause"] == "not_on_source"
+
+        payload = scan(False, None, None, None)
+        assert payload["block_cause"] is None and payload["requires_trust_remote_code"] is False
+
     def test_unscannable_auto_map_blocked_fail_closed(self):
         with (
             patch.object(consent, "_config_has_auto_map", return_value = True),
