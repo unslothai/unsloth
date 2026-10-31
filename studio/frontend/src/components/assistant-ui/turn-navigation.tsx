@@ -609,9 +609,13 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       },
       { root: viewport },
     );
+    // One pass over the thread: a lookup per marker walks the whole DOM once per turn.
+    const messages = new Map<string, Element>();
+    for (const message of viewport.querySelectorAll("[data-message-id]")) {
+      messages.set(message.getAttribute("data-message-id") ?? "", message);
+    }
     for (const marker of rail.querySelectorAll<HTMLElement>("button[data-turn-id]")) {
-      const id = marker.dataset.turnId ?? "";
-      const message = viewport.querySelector(`[data-message-id="${CSS.escape(id)}"]`);
+      const message = messages.get(marker.dataset.turnId ?? "");
       if (message) {
         markerFor.set(message, marker);
         observer.observe(message);
