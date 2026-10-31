@@ -12,6 +12,7 @@ counted, only re-renders).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -19,7 +20,7 @@ import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
@@ -282,10 +283,12 @@ def main() -> int:
                     "() => document.querySelectorAll('[data-model-picker-option]').length"
                 )
 
-                # The probes landed: GGUF rows carry their one quant as a chip.
-                chips = page.evaluate(
-                    "() => (document.body.innerText.match(/\\bQ4_K_M\\b/g) || []).length"
-                )
+                # The probes landed: GGUF rows carry their one quant as a chip. A loaded runner can
+                # paint the last chips after the render counts went quiet, so wait for them first.
+                chip_count = "() => (document.body.innerText.match(/\\bQ4_K_M\\b/g) || []).length"
+                with contextlib.suppress(PlaywrightTimeoutError):
+                    page.wait_for_function(f"({chip_count})() >= {CACHED}", timeout = 30_000)
+                chips = page.evaluate(chip_count)
                 search = page.get_by_placeholder("Search").first
                 search.focus()
                 page.evaluate("() => { window.__renders = {}; }")
