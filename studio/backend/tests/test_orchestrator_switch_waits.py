@@ -83,13 +83,11 @@ def test_idle_worker_shutdown_has_no_fixed_sleep(monkeypatch):
     rec = _Recorder(monkeypatch)
     o = _live()
     proc = o._proc
-    started = time.monotonic()
     assert o._shutdown_subprocess() is True
-    elapsed = time.monotonic() - started
     assert not proc.is_alive() and o._proc is None
+    # The old path slept a fixed 0.5 s before even sending shutdown. The recorded sleeps prove
+    # that is gone; wall time is not asserted because spawned process exit is slow on Windows.
     assert rec.sleeps == [] and rec.terminated == []
-    # The old path slept a fixed 0.5 s before even sending shutdown.
-    assert elapsed < 0.45, elapsed
 
 
 def test_slow_teardown_is_waited_out_not_terminated(monkeypatch):
