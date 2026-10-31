@@ -6816,7 +6816,7 @@ html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wal
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
 .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer { --composer-shadow: none; }
 
-/* Glass materials (html[data-glass]): sidebar and composer frost over the wallpaper.
+/* Glass materials (html[data-glass]): sidebar and composer frost over the wallpaper; "macos" over the desktop.
    The unprefixed backdrop-filter goes last: the minifier keeps only the last of the pair, and Chromium
    (WebView2, Chrome) ignores the -webkit- one. */
 /* --glass-strength (Settings, 0.2-2, default 1) scales every material's tint and blur; the cap keeps it glass. */
@@ -6829,21 +6829,25 @@ html[data-glass="frosted"] { --glass-tint-base: 60%; --glass-blur-base: 26px; --
 html[data-glass="blurred"] { --glass-tint-base: 26%; --glass-blur-base: 48px; --glass-saturate: 125%; }
 html[data-glass="liquid"] { --glass-tint-base: 14%; --glass-blur-base: 10px; --glass-saturate: 190%; }
 html[data-glass="liquid-3d"] { --glass-tint-base: 14%; --glass-blur-base: 10px; --glass-saturate: 190%; }
+html[data-glass="macos"] { --glass-tint-base: 30%; --glass-blur-base: 24px; --glass-saturate: 160%; }
 /* A floor: navigation text sits over the image on every page. */
 html { --glass-sidebar-floor: 52%; }
 html.dark { --glass-sidebar-floor: 40%; }
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
+html[data-glass="macos"] [data-slot="sidebar-inner"] {
   background-color: color-mix(in srgb, var(--sidebar) max(var(--glass-tint), var(--glass-sidebar-floor)), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   box-shadow: inset -1px 0 0 color-mix(in srgb, var(--foreground) 9%, transparent);
 }
 /* Sticky section labels would otherwise paint solid sidebar bands across the glass. */
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label) {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label),
+html[data-glass="macos"] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label) {
   background-color: transparent;
 }
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
-html[data-glass] .wallpaper-preview-composer {
+html[data-glass] .wallpaper-preview-composer,
+html[data-glass="macos"] .unsloth-composer-surface {
   background-color: color-mix(in srgb, var(--background) calc(var(--glass-tint) + 14%), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -6940,12 +6944,14 @@ html[data-glass="liquid-3d"] .wallpaper-preview:has(> .chat-wallpaper[data-outli
 }
 
 /* Run settings panel: the same pane as the sidebar; its header and fields keep their own fills. */
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],
+html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   background-color: color-mix(in srgb, var(--panel-surface) var(--glass-tint), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface,
+html[data-glass="macos"] [data-slot="chat-settings-panel"] .bg-panel-surface {
   background-color: transparent;
 }
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
@@ -6967,7 +6973,8 @@ html.dark[data-glass] {
 }
 html[data-glass] { --glass-field: color-mix(in srgb, var(--background) 55%, transparent); }
 html.dark[data-glass] { --glass-field: rgb(255 255 255 / .07); }
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],
+html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   --panel-input-surface: var(--glass-field);
   --panel-input-surface-hover: var(--glass-hover);
   --secondary: var(--glass-field);
@@ -6986,7 +6993,8 @@ html.dark[data-glass="liquid-3d"] {
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] :is([data-slot="sidebar-inner"], [data-slot="chat-settings-panel"]),
 html[data-glass][data-chat-wallpaper-ready] [data-wallpaper-chrome-controls],
-html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface {
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-settings-panel"], [data-wallpaper-chrome-controls], .unsloth-composer-surface) {
   --accent: var(--glass-hover);
   --sidebar-accent: var(--glass-hover);
   --nav-surface-hover: var(--glass-hover);
@@ -7003,9 +7011,29 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 }
 /* Dark pills mix their fill with the opaque card. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible),
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]) {
+html[data-glass="macos"] .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible),
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]),
+html[data-glass="macos"] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]) {
   background-color: var(--glass-hover);
   box-shadow: var(--glass-hover-rim);
+}
+
+/* macOS: the shell puts the system's vibrancy view under a transparent webview. */
+html[data-glass="macos"],
+html[data-glass="macos"] body {
+  background: transparent;
+}
+html[data-glass="macos"] :is([data-slot="sidebar-inset"], [data-slot="window-titlebar"]) {
+  background-color: color-mix(in srgb, var(--background) 52%, transparent);
+}
+html[data-glass="macos"] [data-slot="window-titlebar"][data-wallpaper-sidebar-pinned] > [data-wallpaper-chrome-controls]:first-child {
+  background: color-mix(in srgb, var(--sidebar) var(--glass-tint), transparent);
+}
+html[data-glass="macos"] :is([data-chat-page-root], .aui-thread-viewport, [data-wallpaper-page-canvas], .hub-page, .hub-page .hub-canvas, [data-side-panel-inset]:not(.chat-header-fade)) {
+  background: transparent;
+}
+html[data-glass="macos"] :is(.chat-header-fade, [data-slot="window-titlebar-decoration"]) {
+  visibility: hidden;
 }
 
 /* Glass menus (html[data-glass-menus]): readable over anything, so always some blur and a heavier tint. */

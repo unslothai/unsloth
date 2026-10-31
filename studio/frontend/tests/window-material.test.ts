@@ -23,6 +23,8 @@ test("every glass material has its stylesheet tokens", () => {
 			material,
 		);
 	}
+	// The page only clears its fills once the shell has put the system material under it.
+	assert.match(css, /html\[data-glass="macos"\],\nhtml\[data-glass="macos"\] body \{\n  background: transparent;/);
 });
 
 test("glass keeps the unprefixed backdrop-filter that Chromium reads", () => {

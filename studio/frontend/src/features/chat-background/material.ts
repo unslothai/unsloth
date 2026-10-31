@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports
+import { isMacPlatform } from "@/features/settings/lib/keyboard-shortcuts";
+import { isTauri } from "@/lib/api-base";
 import { useEffect } from "react";
 import { create } from "zustand";
 import {
@@ -16,7 +19,7 @@ import {
 
 export const MATERIAL_STORAGE_KEY = "unsloth_window_material";
 
-/** Per device, not synced: how much glass reads well depends on the screen. */
+/** Per device, not synced: the macOS material means nothing in another browser. */
 const guardedLocalStorage: StateStorage = {
   getItem: (name) => {
     try {
@@ -41,8 +44,14 @@ const guardedLocalStorage: StateStorage = {
   },
 };
 
+export function nativeMaterialAvailable(): boolean {
+  return isTauri && isMacPlatform();
+}
+
 export const useMaterialStore = create<{
   material: WindowMaterial;
+  /** The desktop shell refused the native material (an older Unsloth Desktop). */
+  nativeFailed: boolean;
   /** Dropdowns, menus and pickers take the glass too. */
   menus: boolean;
   strength: number;
@@ -53,9 +62,11 @@ export const useMaterialStore = create<{
   persist(
     (set) => ({
       material: "solid",
+      nativeFailed: false,
       menus: false,
       strength: 50,
-      setMaterial: (material) => set({ material: sanitizeMaterial(material) }),
+      setMaterial: (material) =>
+        set({ material: sanitizeMaterial(material), nativeFailed: false }),
       setMenus: (menus) => set({ menus }),
       setStrength: (strength) => set({ strength: sanitizeStrength(strength) }),
     }),
@@ -86,7 +97,14 @@ export const useMaterialStore = create<{
   ),
 );
 
-/** Mirrors the material onto <html data-glass>. */
+async function setNativeVibrancy(enabled: boolean): Promise<boolean> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("set_native_vibrancy", { enabled });
+}
+
+let nativeApplied = false;
+
+/** Mirrors the material onto <html data-glass>; the macOS one waits for the shell to apply it. */
 export function WindowMaterialMount() {
   const material = useMaterialStore((s) => s.material);
   const menus = useMaterialStore((s) => s.menus);
@@ -100,6 +118,7 @@ export function WindowMaterialMount() {
     else root.style.setProperty("--glass-strength", factor.toFixed(3));
   }, [strength]);
   useEffect(() => {
+    // The menu rules also require data-glass, so a refused macOS material leaves menus solid.
     document.documentElement.toggleAttribute(
       "data-glass-menus",
       menus && material !== "solid",
@@ -107,8 +126,36 @@ export function WindowMaterialMount() {
   }, [menus, material]);
   useEffect(() => {
     const root = document.documentElement;
-    if (material === "solid") root.removeAttribute("data-glass");
-    else root.setAttribute("data-glass", material);
+    const wantsNative = material === "macos" && nativeMaterialAvailable();
+    let cancelled = false;
+    const show = (value: WindowMaterial) => {
+      if (value === "solid") root.removeAttribute("data-glass");
+      else root.setAttribute("data-glass", value);
+    };
+    if (!wantsNative) {
+      show(material === "macos" ? "solid" : material);
+      if (nativeApplied) {
+        nativeApplied = false;
+        void setNativeVibrancy(false).catch(() => undefined);
+      }
+      return;
+    }
+    // A transparent page over an opaque window would show the webview's blank fill.
+    void setNativeVibrancy(true)
+      .then((applied) => {
+        if (cancelled) return;
+        if (!applied) throw new Error("unsupported");
+        nativeApplied = true;
+        show("macos");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        show("solid");
+        useMaterialStore.setState({ nativeFailed: true });
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [material]);
   return null;
 }

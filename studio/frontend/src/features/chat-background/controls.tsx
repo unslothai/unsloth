@@ -40,7 +40,7 @@ import {
 	useChatBackground,
 } from "./storage";
 import { canvasBlob, decodeImage } from "./image";
-import { useMaterialStore } from "./material";
+import { nativeMaterialAvailable, useMaterialStore } from "./material";
 
 const labels: Record<BackgroundEffect, TranslationKey> = {
 	None: "chatBackground.none",
@@ -62,19 +62,28 @@ const materialLabels: Record<WindowMaterial, TranslationKey> = {
 	blurred: "chatBackground.materialBlurred",
 	liquid: "chatBackground.materialLiquid",
 	"liquid-3d": "chatBackground.materialLiquid3d",
+	macos: "chatBackground.materialMacos",
 };
 function MaterialRow({ hasImage }: { hasImage: boolean }) {
 	const t = useT();
-	const { material, setMaterial } = useMaterialStore();
-	const note =
-		material !== "solid" && !hasImage ? "chatBackground.materialNeedsImage" : null;
+	const { material, nativeFailed, setMaterial } = useMaterialStore();
+	const native = nativeMaterialAvailable();
+	const options = MATERIALS.filter((m) => m !== "macos" || native);
+	const shown = options.includes(material) ? material : "solid";
+	const note = nativeFailed
+		? "chatBackground.materialNativeFailed"
+		: shown === "macos"
+			? "chatBackground.materialMacosNote"
+			: shown !== "solid" && !hasImage
+				? "chatBackground.materialNeedsImage"
+				: null;
 	return (
 		<SettingsRow
 			label={t("chatBackground.material")}
 			description={note ? t(note) : t("chatBackground.materialDescription")}
 		>
 			<Select
-				value={material}
+				value={shown}
 				onValueChange={(next) => setMaterial(next as WindowMaterial)}
 			>
 				<SelectTrigger
@@ -84,7 +93,7 @@ function MaterialRow({ hasImage }: { hasImage: boolean }) {
 					<SelectValue />
 				</SelectTrigger>
 				<SelectContent>
-					{MATERIALS.map((m) => (
+					{options.map((m) => (
 						<SelectItem key={m} value={m}>
 							{t(materialLabels[m])}
 						</SelectItem>
@@ -97,7 +106,8 @@ function MaterialRow({ hasImage }: { hasImage: boolean }) {
 function MaterialMenusRow() {
 	const t = useT();
 	const { material, menus, setMenus } = useMaterialStore();
-	const off = material === "solid";
+	const off =
+		material === "solid" || (material === "macos" && !nativeMaterialAvailable());
 	return (
 		<SettingsRow
 			label={t("chatBackground.materialMenus")}
@@ -115,7 +125,8 @@ function MaterialMenusRow() {
 function MaterialStrengthRow() {
 	const t = useT();
 	const { material, strength, setStrength } = useMaterialStore();
-	const off = material === "solid";
+	const off =
+		material === "solid" || (material === "macos" && !nativeMaterialAvailable());
 	return (
 		<SettingsRow label={t("chatBackground.materialStrength")}>
 			<div className="flex w-52 items-center gap-3">

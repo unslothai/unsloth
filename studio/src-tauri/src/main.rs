@@ -40,6 +40,7 @@ mod native_clipboard;
 mod native_file_dialogs;
 mod native_intents;
 mod native_path_policy;
+mod native_vibrancy;
 mod preflight;
 mod process;
 mod process_identity;
@@ -2591,6 +2592,7 @@ fn main() {
             mark_in_app_relaunch,
             gpu_rendering::get_gpu_rendering,
             gpu_rendering::set_gpu_rendering,
+            native_vibrancy::set_native_vibrancy,
             relaunch_to_apply_gpu_rendering,
             renderer_ready,
             clear_in_app_relaunch,

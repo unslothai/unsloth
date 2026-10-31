@@ -12,7 +12,7 @@ export const EFFECTS = [
 	"Scanlines",
 ] as const;
 export type BackgroundEffect = (typeof EFFECTS)[number];
-/** Glass for the sidebar and composer. */
+/** Glass for the sidebar and composer; "macos" is the system window material (Desktop only). */
 export const MATERIALS = [
 	"solid",
 	"transparent",
@@ -20,6 +20,7 @@ export const MATERIALS = [
 	"blurred",
 	"liquid",
 	"liquid-3d",
+	"macos",
 ] as const;
 export type WindowMaterial = (typeof MATERIALS)[number];
 export function sanitizeMaterial(value: unknown): WindowMaterial {
