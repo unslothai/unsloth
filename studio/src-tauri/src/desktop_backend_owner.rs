@@ -1029,11 +1029,34 @@ pub(crate) async fn probe_owned_backend_state_with_timeout(
         Some(port) => vec![port],
         None => desktop_candidate_ports().collect(),
     };
+    probe_owned_backend_state_on_ports(owner, ports, require_desktop_secret, timeout).await
+}
+
+async fn probe_owned_backend_state_on_ports(
+    owner: BackendOwnerState,
+    ports: Vec<u16>,
+    require_desktop_secret: bool,
+    timeout: Duration,
+) -> OwnedBackendProbe {
     let mut verified = Vec::new();
     // Set only by a complete parsed answer naming someone else, so silence never reads as a takeover.
     let mut answered_with_a_different_owner = false;
+    // Liveness GETs are read-only, so every candidate is asked at once (a refused loopback port can
+    // take about a second on Windows); answers are still walked in port order below, and the login
+    // probes with auth-log side effects stay sequential.
+    // Wrapped so an early return (or a dropped caller) aborts the probes still in flight instead of
+    // leaving them holding sockets until their own timeout.
+    let mut pending = Vec::with_capacity(ports.len());
     for port in ports {
-        let liveness = match fetch_liveness(port, timeout).await {
+        let task = tokio::spawn(fetch_liveness(port, timeout));
+        pending.push((port, AbortOnDrop(task)));
+    }
+    for (port, mut answer) in pending {
+        let answer = match (&mut answer.0).await {
+            Ok(answer) => answer,
+            Err(error) => std::panic::resume_unwind(error.into_panic()),
+        };
+        let liveness = match answer {
             Ok(Some(liveness)) => liveness,
             Ok(None) => continue,
             Err(error) => {
@@ -1102,6 +1125,15 @@ pub(crate) async fn probe_owned_backend_state_with_timeout(
     })
 }
 
+/// Aborts the spawned task when dropped, so unread answers do not outlive the scan.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) async fn probe_verified_owned_backend() -> Result<OwnedBackendProbe, String> {
     let Some(path) = metadata_path() else {
@@ -1119,24 +1151,65 @@ async fn probe_verified_owned_backend_at_path_with_expected(
     path: &Path,
     expected_studio_root_id: Option<&str>,
 ) -> Result<OwnedBackendProbe, String> {
+    verified_owned_backend_metadata_at_path_with_expected(path, expected_studio_root_id)?
+        .finish()
+        .await
+}
+
+/// The metadata half of `probe_verified_owned_backend`: the owner file read, the malformed-file
+/// removal and the previous-app checks, with the HTTP probe left for `finish`.
+pub(crate) enum VerifiedOwnedBackendMetadata {
+    Decided(OwnedBackendProbe),
+    NeedsProbe {
+        owner: BackendOwnerState,
+        port: Option<u16>,
+    },
+}
+
+impl VerifiedOwnedBackendMetadata {
+    pub(crate) async fn finish(self) -> Result<OwnedBackendProbe, String> {
+        match self {
+            Self::Decided(probe) => Ok(probe),
+            Self::NeedsProbe { owner, port } => {
+                Ok(probe_owned_backend_state(owner, port, true).await)
+            }
+        }
+    }
+}
+
+pub(crate) fn verified_owned_backend_metadata() -> Result<VerifiedOwnedBackendMetadata, String> {
+    let Some(path) = metadata_path() else {
+        return Ok(VerifiedOwnedBackendMetadata::Decided(
+            OwnedBackendProbe::NoMetadata,
+        ));
+    };
+    let expected = read_expected_studio_root_id();
+    verified_owned_backend_metadata_at_path_with_expected(&path, expected.as_deref())
+}
+
+fn verified_owned_backend_metadata_at_path_with_expected(
+    path: &Path,
+    expected_studio_root_id: Option<&str>,
+) -> Result<VerifiedOwnedBackendMetadata, String> {
+    let decided = |probe| Ok(VerifiedOwnedBackendMetadata::Decided(probe));
     let Some(metadata) = read_metadata(path).map_err(|e| format!("read owner metadata: {e}"))?
     else {
-        return Ok(OwnedBackendProbe::NoMetadata);
+        return decided(OwnedBackendProbe::NoMetadata);
     };
 
     if !metadata_is_well_formed(&metadata) {
         remove_metadata_file(path);
-        return Ok(OwnedBackendProbe::RemovedMalformed);
+        return decided(OwnedBackendProbe::RemovedMalformed);
     }
 
     match previous_app_pid_status(metadata.app_pid) {
         PreviousAppPidStatus::AliveOrCurrent => {
-            return Ok(OwnedBackendProbe::NotVerified {
+            return decided(OwnedBackendProbe::NotVerified {
                 reason: "previous_desktop_app_still_running".to_string(),
             });
         }
         PreviousAppPidStatus::Uncertain => {
-            return Ok(OwnedBackendProbe::NotVerified {
+            return decided(OwnedBackendProbe::NotVerified {
                 reason: "previous_desktop_app_liveness_uncertain".to_string(),
             });
         }
@@ -1144,14 +1217,14 @@ async fn probe_verified_owned_backend_at_path_with_expected(
     }
 
     if expected_studio_root_id != Some(metadata.studio_root_id.as_str()) {
-        return Ok(OwnedBackendProbe::NotVerified {
+        return decided(OwnedBackendProbe::NotVerified {
             reason: "studio_root_id_mismatch".to_string(),
         });
     }
 
     let owner = BackendOwnerState::from_metadata(path.to_path_buf(), metadata);
     let port = owner.port();
-    Ok(probe_owned_backend_state(owner, port, true).await)
+    Ok(VerifiedOwnedBackendMetadata::NeedsProbe { owner, port })
 }
 
 /// False only when the pid is provably gone. An unresolvable pid counts as running (on Windows
@@ -1818,6 +1891,204 @@ mod tests {
                 "a port answering for a different owner read as silence: {probe:?}"
             );
         }
+    }
+
+    /// Accepts connections and never answers, so each request runs out its timeout.
+    async fn silent_port() -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        (port, task)
+    }
+
+    /// Answers every request with `body` after `delay`.
+    async fn delayed_json_port(
+        delay: Duration,
+        body: &'static str,
+    ) -> (u16, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut raw = Vec::new();
+                    let mut chunk = [0u8; 2048];
+                    while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(count) => raw.extend_from_slice(&chunk[..count]),
+                        }
+                    }
+                    tokio::time::sleep(delay).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (port, task)
+    }
+
+    /// Owner-matching liveness without a desktop protocol version: the probe stops at that port.
+    const OWNED_BUT_INCOMPATIBLE: &str = r#"{"status":"alive","service":"Unsloth UI Backend","studio_root_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","desktop_owner":{"kind":"tauri","token_sha256":"943501cb7d1feb2aa8cde1bf09b80092c25b95dbafaca9ccc12d6785b229a6fd"}}"#;
+
+    #[tokio::test]
+    async fn the_portless_scan_waits_for_one_timeout_not_one_per_silent_port() {
+        let timeout = Duration::from_millis(600);
+        let mut ports = Vec::new();
+        let mut servers = Vec::new();
+        for _ in 0..5 {
+            let (port, server) = silent_port().await;
+            ports.push(port);
+            servers.push(server);
+        }
+        let owner = BackendOwnerState::from_metadata(
+            std::env::temp_dir().join("unsloth-silent-scan.json"),
+            metadata(std::process::id(), None),
+        );
+
+        let started = std::time::Instant::now();
+        let probe = probe_owned_backend_state_on_ports(owner, ports, false, timeout).await;
+        let elapsed = started.elapsed();
+        for server in servers {
+            server.abort();
+        }
+
+        assert!(matches!(
+            probe,
+            OwnedBackendProbe::NotVerified { ref reason } if reason == "owned_backend_not_found"
+        ));
+        // Asked one after another, five silent ports take at least 5 x 600 ms.
+        assert!(
+            elapsed < timeout * 3,
+            "silent ports were probed one after another: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_portless_scan_keeps_port_order_when_a_later_port_answers_first() {
+        let (slow, slow_server) =
+            delayed_json_port(Duration::from_millis(300), OWNED_BUT_INCOMPATIBLE).await;
+        let (fast, fast_server) = delayed_json_port(Duration::ZERO, OWNED_BUT_INCOMPATIBLE).await;
+        let closed = closed_port();
+        for ports in [vec![slow, fast], vec![closed, slow, fast], vec![fast, slow]] {
+            let first = *ports.iter().find(|port| **port != closed).unwrap();
+            let owner = BackendOwnerState::from_metadata(
+                std::env::temp_dir().join("unsloth-ordered-scan.json"),
+                metadata(std::process::id(), None),
+            );
+            let probe =
+                probe_owned_backend_state_on_ports(owner, ports, false, Duration::from_secs(5))
+                    .await;
+            match probe {
+                OwnedBackendProbe::Unmanageable { port, reason } => {
+                    assert_eq!(port, first);
+                    assert_eq!(reason, "desktop_protocol_incompatible");
+                }
+                other => panic!("expected the first answering port to decide: {other:?}"),
+            }
+        }
+        slow_server.abort();
+        fast_server.abort();
+    }
+
+    #[tokio::test]
+    async fn an_early_answer_aborts_the_liveness_probes_still_in_flight() {
+        use tokio::io::AsyncReadExt;
+        // The delay lets the silent port's request connect before the scan decides.
+        let (first, first_server) =
+            delayed_json_port(Duration::from_millis(300), OWNED_BUT_INCOMPATIBLE).await;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let silent = listener.local_addr().unwrap().port();
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        let silent_server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut chunk = [0u8; 2048];
+            while !matches!(socket.read(&mut chunk).await, Ok(0) | Err(_)) {}
+            let _ = closed_tx.send(());
+        });
+        let owner = BackendOwnerState::from_metadata(
+            std::env::temp_dir().join("unsloth-abort-scan.json"),
+            metadata(std::process::id(), None),
+        );
+        let probe = probe_owned_backend_state_on_ports(
+            owner,
+            vec![first, silent],
+            false,
+            Duration::from_secs(30),
+        )
+        .await;
+        assert!(matches!(probe, OwnedBackendProbe::Unmanageable { port, .. } if port == first));
+        // The silent port's request must be dropped with the scan, not held for its 30 s timeout.
+        tokio::time::timeout(Duration::from_secs(5), closed_rx)
+            .await
+            .expect("a liveness probe outlived the scan that no longer reads it")
+            .unwrap();
+        first_server.abort();
+        silent_server.abort();
+    }
+
+    #[tokio::test]
+    async fn owner_metadata_then_probe_matches_the_one_shot_probe() {
+        // Preflight runs the metadata half alone while the state owns a backend; finishing it
+        // later must give the same answer and the same file removals as the one-shot probe.
+        let path = temp_metadata_path("split");
+        let (live, live_server) = delayed_json_port(Duration::ZERO, OWNED_BUT_INCOMPATIBLE).await;
+        let dead = dead_child_pid();
+        let mut malformed = metadata(dead, Some(live));
+        malformed.token_sha256 = "0".repeat(64);
+        let cases: Vec<(Option<DesktopBackendMetadata>, Option<&str>)> = vec![
+            (None, Some(ROOT_ID)),
+            (Some(malformed), Some(ROOT_ID)),
+            (
+                Some(metadata(std::process::id(), Some(live))),
+                Some(ROOT_ID),
+            ),
+            (Some(metadata(u32::MAX - 1, Some(live))), Some(ROOT_ID)),
+            (Some(metadata(dead, Some(live))), Some(ROOT_ID)),
+            (Some(metadata(dead, Some(live))), None),
+            (Some(metadata(dead, Some(closed_port()))), Some(ROOT_ID)),
+        ];
+        for (case, expected) in cases {
+            let write = || match &case {
+                Some(metadata) => write_metadata(&path, metadata).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(&path);
+                }
+            };
+            write();
+            let one_shot = probe_verified_owned_backend_at_path_with_expected(&path, expected)
+                .await
+                .map(|probe| format!("{probe:?}"));
+            let one_shot_file = path.exists();
+            write();
+            let split = verified_owned_backend_metadata_at_path_with_expected(&path, expected);
+            let split_file = path.exists();
+            let split = match split {
+                Ok(half) => half.finish().await.map(|probe| format!("{probe:?}")),
+                Err(error) => Err(error),
+            };
+            assert_eq!(split, one_shot);
+            assert_eq!(split_file, one_shot_file);
+        }
+        live_server.abort();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(path.parent().unwrap());
     }
 
     #[tokio::test]
