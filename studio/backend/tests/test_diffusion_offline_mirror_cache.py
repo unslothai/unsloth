@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An offline load must fetch from the mirror the online prefetch staged, not an upstream snapshot holding a stray file.
-
-Layout reproduced: Studio's online load staged the pipeline under ``unsloth/<name>`` (the ungated mirror), while a
-separate single-file download (``hf_hub_download`` of the upstream's root checkpoint, or loose component folders) left
-weights but no ``model_index.json`` in the upstream snapshot. With no Hub listing the mirror choice used to keep the
-upstream for any cached weight, so ``from_pretrained`` failed with "model_index.json is not the path to a directory".
-"""
+"""Offline loads must use the mirror the online prefetch staged, not an upstream snapshot holding only a stray file."""
 
 from __future__ import annotations
 
@@ -68,7 +62,6 @@ def hub(monkeypatch, tmp_path):
 
 
 def _offline_fetch_base(monkeypatch, repo_id: str) -> str:
-    """Run the real staging phase offline; return the repo handed to load_pipeline as ``_fetch_base``."""
     loaded: dict = {}
     monkeypatch.setattr(DiffusionBackend, "_prefetch_files", lambda self, *a, **k: None)
     monkeypatch.setattr(DiffusionBackend, "load_pipeline", lambda self, **k: loaded.update(k))
@@ -93,7 +86,6 @@ def test_offline_load_reads_the_mirror_prefetch_staged(monkeypatch, hub, upstrea
 
 @pytest.mark.parametrize("upstream,mirror,stray", _CASES)
 def test_offline_load_keeps_a_full_upstream_pipeline(monkeypatch, hub, upstream, mirror, stray):
-    """A cached upstream pipeline still wins over the mirror, as before."""
     _snapshot(hub, upstream, "a" * 40, {**stray, **_PIPELINE})
     _snapshot(hub, mirror, "b" * 40, _PIPELINE)
     assert _offline_fetch_base(monkeypatch, upstream) == upstream
@@ -105,5 +97,4 @@ def test_without_a_cached_mirror_manifest_the_old_decision_stands(hub):
     assert D._cached_mirror_manifest(upstream, "model_index.json") == ()
     _snapshot(hub, mirror, "b" * 40, _PIPELINE)
     assert D._cached_mirror_manifest(upstream, "model_index.json") == ("model_index.json",)
-    # Not a mirrored vendor base: nothing to probe.
     assert D._cached_mirror_manifest("someone/finetune", "model_index.json") == ()

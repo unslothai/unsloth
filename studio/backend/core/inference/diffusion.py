@@ -1446,12 +1446,12 @@ def _base_manifest_name(fam: Any) -> str:
 
 
 def _cached_mirror_manifest(base: str, manifest: str) -> tuple[str, ...]:
-    """Probe files for a mirror decision made without a Hub listing (offline): the manifest when the mirror's cache holds it.
+    """Offline mirror probe: the manifest when the mirror's cache holds it, else ().
 
-    With no file list, ``prefer_ungated_mirror`` keeps the upstream id for ANY cached weight, so a lone single-file
-    checkpoint in the upstream snapshot (no model_index.json) pinned an offline load there although the online
-    prefetch staged the pipeline under the mirror. Empty (the old weight-file test) unless the mirror has the manifest.
+    With no file list, ``prefer_ungated_mirror`` keeps the upstream for ANY cached weight, so a stray single-file
+    checkpoint in the upstream snapshot pinned offline loads there although the pipeline was staged under the mirror.
     """
+
     from .diffusion_families import mirror_repo
 
     mirror = mirror_repo(base)
