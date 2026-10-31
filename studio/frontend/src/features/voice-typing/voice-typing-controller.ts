@@ -79,6 +79,26 @@ const MODEL_KEEPALIVE_MS = 60_000;
 const BOOT_MODEL_RETRY_MS = 3_000;
 const MAX_BOOT_RETRIES = 6;
 
+/**
+ * Harper-backed on-device grammar correction. The TypeScript rules stay as a
+ * fallback so an older desktop backend (or a dev web build) never blocks a
+ * transcript.
+ */
+async function fixGrammarOnDevice(text: string): Promise<string> {
+  const { dictationLanguage, dictionary } = useVoiceSettingsStore.getState();
+  try {
+    const fixed = await invoke<string>("fix_grammar", {
+      text,
+      language: dictationLanguage,
+      customWords: dictionary,
+    });
+    return fixed.trim() ? fixed : text;
+  } catch (error) {
+    console.warn("[voice typing] native grammar fixer unavailable:", error);
+    return fixGrammar(text, { language: dictationLanguage });
+  }
+}
+
 export class VoiceTypingController {
   private info: VoiceTypingInfo | null = null;
   private phase: HudPhase = "idle";
@@ -99,6 +119,8 @@ export class VoiceTypingController {
   private speechHeard = false;
   private voicedFrameStreak = 0;
   private lastVoiceAt = 0;
+  /** Fires after `idleStopMs` without speech, independent of mic level frames. */
+  private idleTimer = 0;
   private noiseFloorLevel = 0.025;
   /** Bumped by cancel; an in-flight delivery from an older session is discarded. */
   private cancelToken = 0;
@@ -565,6 +587,7 @@ export class VoiceTypingController {
         if (this.voicedFrameStreak >= 2 || level >= voiceThreshold * 1.4) {
           this.speechHeard = true;
           this.lastVoiceAt = now;
+          this.armIdleTimer();
         }
         // Slowly adapt noise floor upward if steady ambient hum is below 0.16
         // so constant background noise cannot lock `speechHeard` active forever.
@@ -581,8 +604,20 @@ export class VoiceTypingController {
         0.18,
         Math.max(0.015, this.noiseFloorLevel * 0.95 + level * 0.05),
       );
-      const { autoStopSilence, autoStopDelayMs, mode } =
+      const { autoStopSilence, autoStopDelayMs, idleStopMs, mode } =
         useVoiceTypingStore.getState();
+      // Safety net: a forgotten session ends after a minute of no speech by
+      // default, even when pause auto-stop is off or the mode is hold.
+      if (
+        idleStopMs > 0 &&
+        this.speechHeard &&
+        this.lastVoiceAt > 0 &&
+        now - this.lastVoiceAt >= idleStopMs
+      ) {
+        console.info("[voice typing] auto-stop after idle silence");
+        this.finish();
+        return;
+      }
       if (!autoStopSilence || mode === "hold") return;
       if (!this.speechHeard) {
         // User activated voice typing and spoke nothing (only silence or ambient noise):
@@ -721,7 +756,7 @@ export class VoiceTypingController {
     let text = await this.postProcessTranscript(rawText, token);
     const { grammarFixerEnabled } = useVoiceTypingStore.getState();
     if (grammarFixerEnabled) {
-      text = fixGrammar(text);
+      text = await fixGrammarOnDevice(text);
     }
     if (this.disposed || token !== this.cancelToken) return;
     if (!text.trim()) {
@@ -1036,6 +1071,27 @@ export class VoiceTypingController {
   private clearTimers(): void {
     for (const id of this.timers) window.clearTimeout(id);
     this.timers.clear();
+    if (this.idleTimer) {
+      window.clearTimeout(this.idleTimer);
+      this.idleTimer = 0;
+    }
+  }
+
+  /** Re-arm the forgotten-session safety stop after each voiced frame. */
+  private armIdleTimer(): void {
+    if (this.idleTimer) window.clearTimeout(this.idleTimer);
+    const { idleStopMs } = useVoiceTypingStore.getState();
+    if (idleStopMs <= 0) {
+      this.idleTimer = 0;
+      return;
+    }
+    this.idleTimer = window.setTimeout(() => {
+      this.idleTimer = 0;
+      if (this.phase === "recording" && this.speechHeard) {
+        console.info("[voice typing] auto-stop after idle silence");
+        this.finish();
+      }
+    }, idleStopMs);
   }
 
   /** Short feedback tones; a nicety that must never break dictation. */

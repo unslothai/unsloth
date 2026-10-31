@@ -25,6 +25,11 @@ export type VoiceTypingPasteMethod = (typeof VOICE_TYPING_PASTE_METHODS)[number]
 export const VOICE_TYPING_HUD_POSITIONS = ["bottom", "top"] as const;
 export type VoiceTypingHudPosition = (typeof VOICE_TYPING_HUD_POSITIONS)[number];
 
+/** Idle-dictation safety stop choices, in milliseconds (0 = never). */
+export const VOICE_TYPING_IDLE_STOP_OPTIONS = [
+  0, 15_000, 30_000, 60_000, 120_000, 300_000,
+] as const;export const DEFAULT_VOICE_TYPING_IDLE_STOP_MS = 60_000;
+
 /** What the local dictation stack can do right now; refreshed by the controller. */
 export type VoiceTypingReadiness =
   | "unknown"
@@ -161,6 +166,27 @@ function repair(
   if (typeof saved.muteWhileRecording !== "boolean") {
     saved.muteWhileRecording = false;
   }
+  if (
+    typeof saved.autoStopDelayMs !== "number" ||
+    !Number.isFinite(saved.autoStopDelayMs) ||
+    saved.autoStopDelayMs <= 0
+  ) {
+    saved.autoStopDelayMs = 2500;
+  } else {
+    saved.autoStopDelayMs = Math.min(
+      30_000,
+      Math.max(1000, saved.autoStopDelayMs),
+    );
+  }
+  if (
+    typeof saved.idleStopMs !== "number" ||
+    !Number.isFinite(saved.idleStopMs) ||
+    saved.idleStopMs < 0
+  ) {
+    saved.idleStopMs = DEFAULT_VOICE_TYPING_IDLE_STOP_MS;
+  } else {
+    saved.idleStopMs = Math.min(10 * 60 * 1000, saved.idleStopMs);
+  }
   return saved;
 }
 
@@ -185,6 +211,8 @@ interface VoiceTypingSettings {
   autoStopSilence: boolean;
   /** Silence before the automatic stop, in milliseconds. */
   autoStopDelayMs: number;
+  /** Safety stop after this much continuous silence (0 = never). */
+  idleStopMs: number;
   /** How long the microphone stays open after a dictation for an instant restart. */
   micWarmSeconds: number;
   /** Advanced rule-based grammar and formatting fixer (Harper-inspired). */
@@ -224,6 +252,7 @@ interface VoiceTypingSettings {
   setPreloadModel: (enabled: boolean) => void;
   setAutoStopSilence: (enabled: boolean) => void;
   setAutoStopDelayMs: (delayMs: number) => void;
+  setIdleStopMs: (idleMs: number) => void;
   setMicWarmSeconds: (seconds: number) => void;
   setGrammarFixerEnabled: (enabled: boolean) => void;
   setSpokenPunctuation: (enabled: boolean) => void;
@@ -255,6 +284,7 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
       preloadModel: true,
       autoStopSilence: true,
       autoStopDelayMs: 2500,
+      idleStopMs: DEFAULT_VOICE_TYPING_IDLE_STOP_MS,
       micWarmSeconds: 0,
       grammarFixerEnabled: true,
       spokenPunctuation: false,
@@ -283,6 +313,10 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
       setPreloadModel: (preloadModel) => set({ preloadModel }),
       setAutoStopSilence: (autoStopSilence) => set({ autoStopSilence }),
       setAutoStopDelayMs: (autoStopDelayMs) => set({ autoStopDelayMs }),
+      setIdleStopMs: (idleStopMs) =>
+        set({
+          idleStopMs: Math.min(10 * 60 * 1000, Math.max(0, idleStopMs)),
+        }),
       setMicWarmSeconds: () => set({ micWarmSeconds: 0 }),
       setGrammarFixerEnabled: (grammarFixerEnabled) =>
         set({ grammarFixerEnabled }),
@@ -324,6 +358,7 @@ export const useVoiceTypingStore = create<VoiceTypingSettings>()(
         preloadModel: state.preloadModel,
         autoStopSilence: state.autoStopSilence,
         autoStopDelayMs: state.autoStopDelayMs,
+        idleStopMs: state.idleStopMs,
         micWarmSeconds: 0,
         grammarFixerEnabled: state.grammarFixerEnabled,
         spokenPunctuation: state.spokenPunctuation,

@@ -19,7 +19,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { Tooltip } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   audioCppSizeLabel,
   isAudioCppFolderId,
@@ -63,12 +63,15 @@ import {
 import { useDebouncedValue, useWheelScrollRef } from "@/hooks";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
 import { Volume02Icon } from "@/lib/volume-icons";
-import { Search01Icon, StopIcon } from "@hugeicons/core-free-icons";
+import {
+  CheckmarkCircle02Icon,
+  Search01Icon,
+  StopIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -85,6 +88,7 @@ import {
 } from "../api/openai-model-catalog";
 import { listOpenAIAudioModels } from "../api/openai-models";
 import { DictationDictionaryView } from "../components/dictation-dictionary-view";
+import { PickerRow, PickerTrigger } from "../components/picker";
 import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -313,34 +317,44 @@ function SttModelPicker({
     const isLoaded = loadedModels.has(model);
     const isDownloaded = downloadedModels.has(model) || isLoaded;
     return (
-      <button
+      <PickerRow
         key={model}
-        type="button"
         onClick={() => void selectModel(model)}
-        aria-selected={model === value}
-        className={`flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
-          twoLines ? "rounded-md" : "rounded-full"
-        } ${model === value ? "bg-accent font-medium" : ""}`}
+        selected={model === value}
+        className={twoLines ? "rounded-md" : undefined}
       >
         <span className="min-w-0 flex-1 truncate">
           <span className="flex items-center gap-1.5 truncate text-xs">
             {isDownloaded ? (
-              <Tooltip content={t("picker.onDevice")}>
-                <span
-                  role="img"
-                  aria-label={t("picker.onDevice")}
-                  className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success inline-block"
-                />
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <span
+                    role="img"
+                    aria-label={
+                      isLoaded
+                        ? t("settings.voice.dictation.sttLoadedBadge")
+                        : t("picker.onDevice")
+                    }
+                    className="inline-flex shrink-0 items-center text-emerald-500"
+                  >
+                    <HugeiconsIcon
+                      icon={CheckmarkCircle02Icon}
+                      strokeWidth={2.2}
+                      className="size-3.5"
+                    />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {isLoaded
+                    ? t("settings.voice.dictation.sttLoadedBadge")
+                    : t("picker.onDevice")}
+                </TooltipContent>
               </Tooltip>
             ) : null}
             <span className="truncate" title={sttModelName(model)}>
               {sttModelName(model)}
             </span>
-            {isLoaded ? (
-              <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-ui-9 font-semibold text-primary">
-                {t("settings.voice.dictation.sttLoadedBadge")}
-              </span>
-            ) : RECOMMENDED_STT_MODELS.has(model) ? (
+            {!isLoaded && RECOMMENDED_STT_MODELS.has(model) ? (
               <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
                 {t("settings.voice.dictation.sttRecommended")}
               </span>
@@ -357,7 +371,7 @@ function SttModelPicker({
             {size}
           </span>
         ) : null}
-      </button>
+      </PickerRow>
     );
   };
 
@@ -370,26 +384,15 @@ function SttModelPicker({
       }}
     >
       <PopoverTrigger asChild={true}>
-        <button
-          type="button"
+        <PickerTrigger
           data-testid="stt-model-trigger"
           aria-label={t("settings.voice.dictation.sttModelLabel")}
-          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
+          className="w-full"
         >
-          <span className="flex min-w-0 items-center gap-1.5 truncate">
-            <span className="truncate">{sttModelName(value)}</span>
-            {loadedModels.has(value) ? (
-              <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-ui-9 font-semibold text-primary">
-                {t("settings.voice.dictation.sttLoadedBadge")}
-              </span>
-            ) : null}
+          <span className="truncate" title={sttModelName(value)}>
+            {sttModelName(value)}
           </span>
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            strokeWidth={2}
-            className="text-muted-foreground pointer-events-none size-4 shrink-0"
-          />
-        </button>
+        </PickerTrigger>
       </PopoverTrigger>
       <PopoverContent align="start" sideOffset={4} className="w-72 gap-0 p-0">
         <div className="relative p-1.5 pb-0.5">
@@ -435,10 +438,6 @@ function SttModelPicker({
           ) : (
             <>
               {groupedItems.downloaded.map(renderModelRow)}
-              {groupedItems.downloaded.length > 0 &&
-              groupedItems.available.length > 0 ? (
-                <div className="my-1.5 border-t border-border/50" />
-              ) : null}
               {groupedItems.available.map(renderModelRow)}
             </>
           )}
@@ -910,6 +909,10 @@ export function VoiceTab() {
           setSttPhase("unavailable");
           return;
         }
+        if (!engineStatus) {
+          setSttPhase(allLoaded.has(sttModel) ? "ready" : "unavailable");
+          return;
+        }
 
         const loadedEngine = engines.find(
           (e) =>
@@ -1171,6 +1174,78 @@ export function VoiceTab() {
       setSttUnloading(false);
     }
   };
+
+  // The action sits beside the model picker, not on its own line, so the row
+  // reads as one control: pick a model, then download/eject/load it.
+  const sttModelAction =
+    sttPhase === "unavailable" ? (
+      <Button
+        variant="ghost"
+        className="h-8 shrink-0 px-2.5 text-xs"
+        onClick={() => setStatusNonce((nonce) => nonce + 1)}
+      >
+        {t("settings.voice.dictation.sttRetry")}
+      </Button>
+    ) : effectiveSttDownloadAvailability === "error" ? (
+      <Button
+        variant="ghost"
+        className="h-8 shrink-0 px-2.5 text-xs"
+        disabled={downloadingThisModel || sttDownloadStarting}
+        // Restart: the sidecar error is sticky until a new start(), so
+        // re-polling alone never clears it.
+        onClick={() => void beginSttDownload()}
+      >
+        {t("settings.voice.dictation.sttRetry")}
+      </Button>
+    ) : effectiveSttDownloadAvailability === "missing" ? (
+      <Button
+        variant="outline"
+        className="h-8 shrink-0 px-2.5 text-xs"
+        disabled={downloadingThisModel || sttDownloadStarting}
+        onClick={() => void beginSttDownload()}
+      >
+        {downloadingThisModel || sttDownloadStarting ? (
+          <Spinner className="mr-1" />
+        ) : null}
+        {t("settings.voice.dictation.sttDownload")}
+      </Button>
+    ) : effectiveSttDownloadAvailability === "downloaded" ? (
+      sttPhase === "ready" ? (
+        <Button
+          variant="outline"
+          className="h-8 shrink-0 px-2.5 text-xs"
+          disabled={sttUnloading}
+          onClick={releaseSttModel}
+        >
+          {sttUnloading ? <Spinner className="mr-1" /> : null}
+          {sttUnloading
+            ? t("settings.voice.dictation.sttUnloading")
+            : t("settings.voice.dictation.sttEject")}
+        </Button>
+      ) : sttPhase === "loading" || sttPhase === "checking" ? (
+        <Button
+          variant="outline"
+          size="icon-sm"
+          className="size-8 shrink-0"
+          disabled={true}
+          aria-label={t("settings.voice.dictation.sttLoadingModel")}
+        >
+          <Spinner />
+        </Button>
+      ) : (
+        <Button
+          variant="outline"
+          className="h-8 shrink-0 px-2.5 text-xs"
+          onClick={warmSttModel}
+        >
+          {sttPhase === "error"
+            ? t("settings.voice.dictation.sttRetry")
+            : otherLoadedSttModel
+              ? t("settings.voice.dictation.sttEjectAndLoad")
+              : t("settings.voice.dictation.sttLoad")}
+        </Button>
+      )
+    ) : null;
 
   // Keep an item for an unplugged saved mic so the value stays visible.
   const knownMic = devices.some((d) => d.deviceId === micDeviceId);
@@ -1442,128 +1517,54 @@ export function VoiceTab() {
               // Progress lives in the shared downloads panel; a second bar here
               // said the same thing twice.
               below={
-                <div className="flex min-h-7 w-56 items-center justify-between gap-3">
-                  <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                    {effectiveSttDownloadAvailability === "checking" ||
-                    sttPhase === "loading" ||
-                    sttPhase === "checking" ? (
-                      <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current" />
-                    ) : sttPhase === "ready" ||
-                      (effectiveSttDownloadAvailability === "downloaded" &&
-                        sttPhase === "on-demand") ? (
-                      <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
-                    ) : effectiveSttDownloadAvailability === "error" ||
-                      sttPhase === "error" ? (
-                      <span className="size-1.5 shrink-0 rounded-full bg-destructive" />
-                    ) : null}
-                    <span>{sttModelStatusText}</span>
-                  </span>
-                  {sttPhase === "unavailable" ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      onClick={() => setStatusNonce((nonce) => nonce + 1)}
-                    >
-                      {t("settings.voice.dictation.sttRetry")}
-                    </Button>
-                  ) : effectiveSttDownloadAvailability === "error" ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      disabled={downloadingThisModel || sttDownloadStarting}
-                      // Restart: the sidecar error is sticky until a new
-                      // start(), so re-polling alone never clears it.
-                      onClick={() => void beginSttDownload()}
-                    >
-                      {t("settings.voice.dictation.sttRetry")}
-                    </Button>
-                  ) : effectiveSttDownloadAvailability === "missing" ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="text-xs"
-                      disabled={downloadingThisModel || sttDownloadStarting}
-                      onClick={() => void beginSttDownload()}
-                    >
-                      {downloadingThisModel || sttDownloadStarting ? (
-                        <Spinner className="mr-1.5" />
-                      ) : null}
-                      {t("settings.voice.dictation.sttDownload")}
-                    </Button>
-                  ) : effectiveSttDownloadAvailability === "downloaded" ? (
-                    sttPhase === "ready" ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="text-xs"
-                        disabled={sttUnloading}
-                        onClick={releaseSttModel}
-                      >
-                        {sttUnloading ? <Spinner className="mr-1.5" /> : null}
-                        {sttUnloading
-                          ? t("settings.voice.dictation.sttUnloading")
-                          : t("settings.voice.dictation.sttEject")}
-                      </Button>
-                    ) : sttPhase === "loading" || sttPhase === "checking" ? (
-                      // The status line already says "Loading model…"; the
-                      // button only needs the spinner.
-                      <Button
-                        variant="outline"
-                        size="icon-sm"
-                        className="size-7"
-                        disabled={true}
-                        aria-label={t(
-                          "settings.voice.dictation.sttLoadingModel",
-                        )}
-                      >
-                        <Spinner />
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="text-xs"
-                        onClick={warmSttModel}
-                      >
-                        {sttPhase === "error"
-                          ? t("settings.voice.dictation.sttRetry")
-                          : otherLoadedSttModel
-                            ? t("settings.voice.dictation.sttEjectAndLoad")
-                            : t("settings.voice.dictation.sttLoad")}
-                      </Button>
-                    )
+                <div className="flex min-h-5 w-56 items-center justify-end gap-2 text-xs text-muted-foreground">
+                  {effectiveSttDownloadAvailability === "checking" ||
+                  sttPhase === "loading" ||
+                  sttPhase === "checking" ? (
+                    <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current" />
+                  ) : sttPhase === "ready" ||
+                    (effectiveSttDownloadAvailability === "downloaded" &&
+                      sttPhase === "on-demand") ? (
+                    <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
+                  ) : effectiveSttDownloadAvailability === "error" ||
+                    sttPhase === "error" ? (
+                    <span className="size-1.5 shrink-0 rounded-full bg-destructive" />
                   ) : null}
+                  <span className="min-w-0 truncate">{sttModelStatusText}</span>
                 </div>
               }
             >
               <div className="flex w-56 flex-col gap-1.5">
-                <SttModelPicker
-                  value={sttModel}
-                  language={dictationLanguage}
-                  downloadedModels={downloadedSttModels}
-                  loadedModels={loadedSttModels}
-                  onChange={(next) => {
-                    setSttModel(next);
-                    const nextRepo = getSttModelRepo(next);
-                    if (
-                      loadedSttModels.has(next) ||
-                      (nextRepo && loadedSttModels.has(nextRepo))
-                    ) {
-                      setSttPhase("ready");
-                    } else if (
-                      downloadedSttModels.has(next) ||
-                      (nextRepo && downloadedSttModels.has(nextRepo))
-                    ) {
-                      setSttPhase("on-demand");
-                      setSttDownloadAvailability({
-                        repoId: nextRepo,
-                        state: "downloaded",
-                      });
-                    }
-                  }}
-                />
+                <div className="flex w-full items-center gap-1.5">
+                  <div className="min-w-0 flex-1">
+                    <SttModelPicker
+                      value={sttModel}
+                      language={dictationLanguage}
+                      downloadedModels={downloadedSttModels}
+                      loadedModels={loadedSttModels}
+                      onChange={(next) => {
+                        setSttModel(next);
+                        const nextRepo = getSttModelRepo(next);
+                        if (
+                          loadedSttModels.has(next) ||
+                          (nextRepo && loadedSttModels.has(nextRepo))
+                        ) {
+                          setSttPhase("ready");
+                        } else if (
+                          downloadedSttModels.has(next) ||
+                          (nextRepo && downloadedSttModels.has(nextRepo))
+                        ) {
+                          setSttPhase("on-demand");
+                          setSttDownloadAvailability({
+                            repoId: nextRepo,
+                            state: "downloaded",
+                          });
+                        }
+                      }}
+                    />
+                  </div>
+                  {sttModelAction}
+                </div>
                 {/* A saved key names its own quant, so only package folder rows offer one. */}
                 {sttVariants.length > 1 ? (
                   // Bound to the pin, not the shown quant: picking the quant that runs now

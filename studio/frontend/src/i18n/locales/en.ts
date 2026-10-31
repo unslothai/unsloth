@@ -1708,6 +1708,34 @@ export const en = {
         manageLabel: "Custom spellings",
         manage: "Manage",
         backToVoice: "Back to Voice",
+        title: "Custom spellings",
+        subtitle:
+          "Teach dictation names, jargon and spoken shortcuts. Changes apply from the next dictation.",
+        listLabel: "Vocabulary list",
+        newList: "New list",
+        newListPlaceholder: "List name",
+        create: "Create",
+        renameList: "Rename list",
+        deleteList: "Delete list",
+        deleteListTitle: "Delete this list?",
+        deleteListDescription:
+          "Delete \u201c{name}\u201d and its {count} words? This cannot be undone.",
+        resetTitle: "Reset custom spellings?",
+        resetDescription:
+          "Restore the default vocabulary and remove every custom word and list. This cannot be undone.",
+        wordCount: "Entries: {count}",
+        fromProfile: "\u00b7 {count} from your profile",
+        searchPlaceholder: "Search words and shortcuts",
+        newEntryPlaceholder:
+          "Add a word, phrase, or shortcut -> replacement",
+        snippetHint:
+          "Tip: type my email -> name@example.com to expand a spoken shortcut.",
+        empty: "No words yet. Add one above.",
+        noMatches: "No words match your search",
+        duplicateEntry: "That word is already in this list",
+        editEntry: "Edit entry",
+        save: "Save",
+        cancel: "Cancel",
         addEntry: "Add entry",
         newEntryAria: "New dictionary entry",
         entryPlaceholder: "Jane Doe",
@@ -1724,6 +1752,11 @@ export const en = {
         limitOff: "Off",
         limitCount: "Last {count}",
         playAudio: "Play recording",
+        pauseAudio: "Pause recording",
+        seekLabel: "Seek through the recording",
+        metaWords: "Words: {count}",
+        metaCharacters: "Characters: {count}",
+        metaLinkedChat: "Linked to a chat",
         pageDescription:
           "View, replay, copy, or delete saved dictations.",
         searchPlaceholder: "Search dictations",
@@ -1820,6 +1853,12 @@ export const en = {
         autoStopDelayLabel: "Pause before stopping",
         autoStopDelayDescription:
           "Silence duration before auto-stop",
+        idleStopLabel: "Stop idle dictation",
+        idleStopDescription:
+          "Safety stop after this much silence, even when pause auto-stop is off",
+        idleStopNever: "Never",
+        idleStopSeconds: "{seconds} seconds",
+        idleStopMinutes: "{minutes} min",
         submitLabel: "Press Enter after inserting",
         submitDescription:
           "Send messages automatically after inserting",
@@ -1878,9 +1917,20 @@ export const en = {
         llmModelLabel: "Post-processing model",
         llmModelDescription:
           "Model used to refine transcripts",
+        llmModelNoActive:
+          "No active model — refining will be skipped.",
+        llmModelSearch: "Search models\u2026",
+        llmModelNoLocal: "No chat models found on this device",
+        llmModelNoMatch: "No matching models",
         llmModelActive: "Active chat model",
         llmModelLocalGroup: "On device",
         llmModelConnectedGroup: "Connections",
+        llmThinkingLabel: "Model thinking",
+        llmThinkingDescription:
+          "Allow reasoning tokens (slower, rarely needed for dictation)",
+        grammarFixerLabel: "Advanced grammar fixer",
+        grammarFixerDescription:
+          "Fix spelling, capitalisation, repeated words and punctuation on device",
         llmPromptLabel: "Post-processing prompt",
         llmPromptDescription:
           "Use ${output} where the raw transcript should be inserted",

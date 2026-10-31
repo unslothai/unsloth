@@ -32,6 +32,8 @@ interface VoiceTypingState {
   copyLastTranscript: boolean;
   micWarmSeconds: number;
   soundVolume: number;
+  autoStopDelayMs: number;
+  idleStopMs: number;
   pasteMethod: string;
   hudPosition: string;
   muteWhileRecording: boolean;
@@ -76,6 +78,7 @@ test("voice typing is off by default", async () => {
   assert.equal(store.getState().llmPostProcessEnabled, false);
   assert.equal(store.getState().llmPostProcessModel, "");
   assert.ok(store.getState().llmPostProcessPrompt.includes("${output}"));
+  assert.equal(store.getState().idleStopMs, 60_000);
 });
 
 test("an older enabled preference is reset to off", async () => {
@@ -118,6 +121,7 @@ test("a current payload keeps its choices and forces micWarmSeconds off", async 
       copyLastTranscript: true,
       micWarmSeconds: -1,
       soundVolume: 0.8,
+      idleStopMs: 120_000,
     },
   });
   assert.equal(
@@ -128,6 +132,7 @@ test("a current payload keeps its choices and forces micWarmSeconds off", async 
   assert.equal(store.getState().copyLastTranscript, true);
   assert.equal(store.getState().micWarmSeconds, 0, "micWarmSeconds is always 0");
   assert.equal(store.getState().soundVolume, 0.8);
+  assert.equal(store.getState().idleStopMs, 120_000);
 });
 
 test("out-of-range values are repaired instead of shown", async () => {
@@ -140,6 +145,8 @@ test("out-of-range values are repaired instead of shown", async () => {
       pasteMethod: "bogus",
       hudPosition: "middle",
       muteWhileRecording: "yes",
+      autoStopDelayMs: -1,
+      idleStopMs: -5,
     },
   });
   assert.equal(store.getState().micWarmSeconds, 0);
@@ -147,6 +154,8 @@ test("out-of-range values are repaired instead of shown", async () => {
   assert.equal(store.getState().pasteMethod, "ctrl_v");
   assert.equal(store.getState().hudPosition, "bottom");
   assert.equal(store.getState().muteWhileRecording, false);
+  assert.equal(store.getState().autoStopDelayMs, 2500);
+  assert.equal(store.getState().idleStopMs, 60_000);
 });
 
 test("new writes carry the current schema version", async () => {

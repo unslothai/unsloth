@@ -25,6 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 import {
   DeleteChatFilesSwitch,
   deleteChatItem,
@@ -37,13 +38,13 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import {
   Delete02Icon,
+  PauseIcon,
+  PlayIcon,
   Search01Icon,
-  StopIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
-import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -70,6 +71,118 @@ function formatDictationDate(ms: number): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+/** `m:ss`, used for both the seek-bar position and the recording length. */
+function formatElapsed(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
+  const total = Math.floor(seconds);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/**
+ * Compact recording player: play/pause, a short seek bar and elapsed/total
+ * time. Replaces the native audio controls, whose chunky chrome broke the
+ * settings page and hid the recording length.
+ */
+function DictationAudioPlayer({ src }: { src: string }) {
+  const t = useT();
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  useEffect(() => {
+    setCurrent(0);
+    setDuration(0);
+    setPlaying(false);
+    const audio = new Audio(src);
+    audio.preload = "metadata";
+    audioRef.current = audio;
+    const onLoaded = () => {
+      if (Number.isFinite(audio.duration)) setDuration(audio.duration);
+    };
+    const onTime = () => setCurrent(audio.currentTime);
+    const onEnded = () => {
+      setPlaying(false);
+      setCurrent(0);
+    };
+    const onPause = () => setPlaying(false);
+    const onPlay = () => setPlaying(true);
+    audio.addEventListener("loadedmetadata", onLoaded);
+    audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("ended", onEnded);
+    audio.addEventListener("pause", onPause);
+    audio.addEventListener("play", onPlay);
+    return () => {
+      audio.pause();
+      audio.removeEventListener("loadedmetadata", onLoaded);
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("pause", onPause);
+      audio.removeEventListener("play", onPlay);
+      audioRef.current = null;
+    };
+  }, [src]);
+
+  const toggle = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) {
+      void audio.play().catch(() => setPlaying(false));
+    } else {
+      audio.pause();
+    }
+  };
+
+  const seek = (value: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const next = Math.min(Math.max(value, 0), audio.duration || value);
+    audio.currentTime = next;
+    setCurrent(next);
+  };
+
+  return (
+    <div
+      className="flex max-w-md items-center gap-3 rounded-xl border border-border/60 bg-muted/20 p-2.5"
+      data-testid="dictation-audio-player"
+    >
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label={
+          playing
+            ? t("settings.voice.recents.pauseAudio")
+            : t("settings.voice.recents.playAudio")
+        }
+        className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <HugeiconsIcon
+          icon={playing ? PauseIcon : PlayIcon}
+          strokeWidth={2}
+          className="size-4"
+        />
+      </button>
+      <div className="min-w-0 flex-1">
+        <Slider
+          value={[current]}
+          min={0}
+          max={Math.max(duration, current, 0.1)}
+          step={0.05}
+          onValueChange={([value]) => {
+            if (value !== undefined) seek(value);
+          }}
+          aria-label={t("settings.voice.recents.seekLabel")}
+          className="w-full"
+        />
+        <div className="mt-0.5 flex items-center justify-between text-ui-10 tabular-nums text-muted-foreground">
+          <span>{formatElapsed(current)}</span>
+          <span>{formatElapsed(duration)}</span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function RecentDictationsView({
@@ -105,6 +218,16 @@ export function RecentDictationsView({
       }
     };
   }, []);
+
+  // Opening the detail view stops a row preview so only one recording plays.
+  useEffect(() => {
+    if (!selectedId) return;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    setPlayingId(null);
+  }, [selectedId]);
 
   function togglePlayAudio(dictation: RecentDictation) {
     if (!dictation.audioDataUrl) return;
@@ -271,18 +394,37 @@ export function RecentDictationsView({
 
       {selected ? (
         <div className="flex min-h-0 flex-col gap-4">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span>{formatDictationDate(selected.at)}</span>
+            <span>
+              {t("settings.voice.recents.metaWords", {
+                count: selected.text.trim()
+                  ? selected.text.trim().split(/\s+/).length
+                  : 0,
+              })}
+            </span>
+            <span>
+              {t("settings.voice.recents.metaCharacters", {
+                count: selected.text.length,
+              })}
+            </span>
+            {selected.chatId ? (
+              <span className="inline-flex items-center gap-1">
+                <HugeiconsIcon
+                  icon={MessageCircleIcon}
+                  className="size-3"
+                />
+                {t("settings.voice.recents.metaLinkedChat")}
+              </span>
+            ) : null}
+          </div>
           <article className="rounded-xl border border-border/60 bg-muted/20 p-4">
             <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
               {selected.text}
             </p>
           </article>
           {selected.audioDataUrl ? (
-            <audio
-              controls
-              src={selected.audioDataUrl}
-              className="h-9 w-full"
-              data-testid="dictation-audio-player"
-            />
+            <DictationAudioPlayer src={selected.audioDataUrl} />
           ) : null}
           <div className="flex justify-end gap-2">
             {selected.chatId ? (
@@ -453,13 +595,21 @@ export function RecentDictationsView({
                       <button
                         type="button"
                         onClick={() => togglePlayAudio(dictation)}
-                        aria-label={t("settings.voice.recents.playAudio")}
-                        title={t("settings.voice.recents.playAudio")}
+                        aria-label={
+                          playingId === dictation.id
+                            ? t("settings.voice.recents.pauseAudio")
+                            : t("settings.voice.recents.playAudio")
+                        }
+                        title={
+                          playingId === dictation.id
+                            ? t("settings.voice.recents.pauseAudio")
+                            : t("settings.voice.recents.playAudio")
+                        }
                         className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         <HugeiconsIcon
                           icon={
-                            playingId === dictation.id ? StopIcon : Volume02Icon
+                            playingId === dictation.id ? PauseIcon : PlayIcon
                           }
                           strokeWidth={1.75}
                           className="size-4"

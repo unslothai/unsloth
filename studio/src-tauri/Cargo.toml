@@ -47,6 +47,11 @@ tauri-plugin-notification = "2.3.3"
 tempfile = "3"
 tauri-plugin-window-state = "2"
 time = { version = "0.3", features = ["formatting"] }
+# On-device English grammar/spelling rules for voice typing (grammar.rs).
+# Apache-2.0, no model download. `concurrent` makes the linter Send + Sync for
+# Tauri's command threads; the thesaurus feature is left off so the bundled
+# dictionary stays the only meaningful size cost.
+harper-core = { version = "3.0.0", default-features = false, features = ["concurrent"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

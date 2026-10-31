@@ -22,6 +22,7 @@ mod desktop_update_policy;
 mod desktop_updater;
 mod diagnostics;
 mod gpu_rendering;
+mod grammar;
 mod install;
 mod install_watchdog;
 #[cfg(target_os = "linux")]
@@ -2592,7 +2593,7 @@ fn main() {
             set_tray_icon_visible,
             set_tray_server_status,
             voice_typing::voice_typing_info,
-            voice_typing::voice_typing_configure,
+            grammar::fix_grammar,            voice_typing::voice_typing_configure,
             voice_typing::voice_typing_suspend_shortcut,
             voice_typing::voice_typing_hud_state,
             voice_typing::voice_typing_hud_level,
@@ -2673,6 +2674,8 @@ fn main() {
             // Resident global-shortcut poll for system-wide voice typing; the
             // overlay window is created on first use.
             voice_typing::init(app.handle());
+            // Warm the on-device grammar linter off the UI thread.
+            grammar::init();
             #[cfg(unix)]
             setup_unix_termination_signals(app)?;
             Ok(())
