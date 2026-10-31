@@ -74,3 +74,11 @@ def test_data_dependent_inits_never_see_the_placeholder():
         swapper, w = _evicted_swapper()
         with ns["block_swap_shaped"](types.SimpleNamespace(_unsloth_block_swap = swapper), init):
             assert w.shape == (4, 16, 8), init
+
+
+def test_fallback_leaves_a_block_fetched_inside_the_context():
+    w = torch.nn.Parameter(torch.empty(0), requires_grad = False)
+    blk = types.SimpleNamespace(resident = False, params = [w], empties = [w.data], sig = [((4, 8),)])
+    with _load()["_block_swap_shaped_fallback"](types.SimpleNamespace(blocks = [blk])):
+        w.data, blk.resident = torch.ones(4, 8), True  # what a fetch does
+    assert w.shape == (4, 8)

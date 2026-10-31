@@ -10209,18 +10209,20 @@ def _block_swap_shaped_fallback(swapper):
     # unsloth_zoo before BlockSwap.shaped: the same zero-stride placeholders over its block fields.
     held = []
     try:
-        for b in swapper.blocks:
-            if not b.resident:
-                for p, e, sig in zip(b.params, b.empties, b.sig):
-                    held.append((p, e))
-                    p.data = e.new_zeros(()).expand(sig[0])
-    except AttributeError:
-        pass
-    try:
+        try:
+            for b in swapper.blocks:
+                if not b.resident:
+                    for p, e, sig in zip(b.params, b.empties, b.sig):
+                        held.append((b, p, e))
+                        p.data = e.new_zeros(()).expand(sig[0])
+        except AttributeError:
+            pass
         yield
     finally:
-        for p, e in held:
-            p.data = e
+        # A block fetched inside the context holds real weights now: leave it.
+        for b, p, e in held:
+            if not b.resident:
+                p.data = e
 
 
 def finish_block_swap_load(
