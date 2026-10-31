@@ -12236,9 +12236,59 @@ class DiffusionBackend:
                 )
             if load_token is not None:
                 self._raise_if_load_cancelled(load_token)
+        if not resident:
+            self._small_host_encoders_resident(pipe, decision, info, logger, load_token)
         mark(pipe, info)
         logger.info("diffusion.small_host: %s", info["components"])
         return self._small_host_plan(pipe, plan, fam, logger)
+
+    def _small_host_encoders_resident(
+        self,
+        pipe: Any,
+        decision: Any,
+        info: dict,
+        logger: Any,
+        load_token: Any = None,
+    ) -> None:
+        """Copy routed encoders' memory-mapped weights into anonymous host RAM where the host still covers them, so a
+        new prompt does not page them back in from disk. Read after the DiT is placed; each encoder re-reads the host."""
+        from .diffusion_small_host import (
+            decide_encoder_resident,
+            materialize_streamed_encoder_,
+            streamed_encoder_mib,
+        )
+
+        cancel = None if load_token is None else (lambda: self._raise_if_load_cancelled(load_token))
+        for name in decision.storage_dtypes:
+            if not name.startswith("text_encoder"):
+                continue
+            module = getattr(pipe, name, None)
+            if module is None:
+                continue
+            try:
+                need = streamed_encoder_mib(module)
+            except Exception:  # noqa: BLE001 - an unsizeable encoder stays memory-mapped
+                continue
+            if need <= 0:
+                continue
+            total, available = host_ram_mib()
+            ok, why = decide_encoder_resident(
+                need,
+                host_total_mib = total,
+                host_available_mib = available,
+                host_commit_mib = host_commit_mib(),
+                int8_spill = bool(getattr(decision, "int8_spill", False)),
+            )
+            logger.info(
+                "diffusion.small_host: %s weights %s in host RAM (%s)",
+                name,
+                "copied" if ok else "stay memory-mapped",
+                why,
+            )
+            if not ok:
+                continue
+            mib = materialize_streamed_encoder_(module, cancel)
+            info["components"][name] = f"anonymous host RAM, layerwise cast ({mib} MiB)"
 
     def _small_host_plan(self, pipe: Any, plan: Any, fam: Any, logger: Any) -> Any:
         """Group offload, routed encoders streamed; the denoiser keeps what fits after the runtime reserve resident."""

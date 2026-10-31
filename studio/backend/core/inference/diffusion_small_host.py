@@ -862,9 +862,120 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
                     skip_modules_pattern = None,
                     skip_modules_classes = None,
                 )
+                sub._unsloth_mmap_streamed = True
                 continue
             _convert(sub, want)
     return streamed // _MIB
+
+
+# The route leaves an encoder's streamed weights memory-mapped. Every new prompt reads them again, and a small host
+# drops those clean file pages between prompts (FLUX.1 T5 on a 31 GB Kaggle T4: ~7 GB re-read, 18-24 s per prompt).
+# When host RAM still covers them after placement, they are copied into anonymous memory once at load.
+# 0 keeps them memory-mapped, 1 always copies.
+ENCODER_RESIDENT_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_TE_RESIDENT"
+# Host RAM the load still takes after the route: pinned staging for the streamed DiT (~2 GB on FLUX.1) and the
+# encoder prefetch ring.
+_ENCODER_RESIDENT_RUNTIME_MIB = 2560
+
+
+def _mmap_streamed_tensors(module: Any) -> list:
+    """(owner, name, tensor) of every CPU parameter / buffer left in storage dtype by ``prepare_streamed_encoder_``."""
+    out: list = []
+    seen: set = set()
+    for sub in module.modules():
+        if not getattr(sub, "_unsloth_mmap_streamed", False):
+            continue
+        for kind, items in (
+            ("p", sub.named_parameters(recurse = False)),
+            ("b", sub.named_buffers(recurse = False)),
+        ):
+            for name, t in items:
+                if t is None or t.device.type != "cpu" or t.numel() == 0:
+                    continue
+                key = t.untyped_storage().data_ptr()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((sub, kind, name, t))
+    return out
+
+
+def streamed_encoder_mib(module: Any) -> int:
+    """Host MiB of ``module``'s memory-mapped streamed weights (what :func:`materialize_streamed_encoder_` copies)."""
+    total = sum(int(t.numel()) * int(t.element_size()) for *_x, t in _mmap_streamed_tensors(module))
+    return -(-total // _MIB)
+
+
+def encoder_resident_mode() -> Optional[bool]:
+    """Kill switch: False (``0``), True (``1``), None (auto)."""
+    value = _env(ENCODER_RESIDENT_ENV)
+    if value in ("0", "off", "false", "no"):
+        return False
+    if value in ("1", "on", "true", "yes"):
+        return True
+    return None
+
+
+def decide_encoder_resident(
+    streamed_mib: int,
+    *,
+    host_total_mib: Optional[int],
+    host_available_mib: Optional[int],
+    host_commit_mib: Optional[int] = None,
+    int8_spill: bool = False,
+) -> tuple[bool, str]:
+    """Whether a small-host encoder's memory-mapped weights move into anonymous host RAM. Read after placement:
+    ``host_available_mib`` already excludes the int8 DiT. Copies only when the host keeps the route's reserve plus
+    the rest of the load's host RAM (pinned staging) after the copy; otherwise the weights stay memory-mapped."""
+    mode = encoder_resident_mode()
+    if streamed_mib <= 0:
+        return False, "no memory-mapped encoder weights"
+    if mode is False:
+        return False, f"{ENCODER_RESIDENT_ENV}=0"
+    if mode is True:
+        return True, f"{ENCODER_RESIDENT_ENV}=1"
+    if int8_spill:
+        return False, "the int8 denoiser already spills to disk"
+    if host_available_mib is None:
+        return False, "host RAM unreadable"
+    keep = host_reserve_mib(host_total_mib) + _ENCODER_RESIDENT_RUNTIME_MIB
+    left = int(host_available_mib) - int(streamed_mib)
+    if left < keep:
+        return (
+            False,
+            f"{streamed_mib} MiB would leave {left} MiB of {host_available_mib} MiB available host RAM, "
+            f"under the {keep} MiB the load keeps",
+        )
+    if host_commit_mib is not None and int(host_commit_mib) - int(streamed_mib) < keep:
+        return (
+            False,
+            f"{streamed_mib} MiB would leave {int(host_commit_mib) - int(streamed_mib)} MiB of commit headroom, "
+            f"under the {keep} MiB the load keeps",
+        )
+    return (
+        True,
+        f"{streamed_mib} MiB leaves {left} MiB of {host_available_mib} MiB available host RAM",
+    )
+
+
+def materialize_streamed_encoder_(module: Any, cancel_check: Any = None) -> int:
+    """Copy ``module``'s memory-mapped streamed weights into anonymous host memory, one tensor at a time (dtype,
+    layerwise casting and ties unchanged). Must run before group offload records the host tensors. Returns MiB copied."""
+    import torch
+
+    copied = 0
+    with torch.no_grad():
+        for sub, kind, name, t in _mmap_streamed_tensors(module):
+            fresh = torch.empty_like(t, memory_format = torch.contiguous_format)
+            fresh.copy_(t)
+            if kind == "p":
+                getattr(sub, name).data = fresh
+            else:
+                sub._buffers[name] = fresh
+            copied += int(t.numel()) * int(t.element_size())
+            if cancel_check is not None:
+                cancel_check()
+    return -(-copied // _MIB)
 
 
 def module_dtype_ok(module: Any, compute_dtype: Any) -> bool:
