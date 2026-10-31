@@ -342,3 +342,22 @@ def test_an_untyped_path_column_counts_when_row_zero_is_empty(audio_vlm_trainer)
     )
 
     assert audio_vlm_trainer._resolve_audio_vlm_image_column(ds, None, "audio") == "image"
+
+
+def test_a_pixel_array_column_does_not_break_column_resolution(audio_vlm_trainer):
+    np = pytest.importorskip("numpy")
+    rows = [
+        {"audio": {"array": np.zeros(160), "sampling_rate": 16000}, "text": t, "image": v}
+        for t, v in (("one", None), ("two", np.zeros((2, 2, 3))))
+    ]
+
+    class Rows:
+        column_names = ["audio", "text", "image"]
+        features = {}
+
+        def __iter__(self):
+            return iter(rows)
+
+    ds = Rows()
+
+    audio_vlm_trainer._resolve_audio_vlm_image_column(ds, None, "audio")

@@ -2368,14 +2368,18 @@ class UnslothTrainer:
 
         sample = _first_row(dataset) or {}
 
+        def empty(value):
+            # Not `in (None, "", [])`: that compares a pixel ndarray elementwise and raises.
+            return value is None or (isinstance(value, (str, list)) and not value)
+
         def first_value(col, limit = 100):
             # An untyped column has no schema to fall back on, so look past empty leading rows.
-            if sample.get(col) not in (None, "", []):
+            if not empty(sample.get(col)):
                 return sample.get(col)
             for i, row in enumerate(dataset):
                 if i >= limit:
                     break
-                if row.get(col) not in (None, "", []):
+                if not empty(row.get(col)):
                     return row.get(col)
             return None
 
