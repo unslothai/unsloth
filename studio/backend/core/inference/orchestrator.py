@@ -207,10 +207,16 @@ class _LoadCancelled(Exception):
 _CTX = mp.get_context("spawn")
 
 
+def _is_dispatcher_wake(resp) -> bool:
+    return isinstance(resp, dict) and resp.get("type") == _DISPATCHER_WAKE
+
+
 _DISPATCH_READ_TIMEOUT = 30.0
 
 _STOP_NOTICE_INTERVAL = 0.1
 _DISPATCH_POLL_INTERVAL = 0.5
+# Parent-sent reply that only wakes a dispatcher parked in its poll; no request_id, every reader skips it.
+_DISPATCHER_WAKE = "_dispatcher_wake"
 _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _CANCELLED_ROWS_GRACE = 5.0
@@ -1244,9 +1250,13 @@ class InferenceOrchestrator:
         resp_queue = self._resp_queue
         if resp_queue is None:
             return None
+        deadline = None if timeout is None else time.monotonic() + timeout
         try:
-            resp = resp_queue.get(timeout = timeout)
-            return self._observe_response(resp, worker) if observe else resp
+            while True:
+                left = None if deadline is None else max(deadline - time.monotonic(), 0.0)
+                resp = resp_queue.get(timeout = left)
+                if not _is_dispatcher_wake(resp):
+                    return self._observe_response(resp, worker) if observe else resp
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
@@ -1322,11 +1332,13 @@ class InferenceOrchestrator:
             return events
         while True:
             try:
-                events.append(self._resp_queue.get_nowait())
+                resp = self._resp_queue.get_nowait()
             except queue.Empty:
                 return events
             except (EOFError, OSError, ValueError):
                 return events
+            if not _is_dispatcher_wake(resp):
+                events.append(resp)
 
     def _direct_reader(
         self,
@@ -1666,9 +1678,28 @@ class InferenceOrchestrator:
             if thread is not None and self._dispatcher_thread is not thread:
                 return
             self._dispatcher_stop.set()
+            if self._dispatcher_thread.is_alive():
+                self._wake_dispatcher()
             self._dispatcher_thread.join(timeout = _DISPATCH_STOP_TIMEOUT)
             self._dispatcher_thread = None
             logger.debug("Dispatcher thread stopped")
+
+    def _wake_dispatcher(self) -> None:
+        """Unblock a dispatcher parked in its poll so a stop costs no poll interval. Best effort: if the
+        put fails the dispatcher still sees the stop flag on its next poll timeout."""
+        resp_queue = self._resp_queue
+        if resp_queue is None:
+            return
+        try:
+            # Never let interpreter exit wait on this put if the reply pipe is full or dead.
+            cancel_join = getattr(resp_queue, "cancel_join_thread", None)
+            if cancel_join is not None:
+                cancel_join()
+            resp_queue.put_nowait({"type": _DISPATCHER_WAKE})
+        except Exception:
+            logger.debug(
+                "Dispatcher wake-up put failed; stopping on the poll timeout", exc_info = True
+            )
 
     def _dispatcher_loop(self) -> None:
         """Background loop: read resp_queue and route to mailboxes by request_id."""
@@ -1683,6 +1714,8 @@ class InferenceOrchestrator:
                 continue
             except (EOFError, OSError, ValueError):
                 break
+            if _is_dispatcher_wake(resp):
+                continue  # loop condition rechecks the stop flag
 
             # Sole consumer of the response queue; never let routing kill it, or every in-flight stream hangs.
             try:
