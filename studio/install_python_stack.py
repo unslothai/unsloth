@@ -4753,6 +4753,64 @@ def _ensure_venv_pip() -> bool:
     return _has_pip()
 
 
+# Inherited uv / pip inputs that could drop or replace the XPU wheel while the install still exits 0, after
+# generic triton is already gone, and require-hashes, which the unhashed wheel can only fail. setup.ps1 clears
+# the same set around its swap (Enter-TritonInstallEnv).
+_XPU_TRITON_CLEARED_ENV = (
+    "UV_OVERRIDE",
+    "UV_EXCLUDE",
+    "UV_CONSTRAINT",
+    "PIP_CONSTRAINT",
+    "UV_REQUIRE_HASHES",
+    "PIP_REQUIRE_HASHES",
+)
+
+
+@contextlib.contextmanager
+def _xpu_triton_install_env():
+    saved = {name: os.environ.get(name) for name in _XPU_TRITON_CLEARED_ENV}
+    try:
+        for name in _XPU_TRITON_CLEARED_ENV:
+            os.environ.pop(name, None)
+        # Env beats pip.conf, so a configured require-hashes is off too.
+        os.environ["PIP_REQUIRE_HASHES"] = "0"
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def _xpu_triton_installed(spec: str) -> bool:
+    """A fresh look at the venv: the XPU dist recorded, no generic triton, and triton importing.
+
+    By name, so a ~riton-* backup an interrupted pip leaves is not a generic triton.
+    """
+    code = (
+        "import importlib.metadata as m, re, sys\n"
+        "import triton, triton.language as tl\n"
+        "n = re.match(r'[A-Za-z0-9._-]+', sys.argv[1])\n"
+        "ok = (n is not None and any(m.distributions(name=n.group(0)))\n"
+        "      and not any(m.distributions(name='triton'))\n"
+        "      and getattr(tl, '__file__', None) is not None\n"
+        "      and callable(getattr(triton, 'jit', None))\n"
+        "      and callable(getattr(tl, 'program_id', None)))\n"
+        "sys.exit(0 if ok else 1)\n"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code, spec],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            timeout = 90,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def _ensure_xpu_triton() -> None:
     """Replace generic Triton with the XPU build torch asks for.
 
@@ -4794,8 +4852,9 @@ def _ensure_xpu_triton() -> None:
                     "    reqs = []\n"
                     "print('SPEC=' + next((r.split(';')[0].strip() "
                     "for r in reqs if 'triton' in r.lower()), ''))\n"
-                    "print('GENERIC=' + next((d.version for d in m.distributions() "
-                    "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton'), ''))\n"
+                    # By name: a ~riton-* backup an interrupted pip leaves still says Name: triton.
+                    "print('GENERIC=' + next(((d.version or '?') "
+                    "for d in m.distributions(name='triton')), ''))\n"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -4826,66 +4885,79 @@ def _ensure_xpu_triton() -> None:
     # uninstalling last would delete the XPU files; pre-fetching keeps a dead mirror from stranding
     # the venv between the two. uv has no `pip download`.
     tmp = tempfile.mkdtemp(prefix = "unsloth_triton_xpu_")
-    try:
-        _dl_cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "download",
-            "--no-deps",
-            "--only-binary=:all:",
-            "-d",
-            tmp,
-            spec,
-            "--index-url",
-            pin,
-        ]
+    # Every step, as setup.ps1 does: the download, the uninstall and the install all read these.
+    with _xpu_triton_install_env():
         try:
-            dl = subprocess.run(
-                _dl_cmd,
-                # Scrub PIP_NO_INDEX / PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS so only the pinned index serves it.
-                env = _install_env_for_cmd(_dl_cmd),
-                stdout = subprocess.PIPE,
-                stderr = subprocess.STDOUT,
-                timeout = 900,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            dl = None
-        wheels = glob.glob(os.path.join(tmp, "*.whl"))
-        if dl is None or dl.returncode != 0 or not wheels:
-            _safe_print(
-                _red(
-                    f"   could not fetch {spec}; generic triton {generic} left in place -- "
-                    "it shadows torch XPU triton, so torch.compile will not use the XPU"
+            _dl_cmd = [
+                sys.executable,
+                "-m",
+                "pip",
+                "download",
+                "--no-deps",
+                "--only-binary=:all:",
+                "-d",
+                tmp,
+                spec,
+                "--index-url",
+                pin,
+            ]
+            try:
+                dl = subprocess.run(
+                    _dl_cmd,
+                    # Scrub PIP_NO_INDEX / PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS so only the pinned index serves it.
+                    env = _install_env_for_cmd(_dl_cmd),
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.STDOUT,
+                    timeout = 900,
                 )
-            )
-            return
-        _count_install_action()
-        removed = subprocess.run(
-            [sys.executable, "-m", "pip", "uninstall", "-y", "triton"],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-        )
-        if removed.returncode != 0:
-            # Locked venv: generic triton stays registered, and installing over it would get the files deleted later.
-            _safe_print(
-                _red(
-                    f"   could not remove generic triton {generic}; leaving it in place -- it "
-                    "shadows torch XPU triton, so torch.compile will not use the XPU"
+            except (OSError, subprocess.TimeoutExpired):
+                dl = None
+            wheels = glob.glob(os.path.join(tmp, "*.whl"))
+            if dl is None or dl.returncode != 0 or not wheels:
+                _safe_print(
+                    _red(
+                        f"   could not fetch {spec}; generic triton {generic} left in place -- "
+                        "it shadows torch XPU triton, so torch.compile will not use the XPU"
+                    )
                 )
+                return
+            _count_install_action()
+            removed = subprocess.run(
+                [sys.executable, "-m", "pip", "uninstall", "-y", "triton"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
             )
-            return
-        # The venv now has NO triton. pip_install (exits) so no completion manifest lands over a broken
-        # torch.compile.
-        pip_install(
-            "triton (Intel XPU)",
-            "--force-reinstall",
-            "--no-deps",
-            wheels[0],
-            constrain = False,
-        )
-    finally:
-        shutil.rmtree(tmp, ignore_errors = True)
+            if removed.returncode != 0:
+                # Locked venv: generic triton stays registered, and installing over it would get the files deleted later.
+                _safe_print(
+                    _red(
+                        f"   could not remove generic triton {generic}; leaving it in place -- it "
+                        "shadows torch XPU triton, so torch.compile will not use the XPU"
+                    )
+                )
+                return
+            # The venv now has NO triton. pip_install (exits) so no completion manifest lands over a broken
+            # torch.compile.
+            pip_install(
+                "triton (Intel XPU)",
+                "--force-reinstall",
+                "--no-deps",
+                wheels[0],
+                constrain = False,
+            )
+            # Exit 0 is not enough: a uv config's override or exclude can skip the wheel and still succeed.
+            if not _xpu_triton_installed(spec):
+                _safe_print(
+                    _red(
+                        f"   {spec} did not install or triton does not import, and generic triton "
+                        "is already removed -- torch.compile is broken. Repair with: python -m pip "
+                        f"install --force-reinstall --no-deps {spec} --index-url "
+                        f"{_strip_index_url_credentials(pin)}"
+                    )
+                )
+                raise SystemExit(1)
+        finally:
+            shutil.rmtree(tmp, ignore_errors = True)
 
 
 def _installed_torch_label_on_disk() -> str:

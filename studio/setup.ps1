@@ -7576,7 +7576,9 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
                 try { $_bnbStale = [version]$_bnbNum -lt [version]"0.50.0" } catch {}
             }
             $_tritonWinPresent = $_xpuDeps.Output -match '(?m)^TRITONWIN=\S+\s*$'
-            if ($_bnbStale -or $_tritonWinPresent) {
+            # Clean metadata is not a working triton: an interrupted replacement can leave only the backup record
+            # with the files gone, and only the dependency pass and the post-stack swap put them back.
+            if ($_bnbStale -or $_tritonWinPresent -or -not (Get-TritonRuntimeState).Healthy) {
                 substep "Intel XPU dependencies are stale -- running the dependency pass" "Cyan"
                 $SkipPythonDeps = $false
             }
@@ -8642,9 +8644,21 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
     $_tritonProbe = Get-XpuTritonState
     $_tritonWinVer = $_tritonProbe.TritonWin
     $_tritonXpuSpec = $_tritonProbe.XpuSpec
-    # Anything but an XPU triton spec means torch is not the +xpu wheel.
-    if ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
-        substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"
+    # Anything but an XPU triton spec means torch is not the +xpu wheel. A triton that does not import is
+    # repaired too: once only a ~riton_windows backup is left there is no triton-windows record to trigger this.
+    $_tritonImportedBefore = $true
+    if ($_tritonXpuSpec -match '(?i)xpu') { $_tritonImportedBefore = (Get-TritonRuntimeState).Healthy }
+    if ($_tritonXpuSpec -match '(?i)xpu' -and ($_tritonWinVer -or -not $_tritonImportedBefore)) {
+        if ($_tritonWinVer) {
+            substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"
+            $_tritonLeft = "triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU."
+        } else {
+            substep "triton does not import -- reinstalling $_tritonXpuSpec (Intel XPU)..." "Cyan"
+            $_tritonLeft = "triton still does not import, so torch.compile will not work."
+        }
+        # Redacted: a mirror pin can carry a token.
+        $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
+        $_tritonRepair = "python -m pip install --force-reinstall --no-deps $_tritonXpuSpec --index-url $_tritonRepairUrl"
         # test_intel_registry_fallback.ps1 asserts this literal matches MANIFEST_NAME.
         $_manifestPath = Join-Path $VenvDir "unsloth_install_manifest.json"
         # Fetch, then uninstall, then install, so a dead mirror cannot strand the venv between steps.
@@ -8665,7 +8679,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
             }
             $_tritonWheel = @(Get-ChildItem -LiteralPath $_tritonTmp -Filter "*.whl" -ErrorAction SilentlyContinue) | Select-Object -First 1 -ExpandProperty FullName
             if ($tritonDlExit -ne 0 -or -not $_tritonWheel) {
-                substep "[WARN] could not fetch $_tritonXpuSpec (exit $tritonDlExit); triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
+                substep "[WARN] could not fetch $_tritonXpuSpec (exit $tritonDlExit); $_tritonLeft" "Yellow"
                 Write-StudioLine (Redact-InstallOutput $tritonDlOutput) -ForegroundColor Yellow
             } else {
                 # Move (never rewrite) the manifest aside during the swap: 5.1 encodings would corrupt it.
@@ -8687,16 +8701,27 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                 }
                 if ($_manifestBlocked) {
                     # An unmovable manifest stays valid through the destructive window, so skip the swap.
-                    substep "[WARN] could not set the install manifest aside; triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
-                } else {
+                    substep "[WARN] could not set the install manifest aside; $_tritonLeft" "Yellow"
+                } elseif ($_tritonWinVer) {
                     Fast-Uninstall "triton-windows" | Out-Null
                     $_uninstallExit = $LASTEXITCODE
                 }
-                # An uninstall that failed (file held open) leaves the shadowing in place.
+                # An uninstall that failed (file held open) leaves the shadowing in place, but it can also have
+                # removed files part way: the manifest goes back only while triton still imports.
                 if (-not $_manifestBlocked -and $_uninstallExit -ne 0) {
-                    substep "[WARN] could not remove triton-windows $_tritonWinVer (exit $_uninstallExit); it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
-                    if ($_manifestHeld) {
-                        try { Move-Item -LiteralPath $_manifestHeld -Destination $_manifestPath -Force -ErrorAction Stop } catch {}
+                    if ((Get-TritonRuntimeState).Healthy) {
+                        substep "[WARN] could not remove triton-windows $_tritonWinVer (exit $_uninstallExit); it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
+                        if ($_manifestHeld) {
+                            try { Move-Item -LiteralPath $_manifestHeld -Destination $_manifestPath -Force -ErrorAction Stop } catch {}
+                        }
+                    } elseif ($_tritonImportedBefore) {
+                        Write-StudioLine "[ERROR] removing triton-windows $_tritonWinVer failed part way (exit $_uninstallExit) and triton no longer imports -- torch.compile is broken." -ForegroundColor Red
+                        Write-StudioLine "        Repair with: $_tritonRepair" -ForegroundColor Red
+                        # Fail, or install.ps1 commits this venv over its rollback copy.
+                        $stackExit = $_uninstallExit
+                    } else {
+                        # Broken before the swap touched it: no worse, and the withheld manifest makes the next update retry.
+                        substep "[WARN] could not remove triton-windows $_tritonWinVer (exit $_uninstallExit); $_tritonLeft" "Yellow"
                     }
                 } elseif (-not $_manifestBlocked) {
                     if ($script:UnslothVerbose) {
@@ -8720,14 +8745,15 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                         $_tritonPresent = ($tritonBackExit -eq 0 -and (Get-TritonRuntimeState).Healthy)
                         Write-StudioLine (Redact-InstallOutput $tritonOutput) -ForegroundColor Yellow
                         if ($_tritonPresent) {
-                            substep "[WARN] could not install $_tritonXpuSpec ($_tritonXpuWhy); restored triton-windows, so triton still imports -- but torch.compile will not use the XPU." "Yellow"
-                        } else {
-                            # Redacted: a mirror pin can carry a token.
-                            $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
+                            substep "[WARN] could not install $_tritonXpuSpec ($_tritonXpuWhy); fell back to triton-windows, so triton imports -- but torch.compile will not use the XPU." "Yellow"
+                        } elseif ($_tritonImportedBefore) {
                             Write-StudioLine "[ERROR] triton-windows was removed and neither triton would reinstall -- torch.compile is broken." -ForegroundColor Red
-                            Write-StudioLine "        Repair with: python -m pip install --force-reinstall --no-deps $_tritonXpuSpec --index-url $_tritonRepairUrl" -ForegroundColor Red
+                            Write-StudioLine "        Repair with: $_tritonRepair" -ForegroundColor Red
                             # Fail, or install.ps1 commits this triton-less venv over its rollback copy.
                             $stackExit = if ($tritonBackExit -ne 0) { $tritonBackExit } else { 1 }
+                        } else {
+                            # Broken before the swap touched it: no worse, and the withheld manifest makes the next update retry.
+                            substep "[WARN] could not install $_tritonXpuSpec ($_tritonXpuWhy) and the triton-windows fallback does not import either; $_tritonLeft Repair with: $_tritonRepair" "Yellow"
                         }
                     }
                     # Restore only once a triton imports; a lost manifest makes the next update repair.
