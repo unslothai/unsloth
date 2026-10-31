@@ -3,6 +3,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { LiquidGlassLayer, isLiquidMaterial } from "./liquid-glass";
 import { useMaterialStore } from "./material";
 import { LENS_SCALE } from "./model";
 
@@ -20,9 +21,12 @@ export function ComposerGlassLenses({
   wallpaper: HTMLElement | null;
 }) {
   const material = useMaterialStore((s) => s.material);
+  const lens = useMaterialStore((s) => s.lens);
   const [hosts, setHosts] = useState<HTMLElement[]>([]);
   const workspace = wallpaper?.parentElement ?? null;
   const on = Boolean(workspace) && material !== "solid";
+  // A magnifying or shrinking copy covers the whole composer, so it replaces the refraction layer.
+  const liquid = isLiquidMaterial(material) && lens === "off";
   useEffect(() => {
     if (!workspace || !on) return;
     let frame = 0;
@@ -49,7 +53,10 @@ export function ComposerGlassLenses({
   if (!wallpaper || !on) return null;
   return hosts.map((host, i) =>
     createPortal(
-      <Lens host={host} wallpaper={wallpaper} />,
+      <>
+        {liquid && <LiquidGlassLayer host={host} kind="composer" />}
+        <Lens host={host} wallpaper={wallpaper} />
+      </>,
       host,
       `glass-lens-${i}`,
     ),

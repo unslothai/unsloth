@@ -111,3 +111,9 @@ test("glass lens modes repair malformed data and scale the right way", () => {
 	assert.match(css, /\.glass-lens \{\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
 	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
 });
+
+test("a liqui refraction layer's host drops its own backdrop-filter", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	// A host that kept it would be a backdrop root, and the layer would refract only the host.
+	assert.match(css, /\.unsloth-composer-surface, [^)]*\):has\(> \.unsloth-liquid-layer\) \{\n  -webkit-backdrop-filter: none !important;\n  backdrop-filter: none !important;/);
+});

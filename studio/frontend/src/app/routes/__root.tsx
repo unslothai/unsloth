@@ -4,6 +4,7 @@
 import {
   BACKGROUND_ON_ALL_PAGES,
   ChatBackground,
+  LiquidGlassMount,
   WindowMaterialMount,
 } from "@/features/chat-background";
 import { ImageViewer } from "@/components/image-viewer";
@@ -701,6 +702,7 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <InterfaceZoom />
       <WindowMaterialMount />
+      <LiquidGlassMount />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
