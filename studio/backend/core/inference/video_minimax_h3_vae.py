@@ -18,6 +18,7 @@ from .rocm_bf16 import is_rocm_torch
 H3_VAE_FAST_ENV = "UNSLOTH_H3_VAE_FAST"
 H3_VAE_INT8_ENV = "UNSLOTH_H3_VAE_INT8"
 H3_VAE_TILE_BATCH_ENV = "UNSLOTH_H3_VAE_TILE_BATCH"
+H3_VAE_INT8_FUSED_ENV = "UNSLOTH_H3_VAE_INT8_FUSED"
 FP16_ACCUM_DISABLE_ENV = "UNSLOTH_DISABLE_FP16_ACCUM"
 
 LEVER_FUSED_ENCODER = "fused_encoder"
@@ -1053,6 +1054,61 @@ def _install_tile_batch(vae: Any) -> bool:
     return True
 
 
+# cuda ordinal -> True once the DiT's ConvRot act-quant kernel and fused-dequant int8 GEMM passed their probes there
+_FUSED_DEVICES: dict = {}
+
+
+def _fused_int8_ready(index: Optional[int]) -> bool:
+    """Probe (once per card, never inside a forward) the DiT's rotation + act quant kernel and fused-dequant GEMM."""
+    if index is None or _env(H3_VAE_INT8_FUSED_ENV) in _FALSE:
+        return False
+    if index not in _FUSED_DEVICES:
+        ok = False
+        try:
+            from . import diffusion_int8_gemm as gemm
+            from .diffusion_convrot_quant import rotquant_device_config
+            ok = (
+                gemm.int8_gemm_mode() != "off"
+                and gemm._op() is not None
+                and gemm.device_config(index) is not None
+                and rotquant_device_config(index) is not None
+            )
+        except Exception:  # noqa: BLE001 - the unfused path stays
+            ok = False
+        _FUSED_DEVICES[index] = ok
+    return _FUSED_DEVICES[index]
+
+
+def _fused_int8_linear(
+    linear: Any, x2: Any, wq: Any, ws: Any, out_dtype: Any, group: int
+) -> Optional[Any]:
+    """A rotated Linear on the DiT's kernels: one ConvRot rotation + int8 act quant, then the int8 GEMM with the
+    dequant in its epilogue (three passes over the activation fewer than the rotation GEMM + quant + ``_int_mm`` +
+    dequant). None when this card / shape / dtype is not covered."""
+    import torch
+
+    bias = linear.bias
+    if (
+        _env(H3_VAE_INT8_FUSED_ENV) in _FALSE
+        or out_dtype != torch.bfloat16
+        or x2.dtype != torch.bfloat16
+        or not _FUSED_DEVICES.get(x2.device.index)
+        or (bias is not None and bias.dtype != torch.bfloat16)
+        or x2.shape[1] % 64
+        or wq.shape[0] % 16
+    ):
+        return None
+    from . import diffusion_int8_gemm as gemm
+    from .diffusion_convrot_quant import convrot_act_quant
+
+    q = convrot_act_quant(x2, group, True)
+    op = gemm._op()
+    if q is None or op is None:
+        return None
+    xq, xs = q
+    return op(xq, wq, xs.reshape(-1), ws, bias)
+
+
 def _int8_linear(linear: Any, x: Any) -> Any:
     """W8A8: per-token int8 activations, per-output-channel int8 weights, int32 accumulate via ``torch._int_mm``."""
     import torch
@@ -1064,6 +1120,18 @@ def _int8_linear(linear: Any, x: Any) -> Any:
     wq, ws = linear._unsloth_int8
     out_dtype = torch.get_autocast_dtype("cuda") if torch.is_autocast_enabled("cuda") else x.dtype
     rot = getattr(linear, "_unsloth_rot", None)
+    if (
+        rot is not None
+        and x.is_cuda
+        and x.shape[-1] >= rot.shape[0]
+        and x.numel() >= 17 * x.shape[-1]
+    ):
+        x2 = x.reshape(-1, x.shape[-1])
+        out = _fused_int8_linear(
+            linear, x2 if x2.is_contiguous() else x2.contiguous(), wq, ws, out_dtype, rot.shape[0]
+        )
+        if out is not None:
+            return out.view(*x.shape[:-1], out.shape[-1])
     if rot is not None:
         # ConvRot: weight stored as W @ H.T, so x @ H keeps the product while spreading outlier channels
         g = rot.shape[0]
@@ -1153,6 +1221,15 @@ def _install_int8_decoder(vae: Any, *, keep_blocks: Optional[tuple] = None) -> i
                 wq, ws = _quantize_int8_weight(w, hadamard if rotate else None)
                 staged.append((linear, wq, ws, rotate))
         cls = _int8_linear_class()
+    if hadamard is not None:
+        try:
+            if torch.cuda.is_available():
+                # the card holding the weights (it runs the forward), and the current one for weights offloaded to host
+                if hadamard.is_cuda:
+                    _fused_int8_ready(hadamard.device.index)
+                _fused_int8_ready(torch.cuda.current_device())
+        except Exception:  # noqa: BLE001 - the unfused path stays
+            pass
     freed = 0
     for linear, wq, ws, rotate in staged:
         if rotate:
