@@ -186,6 +186,15 @@ class NodeContext(Protocol):
 
     def text_delta(self, port: str, delta: str) -> None: ...
 
+    def partial(
+        self,
+        port: str,
+        value: Any,
+        *,
+        step: Optional[int] = None,
+        total: Optional[int] = None,
+    ) -> None: ...
+
     @property
     def cancelled(self) -> bool: ...
 

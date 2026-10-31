@@ -6,7 +6,9 @@
 Checks: schema and limits, known node types, ports and port types, one edge per non-multi input, flow edges only
 between story control handles, acyclic data edges, For Each bodies, required inputs. A For Each node's body is the
 nodes whose ``group`` is the For Each node's id, plus the other nodes of the For Each node's own group. Edges into a
-For Each node's ``collect`` port come from inside its body and are not dependencies."""
+For Each node's ``collect`` port come from inside its body and are not dependencies. A Loop node's body
+is built the same way, plus the recipe group its ``feedback`` edge feeds; that edge carries one round's
+failures into the next round and is not a dependency either, so the data edges stay acyclic."""
 
 from __future__ import annotations
 
@@ -17,10 +19,17 @@ from typing import Any, Iterable, Optional
 from pydantic import ValidationError
 
 from core.flows import schema
+from core.flows.recipe_compile import RecipeCompileError, compile_recipe, recipe_graph
+from core.flows.recipe_import import COLUMN_TYPE, GENERATE_TYPE
 from core.flows.specs import SPECS_BY_TYPE
 
 FOR_EACH = "logic.for_each"
+LOOP = "logic.loop"
+REPEATS = (FOR_EACH, LOOP)
+FEEDBACK = "feedback"
 COLLECT_PORT = "collect"
+# The compiled `{recipe, run}` a Recipe Dataset node runs, filled in from its group at compile time.
+RECIPE_PARAM = "_recipe"
 FOR_EACH_INNER_PORTS = ("item", "index")
 FLOW_TARGET_PORT = "in"
 JSON_LIKE = (
@@ -146,6 +155,8 @@ class Plan:
     waits: dict[str, set[str]] = field(default_factory = dict)
     flow_edges: list[dict] = field(default_factory = list)
     warnings: list[dict] = field(default_factory = list)
+    # Loop node id -> its feeds-the-next-round edge.
+    feedback: dict[str, dict] = field(default_factory = dict)
 
     def top_level(self) -> list[str]:
         return [n for n in self.order if self.owner.get(n) is None]
@@ -179,10 +190,10 @@ class Plan:
         return [n for n in pool if self.specs[n]["lane"] == "gpu"]
 
 
-def _members(doc_nodes: dict[str, dict]) -> dict[str, set[str]]:
+def _members(doc_nodes: dict[str, dict], edges: list[dict]) -> dict[str, set[str]]:
     members: dict[str, set[str]] = {}
     for fid, node in doc_nodes.items():
-        if node["type"] != FOR_EACH:
+        if node["type"] not in REPEATS:
             continue
         found = {nid for nid, n in doc_nodes.items() if n.get("group") == fid}
         if node.get("group"):
@@ -192,6 +203,17 @@ def _members(doc_nodes: dict[str, dict]) -> dict[str, set[str]]:
                 if nid != fid and n.get("group") == node["group"]
             }
         members[fid] = found
+    # A Loop also repeats the recipe group its feedback edge feeds, wherever that frame sits.
+    for edge in edges:
+        if edge.get("kind") != FEEDBACK or edge["target"] not in doc_nodes:
+            continue
+        group = doc_nodes[edge["target"]].get("group")
+        for fid, found in members.items():
+            if doc_nodes[fid]["type"] == LOOP and edge["source"] in found:
+                found.add(edge["target"])
+                if group:
+                    found |= {nid for nid, n in doc_nodes.items() if n.get("group") == group}
+                found.discard(fid)
     return members
 
 
@@ -219,7 +241,7 @@ def compile_flow(doc: dict) -> Plan:
             if isinstance(value, str) and len(value) > schema.MAX_STRING_PARAM:
                 errors.append(issue(f"Parameter {key} is too long", node_id = nid))
 
-    members = _members(nodes)
+    members = _members(nodes, list(doc.get("edges", [])))
     owner: dict[str, Optional[str]] = {nid: None for nid in nodes}
     for fid, found in members.items():
         for nid in found:
@@ -250,6 +272,7 @@ def compile_flow(doc: dict) -> Plan:
     collect: dict[str, tuple[str, str]] = {}
     consumers: dict[str, set[str]] = {nid: set() for nid in nodes}
     flow_edges: list[dict] = []
+    feedback_edges: list[dict] = []
     edge_ids: set[str] = set()
     for edge in doc.get("edges", []):
         eid = edge["id"]
@@ -266,6 +289,16 @@ def compile_flow(doc: dict) -> Plan:
             continue
         sspec, dspec = specs.get(src), specs.get(dst)
         if sspec is None or dspec is None:
+            continue
+        if COLUMN_TYPE in (sspec["type"], dspec["type"]) and (
+            sspec["type"] != dspec["type"] or nodes[src].get("group") != nodes[dst].get("group")
+        ):
+            errors.append(
+                issue("A recipe column only wires to columns of its own recipe", edge_id = eid)
+            )
+            continue
+        if edge.get("kind") == FEEDBACK:
+            feedback_edges.append(edge)
             continue
         if edge.get("kind", "data") == "flow":
             if edge["source_port"] not in sspec["flow_out"]:
@@ -312,7 +345,9 @@ def compile_flow(doc: dict) -> Plan:
         if src_owner is not None and not inside(dst, src_owner):
             errors.append(
                 issue(
-                    "A node inside a For Each group can only feed its group; connect it to collect",
+                    "A step inside a Loop only feeds its Loop; use the Loop's own outputs"
+                    if nodes[src_owner]["type"] == LOOP
+                    else "A node inside a For Each group can only feed its group; connect it to collect",
                     edge_id = eid,
                 )
             )
@@ -339,11 +374,48 @@ def compile_flow(doc: dict) -> Plan:
         existing.append((src, sport["id"]))
         consumers[src].add(dst)
 
+    feedback = _check_feedback(feedback_edges, nodes, specs, owner, inputs, errors)
+
     executable = {
         nid
         for nid, node in nodes.items()
-        if nid in specs and not specs[nid]["player"] and not node.get("disabled")
+        if nid in specs
+        and not specs[nid]["player"]
+        and not specs[nid].get("design")
+        and not node.get("disabled")
     }
+    for nid in executable:
+        if nodes[nid]["type"] == LOOP and nid not in feedback:
+            errors.append(
+                issue(
+                    "Draw the dashed feeds-the-next-round wire from the score step back into the recipe's seed",
+                    node_id = nid,
+                )
+            )
+    recipe_groups = {g["id"] for g in doc.get("groups") or [] if g.get("kind") == "recipe"}
+    steps: dict[str, int] = {}
+    for node in nodes.values():
+        if node["type"] == GENERATE_TYPE and not node.get("disabled") and node.get("group"):
+            steps[node["group"]] = steps.get(node["group"], 0) + 1
+    for nid, node in nodes.items():
+        if node["type"] == COLUMN_TYPE and node.get("group") not in recipe_groups:
+            errors.append(issue("A recipe column belongs inside a Data Recipe group", node_id = nid))
+        if nid not in executable or node["type"] != GENERATE_TYPE:
+            continue
+        if steps.get(node.get("group") or "", 0) > 1:
+            errors.append(
+                issue(
+                    "A Data Recipe runs from one Recipe Dataset step; delete or disable the extra one",
+                    node_id = nid,
+                )
+            )
+            continue
+        try:
+            compiled = compile_recipe(recipe_graph(doc, node.get("group") or ""))
+        except RecipeCompileError as exc:
+            errors.append(issue(str(exc), node_id = nid))
+            continue
+        nodes[nid] = {**node, "params": {**(node.get("params") or {}), RECIPE_PARAM: compiled}}
     for nid in executable:
         spec = specs[nid]
         params = nodes[nid].get("params") or {}
@@ -357,6 +429,10 @@ def compile_flow(doc: dict) -> Plan:
                 issue(f"{spec['title']} needs its {port['label']} input connected", node_id = nid)
             )
 
+    for nid in executable:
+        if specs[nid]["type"] == BENCHMARK:
+            errors.extend(_check_benchmark(nid, nodes, specs, inputs))
+
     output_names: dict[str, str] = {}
     for nid in nodes:
         if nid in executable and specs[nid]["type"] == "output.result":
@@ -367,7 +443,16 @@ def compile_flow(doc: dict) -> Plan:
                 )
             output_names.setdefault(name, nid)
 
-    order = _topo(nodes, inputs, owner, collect)
+    # Column wires are design-only; compile_recipe orders a recipe's enabled columns itself.
+    design = {nid for nid, node in nodes.items() if node["type"] == COLUMN_TYPE}
+    flow_inputs = {
+        nid: {
+            port: [s for s in sources if not (nid in design and s[0] in design)]
+            for port, sources in ports.items()
+        }
+        for nid, ports in inputs.items()
+    }
+    order = _topo(nodes, flow_inputs, owner, collect)
     if order is None:
         errors.append(
             issue("The data connections form a loop; use a For Each group to repeat steps")
@@ -379,7 +464,12 @@ def compile_flow(doc: dict) -> Plan:
     for nid in nodes:
         if nid not in specs:
             continue
-        if nid not in executable and not specs[nid]["player"] and nodes[nid].get("disabled"):
+        if (
+            nid not in executable
+            and not specs[nid]["player"]
+            and not specs[nid].get("design")
+            and nodes[nid].get("disabled")
+        ):
             warnings.append(issue("Disabled: skipped", node_id = nid))
     waits: dict[str, set[str]] = {}
     for nid, fid in owner.items():
@@ -404,7 +494,151 @@ def compile_flow(doc: dict) -> Plan:
         waits = waits,
         flow_edges = flow_edges,
         warnings = warnings,
+        feedback = feedback,
     )
+
+
+def _check_feedback(
+    edges: list[dict],
+    nodes: dict[str, dict],
+    specs: dict[str, dict],
+    owner: dict[str, Optional[str]],
+    inputs: dict[str, dict[str, list[tuple[str, str]]]],
+    errors: list[dict],
+) -> dict[str, dict]:
+    found: dict[str, dict] = {}
+    for edge in edges:
+        eid, src, dst = edge["id"], edge["source"], edge["target"]
+        sspec, dspec = specs.get(src), specs.get(dst)
+        if sspec is None or dspec is None:
+            continue
+        loop = owner.get(src)
+        while loop is not None and nodes[loop]["type"] != LOOP:
+            loop = owner.get(loop)
+        if loop is None or not _within(dst, loop, owner):
+            errors.append(
+                issue("A feeds-the-next-round wire runs inside one Loop group", edge_id = eid)
+            )
+            continue
+        if edge["source_port"] != "failures" or not {"failures", "score"} <= {
+            p["id"] for p in sspec["outputs"]
+        }:
+            errors.append(
+                issue(
+                    "Feed the next round from a step that scores the model (its failures and score)",
+                    edge_id = eid,
+                )
+            )
+            continue
+        task = next((p for p in sspec["params"] if p["id"] == "task"), None)
+        if (
+            task
+            and (nodes[src].get("params") or {}).get("task", task["default"]) != task["default"]
+        ):
+            errors.append(
+                issue(
+                    f"A Loop scores its own held-out rows: set {sspec['title']}'s Task to {task['default']}",
+                    node_id = src,
+                )
+            )
+            continue
+        dport = next((p for p in dspec["inputs"] if p["id"] == edge["target_port"]), None)
+        if dspec["type"] != GENERATE_TYPE or dport is None or dport["id"] != "seed":
+            errors.append(
+                issue("The next round's failures go into a recipe's seed input", edge_id = eid)
+            )
+            continue
+        if inputs[dst].get(dport["id"]):
+            errors.append(
+                issue(f"{dspec['title']}.{dport['label']} takes one connection", edge_id = eid)
+            )
+            continue
+        held = [
+            src_node
+            for port in sspec["inputs"]
+            if port["type"] == "dataset"
+            for src_node, src_port in inputs[src].get(port["id"], ())
+            if src_port == "holdout" and _within(src_node, loop, owner)
+        ]
+        if not held:
+            errors.append(
+                issue(
+                    f"{sspec['title']} needs held-out rows from a step inside the Loop "
+                    "(Fine-tune's Held-out rows)",
+                    node_id = src,
+                )
+            )
+            continue
+        percent = next((p for p in specs[held[0]]["params"] if p["id"] == "holdout_percent"), None)
+        if percent:
+            raw = (nodes[held[0]].get("params") or {}).get("holdout_percent", percent["default"])
+            # int(), as the run reads it: 0.5 truncates to no hold-out at all.
+            try:
+                unset = int(raw or 0) < 1
+            except (TypeError, ValueError, OverflowError):
+                unset = False
+            if unset:
+                errors.append(
+                    issue(
+                        f"Set {specs[held[0]]['title']}'s Hold out % above 0, so the Loop "
+                        "has held-out rows to score",
+                        node_id = held[0],
+                    )
+                )
+                continue
+        scored = {
+            src_node
+            for port in sspec["inputs"]
+            if port["type"] == "checkpoint"
+            for src_node, _ in inputs[src].get(port["id"], ())
+        }
+        if scored != {held[0]}:
+            errors.append(
+                issue(
+                    f"Wire the Checkpoint of the step that held the rows out into {sspec['title']}, "
+                    "so each round scores the model it just trained",
+                    node_id = src,
+                )
+            )
+            continue
+        if loop in found:
+            errors.append(issue("A Loop takes one feeds-the-next-round wire", edge_id = eid))
+            continue
+        found[loop] = edge
+    return found
+
+
+BENCHMARK = "train.benchmark"
+EXPORT = "train.export"
+
+
+def _check_benchmark(nid: str, nodes: dict, specs: dict, inputs: dict) -> list[dict]:
+    wired = inputs.get(nid, {})
+    if "checkpoint" in wired and "model" in wired:
+        return [
+            issue(
+                "Benchmark scores one model: wire its Checkpoint or its Model, not both",
+                node_id = nid,
+            )
+        ]
+    task = str((nodes[nid].get("params") or {}).get("task") or "Recipe held-out")
+    if task == "Recipe held-out":
+        return []
+    if "checkpoint" in wired:
+        return [
+            issue(
+                f"{task} is an lm-eval task, and lm-eval scores a GGUF, not a Fine-tune checkpoint. Put Export "
+                "Model (Format GGUF) between them and wire it into Benchmark's Model, or set Task to Recipe held-out",
+                node_id = nid,
+            )
+        ]
+    for src, _port in wired.get("model", []):
+        if (
+            specs[src]["type"] == EXPORT
+            and str((nodes[src].get("params") or {}).get("format") or "gguf") != "gguf"
+        ):
+            return [issue(f"{task} scores a GGUF: set Export Model's Format to GGUF", node_id = nid)]
+    return []
 
 
 def _topo(

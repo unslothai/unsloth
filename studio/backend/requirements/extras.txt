@@ -13,6 +13,7 @@ scikit-learn==1.8.0; sys_platform == "win32" and platform_machine == "ARM64"
 
 # Additional extras
 jiwer==4.0.0                     # WER/CER metrics for vision OCR save-merge benchmarks
+gguf>=0.10.0                     # Required by transformers to load GGUF checkpoints in PyTorch
 omegaconf==2.3.1
 # Imported only by Hub remote code (DeepSeek-OCR and DeepSeek-OCR-2 modeling files), so a
 # grep of this repo finds no user; without them those models fail to load (#8732).

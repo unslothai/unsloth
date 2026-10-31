@@ -26,6 +26,7 @@ from core.flows import assets as asset_store
 from core.flows import glb, schema
 from core.flows.compiler import parse_document
 from core.flows import replication
+from core.flows.recipe_share import missing_seed, share_flow
 from core.flows.specs import SPECS_BY_TYPE
 
 MAX_ENTRIES = schema.MAX_ASSETS + 8
@@ -163,6 +164,34 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
     return {k: await _embed(v, read_media, files) for k, v in value.items()}
 
 
+_LOCAL_SEEDS = ("local", "unstructured")
+_UPLOAD_UI = (
+    "unstructured_file_ids",
+    "unstructured_file_names",
+    "unstructured_file_sizes",
+    "unstructured_upload_uid",
+    "local_file_name",
+)
+
+
+def _drop_local_seeds(doc: dict) -> None:
+    """A recipe group's seed preview rows, and an uploaded seed's paths and upload ids, stay here."""
+    for group in doc.get("groups") or []:
+        if not isinstance(group, dict) or group.get("kind") != "recipe":
+            continue
+        if isinstance(group.get("ui"), dict):
+            group["ui"].pop("seed_preview_rows", None)
+        seed = (group.get("config") or {}).get("seed_config")
+        source = seed.get("source") if isinstance(seed, dict) else None
+        if not isinstance(source, dict) or source.get("seed_type") not in _LOCAL_SEEDS:
+            continue
+        source.pop("path", None)
+        source.pop("paths", None)
+        if isinstance(group.get("ui"), dict):
+            for key in _UPLOAD_UI:
+                group["ui"].pop(key, None)
+
+
 def _drop_local(value: Any) -> Any:
     if isinstance(value, list):
         return [
@@ -197,7 +226,8 @@ def _uses_models(doc: dict) -> bool:
 
 async def export_flow(doc: dict, mode: str, read_media: ReadMedia) -> tuple[bytes, str, str]:
     """(bytes, filename, media type) for ``mode`` json, package or baked."""
-    doc = scrub(json.loads(json.dumps(doc)))
+    doc = scrub(share_flow(json.loads(json.dumps(doc))))
+    _drop_local_seeds(doc)
     meta = dict(doc.get("meta") or {})
     meta["created_with"] = "Unsloth Studio"
     meta.setdefault("license", DEFAULT_LICENSE)
@@ -358,7 +388,7 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
     doc, errors = parse_document(raw)
     if doc is None:
         raise PackageError("; ".join(e["message"] for e in errors[:5]) or "Not a valid flow")
-    doc = scrub(doc)
+    doc = scrub(share_flow(doc))
     declared = {asset_store.parse_ref(a["id"]) for a in doc.get("assets") or []}
     for digest in declared - set(files):
         warnings.append(f"Embedded file {digest[:12]} is missing from the package")
@@ -374,6 +404,9 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
             doc["assets"].append(
                 {"id": f"sha256:{digest}", "mime": mime, "bytes": len(blob), "name": None}
             )
+    for group in doc.get("groups") or []:
+        if group.get("kind") == "recipe" and (seed := missing_seed(group.get("config"))):
+            warnings.append(f"{group.get('label') or 'Data Recipe'}: {seed}")
     unknown = sorted({n["type"] for n in doc.get("nodes", []) if n["type"] not in SPECS_BY_TYPE})
     if unknown:
         warnings.append(

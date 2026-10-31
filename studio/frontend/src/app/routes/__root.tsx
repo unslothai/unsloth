@@ -186,6 +186,11 @@ const FlowPlayerPage = lazy(() =>
 
 const FLOW_PLAY_ROUTE = /^\/flows\/([^/]+)\/play\/?$/;
 
+// Global Evals driver, same job as useExportRuntimeLifecycle; lazy so its API and store stay out of the startup bundle.
+const BenchmarkRuntimeLifecycle = lazy(
+  () => import("@/features/benchmark/benchmark-runtime-lifecycle"),
+);
+
 // Enabled once the session is settled, not once a token exists. The first read runs once per session, so a read
 // refused mid password change would leave personalization unhydrated, and every save paused, until a reload. The
 // pathname subscription re-reads the gate on the navigation that ends the change.
@@ -297,6 +302,8 @@ const CHAT_ONLY_ALLOWED = new Set([
   // Chat-only hosts serve the API like any other, so the monitor must be reachable there
   // or the overlay's "Expand" and the Settings API card redirect to /chat.
   "/api-monitor",
+  // Inference only: a sweep reloads the chat model, which chat-only hosts run like any other.
+  "/benchmarks",
 ]);
 
 // Paths that render their own "still checking" state and self-gate once the verdict lands.
@@ -857,6 +864,9 @@ function RootLayout() {
 
   return (
     <AppProvider>
+      <Suspense fallback={null}>
+        <BenchmarkRuntimeLifecycle />
+      </Suspense>
       <CredentialBootstrapGate active={!isAuthFlowRoute}>
         <SharedRunConfigLinkHandler
           chatSearch={shouldMountChat ? chatSearch : null}

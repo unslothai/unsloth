@@ -32,7 +32,8 @@ from core.flows import assets as asset_store
 from core.flows import capabilities
 from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
-from core.flows.compiler import FOR_EACH, CompileError, Plan, compile_flow
+from core.flows import loop as loop_rounds
+from core.flows.compiler import FOR_EACH, LOOP, CompileError, Plan, compile_flow
 from core.flows.registry import FlowCancelled, FlowNodeError, load_handlers
 from core.flows.schema import MAX_FOREACH_ITEMS, MAX_GPU_OPS_PER_RUN, MAX_RUN_SECONDS
 from storage import flows_db
@@ -808,6 +809,7 @@ class FlowEngine:
         self._gpu_lock: Optional[GpuLease] = None
         self._warming: dict[tuple, asyncio.Task] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._seed_uploads: dict[tuple[str, str], dict] = {}
         self.handlers: Optional[dict] = None
         self.mint_key: Callable[[AccountContext], tuple[str, Optional[int]]] = (
             flow_caller.mint_run_key
@@ -1759,8 +1761,39 @@ class FlowEngine:
         if spec["type"] == FOR_EACH:
             await self._for_each(rs, nid, env, inputs, params, iteration)
             return
+        if spec["type"] == LOOP:
+            ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
+            try:
+                await self._rounds(rs, nid, env, ctx, iteration)
+            except (FlowCancelled, asyncio.CancelledError):
+                env.values[nid] = SKIPPED
+                rs.set_status(nid, "cancelled")
+                self._record(rs, nid, "cancelled", None, None, iteration)
+            except Exception as exc:
+                env.values[nid] = SKIPPED
+                if rs.cancelled:
+                    rs.set_status(nid, "cancelled")
+                else:
+                    if not isinstance(exc, FlowNodeError):
+                        logger.exception("flows: %s (%s) failed", nid, spec["type"])
+                    rs.node(nid).error = (
+                        str(exc)
+                        if isinstance(exc, FlowNodeError)
+                        else f"{spec['title']} failed: {exc}"
+                    )
+                    rs.set_status(nid, "failed")
+                self._record(rs, nid, rs.node(nid).status, None, rs.node(nid).error, iteration)
+            return
 
         ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
+        # Before the cache: a run that may not use a capability does not get another run's output of it.
+        for cap, detail in capabilities.node_needs(spec, params):
+            if refused := capabilities.refusal(rs.origin, rs.approvals, cap, detail, spec["title"]):
+                state.error = refused
+                env.values[nid] = SKIPPED
+                rs.set_status(nid, "failed")
+                self._record(rs, nid, "failed", None, refused, iteration)
+                return
         key = None
         choice = params.get("model")
         cacheable = spec["cacheable"] and not (
@@ -1814,10 +1847,6 @@ class FlowEngine:
             self._record(rs, nid, "failed", None, state.error, iteration)
             return
         try:
-            for cap, detail in capabilities.node_needs(spec, params):
-                refused = capabilities.refusal(rs.origin, rs.approvals, cap, detail, spec["title"])
-                if refused:
-                    raise FlowNodeError(refused)
             if spec["lane"] == "gpu":
                 lock = self.gpu_lock()
                 if lock.locked():
@@ -2053,6 +2082,262 @@ class FlowEngine:
             iteration,
             message = f"{len(failed_body)} step(s) failed" if failed_body else None,
         )
+
+    async def _dataset_rows(self, ctx: NodeContextImpl, value: Any) -> list[dict]:
+        if isinstance(value, list):
+            return [r for r in value if isinstance(r, dict)]
+        if isinstance(value, dict) and isinstance(value.get("rows"), list):
+            return [r for r in value["rows"] if isinstance(r, dict)]
+        if not isinstance(value, dict) or value.get("kind") != "dataset" or not value.get("ref"):
+            return []
+        from core.flows.nodes.data import recipe_rows
+        from core.flows.nodes.training import _load_rows
+
+        from core.training.account_jobs import account_hf_token
+
+        if value.get("source") == "recipe" and value.get("job_id"):
+            return await recipe_rows(ctx, str(value["job_id"]))
+        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+        return await asyncio.to_thread(_load_rows, value, token, None)
+
+    async def _upload_rows(self, ctx: NodeContextImpl, rows: list[dict], name: str) -> dict:
+        from core.flows.nodes.data import upload_rows
+        return await upload_rows(ctx, rows, name)
+
+    async def _seed_upload(self, ctx: NodeContextImpl, rows: list[dict], name: str) -> dict:
+        """Identical seed rows reuse one upload, so the recipe step's cache can hand back the same
+        dataset: two Loops on the same flow seed share round 1 and with it the probe/test split."""
+        from core.flows.nodes.data import local_seed_path
+
+        key = (
+            ctx._rs.account.account_id,
+            hashlib.sha256(json.dumps(rows, sort_keys = True).encode()).hexdigest(),
+        )
+        found = self._seed_uploads.get(key)
+        if found is not None:
+            try:
+                local_seed_path(found["ref"])
+                return dict(found)
+            except FlowNodeError:
+                pass
+        found = await self._upload_rows(ctx, rows, name)
+        self._seed_uploads[key] = found
+        while len(self._seed_uploads) > 256:
+            self._seed_uploads.pop(next(iter(self._seed_uploads)))
+        return dict(found)
+
+    async def _rounds(
+        self, rs: RunState, nid: str, env: Env, ctx: NodeContextImpl, iteration: Optional[tuple]
+    ) -> None:
+        """Run the Loop's body once per round. The score step runs twice a round, on the probe rows and
+        on the test rows; only the probe run's failures reach the next round's seed."""
+        plan = rs.plan
+        params = ctx.params
+        edge = plan.feedback[nid]
+        scorer, fail_port = edge["source"], edge["source_port"]
+        seed_node, seed_port = edge["target"], edge["target_port"]
+        held_port, held_src = next(
+            (port["id"], src)
+            for port in plan.specs[scorer]["inputs"]
+            if port["type"] == "dataset"
+            for src in plan.inputs[scorer].get(port["id"], ())
+            if src[1] == "holdout"
+        )
+        body = plan.body_order(nid)
+        after: set[str] = set()
+        stack = [scorer]
+        while stack:
+            for nxt in plan.consumers.get(stack.pop(), ()):
+                if nxt in body and nxt not in after:
+                    after.add(nxt)
+                    stack.append(nxt)
+        before = [b for b in body if b != scorer and b not in after]
+        rounds = max(1, min(int(params.get("rounds") or 3), 20))
+        target = float(params.get("target") if params.get("target") is not None else 90)
+        feed = params.get("feedback") is not False
+        failure_percent = int(
+            params.get("failure_percent")
+            if params.get("failure_percent") is not None
+            else loop_rounds.FAILURE_PERCENT
+        )
+        per_failure = int(params.get("per_failure") or loop_rounds.PER_FAILURE)
+        seed_rows = int((plan.nodes[seed_node].get("params") or {}).get("rows") or 50)
+        scorer_params = plan.nodes[scorer].get("params") or {}
+        in_percent = plan.specs[scorer]["type"] in loop_rounds.PERCENT_SCORERS
+        rs.set_status(nid, "running")
+        history: list[dict] = []
+        failures: list[dict] = []
+        probe = test = None
+        test_rows: list[dict] = []
+        best: Optional[dict] = None
+        stopped = "max_rounds"
+        # Steps with an unwired Continue from input keep training last round's checkpoint.
+        carry = [
+            b
+            for b in before
+            if params.get("continue_rounds") is not False
+            and any(
+                p["id"] == "start" and p["type"] == "checkpoint" for p in plan.specs[b]["inputs"]
+            )
+            and not plan.inputs[b].get("start")
+        ]
+        last: dict[str, dict] = {}
+        saved = {k: dict(rs.input_overrides.get(k, {})) for k in (seed_node, scorer, *carry)}
+
+        def override(node: str, port: str, value: Any) -> None:
+            rs.input_overrides[node] = {**saved[node], port: value}
+
+        async def score(split: dict, layer: Env, key: tuple) -> dict:
+            override(scorer, held_port, split)
+            await self._run_scope(rs, [scorer], layer, key)
+            produced = layer.values.get(scorer)
+            if not isinstance(produced, dict):
+                raise FlowNodeError(rs.node(scorer).error or "The score step did not finish")
+            return produced
+
+        try:
+            for r in range(rounds):
+                if rs.cancelled:
+                    break
+                rs.progress(
+                    nid,
+                    {
+                        "fraction": r / rounds,
+                        "step": r + 1,
+                        "total": rounds,
+                        "phase": f"Round {r + 1} of {rounds}",
+                    },
+                )
+                key = (*(iteration or ()), r)
+                child = Env(env)
+                child.values[nid] = {}
+                rows = loop_rounds.seed_rows(
+                    failures if feed else [],
+                    seed_rows,
+                    failure_percent,
+                    str(scorer_params.get("prompt_column") or ""),
+                    str(scorer_params.get("reference_column") or ""),
+                    per_failure,
+                )
+                fed = sum(1 for row in rows if row["origin"] == "failure")
+                seed = await self._seed_upload(ctx, rows, f"loop-{nid}-round-{r + 1}")
+                override(seed_node, seed_port, seed)
+                for b in carry:
+                    if b in last:
+                        override(b, "start", last[b])
+                continued = next((last[b].get("name") for b in carry if b in last), None)
+                await self._run_scope(rs, before, child, key)
+                if rs.cancelled:
+                    break
+                broken = next((b for b in before if rs.node(b).status == "failed"), None)
+                if broken:
+                    raise FlowNodeError(
+                        f"Round {r + 1}: {plan.specs[broken]['title']} failed: {rs.node(broken).error or 'see its node'}"
+                    )
+                if probe is None:
+                    produced = child.get(held_src[0])
+                    held = produced.get(held_src[1]) if isinstance(produced, dict) else None
+                    if not held:
+                        raise FlowNodeError(
+                            "Round 1 produced no held-out rows to score; set Hold out % on Fine-tune"
+                        )
+                    probe_rows, test_rows = loop_rounds.split_holdout(
+                        await self._dataset_rows(ctx, held),
+                        int(params.get("probe_percent") or 50),
+                        int(params.get("split_seed") or 0),
+                    )
+                    if not probe_rows or not test_rows:
+                        raise FlowNodeError(
+                            "The Loop needs at least 2 held-out rows: one to probe, one to test"
+                        )
+                    probe = {
+                        **await self._upload_rows(ctx, probe_rows, f"loop-{nid}-probe"),
+                        "split": "probe",
+                    }
+                    test = {
+                        **await self._upload_rows(ctx, test_rows, f"loop-{nid}-test"),
+                        "split": "test",
+                    }
+                probe_out = await score(probe, Env(child), (*key, 0))
+                test_layer = Env(child)
+                test_out = await score(test, test_layer, (*key, 1))
+                if after:
+                    await self._run_scope(
+                        rs, [b for b in body if b in after], test_layer, (*key, 1)
+                    )
+                found = probe_out.get(fail_port)
+                failures = loop_rounds.drop_test_rows(
+                    await self._dataset_rows(ctx, found), test_rows
+                )
+                entry = {
+                    "round": r + 1,
+                    "test_score": loop_rounds.as_percent(test_out.get("score"), in_percent),
+                    "probe_score": loop_rounds.as_percent(probe_out.get("score"), in_percent),
+                    "rows_from_failures": fed,
+                    "probe_failures": len(failures),
+                    "probe_rows": probe.get("rows"),
+                    "test_rows": test.get("rows"),
+                    "continued_from": continued,
+                }
+                for b in carry:
+                    produced = child.values.get(b)
+                    if isinstance(produced, dict) and isinstance(produced.get("checkpoint"), dict):
+                        last[b] = produced["checkpoint"]
+                # The Fine-tune whose held-out rows were scored, not whichever trainer comes first.
+                trained = child.values.get(held_src[0])
+                checkpoint = (
+                    trained["checkpoint"]
+                    if isinstance(trained, dict) and isinstance(trained.get("checkpoint"), dict)
+                    else None
+                )
+                history.append(entry)
+                if entry["test_score"] is not None and (
+                    best is None or entry["test_score"] > best["test_score"]
+                ):
+                    best = {**entry, "checkpoint": checkpoint}
+                rs.partial(
+                    nid, {"port": "history", "value": list(history), "step": r + 1, "total": rounds}
+                )
+                if entry["test_score"] is not None and entry["test_score"] >= target:
+                    stopped = "target"
+                    break
+        finally:
+            for node, kept in saved.items():
+                if kept:
+                    rs.input_overrides[node] = kept
+                else:
+                    rs.input_overrides.pop(node, None)
+        if rs.cancelled:
+            env.values[nid] = SKIPPED
+            rs.set_status(nid, "cancelled")
+            return
+        outputs = {
+            "score": best["test_score"] if best else None,
+            "history": {
+                "rounds": history,
+                "stopped": stopped,
+                "target": target,
+                "feedback": feed,
+                "continue": bool(carry),
+                # Same id, same test rows: runs that share it are scored on the same split.
+                "split": hashlib.sha256(
+                    json.dumps(test_rows, sort_keys = True, default = str).encode()
+                ).hexdigest()[:12]
+                if test_rows
+                else None,
+            },
+            "checkpoint": best["checkpoint"] if best else None,
+        }
+        message = (
+            f"Reached {best['test_score']:g}% in round {best['round']}"
+            if stopped == "target" and best
+            else (
+                f"Best {best['test_score']:g}% (round {best['round']}), target {target:g}%"
+                if best
+                else None
+            )
+        )
+        self._finish(rs, nid, env, outputs, "done", iteration, message = message)
 
     async def _bake(self, rs: RunState) -> None:
         baked: dict[str, dict] = {}

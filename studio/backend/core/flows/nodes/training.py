@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import random
 import secrets
 import time
 from typing import Any, Optional
@@ -30,6 +32,9 @@ OPTIONAL_INTS = (
     "vision_image_size",
     "dataset_slice_end",
 )
+HOLDOUT_MAX_ROWS = 200_000
+HISTORY_POINTS = 80
+LOADERS = {".parquet": "parquet", ".csv": "csv", ".json": "json", ".jsonl": "json"}
 EXPORT_QUANTS = {"q4_k_m": "Q4_K_M", "q5_k_m": "Q5_K_M", "q8_0": "Q8_0", "f16": "F16"}
 
 
@@ -54,6 +59,13 @@ async def finetune(ctx: NodeContext) -> dict:
     }
     if not config["model_name"]:
         raise FlowNodeError("Name the base model to fine-tune")
+    base_model = config["model_name"]
+    start = ctx.inputs.get("start")
+    if isinstance(start, dict) and start.get("output_dir"):
+        # Keep training that LoRA instead of stacking a new one on the base model.
+        config["model_name"] = str(start["output_dir"])
+        config["model_format"] = "adapter"
+        base_model = str(start.get("base_model") or base_model)
     config.update(TASK_FLAGS.get(str(ctx.params.get("task") or "text"), {}))
     if ctx.params.get("num_epochs") not in (None, ""):
         config["num_epochs"] = int(ctx.params["num_epochs"])
@@ -70,8 +82,24 @@ async def finetune(ctx: NodeContext) -> dict:
     if ctx.params.get("weight_decay") not in (None, ""):
         config["weight_decay"] = float(ctx.params["weight_decay"])
     mapping = ctx.params.get("custom_format_mapping")
+    prompt_col = str(ctx.params.get("prompt_column") or "").strip()
+    response_col = str(ctx.params.get("response_column") or "").strip()
     if isinstance(mapping, dict) and mapping:
         config["custom_format_mapping"] = mapping
+    elif prompt_col and prompt_col == response_col:
+        raise FlowNodeError("The prompt and the response need different columns")
+    elif prompt_col and response_col:
+        config["custom_format_mapping"] = {prompt_col: "user", response_col: "assistant"}
+    elif prompt_col or response_col:
+        raise FlowNodeError("Set both the prompt and the response column, or leave both blank")
+    holdout = None
+    percent = int(ctx.params.get("holdout_percent") or 0)
+    if percent > 0:
+        dataset, holdout = await holdout_split(
+            ctx, dataset, percent, int(ctx.params.get("holdout_seed") or 0)
+        )
+        # The split already covers only the sliced rows; slicing the train half again would shrink it.
+        config.pop("dataset_slice_end", None)
     if dataset.get("source") == "hf":
         config["hf_dataset"] = dataset["ref"]
         if dataset.get("subset"):
@@ -113,6 +141,28 @@ async def finetune(ctx: NodeContext) -> dict:
     async def cancel() -> None:
         await ctx.call("POST", "/api/train/stop", json = {"save": True, "expected_job_id": job_id})
 
+    history: dict[str, list] = {"loss": []}
+
+    async def status() -> Any:
+        payload = await ctx.call("GET", "/api/train/status")
+        slot = _training(payload if isinstance(payload, dict) else {})
+        if slot.step and (not slot.job_id or slot.job_id == job_id):
+            history["loss"] = (
+                status_losses(payload) or await loss_history(ctx, job_id) or history["loss"]
+            )
+            ctx.partial(
+                "metrics",
+                {
+                    "loss": slot.loss,
+                    "steps": slot.step,
+                    "total": slot.total_steps,
+                    "loss_history": history["loss"],
+                },
+                step = slot.step,
+                total = slot.total_steps,
+            )
+        return payload
+
     def parse(payload: Any) -> tuple[str, Optional[dict], Optional[str]]:
         slot = _training(payload if isinstance(payload, dict) else {})
         if slot.job_id and slot.job_id != job_id:
@@ -130,7 +180,7 @@ async def finetune(ctx: NodeContext) -> dict:
 
     payload = await poll_job(
         ctx,
-        status = lambda: ctx.call("GET", "/api/train/status"),
+        status = status,
         parse = parse,
         cancel = cancel,
         interval = POLL_S,
@@ -140,15 +190,176 @@ async def finetune(ctx: NodeContext) -> dict:
     run, _ = await _run_folder(ctx.caller, details.get("output_dir"))
     if not run:
         raise FlowNodeError("Training finished but its run folder was not found")
-    metrics = {"loss": slot.loss, "steps": slot.step, "job_id": job_id}
+    metrics = {
+        "loss": slot.loss,
+        "steps": slot.step,
+        "total": slot.total_steps,
+        "job_id": job_id,
+        "loss_history": status_losses(payload)
+        or await loss_history(ctx, job_id)
+        or history["loss"],
+    }
+    if holdout:
+        metrics["train_rows"] = dataset.get("rows")
+        metrics["holdout_rows"] = holdout["rows"]
     return {
         "checkpoint": {
             "kind": "checkpoint",
             "name": run,
-            "base_model": config["model_name"],
+            "base_model": base_model,
         },
         "metrics": metrics,
+        "holdout": holdout,
     }
+
+
+def downsample(values: list, points: int = HISTORY_POINTS) -> list:
+    if len(values) <= points:
+        return list(values)
+    stride = len(values) / points
+    return [values[min(len(values) - 1, round(i * stride))] for i in range(points - 1)] + [
+        values[-1]
+    ]
+
+
+def status_losses(payload: Any) -> list:
+    """The loss history /api/train/status already carries, so a poll needs no second request."""
+    found = payload.get("metric_history") if isinstance(payload, dict) else None
+    losses = found.get("loss") if isinstance(found, dict) else None
+    if not isinstance(losses, list):
+        return []
+    return downsample([round(float(v), 4) for v in losses if isinstance(v, (int, float))])
+
+
+async def loss_history(ctx: NodeContext, job_id: str) -> list:
+    try:
+        found = await ctx.call("GET", "/api/train/metrics", params = {"expected_job_id": job_id})
+    except FlowNodeError:
+        return []
+    losses = found.get("loss_history") if isinstance(found, dict) else None
+    if not isinstance(losses, list):
+        return []
+    return downsample([round(float(v), 4) for v in losses if isinstance(v, (int, float))])
+
+
+def holdout_row_ids(total: int, percent: int, seed: int) -> list[int]:
+    """Same seeded split as the Data Recipes Train card: rounded, at least one row, never all of them."""
+    if percent <= 0 or total <= 1:
+        return []
+    count = min(total - 1, max(1, round(total * percent / 100)))
+    order = list(range(total))
+    random.Random(seed).shuffle(order)
+    return sorted(order[:count])
+
+
+def _too_many(rows: int) -> FlowNodeError:
+    return FlowNodeError(
+        f"{rows} rows is too many to hold out from here; set Hold out % to 0 or use a smaller slice"
+    )
+
+
+def _stream_rows(streamed: Any, end: Optional[int]) -> Any:
+    """Rows 0..end of a streamed dataset, reading no further than the slice end or the cap plus one."""
+    from datasets import Dataset
+
+    if end is not None and end + 1 > HOLDOUT_MAX_ROWS:
+        raise _too_many(end + 1)
+    rows = list(streamed.take(HOLDOUT_MAX_ROWS + 1 if end is None else end + 1))
+    if len(rows) > HOLDOUT_MAX_ROWS:
+        raise _too_many(f"More than {HOLDOUT_MAX_ROWS}")
+    return Dataset.from_list(rows)
+
+
+def _hub_rows(dataset: dict, token: Any, end: Optional[int]) -> Any:
+    """A Hub split, without downloading more than the hold-out can use: a slice streams just its
+    rows, a split the Hub says is over the cap is refused before anything is fetched, and one of
+    unknown size streams at most the cap plus one row."""
+    from datasets import load_dataset, load_dataset_builder
+
+    ref, subset = str(dataset["ref"]), dataset.get("subset") or None
+    split = dataset.get("split") or "train"
+
+    def stream() -> Any:
+        streamed = load_dataset(ref, subset, split = split, token = token, streaming = True)
+        return _stream_rows(streamed, end)
+
+    if end is not None:
+        return stream()
+    try:
+        known = load_dataset_builder(ref, subset, token = token).info.splits[split].num_examples
+    except Exception:
+        known = None
+    if not known:
+        return stream()
+    if known > HOLDOUT_MAX_ROWS:
+        raise _too_many(known)
+    return load_dataset(ref, subset, split = split, token = token)
+
+
+def _load_rows(dataset: dict, token: Any, end: Optional[int]) -> list[dict]:
+    from datasets import load_dataset
+
+    from core.flows.nodes.data import local_seed_path
+
+    if dataset.get("source") == "hf":
+        loaded = _hub_rows(dataset, token, end)
+    else:
+        path = local_seed_path(dataset.get("ref"))
+        builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
+        if builder is None:
+            raise FlowNodeError(
+                "Hold-out works on Parquet, CSV or JSON datasets; set Hold out % to 0 for this one"
+            )
+        # Streamed, so a big local file is never read past the slice end or the cap.
+        streamed = load_dataset(builder, data_files = path, split = "train", streaming = True)
+        loaded = _stream_rows(streamed, end)
+    if len(loaded) > HOLDOUT_MAX_ROWS:
+        raise _too_many(len(loaded))
+    # Timestamps and decimals in unused columns would stop the JSONL upload; NaN and inf become null.
+    return [
+        json.loads(json.dumps(row, default = str), parse_constant = lambda _: None)
+        for row in loaded.to_list()
+    ]
+
+
+async def holdout_split(
+    ctx: NodeContext, dataset: dict, percent: int, seed: int
+) -> tuple[dict, dict]:
+    """Train on the rest of the rows and hand the held-out ones on as their own dataset."""
+    from core.flows.nodes.data import recipe_artifact, recipe_rows, upload_rows
+    from core.training.account_jobs import account_hf_token
+
+    if str(ctx.params.get("task") or "text") != "text" or ctx.params.get("dataset_streaming"):
+        raise FlowNodeError(
+            "Hold-out works on text datasets that are not streamed; set Hold out % to 0"
+        )
+    ctx.progress(phase = "Holding out rows")
+    # Same "use rows up to" slice the trainer would apply, so the split is of the configured range.
+    end = ctx.params.get("dataset_slice_end")
+    end = None if end in (None, "") else int(end)
+    if dataset.get("source") == "recipe" and not recipe_artifact(dataset.get("ref")):
+        rows = await recipe_rows(ctx, str(dataset["ref"]))
+        if end is not None:
+            rows = rows[: end + 1]
+    else:
+        # The request's own Hub token, as /api/train/start gets it; managed accounts never borrow the server's.
+        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+        try:
+            rows = await asyncio.to_thread(_load_rows, dataset, token, end)
+        except FlowNodeError:
+            raise
+        except Exception as exc:
+            raise FlowNodeError(f"Could not read the dataset to hold rows out: {exc}") from None
+    held_ids = holdout_row_ids(len(rows), percent, seed)
+    if not held_ids:
+        raise FlowNodeError(f"{len(rows)} row(s) is too few to hold any out; set Hold out % to 0")
+    held = set(held_ids)
+    name = str(dataset.get("ref") or "dataset").replace("/", "-")
+    tag = f"{name}-holdout{percent}-seed{seed}"
+    train = await upload_rows(ctx, [r for i, r in enumerate(rows) if i not in held], f"{tag}-train")
+    holdout = await upload_rows(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
+    holdout.update({"percent": percent, "seed": seed, "row_ids": held_ids, "of_rows": len(rows)})
+    return train, holdout
 
 
 @handler("train.export")
@@ -217,6 +428,7 @@ async def chat_checkpoint(ctx: NodeContext) -> dict:
     if not name:
         raise FlowNodeError("Chat With Checkpoint needs a checkpoint")
     deadline = time.monotonic() + 3600
+    previous = await active_chat_model(ctx)
     ctx.set_status("loading_model", f"Loading {name}")
     try:
         trained = await trained_models.resolve_by(
@@ -241,14 +453,54 @@ async def chat_checkpoint(ctx: NodeContext) -> dict:
         raise FlowNodeError(f"Could not load {name}: {exc}") from None
     ctx.resident.clear()
     ctx.set_status("running")
-    prompt = as_text(ctx.inputs.get("prompt")) or str(ctx.params.get("prompt") or "")
-    if not prompt.strip():
-        raise FlowNodeError("The prompt is empty")
-    text = await ctx.llm_text(
-        model = None,
-        system = "",
-        prompt = prompt,
-        max_tokens = int(ctx.params.get("max_tokens") or 512),
-        seed = ctx.seed,
-    )
+    try:
+        prompt = as_text(ctx.inputs.get("prompt")) or str(ctx.params.get("prompt") or "")
+        if not prompt.strip():
+            raise FlowNodeError("The prompt is empty")
+        text = await ctx.llm_text(
+            model = None,
+            system = "",
+            prompt = prompt,
+            max_tokens = int(ctx.params.get("max_tokens") or 512),
+            seed = ctx.seed,
+        )
+    finally:
+        # Put back the chat model the adapter replaced: a Data Recipe step on the next run needs it loaded.
+        await restore_chat_model(ctx, previous, trained.ref)
     return {"text": strip_think(text)}
+
+
+async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
+    try:
+        status = await ctx.call("GET", "/api/inference/status")
+    except FlowNodeError:
+        return None
+    model = status.get("model_identifier") if isinstance(status, dict) else None
+    if not isinstance(model, str) or not model.strip():
+        return None
+    return {"repo": model, "variant": status.get("gguf_variant") or None}
+
+
+async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replaced_by: str) -> None:
+    from studio_mcp import loading
+
+    if not previous or loading._same_id(previous["repo"], replaced_by):
+        return
+    label = previous["repo"] + (f" ({previous['variant']})" if previous["variant"] else "")
+    ctx.set_status("loading_model", f"Loading {label} again")
+    try:
+        await loading.load_llm(
+            ctx.caller,
+            None,
+            model = previous["repo"],
+            variant = previous["variant"],
+            max_seq_length = FLOW_CHAT_CONTEXT,
+            load_in_4bit = True,
+            hf_token = None,
+            kind = "llm",
+            deadline = time.monotonic() + 1800,
+        )
+        note_loaded(ctx, "llm", previous["repo"])
+        ctx.resident.clear()
+    except Exception as exc:
+        ctx.log(f"Could not load {label} again; load it before the next run ({exc})", "warning")

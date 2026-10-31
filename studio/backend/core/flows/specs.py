@@ -147,6 +147,7 @@ def spec(
     requires: Optional[list[str]] = None,
     exclusive_gpu: bool = False,
     requires_approval: Optional[list[str]] = None,
+    design: bool = False,
 ) -> dict:
     inputs = list(inputs)
     for p in params:
@@ -190,6 +191,9 @@ def spec(
     if requires_approval:
         # requires_approval: python | http | mcp | provider | trigger, owner-approved per flow (core/flows/capabilities.py).
         found["requires_approval"] = list(requires_approval)
+    if design:
+        # design: describes part of something another node runs (a recipe column); never executed itself.
+        found["design"] = True
     return found
 
 
@@ -759,6 +763,58 @@ NODE_SPECS: list[dict] = [
             P("max_items", "int", 16, "Max items", min = 1, max = 256),
             P("parallel", "bool", False, "Run CPU steps in parallel"),
         ],
+        icon = "repeat",
+    ),
+    spec(
+        "logic.loop",
+        "Loop",
+        "logic",
+        "Repeat the steps in this node's group for a few rounds: generate, train, score. A dashed "
+        "feeds-the-next-round wire carries the score step's failures into the next round's recipe "
+        "seed. Round 1's held-out rows split once into probe rows (their failures feed back) and test "
+        "rows (never fed back; their score decides when to stop). Up to a quarter of each round's seed "
+        "rows rewrite failures, at most two per distinct failure (near-copies count once), so a round "
+        "with few failures stays mostly fresh rows.",
+        outputs = [
+            out("score", "number", "Best test score"),
+            out("history", "json", "Rounds"),
+            out("checkpoint", "checkpoint", "Best checkpoint"),
+        ],
+        params = [
+            P("rounds", "int", 3, "Rounds", min = 1, max = 20),
+            P("target", "number", 90, "Target test score %", min = 0, max = 100),
+            P("feedback", "bool", True, "Feed failures into the next round"),
+            P("continue_rounds", "bool", True, "Continue from last round"),
+            P(
+                "failure_percent",
+                "int",
+                25,
+                "Seed rows from failures %",
+                min = 0,
+                max = 100,
+                advanced = True,
+            ),
+            P("per_failure", "int", 2, "Rewrites per failure", min = 1, max = 10, advanced = True),
+            P(
+                "probe_percent",
+                "int",
+                50,
+                "Held-out rows used as probe %",
+                min = 1,
+                max = 99,
+                advanced = True,
+            ),
+            P(
+                "split_seed",
+                "int",
+                3407,
+                "Probe/test split seed",
+                min = 0,
+                max = 2**31 - 1,
+                advanced = True,
+            ),
+        ],
+        cacheable = False,
         icon = "repeat",
     ),
     spec(
@@ -1393,9 +1449,10 @@ NODE_SPECS: list[dict] = [
     ),
     spec(
         "data.recipe",
-        "Data Recipe",
+        "Run a saved recipe",
         "data",
-        "Run a saved Data Recipe and output its dataset.",
+        "Run a Data Recipe saved on the Data Recipes page and output its dataset. To edit a recipe here, "
+        "bring it into Flows as a Data Recipe group.",
         inputs = [inp("seed", "dataset", "Seed dataset", optional = True)],
         outputs = [out("dataset", "dataset"), out("preview", "json")],
         params = [
@@ -1415,6 +1472,36 @@ NODE_SPECS: list[dict] = [
         icon = "flask",
     ),
     spec(
+        "recipe.generate",
+        "Recipe Dataset",
+        "data",
+        "Runs the Data Recipe group it sits in as one job and outputs the dataset; select it to edit the "
+        "recipe's models, seed and processors. Added on its own, it starts a new recipe group.",
+        inputs = [inp("seed", "dataset", "Seed dataset", optional = True)],
+        outputs = [out("dataset", "dataset"), out("preview", "json")],
+        params = [
+            P("rows", "int", 5, "Rows", min = 1, max = 100000),
+            P("mode", "select", "preview", "Mode", options = ["preview", "full"]),
+        ],
+        lane = "gpu",
+        # Cached on the compiled recipe, rows, mode and seed input: an unchanged recipe hands back its
+        # last dataset; Re-roll forces a new job.
+        icon = "flask",
+    ),
+    spec(
+        "recipe.column",
+        "Recipe column",
+        "data",
+        "One column of a Data Recipe group. Double-click it to edit it in the inspector; wires show "
+        "which columns its prompt reads.",
+        inputs = [inp("in", "text", "Reads", optional = True, multi = True)],
+        outputs = [out("out", "text", "Column")],
+        params = [P("column", "json", None, "Column (JSON)", advanced = True)],
+        cacheable = False,
+        icon = "table",
+        design = True,
+    ),
+    spec(
         "data.rows_to_dataset",
         "Rows to Dataset",
         "data",
@@ -1429,23 +1516,50 @@ NODE_SPECS: list[dict] = [
         "train.finetune",
         "Fine-tune",
         "data",
-        "LoRA fine-tune a model on a dataset. Waits for training to finish.",
-        inputs = [inp("dataset", "dataset")],
-        outputs = [out("checkpoint", "checkpoint"), out("metrics", "json")],
+        "LoRA fine-tune a model on a dataset, optionally holding out rows to score later. Waits for training to finish. "
+        "Wire a checkpoint into Continue from to keep training that LoRA instead of starting from the base model.",
+        inputs = [
+            inp("dataset", "dataset"),
+            inp("start", "checkpoint", "Continue from", optional = True),
+        ],
+        outputs = [
+            out("checkpoint", "checkpoint"),
+            out("metrics", "json"),
+            out("holdout", "dataset", "Held-out rows"),
+        ],
         params = [
             P("base_model", "text", "unsloth/Qwen3-0.6B", "Base model"),
-            P("training_type", "select", "lora", "Type", options = ["lora", "full"]),
-            P("max_steps", "int", 60, "Max steps", min = 1, max = 100000),
-            P("learning_rate", "number", 0.0002, "Learning rate"),
-            P("lora_r", "int", 16, "LoRA rank", min = 1, max = 256),
-            P("lora_alpha", "int", None, "LoRA alpha (blank = default)", min = 1, max = 32768),
-            P("max_seq_length", "int", 2048, "Max seq length"),
+            P("prompt_column", "text", "", "Prompt column (blank = detect the format)"),
+            P("response_column", "text", "", "Response column (blank = detect the format)"),
+            P("max_steps", "int", 60, "Steps", min = 1, max = 100000),
+            P(
+                "holdout_percent",
+                "int",
+                0,
+                "Hold out % (scored later, never trained on)",
+                min = 0,
+                max = 50,
+            ),
+            P("training_type", "select", "lora", "Type", options = ["lora", "full"], advanced = True),
+            P("learning_rate", "number", 0.0002, "Learning rate", advanced = True),
+            P("lora_r", "int", 16, "LoRA rank", min = 1, max = 256, advanced = True),
+            P(
+                "lora_alpha",
+                "int",
+                None,
+                "LoRA alpha (blank = default)",
+                min = 1,
+                max = 32768,
+                advanced = True,
+            ),
+            P("max_seq_length", "int", 2048, "Max seq length", advanced = True),
             P(
                 "format_type",
                 "select",
                 "auto",
                 "Format",
                 options = ["auto", "alpaca", "chatml", "sharegpt"],
+                advanced = True,
             ),
             P(
                 "task",
@@ -1453,9 +1567,26 @@ NODE_SPECS: list[dict] = [
                 "text",
                 "Model task",
                 options = ["text", "vision", "audio", "embedding"],
+                advanced = True,
             ),
-            P("num_epochs", "int", None, "Epochs (blank = use Max steps)", min = 1, max = 1000),
-            P("batch_size", "int", None, "Batch size (blank = Studio default)", min = 1, max = 1024),
+            P(
+                "num_epochs",
+                "int",
+                None,
+                "Epochs (blank = use Steps)",
+                min = 1,
+                max = 1000,
+                advanced = True,
+            ),
+            P(
+                "batch_size",
+                "int",
+                None,
+                "Batch size (blank = Studio default)",
+                min = 1,
+                max = 1024,
+                advanced = True,
+            ),
             P(
                 "gradient_accumulation_steps",
                 "int",
@@ -1463,9 +1594,26 @@ NODE_SPECS: list[dict] = [
                 "Gradient accumulation (blank = default)",
                 min = 1,
                 max = 1024,
+                advanced = True,
             ),
-            P("warmup_steps", "int", None, "Warmup steps (blank = default)", min = 0, max = 100000),
-            P("weight_decay", "number", None, "Weight decay (blank = default)", min = 0, max = 1),
+            P(
+                "warmup_steps",
+                "int",
+                None,
+                "Warmup steps (blank = default)",
+                min = 0,
+                max = 100000,
+                advanced = True,
+            ),
+            P(
+                "weight_decay",
+                "number",
+                None,
+                "Weight decay (blank = default)",
+                min = 0,
+                max = 1,
+                advanced = True,
+            ),
             P(
                 "vision_image_size",
                 "int",
@@ -1473,11 +1621,37 @@ NODE_SPECS: list[dict] = [
                 "Vision image size (blank = default)",
                 min = 32,
                 max = 4096,
+                advanced = True,
             ),
-            P("custom_format_mapping", "json", None, "Column mapping (optional)"),
-            P("dataset_streaming", "bool", False, "Stream the dataset (large Hub datasets)"),
-            P("load_in_4bit", "bool", True, "Load in 4-bit (QLoRA; off = 16-bit LoRA)"),
-            P("train_on_completions", "bool", False, "Train on responses only (chat data)"),
+            P(
+                "custom_format_mapping",
+                "json",
+                None,
+                "Column mapping (overrides the columns above)",
+                advanced = True,
+            ),
+            P("holdout_seed", "int", 3407, "Hold-out seed", min = 0, max = 2**31 - 1, advanced = True),
+            P(
+                "dataset_streaming",
+                "bool",
+                False,
+                "Stream the dataset (large Hub datasets)",
+                advanced = True,
+            ),
+            P(
+                "load_in_4bit",
+                "bool",
+                True,
+                "Load in 4-bit (QLoRA; off = 16-bit LoRA)",
+                advanced = True,
+            ),
+            P(
+                "train_on_completions",
+                "bool",
+                False,
+                "Train on responses only (chat data)",
+                advanced = True,
+            ),
             P(
                 "dataset_slice_end",
                 "int",
@@ -1485,11 +1659,69 @@ NODE_SPECS: list[dict] = [
                 "Use rows up to (blank = all)",
                 min = 0,
                 max = 100000000,
+                advanced = True,
             ),
         ],
         lane = "gpu",
         side_effect = True,
         icon = "dumbbell",
+    ),
+    spec(
+        "train.benchmark",
+        "Benchmark",
+        "data",
+        "Score a checkpoint or a model on held-out rows or an lm-eval task. lm-eval tasks score a GGUF: wire "
+        "Fine-tune into Export Model (GGUF) and Export Model into Model. Runs also show on the Benchmarks Evals tab.",
+        inputs = [
+            inp("checkpoint", "checkpoint", "Checkpoint", optional = True),
+            inp("model", "model", "Model", optional = True),
+            inp("dataset", "dataset", "Rows to score", optional = True),
+        ],
+        outputs = [
+            out("score", "number", "Score %"),
+            out("results", "dataset", "Per-row results"),
+            out("failures", "dataset", "Failed rows"),
+        ],
+        params = [
+            P(
+                "task",
+                "select",
+                "Recipe held-out",
+                "Task",
+                options = [
+                    "Recipe held-out",
+                    "HellaSwag",
+                    "ARC-Challenge",
+                    "WinoGrande",
+                    "GSM8K",
+                    "MMLU",
+                    "TruthfulQA MC1",
+                ],
+            ),
+            P(
+                "scorer",
+                "select",
+                "Reference match",
+                "Scorer",
+                options = ["Reference match", "LLM judge"],
+            ),
+            P("max_rows", "int", 20, "Max rows", min = 1, max = 200),
+            P(
+                "model",
+                "model",
+                None,
+                "Model (blank = the wired checkpoint, else the loaded model)",
+                model_kind = "chat",
+            ),
+            P("prompt_column", "text", "", "Prompt column (blank = detect)", advanced = True),
+            P("reference_column", "text", "", "Reference column (blank = detect)", advanced = True),
+            P("compare_base", "bool", True, "Also score with the adapter off", advanced = True),
+            P("rubric", "textarea", "", "Judge criteria (LLM judge)", advanced = True),
+            P("system_prompt", "textarea", "", "System prompt", advanced = True),
+        ],
+        lane = "gpu",
+        side_effect = True,
+        icon = "flask",
     ),
     spec(
         "train.export",
