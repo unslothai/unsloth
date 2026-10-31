@@ -20,6 +20,7 @@ from utils import gguf_archs as _gguf_archs
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS,
     is_audio_cpp_gguf_architecture,
+    is_foreign_asr_gguf_architecture,
     is_speech_gguf_architecture,
 )
 from utils.paths.path_utils import file_contents_available_locally
@@ -38,6 +39,8 @@ _SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
 _SPEECH_TASK = "text-to-speech"
 # An audio.cpp GGUF of a kind Studio has no page for (separation, diarization, ...): not chat either.
 _AUDIO_CPP_UNSUPPORTED_TASK = "audio-to-audio"
+# Foreign ASR (parakeet.cpp, ...): not chat, and Audio cannot load the file either (#16273).
+_UNSUPPORTED_ASR_TASK = "speech-recognition-unsupported"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 _H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
 _LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
@@ -281,6 +284,8 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     normalized = arch.lower()
     if is_audio_cpp_gguf_architecture(normalized):
         return _audio_cpp_classification(None, name_hints)[0]
+    if is_foreign_asr_gguf_architecture(normalized):
+        return _UNSUPPORTED_ASR_TASK
     if normalized == "qwen3" and any(
         _QWEN3_ASR_HINT.search(str(hint)) for hint in name_hints if hint
     ):
@@ -430,7 +435,7 @@ def _gguf_folder_task(
         if task == _SPEECH_TASK:
             if speech is None:
                 speech = task
-        elif task == _UNSUPPORTED_DIFFUSION_TASK:
+        elif task in (_UNSUPPORTED_DIFFUSION_TASK, _UNSUPPORTED_ASR_TASK):
             unsupported = unsupported or task
         elif task is not None and fallback is None:
             fallback = task
