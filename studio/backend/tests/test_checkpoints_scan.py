@@ -7,6 +7,8 @@ import sys
 import types as _types
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -514,6 +516,10 @@ def test_checkpoint_loss_cache_skips_reparse_of_unchanged_file(tmp_path, monkeyp
     assert len(calls) == 1
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "st_ctime is the creation time on Windows, so it does not move on a rewrite",
+)
 def test_checkpoint_loss_cache_sees_same_size_rewrite_with_restored_mtime(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoints_module, "_LOSS_CACHE_SETTLE_NS", -(10**18))
     monkeypatch.setattr(checkpoints_module, "_LOSS_CACHE", checkpoints_module.OrderedDict())
