@@ -9130,24 +9130,29 @@ class DiffusionBackend:
                                         denoiser_prequant_pipe_kwargs,
                                     )
 
-                                    seeded = denoiser_prequant_pipe_kwargs(
-                                        fam,
-                                        fetch_base,
-                                        scheme = pipeline_seed_scheme,
-                                        dtype = dtype,
-                                        device = device,
-                                        # offloading plans seed it on the host: a GPU seed OOMed 8 GB cards
-                                        placement_device = prequant_seed_device(
-                                            plan, device, pipeline_seed_scheme
-                                        ),
-                                        hf_token = hf_token,
-                                        target = target,
-                                        path_override = transformer_prequant_path,
-                                        fast_accum = transformer_quant_fast_accum,
-                                        local_files_only = local_files_only,
-                                        cache_dir = hub_cache_dir(),
-                                        logger = logger,
+                                    # streamed plans int8 the seed's bf16 text stream / modulations, like an in-place build
+                                    _seed_scope = int8_text_stream_scope(
+                                        not plan_keeps_transformer_resident(plan)
                                     )
+                                    with _seed_scope:
+                                        seeded = denoiser_prequant_pipe_kwargs(
+                                            fam,
+                                            fetch_base,
+                                            scheme = pipeline_seed_scheme,
+                                            dtype = dtype,
+                                            device = device,
+                                            # offloading plans seed it on the host: a GPU seed OOMed 8 GB cards
+                                            placement_device = prequant_seed_device(
+                                                plan, device, pipeline_seed_scheme
+                                            ),
+                                            hf_token = hf_token,
+                                            target = target,
+                                            path_override = transformer_prequant_path,
+                                            fast_accum = transformer_quant_fast_accum,
+                                            local_files_only = local_files_only,
+                                            cache_dir = hub_cache_dir(),
+                                            logger = logger,
+                                        )
                                     pipe_kwargs.update(seeded)
                                     if seeded:
                                         transformer_quant_engaged = pipeline_seed_scheme
