@@ -124,6 +124,11 @@ test("code copied from VS Code is never converted", () => {
   assert.equal(richPasteMarkdown(data, () => el("body", el("a", { href: "https://a.b" }, "x"))), null);
 });
 
+test("the copied text's edge spaces survive conversion", () => {
+  const parse = () => el("body", el("strong", "Hello "));
+  assert.equal(richPasteMarkdown(clipboard("<strong>Hello </strong>", "Hello "), parse), "**Hello** ");
+});
+
 test("a structural paste returns the Markdown", () => {
   const html = '<p>Read <a href="https://unsloth.ai">Unsloth</a></p>';
   const parse = () => el("body", el("p", "Read ", el("a", { href: "https://unsloth.ai" }, "Unsloth")));

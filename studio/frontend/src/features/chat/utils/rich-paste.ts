@@ -256,8 +256,10 @@ export function richPasteMarkdown(
   const root = parse(html);
   if (!root) return null;
   const markdown = htmlNodeToMarkdown(root);
-  if (!markdown || squash(markdown) === squash(data.getData("text/plain"))) return null;
-  return markdown;
+  const plain = data.getData("text/plain");
+  if (!markdown || squash(markdown) === squash(plain)) return null;
+  // Conversion trims its edges; the copied text's own edges still separate it from its neighbours.
+  return `${/^\s*/.exec(plain)?.[0] ?? ""}${markdown}${/\s*$/.exec(plain)?.[0] ?? ""}`;
 }
 
 function parseHtml(html: string): PasteNode | null {
