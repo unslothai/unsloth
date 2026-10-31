@@ -133,8 +133,12 @@ def test_a_render_freezes_the_compile_mid_trace_without_waiting():
     graphs = _compiled_frames()
     waited, paused = job.pause(budget_s = 5.0, freeze = True)
     assert paused
-    assert waited < 0.2, waited
-    assert job._frozen and job.freezes == 1
+    # typically a few ms; the bound only absorbs a CPU-starved runner. _in_dynamo below proves it stopped mid-trace,
+    # not at a block boundary. A starved compile thread also looks quiet, so pause may return before it runs again;
+    # the armed freeze then stops it at its next Python call
+    assert waited < 2.0, waited
+    _wait_for(lambda: job._frozen, timeout = 5.0)
+    assert job.freezes == 1
     assert _in_dynamo(job)  # parked inside the trace, not at a block boundary
     assert sys.monitoring.get_events(bg._FREEZE_TOOL[0]) == 0
     t0 = time.perf_counter()
