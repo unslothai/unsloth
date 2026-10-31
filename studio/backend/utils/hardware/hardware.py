@@ -2335,7 +2335,9 @@ def _clear_mps_cache() -> None:
     try:
         import torch
         empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
-        if callable(empty_cache):
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        # Without a usable Metal device (a macOS VM's paravirtual GPU) empty_cache segfaults rather than raising.
+        if callable(empty_cache) and mps_backend is not None and mps_backend.is_available():
             empty_cache()
     except Exception as e:
         logger.debug("Failed to clear MPS cache: %s", e)
