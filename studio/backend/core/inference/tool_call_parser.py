@@ -3160,22 +3160,50 @@ def _parse_gemma_tool_calls(
 _balanced_brace_end = _tool_healing._balanced_brace_end
 
 
+# Streaming rescans the same growing body every token; a few saved scans let it resume at the old end.
+_GEMMA_BODY_SCAN_SLOTS = 8
+_GEMMA_BODY_SCAN_MIN = 256
+_gemma_body_scans: list = [None] * _GEMMA_BODY_SCAN_SLOTS
+_gemma_body_scan_next = 0
+
+
 def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
     """Closing brace of a Gemma body; quotes hide braces, but a single quote opens only at value start, so apostrophes in prose do not."""
+    global _gemma_body_scan_next
     if brace_pos >= len(text) or text[brace_pos] != "{":
         return None
+    n = len(text)
     depth = 0
     quote = ""
     prev = ""
     prev_raw = ""
     i = brace_pos
-    n = len(text)
+    hit = -1
+    # A saved scan of a prefix of ``text`` holds the walk's exact state at its end.
+    for k, entry in enumerate(tuple(_gemma_body_scans)):
+        if (
+            entry is not None
+            and entry[1] == brace_pos
+            and entry[2] > i
+            and len(entry[0]) <= n
+            and text.startswith(entry[0])
+        ):
+            if entry[3] is not None:
+                return entry[3]
+            i, depth, quote, prev, prev_raw = entry[2], entry[4], entry[5], entry[6], entry[7]
+            hit = k
+            break
+    start = i
+    end = None
     while i < n:
         ch = text[i]
         if quote:
-            if ch == "\\" and i + 1 < n:
-                i += 2
-                continue
+            if ch == "\\":
+                if i + 1 < n:
+                    i += 2
+                    continue
+                # A trailing backslash escapes whatever arrives next: stop before it.
+                break
             if ch == quote:
                 quote = ""
         elif ch in "\"'" and (prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())):
@@ -3185,12 +3213,20 @@ def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                return i
+                end = i
+                break
         if not ch.isspace():
             prev = ch
         prev_raw = ch
         i += 1
-    return None
+    if i > start and (hit >= 0 or i - start >= _GEMMA_BODY_SCAN_MIN):
+        prefix = text if end is None and i == n else text[: (end + 1 if end is not None else i)]
+        slot = hit
+        if slot < 0:
+            slot = _gemma_body_scan_next % _GEMMA_BODY_SCAN_SLOTS
+            _gemma_body_scan_next = slot + 1
+        _gemma_body_scans[slot] = (prefix, brace_pos, i, end, depth, quote, prev, prev_raw)
+    return end
 
 
 _BARE_JSON_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')

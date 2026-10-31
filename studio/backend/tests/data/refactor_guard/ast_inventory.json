@@ -1415,6 +1415,12 @@
       "_GEMMA_BARE_TC_RE": {
         "kind": "assign"
       },
+      "_GEMMA_BODY_SCAN_MIN": {
+        "kind": "assign"
+      },
+      "_GEMMA_BODY_SCAN_SLOTS": {
+        "kind": "assign"
+      },
       "_GEMMA_JSON_NUMBER_RE": {
         "kind": "assign"
       },
@@ -1698,6 +1704,12 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, brace_pos: int"
+      },
+      "_gemma_body_scan_next": {
+        "kind": "assign"
+      },
+      "_gemma_body_scans": {
+        "kind": "assign"
       },
       "_gemma_call_is_anchored": {
         "decorators": [],
