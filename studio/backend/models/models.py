@@ -275,7 +275,8 @@ class GgufVariantsResponse(BaseModel):
         ),
     )
     observed_at: Optional[float] = Field(
-        None, description = "Unix time the Hub state in this answer was observed; null when live or absent"
+        None,
+        description = "Unix time the Hub state in this answer was observed; null when live or absent",
     )
 
 

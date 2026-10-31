@@ -696,9 +696,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # it renders. Hub state (an update, a pending companion) is read by the expander.
     assert "hubWithdrawsSoleQuant(" not in picker
     assert "soleQuantNeedsExpander(" not in picker
-    sole_reader = re.search(
-        r"function useSoleDownloadedQuants\(.*?\n}\n", picker, re.S
-    )
+    sole_reader = re.search(r"function useSoleDownloadedQuants\(.*?\n}\n", picker, re.S)
     assert sole_reader, "the sole-quant reader was renamed"
     assert "listGgufVariantsCached(" not in sole_reader.group(0), (
         "the collapsed rows list variants directly instead of through readSoleQuant, "

@@ -77,15 +77,9 @@ def test_a_record_from_another_credential_or_endpoint_is_not_this_callers_answer
 def test_an_expired_record_is_not_served(hub_state_root):
     variant_hub_state.record_listing("Org/Cached", _response())
     now = time.time()
+    assert variant_hub_state.stored_listing("Org/Cached", max_age_seconds = 60, now = now + 61) is None
     assert (
-        variant_hub_state.stored_listing(
-            "Org/Cached", max_age_seconds = 60, now = now + 61
-        )
-        is None
-    )
-    assert (
-        variant_hub_state.stored_listing("Org/Cached", max_age_seconds = 60, now = now + 5)
-        is not None
+        variant_hub_state.stored_listing("Org/Cached", max_age_seconds = 60, now = now + 5) is not None
     )
 
 
@@ -149,9 +143,7 @@ def _answer(**overrides) -> gguf_variants.VariantsAnswer:
 
 def _live(**overrides) -> gguf_variants.VariantsAnswer:
     """An answer the Hub produced: what _compute_with_cleanables stamps in its worker thread."""
-    return gguf_variants.VariantsAnswer(
-        _response(hub_state = "live", **overrides), None
-    )
+    return gguf_variants.VariantsAnswer(_response(hub_state = "live", **overrides), None)
 
 
 def test_a_live_answer_is_marked_live_and_recorded(hub_state_root, monkeypatch):
@@ -173,13 +165,11 @@ def test_an_answer_that_could_not_reach_the_hub_is_marked_cached(hub_state_root)
 def test_a_local_or_mlx_answer_never_reads_or_writes_the_record(hub_state_root):
     for kwargs in ({"resolved_locally": True}, {"variant_format": "mlx"}):
         answer = _live(**kwargs)
-        returned = gguf_variants._hub_state_answer(
-            answer, "Org/Cached", None, offline = False
-        )
+        returned = gguf_variants._hub_state_answer(answer, "Org/Cached", None, offline = False)
         assert returned is answer, "a local or MLX answer was rebuilt for no reason"
-        assert variant_hub_state.stored_listing("Org/Cached") is None, (
-            "nothing about a local path or an MLX listing belongs in the record"
-        )
+        assert (
+            variant_hub_state.stored_listing("Org/Cached") is None
+        ), "nothing about a local path or an MLX listing belongs in the record"
 
 
 def test_an_offline_answer_keeps_its_rows_and_offers_nothing_stored(hub_state_root):
@@ -187,16 +177,19 @@ def test_an_offline_answer_keeps_its_rows_and_offers_nothing_stored(hub_state_ro
     disk = _answer(
         variants = [
             GgufVariantDetail(
-                quant = "Q4_K_M", filename = "model-Q4_K_M.gguf", size_bytes = 1024,
-                downloaded = True, update_available = False,
+                quant = "Q4_K_M",
+                filename = "model-Q4_K_M.gguf",
+                size_bytes = 1024,
+                downloaded = True,
+                update_available = False,
             )
         ]
     )
     answer = gguf_variants._hub_state_answer(disk, "Org/Cached", None, offline = True)
     assert answer.response.hub_state == "none", "an offline listing must not claim Hub state"
-    assert answer.response.variants[0].update_available is False, (
-        "an offline request must not be answered from the record"
-    )
+    assert (
+        answer.response.variants[0].update_available is False
+    ), "an offline request must not be answered from the record"
 
 
 def test_the_wrapper_falls_back_to_the_stored_listing_when_the_hub_fails(
@@ -235,9 +228,7 @@ def test_the_wrapper_falls_back_to_the_stored_listing_when_the_hub_fails(
     assert answer.response.variants[0].update_available is True
 
 
-def test_the_wrapper_reraises_when_the_hub_fails_and_nothing_is_stored(
-    hub_state_root, monkeypatch
-):
+def test_the_wrapper_reraises_when_the_hub_fails_and_nothing_is_stored(hub_state_root, monkeypatch):
     async def failing(*args, **kwargs):
         raise ConnectionError("Hub unreachable")
 
@@ -278,9 +269,7 @@ def test_disk_proof_of_dependencies_is_not_mistaken_for_a_hub_answer(hub_state_r
             )
         ],
     )
-    answer = gguf_variants._hub_state_answer(
-        disk_only, "Org/Cached", None, offline = False
-    )
+    answer = gguf_variants._hub_state_answer(disk_only, "Org/Cached", None, offline = False)
 
     after = variant_hub_state.stored_listing("Org/Cached")
     assert after == before, "a disk answer replaced the record"

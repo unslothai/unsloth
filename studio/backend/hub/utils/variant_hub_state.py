@@ -60,7 +60,6 @@ def _identity(hf_token: Optional[str]) -> str:
 def _endpoint() -> str:
     try:
         from utils.utils import hf_endpoint_url
-
         return hf_endpoint_url().rstrip("/")
     except Exception:  # noqa: BLE001 - a mirror switch only misses the cache
         return "https://huggingface.co"
@@ -80,7 +79,12 @@ def _record_path(repo_id: str) -> Optional[Path]:
     return root / _SUBDIR / f"{name}.json"
 
 
-def record_listing(repo_id: str, response: Any, *, hf_token: Optional[str] = None) -> None:
+def record_listing(
+    repo_id: str,
+    response: Any,
+    *,
+    hf_token: Optional[str] = None,
+) -> None:
     """Store the Hub-derived fields of a live ``GgufVariantsResponse``. Best effort, never raises."""
     variants = []
     for variant in getattr(response, "variants", None) or ():
@@ -196,7 +200,9 @@ def merged_response(response: Any, stored: dict) -> Any:
             "variants": variants,
             "has_vision": bool(stored.get("has_vision", response.has_vision)),
             "default_variant": (
-                stored_default if isinstance(stored_default, str) and stored_default else response.default_variant
+                stored_default
+                if isinstance(stored_default, str) and stored_default
+                else response.default_variant
             ),
             "hub_state": "cached",
             "observed_at": float(stored["observed_at"]),

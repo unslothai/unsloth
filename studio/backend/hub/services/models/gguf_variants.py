@@ -2551,9 +2551,7 @@ async def _compute_gguf_variants_answer(
         # Returned with the answer: coalesced callers must all see the copy it answered from.
         response = _compute_response()
         # Stamped here, in the worker thread, where the Hub verdict was observed.
-        response = response.model_copy(
-            update = {"hub_state": "live"} if hub_listing_live[0] else {}
-        )
+        response = response.model_copy(update = {"hub_state": "live"} if hub_listing_live[0] else {})
         return VariantsAnswer(
             response, answered_from[0], cache_authorized[0], variant_context_sources
         )
@@ -2773,13 +2771,8 @@ async def _compute_gguf_variants_answer(
         )
 
 
-
 def _hub_state_answer(
-    answer: VariantsAnswer,
-    repo_id: str,
-    hf_token: Optional[str],
-    *,
-    offline: bool,
+    answer: VariantsAnswer, repo_id: str, hf_token: Optional[str], *, offline: bool
 ) -> VariantsAnswer:
     """``answer`` with its Hub-derived state recorded (live) or restored (cached).
 
