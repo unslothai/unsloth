@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import struct
+import threading
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -986,18 +987,26 @@ def _docx_symbol(sym) -> str:
     return chr(code) if 0 <= code <= 0x10FFFF and chr(code).isprintable() else ""
 
 
+_docx_xpath = threading.local()
+
+
 def _docx_run_text(run) -> str:
-    if run.find(f"{_W}fldChar/{_W}ffData/{_W}checkBox") is None and run.find(_W + "sym") is None:
-        return run.text
+    # CT_R.text's children plus checkbox fields and symbols, compiled once per thread: run.xpath()
+    # recompiles per run, and lxml locks an evaluator shared between threads.
+    parts = getattr(_docx_xpath, "run_parts", None)
+    if parts is None:
+        from lxml import etree
+        parts = _docx_xpath.run_parts = etree.XPath(
+            "w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar | w:sym",
+            namespaces = {"w": _W[1:-1]},
+        )
     return "".join(
         _docx_checkbox(e)
         if e.tag == _W + "fldChar"
         else _docx_symbol(e)
         if e.tag == _W + "sym"
         else str(e)
-        for e in run.xpath(
-            "w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar | w:sym"
-        )
+        for e in parts(run)
     )
 
 
@@ -1065,17 +1074,26 @@ def _docx_number_lists(document) -> None:
     abstracts = {a.get(_W + "abstractNumId"): a for a in numbering.iterchildren(_W + "abstractNum")}
     nums = {n.get(_W + "numId"): n for n in numbering.iterchildren(_W + "num")}
 
+    style_nums = {}
+
     # numId and ilvl inherit through basedOn independently, like any other paragraph property.
     def style_num(
         style_id,
         name,
         depth = 0,
     ):
+        if depth == 0 and (style_id, name) in style_nums:
+            return style_nums[style_id, name]
         style = style_by_id.get(style_id)
         if style is None or depth > 20:
-            return None
-        value = val(style.find(f"{_W}pPr/{_W}numPr"), name)
-        return style_num(val(style, "basedOn"), name, depth + 1) if value is None else value
+            value = None
+        else:
+            value = val(style.find(f"{_W}pPr/{_W}numPr"), name)
+            if value is None:
+                value = style_num(val(style, "basedOn"), name, depth + 1)
+        if depth == 0:
+            style_nums[style_id, name] = value
+        return value
 
     def linked(abstract_id, depth = 0):
         num_id = style_num(val(abstracts.get(abstract_id), "numStyleLink"), "numId")
