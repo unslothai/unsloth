@@ -65,8 +65,7 @@ def test_the_suite_hands_engines_ports_no_other_process_can_be_given():
 
 @pytest.mark.parametrize("workers", [1, 4, 16, 40, 41, 64, 192, 512])
 def test_every_xdist_worker_gets_its_own_engine_port_block(engine_port_block, workers):
-    """A block shared by two workers lets one bind the port the other just released and answer
-    its /health, so the blocks must stay disjoint for any worker count, not only up to 40."""
+    """A shared block lets one worker bind a port another just released and answer its /health."""
     taken = set()
     for index in range(workers):
         base, size = engine_port_block(f"gw{index}", workers)

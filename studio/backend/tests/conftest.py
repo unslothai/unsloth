@@ -660,8 +660,7 @@ _engine_port_counter = itertools.count()
 
 
 def _engine_port_block(worker, worker_count):
-    """(first port, block size) for an xdist worker. Past 40 workers the blocks shrink so every
-    worker still gets its own block inside the span."""
+    """(first port, size); past 40 workers blocks shrink so each stays disjoint inside the span."""
     index = int(worker[2:]) if worker[2:].isdigit() else 0
     count = max(worker_count, index + 1, 1)
     size = min(_ENGINE_PORTS_PER_WORKER, _ENGINE_PORT_SPAN // count)
