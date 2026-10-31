@@ -193,3 +193,33 @@ def test_a_stray_file_the_folder_read_would_pick_up_takes_the_dataframe_merge(
 
     assert pq.read_table(parquet_dir / "batch_00000.parquet").equals(expected)
     assert expected.num_rows == 6
+
+
+@pytest.mark.parametrize("name", ["_partial.parquet", ".partial.parquet"])
+def test_a_shard_name_the_folder_read_skips_stays_out_of_the_merge(
+    tmp_path: Path, worker, name
+) -> None:
+    # The glob lists "_" and "." names, the folder read skips them: the merge must not take their rows.
+    base = tmp_path / "dataset"
+    parquet_dir = _write_dataset(base, 2, 4, drift = False)
+    pq.write_table(pq.read_table(parquet_dir / "batch_00001.parquet"), parquet_dir / name)
+    expected = pq.read_table(_reference(parquet_dir, tmp_path))
+    worker._merge_batches_to_single_parquet(base)
+
+    assert expected.num_rows == 4
+    assert pq.read_table(parquet_dir / "batch_00000.parquet").equals(expected)
+
+
+def test_an_unreadable_shard_fails_the_merge_as_the_folder_read_does(
+    tmp_path: Path, worker
+) -> None:
+    base = tmp_path / "dataset"
+    parquet_dir = _write_dataset(base, 2, 4, drift = False)
+    (parquet_dir / "batch_00001.parquet").write_bytes(b"PAR1 not a parquet file")
+    with pytest.raises(pyarrow.ArrowInvalid, match = "batch_00001.parquet"):
+        worker._merge_batches_to_single_parquet(base)
+    assert sorted(p.name for p in parquet_dir.iterdir()) == [
+        "batch_00000.parquet",
+        "batch_00001.parquet",
+    ]
+    assert not list(base.glob("*.merging"))

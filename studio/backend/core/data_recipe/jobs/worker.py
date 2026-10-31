@@ -354,15 +354,22 @@ def _stream_merge_batches(parquet_dir: Path, parquet_files: list[Path], staged_f
     import pyarrow
     import pyarrow.parquet as pyarrow_parquet
 
+    # The folder read skips names starting with "." or "_" and reads everything else, subfolders included.
+    # The glob lists such names too, so a shard named that way would be merged here but not there.
+    if any(path.name.startswith((".", "_")) for path in parquet_files):
+        return False
     listed = {path.name for path in parquet_files}
     for entry in parquet_dir.iterdir():
-        # The folder read skips names starting with "." or "_" and reads everything else, subfolders included.
         if entry.name not in listed and not entry.name.startswith((".", "_")):
             return False
 
-    source_schema = pyarrow_parquet.read_schema(parquet_files[0])
-    for path in parquet_files[1:]:
-        schema = pyarrow_parquet.read_schema(path)
+    try:
+        schemas = [pyarrow_parquet.read_schema(path) for path in parquet_files]
+    except Exception:
+        # An unreadable shard: the folder read raises its own error, naming the file, as before.
+        return False
+    source_schema = schemas[0]
+    for schema in schemas[1:]:
         if schema.names != source_schema.names or schema.types != source_schema.types:
             return False
 
