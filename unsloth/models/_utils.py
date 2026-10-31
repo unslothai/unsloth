@@ -8432,7 +8432,6 @@ def save_lora_adapter(model, save_directory, *args, **kwargs):
         # A state_dict built here would hold the sharded DTensors (safetensors cannot read their storage) and
         # bypass the tensor parallel save: build it on rank 0 from the gathered adapter instead.
         from .tp_replica import collective_applies, tp_collective
-
         if collective_applies(model):
             return tp_collective(model, "save_lora", write, "adapters")
         return model.save_pretrained(save_directory, *args, **kwargs)

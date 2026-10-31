@@ -674,7 +674,10 @@ def test_tp2_save_lora_after_generate_equals_one_process():
         assert res["error"] is None, (rank, res["error"])
         assert res["still_sharded"], rank
         assert "adapter_model.safetensors" in res["files_ref"]
-        assert res["files_tp"].keys() == res["files_ref"].keys(), (sorted(res["files_tp"]), sorted(res["files_ref"]))
+        assert res["files_tp"].keys() == res["files_ref"].keys(), (
+            sorted(res["files_tp"]),
+            sorted(res["files_ref"]),
+        )
         for name in res["files_ref"]:
             assert res["files_tp"][name] == res["files_ref"][name], name
 
