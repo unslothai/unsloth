@@ -1667,7 +1667,6 @@ interface DeviceRowActions {
   hfToken: string | undefined;
   select: (id: string, meta: ModelSelectorChangeMeta) => void;
   configure: (id: string, meta: ModelSelectorChangeMeta) => void;
-  resolveDownloadFootprint: ModelDownloadFootprintResolver | undefined;
   toggleGgufExpanded: (id: string, showing?: boolean) => void;
   togglePinned: (repoId: string, quant?: string) => void;
   unpinRepo: (repoId: string) => void;
@@ -1705,7 +1704,9 @@ interface DeviceRowExpanderProps {
   gpuGb: number | undefined;
   systemRamGb: number | undefined;
   budgetKnown: boolean;
-  canResolveFootprint: boolean;
+  /** Passed as is, not forwarded: the expander refetches companion sizes when its identity
+   *  changes (the Images and Video pages rebuild it when the text encoder, VAE or memory mode do). */
+  resolveDownloadFootprint: ModelDownloadFootprintResolver | undefined;
   hfToken: string | undefined;
 }
 
@@ -1734,7 +1735,7 @@ function ejectMenuItemsFor(
     : undefined;
 }
 
-/** Stable forwarders for the quant expander, whose effects key on these callbacks. */
+/** Stable forwarders for the quant expander callbacks that only run from events. */
 function useDeviceExpanderCallbacks(
   actions: DeviceRowActionsBox,
   optionKey: string,
@@ -1749,13 +1750,6 @@ function useDeviceExpanderCallbacks(
       actions.get().configure(id, meta),
     [actions],
   );
-  const resolveDownloadFootprint = useCallback<ModelDownloadFootprintResolver>(
-    (id, meta) => {
-      const resolve = actions.get().resolveDownloadFootprint;
-      return resolve ? resolve(id, meta) : Promise.resolve(null);
-    },
-    [actions],
-  );
   const onNavigatePastStart = useCallback(
     () => actions.get().focusOption(optionKey),
     [actions, optionKey],
@@ -1767,7 +1761,6 @@ function useDeviceExpanderCallbacks(
   return {
     onSelect,
     onConfigure,
-    resolveDownloadFootprint,
     onNavigatePastStart,
     onNavigatePastEnd,
   };
@@ -2187,11 +2180,7 @@ const DownloadedGgufDeviceRow = memo(function DownloadedGgufDeviceRow({
           allowPin={true}
           onHasVision={(v) => actions.get().reportVision(c.repo_id, v)}
           onSelect={callbacks.onSelect}
-          resolveDownloadFootprint={
-            expander.canResolveFootprint
-              ? callbacks.resolveDownloadFootprint
-              : undefined
-          }
+          resolveDownloadFootprint={expander.resolveDownloadFootprint}
           onConfigure={canConfigure ? callbacks.onConfigure : undefined}
           hfToken={expander.hfToken}
           parentOptionKey={optionKey}
@@ -2349,11 +2338,7 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
           loadedQuants={loadedQuants}
           onDevice={true}
           onSelect={callbacks.onSelect}
-          resolveDownloadFootprint={
-            expander.canResolveFootprint
-              ? callbacks.resolveDownloadFootprint
-              : undefined
-          }
+          resolveDownloadFootprint={expander.resolveDownloadFootprint}
           onConfigure={canConfigure ? callbacks.onConfigure : undefined}
           parentOptionKey={optionKey}
           onNavigatePastStart={callbacks.onNavigatePastStart}
@@ -6888,7 +6873,6 @@ export function HubModelPicker({
       hfToken: hfToken || undefined,
       select: onSelect,
       configure: (id, meta) => onConfigure?.(id, meta),
-      resolveDownloadFootprint,
       toggleGgufExpanded,
       togglePinned,
       unpinRepo,
@@ -6904,7 +6888,6 @@ export function HubModelPicker({
   });
   const expanderBudgetKnown = expanderBudgetGpu.budgetKnown;
   const hostPooledMemory = gpu.loadDeviceSharesHostMemory;
-  const canResolveFootprint = Boolean(resolveDownloadFootprint);
   const deviceExpanderProps = useMemo<DeviceRowExpanderProps>(
     () => ({
       diffusionLoad,
@@ -6913,7 +6896,7 @@ export function HubModelPicker({
       gpuGb: expanderGpuGb,
       systemRamGb: expanderRamGb || undefined,
       budgetKnown: expanderBudgetKnown,
-      canResolveFootprint,
+      resolveDownloadFootprint,
       hfToken: hfToken || undefined,
     }),
     [
@@ -6923,7 +6906,7 @@ export function HubModelPicker({
       expanderGpuGb,
       expanderRamGb,
       expanderBudgetKnown,
-      canResolveFootprint,
+      resolveDownloadFootprint,
       hfToken,
     ],
   );
