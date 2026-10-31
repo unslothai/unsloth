@@ -76,7 +76,7 @@ function LoopNodeBody({ node }: { node: FlowNode }) {
     <div className="flow-detail flex flex-col gap-1 px-3" data-loop-done={view.done}>
       <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
         <span
-          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+          className={`shrink-0 rounded px-1.5 py-0.5 text-ui-10 font-medium ${
             view.done
               ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300"
               : "bg-sky-500/15 text-sky-600 dark:text-sky-300"
@@ -84,13 +84,13 @@ function LoopNodeBody({ node }: { node: FlowNode }) {
         >
           {view.headline}
         </span>
-        <span className="text-[11px] leading-snug text-muted-foreground">
+        <span className="text-ui-11 leading-snug text-muted-foreground">
           {view.detail}
         </span>
       </div>
       <ScoreSparkline scores={view.scores} rounds={total} target={view.target} />
       {view.rounds.length > 0 && (
-        <div className="flex flex-wrap gap-x-2 text-[11px] tabular-nums text-muted-foreground">
+        <div className="flex flex-wrap gap-x-2 text-ui-11 tabular-nums text-muted-foreground">
           {view.rounds.map((r) => (
             <span key={r.round} title={`probe ${r.probe_score ?? "-"}%, ${r.rows_from_failures} rows from failures`}>
               R{r.round} {r.test_score ?? "-"}%

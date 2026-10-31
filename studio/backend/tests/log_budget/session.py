@@ -35,6 +35,8 @@ IDLE_POLLS: dict[str, tuple[float, str]] = {
     # Hub's 5s vLLM availability retry while the GPU probe still answers "Checking...". A path sits in one scenario
     # only, and every 2xx read is dropped by _QUIET_SUCCESS_PATHS, so the faster cadences cost no lines either.
     "/api/engines": (30.0, "declared"),
+    # The Benchmark runtime lifecycle re-reads it every 5s while mounted (use-benchmark-runtime-lifecycle.ts).
+    "/api/benchmarks/evals/status": (5.0, "declared"),
 }
 
 # Polls only while an operation is in flight; separate so the idle envelope is not averaged.
