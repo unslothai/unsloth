@@ -3359,18 +3359,25 @@ def _remove_same_device_compressed_tensors_offload(model):
         from compressed_tensors.offload.module import remove_module_offload
     except Exception:
         return 0
-    removed = 0
+    same_device = []
+    onload_devices = set()
     for module in model.modules():
         cache = module._parameters
         if not isinstance(cache, OffloadCache):
             continue
         onload = getattr(cache, "onload_device", None)
         offload = getattr(cache, "offload_device", None)
+        if onload is not None:
+            onload_devices.add(torch.device(onload))
         if onload is None or offload is None or torch.device(onload) != torch.device(offload):
             continue
+        same_device.append(module)
+    # On a split model these wrappers replaced accelerate's hooks and are what move inputs across devices.
+    if len(onload_devices) > 1:
+        return 0
+    for module in same_device:
         remove_module_offload(module)
-        removed += 1
-    return removed
+    return len(same_device)
 
 
 def _decompress_compressed_tensors_model(model):
