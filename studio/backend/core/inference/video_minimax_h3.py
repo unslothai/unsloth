@@ -605,7 +605,9 @@ def _fit_h3_video_frame(
 ) -> tuple[Any, tuple[int, int]]:
     from PIL import Image
 
-    image = frame.to_image().convert("RGB")
+    image = frame.to_image()
+    if image.mode != "RGB":  # PyAV already returns a fresh RGB image; convert only copies it
+        image = image.convert("RGB")
     if fitted_size is None:
         fitted_size = h3_reference_frame_size(*image.size)
     if image.size != fitted_size:
@@ -972,6 +974,20 @@ class MiniMaxH3References:
 
     def count(self) -> int:
         return len(self.images) + len(self.videos) + len(self.audios)
+
+
+@dataclass(frozen = True)
+class DecodedReferenceAudios:
+    """Standalone reference audios one request already decoded, with the exact inputs they came from.
+
+    Reused only when the render resolves the same strings, so a different input decodes afresh."""
+
+    sources: tuple = ()
+    # decode_h3_reference_audio(...) per source, untrimmed, in order.
+    decoded: tuple = ()
+
+    def for_inputs(self, audios: list) -> Optional[tuple]:
+        return self.decoded if tuple(audios) == self.sources else None
 
 
 @dataclass(frozen = True)
