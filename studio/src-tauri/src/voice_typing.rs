@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 mod hud;
 pub(crate) mod paste;
@@ -132,15 +132,42 @@ static CONFIG: Mutex<Config> = Mutex::new(Config {
 });
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SignalPayload {
     action: &'static str,
+    /// `"system"` types into the focused app through the overlay; `"app"` drives
+    /// the composer dictation inside the Unsloth window instead.
+    target: &'static str,
+    /// How long the chord was held, so the frontend can apply tap/hold semantics.
+    held_ms: u64,
 }
 
-fn emit_signal(app: &AppHandle, action: &'static str) {
+fn emit_signal(app: &AppHandle, action: &'static str, target: &'static str, held_ms: u64) {
     // The frontend logs how it handled the signal; this side proves the chord was
     // seen even when the window is hidden in the tray.
-    log::info!("Voice typing shortcut signal: {action}");
-    let _ = app.emit_to("main", "voice-typing:signal", SignalPayload { action });
+    log::info!("Voice typing shortcut signal: {action} ({target}, {held_ms}ms)");
+    let _ = app.emit_to(
+        "main",
+        "voice-typing:signal",
+        SignalPayload {
+            action,
+            target,
+            held_ms,
+        },
+    );
+}
+
+/// Whether the Unsloth window itself is in front. A global chord pressed there
+/// should drive the built-in composer dictation, not the system-wide overlay.
+fn main_window_focused(app: &AppHandle) -> bool {
+    if let Some(window) = app.get_window("main") {
+        return window.is_focused().unwrap_or(false);
+    }
+    // `get_window` can miss the main window while browser views are children.
+    if let Some(window) = app.get_webview_window("main") {
+        return window.is_focused().unwrap_or(false);
+    }
+    false
 }
 
 /// Wire the shortcut poller. The overlay window is created on first use.
@@ -313,7 +340,7 @@ pub async fn voice_typing_cancel(app: AppHandle) {
     SESSION_ACTIVE.store(false, Ordering::SeqCst);
     audio_mute::set_recording_mute(false);
     hud::hide(&app);
-    emit_signal(&app, "cancel");
+    emit_signal(&app, "cancel", "system", 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -683,8 +710,8 @@ mod audio_mute {
 #[cfg(target_os = "windows")]
 mod shortcut_poller {
     use super::{
-        edge_signal, emit_signal, parse_chord, Chord, Edge, CONFIG, PACKED_CHORD, SESSION_ACTIVE,
-        SHORTCUT_SUSPENDED,
+        edge_signal, emit_signal, main_window_focused, parse_chord, Chord, Edge, CONFIG,
+        PACKED_CHORD, SESSION_ACTIVE, SHORTCUT_SUSPENDED,
     };
     use std::ptr::null_mut;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -855,6 +882,9 @@ mod shortcut_poller {
         let mut chord_held = false;
         let mut pressed_at: Option<Instant> = None;
         let mut press_started_session = false;
+        // Set at press: a chord pressed inside the Unsloth window drives the
+        // composer dictation, and its release must go there even if focus moved.
+        let mut press_started_in_app = false;
         let mut escape_held = false;
 
         loop {
@@ -870,6 +900,7 @@ mod shortcut_poller {
                 chord_source.clear();
                 chord_held = false;
                 pressed_at = None;
+                press_started_in_app = false;
                 HOOK_MAIN_KEY_DOWN.store(false, Ordering::SeqCst);
                 HOOK_MAIN_KEY_PRESSED.store(false, Ordering::SeqCst);
                 HOOK_ESCAPE_DOWN.store(false, Ordering::SeqCst);
@@ -903,6 +934,7 @@ mod shortcut_poller {
                 };
                 chord_held = false;
                 pressed_at = None;
+                press_started_in_app = false;
                 HOOK_MAIN_KEY_DOWN.store(false, Ordering::SeqCst);
                 HOOK_MAIN_KEY_PRESSED.store(false, Ordering::SeqCst);
             }
@@ -923,17 +955,22 @@ mod shortcut_poller {
                 chord_held = true;
                 pressed_at = Some(now);
                 press_started_session = !SESSION_ACTIVE.load(Ordering::SeqCst);
+                press_started_in_app = main_window_focused(&app);
             }
 
             if press_edge {
-                if let Some(action) = edge_signal(mode, Edge::Press, press_started_session, Duration::ZERO)
+                if press_started_in_app {
+                    // The overlay never opens over the app's own composer.
+                    emit_signal(&app, "press", "app", 0);
+                } else if let Some(action) =
+                    edge_signal(mode, Edge::Press, press_started_session, Duration::ZERO)
                 {
                     if action == "start" {
                         // Mark session active immediately so a fast release before JS
                         // finishes permission preflight still produces a "stop" signal.
                         SESSION_ACTIVE.store(true, Ordering::SeqCst);
                     }
-                    emit_signal(&app, action);
+                    emit_signal(&app, action, "system", 0);
                 }
             } else if release_edge {
                 chord_held = false;
@@ -941,10 +978,14 @@ mod shortcut_poller {
                     .map(|start| now.saturating_duration_since(start))
                     .unwrap_or_default();
                 pressed_at = None;
-                if let Some(action) =
+                if press_started_in_app {
+                    press_started_in_app = false;
+                    let held_ms = u64::try_from(held_for.as_millis()).unwrap_or(u64::MAX);
+                    emit_signal(&app, "release", "app", held_ms);
+                } else if let Some(action) =
                     edge_signal(mode, Edge::Release, press_started_session, held_for)
                 {
-                    emit_signal(&app, action);
+                    emit_signal(&app, action, "system", 0);
                 }
             }
 
@@ -961,7 +1002,7 @@ mod shortcut_poller {
         if held && !*escape_held && SESSION_ACTIVE.swap(false, Ordering::SeqCst) {
             super::audio_mute::set_recording_mute(false);
             super::hud::hide(app);
-            emit_signal(app, "cancel");
+            emit_signal(app, "cancel", "system", 0);
         }
         *escape_held = held;
     }

@@ -170,7 +170,7 @@ export function VoiceTypingHud() {
           </span>
         </button>
         {state === "blocked" ? (
-          <span className="vt-blocked" role="alert">
+          <span className="vt-blocked-message" role="alert">
             {message || "Abusive Language is Discouraged!"}
           </span>
         ) : (

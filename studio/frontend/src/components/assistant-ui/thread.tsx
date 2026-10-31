@@ -487,6 +487,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
+import { setInAppDictationActive } from "@/features/chat/adapters/dictation-activity";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
@@ -2897,6 +2898,13 @@ const Composer: FC<{
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
+  const dictationActivityOwner = useRef(Symbol("composer-dictation"));
+  // The global voice-typing chord reads this to toggle the built-in dictation
+  // while the Unsloth window is focused, instead of opening the overlay.
+  useEffect(() => {
+    setInAppDictationActive(dictationActivityOwner.current, isDictating);
+    return () => setInAppDictationActive(dictationActivityOwner.current, false);
+  }, [isDictating]);
   const pageDragging = useContext(PageDragContext);
   const nativeDragging = useContext(NativeAttachmentDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();

@@ -64,6 +64,7 @@ import {
   notifyStudioDictationUnavailable,
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import { appendTranscriptText } from "@/features/chat/adapters/dictation-text";
+import { setInAppDictationActive } from "@/features/chat/adapters/dictation-activity";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -337,6 +338,14 @@ function useDictation(
   const sessionRef = useRef<StudioDictationSession | null>(null);
   const startingRef = useRef(false);
   const finalizingRef = useRef(false);
+  const activityOwner = useRef(Symbol("composer-dictation"));
+
+  // Lets the global voice-typing chord stop this dictation instead of
+  // starting a second, system-wide session.
+  useEffect(() => {
+    setInAppDictationActive(activityOwner.current, isDictating);
+    return () => setInAppDictationActive(activityOwner.current, false);
+  }, [isDictating]);
 
   const start = useCallback(async () => {
     if (startingRef.current || sessionRef.current) return;

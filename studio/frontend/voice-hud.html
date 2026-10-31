@@ -156,16 +156,25 @@
         font-weight: 500;
         letter-spacing: -0.01em;
       }
-      .vt-blocked {
+      .vt-blocked-message {
         flex: 1 1 auto;
         min-width: 0;
-        padding: 0 6px 0 8px;
+        padding: 0 0 0 10px;
         text-align: center;
-        font-size: 9.5px;
-        line-height: 1.15;
+        font-size: 11.5px;
+        line-height: 1.25;
         font-weight: 600;
-        letter-spacing: 0.01em;
+        letter-spacing: 0.005em;
         color: #fecaca;
+        text-wrap: balance;
+      }
+      /* Blocked state: wider and taller so the notice reads as two balanced
+         lines instead of being squeezed into the waveform slot. */
+      .vt-pill.vt-blocked {
+        width: 232px;
+        height: 58px;
+        padding: 0 14px 0 8px;
+        border-color: rgba(248, 113, 113, 0.35);
       }
       @keyframes vt-in {
         from {

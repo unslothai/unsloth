@@ -14,6 +14,7 @@
 // A chord that does nothing must never be unexplainable.
 
 import { authFetch } from "@/features/auth";
+import { isInAppDictationActive } from "@/features/chat/adapters/dictation-activity";
 import {
   type StudioDictationSession,
   StudioModelDictationAdapter,
@@ -37,10 +38,12 @@ import {
   useSettingsDialogStore,
   useVoiceSettingsStore,
 } from "@/features/settings";
+import { triggerShortcut } from "@/features/settings/hooks/use-shortcut";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { fixGrammar } from "./grammar-fixer";
 import { containsAbusiveLanguage } from "./abusive-language";
+import { resolveInAppShortcut } from "./in-app-shortcut";
 import { invoke } from "@tauri-apps/api/core";
 import { type UnlistenFn, listen } from "@tauri-apps/api/event";
 import {
@@ -62,7 +65,10 @@ interface VoiceTypingInfo {
   pasteSupported: boolean;
 }
 
-type SignalAction = "start" | "stop" | "cancel";
+type SignalAction = "start" | "stop" | "cancel" | "press" | "release";
+/** `system` inserts into the focused app through the overlay; `app` drives the
+ *  built-in composer dictation inside the Unsloth window. */
+type SignalTarget = "system" | "app";
 type HudPhase =
   | "idle"
   | "preparing"
@@ -172,6 +178,8 @@ export class VoiceTypingController {
   private warmToken = 0;
   /** The warm stream a running session borrowed, reclaimed when it ends. */
   private sessionStream: MediaStream | null = null;
+  /** True when the current chord press started the in-app composer dictation. */
+  private appPressStarted = false;
   private pressStartedAt = 0;
   private micLiveAt = 0;
   private firstFinalAt = 0;
@@ -186,12 +194,15 @@ export class VoiceTypingController {
       console.info("[voice typing] not available on this platform; dormant");
       return;
     }
-    const unlisten = await listen<{ action: SignalAction }>(
-      "voice-typing:signal",
-      (event) => {
-        void this.onSignal(event.payload.action);
-      },
-    );
+    const unlisten = await listen<{
+      action: SignalAction;
+      target?: SignalTarget;
+      heldMs?: number;
+    }>("voice-typing:signal", (event) => {
+      const { action, target, heldMs } = event.payload;
+      if (target === "app") this.onAppShortcut(action, heldMs ?? 0);
+      else void this.onSignal(action);
+    });
     if (this.disposed) {
       unlisten();
       return;
@@ -464,6 +475,26 @@ export class VoiceTypingController {
         if (this.phase !== "idle" || this.starting) this.cancelSession();
         return;
     }
+  }
+
+  /**
+   * The chord was pressed while the Unsloth window was focused. Route it to the
+   * built-in composer dictation and keep the system overlay out of the way.
+   * Hold/hybrid stop on release; toggle stops on the next press; a hybrid tap
+   * leaves the dictation running, exactly like the in-app shortcut's own modes.
+   */
+  private onAppShortcut(action: SignalAction, heldMs: number): void {
+    if (action !== "press" && action !== "release") return;
+    const { mode } = useVoiceTypingStore.getState();
+    const decision = resolveInAppShortcut({
+      action,
+      active: isInAppDictationActive(),
+      mode,
+      heldMs,
+      pressStarted: this.appPressStarted,
+    });
+    this.appPressStarted = decision.pressStarted;
+    if (decision.toggle) triggerShortcut("startDictation");
   }
 
   private notifyMicBlocked(): void {
