@@ -91,7 +91,6 @@ def test_load_wraps_lookup_build_and_write_in_the_placement_scope():
 
 
 def test_hosted_seed_load_runs_in_the_placement_scope():
-    # The hosted int8 seed is the path a fresh install takes: a streamed plan must int8 its baked text stream too.
     import inspect
 
     from core.inference import diffusion

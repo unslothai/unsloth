@@ -9130,9 +9130,7 @@ class DiffusionBackend:
                                         denoiser_prequant_pipe_kwargs,
                                     )
 
-                                    # A streamed plan int8s the artifact's baked text stream / modulations
-                                    # (quantize_runtime_leftovers, quantize_streamed_weight_only), as an in-place
-                                    # build does: the hosted seed keeps them bf16 for the resident layout.
+                                    # streamed plans int8 the seed's bf16 text stream / modulations, like an in-place build
                                     _seed_scope = int8_text_stream_scope(
                                         not plan_keeps_transformer_resident(plan)
                                     )
