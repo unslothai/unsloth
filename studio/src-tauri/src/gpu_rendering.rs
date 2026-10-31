@@ -31,6 +31,11 @@ const WEBVIEW2_DEFAULT_ARGS: &str =
     "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
 #[cfg_attr(not(windows), allow(dead_code))]
 const WEBVIEW2_DISABLE_GPU: &str = "--disable-gpu";
+/// A hidden-to-tray main window must still run timers and audio worklets for
+/// system-wide voice typing, so it is never backgrounded or frozen.
+#[cfg_attr(not(windows), allow(dead_code))]
+const WEBVIEW2_KEEP_BACKGROUND_ALIVE: &str = "--disable-background-timer-throttling \
+     --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -205,11 +210,17 @@ pub fn old_webkit_warning(
         .then(|| format!("{major}.{minor}.{micro}"))
 }
 
-/// WebView2 arguments for the main window: None keeps today's (wry's defaults).
+/// WebView2 arguments for the main window. Returning a value replaces wry's
+/// defaults wholesale, so [`WEBVIEW2_DEFAULT_ARGS`] is always included.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn windows_main_browser_args(setting: GpuRendering) -> Option<String> {
-    (setting == GpuRendering::Off)
-        .then(|| format!("{WEBVIEW2_DEFAULT_ARGS} {WEBVIEW2_DISABLE_GPU}"))
+    // Always explicit, because the background flags must reach the main view;
+    // `--disable-gpu` is added only for the Off preference.
+    let gpu = (setting == GpuRendering::Off).then(|| format!(" {WEBVIEW2_DISABLE_GPU}"));
+    Some(format!(
+        "{WEBVIEW2_DEFAULT_ARGS} {WEBVIEW2_KEEP_BACKGROUND_ALIVE}{}",
+        gpu.unwrap_or_default()
+    ))
 }
 
 static PAGES_DISABLE_GPU: AtomicBool = AtomicBool::new(false);
@@ -449,9 +460,13 @@ mod tests {
     }
 
     #[test]
-    fn only_off_changes_the_windows_arguments_and_keeps_wrys_defaults() {
-        assert_eq!(windows_main_browser_args(GpuRendering::Auto), None);
-        assert_eq!(windows_main_browser_args(GpuRendering::On), None);
+    fn windows_arguments_keep_the_view_alive_and_only_off_disables_the_gpu() {
+        for setting in [GpuRendering::Auto, GpuRendering::On] {
+            let args = windows_main_browser_args(setting).unwrap();
+            assert!(args.starts_with(WEBVIEW2_DEFAULT_ARGS), "{args}");
+            assert!(args.contains("--disable-background-timer-throttling"), "{args}");
+            assert!(!args.contains("--disable-gpu"), "{args}");
+        }
         let off = windows_main_browser_args(GpuRendering::Off).unwrap();
         assert!(off.contains("--disable-gpu"), "{off}");
         assert!(off.starts_with(WEBVIEW2_DEFAULT_ARGS), "{off}");
