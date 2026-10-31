@@ -132,6 +132,7 @@ def _mmap_encoder(tmp_path):
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "reads /proc/self/maps")
 def test_materialize_moves_streamed_weights_off_the_file(tmp_path):
+    pytest.importorskip("diffusers")
     enc, path = _mmap_encoder(tmp_path)
     ranges = _file_ranges(path)
     if not ranges or not _mapped(enc.proj.weight, ranges):
@@ -156,6 +157,7 @@ def test_materialize_moves_streamed_weights_off_the_file(tmp_path):
 
 
 def test_materialize_keeps_ties():
+    pytest.importorskip("diffusers")
     enc = _Enc()
     for p in enc.parameters():
         p.data = p.data.to(torch.bfloat16)
@@ -207,6 +209,7 @@ def _route(monkeypatch, tmp_path, available):
 
 
 def test_route_copies_encoder_when_host_covers_it(monkeypatch, tmp_path):
+    pytest.importorskip("diffusers")
     pipe, lines = _route(monkeypatch, tmp_path, 1 << 20)
     info = sh.engaged_on(pipe)
     assert info["components"]["text_encoder_2"].startswith("anonymous host RAM")
@@ -214,6 +217,7 @@ def test_route_copies_encoder_when_host_covers_it(monkeypatch, tmp_path):
 
 
 def test_route_keeps_encoder_mapped_on_a_short_host(monkeypatch, tmp_path):
+    pytest.importorskip("diffusers")
     pipe, lines = _route(monkeypatch, tmp_path, 4000)
     info = sh.engaged_on(pipe)
     assert info["components"]["text_encoder_2"].startswith("memory-mapped")
@@ -221,6 +225,7 @@ def test_route_keeps_encoder_mapped_on_a_short_host(monkeypatch, tmp_path):
 
 
 def test_route_kill_switch(monkeypatch, tmp_path):
+    pytest.importorskip("diffusers")
     monkeypatch.setenv(sh.ENCODER_RESIDENT_ENV, "0")
     pipe, _lines = _route(monkeypatch, tmp_path, 1 << 20)
     assert sh.engaged_on(pipe)["components"]["text_encoder_2"].startswith("memory-mapped")
