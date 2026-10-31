@@ -6,19 +6,51 @@ and reading text aloud through the chat model's TTS mode."""
 
 import asyncio
 import base64
+import importlib
 import io
 import sys
 import threading
 import types
 import wave
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 import torch
 from fastapi import HTTPException
 
-import core.inference.inference as inf
+_STUBBED: list[str] = []
+
+
+def _stub_if_missing(name, attrs):
+    """Stubs a dep the backend pytest job lacks, so collection succeeds; real installs are left alone."""
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - any import failure means "not usable here", so stub it
+        pass
+    _STUBBED.append(name)
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+
+import core.inference.inference as inf  # noqa: E402
+
+# Drop the stubs once inf is bound: leftover stubs make _shared_policy return None.
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_audio_chat_load import _config, backend  # noqa: E402, F401 - fixture
@@ -40,7 +72,11 @@ class _Codec(torch.nn.Module):
 
 
 class _Tokenizer:
-    def decode(self, ids, skip_special_tokens = False):
+    def decode(
+        self,
+        ids,
+        skip_special_tokens = False,
+    ):
         assert skip_special_tokens
         return " Paris is the capital. "
 
@@ -67,7 +103,11 @@ class _Model(torch.nn.Module):
     config = types.SimpleNamespace(interleaved_n_audio = 12)
     device = "cpu"
 
-    def __init__(self, frames = 3, cancel_during = None):
+    def __init__(
+        self,
+        frames = 3,
+        cancel_during = None,
+    ):
         super().__init__()
         self.p = torch.nn.Parameter(torch.zeros(1))
         self.frames, self.cancel_during, self.kwargs = frames, cancel_during, None
@@ -87,7 +127,11 @@ class _Model(torch.nn.Module):
         )
 
 
-def _backend(model, processor, audio_type = "audio_vlm"):
+def _backend(
+    model,
+    processor,
+    audio_type = "audio_vlm",
+):
     b = inf.InferenceBackend.__new__(inf.InferenceBackend)
     b.active_model_name = "LiquidAI/LFM3-Audio-2B"
     b.models = {
@@ -105,7 +149,11 @@ def _backend(model, processor, audio_type = "audio_vlm"):
     return b
 
 
-def _spoken(b, cancel_event = None, **kwargs):
+def _spoken(
+    b,
+    cancel_event = None,
+    **kwargs,
+):
     return list(
         inf.InferenceBackend.generate_audio_input_response(
             b,
@@ -138,17 +186,12 @@ def test_speech_codec_needs_the_bundled_codec_and_speech_frames():
 
 
 @pytest.mark.parametrize("codec, speaks", [(True, True), (False, False)])
-def test_load_reports_speaks(backend, monkeypatch, codec, speaks):  # noqa: F811
-    import unsloth
-
+def test_load_reports_speaks(backend, codec, speaks):  # noqa: F811
     b, _ = backend
     model, processor = _Model(), _Processor(_Codec() if codec else None)
-    monkeypatch.setattr(
-        unsloth,
-        "FastModel",
-        types.SimpleNamespace(
-            from_pretrained = lambda **_k: (model, processor), for_inference = lambda *_a: None
-        ),
+    # The backend fixture put a per-test unsloth module in sys.modules; load_model imports from it.
+    sys.modules["unsloth"].FastModel = types.SimpleNamespace(
+        from_pretrained = lambda **_k: (model, processor), for_inference = lambda *_a: None
     )
     assert inf.InferenceBackend.load_model(b, _config(), trust_remote_code = True) is True
     assert b.models["LiquidAI/LFM3-Audio-2B"]["speaks"] is speaks
