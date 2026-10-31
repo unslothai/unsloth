@@ -1815,8 +1815,9 @@ _TEARDOWN_TASK_RECANCEL_S = 0.01
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 # How often a UI stream looks for new prefill progress while the generator is silent.
 _LIVE_PROGRESS_POLL_S = 0.25
-# Minimum gap between two live decode frames: the client only redraws one line of text.
-_LIVE_DECODE_FRAME_INTERVAL_S = 1.0
+# Minimum gap between two live decode frames, the stall poll's period: at 1 s a reply of a second or two
+# showed one stale count.
+_LIVE_DECODE_FRAME_INTERVAL_S = 0.25
 _APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
 
@@ -7184,6 +7185,7 @@ class _PrefillProgressSignal:
         self._prefill_sent: Optional[dict] = None
         self._decode: Optional[dict] = None
         self._decode_sent_at = 0.0
+        self._decode_started = False
         self.wants_timings = inner is not None or live
 
     @property
@@ -7219,6 +7221,7 @@ class _PrefillProgressSignal:
         cached = _live_count(progress.get("cache"))
         # A new prompt pass (the next round of a tool loop): the last round's decode figures must not follow it.
         self._decode = None
+        self._decode_started = False
         self._prefill = {
             "type": "generation_progress",
             "phase": "prefill",
@@ -7232,11 +7235,19 @@ class _PrefillProgressSignal:
         tokens = _live_count(sample.get("predicted_n"))
         if not tokens:
             return
+        if not self._decode_started:
+            # A pass's first sample opens the interval instead of going out: its token comes from the prompt pass
+            # with no rate, and the next one's single-step rate reads ~10x low after a speculative verify step.
+            self._decode_started = True
+            self._decode_sent_at = time.monotonic()
+        rate = _live_rate(sample.get("predicted_per_second"))
+        if rate is None:
+            return
         frame = {
             "type": "generation_progress",
             "phase": "decode",
             "tokens": tokens,
-            "tok_per_s": _live_rate(sample.get("predicted_per_second")),
+            "tok_per_s": rate,
         }
         draft_n = _live_count(sample.get("draft_n"))
         draft_accepted = _live_count(sample.get("draft_n_accepted"))
