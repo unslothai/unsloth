@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Small-host route: a streamed encoder's memory-mapped weights move into anonymous host RAM when the host covers
-them after placement, so a new prompt does not page them back in from disk. CPU only."""
+"""Small-host route: mmapped encoder weights move into host RAM when they fit. CPU only."""
 
 from __future__ import annotations
 

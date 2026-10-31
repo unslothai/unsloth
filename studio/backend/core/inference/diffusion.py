@@ -12250,8 +12250,7 @@ class DiffusionBackend:
         logger: Any,
         load_token: Any = None,
     ) -> None:
-        """Copy routed encoders' memory-mapped weights into anonymous host RAM where the host still covers them, so a
-        new prompt does not page them back in from disk. Read after the DiT is placed; each encoder re-reads the host."""
+        """Copy routed encoders' mmapped weights into host RAM if it fits; must run after the DiT is placed."""
         from .diffusion_small_host import (
             decide_encoder_resident,
             materialize_streamed_encoder_,

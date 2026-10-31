@@ -868,13 +868,9 @@ def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
     return streamed // _MIB
 
 
-# The route leaves an encoder's streamed weights memory-mapped. Every new prompt reads them again, and a small host
-# drops those clean file pages between prompts (FLUX.1 T5 on a 31 GB Kaggle T4: ~7 GB re-read, 18-24 s per prompt).
-# When host RAM still covers them after placement, they are copied into anonymous memory once at load.
-# 0 keeps them memory-mapped, 1 always copies.
+# Small hosts drop mmapped encoder pages between prompts (FLUX.1 T5 on a 31 GB T4: ~7 GB re-read, 18-24 s/prompt).
 ENCODER_RESIDENT_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_TE_RESIDENT"
-# Host RAM the load still takes after the route: pinned staging for the streamed DiT (~2 GB on FLUX.1) and the
-# encoder prefetch ring.
+# Host RAM still taken after the route: pinned DiT staging (~2 GB on FLUX.1) + encoder prefetch ring.
 _ENCODER_RESIDENT_RUNTIME_MIB = 2560
 
 
@@ -901,13 +897,11 @@ def _mmap_streamed_tensors(module: Any) -> list:
 
 
 def streamed_encoder_mib(module: Any) -> int:
-    """Host MiB of ``module``'s memory-mapped streamed weights (what :func:`materialize_streamed_encoder_` copies)."""
     total = sum(int(t.numel()) * int(t.element_size()) for *_x, t in _mmap_streamed_tensors(module))
     return -(-total // _MIB)
 
 
 def encoder_resident_mode() -> Optional[bool]:
-    """Kill switch: False (``0``), True (``1``), None (auto)."""
     value = _env(ENCODER_RESIDENT_ENV)
     if value in ("0", "off", "false", "no"):
         return False
@@ -924,9 +918,7 @@ def decide_encoder_resident(
     host_commit_mib: Optional[int] = None,
     int8_spill: bool = False,
 ) -> tuple[bool, str]:
-    """Whether a small-host encoder's memory-mapped weights move into anonymous host RAM. Read after placement:
-    ``host_available_mib`` already excludes the int8 DiT. Copies only when the host keeps the route's reserve plus
-    the rest of the load's host RAM (pinned staging) after the copy; otherwise the weights stay memory-mapped."""
+    """``host_available_mib`` is read after placement, so it already excludes the int8 DiT."""
     mode = encoder_resident_mode()
     if streamed_mib <= 0:
         return False, "no memory-mapped encoder weights"
@@ -959,8 +951,7 @@ def decide_encoder_resident(
 
 
 def materialize_streamed_encoder_(module: Any, cancel_check: Any = None) -> int:
-    """Copy ``module``'s memory-mapped streamed weights into anonymous host memory, one tensor at a time (dtype,
-    layerwise casting and ties unchanged). Must run before group offload records the host tensors. Returns MiB copied."""
+    """Must run before group offload records the host tensors. Returns MiB copied."""
     import torch
 
     copied = 0
