@@ -3244,6 +3244,14 @@ def _match_assets_before_api_routes(app: FastAPI) -> None:
     routes.insert(position, mount)
 
 
+# Takes over at once, then unregisters: no fetch handler, so requests go straight to the network,
+# and no cache or storage is touched (another app's caches are not Studio's to clear).
+_RETIRING_SERVICE_WORKER = (
+    'self.addEventListener("install", () => self.skipWaiting());\n'
+    'self.addEventListener("activate", (event) => event.waitUntil(self.registration.unregister()));\n'
+)
+
+
 def setup_frontend(
     app: FastAPI,
     build_path: Path,
@@ -3319,6 +3327,15 @@ def setup_frontend(
         # A non-string type is unsupported too; an unhashable value would raise TypeError and escape as a 500 instead of a clean 400.
         if is_engine_probe_path(full_path):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
+
+        # Studio registers no service worker, so this is the browser updating one another app left on
+        # this origin. The app shell fails that update forever and the worker keeps every Studio request.
+        if request.headers.get("service-worker") == "script":
+            return Response(
+                content = _RETIRING_SERVICE_WORKER,
+                media_type = "text/javascript",
+                headers = {"Cache-Control": "no-store", "Service-Worker-Allowed": "/"},
+            )
 
         # Serve index.html as bytes - avoids Content-Length mismatch
         return _build_index_response(request)
