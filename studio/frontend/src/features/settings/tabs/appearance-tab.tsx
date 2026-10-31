@@ -15,6 +15,7 @@ import {
   ActiveColorControl,
   ChatFontRow,
   ChatWidthSelect,
+  CodeDisplaySwitch,
   SentAttachmentsSelect,
   CodeFontRow,
   CodeFontSizeRow,
@@ -28,6 +29,7 @@ import {
   UiFontRow,
   UiFontSizeRow,
 } from "../components/appearance-custom-controls";
+import { CodeDisplayPreview } from "../components/code-display-preview";
 import { ColorThemeSelect } from "../components/color-theme-select";
 import { GpuRenderingSegmented } from "../components/gpu-rendering-segmented";
 import { SettingsRow } from "../components/settings-row";
@@ -41,6 +43,11 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 const FONT_CONTROL_CLASS = "flex w-76 max-w-full items-center gap-2";
 const FONT_SELECT_CLASS = "w-auto min-w-0 flex-1";
+const CODE_SWITCHES = [
+  { field: "codeLineNumbers", key: "lineNumbers" },
+  { field: "codeWordWrap", key: "wordWrap" },
+  { field: "codeLigatures", key: "ligatures" },
+] as const;
 const NOTE_CLASS =
   "max-w-[calc(280px*var(--ui-space-scale,1))] text-right text-xs";
 
@@ -227,12 +234,6 @@ export function AppearanceTab() {
             <ChatFontRow className={FONT_SELECT_CLASS} />
           </div>
         </SettingsRow>
-        <SettingsRow label={t("settings.appearance.custom.codeFont.label")}>
-          <div className={FONT_CONTROL_CLASS}>
-            <CodeFontRow className={FONT_SELECT_CLASS} />
-            <CodeFontSizeRow />
-          </div>
-        </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.interfaceScale.label")}
           description={t(
@@ -277,6 +278,33 @@ export function AppearanceTab() {
         >
           <FontSmoothingSwitch />
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.appearance.code.title")}>
+        <SettingsRow
+          label={t("settings.appearance.custom.codeFont.label")}
+          description={t("settings.appearance.code.fontDescription")}
+        >
+          <div className={FONT_CONTROL_CLASS}>
+            <CodeFontRow className={FONT_SELECT_CLASS} />
+            <CodeFontSizeRow />
+          </div>
+        </SettingsRow>
+        <div className="pb-3">
+          <CodeDisplayPreview />
+        </div>
+        {CODE_SWITCHES.map(({ field, key }) => (
+          <SettingsRow
+            key={field}
+            label={t(`settings.appearance.code.${key}.label`)}
+            description={t(`settings.appearance.code.${key}.description`)}
+          >
+            <CodeDisplaySwitch
+              field={field}
+              label={t(`settings.appearance.code.${key}.label`)}
+            />
+          </SettingsRow>
+        ))}
       </SettingsSection>
 
       {isTauri ? (

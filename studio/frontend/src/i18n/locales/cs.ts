@@ -2545,6 +2545,22 @@ export const cs = {
         description:
           "Halloweenské motivy a strašidelné pozdravy, do 1. listopadu.",
       },
+      code: {
+        title: "Kód",
+        fontDescription: "Bloky kódu v chatu, náhledy souborů a příklady API.",
+        lineNumbers: {
+          label: "Čísla řádků",
+          description: "Číslovat řádky bloků kódu v chatu.",
+        },
+        wordWrap: {
+          label: "Zalamování řádků",
+          description: "Zalamovat dlouhé řádky v blocích kódu místo vodorovného posouvání.",
+        },
+        ligatures: {
+          label: "Ligatury písma",
+          description: "Spojovat symboly jako => a != do jednoho znaku, pokud to písmo kódu podporuje.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Šířka chatu",

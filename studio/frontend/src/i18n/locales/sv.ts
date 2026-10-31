@@ -2458,6 +2458,22 @@ export const sv = {
         description:
           "Halloweenteman och kusliga hälsningar, till 1 november.",
       },
+      code: {
+        title: "Kod",
+        fontDescription: "Kodblock i chatten, filförhandsvisningar och API-exempel.",
+        lineNumbers: {
+          label: "Radnummer",
+          description: "Numrera raderna i kodblock i chatten.",
+        },
+        wordWrap: {
+          label: "Radbrytning",
+          description: "Bryt långa rader i kodblock i stället för att rulla i sidled.",
+        },
+        ligatures: {
+          label: "Ligaturer",
+          description: "Slå ihop tecken som => och != till ett tecken när kodtypsnittet stöder det.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Chattbredd",

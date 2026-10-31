@@ -2356,6 +2356,22 @@ export const es = {
         description:
           "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
       },
+      code: {
+        title: "Código",
+        fontDescription: "Bloques de código en el chat, vistas previas de archivos y ejemplos de la API.",
+        lineNumbers: {
+          label: "Números de línea",
+          description: "Numerar las líneas de los bloques de código en el chat.",
+        },
+        wordWrap: {
+          label: "Ajuste de línea",
+          description: "Ajustar las líneas largas en los bloques de código en lugar de desplazarse en horizontal.",
+        },
+        ligatures: {
+          label: "Ligaduras tipográficas",
+          description: "Unir símbolos como => y != en un solo glifo cuando la fuente de código lo admite.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Ancho del chat",

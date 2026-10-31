@@ -2559,6 +2559,22 @@ export const pl = {
         label: "Cukierek albo psikus",
         description: "Motywy Halloween i upiorne powitania, do 1 listopada.",
       },
+      code: {
+        title: "Kod",
+        fontDescription: "Bloki kodu na czacie, podglądy plików i przykłady API.",
+        lineNumbers: {
+          label: "Numery wierszy",
+          description: "Numeruj wiersze bloków kodu na czacie.",
+        },
+        wordWrap: {
+          label: "Zawijanie wierszy",
+          description: "Zawijaj długie wiersze w blokach kodu zamiast przewijać w poziomie.",
+        },
+        ligatures: {
+          label: "Ligatury czcionki",
+          description: "Łącz symbole takie jak => i != w jeden glif, jeśli czcionka kodu to obsługuje.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Szerokość czatu",

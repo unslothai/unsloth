@@ -2529,6 +2529,22 @@ export const id = {
         label: "Trick or treat",
         description: "Tema Halloween dan sapaan seram, hingga 1 November.",
       },
+      code: {
+        title: "Kode",
+        fontDescription: "Blok kode di chat, pratinjau file, dan contoh API.",
+        lineNumbers: {
+          label: "Nomor baris",
+          description: "Beri nomor pada baris blok kode di chat.",
+        },
+        wordWrap: {
+          label: "Bungkus baris",
+          description: "Bungkus baris panjang di blok kode alih-alih menggulir ke samping.",
+        },
+        ligatures: {
+          label: "Ligatur font",
+          description: "Gabungkan simbol seperti => dan != menjadi satu glif jika font kode mendukungnya.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Lebar chat",

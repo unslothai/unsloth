@@ -2361,6 +2361,22 @@ export const de = {
         description:
           "Halloween-Designs und gruselige Begrüßungen, bis zum 1. November.",
       },
+      code: {
+        title: "Code",
+        fontDescription: "Codeblöcke im Chat, Dateivorschauen und API-Beispiele.",
+        lineNumbers: {
+          label: "Zeilennummern",
+          description: "Zeilen von Codeblöcken im Chat nummerieren.",
+        },
+        wordWrap: {
+          label: "Zeilenumbruch",
+          description: "Lange Zeilen in Codeblöcken umbrechen statt seitlich zu scrollen.",
+        },
+        ligatures: {
+          label: "Schrift-Ligaturen",
+          description: "Zeichen wie => und != zu einer Glyphe verbinden, wenn die Codeschrift das unterstützt.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Chatbreite",

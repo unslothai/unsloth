@@ -2349,6 +2349,25 @@ html[data-code-font-size] .aui-reasoning-code-lines {
 	font-size: var(--custom-code-font-size) !important;
 }
 
+/* Settings > Appearance > Code. */
+html[data-code-wrap] [data-streamdown="code-block"] :is(pre, code) {
+	white-space: pre-wrap !important;
+	overflow-wrap: anywhere;
+}
+/* With numbers on, wrapped lines hang past Streamdown's number column (w-6 + mr-4). */
+html[data-code-wrap][data-code-line-numbers] [data-streamdown="code-block"] code > span {
+	padding-inline-start: 2.5rem;
+	text-indent: -2.5rem;
+}
+html[data-code-wrap][data-code-line-numbers] [data-streamdown="code-block"] code > span::before {
+	text-indent: 0;
+}
+html[data-code-no-ligatures] :is(pre, code, kbd, samp),
+html[data-code-no-ligatures] .aui-reasoning-code-lines {
+	font-variant-ligatures: none;
+	font-feature-settings: "liga" 0, "calt" 0;
+}
+
 html.pointer-cursors
 	:is(
 		button:not(:disabled),
@@ -4701,7 +4720,7 @@ html[data-chat-font] .aui-root {
 		padding-left: 0;
 	}
 
-	.aui-thread-root [data-streamdown="code-block"] code > span::before {
+	html:not([data-code-line-numbers]) :is(.aui-thread-root, [data-code-preview]) [data-streamdown="code-block"] code > span::before {
 		content: none !important;
 		display: none !important;
 		margin: 0 !important;
@@ -4709,13 +4728,13 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* Chat code is 12px at any width (CODE_FONT_SIZE_RANGE.default). */
-	.aui-thread-root [data-streamdown="code-block"] {
+	:is(.aui-thread-root, [data-code-preview]) [data-streamdown="code-block"] {
 		font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		line-height: 1.55;
 	}
 
 	/* The body's text-sm would otherwise override the size above. */
-	.aui-thread-root [data-streamdown="code-block-body"] {
+	:is(.aui-thread-root, [data-code-preview]) [data-streamdown="code-block-body"] {
 		font-size: inherit;
 		line-height: inherit;
 	}
@@ -4933,8 +4952,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* --custom-code-font when set, else Fira Code; not KaTeX. */
-	.aui-thread-root [data-streamdown="code-block"] pre,
-	.aui-thread-root [data-streamdown="code-block"] code {
+	:is(.aui-thread-root, [data-code-preview]) [data-streamdown="code-block"] :is(pre, code) {
 		font-family: var(--custom-code-font, "Fira Code", ui-monospace, monospace);
 	}
 
@@ -4949,7 +4967,7 @@ html[data-chat-font] .aui-root {
 		max-width: calc(100% + 1.25rem * var(--ui-space-scale, 1));
 	}
 
-	.dark .aui-thread-root [data-streamdown="code-block"] {
+	.dark :is(.aui-thread-root, [data-code-preview]) [data-streamdown="code-block"] {
 		/* Streamdown `pre` sets its own dark bg; keep one surface on the outer shell. */
 		--shiki-dark-bg: transparent;
 		background: var(--color-code-block);

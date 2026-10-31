@@ -2229,6 +2229,22 @@ export const it = {
         description:
           "Temi di Halloween e saluti spaventosi, fino al 1° novembre.",
       },
+      code: {
+        title: "Codice",
+        fontDescription: "Blocchi di codice nella chat, anteprime dei file ed esempi API.",
+        lineNumbers: {
+          label: "Numeri di riga",
+          description: "Numera le righe dei blocchi di codice nella chat.",
+        },
+        wordWrap: {
+          label: "A capo automatico",
+          description: "Manda a capo le righe lunghe nei blocchi di codice invece di scorrere in orizzontale.",
+        },
+        ligatures: {
+          label: "Legature del carattere",
+          description: "Unisce simboli come => e != in un solo glifo se il carattere del codice lo supporta.",
+        },
+      },
       custom: {
         chatWidth: {
           label: "Larghezza chat",
