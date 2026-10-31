@@ -1430,3 +1430,219 @@ def test_reexport_never_touches_the_leftovers_while_saving(tmp_path, monkeypatch
     assert {path: during[path] for path in before} == before
     assert {path: stat_all()[path] for path in before} == before
     assert seen["uploaded"] == ["model.safetensors"]
+
+
+# unsloth_zoo's MLX merged save (save_merged_model), as far as which files it writes and keeps.
+_ZOO_CORE_NAMES = {"config.json", "model.safetensors.index.json", "README.md", ".gitattributes"}
+
+
+def _zoo_copy_source_sidecars(src_path, path):
+    # unsloth_zoo.mlx.utils._copy_source_sidecars: copies a source sidecar only when it is missing.
+    for source in Path(src_path).iterdir():
+        name = source.name
+        if (
+            not source.is_file()
+            or name in _ZOO_CORE_NAMES
+            or name in {"quantize_config.json", "quant_config.json"}
+            or name.startswith(("model-", "pytorch_model"))
+            or source.suffix not in (".json", ".jinja", ".model", ".txt", ".py")
+        ):
+            continue
+        target = Path(path, name)
+        if not target.exists():
+            shutil.copy2(source, target)
+
+
+class _MlxZooModel(_Model):
+    shards = 2
+    shard_bytes = b"merged"
+
+    def __init__(
+        self,
+        hf_api,
+        source,
+        card_fails = False,
+    ):
+        super().__init__()
+        self.hf_api = hf_api
+        self._src_path = str(source)
+        self.card_fails = card_fails
+
+    def save_pretrained_merged(
+        self,
+        save_directory,
+        tokenizer,
+        save_method = None,
+        token = None,
+    ):
+        self.merges.append(save_method)
+        path = Path(save_directory)
+        path.mkdir(parents = True, exist_ok = True)
+        # mlx_lm.utils.save_model: every shard and the index are written.
+        names = [
+            f"model-{i:05d}-of-{self.shards:05d}.safetensors" for i in range(1, self.shards + 1)
+        ]
+        for name in names:
+            (path / name).write_bytes(self.shard_bytes)
+        (path / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {str(i): name for i, name in enumerate(names)}})
+        )
+        (path / "config.json").write_text('{"model_type": "qwen2"}')
+        (path / "tokenizer.json").write_text("{}")
+        (path / "tokenizer_config.json").write_text("{}")
+        _zoo_copy_source_sidecars(self._src_path, path)
+        readme = path / "README.md"
+        if not self.card_fails:
+            readme.write_text("---\nlibrary_name: mlx\n---\n")
+        elif not readme.exists():
+            readme.write_text("---\nlibrary_name: mlx\ntags:\n- mlx\n---\n")
+
+
+def _mlx_zoo_backend(
+    monkeypatch,
+    tmp_path,
+    calls,
+    seen,
+    export,
+    card_fails = False,
+    zoo = True,
+):
+    backend, push = _mlx_backend(
+        monkeypatch, "test_export_hub_push_mlx_zoo_backend", calls, seen, export
+    )
+    source = tmp_path / "hf_snapshot"
+    source.mkdir()
+    (source / "config.json").write_text("{}")
+    (source / "model.safetensors").write_bytes(b"base weights")
+    (source / "tokenizer.json").write_text('{"source": 1}')
+    (source / "generation_config.json").write_text('{"eos_token_id": 2}')
+    (source / "modeling_qwen.py").write_text("# remote code")
+    (source / "quantize_config.json").write_text("{}")
+    if zoo:
+        for name in ("unsloth_zoo", "unsloth_zoo.mlx"):
+            package = types.ModuleType(name)
+            package.__path__ = []
+            monkeypatch.setitem(sys.modules, name, package)
+        utils = types.ModuleType("unsloth_zoo.mlx.utils")
+        utils._copy_source_sidecars = _zoo_copy_source_sidecars
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", utils)
+    else:
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", None)
+    backend.current_model = _MlxZooModel(
+        sys.modules[type(backend).__module__].HfApi, source, card_fails = card_fails
+    )
+    return backend, push, source
+
+
+def _fresh_mlx_upload(backend, tmp_path):
+    """The files (and bytes) a save into an empty folder holds, i.e. what the staged path uploads."""
+    model = backend.current_model
+    merges = list(model.merges)
+    fresh = Path(tempfile.mkdtemp(dir = tmp_path))
+    model.save_pretrained_merged(str(fresh), backend.current_tokenizer, save_method = "merged_16bit")
+    model.merges[:] = merges
+    return {path.name: path.read_bytes() for path in fresh.iterdir()}
+
+
+def _mlx_reexport(push, export_dir, monkeypatch, export_module, uploaded):
+    real_upload = export_module.HfApi.upload_folder
+
+    def record(
+        self,
+        *,
+        folder_path,
+        allow_patterns = None,
+        **kwargs,
+    ):
+        from fnmatch import fnmatchcase
+        uploaded.update(
+            {
+                path.name: path.read_bytes()
+                for path in Path(folder_path).iterdir()
+                if path.is_file()
+                and path.name != "export_metadata.json"
+                and (
+                    allow_patterns is None or any(fnmatchcase(path.name, p) for p in allow_patterns)
+                )
+            }
+        )
+        return real_upload(self, folder_path = folder_path, allow_patterns = allow_patterns, **kwargs)
+
+    monkeypatch.setattr(export_module.HfApi, "upload_folder", record)
+    return push(str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake")
+
+
+@pytest.mark.parametrize("export", _MLX_EXPORTS)
+def test_mlx_reexport_into_the_same_folder_saves_once(tmp_path, monkeypatch, export):
+    calls: list[str] = []
+    seen: dict = {}
+    backend, push, _source = _mlx_zoo_backend(monkeypatch, tmp_path, calls, seen, export)
+    export_module = sys.modules[type(backend).__module__]
+    export_dir = tmp_path / "export"
+    # An earlier export into this folder with another shard layout, plus unrelated leftovers.
+    backend.current_model.shards = 3
+    backend.current_model.save_pretrained_merged(str(export_dir), None, save_method = "merged_16bit")
+    (export_dir / "export_metadata.json").write_text("{}")
+    (export_dir / "old.Q4_K_M.gguf").write_bytes(b"GGUF")
+    (export_dir / "adapters.safetensors").write_bytes(b"lora")
+    _age(export_dir)
+    backend.current_model.shards = 2
+    backend.current_model.merges.clear()
+    expected = _fresh_mlx_upload(backend, tmp_path)
+    uploaded: dict = {}
+
+    success, message, output_path = _mlx_reexport(
+        push, export_dir, monkeypatch, export_module, uploaded
+    )
+
+    assert success is True, message
+    assert backend.current_model.merges == [_MLX_EXPORTS[export][3]]
+    assert seen["folder"] == output_path == str(export_dir.resolve())
+    # The kept generation_config.json and remote code are what a fresh save copies, so they ship.
+    assert "generation_config.json" in uploaded and "modeling_qwen.py" in uploaded
+    assert uploaded == expected
+    assert seen["uploaded"] == sorted(expected)
+    assert seen["delete_patterns"] == ["reap_report.json"]
+    assert Path(output_path, "old.Q4_K_M.gguf").is_file()
+
+
+@pytest.mark.parametrize(
+    "why", ["changed_sidecar", "kept_card", "no_zoo_rules", "source_folder", "fresh_leftover"]
+)
+def test_mlx_reexport_stages_a_clean_save_when_a_kept_file_may_belong_to_it(
+    tmp_path, monkeypatch, why
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend, push, source = _mlx_zoo_backend(
+        monkeypatch,
+        tmp_path,
+        calls,
+        seen,
+        "merged",
+        card_fails = why == "kept_card",
+        zoo = why != "no_zoo_rules",
+    )
+    export_module = sys.modules[type(backend).__module__]
+    export_dir = source if why == "source_folder" else tmp_path / "export"
+    export_dir.mkdir(exist_ok = True)
+    (export_dir / "generation_config.json").write_text(
+        '{"eos_token_id": 9}' if why == "changed_sidecar" else '{"eos_token_id": 2}'
+    )
+    (export_dir / "README.md").write_text("old card")
+    (export_dir / "old.Q4_K_M.gguf").write_bytes(b"GGUF")
+    if why != "fresh_leftover":
+        _age(export_dir)
+    expected = _fresh_mlx_upload(backend, tmp_path)
+    uploaded: dict = {}
+
+    success, message, output_path = _mlx_reexport(
+        push, export_dir, monkeypatch, export_module, uploaded
+    )
+
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit", "merged_16bit"]
+    assert seen["folder"] != output_path
+    assert not Path(seen["folder"]).exists()
+    assert uploaded == expected
+    assert "old.Q4_K_M.gguf" not in seen["uploaded"]
