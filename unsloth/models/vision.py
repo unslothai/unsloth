@@ -398,7 +398,6 @@ from typing import Optional, Tuple, List, Union
 import re, inspect, sys
 import contextlib
 import threading
-import weakref
 
 try:
     from huggingface_hub.utils import get_token
