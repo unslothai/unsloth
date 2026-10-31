@@ -46,7 +46,11 @@ def _rdna1_aware(original: Any, torch: Any):
     return gate
 
 
-def disable_lfm3_triton_conv_on_rdna1(model: Any, torch: Any, log: Any = None) -> list[str]:
+def disable_lfm3_triton_conv_on_rdna1(
+    model: Any,
+    torch: Any,
+    log: Any = None,
+) -> list[str]:
     """Make every loaded remote-code module's ``can_use_lfm3_conv`` refuse RDNA1 tensors when the model sits on an RDNA1 card."""
     if not is_rocm_torch(torch):
         return []

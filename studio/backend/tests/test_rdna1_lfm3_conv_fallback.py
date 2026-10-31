@@ -57,7 +57,9 @@ def remote_modules(monkeypatch):
 def test_rdna1_gate_patched_in_every_remote_module(remote_modules, arch):
     log = types.SimpleNamespace(lines = [])
     log.info = log.lines.append
-    patched = disable_lfm3_triton_conv_on_rdna1(_model("cuda"), _fake_torch(hip = True, arch = arch), log)
+    patched = disable_lfm3_triton_conv_on_rdna1(
+        _model("cuda"), _fake_torch(hip = True, arch = arch), log
+    )
     assert sorted(patched) == sorted([LFM3, OMNI_TEXT])
     for name in (LFM3, OMNI_TEXT):
         assert remote_modules[name].can_use_lfm3_conv(None, None) is False
@@ -90,7 +92,10 @@ def test_model_without_gate_is_a_noop(monkeypatch):
         monkeypatch.delitem(sys.modules, name)
     plain = types.ModuleType(OTHER)
     monkeypatch.setitem(sys.modules, OTHER, plain)
-    assert disable_lfm3_triton_conv_on_rdna1(_model("cuda"), _fake_torch(hip = True, arch = "gfx1010")) == []
+    assert (
+        disable_lfm3_triton_conv_on_rdna1(_model("cuda"), _fake_torch(hip = True, arch = "gfx1010"))
+        == []
+    )
 
 
 def test_unreadable_model_or_props_is_a_noop(remote_modules):
@@ -113,7 +118,9 @@ def test_gate_stays_on_for_a_non_rdna1_card_in_the_same_process(remote_modules):
     # Mixed host: an RDNA1 model is loaded first, then the same remote code runs on another card.
     archs = {0: "gfx1010", 1: "gfx1100"}
     torch = _fake_torch(hip = True, arch = "gfx1010")
-    torch.cuda.get_device_properties = lambda index = None: types.SimpleNamespace(gcnArchName = archs[index])
+    torch.cuda.get_device_properties = lambda index = None: types.SimpleNamespace(
+        gcnArchName = archs[index]
+    )
     disable_lfm3_triton_conv_on_rdna1(_model("cuda", 0), torch)
     assert disable_lfm3_triton_conv_on_rdna1(_model("cuda", 0), torch) == []  # no double wrap
     for name in (LFM3, OMNI_TEXT):
