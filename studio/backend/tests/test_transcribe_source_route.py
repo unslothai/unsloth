@@ -343,6 +343,14 @@ def test_another_engine_refuses_a_source_past_its_cap_before_loading(stub, short
     assert not (stub.loads or stub.bytes or stub.paths)
 
 
+def test_a_source_just_past_the_cap_is_refused_not_cut(stub, short_caps):
+    source = {"input_id": _long_input(ALICE, seconds = 1.5)}
+    with _client(ALICE) as client:
+        response, _ = _post(client, model = "small", engine = "transformers", source = source)
+    assert response.status_code == 413
+    assert not (stub.loads or stub.bytes or stub.paths)
+
+
 def test_a_connection_refuses_a_source_past_its_cap_before_upload(stub, connection, short_caps):
     source = {"input_id": _long_input(ALICE)}
     with _client(ALICE) as client:

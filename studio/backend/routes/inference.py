@@ -25778,7 +25778,7 @@ def _refuse_long_source(
     from core.inference import audio_edit, audio_inputs
 
     seconds = audio_edit.wav_seconds(source.path)
-    if seconds is None or seconds <= cap + 1.0:
+    if seconds is None or seconds <= cap:
         return
     who = "A connection takes" if connection else "This model transcribes"
     longest = audio_inputs.length_words(audio_inputs.transcribe_max_seconds())
