@@ -73,7 +73,6 @@ def _install_zoo(monkeypatch, new_zoo):
 
 
 def _compiled_module(monkeypatch, stance, utils, new_zoo):
-    """Mimics unsloth_zoo compiler.__DYNAMO__RECOMPILING__."""
     module = types.ModuleType(COMPILED)
     module.INFERENCE_RUNS = 0
     monkeypatch.setitem(sys.modules, COMPILED, module)
