@@ -71,16 +71,39 @@ def test_jsonl_preview_skips_the_threaded_loader(tmp_path, loader_calls):
     assert dataset[0]["messages"][2]["content"] == "r" * 50_000
 
 
-def test_mixed_nested_types_raise_without_the_threaded_loader(tmp_path, loader_calls):
-    def row(search):
-        call = {"function": {"name": "s", "arguments": {"json_body": {"searchContent": search}}}}
+@pytest.mark.parametrize(
+    "bodies, field, kinds",
+    [
+        # The fields of #15681's json_body mix plain values with objects ...
+        (
+            ({"searchContent": "text"}, {"searchContent": {"q": "x"}}),
+            "json_body.searchContent",
+            "a plain value in some rows and an object",
+        ),
+        # ... and json_body itself is an object in some rows and a list in others.
+        (
+            ({"condition": "a"}, [{"condition": "a"}]),
+            "json_body",
+            "a list in some rows and an object",
+        ),
+    ],
+)
+def test_mixed_nested_types_raise_without_the_threaded_loader(
+    tmp_path, loader_calls, bodies, field, kinds
+):
+    def row(body):
+        call = {"function": {"name": "s", "arguments": {"json_body": body}}}
         return {"messages": [{"role": "assistant", "content": "", "tool_calls": [call]}]}
 
     path = tmp_path / "train.jsonl"
-    _write_jsonl(path, [row("text"), row({"q": "x"})] * 50)
+    _write_jsonl(path, [row(bodies[0]), row(bodies[1])] * 50)
     # Token preview reads 100 rows: an Arrow column cannot be both string and struct.
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises(ValueError) as exc:
         local._stream_file_preview_slice(path, 100)
+    # Named, not pyarrow's "cannot mix struct and non-struct": the user can find the field to fix.
+    message = str(exc.value)
+    assert f"`messages[].tool_calls[].function.arguments.{field}` is {kinds} in others" in message
+    assert "JSON string" in message
     assert loader_calls == []
 
 
