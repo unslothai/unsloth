@@ -3068,6 +3068,36 @@ def _video_auto_denoiser_scheme(
     speed_mode: Optional[str] = None,
     hf_token: Optional[str] = None,
 ) -> Optional[str]:
+    """Seed scheme: a hosted checkpoint, else (auto only) the local cached resident build; None = dense shards."""
+    scheme = _video_hosted_denoiser_scheme(
+        fam,
+        target = target,
+        requested = requested,
+        base_repo = base_repo,
+        speed_mode = speed_mode,
+        hf_token = hf_token,
+    )
+    if scheme is not None:
+        return scheme
+    return _video_cached_resident_scheme(
+        fam,
+        target = target,
+        requested = requested,
+        base_repo = base_repo,
+        speed_mode = speed_mode,
+        hf_token = hf_token,
+    )
+
+
+def _video_hosted_denoiser_scheme(
+    fam: Any,
+    *,
+    target: Any,
+    requested: Optional[str],
+    base_repo: Optional[str],
+    speed_mode: Optional[str] = None,
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
     """The scheme a CONVENTIONAL video load would seed from a hosted checkpoint, or None. ``hf_token``
     reaches the hosted header probe, so a gated artifact is judged, not read as unknown."""
     # Only an AUTO precision becomes "off" under Speed="off"; an EXPLICIT scheme is honored, so it keeps its seed.
@@ -3128,18 +3158,20 @@ def _save_runtime_quant_to_cache(
     base: Optional[str],
     source: Optional[str],
     cancel_check: Any = None,
-) -> None:
-    """Cache a runtime-quantized single denoiser; MoE is skipped (no lookup slot for the second expert)."""
+    defer: bool = False,
+) -> Any:
+    """Cache a runtime-quantized single denoiser; MoE is skipped (no lookup slot for the second expert).
+    ``defer``: return a ``PendingWrite`` to start after publish, or None. Never raises."""
     try:
         from .video_denoiser_prequant import denoiser_components
 
         views = list(views or ())
         if len(denoiser_components(fam)) != 1 or len(views) != 1:
             logger.info("diffusion.prequant_cache: skipped (multi-denoiser video family)")
-            return
+            return None
         from .diffusion_prequant_cache import save_runtime_quant
 
-        save_runtime_quant(
+        return save_runtime_quant(
             getattr(views[0], "transformer", None),
             fam,
             base_repo = base,
@@ -3147,9 +3179,126 @@ def _save_runtime_quant_to_cache(
             component = "transformer",
             logger = logger,
             cancel_check = cancel_check,
+            **({"defer": True, "host_snapshot": True} if defer else {}),
         )
     except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
         logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
+        return None
+
+
+# "0": no local prequant cache for AUTO resident torchao DiTs (explicit schemes unaffected).
+VIDEO_RESIDENT_QUANT_CACHE_ENV = "UNSLOTH_VIDEO_RESIDENT_QUANT_CACHE"
+_RESIDENT_QUANT_WRITE_ATTR = "_unsloth_resident_quant_write"
+
+
+def _resident_quant_cache_enabled() -> bool:
+    raw = (os.environ.get(VIDEO_RESIDENT_QUANT_CACHE_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no", "none"):
+        return False
+    try:
+        from .diffusion_prequant_cache import enabled
+        return bool(enabled())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _is_prequant_cache_source(source: Any) -> bool:
+    if getattr(source, "kind", None) != "path":
+        return False
+    try:
+        from .diffusion_prequant_cache import path_in_cache
+        return bool(path_in_cache(getattr(source, "location", None)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _video_cached_resident_scheme(
+    fam: Any,
+    *,
+    target: Any,
+    requested: Optional[str],
+    base_repo: Optional[str],
+    speed_mode: Optional[str] = None,
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """AUTO's own resident pick if the local cache holds exactly that build, else None. Only that scheme is
+    served, so an explicit int8 entry cannot turn later auto loads into int8. Never raises."""
+    try:
+        # Unset is auto: the Studio page omits the field.
+        auto = requested is None or str(requested).strip().lower() in ("", "auto")
+        if not auto:
+            return None
+        if speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
+            return None
+        if getattr(fam, "modular_workflow", None) or not _resident_quant_cache_enabled():
+            return None
+        from .video_denoiser_prequant import denoiser_components, denoiser_prequant_sources
+
+        if len(denoiser_components(fam)) != 1:
+            return None
+        import torch
+
+        # Entries are bf16 builds only (the save refuses any other dtype).
+        if getattr(target, "dtype", None) is not torch.bfloat16:
+            return None
+        from .diffusion_prequant import restricted_prequant_load_supported
+        from .diffusion_prequant_cache import CACHEABLE_SCHEMES
+
+        cached = {}
+        for scheme in CACHEABLE_SCHEMES:
+            sources = denoiser_prequant_sources(fam, scheme, base_repo, hf_token = hf_token)
+            if sources and all(_is_prequant_cache_source(src) for src in sources.values()):
+                cached[scheme] = sources
+        if not cached:
+            return None
+        pick = select_transformer_quant_scheme(target, TQ_AUTO, family = getattr(fam, "name", None))
+        if pick not in cached or not restricted_prequant_load_supported(pick):
+            return None
+        return pick
+    except Exception:  # noqa: BLE001 -- unanswerable: the dense shards load and quantise as before
+        return None
+
+
+def _discard_resident_quant_write(owner: Any, token: Any = None) -> None:
+    slot = getattr(owner, "_resident_quant_write", None)
+    if slot is None or (token is not None and slot[0] != token):
+        return
+    owner._resident_quant_write = None
+    try:
+        slot[1].discard()
+    except Exception:  # noqa: BLE001 - best effort
+        pass
+
+
+def _start_resident_quant_write(owner: Any, pipe: Any, token: Any) -> None:
+    slot = getattr(owner, "_resident_quant_write", None)
+    if slot is None or slot[0] != token:
+        return
+    owner._resident_quant_write = None
+    try:
+        setattr(pipe, _RESIDENT_QUANT_WRITE_ATTR, slot[1])
+        slot[1].start()
+    except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
+        logger.warning("diffusion.prequant_cache: resident background write skipped (%s)", exc)
+        try:
+            slot[1].discard()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _finish_resident_quant_write(pipe: Any) -> None:
+    """Teardown: let a running write finish (bounded), then cancel."""
+    write = getattr(pipe, _RESIDENT_QUANT_WRITE_ATTR, None)
+    if write is None:
+        return
+    try:
+        from .diffusion_prequant_cache import FINISH_TIMEOUT_SECONDS
+        if not write.wait(FINISH_TIMEOUT_SECONDS):
+            write.cancel()
+            write.wait(30.0)
+        setattr(pipe, _RESIDENT_QUANT_WRITE_ATTR, None)
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
 
 
 def _read_cast_cache(
@@ -5588,6 +5737,7 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- surfaced via load_progress
             # A failed load never commits state; roll back speed globals here, token-scoped to this load.
             self._rollback_precommit_globals(token)
+            _discard_resident_quant_write(self, token)
             # Token-scoped: a newer LTX-2.5 load may already hold the slot with its own worker.
             self._close_pending_ltx25_encoder(token)
             if self._load_token != token:
@@ -9415,6 +9565,30 @@ class VideoBackend:
                 f"{comfy_info.get('dequantized', 0)} dequantized"
             )
             logger.info("video.transformer_quant: %s", transformer_quant_source)
+        elif (
+            denoiser_injected
+            and denoiser_seed_sources
+            and all(_is_prequant_cache_source(src) for src in denoiser_seed_sources.values())
+        ):
+            transformer_quant_engaged = denoiser_seed_scheme
+            transformer_quant_source = (
+                f"runtime {denoiser_seed_scheme} build read back from this machine's prequant cache of "
+                "the same build"
+            )
+            logger.info(
+                "video.transformer_quant: read the resident %s denoiser for %s from the local prequant "
+                "cache (%s); the dense denoiser shards are not loaded or quantised",
+                denoiser_seed_scheme,
+                fam.name,
+                ", ".join(
+                    sorted(
+                        {
+                            Path(str(src.location)).parent.name
+                            for src in denoiser_seed_sources.values()
+                        }
+                    )
+                ),
+            )
         elif denoiser_injected:
             transformer_quant_engaged = denoiser_seed_scheme
             transformer_quant_source = (
@@ -9561,7 +9735,6 @@ class VideoBackend:
                             cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
                         )
                     self._raise_if_video_load_superseded(_load_token)
-                # Only explicit schemes read the cache back, so an auto save would be a write nothing opens.
                 elif transformer_quant_pinned is not None:
                     _save_runtime_quant_to_cache(
                         fam,
@@ -9570,6 +9743,25 @@ class VideoBackend:
                         source = _base_local_dir or fetch_base,
                         cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
                     )
+                    self._raise_if_video_load_superseded(_load_token)
+                # Auto resident build: write after publish so the first render never waits on disk.
+                elif (
+                    not video_offload
+                    and native_scheme is None
+                    and normalize_transformer_quant(transformer_quant) == TQ_AUTO
+                    and _resident_quant_cache_enabled()
+                ):
+                    _discard_resident_quant_write(self)
+                    pending = _save_runtime_quant_to_cache(
+                        fam,
+                        views,
+                        base = base,
+                        source = _base_local_dir or fetch_base,
+                        cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+                        defer = True,
+                    )
+                    if hasattr(pending, "start"):
+                        self._resident_quant_write = (_load_token, pending)
                     self._raise_if_video_load_superseded(_load_token)
             elif transformer_quant_pinned is not None:
                 transformer_quant_decline = (
@@ -10246,6 +10438,7 @@ class VideoBackend:
         if native_writes is not None:
             setattr(pipe, _NATIVE_WRITES_ATTR, native_writes)
             native_writes.start()
+        _start_resident_quant_write(self, pipe, _load_token)
         return self.status()
 
     @staticmethod
@@ -13556,6 +13749,7 @@ class VideoBackend:
             # A cast cache write still reads the components the teardown frees.
             _finish_cast_writes(getattr(state, "pipe", None))
             _finish_native_writes(getattr(state, "pipe", None))
+            _finish_resident_quant_write(getattr(state, "pipe", None))
             uninstall_cfg_parallel(getattr(state, "pipe", None))
             # Before clear_gpu_cache(), or the graph pool stays reserved.
             diffusion_cuda_graph.uninstall_all(
