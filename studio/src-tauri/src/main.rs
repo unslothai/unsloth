@@ -2356,9 +2356,7 @@ fn main() {
         if let Some(window) = context.config_mut().app.windows.get_mut(0) {
             window.additional_browser_args = Some(args);
         }
-        if gpu_setting == gpu_rendering::GpuRendering::Off {
-            gpu_rendering::set_pages_disable_gpu(true);
-        }
+        gpu_rendering::set_pages_disable_gpu(true);
     }
 
     #[cfg(target_os = "linux")]

@@ -162,11 +162,43 @@ fn emit_signal(app: &AppHandle, action: &'static str, target: &'static str, held
 
 /// Whether the Unsloth window itself is in front. A global chord pressed there
 /// should drive the built-in composer dictation, not the system-wide overlay.
+///
+/// Must use the Win32 foreground window: Tauri's `is_focused` reported true
+/// while another app was active, which sent chords into the wrong target.
+#[cfg(target_os = "windows")]
+fn main_window_focused(app: &AppHandle) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetForegroundWindow, GA_ROOT,
+    };
+
+    let hwnd = app
+        .get_window("main")
+        .and_then(|window| window.hwnd().ok())
+        .or_else(|| {
+            app.get_webview_window("main")
+                .and_then(|window| window.hwnd().ok())
+        });
+    let Some(hwnd) = hwnd else {
+        return false;
+    };
+    let target = hwnd.0;
+    // SAFETY: both calls only read the OS foreground-window state.
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.is_null() {
+        return false;
+    }
+    if foreground == target {
+        return true;
+    }
+    // A focused child (a browser view) is still the Unsloth window.
+    unsafe { GetAncestor(foreground, GA_ROOT) == target }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn main_window_focused(app: &AppHandle) -> bool {
     if let Some(window) = app.get_window("main") {
         return window.is_focused().unwrap_or(false);
     }
-    // `get_window` can miss the main window while browser views are children.
     if let Some(window) = app.get_webview_window("main") {
         return window.is_focused().unwrap_or(false);
     }
