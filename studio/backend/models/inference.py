@@ -2002,6 +2002,15 @@ class _InferenceRuntimeFields(BaseModel):
             "the most used ones are cached on the GPU. None when no MoE cache is in use."
         ),
     )
+    metal_unsupported_weight_types: Optional[list[str]] = Field(
+        None,
+        description = (
+            "GGUF weight types (e.g. 'nvfp4') that llama.cpp's Metal backend cannot multiply, so "
+            "they stay in CPU buffers and run on the CPU. offloaded_layers still counts their "
+            "layers as on the GPU. Set only when the load put more weight in host buffers than "
+            "on the GPU; None otherwise."
+        ),
+    )
     gpu_weights_mib: Optional[float] = Field(
         None,
         description = "MiB of model weights llama.cpp placed in GPU buffers, from its load log.",

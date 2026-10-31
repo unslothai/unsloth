@@ -286,6 +286,8 @@ export interface LoadModelResponse {
   gpu_layers?: number;
   offloaded_layers?: number | null;
   offload_total_layers?: number | null;
+  /** Weight types (e.g. "nvfp4") Metal cannot run, kept on the CPU although their layers count as offloaded. */
+  metal_unsupported_weight_types?: string[] | null;
   offload_overridden?: boolean | null;
   gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
@@ -430,6 +432,8 @@ export interface InferenceStatusResponse {
   host_weights_mib?: number | null;
   /** --moe-cache-mib auto: every routed expert in RAM, this many MiB cached on the GPU. */
   expert_cache_mib?: number | null;
+  /** Weight types (e.g. "nvfp4") Metal cannot run, kept on the CPU although their layers count as offloaded. */
+  metal_unsupported_weight_types?: string[] | null;
   offload_overridden?: boolean | null;
   gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
