@@ -206,7 +206,6 @@ export const ChatDictationBar: FC<{
       <div
         ref={rowRef}
         aria-hidden="true"
-        // Older samples fade out at the left edge, so the wave reads as flowing in from the right.
         className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden pl-4 pr-2 [mask-image:linear-gradient(to_right,transparent,#000_28%)]"
         style={{
           gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(2px, 3px))`,

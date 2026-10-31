@@ -82,7 +82,6 @@ export function sanitizeAdjustments(
 		position: parsePosition(input.position) ? input.position! : "50% 50%",
 	};
 }
-/** `[x, y]` percents of a stored "X% Y%" position, or null for anything else. */
 export function parsePosition(value: unknown): [number, number] | null {
 	if (typeof value !== "string") return null;
 	const match = /^(\d{1,3})% (\d{1,3})%$/.exec(value);

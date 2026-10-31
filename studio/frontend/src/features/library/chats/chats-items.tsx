@@ -1231,7 +1231,6 @@ const TILELESS_ROW_NAME = "min-h-10";
 const CARD_TITLE =
   "block w-full rounded-md text-left font-medium text-ui-12p5 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
-/** The rule under the heading lines up list rows; grid cards carry their own edges, so it is off there. */
 export function GroupHeading({
   children,
   count,
