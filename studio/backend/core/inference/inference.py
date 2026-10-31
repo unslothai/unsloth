@@ -3023,10 +3023,12 @@ class InferenceBackend:
             worker.start()
             text_ids: list = []
             said = ""
+            finished = False
             try:
                 while True:
                     item = events.get()
                     if item is done:
+                        finished = True
                         break
                     if cancelled():
                         continue
@@ -3042,9 +3044,10 @@ class InferenceBackend:
                         if wav is not None:
                             yield _speech_item(wav, sample_rate)
             finally:
-                if worker.is_alive():
+                # The worker can still be alive just after queueing `done`; only an early exit stops it.
+                if not finished:
                     stopped.set()
-                    worker.join()
+                worker.join()
             if "error" in result:
                 raise result["error"]
             if cancelled() or "out" not in result:

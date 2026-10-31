@@ -483,3 +483,19 @@ def test_non_streamed_route_joins_speech_chunks_into_one_wav():
     assert _wav(joined["data"]) == (24000, 5760)
     assert route._joined_speech_reply(chunks[:1])["data"] == chunks[0]["speech"]
     assert route._joined_speech_reply([]) == {}
+
+
+def test_a_worker_still_alive_after_finishing_keeps_the_reply(monkeypatch):
+    # The worker queues `done` from its finally block and can still be alive when it is read.
+    real_put = inf.queue.Queue.put if hasattr(inf, "queue") else None
+    import queue
+
+    class _SlowExit(queue.Queue):
+        def put(self, item, *a, **k):
+            super().put(item, *a, **k)
+            if not isinstance(item, tuple):
+                threading.Event().wait(0.2)
+
+    monkeypatch.setattr(queue, "Queue", _SlowExit)
+    b = _backend(_Model(frames = 0), _Processor(_Codec()))
+    assert _spoken(b, speak = True) == ["Paris is the capital."]
