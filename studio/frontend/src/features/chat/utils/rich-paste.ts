@@ -175,10 +175,13 @@ function convert(node: PasteNode, ctx: Ctx): string {
     case "A": {
       const raw = attr(node, "href").trim();
       const href = safeHref(raw);
-      const text = children(node, ctx).trim();
-      if (!href) return children(node, ctx);
-      if (!text || text === raw || text === href || `mailto:${text}` === raw) return href;
-      return `[${text.replace(/([[\]])/g, "\\$1")}](${href})`;
+      const inner = children(node, ctx);
+      if (!href) return inner;
+      const text = inner.trim();
+      const lead = inner.slice(0, inner.length - inner.trimStart().length);
+      const trail = inner.slice(inner.trimEnd().length);
+      if (!text || text === raw || text === href || `mailto:${text}` === raw) return `${lead}${href}${trail}`;
+      return `${lead}[${text.replace(/([[\]])/g, "\\$1")}](${href})${trail}`;
     }
     case "STRONG":
     case "B":

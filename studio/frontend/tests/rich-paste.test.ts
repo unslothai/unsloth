@@ -44,6 +44,11 @@ test("links keep their target, and bare URLs stay bare", () => {
   assert.equal(htmlNodeToMarkdown(body), "See [the docs](https://unsloth.ai/docs) or https://x.com/a%20b.");
 });
 
+test("spaces inside a link's tag still separate it from its neighbours", () => {
+  const body = el("body", el("p", "Read", el("a", { href: "https://unsloth.ai/docs" }, " the docs "), "now"));
+  assert.equal(htmlNodeToMarkdown(body), "Read [the docs](https://unsloth.ai/docs) now");
+});
+
 test("unsafe or relative links paste as their text only", () => {
   const body = el("body", el("a", { href: "javascript:alert(1)" }, "click"), " ", el("a", { href: "/relative" }, "here"));
   assert.equal(htmlNodeToMarkdown(body), "click here");
