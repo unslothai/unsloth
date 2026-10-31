@@ -4605,7 +4605,7 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;
-		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		padding-inline-start: calc(1.25rem * var(--ui-space-scale, 1));
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
@@ -4613,7 +4613,7 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;
-		padding-left: 1.6em;
+		padding-inline-start: 1.6em;
 		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
@@ -4622,11 +4622,11 @@ html[data-chat-font] .aui-root {
 			:has(> li:nth-child(10)),
 			[start]:not([start="1"], [start="2"], [start="3"], [start="4"], [start="5"], [start="6"], [start="7"], [start="8"], [start="9"])
 		) {
-		padding-left: 2.2em;
+		padding-inline-start: 2.2em;
 	}
 
 	[data-streamdown="ordered-list"]:has(> li:nth-child(100)) {
-		padding-left: 2.8em;
+		padding-inline-start: 2.8em;
 	}
 
 	[data-streamdown="list-item"] {
