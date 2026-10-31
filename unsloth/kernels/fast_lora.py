@@ -353,8 +353,11 @@ def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
     d_Bs = []
     for AX_, dY, B in zip((A_rows @ X.t()).split_with_sizes(rs, 0), dYs, Bs):
         d_Bs.append(torch.empty_like(B).addmm_(AX_, dY, alpha = S, beta = 0))
-    if _is_compiling():
-        # Traced, Inductor plans the buffers; slice writes would only add scatter copies.
+    # The last view keeps the whole A @ X.t() buffer alive otherwise.
+    del AX_
+    if _is_compiling() or torch.is_grad_enabled():
+        # Traced, Inductor plans the buffers; slice writes would only add scatter copies. A recorded
+        # backward (create_graph) cannot write through sibling split views either.
         dB = torch.cat([dY @ B.t() for dY, B in zip(dYs, Bs)], 1)
     else:
         dB = dYs[0].new_empty((X.shape[0], A_rows.shape[0]))
