@@ -517,8 +517,8 @@ function FloatingMonitorPanel({
                 <UsageBar percent={ramKnown ? ramPercent : null} />
               )}
             </MeterRow>
-            {/* One card, or several with the share on: one VRAM row over every card. */}
-            {discreteVram && (vram.rows.length === 0 || vramSegments) && (
+            {/* One card, an aggregate the cards cannot split, or the share on: one VRAM row over every card. */}
+            {discreteVram && (vram.showTotal || vramSegments) && (
               <MeterRow
                 testId="floating-monitor-vram"
                 label={t("settings.resources.liveMonitor.vram")}

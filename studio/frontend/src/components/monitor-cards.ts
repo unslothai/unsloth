@@ -36,6 +36,8 @@ export interface VramCards {
   usedGb: number | null;
   /** One full-size row per card, only when there is more than one. */
   rows: CardUsage[];
+  /** One row over every card: a single card, or an aggregate the per-card rows cannot show (Windows ROCm). */
+  showTotal: boolean;
 }
 
 /**
@@ -63,5 +65,7 @@ export function vramCards(
           totalGb: gpuMemoryTotalsGb([card]).total,
         }))
       : [];
-  return { cards, totalGb: gpuMemoryTotalsGb(cards).total, usedGb, rows };
+  const showTotal =
+    rows.length === 0 || (usedGb !== null && rows.some((row) => row.usedGb === null));
+  return { cards, totalGb: gpuMemoryTotalsGb(cards).total, usedGb, rows, showTotal };
 }

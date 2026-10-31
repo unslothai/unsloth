@@ -56,3 +56,16 @@ test("card names drop the vendor prefix every row would repeat", () => {
   assert.equal(shortCardName("Apple M5"), "Apple M5");
   assert.equal(shortCardName(undefined), "GPU");
 });
+
+test("an aggregate the cards cannot split keeps its own row (Windows ROCm, #7452)", () => {
+  const blind = [r9700(0, 0), r9700(1, 0)].map((card) => ({ ...card, vram_used_gb: undefined })) as GpuDevice[];
+  const vram = vramCards(blind, { devices: blind, vram_used_gb_aggregate: 9.5 });
+  assert.equal(vram.usedGb, 9.5);
+  assert.deepEqual(vram.rows.map((row) => row.usedGb), [null, null]);
+  assert.equal(vram.showTotal, true);
+  // Every card read: the per-card rows say it all.
+  const read = [r9700(0, 4), r9700(1, 2)];
+  assert.equal(vramCards(read, { devices: read }).showTotal, false);
+  assert.equal(vramCards([r9700(0, 4)], { devices: [r9700(0, 4)] }).showTotal, true);
+  assert.match(readSrc("components/floating-monitor.tsx"), /discreteVram && \(vram\.showTotal \|\| vramSegments\)/);
+});
