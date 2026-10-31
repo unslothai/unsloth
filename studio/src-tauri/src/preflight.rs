@@ -985,6 +985,55 @@ exit 1
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_cache_hit_is_rechecked_when_the_tree_changes_during_help() {
+        use std::fs;
+
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("cache-hit-tree-change");
+        remove_managed_capability_cache();
+        // `changeonh` makes -h rewrite the launcher's mtime (an update landing mid-probe) and
+        // `modecap` makes the new tree's capability probe fail.
+        let fake = fake_cli(
+            "cap-cache-hit-tree-change",
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$0.calls"
+if [ "$1" = "-h" ]; then
+  if [ -f "$0.changeonh" ]; then rm -f "$0.changeonh"; touch -m -t 200101010000 "$0"; fi
+  exit 0
+fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  if [ -f "$0.modecap" ]; then exit 42; fi
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let bin = fake.bin.clone();
+        let calls = bin.with_extension("calls");
+
+        // Warm the cache for the current tree.
+        assert!(matches!(
+            probe_managed_bin(bin.clone()).await,
+            ManagedProbe::Ready { .. }
+        ));
+        fs::write(bin.with_extension("modecap"), "broken").unwrap();
+        fs::write(bin.with_extension("changeonh"), "1").unwrap();
+        fs::write(&calls, "").unwrap();
+
+        let probe = probe_managed_bin(bin.clone()).await;
+        let seen = fs::read_to_string(&calls).unwrap();
+        assert!(
+            matches!(probe, ManagedProbe::Stale { .. }),
+            "a cache hit for the old tree was accepted: {probe:?}, calls {seen:?}"
+        );
+        assert!(seen.contains("studio desktop-capabilities --json"), "calls {seen:?}");
+
+        remove_managed_capability_cache();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_cache_miss_runs_help_and_the_capability_probe_at_once() {
         use std::fs;
 
