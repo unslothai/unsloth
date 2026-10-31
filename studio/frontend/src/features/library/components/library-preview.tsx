@@ -18,7 +18,7 @@ import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { useBlocker } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
-import { Download04Icon, PlayIcon } from "@hugeicons/core-free-icons";
+import { Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -46,6 +46,7 @@ import { type NoteFormat, type NoteReadOnlyReason, encodeNote } from "../note-te
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
 import { KindIcon } from "./library-cards";
 import { UnsavedChangesDialog } from "./library-dialogs";
+import { PlayIcon } from "lucide-react";
 
 const PAGE_SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
@@ -121,11 +122,7 @@ interface LoadedText {
   error?: string;
 }
 
-/**
- * The item's text, or null while it first loads. A newer version of the same item keeps showing
- * the last one until it arrives (`loadedKey` says which is on screen), so an editor is never
- * swapped for a spinner, and never loses focus, when its own save bumps the version.
- */
+/** A newer version keeps showing the old text until it loads, so a save never swaps in a spinner. */
 function useItemText(item: LibraryItem | null, enabled: boolean) {
   const key = item ? itemVersion(item) : "";
   const [state, setState] = useState<LoadedText | null>(null);
@@ -142,7 +139,7 @@ function useItemText(item: LibraryItem | null, enabled: boolean) {
     return () => {
       cancelled = true;
     };
-    // `key` carries the item's identity and version; the object itself changes on every refresh.
+    // `key` carries the item's identity and version; the object changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled]);
   const current = item && state?.itemId === item.id ? state : null;
@@ -220,7 +217,6 @@ function TextPrefix({ text, className }: { text: string; className?: string }) {
   );
 }
 
-/** What shows when a file cannot be previewed here, by type or because it failed to load. */
 function NoPreview({
   item,
   message,
@@ -273,7 +269,7 @@ function RunStrip({
           </Button>
         ))}
         <Button variant="outline" size="sm" className="ml-auto rounded-full px-3" onClick={onDownloadRun}>
-          <HugeiconsIcon icon={Download04Icon} strokeWidth={1.75} className="size-4" />
+          <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
           {t("library.audio.downloadRun")}
         </Button>
       </div>
@@ -461,7 +457,6 @@ function PreviewBody({
           </Zoomed>
         );
       }
-      // A note the editor would write back wrongly says why it cannot be edited.
       if (isEditable(item) && readOnlyReason) {
         return (
           <Zoomed scale={pageScale}>
@@ -520,12 +515,9 @@ export function LibraryPreview({
   const itemText = useItemText(item, view === "text" || view === "web" || view === "markdown");
   const version = item && itemVersion(item);
   // Tagged with its item, so a draft never follows the preview to another file.
-  // `savedAt` marks text already written: the item version it was saved over, shown until the
-  // refreshed item's text has loaded, so the editor never falls back to the old text.
   const [edit, setEdit] = useState<{ itemId: string; text: string; savedAt?: number } | null>(
     null,
   );
-  // The same draft, readable after an await: a save must not return while typing moved past it.
   const latestEdit = useRef(edit);
   const lastSaved = useRef<{ itemId: string; text: string } | null>(null);
   const current = item && edit?.itemId === item.id ? edit : null;
@@ -598,8 +590,7 @@ export function LibraryPreview({
     if (await save()) action();
   }
 
-  // Closing a note saves it, so an edit is never lost to a stray Escape. A save that fails asks
-  // what to do instead, so the preview can always be closed.
+  // Closing saves; a failed save asks instead, so the preview can always be closed.
   async function handleOpenChange(open: boolean) {
     if (!open) {
       const error = await trySave();
@@ -611,8 +602,7 @@ export function LibraryPreview({
     onOpenChange(open);
   }
 
-  // Back, or any link, closes the preview without handleOpenChange: save first, as closing does.
-  // Refs, not `unsaved`: a discard or a save just made has not rendered yet when it navigates.
+  // Navigation bypasses handleOpenChange, so save here; refs because state may not have rendered.
   useBlocker({
     shouldBlockFn: async () => {
       const latest = latestEdit.current;
@@ -694,7 +684,7 @@ export function LibraryPreview({
                 active={!showCode}
                 onClick={() => setCodeFor(null)}
               >
-                <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-5" />
+                <PlayIcon strokeWidth={1.75} className="size-5" />
               </ViewButton>
             </div>
           )}
@@ -754,7 +744,6 @@ export function LibraryPreview({
           onDownloadRun={() => onDownloadRun(run)}
         />
       )}
-      {/* Portalled, so it sits over the preview whatever the body is. */}
       <UnsavedChangesDialog
         error={closeError}
         onRetry={() => {

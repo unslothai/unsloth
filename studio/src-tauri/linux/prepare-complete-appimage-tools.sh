@@ -46,10 +46,9 @@ fetch "$GTK_PLUGIN_URL" "$GTK_PLUGIN_SHA256" linuxdeploy-plugin-gtk.sh
 fetch "$GSTREAMER_PLUGIN_URL" "$GSTREAMER_PLUGIN_SHA256" linuxdeploy-plugin-gstreamer.sh
 fetch "$APPIMAGE_PLUGIN_URL" "$APPIMAGE_PLUGIN_SHA256" linuxdeploy-plugin-appimage.AppImage
 
-# Replace Tauri's global LD_LIBRARY_PATH launcher to avoid #7953.
+# Replace Tauri's global LD_LIBRARY_PATH launcher.
 install -m 755 "$script_dir/appimage-apprun.sh" "$tools_dir/AppRun-x86_64"
 
-# Run the finalizer after the GTK plugin deploys its dependencies.
 install -m 755 \
   "$script_dir/finalize-complete-appimage.sh" \
   "$tools_dir/finalize-complete-appimage.sh"
@@ -58,10 +57,8 @@ install -m 644 "$script_dir/appimage-fonts.conf" "$tools_dir/unsloth-appimage-fo
 install -m 644 "$safe_emoji_font" "$tools_dir/UnslothSafeEmoji.ttf"
 install -m 644 "$safe_emoji_license" "$tools_dir/UnslothSafeEmoji.LICENSE"
 
-# Let GTK select X11 or Wayland instead of forcing X11.
 sed -i '/export GDK_BACKEND=x11/d' "$tools_dir/linuxdeploy-plugin-gtk.sh"
 
-# Remove host module paths from the generated AppRun hook (#7953).
 cat >> "$tools_dir/linuxdeploy-plugin-gtk.sh" <<'SH'
 # Canonicalize the relative APPDIR used by APPIMAGE_EXTRACT_AND_RUN.
 sed -i '2i\
@@ -113,7 +110,7 @@ if [[ "$dir_icon_target" == /* ]]; then
 fi
 SH
 
-# Append the idempotent finalizer because linuxdeploy does not guarantee plugin order.
+# linuxdeploy does not guarantee plugin order, so append the idempotent finalizer to each.
 for plugin in linuxdeploy-plugin-gtk.sh linuxdeploy-plugin-gstreamer.sh; do
   cat >> "$tools_dir/$plugin" <<'SH'
 

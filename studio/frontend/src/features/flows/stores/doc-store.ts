@@ -40,6 +40,13 @@ export interface GraphFragment {
   edges: FlowEdge[];
 }
 
+export interface GraphPatch {
+  nodes?: FlowNode[];
+  groups?: FlowGroup[];
+  addEdges?: FlowEdge[];
+  removeEdges?: string[];
+}
+
 export interface DocState {
   flowId: string | null;
   meta: DocMeta;
@@ -79,6 +86,8 @@ export interface DocState {
   resizeGroup: (group: FlowGroup) => void;
   groupNodes: (group: FlowGroup, nodeIds: string[]) => void;
   upsertNote: (note: FlowNote, coalesceKey?: string) => void;
+  /** One undo step that upserts nodes and groups and adds or drops edges (a recipe group edit). */
+  patchGraph: (patch: GraphPatch, coalesceKey?: string) => void;
   undo: () => void;
   redo: () => void;
 }
@@ -416,8 +425,8 @@ export const useDocStore = create<DocState>((set, get) => {
           if (duplicate) return null;
           const occupiesInput =
             replaceSingleInput &&
-            edge.kind === "data" &&
-            existing.kind === "data" &&
+            edge.kind !== "flow" &&
+            existing.kind !== "flow" &&
             existing.target === edge.target &&
             existing.target_port === edge.target_port;
           const occupiesFlowOut =
@@ -506,6 +515,40 @@ export const useDocStore = create<DocState>((set, get) => {
         coalesceKey,
       ),
 
+    patchGraph: (patch, coalesceKey) =>
+      commit((s) => {
+        const nodes = { ...s.graph.nodes };
+        let nodeOrder = s.graph.nodeOrder;
+        for (const node of patch.nodes ?? []) {
+          if (!nodes[node.id]) nodeOrder = [...nodeOrder, node.id];
+          nodes[node.id] = node;
+        }
+        const groups = { ...s.graph.groups };
+        let groupOrder = s.graph.groupOrder;
+        for (const group of patch.groups ?? []) {
+          if (!groups[group.id]) groupOrder = [...groupOrder, group.id];
+          groups[group.id] = group;
+        }
+        const drop = new Set(patch.removeEdges ?? []);
+        const edges = { ...s.graph.edges };
+        for (const id of drop) delete edges[id];
+        let edgeOrder = drop.size
+          ? s.graph.edgeOrder.filter((id) => !drop.has(id))
+          : s.graph.edgeOrder;
+        for (const edge of patch.addEdges ?? []) {
+          if (!edges[edge.id]) edgeOrder = [...edgeOrder, edge.id];
+          edges[edge.id] = edge;
+        }
+        return withGraph(s, {
+          nodes,
+          nodeOrder,
+          groups,
+          groupOrder,
+          edges,
+          edgeOrder,
+        });
+      }, coalesceKey),
+
     undo: () => {
       const s = get();
       const previous = s.past.at(-1);
@@ -541,7 +584,7 @@ export const useDocStore = create<DocState>((set, get) => {
   };
 });
 
-function frameAt(graph: DocGraph, pos: [number, number]): string | null {
+export function frameAt(graph: DocGraph, pos: [number, number]): string | null {
   const [x, y] = [pos[0] + 130, pos[1] + 16];
   let best: { id: string; area: number } | null = null;
   for (const id of graph.groupOrder) {

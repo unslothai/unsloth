@@ -39,20 +39,14 @@ _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
 # /tmp exists on the host; separate only to note that. The absence gate applies alike.
 _CONDITIONAL_PREFIXES = ("/tmp/outputs",)
 _notified = False
-# Invented absolute write path -> healed CWD target, so re-writing the same artifact re-serves it instead of tripping
-# the anti-clobber guard.
+# Invented path -> healed target, so rewrites re-serve it instead of tripping anti-clobber.
 _remapped_writes: dict = {}
-# Each tool call is a fresh subprocess (in-process map starts empty), so this on-disk sidecar carries the map across
-# runs. It records only sources the fallback healed, so an unrelated same-basename file is never adopted.
+# Each tool call is a fresh process, so this sidecar carries healed mappings across runs; only fallback-healed sources, never unrelated same-basename files.
 _REMAP_SIDECAR = ".unsloth_sandbox_remap.json"
 
 
 def _note(subject, original, mapped):
-    """Print the one-shot stderr notice so the model learns the real location.
-
-    ``subject`` is what "does not exist" (the prefix, or the whole invented
-    path); ``original`` is echoed in the ``(original -> mapped)`` tail.
-    """
+    """Prints once per process so the model learns the real location, not on every remap."""
     global _notified
     if _notified:
         return
@@ -65,12 +59,7 @@ def _note(subject, original, mapped):
 
 
 def _contained_join(cwd, rel):
-    """Join ``rel`` onto ``cwd`` so the result can never escape ``cwd``.
-
-    A habit path can carry ``..`` segments; joining verbatim would let the target
-    climb above the sandbox. ``..`` components are dropped and empty / ``.`` ones
-    ignored, keeping the result under ``cwd``.
-    """
+    """Drops ``..`` components so a path cannot climb out of the sandbox cwd."""
     parts = []
     for part in rel.split("/"):
         if part == "" or part == ".":
@@ -88,13 +77,7 @@ def _map_onto_cwd(
     text,
     notify = True,
 ):
-    """Map ``<prefix>/rest`` onto ``./rest`` in the CWD, noting it once.
-
-    The suffix is contained under the CWD (see ``_contained_join``) so a path
-    like ``/mnt/data/../other_session/file`` cannot escape the workdir.
-    ``notify`` is False when the caller may keep the original path (a read), so
-    the one-shot notice is not spent on a remap that never happens.
-    """
+    """Maps prefix/rest onto ./rest under the CWD, contained against .. escapes; notify False for reads so the notice is not spent on a remap that never happens."""
     rel = text[len(prefix) :].lstrip("/")
     mapped = _contained_join(os.getcwd(), rel)
     if notify:
@@ -118,12 +101,7 @@ def _load_sidecar(cwd):
 
 
 def _record_sidecar(cwd, source, target):
-    """Persist ``source -> target`` so the next run re-serves it.
-
-    Written atomically (temp + ``os.replace``) and wrapped so a read-only/full
-    filesystem never breaks the interpreter. The path is inside the CWD, so the
-    patched ``open`` leaves it untouched (no remap, no recursion).
-    """
+    """Writes atomically and never raises; the path sits in the CWD so the patched open leaves it alone."""
     try:
         data = _load_sidecar(cwd)
         if data.get(source) == target:
@@ -138,33 +116,17 @@ def _record_sidecar(cwd, source, target):
 
 
 def _is_creating_mode(mode):
-    """True only when an ``open()`` mode string can CREATE a missing file.
-
-    Only ``w`` / ``a`` / ``x`` create. ``r+`` / ``rb+`` require the path to exist,
-    so they must not trip the write fallback (which would corrupt an unrelated
-    same-basename file); ``w+`` / ``a+`` / ``x+`` still match.
-    """
+    """r+ must not trip the write fallback, which would corrupt an unrelated same-basename file."""
     return isinstance(mode, str) and any(c in mode for c in ("w", "a", "x"))
 
 
 def _remap_open(file, mode):
-    """Remap for ``open()`` / ``io.open()``.
-
-    A prefix remap runs first: a write/create heals onto the CWD; a READ heals
-    only when the mapped target already exists (re-reading an earlier write),
-    else the original path is kept so a genuine missing input fails truthfully
-    instead of silently reading a same-basename workdir file. Only if no prefix
-    matched and the call creates does the fallback kick in: an absolute target
-    outside the CWD whose parent is missing is redirected to the basename in the
-    CWD, unless ``CWD/<basename>`` already exists (an unrelated file), in which
-    case the original path is kept so open raises.
-    """
+    """A read heals only if the target exists, so a missing input fails instead of reading a stray file."""
     creating = _is_creating_mode(mode)
     # notify=False: emit the notice only once we commit to the mapping below.
     mapped = _remap(file, notify = False)
     if mapped is not file:
-        # Write always heals; a read only when the mapped target exists (else keep the original path so a missing input
-        # stays truthful).
+        # Reads heal only when the target exists, so a missing input stays truthful.
         if creating or os.path.exists(mapped):
             # Commit: emit the notice now (the notify=False peek above deferred it).
             _remap(file, notify = True)
@@ -184,8 +146,7 @@ def _remap_open(file, mode):
     if text == cwd or text.startswith(cwd + os.sep):
         return file
     parent = os.path.dirname(text)
-    # Redirect only when the parent is missing; an existing external directory is a deliberate target and stays
-    # truthful (os.path.exists follows symlinks).
+    # Only when the parent is missing; an existing external dir is a deliberate target.
     if parent and os.path.exists(parent):
         return file
     base = os.path.basename(text)
@@ -193,9 +154,7 @@ def _remap_open(file, mode):
     if base in ("", ".", ".."):
         return file
     remapped = os.path.join(cwd, base)
-    # Never clobber an unrelated file sharing this basename (lexists catches dangling symlinks). But a target this
-    # fallback already healed for the same invented path (in-process map or cross-run sidecar) is the artifact being
-    # re-written, so re-serve it instead of raising on every overwrite.
+    # Never clobber an unrelated same-basename file (lexists also catches dangling symlinks), but re-serve one this fallback healed.
     if os.path.lexists(remapped) and remapped not in (
         _remapped_writes.get(text),
         _load_sidecar(cwd).get(text),
@@ -208,11 +167,7 @@ def _remap_open(file, mode):
 
 
 def _remap(path, notify = True):
-    """Map ``<prefix>/rest`` onto ``./rest`` in the CWD; other paths pass through.
-
-    ``notify`` is forwarded to ``_map_onto_cwd``; ``_remap_open`` passes False so
-    a read that keeps its original path emits no false notice.
-    """
+    """``_remap_open`` passes notify False, so a read that keeps its original path emits no false notice."""
     try:
         text = os.fspath(path)
     except TypeError:
@@ -220,8 +175,7 @@ def _remap(path, notify = True):
     if not isinstance(text, str):
         return path
     for prefix in _PREFIXES + _CONDITIONAL_PREFIXES:
-        # Heal only while the real prefix directory is absent, so a genuine host mount / user directory at that prefix
-        # is never shadowed.
+        # Heal only while the prefix directory is absent, so a real host mount is never shadowed.
         if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
             return _map_onto_cwd(prefix, text, notify = notify)
     return path
@@ -253,8 +207,7 @@ def _install():
     ):
         return original_io_open(_remap_open(file, mode), mode, *args, **kwargs)
 
-    # mkdir/makedirs get only the prefix remap, never the write-mode fallback: an arbitrary absolute directory can
-    # legitimately succeed on the host.
+    # mkdir gets only the prefix remap: arbitrary absolute dirs may legitimately succeed.
     def _makedirs(name, *args, **kwargs):
         return original_makedirs(_remap(name), *args, **kwargs)
 
@@ -268,8 +221,7 @@ def _install():
         *,
         dir_fd = None,
     ):
-        # Path.touch() etc. go through os.open, not builtins.open. Only O_CREAT can create, so only it maps to
-        # "creating" mode; O_TRUNC / O_APPEND without O_CREAT still require the file to exist, so behave as a read.
+        # Only O_CREAT creates; O_TRUNC/O_APPEND alone behave as a read.
         logical_mode = "w" if (flags & os.O_CREAT) else "r"
         mapped = _remap_open(path, logical_mode)
         if dir_fd is None:
@@ -277,8 +229,7 @@ def _install():
         return original_os_open(mapped, flags, mode, dir_fd = dir_fd)
 
     def _path_mkdir(self, *args, **kwargs):
-        # pathlib probes Path.is_dir()/os.stat (unpatched) on FileExistsError, so a bare os.mkdir remap would still
-        # raise when the target exists. Remap the receiver up front so parents/exist_ok stays idempotent.
+        # pathlib probes unpatched os.stat on FileExistsError; remap up front for exist_ok.
         mapped = _remap(self)
         target = self if mapped is self else self.__class__(mapped)
         return original_path_mkdir(target, *args, **kwargs)
@@ -286,9 +237,7 @@ def _install():
     builtins.open = _open
     # pathlib.Path.open / write_text / read_text call io.open directly, so patch both.
     io.open = _io_open
-    # Python < 3.11 only: pathlib's accessor captured the ORIGINAL io.open at import (``_NormalAccessor.open =
-    # io.open``), so the io.open patch misses it. Repoint it at the same wrapper (staticmethod to stay unbound); 3.11+
-    # dropped the accessor, so this is a no-op there.
+    # Python < 3.11: pathlib's _NormalAccessor captured the original io.open; repoint it.
     accessor = getattr(pathlib, "_NormalAccessor", None)
     if accessor is not None and hasattr(accessor, "open"):
         accessor.open = staticmethod(_io_open)
@@ -306,11 +255,105 @@ try:
 except Exception:  # noqa: BLE001 - a broken shim must never break user code
     pass
 
-# Approved host calls keep chat-installed packages importable, including Python started by Terminal.
-# Append only after the normal site setup; no .pth execution or stdlib/installed-package shadowing.
+
+# Approved host calls import chat-installed packages through a last-resort finder, NOT sys.path: a folder on
+# sys.path exposes its *.dist-info to importlib.metadata, so entry-point autoload (pytest11, ...) would run
+# chat-planted code the command never named. Metadata answers only an exact name with no explicit path.
+class _HostPackagesFinder:
+    _skip = frozenset(("sitecustomize", "usercustomize"))
+
+    def __init__(self, folder):
+        self._folder = folder
+
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        import importlib.machinery
+
+        if "." not in name:
+            if path is not None or name in self._skip:
+                return None
+            return importlib.machinery.PathFinder.find_spec(name, [self._folder])
+        parent, _, _ = name.rpartition(".")
+        module = sys.modules.get(parent)
+        spec = getattr(module, "__spec__", None)
+        if spec is None or spec.submodule_search_locations is None:
+            return None
+        # Only namespace packages: a regular package's submodules come from its own __path__ alone.
+        pkgutil_style = spec.origin not in (None, "namespace")
+        if pkgutil_style and not self._extends_path(spec.origin):
+            return None
+        portion = os.path.join(self._folder, *parent.split("."))
+        if not os.path.isdir(portion):
+            return None
+        found = importlib.machinery.PathFinder.find_spec(name, [portion])
+        if found is not None:
+            # The portion extend_path / PEP 420 would have collected; a _NamespacePath drops it on sys.path changes.
+            search = getattr(module, "__path__", None)
+            if search is not None and hasattr(search, "append") and portion not in list(search):
+                search.append(portion)
+        return found
+
+    _extends = {}
+
+    @classmethod
+    def _extends_path(cls, origin):
+        # Open only if __init__ declares extend_path / declare_namespace at module level (try body / else /
+        # finally count, an except handler may not have run); text, imports or calls under if/def do not.
+        if origin not in cls._extends:
+            try:
+                import ast
+                with open(origin, "rb") as f:
+                    tree = ast.parse(f.read())
+                cls._extends[origin] = any(map(cls._declares_namespace, cls._top_level(tree.body)))
+            except Exception:  # noqa: BLE001 - an unreadable __init__ is treated as a regular package
+                cls._extends[origin] = False
+        return cls._extends[origin]
+
+    @classmethod
+    def _top_level(cls, body):
+        import ast
+        for node in body:
+            yield node
+            if isinstance(node, ast.Try):
+                for block in (node.body, node.orelse, node.finalbody):
+                    yield from cls._top_level(block)
+
+    @staticmethod
+    def _declares_namespace(node):
+        import ast
+
+        def call_of(value, name, args):
+            if not isinstance(value, ast.Call) or value.keywords:
+                return False
+            func = value.func
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            return called == name and [getattr(a, "id", None) for a in value.args] == args
+
+        if isinstance(node, ast.Assign):
+            return any(getattr(t, "id", None) == "__path__" for t in node.targets) and call_of(
+                node.value, "extend_path", ["__path__", "__name__"]
+            )
+        return isinstance(node, ast.Expr) and call_of(node.value, "declare_namespace", ["__name__"])
+
+    def find_distributions(self, context = None):
+        name = getattr(context, "name", None)
+        # An explicit path is the caller's scope, already served by the stock path finder.
+        if not name or "path" in getattr(context, "__dict__", {}):
+            return iter(())
+        import importlib.metadata
+
+        return importlib.metadata.MetadataPathFinder.find_distributions(
+            importlib.metadata.DistributionFinder.Context(name = name, path = [self._folder])
+        )
+
+
 _host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
-if _host_packages and _host_packages not in sys.path:
-    sys.path.append(_host_packages)
+if _host_packages and not any(isinstance(f, _HostPackagesFinder) for f in sys.meta_path):
+    sys.meta_path.append(_HostPackagesFinder(_host_packages))
 
 
 # Helper modules the approved script imports by name come from the chat folder, after everything

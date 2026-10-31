@@ -1,20 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Derived HugeIcons shared between the sidebar and page tabs, so the same visual language appears everywhere.
-
 import type { IconSvgElement } from "@hugeicons/react";
 import { BubbleChatIcon, TestTube01Icon } from "@hugeicons/core-free-icons";
 
-// TestTube01Icon's last 2 paths are interior bubbles; slice to the first 3 (outline + cap + liquid line). Original export untouched.
+// Drop the last 2 paths (interior bubbles).
 export const TestTubeOutlineIcon = TestTube01Icon.slice(
   0,
   3,
 ) as typeof TestTube01Icon;
 
-// HugeIcons' own message-circle, which this icon set does not ship: BubbleChatIcon is that same
-// round bubble with a second path drawing the three dots inside it, so the first path alone is it.
-// This is the glyph for a chat anywhere in the app. Original export untouched.
+// BubbleChatIcon's first path alone is HugeIcons' message-circle, which this set lacks.
 export const MessageCircleIcon = BubbleChatIcon.slice(
   0,
   1,
@@ -36,8 +32,7 @@ export const SheetIcon: IconSvgElement = [
   ],
 ];
 
-// HugeIcons' folder-plus (stroke rounded), from @hugeicons/core-free-icons 4.3.5; the 4.1 installed
-// here predates it. The glyph for a project's sources.
+// From @hugeicons/core-free-icons 4.3.5; the installed 4.1 predates it.
 export const FolderPlusIcon: IconSvgElement = [
   [
     "path",

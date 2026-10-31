@@ -9,6 +9,7 @@ import type { ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCachedRecipe, getRecipe, primeRecipeCache, saveRecipe } from "../data/recipes-db";
 import type { RecipeRecord } from "../types";
+import { openRecipeInFlows } from "../data/open-in-flows";
 
 type EditRecipePageProps = {
   recipeId: string;
@@ -95,7 +96,6 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
     signalReady();
   }, [loadState.status, signalReady]);
 
-  // The version this editor is built on, so a save over another window's newer copy is refused.
   const editedVersion = useRef<number | undefined>(undefined);
   const loadedRecord = loadState.status === "ready" ? loadState.record : null;
   useEffect(() => {
@@ -145,6 +145,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       initialPayload={loadState.record.payload}
       initialSavedAt={loadState.record.updatedAt}
       onPersistRecipe={handlePersist}
+      onOpenInFlows={() => openRecipeInFlows(loadState.record.id, navigate)}
     />
   );
 }

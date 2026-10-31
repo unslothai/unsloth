@@ -12,6 +12,7 @@ This matches ComfyUI's PDD head selection (``FinalLayer.forward`` / ``_pdd_head`
 Graph safety: the ``(sigma, sigma_next)`` pair is a device tensor on each bank (``pdd_state``), rewritten in place by
 a forward pre-hook on the denoiser before every call, and the head selection is pure tensor math on it. Nothing about
 the step is a Python constant, so a CUDA graph replays it with new sigmas and torch.compile never specializes on it.
+Without device float64 (Intel Arc A-series) the float64 math stays on the host; only the cast weights go to the device.
 
 A ``without_heads`` bake keeps the plain single heads and needs an external head bank applied by a custom node, which
 Studio does not have, so it is refused rather than run as a plain trunk (that renders wrong output with no error).
@@ -121,6 +122,33 @@ def h3_pdd_heads_in_file(
 
 # ── the head-bank math (shared by every bank and by the tests' oracle comparisons) ──
 
+_FP64_BY_DEVICE: dict = {}
+
+
+def device_has_fp64(device: Any) -> bool:
+    """CPU / CUDA / ROCm always; XPU per ``has_fp64`` (Arc A-series raises "Required aspect fp64"); else (MPS) never.
+    Unknown counts as without: the host path is exact everywhere."""
+    kind = getattr(device, "type", None)
+    if kind is None:
+        import torch
+        device = torch.device(device)
+        kind = device.type
+    if kind in ("cpu", "cuda", "meta"):
+        return True
+    key = (kind, getattr(device, "index", None))
+    known = _FP64_BY_DEVICE.get(key)
+    if known is None:
+        known = False
+        if kind == "xpu":
+            try:
+                import torch
+                index = key[1] if key[1] is not None else torch.xpu.current_device()
+                known = bool(torch.xpu.get_device_properties(index).has_fp64)
+            except Exception:  # noqa: BLE001
+                known = False
+        _FP64_BY_DEVICE[key] = known
+    return known
+
 
 def pdd_head_weights(state: Any, heads: int) -> Any:
     """Per-head blend weights ``(heads,)`` float64 for one step, from ``state = [sigma, sigma_next, select_shift,
@@ -203,9 +231,15 @@ def _bank_class():
 
         def forward(self, hidden_states: Any) -> Any:
             state = self.pdd_state
-            if state.device != hidden_states.device:
-                state = state.to(hidden_states.device)
-            w = pdd_head_weights(state, self.heads).to(hidden_states.dtype)
+            device = hidden_states.device
+            if device_has_fp64(device):
+                if state.device != device:
+                    state = state.to(device)
+                w = pdd_head_weights(state, self.heads).to(hidden_states.dtype)
+            else:
+                if state.device.type != "cpu":
+                    state = state.cpu()
+                w = pdd_head_weights(state, self.heads).to(hidden_states.dtype).to(device)
             weight = self.weight.to(hidden_states.dtype)
             bias = self.bias.to(hidden_states.dtype)
             rows = weight.view(self.heads, self.out_features, self.in_features)
@@ -239,9 +273,9 @@ _SIGMA_POSITIONS = (3, 4, 7)
 def h3_pdd_sigma_pair(
     timestep: Any, timestep_indices: Any, video_indices: Any, sample_sigmas: Any
 ) -> Any:
-    """``[sigma, sigma_next]`` float64 on the device, without a host sync. ``sigma`` is the generated video rows'
-    sigma (conditioning rows sit at a larger t, so it is the largest video-row sigma), clamped like ComfyUI's; the
-    next one is the schedule entry after the nearest, the last entry for the last step (sigma 0)."""
+    """``[sigma, sigma_next]`` float64 on the device (host if it lacks float64), without a host sync. ``sigma`` is
+    the generated video rows' sigma (conditioning rows sit at a larger t, so it is the largest video-row sigma),
+    clamped like ComfyUI's; the next one is the schedule entry after the nearest, the last entry for the last step."""
     import torch
 
     rows = timestep_indices.index_select(0, video_indices.reshape(-1).to(timestep_indices.device))
@@ -250,7 +284,10 @@ def h3_pdd_sigma_pair(
     sigmas = sample_sigmas.reshape(-1).to(device = sigma.device, dtype = torch.float32)
     i = (sigmas - sigma).abs().argmin()
     nxt = sigmas.index_select(0, (i + 1).clamp(max = sigmas.shape[0] - 1).reshape(1))[0]
-    return torch.stack([sigma, nxt]).to(torch.float64)
+    pair = torch.stack([sigma, nxt])
+    if not device_has_fp64(pair.device):
+        pair = pair.cpu()
+    return pair.to(torch.float64)
 
 
 class _Schedule:

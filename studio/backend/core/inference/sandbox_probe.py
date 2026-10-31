@@ -6,15 +6,16 @@
 from __future__ import annotations
 import ctypes
 import errno
+import itertools
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 from typing import Any
 from loggers import get_logger
 
@@ -26,6 +27,15 @@ try:
     _libc = ctypes.CDLL(None, use_errno = True) if sys.platform == "linux" else None
 except OSError:  # pragma: no cover - a libc that will not load
     _libc = None
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover - Windows never probes
+    _resource = None
+
+# The tool launch's own fd cap (tools._sandbox_preexec), so the probe qualifies what tools get.
+_PROBE_NOFILE = 16384
+# Kernel-enforced: ends a payload process nobody is left to kill.
+_PROBE_CPU_SECONDS = 60
 
 # ALONE on stdout: a payload that printed it early and died would satisfy "in".
 PROBE_TOKEN = "UNSLOTH_SANDBOX_PROBE_OK"
@@ -34,17 +44,11 @@ _SENTINEL_TOKEN = "unsloth-host-sentinel-must-not-be-readable"
 _OUTSIDE_WRITE_TOKEN = "unsloth-sandbox-escaped-to-the-host"
 
 PROBE_TIMEOUT_SECONDS = 30.0
-# Correctness does not rest on the TTL: the key carries the runtime identity and a failed launch invalidates.
-_CACHE_TTL_SECONDS = 900.0
-# UNAVAILABLE keeps a short TTL: the user fixing their host does not move the cache key.
-_CACHE_TTL_UNAVAILABLE_SECONDS = 60.0
+# No TTL: re-probing on a timer turned one hung probe into one more each minute on macOS.
 _CACHE_MAX_ENTRIES = 8
 
 # ``sun_path`` is 108 bytes and multiprocessing appends about 32.
 _MAX_PROBE_BASE_LEN = 59
-
-# A stale PASS is served while one background re-probe runs; a FAIL never is.
-_STALE_GRACE_SECONDS = 3600.0
 
 # Tool code can exhaust these from the jail: undecided, never cached, and auto refuses rather than falls back.
 _RESOURCE_ERRNOS = frozenset(
@@ -97,9 +101,11 @@ def _classified(reason: str, exc: BaseException | None = None) -> str:
 
 
 _cache_lock = threading.Lock()
-_cache: dict[tuple[str, str], tuple[float, bool, str]] = {}
-_refreshing: set[tuple[str, str]] = set()
+_cache: dict[tuple[str, str], tuple[bool, str]] = {}
 _generation = 0
+# A slower, older probe must not replace a newer (forced) verdict.
+_tickets = itertools.count(1)
+_published: dict[tuple[str, str], int] = {}
 
 
 def reset_probe_cache() -> None:
@@ -107,6 +113,7 @@ def reset_probe_cache() -> None:
     global _generation
     with _cache_lock:
         _cache.clear()
+        _published.clear()
         _generation += 1
     if sys.platform == "linux":
         try:
@@ -121,71 +128,24 @@ def reset_probe_cache() -> None:
     forget_tool_isolation()
 
 
-def _cache_get(key: tuple[str, str]) -> tuple[bool, str, bool] | None:
-    """(available, reason, stale); None when nothing may be served."""
-    now = time.monotonic()
-    with _cache_lock:
-        entry = _cache.get(key)
-        if entry is None:
-            return None
-        expires_at, available, reason = entry
-        if expires_at > now:
-            return available, reason, False
-        if available and now < expires_at + _STALE_GRACE_SECONDS:
-            return available, reason, True
-        _cache.pop(key, None)
-        return None
-
-
 def _cache_put(
     key: tuple[str, str],
     available: bool,
     reason: str,
     *,
     generation: int | None = None,
+    ticket: int = 0,
 ) -> None:
     with _cache_lock:
         if generation is not None and generation != _generation:
             return
-        ttl = _CACHE_TTL_SECONDS if available else _CACHE_TTL_UNAVAILABLE_SECONDS
+        if ticket < _published.get(key, 0):
+            return
+        _published[key] = ticket
         _cache.pop(key, None)
-        _cache[key] = (time.monotonic() + ttl, available, reason)
+        _cache[key] = (available, reason)
         while len(_cache) > _CACHE_MAX_ENTRIES:
             _cache.pop(next(iter(_cache)))
-
-
-def _background_probes_disabled() -> bool:
-    try:
-        from .os_sandbox import _background_probes_disabled as disabled
-    except Exception:  # noqa: BLE001 - a partially imported package: stay in the foreground
-        return True
-    return disabled()
-
-
-def _refresh_in_background(backend: Any, key: tuple[str, str]) -> None:
-    with _cache_lock:
-        if key in _refreshing:
-            return
-        _refreshing.add(key)
-        generation = _generation
-
-    def run() -> None:
-        try:
-            from .os_sandbox import ToolLaunchPlan
-            available, reason = _run_probe(backend, key[0], ToolLaunchPlan)
-            if not isinstance(reason, UndecidedReason):
-                _cache_put(key, available, reason, generation = generation)
-        except Exception as exc:  # noqa: BLE001 - the stale PASS just ages out
-            logger.debug("background sandbox re-probe failed: %s", exc)
-        finally:
-            with _cache_lock:
-                _refreshing.discard(key)
-
-    try:
-        threading.Thread(target = run, name = "unsloth-sandbox-reprobe", daemon = True).start()
-    except RuntimeError:
-        with _cache_lock:
-            _refreshing.discard(key)
 
 
 _PREAMBLE = '''import multiprocessing.reduction, os, socket, subprocess, sys
@@ -296,6 +256,53 @@ def _no_new_privs() -> None:
         logger.warning("The sandbox probe could not set PR_SET_NO_NEW_PRIVS")
 
 
+def _probe_preexec() -> None:
+    """In the forked child, before the backend's wrapper: the payload's limits, then no_new_privs."""
+    if _resource is not None:
+        try:
+            _soft, hard = _resource.getrlimit(_resource.RLIMIT_NOFILE)
+            nofile = _PROBE_NOFILE if hard == _resource.RLIM_INFINITY else min(_PROBE_NOFILE, hard)
+            _resource.setrlimit(_resource.RLIMIT_NOFILE, (nofile, nofile))
+        except (ValueError, OSError):
+            pass
+        try:
+            _resource.setrlimit(_resource.RLIMIT_CPU, (_PROBE_CPU_SECONDS, _PROBE_CPU_SECONDS))
+        except (ValueError, OSError):
+            pass
+    _no_new_privs()
+
+
+def _end_probe_group(proc: subprocess.Popen) -> None:
+    """killpg, not kill: the payload's own children outlive a killed payload, and on macOS one spun forever.
+    Only while the leader is unreaped: once reaped and its group empty, the id can name someone else's group."""
+    if proc.returncode is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+    proc.wait()
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is not None:
+            pipe.close()
+
+
+def _run_grouped(argv, **popen_kwargs) -> subprocess.CompletedProcess:
+    """subprocess.run in its own session; the whole group ends with it."""
+    proc = subprocess.Popen(
+        argv,
+        stdin = subprocess.DEVNULL,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        start_new_session = True,
+        **popen_kwargs,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout = PROBE_TIMEOUT_SECONDS)
+    finally:
+        _end_probe_group(proc)
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+
 def _abstract_control() -> "tuple[bytes | None, Any]":
     """Nothing without a scope to test, or when the host cannot reach its own socket."""
     if sys.platform != "linux":
@@ -375,14 +382,11 @@ def _host_positive_controls(workdir: str, sentinel: str, outside: str, env: dict
             f"the host itself could not write outside the probe workdir ({exc})", exc
         )
     try:
-        completed = subprocess.run(
+        completed = _run_grouped(
             (sys.executable, "-I", "-S", "-c", _host_payload(workdir)),
             cwd = workdir,
             env = env,
-            stdin = subprocess.DEVNULL,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            timeout = PROBE_TIMEOUT_SECONDS,
+            preexec_fn = _probe_preexec,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return _classified(
@@ -407,23 +411,19 @@ def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
         return False, f"the sandbox probe could not identify this runtime: {exc}"
 
     if not force:
-        cached = _cache_get(key)
+        with _cache_lock:
+            cached = _cache.get(key)
         if cached is not None:
-            available, reason, stale = cached
-            if not stale:
-                return available, reason
-            if not _background_probes_disabled():
-                _refresh_in_background(backend, key)
-                return available, reason
-            # Background probes are off: re-probe here.
+            return cached
 
     with _cache_lock:
         generation = _generation
+        ticket = next(_tickets)
     available, reason = _run_probe(backend, backend_name, ToolLaunchPlan)
     if isinstance(reason, UndecidedReason):
         # Re-probed on the next call: the resource may be freed by then.
         return False, reason
-    _cache_put(key, available, reason, generation = generation)
+    _cache_put(key, available, reason, generation = generation, ticket = ticket)
     return available, reason
 
 
@@ -473,21 +473,17 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
             workdir = workdir,
             env = env,
             # A setuid bwrap dies under no_new_privs, so without this the probe qualifies a launch that fails after Popen.
-            preexec_fn = _no_new_privs,
+            preexec_fn = _probe_preexec,
             requested_mode = "required",
             execution_kind = "python",
         )
         prepared = backend.prepare(plan)
-        completed = subprocess.run(
+        completed = _run_grouped(
             prepared.argv,
             cwd = prepared.workdir,
             env = prepared.env,
-            stdin = subprocess.DEVNULL,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
             preexec_fn = prepared.preexec_fn,
             pass_fds = tuple(prepared.pass_fds),
-            timeout = PROBE_TIMEOUT_SECONDS,
         )
         if completed.returncode != 0 or completed.stdout.strip() != PROBE_TOKEN.encode():
             detail = (completed.stderr or b"").decode("utf-8", "replace").strip()[-300:]

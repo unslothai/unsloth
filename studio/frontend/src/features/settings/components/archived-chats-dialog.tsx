@@ -32,8 +32,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
-import { MoreHorizontalIcon } from "lucide-react";
+import { Delete02Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -268,7 +267,7 @@ export function ArchivedChatsView() {
                       group: group.name,
                     })}
                   >
-                    <MoreHorizontalIcon className="size-4" />
+                    <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">

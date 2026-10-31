@@ -30,7 +30,7 @@ export type PortType =
   | "any"
   | "flow";
 
-export type EdgeKind = "data" | "flow";
+export type EdgeKind = "data" | "flow" | "feedback";
 
 export interface FlowParam {
   id: string;
@@ -90,6 +90,11 @@ export interface FlowGroup {
   label: string;
   color?: string | null;
   rect: [number, number, number, number];
+  /** "recipe": one Data Recipe; `config` is the recipe minus its columns (they are recipe.column nodes). */
+  kind?: "recipe" | "loop" | null;
+  config?: Record<string, unknown> | null;
+  run?: Record<string, unknown> | null;
+  ui?: Record<string, unknown> | null;
 }
 
 export interface FlowNote {
@@ -186,6 +191,8 @@ export interface NodeSpec {
   requires?: string[];
   exclusive_gpu?: boolean;
   requires_approval?: string[];
+  /** Part of something another node runs (a recipe column); never run on its own. */
+  design?: boolean;
 }
 
 export interface NodeCategory {
@@ -219,6 +226,8 @@ export interface DatasetValue {
   ref: string;
   rows?: number | null;
   columns?: string[] | null;
+  /** Which block wrote a local upload, for its label. */
+  made_by?: "preview" | "recipe" | "rows" | null;
 }
 
 export interface ModelValue {

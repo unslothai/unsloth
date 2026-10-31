@@ -77,7 +77,6 @@ def main(argv = None) -> int:
     from core.inference.diffusion_precision import _cast_fp8
     from core.inference.diffusion_te_prequant import TE_PREQUANT_FORMAT
 
-    # Family is forensic metadata; detection differs per branch, so resolve best-effort by name.
     family = args.family.strip().lower()
 
     subfolder = args.component if args.config_subfolder is None else args.config_subfolder

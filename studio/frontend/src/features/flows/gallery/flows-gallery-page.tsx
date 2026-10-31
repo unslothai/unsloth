@@ -27,6 +27,7 @@ import {
   createFlow,
   deleteFlow,
   importFlow,
+  importAllRecipes,
   importNotebook,
   listExamples,
   listFlows,
@@ -40,8 +41,12 @@ import {
   GameController01Icon,
   GridViewIcon,
   PlusSignIcon,
+  TestTube01Icon,
 } from "../editor/icon-data";
 import { MediaThumb } from "../editor/media";
+import { starterRecipeGraph } from "../recipe/recipe-actions";
+import { COLUMN_TYPE, referenceEdges } from "../recipe/recipe-columns";
+import { RecipeImportDialog } from "../recipe/recipe-import-dialog";
 import type { FlowKind, FlowRecord, FlowSummary } from "../types";
 import {
   type GalleryCategory,
@@ -405,6 +410,8 @@ export function FlowsGalleryPage(): ReactElement {
   const [importOpen, setImportOpen] = useState(false);
   const [category, setCategory] = useState<GalleryCategory | null>(null);
   const [creating, setCreating] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [recipeImportOpen, setRecipeImportOpen] = useState(false);
 
   const refresh = useCallback(() => {
     listFlows()
@@ -440,6 +447,80 @@ export function FlowsGalleryPage(): ReactElement {
     }
   };
 
+  const newRecipe = async () => {
+    setCreating(true);
+    try {
+      const doc = templateDocument("pipeline");
+      const { group, nodes } = starterRecipeGraph([0, 0], {
+        rows: 5,
+        mode: "preview",
+      });
+      const record = await createFlow({
+        ...doc,
+        name: "New recipe",
+        description: "A Data Recipe: columns that generate a dataset.",
+        nodes,
+        edges: referenceEdges(nodes.filter((n) => n.type === COLUMN_TYPE)),
+        groups: [group],
+        notes: [],
+      });
+      open(record.id);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not create the recipe",
+      );
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const bringRecipes = async () => {
+    setMigrating(true);
+    try {
+      const result = await importAllRecipes();
+      const refreshed = result.created.filter((c) => c.replaces).length;
+      const made = result.created.length - refreshed;
+      const kept = result.skipped.length;
+      if (made + refreshed === 0 && kept === 0 && result.failed.length === 0)
+        toast.info("No saved Data Recipes yet");
+      else if (made + refreshed === 0 && kept === 0)
+        toast.error("Could not bring in your Data Recipes", {
+          description: result.failed.map((f) => `${f.name}: ${f.error}`).join("; "),
+        });
+      else
+        toast.success(
+          made + refreshed
+            ? [
+                made && `Brought ${made} Data Recipe${made === 1 ? "" : "s"} into Flows`,
+                refreshed &&
+                  `${refreshed} edited recipe${refreshed === 1 ? "" : "s"} brought in again`,
+                kept && `${kept} already here`,
+              ]
+                .filter(Boolean)
+                .join("; ")
+            : `All ${kept} Data Recipe${kept === 1 ? " is" : "s are"} already in Flows`,
+          {
+            description: result.failed.length
+              ? `Could not bring in: ${result.failed.map((f) => f.name).join(", ")}`
+              : "Your recipes stay on the Data Recipes page too.",
+          },
+        );
+      const notices = result.created.flatMap((c) =>
+        (c.notices ?? []).map((notice) => `${c.name}: ${notice}`),
+      );
+      for (const notice of notices.slice(0, 4)) toast.info(notice);
+      if (notices.length > 4)
+        toast.info(`${notices.length - 4} more notes on the brought-in recipes`);
+      refresh();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not bring in the recipes",
+      );
+    } finally {
+      setMigrating(false);
+    }
+  };
+
   return (
     <div
       className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-8"
@@ -456,6 +537,32 @@ export function FlowsGalleryPage(): ReactElement {
             and any flow can be shared as a single file.
           </p>
         </div>
+        <Button
+          variant="outline"
+          disabled={creating}
+          onClick={() => void newRecipe()}
+          title="A new flow with a starter Data Recipe in it"
+          data-testid="flows-new-recipe"
+        >
+          <HugeiconsIcon icon={PlusSignIcon} size={15} /> New recipe
+        </Button>
+        <Button
+          variant="outline"
+          disabled={migrating}
+          onClick={() => void bringRecipes()}
+          title="One flow per saved Data Recipe, each an editable recipe group. Safe to run again."
+          data-testid="flows-bring-recipes"
+        >
+          <HugeiconsIcon icon={TestTube01Icon} size={15} />{" "}
+          {migrating ? "Bringing in…" : "Bring in my Data Recipes"}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => setRecipeImportOpen(true)}
+          data-testid="flows-import-recipe"
+        >
+          <HugeiconsIcon icon={FileImportIcon} size={15} /> Import recipe JSON
+        </Button>
         <Button
           variant="outline"
           onClick={() => setImportOpen(true)}
@@ -616,6 +723,14 @@ export function FlowsGalleryPage(): ReactElement {
         onImport={() => setImportOpen(true)}
       />
 
+      <RecipeImportDialog
+        open={recipeImportOpen}
+        onOpenChange={setRecipeImportOpen}
+        onImported={(record) => {
+          setRecipeImportOpen(false);
+          open(record.id);
+        }}
+      />
       <ImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}

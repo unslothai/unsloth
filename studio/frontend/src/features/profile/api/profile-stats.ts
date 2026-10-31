@@ -4,7 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-/** One day of the activity series. Dense: every day in range is present. */
+/** Dense: every day in range is present. */
 export type ProfileStatsDay = {
   date: string;
   tokens: number;

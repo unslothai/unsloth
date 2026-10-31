@@ -262,9 +262,7 @@ _CLAUDE_ENV_UNSET = (
     "CLAUDE_CODE_USE_MANTLE",
 )
 _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
-# OpenClaw tries CODEX_API_KEY before OPENAI_API_KEY, so dropping only the latter still embeds
-# via OpenAI. CODEX_ACCESS_TOKEN is not a provider candidate but its host exec tool inherits it
-# (it is absent from host-env-security-policy.json), and the codex CLI on PATH logs in with it.
+# Unset all three: OpenClaw tries CODEX_API_KEY before OPENAI_API_KEY, and CODEX_ACCESS_TOKEN reaches its exec tool and the codex CLI.
 _OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 _OPENCLAW_PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}", re.IGNORECASE)
 
@@ -731,8 +729,7 @@ def _dsh_command(args: list[str], patch: Optional[str] = None) -> list[str]:
     else:
         command = ["dsh", "web", *args]
     if patch is not None and command[1] not in _DSH_NO_PROFILE_ARGS:
-        # `dsh <name>` only expands to `--profile <name>` when the name comes first, so the
-        # overlay goes after a bare profile name and ahead of a leading launcher option.
+        # dsh name expands to --profile name only when the name comes first, so put the overlay after a bare name and before any leading option.
         at = 1 if command[1].startswith("-") else 2
         command[at:at] = ["--patch", patch]
     return command
@@ -1034,8 +1031,7 @@ def _http_json(
 
 # A server that WE auto-started (never one we merely found). Kept at module scope so failure paths and the atexit backstop can tear it down without threading a handle through all six agent commands. Only one agent runs per process, so one slot is enough.
 _auto_served_server: Optional[subprocess.Popen] = None
-# Model download + load can be slow, so this caps time since the download last
-# advanced, not total elapsed time (see `_start_studio_server`).
+# Caps time since the download last advanced, not total elapsed.
 _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
 # Ceiling on the doubling back-off the progress reader uses after a polling error.
@@ -1323,10 +1319,7 @@ class _ModelDownloadProgress:
             if active in readings:
                 self._display.update(readings[active], active)
         except Exception:
-            # Progress is best-effort and never fails the load, but `_start_studio_server`
-            # reads `downloaded_bytes` to tell a live transfer from a wedged one. Backing
-            # off keeps a broken endpoint cheap; giving up for good would kill the very
-            # download this exists to protect, so it never stops probing.
+            # downloaded_bytes drives _start_studio_server liveness: back off on failure but never stop probing, or the download it protects dies.
             self._failures += 1
             self._retry_at = time.monotonic() + min(
                 2.0**self._failures, _DOWNLOAD_POLL_MAX_BACKOFF_S
@@ -1564,8 +1557,7 @@ def _start_studio_server(
                 _shutdown_auto_served()
                 _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
             tail = _log_tail(log_path, lines = 400)
-            # `unsloth run` falls forward off a taken port, so poll the port it reports. Printed
-            # once, so read the whole log, not the tail below.
+            # `unsloth run` falls forward off a taken port; it prints the port once, so read the whole log.
             if not port_followed:
                 bound_port = re.search(
                     rf"^{re.escape(_START_PORT_PREFIX)}(\d+)$",
@@ -1591,17 +1583,13 @@ def _start_studio_server(
                     )
             if progress is not None:
                 progress.poll()
-            # Fresh bytes are the one unambiguous sign the child is moving, so the cap
-            # measures time since the transfer last advanced rather than total elapsed.
-            # Server log growth deliberately does NOT count: the loop's own health poll,
-            # echoed tracebacks and the loader's watchdog heartbeat all keep the log
-            # growing while nothing loads, which would make this deadline unreachable.
+            # The cap measures time since bytes last arrived; log growth does not count (health polls and
+            # heartbeats keep it growing while nothing loads).
             bytes_now = progress.downloaded_bytes if progress is not None else 0
             if bytes_now > downloaded_bytes:
                 deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
             downloaded_bytes = bytes_now
-            # New children emit an early key marker, so wait for the final model banner;
-            # older children only print the key after load, so fall back to that.
+            # New children emit an early key marker, so wait for the Model loaded banner; older ones print the key only after load.
             ready_signal = "Model loaded:" in tail if early_key_seen else "sk-unsloth-" in tail
             if _studio_healthy(base) and ready_signal:
                 if progress is not None:
@@ -1867,14 +1855,11 @@ def _loaded_models_response(
         answer = _http_json("GET", f"{base}/api/inference/loaded-models", key, timeout = timeout)
         if isinstance(answer.get("data"), list):
             return answer
-        # A Studio older than the 404-ing catch-all answers an unknown /api path with a
-        # 200 and {"error": ...}, which read as an empty listing reports a resident model
-        # as unloaded. Anything without a "data" list means the route is not there.
+        # Older Studio returns 200 with error JSON for unknown /api paths; no data list means no route, not an empty one that hides a loaded model.
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
             raise
-    # Fall back, never on an auth or server error. An older Studio still answers on
-    # /v1/models, with the unloaded catalog entries every caller below already filters out.
+    # Fall back, but never on an auth or server error; older Studios still answer /v1/models.
     return _http_json("GET", f"{base}/v1/models", key, timeout = timeout)
 
 
@@ -2369,8 +2354,7 @@ def _resolve_model(
                 preload_check(base, key, requested, load.gguf_variant)
         active_id = active.get("id") if active else None
         announced_switch = False
-        # Public IDs can collide, and status hides paths from API keys.
-        # Wait for the load result to distinguish reuse from replacement.
+        # Public IDs can collide and status hides paths: wait for the load result.
         switch_unknown = False
         if attach_public_id is not None:
             # An inferred attach never switches model, so the comparison below would misreport a switch and print the server's path.
@@ -2516,8 +2500,7 @@ def _resolve_model(
         elif switch_unknown:
             typer.echo(f"Loaded {requested} in place of {active_id}.")
             typer.echo("This unloaded the previous model for every attached session.")
-        # Match public IDs and load-response names, since the listing may omit paths.
-        # Keep attach_public_id for inferred requests using opaque identifiers.
+        # Match public IDs and load-response names, since the listing may omit paths; keep attach_public_id for inferred opaque IDs.
         wanted = ({requested, attach_public_id} - {None}) | _public_model_ids(requested)
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
@@ -2555,8 +2538,7 @@ def _resolve_model(
             )
         if _inference_status(base, key).get("yours") is False:
             _fail(_OTHER_ACCOUNT_RESIDENT)
-        # An empty listing and one holding only unloaded entries are the same situation
-        # to the user, and which one a server sends depends only on its version.
+        # Empty and unloaded-only listings mean the same; the server version decides which it sends.
         _fail(
             "No model is loaded in Unsloth. Load one from the model dropdown in "
             "the UI, or pass --model <hf-id-or-path> to load it from here."
@@ -2786,8 +2768,7 @@ def _answer_offers_variant(
     for row in variants:
         if not isinstance(row, dict):
             return True
-        # A torn local row proves a load llama cannot serve, so its labels do not vouch in
-        # strict mode; hub partials stay resumable and count.
+        # A torn local row cannot vouch in strict mode; hub partials stay resumable.
         if strict and row.get("partial") is True:
             continue
         quant = row.get("quant")
@@ -2800,13 +2781,11 @@ def _answer_offers_variant(
             if wanted in (label, re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", label)):
                 return True
         if isinstance(filename, str):
-            # The local resolver also takes the exact shard-stripped stem: full relative
-            # spelling only, never a nested file's bare basename.
+            # Local resolver also takes the exact shard-stripped stem, full relative spelling only, never a nested file's bare basename.
             stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", filename.rsplit(".", 1)[0]).lower()
             if wanted == stem:
                 return True
-            # Also any whole quant token of the BASENAME, which is how the listing's default
-            # can name the file by its other label (F16-checkpoint-Q4_K_M -> Q4_K_M).
+            # Any whole quant token of the basename (F16-checkpoint-Q4_K_M -> Q4_K_M).
             if any(
                 wanted
                 in (
@@ -2890,8 +2869,7 @@ def _preflight_agent_gguf(
     if find_studio_server() is not None:
         return
     repo, _ = _split_repo_variant(model)
-    # A bare foo.gguf naming no local file is a shorthand, not a path: the load
-    # canonicalizes it like any other owner-less name.
+    # A bare foo.gguf naming no local file is a shorthand, canonicalized like any owner-less name.
     if "/" not in repo and (not _is_model_path(repo) or repo.lower().endswith(".gguf")):
         # The server canonicalizes owner-less shorthands to unsloth/<name>.
         try:
@@ -2914,17 +2892,13 @@ def _attach_gguf_check(
     model: Optional[str],
     variant: Optional[str] = None,
 ) -> None:
-    # Attach path: the server resolves the identifier with its own cwd, cache and token, so
-    # ask it before the load evicts the resident model. A live empty list is definitive;
-    # any error (an older server included) defers.
+    # Ask the server before the load evicts the resident model: only a live empty list is definitive; any error, older servers included, defers.
     if not model:
         return
     repo, inline_variant = _split_repo_variant(model)
     # `--model repo:QUANT` is split before the gate runs, so the caller passes the quant on.
     variant = variant or inline_variant
-    # A .gguf filesystem path is GGUF by definition; only the hub-id shape (owner/name.gguf)
-    # gets probed. A bare foo.gguf naming no local file takes the shorthand route, since the
-    # load canonicalizes it to unsloth/foo.gguf.
+    # A .gguf filesystem path is GGUF by definition; only the hub-id shape owner/name.gguf is probed.
     bare_missing_gguf = False
     if repo.lower().endswith(".gguf") and not _is_model_path(repo.rsplit(".", 1)[0]):
         try:
@@ -2941,24 +2915,16 @@ def _attach_gguf_check(
             and "\\" not in repo
         )
     ):
-        # detect_gguf_model refuses a companion or big-endian build, so the load falls through
-        # to transformers and unloads llama-server before failing. Settled by name: the probe's
-        # empty answer defers whenever the path exists here, which on a loopback attach is
-        # exactly when it does. The quant never redirects a direct file (from_identifier
-        # consults it only for a DIRECTORY), though an explicit one still reaches the probe.
+        # Refuse companion or big-endian builds by name: otherwise load falls to transformers and unloads llama-server before failing.
         refused = _direct_gguf_is_companion(repo) or _direct_gguf_is_big_endian(repo)
         if refused:
             _fail_agent_needs_gguf(agent, repo)
         # A drafter folder further up is the server's call.
         uncertain = _direct_gguf_companion_is_uncertain(repo)
-        # The variant does not exempt this: a direct file is loaded as itself, so a complete
-        # sibling matching the quant is never substituted for it.
+        # A direct file loads as itself; a matching sibling is never substituted.
         if not refused and not uncertain:
-            # Only when this process really shares the server's filesystem: the .gguf suffix
-            # alone gets an incomplete file loaded, and llama-server finds the missing bytes
-            # only after teardown. Loopback does not prove that -- 127.0.0.1 may be an SSH or
-            # container forward where a server-valid path is simply absent here -- so confirm
-            # this machine's Unsloth and otherwise defer to the probe.
+            # Only when this machine shares the server's filesystem, confirmed by identity (loopback may be an SSH or container forward), else defer.
+            # Otherwise an incomplete file loads and llama-server finds bytes missing only after teardown.
             if is_loopback_url(base) and verify_studio_identity(base):
                 # A .gguf-NAMED DIRECTORY is scanned, not loaded, so the suffix proves nothing.
                 try:
@@ -2966,16 +2932,11 @@ def _attach_gguf_check(
                 except OSError:
                     is_gguf_dir = False
                 if not is_gguf_dir:
-                    # On loopback this reads the server's filesystem, so a name absent from a
-                    # listable directory is absent for the load too, and the .gguf suffix
-                    # still makes it a load that fails after teardown. An unreadable parent
-                    # stays unknowable and defers.
+                    # On loopback this reads the server's filesystem: a name missing from a listable dir is missing for the load too; unreadable parent defers.
                     try:
                         probe = Path(os.path.expanduser(repo))
                         missing = (
-                            # Only a path this OS spells: a Windows path seen from WSL parses
-                            # to nonsense (C:\... has parent '.') and the server may hold the
-                            # real file, so it defers to the probe.
+                            # A Windows path seen from WSL parses to nonsense, so defer.
                             _path_syntax_is_native(repo)
                             and not probe.is_symlink()
                             and probe.parent.is_dir()
@@ -2993,19 +2954,12 @@ def _attach_gguf_check(
                             f"{repo} is incomplete (zero bytes or a split missing shards); "
                             f"re-download or re-copy it before pointing {agent.label} at it."
                         )
-                    # Only a spelling this OS can judge is settled here: a Windows path read
-                    # from WSL skipped the absence check above and reads as ready, so returning
-                    # would vouch for a file nobody looked at. An explicit variant also goes to
-                    # the probe, which judges the marked parent.
+                    # Settle here only a spelling this OS can judge: a WSL-read Windows path would vouch for an unchecked file; explicit variant goes to probe.
                     if not variant and _path_syntax_is_native(repo):
                         return
-            # A remote server's filesystem is not ours to read, and the load takes the .gguf
-            # suffix as authoritative, so ask the server instead. Its errors defer as always.
-    # Mirrors the load path's shorthand precedence: the raw name first (it may be a directory
-    # under the server's cwd), then the unsloth/<name> form the load falls back to only when
-    # the raw name resolves to nothing. A live answer settles that exact id, so the canonical
-    # form must not vouch for a raw name already answered, else a non-GGUF directory in the
-    # server's cwd passes the gate and evicts. Only an error falls through.
+            # Do not read a remote server's filesystem; the load treats the .gguf suffix as authoritative, so ask the server. Errors still defer.
+    # Check the raw name first, as the load does; fall back to unsloth/<name> only when the raw name errors.
+    # A live answer settles the raw id; otherwise a non-GGUF directory in the server's cwd would pass the gate and evict.
     candidates = [repo]
     if "/" not in repo and (not _is_model_path(repo) or bare_missing_gguf):
         candidates.append(f"unsloth/{repo}")
@@ -3018,14 +2972,11 @@ def _attach_gguf_check(
             continue
         variants = info.get("variants") if isinstance(info, dict) else None
         if isinstance(variants, list):
-            # A cleanable row is an empty leftover <quant>/ folder: it offers a delete, never
-            # weights, so it cannot stand in for the load finding something.
+            # A cleanable row is an empty leftover <quant>/ folder, never weights.
             variants = [
                 row for row in variants if not (isinstance(row, dict) and row.get("cleanable"))
             ]
-        # The load uses a bare name only when it resolves locally, else it canonicalizes to
-        # unsloth/<name>, so a raw answer the server calls non-local settles nothing. Without
-        # the flag (older server) the raw answer is still the best evidence there is.
+        # Non-local raw answers settle nothing; a server lacking the flag still counts its raw answer.
         if (
             "/" not in candidate
             and candidate != candidates[-1]
@@ -3034,13 +2985,10 @@ def _attach_gguf_check(
             and not info["resolved_locally"]
         ):
             continue
-        # The server can answer the gate's real question with the load resolver itself, so it
-        # settles the round -- even an EMPTY listing, since a root-blind lister can miss a file
-        # detect_gguf_model still resolves. No filename grammar beats the code that loads.
+        # Server answer from the load resolver settles the round, even empty: a root-blind lister can miss a file the load still finds.
         if isinstance(variants, list) and isinstance(info, dict):
             offered = info.get("loadable_variants")
-            # No allow-list means a direct file, which loads as itself whatever the quant, so
-            # the variantless verdict decides. Only a server omitting the field falls through.
+            # No allow-list means a direct file, which loads as itself whatever the quant, so the variantless verdict decides.
             if variant and offered is None and isinstance(info.get("loadable"), bool):
                 if not info["loadable"]:
                     _fail_agent_needs_gguf(agent, candidate)
@@ -3057,13 +3005,8 @@ def _attach_gguf_check(
                     _fail_agent_needs_gguf(agent, candidate)
                 return
         if isinstance(variants, list) and variants:
-            # llama.cpp kills the resident model before resolving the quant, so a quant this
-            # answer cannot serve is settled here. Local answers take exact labels only; the
-            # looser filename-token tier is for hub answers.
-            # "Local" means the server says so (resolved_locally) or, predating that field,
-            # path syntax / bare names, which resolve locally anyway. owner/name.gguf is
-            # exempted like the direct-file branch (_is_model_path sees only the suffix),
-            # since a remote answer wrongly judged local would face local-only rules.
+            # llama.cpp kills the resident model before resolving the quant, so settle it here; local answers take exact labels only.
+            # owner/name.gguf is exempt like a direct file, since a remote answer judged local would face local-only rules.
             hub_shaped = (
                 candidate.count("/") == 1
                 and not candidate.startswith(("/", ".", "~"))
@@ -3073,8 +3016,7 @@ def _attach_gguf_check(
             local_answer = bool(info.get("resolved_locally")) or (
                 not hub_shaped and (_is_model_path(candidate) or "/" not in candidate)
             )
-            # A local answer of only torn rows has no resumable side: llama-server would get
-            # the incomplete split only after teardown.
+            # Only torn local rows: llama-server would fail after teardown.
             if local_answer and all(
                 isinstance(row, dict) and row.get("partial") is True for row in variants
             ):
@@ -3082,9 +3024,7 @@ def _attach_gguf_check(
                     f"{candidate} has only incomplete GGUF weights on the server; "
                     f"finish or re-copy the download before pointing {agent.label} at it."
                 )
-            # A variantless local load picks from the directory's top level, so rows living
-            # only in quant subdirectories need the variant that resolves them -- else this
-            # answer evicts for a load that finds nothing.
+            # Variantless local load reads only the top level, so subdirectory-only rows need the variant; else it evicts for a load finding nothing.
             if (
                 local_answer
                 and not variant
@@ -3438,17 +3378,226 @@ def _codex_model_catalog(model: dict, visibility: str = "none") -> dict:
     return {"models": [entry]}
 
 
+_TOML_KEY_PART = re.compile(
+    r"""[ \t]*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))[ \t]*([.\]])"""
+)
+
+
+_TOML_STRING = re.compile(r'"(?:[^"\\]|\\.)*"|\'[^\']*\'')
+
+
+def _toml_table_path(chunk: str) -> Optional[tuple]:
+    """Key path of the [table] or [[array]] header opening chunk, whatever its quoting or comment."""
+    line = chunk.lstrip(" \t")
+    if not line.startswith("["):
+        return None
+    parts, pos = [], 2 if line.startswith("[[") else 1
+    while True:
+        m = _TOML_KEY_PART.match(line, pos)
+        if m is None:
+            return None
+        parts.append(next(g for g in m.groups()[:3] if g is not None))
+        pos = m.end()
+        if m.group(4) == "]":
+            return tuple(parts)
+
+
+def _toml_chunks(text: str) -> list:
+    """Split before each table header; a "[" line inside a string or an array is not one."""
+    chunks, current, delim, depth = [], "", None, 0
+    for line in text.splitlines(True):
+        if delim is None and depth == 0 and line.lstrip(" \t").startswith("["):
+            chunks.append(current)
+            current = line
+            continue
+        current += line
+        i = 0
+        while i < len(line):
+            if delim is not None:
+                if line.startswith(delim, i):
+                    # Up to two quotes may end the string just before its closing delimiter.
+                    run = len(line) - i - len(line[i:].lstrip(delim[0]))
+                    delim, i = None, i + min(run, 5)
+                else:
+                    i += 2 if delim == '"""' and line[i] == "\\" else 1
+                continue
+            c = line[i]
+            if c == "#":
+                break
+            if line.startswith(('"""', "'''"), i):
+                delim, i = line[i : i + 3], i + 3
+                continue
+            if c in "\"'":
+                m = _TOML_STRING.match(line, i)
+                i = m.end() if m else len(line)
+                continue
+            depth += (c in "[{") - (c in "]}")
+            i += 1
+    chunks.append(current)
+    return chunks
+
+
+def _toml_loads():
+    try:
+        import tomllib  # novermin
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            return None
+    return tomllib.loads
+
+
+def _toml_parses(text: str) -> Optional[bool]:
+    loads = _toml_loads()
+    if loads is None:
+        return None
+    try:
+        loads(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _toml_key(key: str) -> str:
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else _toml_value(key)
+
+
+def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        # JSON string escapes are TOML's, except that TOML also forbids a raw DEL.
+        return json.dumps(value, ensure_ascii = False).replace("\x7f", "\\u007f")
+    if isinstance(value, float) and value != value:
+        return "nan"
+    if isinstance(value, float) and value in (float("inf"), float("-inf")):
+        return "inf" if value > 0 else "-inf"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return (
+            "{ " + ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()) + " }"
+        )
+    return value.isoformat()  # TOML dates and times
+
+
+_CODEX_MCP_MANIFEST = "unsloth_mcp_servers.json"
+
+
+def _codex_mcp_server(chunk: str) -> Optional[tuple]:
+    # The server a [mcp_servers.NAME...] table belongs to: owning NAME owns its subtables. A bare
+    # [mcp_servers] table can mix servers from two homes, so it is never owned as a whole.
+    path = _toml_table_path(chunk)
+    return path[:2] if path and len(path) > 1 and path[0] == "mcp_servers" else None
+
+
+def _codex_mcp_manifest(home: Path) -> tuple:
+    """(home it was built from, the user's own home at the end of that chain, inherited servers)."""
+    try:
+        state = json.loads((home / _CODEX_MCP_MANIFEST).read_text(encoding = "utf-8"))
+        inherited = {tuple(path)[:2] for path in state["tables"]}
+        source, origin = state.get("source"), state.get("origin")
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None, None, set()
+    source = source if isinstance(source, str) else None
+    return source, origin if isinstance(origin, str) else source, inherited
+
+
+def _codex_mcp_followed(home: Path) -> Optional[Path]:
+    # A source that was itself a temporary session home is gone once that session exits.
+    source, origin, _ = _codex_mcp_manifest(home)
+    for candidate in (source, origin):
+        if candidate and Path(candidate).is_dir():
+            return Path(candidate)
+    return None
+
+
+def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
+    """MCP tables in source's config; a home Unsloth built trades its inherited ones for its origin's."""
+    try:
+        text = (source / "config.toml").read_text(encoding = "utf-8-sig")
+    except OSError:
+        return []
+    loads = _toml_loads()
+    try:
+        # Parsed, so root dotted keys, inline tables and a bare [mcp_servers] all count.
+        servers = loads(text).get("mcp_servers") if loads else None
+    except ValueError:
+        loads = (
+            None  # TOML 1.1, which Codex reads and tomllib does not: copy the tables as written.
+        )
+    if loads is None:
+        tables = [c for c in _toml_chunks(text) if _codex_mcp_server(c)]
+    else:
+        tables = [
+            f"[mcp_servers.{_toml_key(name)}]\n"
+            + "".join(f"{_toml_key(k)} = {_toml_value(v)}\n" for k, v in spec.items())
+            + "\n"
+            for name, spec in (servers.items() if isinstance(servers, dict) else ())
+            if isinstance(spec, dict)
+        ]
+    _, _, inherited = _codex_mcp_manifest(source)
+    upstream_home = _codex_mcp_followed(source)
+    if upstream_home is not None and str(upstream_home.resolve(strict = False)) not in seen:
+        upstream = _codex_mcp_tables(
+            upstream_home, seen | {str(upstream_home.resolve(strict = False))}
+        )
+        # The origin wins a name clash, as it does when that saved home is synced.
+        taken = inherited | {_codex_mcp_server(c) for c in upstream}
+        tables = [c for c in tables if _codex_mcp_server(c) not in taken] + upstream
+    return tables
+
+
+def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
+    _, _, carried = _codex_mcp_manifest(home)
+    source = _codex_source_home()
+    home_key = home.resolve(strict = False)
+    if source.resolve(strict = False) == home_key:
+        # The printed recipe exports CODEX_HOME=home: keep reading the home it was built from.
+        followed = _codex_mcp_followed(home)
+        if followed is not None and followed.resolve(strict = False) != home_key:
+            source = followed
+        else:
+            source = _codex_source_home(ignore_configured = True)
+    source_key = str(source.resolve(strict = False))
+    tables = _codex_mcp_tables(source, frozenset({str(home_key), source_key}))
+    # Only replace what came from the user's config; servers added in this home stay.
+    servers = {_codex_mcp_server(c) for c in tables}
+    carried |= servers
+    out = "".join(c for c in _toml_chunks(text) if _codex_mcp_server(c) not in carried)
+    if tables:
+        out = out.rstrip("\n") + "\n\n" + "\n\n".join(c.rstrip("\n") for c in tables) + "\n"
+    if _toml_parses(out) is False:
+        return text
+    _, origin, _ = _codex_mcp_manifest(source)
+    # Written even when empty: a recipe shell's CODEX_HOME=home must still find a custom origin.
+    (home / _CODEX_MCP_MANIFEST).write_text(
+        json.dumps(
+            {"source": source_key, "origin": origin or source_key, "tables": sorted(servers)}
+        )
+        + "\n",
+        encoding = "utf-8",
+    )
+    return out
+
+
 def write_codex_config(
     base: str,
     model: dict,
     home: Path,
     reasoning_effort: Optional[str] = None,
+    keep_mcp_servers: bool = False,
 ) -> None:
     home.mkdir(parents = True, exist_ok = True)
 
     config = home / "config.toml"
     existing = config.read_text(encoding = "utf-8") if config.exists() else ""
     merged = _merge_codex_config(existing, base)
+    if keep_mcp_servers:
+        merged = _with_user_codex_mcp_servers(merged, home)
     if merged != existing:
         config.write_text(merged, encoding = "utf-8")
         typer.echo(f"Updated {config}")
@@ -4261,8 +4410,7 @@ def _refresh_windows_path() -> None:
 def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
     # Best-effort: any failure here means "no managed Node", never a broken launch.
     try:
-        # Discovery only: this answers "is there a managed Node", including for a launch aimed
-        # at a remote server, so it must not create the cache tree on the way past.
+        # Discovery only: must not create the cache tree (the launch may target a remote server).
         ensure_studio_backend_path(seed_cache_env = False)
         from utils.node_runtime import managed_node_binary, resolve_node_executable
         node = Path(managed_node_binary())
@@ -4355,8 +4503,7 @@ def _prefer_windows_cmd_sibling(executable: Optional[str]) -> Optional[str]:
 
 
 def _which_with_install_dirs(name: str) -> Optional[str]:
-    # shutil.which(name), but searching the known agent install dirs too, so a version probe resolves the same binary _launch() will (it augments PATH before it runs). Without this an agent present only in ~/.local/bin / %APPDATA%
-    # pm is missed, wrongly assumed current, and launched with flags an older build rejects. PATH is restored afterward: only _launch() should persist the augmentation for the child process.
+    # Probe lookup also searches agent install dirs so it matches _launch(); else flags reach an older build it rejects; PATH is restored.
     original = os.environ.get("PATH")
     _augment_path_with_install_dirs()
     try:
@@ -5821,8 +5968,7 @@ def _vibe_env(
         "VIBE_PROVIDERS": json.dumps([provider]),
         "VIBE_MODELS": json.dumps([entry]),
         "VIBE_ACTIVE_MODEL": _VIBE_MODEL_ALIAS,
-        # Only this model: an inherited allowlist or a resumed cloud session would otherwise
-        # select a hosted model. An escaped `re:` pattern matches the id exactly.
+        # An inherited allowlist or resumed cloud session would select a hosted model.
         "VIBE_ALLOWED_MODELS": json.dumps(["re:" + re.escape(model["id"])]),
         "VIBE_ENABLE_TELEMETRY": "false",
         "VIBE_ENABLE_UPDATE_CHECKS": "false",
@@ -5908,8 +6054,7 @@ def _pi_local_entry(
         target = os.path.join(source, value)
     target = os.path.normpath(target)
     if agents_skills is not None:
-        # Pi reads ~/.agents/skills through HOME, which moved, so a rule naming the
-        # user's copy must follow it or it stops matching.
+        # Pi reads ~/.agents/skills via HOME, which moved; rules naming the user copy must follow it.
         user_root, session_root = agents_skills
         try:
             inside = os.path.relpath(target, user_root)
@@ -5923,8 +6068,7 @@ def _pi_local_entry(
         relative = os.path.relpath(target, source)
     except ValueError:  # on another Windows drive
         return target
-    # Session-relative only where the link landed: a real session directory blocks
-    # the link, and the entry would then point into it instead of at the user's.
+    # Session-relative only where the link landed; where a real session directory blocks it, the entry would point into that directory instead.
     if relative.split(os.sep)[0] in linked:
         return relative
     return target
@@ -5956,8 +6100,7 @@ def _pi_settings_entries(
             if not prefix and "*" not in entry and "?" not in entry:
                 entry = _pi_local_entry(entry, source, home, linked, agents_skills)
             elif not pattern.strip().startswith("~"):  # Pi does not expand ~ in patterns
-                # Pi matches patterns against paths relative to the agent directory, which moved.
-                # Keep the original too: it still matches basenames and linked directories.
+                # The agent directory moved; keep the original too, it still matches basenames.
                 anchored = prefix + _pi_local_entry(
                     pattern,
                     source,
@@ -6010,8 +6153,7 @@ def _clear_pi_user_resources(agent_dir: Path, home: Path) -> None:
 def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
     """Expose selected user Pi resources inside an isolated session."""
     if _wsl_windows_executable(["pi"]):
-        # Windows Pi cannot reliably follow WSL links into mounted drives, and a session
-        # an earlier Linux pi prepared still holds them, so drop those before returning.
+        # Windows Pi cannot follow WSL links into mounted drives; drop those.
         _clear_pi_user_resources(agent_dir, home)
         return
     user_home = Path.home()
@@ -6096,16 +6238,14 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
             continue
         own = [item for item in own or [] if item not in stale and item not in entries]
         if entries or own:
-            # Pi de-dupes packages by identity keeping the FIRST, so session entries
-            # lead. Patterns apply in order instead, so those stay user-first.
+            # Pi keeps the FIRST duplicate package, so session entries lead; patterns stay user-first.
             settings[key] = own + entries if key == "packages" else entries + own
         else:
             settings.pop(key, None)
         if entries:
             copied[key] = entries
     for key in _PI_USER_VERBATIM_SETTINGS:
-        # Pi runs every package lookup and install through npmCommand, so inheriting
-        # the package list without it falls back to an npm that cannot find them.
+        # Pi runs every package lookup and install through npmCommand; inherit it along with the package list or npm cannot find them.
         value = user_settings.get(key)
         own = settings.get(key)
         if own is not None and own != previous.get(key):
@@ -7538,7 +7678,7 @@ def codex(
         *ctx.args,
     ]
     with _session_config("codex", launch, persist = persist) as home:
-        write_codex_config(base, entry, home, codex_effort)
+        write_codex_config(base, entry, home, codex_effort, keep_mcp_servers = True)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
         _run(
             base,
@@ -7635,8 +7775,7 @@ def openclaw(
             request_body = server_options.request_body(),
             max_tokens = max_tokens,
         )
-        # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
-        # Off, else OpenClaw re-imports any provider key it cannot see from a login shell.
+        # Scope config and state so OpenClaw never touches ~/.openclaw. Shell env off, else it re-imports keys.
         env = {
             "OPENCLAW_CONFIG_PATH": str(config_path),
             "OPENCLAW_STATE_DIR": str(cfg),
@@ -8262,8 +8401,7 @@ def vibe(
         server_options = server_options,
     )
     command = ["vibe", *_yolo_command_flags("vibe", yolo), *ctx.args]
-    # Like claude, Vibe keeps its own home (~/.vibe: instructions, hooks, trust, agents,
-    # sessions); the env layer pins the Unsloth provider and model above its config files.
+    # Vibe keeps its own home; the env layer pins provider and model above its config files.
     request_body = server_options.request_body()
     if "temperature" not in request_body:
         # Vibe always sends a temperature, which the server honours over the model's

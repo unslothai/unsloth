@@ -13,8 +13,12 @@ import {
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useId, useMemo, useState } from "react";
+import { Switch } from "@/components/ui/switch";
+import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { hostOf } from "./address";
+import { useBrowserAgentStore } from "./agent/agent-store";
+import { useBrowserAgentDisabled } from "./agent/composer-toggle";
 import { type HistoryItem, useBrowserHistoryStore } from "./history-store";
 import { LinkContextMenu, MenuRow } from "./link-context-menu";
 import { useNativeBrowser } from "./native-support";
@@ -196,6 +200,47 @@ function ToolButton({
   );
 }
 
+/** The composer's Browser use switch: the same store, so its pill shows as soon as this is on. */
+function BrowserUseToggle() {
+  const t = useT();
+  const id = useId();
+  const disabled = useBrowserAgentDisabled();
+  const enabled = useBrowserAgentStore((state) => state.enabled);
+  return (
+    <label
+      htmlFor={id}
+      className={cn(
+        "flex min-w-0 items-center gap-3 rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-5 py-3",
+        disabled ? "cursor-default" : "cursor-pointer",
+      )}
+    >
+      <HugeiconsIcon
+        icon={CursorInWindowIcon}
+        strokeWidth={1.75}
+        className="me-1 size-6 shrink-0 text-muted-foreground"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block text-ui-15 text-foreground">
+          {t("browser.browserUse.label")}
+        </span>
+        <span className="block text-ui-13 text-muted-foreground">
+          {t(
+            disabled
+              ? "browser.browserUse.unavailable"
+              : "browser.browserUse.description",
+          )}
+        </span>
+      </span>
+      <Switch
+        id={id}
+        checked={enabled && !disabled}
+        disabled={disabled}
+        onCheckedChange={(on) => useBrowserAgentStore.getState().setEnabled(on)}
+      />
+    </label>
+  );
+}
+
 function PageButton({
   label,
   icon,
@@ -298,6 +343,7 @@ export function NewTabPage({ tabId }: { tabId: string }) {
             </div>
           </section>
         ) : null}
+        <BrowserUseToggle />
         {showRecents && recents.length > 0 ? (
           <section className="flex flex-col gap-3">
             <SectionTitle

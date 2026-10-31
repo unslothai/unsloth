@@ -50,7 +50,21 @@ def test_api_monitor_entries_and_expanded_text_can_shrink():
 def test_settings_monitor_link_can_shrink():
     source = MONITOR_LINK.read_text(encoding = "utf-8")
     assert "flex w-full min-w-0 items-center gap-3" in source
-    assert '<span className="truncate text-xs text-muted-foreground">' in source
+    assert '<span className="truncate text-sm font-semibold text-foreground">' in source
+    assert '<span className="min-h-[1lh] truncate text-xs text-muted-foreground">' in source
+    # The monitor has a section of its own, not a card dropped among other sections.
+    assert re.search(
+        r'<SettingsSection\s+title=\{t\("settings\.resources\.liveMonitor\.apiTitle"\)\}', source
+    ), "MonitorLink no longer renders its own titled SettingsSection"
+    # Where a page hides that heading (the API tab, #15467), the link must sit inside a titled section there.
+    for tsx in SETTINGS.rglob("*.tsx"):
+        page = tsx.read_text(encoding = "utf-8")
+        for use in re.finditer(r"<MonitorLink\b[^>]*\bhideHeading\b", page):
+            before = page[: use.start()]
+            opened = before.rfind("<SettingsSection")
+            assert (
+                opened != -1 and "</SettingsSection>" not in before[opened:]
+            ), f"{tsx.name}: MonitorLink hides its heading outside a titled SettingsSection"
 
 
 def test_remote_access_card_can_shrink():
