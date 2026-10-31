@@ -175,6 +175,7 @@ from .diffusion_small_host import (
     host_commit_mib,
     host_ram_mib,
     resolve_snapshot_dir,
+    snapshot_weights_complete,
     spill_capacity_mib,
     stored_components,
     torch_dtype_map as small_host_torch_dtype_map,
@@ -9300,6 +9301,7 @@ class DiffusionBackend:
                                             local_files_only = local_files_only,
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
+                                            checkpoint = base,
                                         )
                                     finally:
                                         self._stop_load_prefetch()
@@ -9322,6 +9324,17 @@ class DiffusionBackend:
                                         self._stop_load_prefetch()
                                 else:
                                     # bf16 -> fp16 conversion materialises in host RAM (35 GB for FLUX.1)
+                                    # Re-judged on current pipe_kwargs: a since-supplied component can complete the twins.
+                                    _decision_variant = (
+                                        local_fp16_variant(
+                                            _variant_snapshot,
+                                            load_dtype = dtype,
+                                            torch_dtype = pipe_kwargs.get("torch_dtype"),
+                                            supplied = tuple(pipe_kwargs),
+                                        )
+                                        if _fp16_variant_eligible
+                                        else None
+                                    )
                                     small_host = self._small_host_decision(
                                         _base_local_dir or fetch_base,
                                         pipe_kwargs,
@@ -9331,10 +9344,13 @@ class DiffusionBackend:
                                         fetch = _small_host_fetch(
                                             pipeline_cls,
                                             fetch_base,
-                                            pipe_kwargs,
+                                            {**pipe_kwargs, "variant": _decision_variant}
+                                            if _decision_variant is not None
+                                            else pipe_kwargs,
                                             _base_local_dir,
                                             local_files_only,
                                         ),
+                                        variant = _decision_variant,
                                     )
                                     if small_host is not None and small_host.engaged:
                                         pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
@@ -11582,6 +11598,7 @@ class DiffusionBackend:
                 text_encoder = moss_te,
                 check_cancelled = check_cancelled,
                 local_files_only = local_files_only,
+                checkpoint = base,
             )
             check_cancelled()
             pipe.to(device)
@@ -12064,14 +12081,21 @@ class DiffusionBackend:
         *,
         lora_active: bool,
         fetch: Optional[Callable[[], Any]] = None,
+        variant: Optional[str] = None,
     ) -> Any:
         """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot.
-        ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet."""
+        ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet; ``variant``
+        is the weight layout the load reads."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
         if (
             fetch is not None
             and small_host_download_first()
-            and (snapshot is None or not stored_components(snapshot))
+            and (
+                snapshot is None
+                or not stored_components(snapshot)
+                # interrupted download: sizing only the cached part hides missing components
+                or not snapshot_weights_complete(snapshot, skip = tuple(pipe_kwargs), variant = variant)
+            )
         ):
             fetched = fetch()
             snapshot = resolve_snapshot_dir(fetched, None) if fetched else snapshot
@@ -13631,6 +13655,17 @@ class DiffusionBackend:
                         if inpaint_padding_applied is None and init_pil is not None:
                             soft_overlay = (init_pil, mask_pil)
 
+                if (
+                    workflow in ("img2img", "inpaint", "upscale")
+                    and init_pil is not None
+                    and "strength" in call_params
+                ):
+                    applied = strength if strength is not None else call_params["strength"].default
+                    if isinstance(applied, (int, float)):
+                        # SDXL-style img2img runs int(N * strength) steps: a 1-step default would denoise none.
+                        steps = diffusion_hires.min_inference_steps(
+                            steps, float(applied), diffusion_hires.timestep_rule(pipe)
+                        )
                 kwargs: dict[str, Any] = {
                     # prompt / generator are set per chunk below, one Generator per image.
                     "num_inference_steps": steps,

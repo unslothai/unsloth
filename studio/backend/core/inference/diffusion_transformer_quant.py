@@ -1793,12 +1793,12 @@ def _quiet_config(cls: Any, **kwargs: Any) -> Any:
     return cls(**kwargs)
 
 
-def _install_fp8_unit_scale() -> None:
+def _install_fp8_unit_scale(fast_accum: Optional[bool] = None) -> None:
     try:
         import logging
 
         from .diffusion_fp8_unit_scale import install
-        install(logger = logging.getLogger(__name__))
+        install(logger = logging.getLogger(__name__), fast_accum = fast_accum)
     except Exception:  # noqa: BLE001 - never block a load on a speed path
         pass
 
@@ -1818,7 +1818,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # activation_value_lb floors the scale: an all-zero row otherwise gives NaN.
         from torchao.quantization import PerRow
 
-        _install_fp8_unit_scale()
+        _install_fp8_unit_scale(fast_accum = _resolve_fast_accum(fast_accum))
         fp8_kwargs: dict = {"granularity": PerRow()}
         config_params = _inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:
