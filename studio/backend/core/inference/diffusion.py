@@ -1445,6 +1445,21 @@ def _base_manifest_name(fam: Any) -> str:
     return FLUX3_INDEX if is_flux3_family(fam) else "model_index.json"
 
 
+def _cached_mirror_manifest(base: str, manifest: str) -> tuple[str, ...]:
+    """Offline mirror probe: the manifest when the mirror's cache holds it, else ().
+
+    With no file list, ``prefer_ungated_mirror`` keeps the upstream for ANY cached weight, so a stray single-file
+    checkpoint in the upstream snapshot pinned offline loads there although the pipeline was staged under the mirror.
+    """
+
+    from .diffusion_families import mirror_repo
+
+    mirror = mirror_repo(base)
+    if mirror and mirror.lower() != (base or "").lower() and cache_holds_files(mirror, (manifest,)):
+        return (manifest,)
+    return ()
+
+
 def _te_quant_for_supplied_encoders(requested: Optional[str]) -> Optional[str]:
     """Unset / auto never re-casts a supplied encoder (it would fetch the hosted encoder the file replaces)."""
     if requested is None or str(requested).strip().lower() in ("", "auto"):
@@ -5558,7 +5573,9 @@ class DiffusionBackend:
             ) or _local_base_transformer_present(base)
             # One mirror decision per load, so staging and assembly use the same repo.
             fetch_base = fetch_repos.get(base) or prefer_ungated_mirror(
-                base, kwargs.get("hf_token"), files = base_files
+                base,
+                kwargs.get("hf_token"),
+                files = base_files or _cached_mirror_manifest(base, _base_manifest_name(fam)),
             )
             kwargs["_fetch_base"] = fetch_base
             # Catch a gated base before the prefetch moves any bytes; probes fetch_base.
@@ -9130,24 +9147,29 @@ class DiffusionBackend:
                                         denoiser_prequant_pipe_kwargs,
                                     )
 
-                                    seeded = denoiser_prequant_pipe_kwargs(
-                                        fam,
-                                        fetch_base,
-                                        scheme = pipeline_seed_scheme,
-                                        dtype = dtype,
-                                        device = device,
-                                        # offloading plans seed it on the host: a GPU seed OOMed 8 GB cards
-                                        placement_device = prequant_seed_device(
-                                            plan, device, pipeline_seed_scheme
-                                        ),
-                                        hf_token = hf_token,
-                                        target = target,
-                                        path_override = transformer_prequant_path,
-                                        fast_accum = transformer_quant_fast_accum,
-                                        local_files_only = local_files_only,
-                                        cache_dir = hub_cache_dir(),
-                                        logger = logger,
+                                    # streamed plans int8 the seed's bf16 text stream / modulations, like an in-place build
+                                    _seed_scope = int8_text_stream_scope(
+                                        not plan_keeps_transformer_resident(plan)
                                     )
+                                    with _seed_scope:
+                                        seeded = denoiser_prequant_pipe_kwargs(
+                                            fam,
+                                            fetch_base,
+                                            scheme = pipeline_seed_scheme,
+                                            dtype = dtype,
+                                            device = device,
+                                            # offloading plans seed it on the host: a GPU seed OOMed 8 GB cards
+                                            placement_device = prequant_seed_device(
+                                                plan, device, pipeline_seed_scheme
+                                            ),
+                                            hf_token = hf_token,
+                                            target = target,
+                                            path_override = transformer_prequant_path,
+                                            fast_accum = transformer_quant_fast_accum,
+                                            local_files_only = local_files_only,
+                                            cache_dir = hub_cache_dir(),
+                                            logger = logger,
+                                        )
                                     pipe_kwargs.update(seeded)
                                     if seeded:
                                         transformer_quant_engaged = pipeline_seed_scheme
