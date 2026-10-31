@@ -32,8 +32,20 @@ function docxSymbolText(element: Element, w: string): string {
 /** Each w:sym becomes the text it shows, so the body, equation and note readers all see it.
  *  Parts are picked by size, not name: mammoth reaches them through relationships. */
 export function writeDocxSymbols(archive: Uint8Array, maxPartBytes: number): Uint8Array {
+  const rewritten = writeDocxSymbolParts(
+    (keep) => unzipSync(archive, { filter: (entry) => keep(entry.name, entry.originalSize) }),
+    maxPartBytes,
+  );
+  return rewritten ? zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 }) : archive;
+}
+
+/** The rewritten parts alone, or null; `select` picks parts as an `unzipSync` filter would. */
+export function writeDocxSymbolParts(
+  select: (keep: (name: string, size: number) => boolean) => Record<string, Uint8Array>,
+  maxPartBytes: number,
+): Record<string, Uint8Array> | null {
   const rewritten: Record<string, Uint8Array> = {};
-  const parts = unzipSync(archive, { filter: (entry) => entry.originalSize <= maxPartBytes });
+  const parts = select((_name, size) => size <= maxPartBytes);
   for (const [name, bytes] of Object.entries(parts)) {
     const xml = strFromU8(bytes);
     if (!xml.includes("sym")) continue;
@@ -50,6 +62,5 @@ export function writeDocxSymbols(archive: Uint8Array, maxPartBytes: number): Uin
     }
     if (symbols.length) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
   }
-  if (!Object.keys(rewritten).length) return archive;
-  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+  return Object.keys(rewritten).length ? rewritten : null;
 }
