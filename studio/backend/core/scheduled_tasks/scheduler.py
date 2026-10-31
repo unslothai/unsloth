@@ -131,6 +131,21 @@ def system_prompt(task: dict, now_ms: int) -> str:
     )
 
 
+def _run_instructions(task: dict, now_ms: int) -> str:
+    from core.agents_md import agents_md_text
+    from storage import studio_db
+
+    project = studio_db.get_chat_project(task["projectId"]) if task.get("projectId") else None
+    agents_md = agents_md_text(project).strip()
+    instructions = project["instructions"].strip() if project and not project["archived"] else ""
+    parts = [
+        f"<agents_md>\n{agents_md}\n</agents_md>" if agents_md else "",
+        f"<project_instructions>\n{instructions}\n</project_instructions>" if instructions else "",
+        system_prompt(task, now_ms),
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
 def _loop_cancelled(current: Optional[asyncio.Task], stopping: bool) -> bool:
     """Whether the scheduler's own task is being cancelled. ``Task.cancelling()`` is 3.11+; before it only stop() does."""
     if current is None:
@@ -555,10 +570,18 @@ async def generate_answer(
             # Built once admitted: a model kept alongside is chosen as it stands now, not before a load or unload.
             if not task.get("model") and (kept := _sole_kept_model()):
                 model_fields = {"model": kept}
+            # A project folder on a stalled mount must not keep the scheduler from every other task.
+            try:
+                instructions = await asyncio.wait_for(
+                    asyncio.to_thread(_run_instructions, task, db.now_ms()),
+                    timeout = max(0.0, deadline - loop.time()),
+                )
+            except TimeoutError:
+                raise RunFailed("timeout") from None
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
-                        {"role": "system", "content": system_prompt(task, db.now_ms())},
+                        {"role": "system", "content": instructions},
                         {"role": "user", "content": task["prompt"]},
                     ],
                     "stream": False,
