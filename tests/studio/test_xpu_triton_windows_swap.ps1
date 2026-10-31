@@ -1,0 +1,244 @@
+#!/usr/bin/env pwsh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+# setup.ps1 replaces triton-windows with torch's own XPU triton on the Intel XPU path (both own the `triton`
+# package). The swap runs with inherited uv / pip resolver inputs cleared, as the AMD ROCm pairing does, and an
+# install counts only once a fresh probe shows the XPU dist recorded, no triton-windows left and triton importing;
+# the triton-windows fallback is verified the same way. Both the fast-path check and the swap find dists by name,
+# so a ~riton_windows-* backup an interrupted pip leaves is not an installed triton-windows. The helpers, the
+# fast-path check and the post-stack swap are cut out of setup.ps1 and run against stubs and real Python.
+# ASCII only: Windows PowerShell 5.1 reads a BOM-less script in the ANSI code page.
+# Run: pwsh -NoProfile -File tests/studio/test_xpu_triton_windows_swap.ps1
+
+$ErrorActionPreference = "Stop"
+$root = (Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, "..", ".."))).Path
+$setupPath = Join-Path (Join-Path $root "studio") "setup.ps1"
+$setup = Get-Content -LiteralPath $setupPath -Raw -Encoding UTF8
+
+function Cut([string]$From, [string]$To) {
+    $start = $setup.IndexOf($From)
+    $end = if ($start -ge 0) { $setup.IndexOf($To, $start) } else { -1 }
+    if ($start -lt 0 -or $end -le $start) { throw "setup.ps1 no longer has the block from '$From' to '$To'" }
+    return $setup.Substring($start, $end - $start)
+}
+$helpers = Cut "# AMD ROCm: triton-windows paired with torch." "# End of the AMD ROCm triton-windows pairing helpers."
+$fastPath = Cut "    # An explicit xpu pin can leave IsIntelXpu false" '    $script:SkipPythonDeps = $SkipPythonDeps'
+$swap = Cut '# Both own the `triton` package.' '$ErrorActionPreference = $prevEAP'
+
+$failures = 0
+function Check([string]$Name, [bool]$Ok) {
+    if ($Ok) { Write-Host "  PASS  $Name" } else { Write-Host "  FAIL  $Name" -ForegroundColor Red; $script:failures++ }
+}
+# A scenario that throws (a helper setup.ps1 no longer defines) is a failed check, not an aborted run.
+function Try-Scenario([string]$Name, [scriptblock]$Body) {
+    try { & $Body } catch { Check "$Name (threw: $($_.Exception.Message))" $false; return $null }
+}
+
+# Stubs. The probes answer from $script:State; the installers move it to what each call leaves.
+$script:State = @{}
+$script:RealProbeDir = $null
+$script:Calls = @()
+$script:EnvSeen = @()
+$script:Lines = @()
+$script:InstallExits = @()
+$script:InstallLeaves = @()
+$script:UninstallExit = 0
+$envNames = @('UV_OVERRIDE', 'UV_EXCLUDE', 'UV_CONSTRAINT', 'PIP_CONSTRAINT', 'UV_REQUIRE_HASHES', 'PIP_REQUIRE_HASHES')
+function Invoke-BoundedPythonProbe {
+    param($PythonExe, $Code, $TimeoutSec)
+    if ($script:RealProbeDir) {
+        # The real probe code against a site directory of hand-made dist-infos only (-S: no site-packages).
+        $py = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $py) { $py = Get-Command python3 }
+        $savedPath = $env:PYTHONPATH
+        $env:PYTHONPATH = $script:RealProbeDir
+        $ErrorActionPreference = "Continue"
+        try { $out = & $py.Source -S -c $Code 2>&1 | Out-String } finally { $env:PYTHONPATH = $savedPath }
+        return @{ Ok = ($LASTEXITCODE -eq 0); Output = $out }
+    }
+    if ($Code -like "*HEALTHY=*") {
+        if (-not $script:State.Imports) { return @{ Ok = $false; Output = "" } }
+        return @{ Ok = $true; Output = "TRITONVER=`nHEALTHY=1`nPAIRED=0" }
+    }
+    if (-not $script:State.Readable) { return @{ Ok = $false; Output = "" } }
+    return @{ Ok = $true; Output = "TRITONWIN=$($script:State.TritonWin)`nTRITONXPU=$($script:State.XpuSpec)`nXPUDIST=$($script:State.XpuDist)" }
+}
+function Save-EnvSeen { $script:EnvSeen += ,(@($envNames | ForEach-Object { [Environment]::GetEnvironmentVariable($_) }) -join "|") }
+function Fast-Download {
+    $script:Calls += ,("download " + ($args -join " "))
+    Save-EnvSeen
+    $dest = $args[[array]::IndexOf($args, '--dest') + 1]
+    Set-Content -LiteralPath (Join-Path $dest "pytorch_triton_xpu-3.5.0-cp312-cp312-win_amd64.whl") -Value "" -Encoding ascii
+    $global:LASTEXITCODE = 0
+    return ""
+}
+function Fast-Uninstall {
+    $script:Calls += ,("uninstall " + ($args -join " "))
+    Save-EnvSeen
+    if ($script:UninstallExit -eq 0) { $script:State.TritonWin = ""; $script:State.Imports = $false }
+    $global:LASTEXITCODE = $script:UninstallExit
+    return ""
+}
+function Fast-Install {
+    $n = @($script:Calls | Where-Object { $_ -like "install *" }).Count
+    $script:Calls += ,("install " + ($args -join " "))
+    Save-EnvSeen
+    if ($n -lt $script:InstallLeaves.Count -and $script:InstallLeaves[$n]) {
+        foreach ($k in $script:InstallLeaves[$n].Keys) { $script:State[$k] = $script:InstallLeaves[$n][$k] }
+    }
+    $global:LASTEXITCODE = if ($n -lt $script:InstallExits.Count) { $script:InstallExits[$n] } else { 0 }
+    return ""
+}
+function substep { param($Text, $Color) $script:Lines += ,"$Text" }
+function Write-StudioLine { param($Text, $ForegroundColor) $script:Lines += ,"$Text" }
+function Redact-InstallOutput { param($Text) return $Text }
+function Test-UvOfflineRequested { return $false }
+Invoke-Expression $helpers
+
+$venvRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("xpu_triton_venv_" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $venvRoot -Force | Out-Null
+$manifestFile = Join-Path $venvRoot "unsloth_install_manifest.json"
+$xpuSpec = "pytorch-triton-xpu==3.5.0"
+$generic = "triton-windows<3.7"
+$xpuOk = @{ XpuDist = "3.5.0"; Imports = $true }
+$backOk = @{ TritonWin = "3.6.0.post25"; Imports = $true }
+
+# Runs the post-stack swap from a venv where triton-windows shadows torch's XPU triton.
+function Invoke-Swap($Exits = @(), $Leaves = @($xpuOk), [string]$TritonWin = "3.9.0.post30", [string]$Spec = $xpuSpec,
+                     [int]$UninstallExit = 0) {
+    $script:State = @{ TritonWin = $TritonWin; XpuSpec = $Spec; XpuDist = ""; Imports = $true; Readable = $true }
+    $script:Calls = @(); $script:EnvSeen = @(); $script:Lines = @()
+    $script:InstallExits = $Exits; $script:InstallLeaves = $Leaves; $script:UninstallExit = $UninstallExit
+    Set-Content -LiteralPath $manifestFile -Value '{"complete": true}' -Encoding ascii
+    $stackExit = 0
+    $XpuIndexUrl = "https://download.pytorch.org/whl/xpu"
+    $VenvDir = $venvRoot
+    $_tritonSpec = $generic
+    Invoke-Expression $swap
+    return @{ Calls = $script:Calls; StackExit = $stackExit; Manifest = (Test-Path -LiteralPath $manifestFile -PathType Leaf);
+              Installs = @($script:Calls | Where-Object { $_ -like "install *" }); Lines = $script:Lines }
+}
+function Has-Error($r) { return @($r.Lines | Where-Object { $_ -like "*[[]ERROR]*" }).Count -gt 0 }
+
+try {
+Write-Host "=== swap: verified, not just exit 0 ==="
+$r = Try-Scenario "happy path" { Invoke-Swap }
+Check "a verified XPU install keeps the manifest and installs once" ($r -and $r.Installs.Count -eq 1 -and $r.Manifest -and $r.StackExit -eq 0)
+Check "and runs fetch, uninstall, install in order" ($r -and $r.Calls.Count -eq 3 -and $r.Calls[0] -like "download *" -and $r.Calls[1] -like "uninstall *" -and $r.Calls[2] -like "install *")
+# An inherited UV_EXCLUDE drops the wheel and the install still exits 0, with triton-windows already gone.
+$r = Try-Scenario "exit 0, nothing installed" { Invoke-Swap -Leaves @($null, $backOk) }
+Check "exit 0 with no XPU dist falls back to triton-windows" ($r -and $r.Installs.Count -eq 2 -and $r.Installs[1] -eq "install --force-reinstall --no-deps $generic")
+Check "and the restored triton-windows keeps setup going" ($r -and $r.StackExit -eq 0 -and $r.Manifest -and -not (Has-Error $r))
+$r = Try-Scenario "XPU dist recorded, no import" { Invoke-Swap -Leaves @(@{ XpuDist = "3.5.0"; Imports = $false }, $backOk) }
+Check "an XPU dist that does not import falls back" ($r -and $r.Installs.Count -eq 2 -and $r.StackExit -eq 0)
+$r = Try-Scenario "triton-windows still recorded" { Invoke-Swap -Leaves @(@{ XpuDist = "3.5.0"; Imports = $true; TritonWin = "3.9.0.post30" }, $backOk) }
+Check "an install that leaves triton-windows recorded falls back" ($r -and $r.Installs.Count -eq 2)
+$r = Try-Scenario "unreadable after install" { Invoke-Swap -Leaves @(@{ XpuDist = "3.5.0"; Imports = $true; Readable = $false }, $backOk) }
+Check "a post-install probe that cannot read the venv verifies nothing" ($r -and $r.Installs.Count -eq 2)
+$r = Try-Scenario "XPU install fails" { Invoke-Swap -Exits @(1, 0) -Leaves @($null, $backOk) }
+Check "a failed XPU install restores triton-windows and the manifest" ($r -and $r.Installs.Count -eq 2 -and $r.StackExit -eq 0 -and $r.Manifest)
+
+Write-Host "=== fallback: verified too ==="
+# The fallback exits 0 but triton still does not import: the venv has no working triton.
+$r = Try-Scenario "fallback exit 0, no import" { Invoke-Swap -Exits @(1, 0) -Leaves @($null, $null) }
+Check "a fallback that exits 0 without a working triton fails setup" ($r -and $r.StackExit -ne 0 -and (Has-Error $r))
+Check "and the manifest is not restored" ($r -and -not $r.Manifest)
+$r = Try-Scenario "fallback fails" { Invoke-Swap -Exits @(1, 7) -Leaves @($null, $null) }
+Check "a failed fallback fails setup with its exit code" ($r -and $r.StackExit -eq 7 -and (Has-Error $r) -and -not $r.Manifest)
+
+Write-Host "=== swap: resolver inputs isolated ==="
+foreach ($n in $envNames) { Set-Item "Env:$n" "inherited-$n" }
+$r = Try-Scenario "env isolation" { Invoke-Swap -Leaves @($null, $backOk) }
+$clean = "|||||0"
+Check "fetch, uninstall, install and fallback run with UV_OVERRIDE / UV_EXCLUDE / UV_CONSTRAINT / PIP_CONSTRAINT cleared and hashes relaxed" ($r -and $script:EnvSeen.Count -eq 4 -and @($script:EnvSeen | Where-Object { $_ -ne $clean }).Count -eq 0)
+Check "and every inherited value is restored afterwards" (@($envNames | Where-Object { [Environment]::GetEnvironmentVariable($_) -ne "inherited-$_" }).Count -eq 0)
+foreach ($n in $envNames) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
+$r = Try-Scenario "unset env" { Invoke-Swap }
+Check "unset ones stay unset after the swap" ($r -and @($envNames | Where-Object { $null -ne [Environment]::GetEnvironmentVariable($_) }).Count -eq 0)
+
+Write-Host "=== swap: when it does not apply ==="
+$r = Try-Scenario "no triton-windows" { Invoke-Swap -TritonWin "" }
+Check "no triton-windows: nothing is touched" ($r -and $r.Calls.Count -eq 0 -and $r.Manifest)
+$r = Try-Scenario "not the xpu wheel" { Invoke-Swap -Spec "triton==3.5.0" }
+Check "a torch that does not require an XPU triton: nothing is touched" ($r -and $r.Calls.Count -eq 0 -and $r.Manifest)
+$r = Try-Scenario "uninstall fails" { Invoke-Swap -UninstallExit 1 }
+Check "a failed uninstall installs nothing and keeps the manifest" ($r -and $r.Installs.Count -eq 0 -and $r.Manifest -and $r.StackExit -eq 0)
+
+Write-Host "=== probe code (real Python): pip backups are not installed dists ==="
+$site = Join-Path ([System.IO.Path]::GetTempPath()) ("xpu_triton_probe_" + [guid]::NewGuid().ToString("N"))
+function New-DistInfo([string]$Folder, [string]$Name, [string]$Version, [string]$Requires = "") {
+    $dir = Join-Path $site $Folder
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $meta = "Metadata-Version: 2.1`nName: $Name`n"
+    if ($Version) { $meta += "Version: $Version`n" }
+    if ($Requires) { $meta += "Requires-Dist: $Requires`n" }
+    Set-Content -LiteralPath (Join-Path $dir "METADATA") -Value $meta -Encoding ascii
+}
+try {
+    New-DistInfo "torch-2.9.0+xpu.dist-info" "torch" "2.9.0+xpu" "$xpuSpec; platform_system == 'Windows'"
+    New-DistInfo "pytorch_triton_xpu-3.5.0.dist-info" "pytorch-triton-xpu" "3.5.0"
+    New-DistInfo "bitsandbytes-0.50.0.dist-info" "bitsandbytes" "0.50.0"
+    New-DistInfo "~riton_windows-3.9.0.post30.dist-info" "triton-windows" "3.9.0.post30"
+    $script:RealProbeDir = $site
+
+    # The fast-path check: a verified XPU install with only a backup left is not sent through the dependency pass.
+    $r = Try-Scenario "fast path, backup only" {
+        $SkipPythonDeps = $true; $_xpuIsReachable = $true; $script:IsIntelXpu = $true; $installedTorchTag = "xpu"
+        Invoke-Expression $fastPath
+        $SkipPythonDeps
+    }
+    Check "fast path: a ~riton_windows backup alone does not force the dependency pass" ($r -eq $true)
+    $s = Try-Scenario "swap probe, backup only" { Get-XpuTritonState }
+    Check "swap probe: a ~riton_windows backup alone is not a triton-windows to replace" ($s -and $s.Known -and $s.TritonWin -eq "" -and $s.XpuSpec -eq $xpuSpec -and $s.XpuDist -eq "3.5.0")
+    $r = Try-Scenario "swap, backup only" {
+        $script:Calls = @()
+        Set-Content -LiteralPath $manifestFile -Value '{"complete": true}' -Encoding ascii
+        $stackExit = 0; $XpuIndexUrl = "https://download.pytorch.org/whl/xpu"; $VenvDir = $venvRoot; $_tritonSpec = $generic
+        Invoke-Expression $swap
+        @{ Calls = $script:Calls.Count; StackExit = $stackExit }
+    }
+    Check "swap: nothing is fetched or removed for a backup alone" ($r -and $r.Calls -eq 0 -and $r.StackExit -eq 0)
+
+    New-DistInfo "triton_windows-3.9.0.post30.dist-info" "triton-windows" "3.9.0.post30"
+    $r = Try-Scenario "fast path, active" {
+        $SkipPythonDeps = $true; $_xpuIsReachable = $true; $script:IsIntelXpu = $true; $installedTorchTag = "xpu"
+        Invoke-Expression $fastPath
+        $SkipPythonDeps
+    }
+    Check "fast path: an active triton-windows still forces the dependency pass" ($r -eq $false)
+    $s = Try-Scenario "swap probe, active" { Get-XpuTritonState }
+    Check "swap probe: an active triton-windows is found" ($s -and $s.TritonWin -eq "3.9.0.post30")
+    Remove-Item -LiteralPath (Join-Path $site "triton_windows-3.9.0.post30.dist-info") -Recurse -Force
+    New-DistInfo "triton_windows-0.dist-info" "triton-windows" ""
+    $s = Try-Scenario "swap probe, versionless" { Get-XpuTritonState }
+    Check "swap probe: a record without Version still counts as triton-windows" ($s -and $s.Known -and $s.TritonWin -eq "?")
+    Remove-Item -LiteralPath (Join-Path $site "triton_windows-0.dist-info") -Recurse -Force
+
+    # bitsandbytes: the active 0.50 decides, not a 0.45 backup.
+    New-DistInfo "~itsandbytes-0.45.0.dist-info" "bitsandbytes" "0.45.0"
+    $r = Try-Scenario "fast path, bnb backup" {
+        $SkipPythonDeps = $true; $_xpuIsReachable = $true; $script:IsIntelXpu = $true; $installedTorchTag = "xpu"
+        Invoke-Expression $fastPath
+        $SkipPythonDeps
+    }
+    Check "fast path: a ~itsandbytes backup does not make bitsandbytes stale" ($r -eq $true)
+    Remove-Item -LiteralPath (Join-Path $site "bitsandbytes-0.50.0.dist-info") -Recurse -Force
+    $r = Try-Scenario "fast path, bnb backup only" {
+        $SkipPythonDeps = $true; $_xpuIsReachable = $true; $script:IsIntelXpu = $true; $installedTorchTag = "xpu"
+        Invoke-Expression $fastPath
+        $SkipPythonDeps
+    }
+    Check "fast path: a bitsandbytes backup alone is missing bitsandbytes" ($r -eq $false)
+} finally {
+    $script:RealProbeDir = $null
+    Remove-Item -LiteralPath $site -Recurse -Force -ErrorAction SilentlyContinue
+}
+} finally {
+    Remove-Item -LiteralPath $venvRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+if ($failures -gt 0) {
+    Write-Host "$failures check(s) failed" -ForegroundColor Red
+    exit 1
+}
+Write-Host "All checks passed"
