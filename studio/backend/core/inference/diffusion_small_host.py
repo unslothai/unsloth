@@ -911,7 +911,6 @@ def encoder_resident_mode() -> Optional[bool]:
 
 
 def encoder_resident_keep_mib(host_total_mib: Optional[int]) -> int:
-    """Available host RAM a copied encoder must leave behind."""
     return host_reserve_mib(host_total_mib) + _ENCODER_RESIDENT_RUNTIME_MIB
 
 
@@ -923,8 +922,7 @@ def encoder_resident_share_mib(
     host_commit_mib: Optional[int] = None,
     min_share_mib: int = 0,
 ) -> tuple[int, str]:
-    """MiB of ``streamed_mib`` that fit in host RAM under ``decide_encoder_resident``'s reserve: all, a share, or 0.
-    ``host_available_mib`` is read after placement. Shares under ``min_share_mib`` are not worth the copy."""
+    """MiB of ``streamed_mib`` that fit under ``decide_encoder_resident``'s reserve; ``host_available_mib`` read after placement."""
     if streamed_mib <= 0:
         return 0, "no memory-mapped encoder weights"
     if host_available_mib is None:

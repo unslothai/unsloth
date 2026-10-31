@@ -16,8 +16,7 @@ import torch
 import core.inference.diffusion_small_host as sh
 import core.inference.video_minimax_h3_te as te
 
-# Colab L4 high-RAM: 53 GiB host, 20.2 GiB available after the load (denoiser pinned, VAEs copied), 23.5 GiB of
-# conditioner (int8 decoder layers + bf16 embedding) streamed from its mapping.
+# Colab L4 high-RAM: 53 GiB host, 20.2 GiB available after load, 23.5 GiB streamed conditioner.
 L4_TOTAL = 53 * 1024
 L4_AFTER_LOAD = 20664
 H3_TE_STREAMED = 24064

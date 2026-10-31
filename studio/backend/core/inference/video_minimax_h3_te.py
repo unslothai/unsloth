@@ -647,11 +647,8 @@ def stream_h3_text_encoder(
     return mode
 
 
-# A pageable streamed conditioner reads its safetensors mapping every new prompt; when it is larger than the page cache
-# left beside the pinned denoiser, every new prompt re-reads it from disk (L4, 53 GB: 25 GB file, ~20 GB available,
-# ~48 GiB read and +78-84 s per prompt). Anonymous pages are not reclaimed by that read.
+# A mapped conditioner larger than the page cache is re-read from disk every prompt (L4: +78-84 s); anon pages are not.
 H3_TE_RESIDENT_ENV = "UNSLOTH_H3_TE_RESIDENT"
-# A smaller share would not save a measurable part of the re-read.
 _H3_TE_RESIDENT_MIN_MIB = 1024
 _H3_TE_COPY_THREADS = 4
 
@@ -668,8 +665,7 @@ def h3_te_resident_enabled() -> bool:
 
 
 def _streamed_host_tensors(target: Any, groups: Optional[list] = None) -> list:
-    """(group, tensor, host) of every pageable CPU tensor the offload groups under ``target`` onload from, language
-    model first: the vision tower is only read for image prompts."""
+    """(group, tensor, host) pageable CPU tensors, language model first: vision is only read for image prompts."""
     import torch
 
     if groups is None:
@@ -713,9 +709,8 @@ def keep_h3_te_resident(
     groups: Optional[list] = None,
     host_ram: Any = None,
 ) -> int:
-    """Copy the share of a pageable streamed conditioner that fits beside the reserve into anonymous host RAM; the
-    rest keeps streaming from the mapping. Run after every load-time host allocation (the denoiser's pin, the VAE
-    copies). ``host_ram``: ``(total, available, commit)`` MiB, read when None. Returns MiB copied. Never raises."""
+    """Copy the share of the streamed conditioner that fits beside the reserve into anonymous RAM; run after every
+    load-time host allocation. ``host_ram``: ``(total, available, commit)`` MiB. Returns MiB copied. Never raises."""
     try:
         target = getattr(text_encoder, "model", None)
         if target is None or not h3_te_resident_enabled():
@@ -770,7 +765,6 @@ def keep_h3_te_resident(
 
 
 def _copy_host_tensors_(entries: list) -> int:
-    """Re-point each group's host copy (and the offloaded tensor) at a fresh anonymous copy. Returns bytes copied."""
     import torch
     from concurrent.futures import ThreadPoolExecutor
 

@@ -11497,7 +11497,7 @@ class VideoBackend:
                 except Exception as exc:  # noqa: BLE001 -- stock moves
                     logger.warning("video.h3_pinned_swap: %s: %s", vae_name, exc)
         if te_streamed == "stream_lazy":
-            # After every load-time host copy, so the available RAM it sizes against is final.
+            # Last host copy, so available RAM is final.
             from .video_minimax_h3_te import h3_te_resident_enabled, keep_h3_te_resident
             if h3_te_resident_enabled():
                 if block_pinner is not None:
