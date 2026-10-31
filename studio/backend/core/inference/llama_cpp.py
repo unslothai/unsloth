@@ -4330,6 +4330,395 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
 
 
+_SPEC_DRAFT_SAMPLING_ENV = "UNSLOTH_SPEC_DRAFT_SAMPLING"
+
+
+# llama.cpp common_sampler_types_from_names lowercases each ';'-separated name (no strip) and also
+# takes the kebab-case and underscore-free alias of every canonical name with an underscore.
+_ADAPTIVE_P_SAMPLER_NAMES = frozenset({"adaptive_p", "adaptive-p", "adaptivep"})
+_STOI_PREFIX = re.compile(r"[ \t\n\v\f\r]*[+-]?[0-9]+")
+
+
+def _apply_sampler_setting(state: list, key: str, value: str) -> bool:
+    """Fold one --mirostat / --samplers / --sampler-seq value into ``state`` = [mirostat_on,
+    adaptive_p_on, mirostat_user_set, samplers_user_set] like llama.cpp: each occurrence
+    overwrites, --mirostat goes through std::stoi, --samplers names are lowercased per ';' part,
+    sequence chars are case-sensitive ('a' = adaptive-p). Only --mirostat and --samplers mark
+    the field user-set (common/arg.cpp user_sampling_config); --sampler-seq does not, so a GGUF
+    general.sampling.sequence still replaces it. Returns False for a value llama-server rejects
+    (callers count that as stateful)."""
+    if key == "mirostat":
+        state[2] = True
+        match = _STOI_PREFIX.match(value)
+        if not match or not -(2**31) <= int(match.group(0)) < 2**31:
+            return False
+        state[0] = int(match.group(0)) != 0
+    elif key == "samplers":
+        state[3] = True
+        state[1] = any(name.lower() in _ADAPTIVE_P_SAMPLER_NAMES for name in value.split(";"))
+    else:
+        state[1] = "a" in value
+    return True
+
+
+def _request_mirostat_on(value) -> bool:
+    """Whether a request's ``mirostat`` leaves Mirostat on: server-schema.cpp reads it as int32
+    (nlohmann get<int32_t>, so a 64-bit integer keeps its low 32 bits and a float truncates)
+    and soft-clamps it to [0, 2], so only a positive result is on. Values whose cast has no
+    defined result (beyond 64 bits, NaN, a float outside int32) count as on. nlohmann reads a
+    JSON boolean as 0 / 1, so ``true`` is Mirostat 1."""
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, int):
+        if not -(2**63) <= value < 2**64:
+            return True
+        return ((value + 2**31) % 2**32) - 2**31 > 0
+    if not math.isfinite(value) or not -(2**31) < value < 2**31:
+        return True
+    return int(value) > 0
+
+
+# std::stof's strtof prefix, hex floats included ("-0x1p-1" is -0.5, not -0).
+_STOF_PREFIX = re.compile(
+    r"[ \t\n\v\f\r]*[+-]?(?:inf(?:inity)?|nan|"
+    r"0x(?:[0-9a-f]+\.?[0-9a-f]*|\.[0-9a-f]+)(?:p[+-]?[0-9]+)?|"
+    r"(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:e[+-]?[0-9]+)?)",
+    re.IGNORECASE,
+)
+
+
+def _stof_prefix_value(value: str) -> Optional[float]:
+    """The float std::stof reads from ``value``; None when it would throw."""
+    match = _STOF_PREFIX.match(value)
+    if not match:
+        return None
+    text = match.group(0)
+    try:
+        return float.fromhex(text) if "x" in text.lower() else float(text)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _launch_adaptive_target(
+    cmd: Iterable[str],
+    env: Optional[Mapping[str, str]] = None,
+    platform: Optional[str] = None,
+) -> Optional[float]:
+    """The adaptive-p target llama-server starts with (default -1, disabled): config.ini's
+    ``adaptive-target`` first, then the last --adaptive-target in ``cmd`` (std::stof). None
+    when a value cannot be read the way llama.cpp reads it."""
+    target = -1.0
+    for path in _llama_config_paths(env, platform):
+        try:
+            if not os.path.isfile(path):
+                continue
+            with open(path, "rb") as fh:
+                raw = fh.read(_LLAMA_CONFIG_MAX_BYTES + 1)
+        except (OSError, ValueError):
+            continue
+        if len(raw) > _LLAMA_CONFIG_MAX_BYTES:
+            return None
+        sections = _parse_llama_config_ini(raw.decode("utf-8", errors = "replace"))
+        for name in ("*", "default"):
+            value = ((sections or {}).get(name) or {}).get("adaptive-target")
+            if value is not None:
+                target = _stof_prefix_value(value)
+                if target is None:
+                    return None
+    try:
+        value = _last_flag_value(list(cmd), frozenset({"--adaptive-target"}))
+    except Exception:
+        return None
+    if value is not None:
+        target = _stof_prefix_value(value)
+    return target
+
+
+def _float32_negative(value) -> bool:
+    """``value < 0`` once stored as a float32, as llama.cpp keeps the adaptive-p target."""
+    try:
+        return struct.unpack("f", struct.pack("f", float(value)))[0] < 0
+    except (OverflowError, ValueError):
+        return value < 0
+
+
+def _request_selects_stateful_sampler(
+    body: Mapping, launch_adaptive_target: Optional[float] = None
+) -> bool:
+    """A /v1/completions body that turns on Mirostat or adaptive-p at a positive temperature.
+
+    llama-server verifies a sampled draft by rejection sampling only above temperature 0, and
+    each draft position then advances the sampler's state on the target's own pick rather than
+    on the token kept, which drifts Mirostat's mu and adaptive-p's running target. The launch
+    side is already kept greedy for these (``_spec_draft_sampling_flags``); a request can still
+    switch one on per slot. Read like tools/server/server-schema.cpp: ``mirostat`` a number,
+    ``samplers`` an array of names or a string of sequence chars; a missing ``temperature``
+    counts as positive."""
+    stateful = _request_mirostat_on(body.get("mirostat"))
+    samplers = body.get("samplers")
+    probe = [False, False, False, False]
+    adaptive = False
+    if isinstance(samplers, list) and all(isinstance(name, str) for name in samplers):
+        adaptive = any(name.lower() in _ADAPTIVE_P_SAMPLER_NAMES for name in samplers)
+    elif isinstance(samplers, str):
+        _apply_sampler_setting(probe, "seq", samplers)
+        adaptive = probe[1]
+    # adaptive-p is a plain dist draw below target 0 (llama_sampler_adaptive_p_apply). An
+    # omitted or null target is the launch's (None: unknown, so it counts as on).
+    target = body.get("adaptive_target")
+    if adaptive:
+        if isinstance(target, (int, float)) and not isinstance(target, bool):
+            adaptive = not _float32_negative(target)
+        elif target is None and launch_adaptive_target is not None:
+            adaptive = not _float32_negative(launch_adaptive_target)
+    stateful = stateful or adaptive
+    if not stateful:
+        return False
+    temperature = body.get("temperature")
+    # nlohmann reads a JSON boolean as 0 / 1 for the float field too.
+    if isinstance(temperature, (int, float)):
+        return temperature > 0
+    return True
+
+
+# llama.cpp common_init_sampler_from_model (common/common.cpp) reads these after the CLI/config,
+# each one only when the user did not set that field.
+_GGUF_SAMPLING_MIROSTAT_KEY = "general.sampling.mirostat"
+_GGUF_SAMPLING_SEQUENCE_KEY = "general.sampling.sequence"
+_GGUF_SAMPLING_KEYS = frozenset({_GGUF_SAMPLING_MIROSTAT_KEY, _GGUF_SAMPLING_SEQUENCE_KEY})
+
+
+def _apply_gguf_sampler_defaults(state: list, gguf_sampling: Mapping[str, Optional[str]]) -> bool:
+    """Fold the model's general.sampling.* defaults into ``state`` like common_init_sampler_from_model.
+
+    Values are llama.cpp's gguf_kv_to_str text (``None`` = a form Studio does not mirror, e.g.
+    an array). mirostat: skipped once --mirostat/config set it; snprintf into char[64], then
+    strtol base 10, taken only when it consumed a digit, narrowed to int32. sequence: skipped once
+    --samplers/config ``samplers`` set it; snprintf into char[512], split on ';', names matched
+    like --samplers. Returns False when a present value is in an unknown form."""
+    if not state[2] and _GGUF_SAMPLING_MIROSTAT_KEY in gguf_sampling:
+        value = gguf_sampling[_GGUF_SAMPLING_MIROSTAT_KEY]
+        if value is None:
+            return False
+        match = _STOI_PREFIX.match(
+            value.encode("utf-8", errors = "replace")[:63].decode("utf-8", errors = "ignore")
+        )
+        if match:
+            lo, hi = (-(2**31), 2**31 - 1) if sys.platform == "win32" else (-(2**63), 2**63 - 1)
+            v = min(max(int(match.group(0)), lo), hi)
+            state[0] = ((v + 2**31) % 2**32) - 2**31 != 0
+    if not state[3] and _GGUF_SAMPLING_SEQUENCE_KEY in gguf_sampling:
+        value = gguf_sampling[_GGUF_SAMPLING_SEQUENCE_KEY]
+        if value is None:
+            return False
+        value = value.encode("utf-8", errors = "replace")[:511].decode("utf-8", errors = "ignore")
+        if value:
+            state[1] = any(name.lower() in _ADAPTIVE_P_SAMPLER_NAMES for name in value.split(";"))
+    return True
+
+
+def _extra_args_select_stateful_sampler(
+    extra_args: Optional[Iterable[str]],
+    base: tuple = (False, False, False, False),
+    gguf_sampling: Optional[Mapping[str, Optional[str]]] = None,
+) -> bool:
+    """Whether the extras leave Mirostat or adaptive-p in effect (neither has an env var).
+
+    Rejection verification runs the target's sampler chain, then may emit the draft or a residual
+    draw instead of that chain's pick. Mirostat updates mu inside apply on its own pick and
+    adaptive-p updates its EMA only when the emitted token is its pick, so either would drift.
+    ``base`` = (mirostat_on, adaptive_p_on, mirostat_user_set, samplers_user_set) from llama.cpp's
+    config.ini, which the CLI overrides; ``gguf_sampling`` = the model's general.sampling.* text,
+    applied last to the fields neither set (see _apply_gguf_sampler_defaults).
+    Mirrors llama.cpp's parser: the last --mirostat wins and the last of --samplers /
+    --sampler-seq / --sampling-seq sets the chain. A malformed or missing value counts as
+    stateful (llama-server rejects it)."""
+    state = (list(base) + [False, False, False, False])[:4]
+    args = [str(a) for a in (extra_args or ())]
+    i = 0
+    while i < len(args):
+        raw = args[i]
+        flag = _flag_name(raw)
+        i += 1
+        if flag not in ("--mirostat", "--samplers", "--sampler-seq", "--sampling-seq"):
+            continue
+        _, eq, inline = raw.partition("=")
+        if eq:
+            value = inline
+        elif i < len(args):
+            value = args[i]
+            i += 1
+        else:
+            return True
+        if not _apply_sampler_setting(state, flag[2:], value):
+            return True
+    if gguf_sampling and not _apply_gguf_sampler_defaults(state, gguf_sampling):
+        return True
+    return state[0] or state[1]
+
+
+# llama.cpp (common/arg.cpp common_params_apply_system_config) applies these before the env and
+# the CLI, a later file over an earlier one: /etc/llama.cpp/config.ini (%PROGRAMDATA% on
+# Windows), then fs_get_config_directory()/config.ini.
+_LLAMA_SYSTEM_CONFIG_PATH = "/etc/llama.cpp/config.ini"
+_INI_HEADER = re.compile(r"\[[ \t]*([^\] \t][^\]]*)\][ \t]*(?:[;#].*)?")
+_INI_KV = re.compile(r"([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*=[ \t]*(.*?)[ \t]*(?:[;#].*)?")
+_INI_SKIP = re.compile(r"[ \t]*(?:[;#].*)?")
+_CONFIG_SAMPLER_KEYS = ("mirostat", "samplers", "sampler-seq", "sampling-seq")
+_CONFIG_SPEC_DRAFT_SAMPLING_KEYS = ("spec-draft-sampling", "LLAMA_ARG_SPEC_DRAFT_SAMPLING")
+# llama.cpp reads the whole file; one bigger than this is not scanned and counts as unknown.
+_LLAMA_CONFIG_MAX_BYTES = 16 << 20
+
+
+def _llama_config_paths(
+    env: Optional[Mapping[str, str]] = None, platform: Optional[str] = None
+) -> list[str]:
+    """The config.ini files llama-server reads, in apply order (common/common.cpp
+    fs_get_config_directory): Windows %PROGRAMDATA% then %APPDATA%; elsewhere (macOS too)
+    /etc then ${XDG_CONFIG_HOME:-$HOME/.config}, $HOME falling back to the passwd entry.
+    An unset or empty variable skips that file, as in llama.cpp."""
+    e = os.environ if env is None else env
+    plat = sys.platform if platform is None else platform
+    paths = []
+    if plat == "win32":
+        for var in ("PROGRAMDATA", "APPDATA"):
+            if e.get(var):
+                paths.append(os.path.join(e[var], "llama.cpp", "config.ini"))
+        return paths
+    paths.append(_LLAMA_SYSTEM_CONFIG_PATH)
+    config_dir = e.get("XDG_CONFIG_HOME") or ""
+    if not config_dir:
+        home = e.get("HOME") or ""
+        if not home:
+            try:
+                import pwd
+                home = pwd.getpwuid(os.getuid()).pw_dir or ""
+            except Exception:
+                home = ""
+        if not home:
+            return paths
+        config_dir = os.path.join(home, ".config")
+    paths.append(os.path.join(config_dir, "llama.cpp", "config.ini"))
+    return paths
+
+
+def _parse_llama_config_ini(text: str) -> Optional[dict[str, dict[str, str]]]:
+    """Sections of a llama.cpp config.ini (common/preset.cpp parse_ini_from_file), or None when
+    llama.cpp would reject the file. Keys before any header land in "default"; a repeated header
+    restarts its section and a repeated key keeps the last value; a value ends at whitespace
+    followed by ';', '#' or the line end."""
+    sections: dict[str, dict[str, str]] = {}
+    current = "default"
+    for line in re.split(r"\r\n|\n|\r", text):
+        m = _INI_KV.fullmatch(line)
+        if m:
+            sections.setdefault(current, {})[m.group(1)] = m.group(2)
+            continue
+        m = _INI_HEADER.fullmatch(line)
+        if m:
+            current = m.group(1)
+            sections[current] = {}
+            continue
+        if not _INI_SKIP.fullmatch(line):
+            return None
+    return sections
+
+
+def _llama_config_spec_settings(
+    env: Optional[Mapping[str, str]] = None, platform: Optional[str] = None
+) -> tuple[bool, tuple[bool, bool, bool, bool]]:
+    """(sets spec-draft-sampling, (mirostat_on, adaptive_p_on, mirostat_user_set,
+    samplers_user_set)) after llama-server's config files.
+
+    Each file applies its [*] section, then its default one (keys before any header or under
+    [default]); model-named sections are presets for router mode and do not apply here. A
+    missing, unreadable or unparsable file counts as absent (llama-server refuses to start on
+    an unparsable one anyway); a sampler value llama-server would reject counts as stateful. A
+    file over _LLAMA_CONFIG_MAX_BYTES reports "sets spec-draft-sampling" so nothing is emitted
+    over settings Studio did not read."""
+    sets_draft_sampling = False
+    state = [False, False, False, False]
+    for path in _llama_config_paths(env, platform):
+        try:
+            if not os.path.isfile(path):
+                continue
+            with open(path, "rb") as fh:
+                raw = fh.read(_LLAMA_CONFIG_MAX_BYTES + 1)
+        except (OSError, ValueError):
+            continue
+        if len(raw) > _LLAMA_CONFIG_MAX_BYTES:
+            return True, (state[0], state[1], state[2], state[3])
+        text = raw.decode("utf-8", errors = "replace")
+        sections = _parse_llama_config_ini(text)
+        if sections is None:
+            continue
+        for name in ("*", "default"):
+            section = sections.get(name) or {}
+            if any(k in section for k in _CONFIG_SPEC_DRAFT_SAMPLING_KEYS):
+                sets_draft_sampling = True
+            if "mirostat" in section:
+                if not _apply_sampler_setting(state, "mirostat", section["mirostat"]):
+                    state[0] = True
+            # The chain keys write the same field; when one section holds several, any
+            # adaptive-p among them keeps the greedy draft.
+            chain = [k for k in _CONFIG_SAMPLER_KEYS[1:] if k in section]
+            if chain:
+                adaptive = False
+                for key in chain:
+                    probe = [False, False, False, False]
+                    _apply_sampler_setting(
+                        probe, "samplers" if key == "samplers" else "seq", section[key]
+                    )
+                    adaptive = adaptive or probe[1]
+                state[1] = adaptive
+                state[3] = state[3] or "samplers" in section
+    return sets_draft_sampling, (state[0], state[1], state[2], state[3])
+
+
+def _spec_draft_sampling_flags(
+    caps: Optional[dict],
+    extra_args: Optional[Iterable[str]],
+    gguf_sampling: Optional[Mapping[str, Optional[str]]] = None,
+) -> list[str]:
+    """``--spec-draft-sampling probabilistic`` for an MTP drafter (built-in head or a separate one, except Gemma 4's).
+
+    llama-server's default drafts the argmax and accepts a drafted token only when the
+    target samples exactly that token, so at Studio's T > 0 chat defaults most drafts are
+    rejected. Probabilistic drafting samples the draft and verifies it by rejection sampling
+    (accept with min(1, p/q), else resample from max(0, p - q)): the output distribution is
+    the target's either way, and at temperature 0 llama-server keeps the greedy match.
+    Not emitted when the build lacks the flag, when the user's extras, the inherited
+    LLAMA_ARG_SPEC_DRAFT_SAMPLING or llama.cpp's config.ini already choose, when Mirostat or
+    adaptive-p stays in effect after config.ini, the extras and the model's general.sampling.*
+    defaults, or with UNSLOTH_SPEC_DRAFT_SAMPLING=greedy. ``gguf_sampling`` = those defaults
+    from a complete header read ({} = none); None (header not read) emits nothing."""
+    if not caps or not caps.get("supports_spec_draft_sampling"):
+        return []
+    if gguf_sampling is None:
+        return []
+    if _extra_args_set_any_flag(extra_args, {"--spec-draft-sampling"}):
+        return []
+    if os.environ.get("LLAMA_ARG_SPEC_DRAFT_SAMPLING"):
+        return []
+    try:
+        config_sets_choice, config_samplers = _llama_config_spec_settings()
+    except Exception as e:
+        logger.debug(f"llama.cpp config.ini scan failed, ignoring it: {e}")
+        config_sets_choice, config_samplers = False, (False, False, False, False)
+    if config_sets_choice:
+        return []
+    if _extra_args_select_stateful_sampler(extra_args, config_samplers, gguf_sampling):
+        return []
+    mode = (os.environ.get(_SPEC_DRAFT_SAMPLING_ENV) or "probabilistic").strip().lower()
+    if mode not in ("probabilistic", "greedy"):
+        mode = "probabilistic"
+    if mode == "greedy":
+        return []
+    return ["--spec-draft-sampling", "probabilistic"]
+
+
 # Shared with llama_server_args so detection and stripping cannot drift.
 _GPU_OFFLOAD_OVERRIDE_FLAGS = _LAYER_OFFLOAD_FLAGS
 # Extras keeping weights on CPU regardless of -ngl; -ncmoe 0 places nothing, so it is parsed.
@@ -8276,6 +8665,12 @@ class LlamaCppBackend:
         self._layer_preserves_tensor_intent: bool = False
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
+        # Studio's speculative flags chose --spec-draft-sampling probabilistic, and the
+        # running child was spawned with it (a recovery without speculation clears it).
+        self._spec_draft_sampling_emitted: bool = False
+        self._spec_draft_probabilistic: bool = False
+        # adaptive-p's target at launch (None: unknown), for requests that omit it.
+        self._launch_adaptive_target: Optional[float] = None
         # UI mode as requested, not the resolved flag set (auto may resolve to draft-mtp).
         self._requested_spec_mode: Optional[str] = None
         # User --spec-draft-n-max override (None = platform default).
@@ -10117,6 +10512,7 @@ class LlamaCppBackend:
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
                 "spec_draft_n_max_default": None,
+                "supports_spec_draft_sampling": False,
                 "supports_kv_unified": False,
                 # Fail OPEN: these are emitted on every launch; only a positive absence drops one.
                 "supports_no_context_shift": True,
@@ -10190,6 +10586,7 @@ class LlamaCppBackend:
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
         spec_draft_n_max_default: Optional[int] = None
+        supports_spec_draft_sampling = False
         supports_kv_unified = False
         supports_trace_verbosity = False
         # See the fallback dict: these fail open.
@@ -10381,6 +10778,17 @@ class LlamaCppBackend:
                 if _n_max_default:
                     spec_draft_n_max_default = int(_n_max_default.group(1))
 
+            # --spec-draft-sampling {greedy,probabilistic} (ggml-org/llama.cpp#27694): the draft samples
+            # and the target verifies by rejection sampling. Fails closed: a build without it exits on it,
+            # and one whose help does not list "probabilistic" is not trusted with the value.
+            supports_spec_draft_sampling = bool(
+                probe_ok
+                and _is_real("--spec-draft-sampling")
+                and re.search(
+                    r"(?<![a-z0-9_-])probabilistic(?![a-z0-9_-])",
+                    (blocks.get("--spec-draft-sampling") or "").lower(),
+                )
+            )
             supports_kv_unified = _is_real("--kv-unified")
             # Fails closed: an older build's level 4 may be per-token debug on the decode path.
             supports_trace_verbosity = bool(
@@ -10511,6 +10919,7 @@ class LlamaCppBackend:
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "spec_draft_n_max_default": spec_draft_n_max_default,
+            "supports_spec_draft_sampling": supports_spec_draft_sampling,
             "supports_kv_unified": supports_kv_unified,
             "supports_no_context_shift": supports_no_context_shift,
             "supports_jinja": supports_jinja,
@@ -18264,6 +18673,30 @@ class LlamaCppBackend:
     }
 
     @staticmethod
+    def _gguf_value_as_llama_text(f, vtype: int) -> Optional[str]:
+        """Read one scalar KV value as llama.cpp's gguf_kv_to_str prints it (src/llama-impl.cpp:
+        integers in decimal, floats via std::to_string = "%f", bools "true"/"false", strings
+        raw). Arrays are skipped and return None."""
+        formats = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 10: "<Q", 11: "<q"}
+        if vtype in formats:
+            fmt = formats[vtype]
+            return str(struct.unpack(fmt, f.read(struct.calcsize(fmt)))[0])
+        if vtype in (6, 12):
+            fmt = "<f" if vtype == 6 else "<d"
+            return "%f" % struct.unpack(fmt, f.read(struct.calcsize(fmt)))[0]
+        if vtype == 7:
+            return "true" if struct.unpack("<b", f.read(1))[0] != 0 else "false"
+        if vtype == 8:
+            slen = struct.unpack("<Q", f.read(8))[0]
+            raw = f.read(slen)
+            if len(raw) < slen:
+                raise struct.error("truncated string")
+            # gguf_kv_to_str hands back gguf_get_val_str as a C string: it ends at the first NUL.
+            return raw.split(b"\0", 1)[0].decode("utf-8", errors = "replace")
+        LlamaCppBackend._gguf_skip_value(f, vtype)
+        return None
+
+    @staticmethod
     def _gguf_skip_value(f, vtype: int) -> None:
         """Skip a GGUF KV value without reading it."""
         sz = LlamaCppBackend._GGUF_TYPE_SIZE.get(vtype)
@@ -18635,6 +19068,9 @@ class LlamaCppBackend:
         self._is_diffusion = False
         self._gguf_header_parsed = False
         self._gguf_split_index = None
+        # general.sampling.mirostat / .sequence as llama.cpp's gguf_kv_to_str text (None = a
+        # form not mirrored); trusted only with _gguf_header_parsed.
+        self._gguf_sampling = {}
 
         try:
             canvas_seen = False
@@ -18706,6 +19142,9 @@ class LlamaCppBackend:
                         break
 
                     try:
+                        if key in _GGUF_SAMPLING_KEYS:
+                            self._gguf_sampling[key] = self._gguf_value_as_llama_text(f, vtype)
+                            continue
                         if (
                             key in WANTED
                             or key in arch_keys
@@ -19341,6 +19780,11 @@ class LlamaCppBackend:
         self._requested_ctx_checkpoints = None
         self._requested_cache_ram = None
         self._idle_slot_clearing_active = False
+        # The runner never verifies sampled drafts, so the completions gate must not see
+        # the previous llama-server's.
+        self._spec_draft_sampling_emitted = False
+        self._spec_draft_probabilistic = False
+        self._launch_adaptive_target = None
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._requested_cache_types = ("f16", "f16")
@@ -23783,6 +24227,11 @@ class LlamaCppBackend:
                 # drafter it was never going to carry.
                 self._spec_fallback_reason = None
                 self._spec_drafter_kind = None
+                # Likewise for the sampled-draft marker: a previous MTP launch's would
+                # have /v1/completions refuse Mirostat and adaptive-p on this server.
+                self._spec_draft_sampling_emitted = False
+                self._spec_draft_probabilistic = False
+                self._launch_adaptive_target = None
                 # Discovery runs before the metadata read that says diffusion, so a
                 # transient sidecar failure can set this for a drafterless server.
                 self._dflash_retry_needed = False
@@ -30615,6 +31064,16 @@ class LlamaCppBackend:
                             f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(run_cmd))}"
                         )
                         _last_spawn_cmd = list(run_cmd)
+                        self._spec_draft_probabilistic = (
+                            self._spec_draft_sampling_emitted
+                            and _last_flag_value(run_cmd, frozenset({"--spec-draft-sampling"}))
+                            == "probabilistic"
+                        )
+                        self._launch_adaptive_target = (
+                            _launch_adaptive_target(run_cmd, env)
+                            if self._spec_draft_probabilistic
+                            else None
+                        )
                         # Read off the argv actually spawned rather than the intent, so
                         # every emitter is covered by construction.
                         self._idle_slot_clearing_active = _idle_slot_clearing_active(
@@ -32751,6 +33210,7 @@ class LlamaCppBackend:
         # Reset; emit branches re-set on the resolved emission.
         self._spec_draft_n_max = None
         self._speculative_type = None
+        self._spec_draft_sampling_emitted = False
         self._spec_fallback_reason = None
         # A drafter trained with the fine-tune and exported beside this GGUF (drafter.json).
         trained_steps = None
@@ -33045,6 +33505,29 @@ class LlamaCppBackend:
                     )
             flags.extend(["--spec-type", spec_value, n_max_flag, str(draft_n_max)])
             flags.extend(ngram_knobs)
+            # Not for the Gemma 4 assistant: at Gemma's defaults (T 1.0, top-k 64) its
+            # sampled drafts were accepted less often than its argmax.
+            # By general.architecture too, so a renamed target or assistant is still caught.
+            _draft_arch = None
+            if mtp_draft_path:
+                _db = self._draft_backend_for(mtp_draft_path)
+                _draft_arch = getattr(_db, "_architecture", None)
+            if not (
+                _is_gemma_mtp_name(model_identifier, model_path)
+                or _is_gemma_mtp_name(None, mtp_draft_path)
+                or getattr(self, "_architecture", None) == "gemma4"
+                or _draft_arch == "gemma4-assistant"
+            ):
+                # The model's general.sampling.* defaults, only from a complete header read of
+                # this model; otherwise unknown, and nothing is emitted.
+                _gguf_sampling = None
+                if getattr(self, "_gguf_header_parsed", False) and (
+                    model_path is None or getattr(self, "_gguf_path", None) == model_path
+                ):
+                    _gguf_sampling = dict(getattr(self, "_gguf_sampling", None) or {})
+                _draft_sampling = _spec_draft_sampling_flags(caps, extra_args, _gguf_sampling)
+                flags.extend(_draft_sampling)
+                self._spec_draft_sampling_emitted = bool(_draft_sampling)
             self._speculative_type = "draft-mtp"
             chain_label = "chained ngram-mod" if chain_ngram else "MTP-only"
             logger.info(f"Spec decoding: {mtp_token} ({chain_label})")
@@ -33584,6 +34067,9 @@ class LlamaCppBackend:
             self._arch_gate_forced_cpu = False
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None
+            self._spec_draft_sampling_emitted = False
+            self._spec_draft_probabilistic = False
+            self._launch_adaptive_target = None
             self._requested_spec_mode = None
             self._spec_draft_n_max = None
             self._n_layers = None
