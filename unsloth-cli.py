@@ -26,8 +26,8 @@ def _is_mlx_backend(unsloth_module):
     return bool(getattr(unsloth_module, "_IS_MLX", False))
 
 
-def _normalize_dtype(dtype, is_mlx):
-    if is_mlx and isinstance(dtype, str) and dtype.strip().lower() in {"", "none", "auto"}:
+def _normalize_dtype(dtype):
+    if isinstance(dtype, str) and dtype.strip().lower() in {"", "none", "auto"}:
         return None
     return dtype
 
@@ -226,7 +226,7 @@ def run(args):
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model_name,
         max_seq_length = args.max_seq_length,
-        dtype = _normalize_dtype(args.dtype, is_mlx),
+        dtype = _normalize_dtype(args.dtype),
         load_in_4bit = args.load_in_4bit,
         device_map = device_map,
     )
