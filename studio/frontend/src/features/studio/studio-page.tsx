@@ -83,13 +83,16 @@ export function StudioPage(): ReactElement {
     })),
   );
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
-  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const trainUnavailable = usePlatformStore((s) => s.isTrainUnavailable());
+  const trainsOnCpu = usePlatformStore(
+    (s) => s.isCpuTrainingHost() && !s.capabilitiesUnknown(),
+  );
   const navigate = useNavigate();
-  // The guard let this load on a guess; leave once the host is confirmed chat-only.
+  // The guard let this load on a guess; leave once the host is confirmed unable to train.
   useEffect(() => {
-    if (capabilitiesUnknown || !chatOnly) return;
+    if (capabilitiesUnknown || !trainUnavailable) return;
     void navigate({ to: "/chat", replace: true });
-  }, [capabilitiesUnknown, chatOnly, navigate]);
+  }, [capabilitiesUnknown, trainUnavailable, navigate]);
   const hfToken = useHfTokenStore((s) => s.token);
   const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
   const ensureModelDefaultsLoaded = useTrainingConfigStore(
@@ -245,6 +248,11 @@ export function StudioPage(): ReactElement {
             ) : (
               <>
                 <TabsContent value="configure" className="mt-0">
+                  {trainsOnCpu && (
+                    <p className="mb-6 rounded-2xl border border-border/60 px-4 py-3 text-sm text-muted-foreground">
+                      {t("studio.cpuTrainingNotice")}
+                    </p>
+                  )}
                   <div className="@container/train-configure">
                     {/* 64rem only fit windows 1376px and wider; 56rem still clears @md/train-section */}
                     <div className="grid grid-cols-1 gap-8 @4xl/train-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/train-configure:gap-10">

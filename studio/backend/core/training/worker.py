@@ -4108,6 +4108,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
+    if _hw.trains_on_cpu(_hw.CHAT_ONLY_REASON):
+        # Studio's verdict wins over the inherited UNSLOTH_DISABLE_CPU_FALLBACK=1 and zoo's own CPU refusals.
+        os.environ["UNSLOTH_FORCE_CPU"] = "1"
     if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
         diffusion_error = _mlx_diffusion_lm_error(config, model_load_target)
         if diffusion_error:
