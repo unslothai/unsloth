@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const zhTW = {
+  turns: {
+    label: "第 {number} 輪",
+    bookmarkedLabel: "第 {number} 輪，已加書籤",
+    bookmark: "為此輪加書籤",
+    removeBookmark: "移除書籤",
+    navigator: "輪次",
+  },
   chatBackground: {
     noBackground: "無背景",
     sizing: "圖片縮放方式",
@@ -3018,6 +3025,8 @@ export const zhTW = {
       inlineEditResponse: "在回應上顯示「編輯回應」",
       inlineEditResponseDescription:
         "在每則回應上保留「編輯回應」，而不是放在「更多」選單中。",
+      turnNavigation: "輪次導覽",
+      turnNavigationDescription: "在長對話的左側邊緣以導軌形式顯示你的訊息。懸停可預覽某一輪，點擊可跳轉，並可加書籤以便再次找到。",
       composerAtBottom: "輸入框置於底部",
       composerAtBottomDescription:
         "開始新聊天時，將輸入框放在頁面底部而非中間。",

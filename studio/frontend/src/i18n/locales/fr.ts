@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const fr = {
+  turns: {
+    label: "Tour {number}",
+    bookmarkedLabel: "Tour {number}, en favori",
+    bookmark: "Ajouter le tour aux favoris",
+    removeBookmark: "Retirer des favoris",
+    navigator: "Tours",
+  },
   chatBackground: {
     noBackground: "Aucun arrière-plan",
     sizing: "Dimensionnement de l’image",
@@ -2963,6 +2970,8 @@ export const fr = {
         "détails vitesse jetons statistiques couches déchargement verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifier la réponse sur les réponses",
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
+      turnNavigation: "Navigation par tours",
+      turnNavigationDescription: "Affiche vos messages sous forme de barre sur le bord gauche des longues discussions. Survolez un tour pour l’aperçu, cliquez pour y aller et ajoutez-le aux favoris pour le retrouver.",
       composerAtBottom: "Zone de saisie en bas",
       composerAtBottomDescription: "Commencer les nouvelles discussions avec la zone de saisie en bas de la page plutôt qu'au centre.",
       projectAttachments: "Partager les fichiers dans tout le projet",

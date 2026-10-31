@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const fa = {
+  turns: {
+    label: "نوبت {number}",
+    bookmarkedLabel: "نوبت {number}، نشانک‌شده",
+    bookmark: "نشانک‌گذاری نوبت",
+    removeBookmark: "حذف نشانک",
+    navigator: "نوبت‌ها",
+  },
   chatBackground: {
     noBackground: "بدون پس‌زمینه",
     sizing: "اندازه‌بندی تصویر",
@@ -3160,6 +3167,8 @@ export const fa = {
       inlineEditResponse: "«ویرایش پاسخ» روی پاسخ‌ها",
       inlineEditResponseDescription:
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",
+      turnNavigation: "پیمایش نوبت‌ها",
+      turnNavigationDescription: "پیام‌هایتان را به‌صورت نواری در لبهٔ چپ گفتگوهای طولانی نشان می‌دهد. برای پیش‌نمایش یک نوبت نشانگر را روی آن ببرید، برای رفتن به آن کلیک کنید و برای یافتن دوباره نشانکش بگذارید.",
       composerAtBottom: "کادر نوشتن در پایین",
       composerAtBottomDescription:
         "گفتگوهای جدید با کادر نوشتن در پایین صفحه آغاز شوند، نه در وسط.",

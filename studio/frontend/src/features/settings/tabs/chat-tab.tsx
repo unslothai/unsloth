@@ -318,6 +318,12 @@ export function ChatTab() {
     (state) => state.setKeepRunningWhenTabClosed,
   );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const showTurnNavigation = useChatPreferencesStore(
+    (s) => s.showTurnNavigation,
+  );
+  const setShowTurnNavigation = useChatPreferencesStore(
+    (s) => s.setShowTurnNavigation,
+  );
   const composerAtBottom = useChatPreferencesStore(
     (s) => s.newChatComposerAtBottom,
   );
@@ -800,6 +806,16 @@ export function ChatTab() {
             aria-label={t("settings.chat.inlineEditResponse")}
             checked={showInlineEditResponse}
             onCheckedChange={setShowInlineEditResponse}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.turnNavigation")}
+          description={t("settings.chat.turnNavigationDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.turnNavigation")}
+            checked={showTurnNavigation}
+            onCheckedChange={setShowTurnNavigation}
           />
         </SettingsRow>
         <SettingsRow

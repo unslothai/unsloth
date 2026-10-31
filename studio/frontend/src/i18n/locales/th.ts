@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const th = {
+  turns: {
+    label: "รอบที่ {number}",
+    bookmarkedLabel: "รอบที่ {number} (บุ๊กมาร์กแล้ว)",
+    bookmark: "บุ๊กมาร์กรอบนี้",
+    removeBookmark: "เอาบุ๊กมาร์กออก",
+    navigator: "รอบ",
+  },
   chatBackground: {
     noBackground: "ไม่มีพื้นหลัง",
     sizing: "การปรับขนาดภาพ",
@@ -3037,6 +3044,8 @@ export const th = {
       inlineEditResponse: "แก้ไขคำตอบบนคำตอบ",
       inlineEditResponseDescription:
         "แสดง “แก้ไขคำตอบ” บนทุกคำตอบ แทนที่จะอยู่ในเมนูเพิ่มเติม",
+      turnNavigation: "การนำทางตามรอบ",
+      turnNavigationDescription: "แสดงข้อความของคุณเป็นแถบที่ขอบซ้ายของแชทยาว วางเมาส์เพื่อดูตัวอย่าง คลิกเพื่อไปยังรอบนั้น และบุ๊กมาร์กเพื่อหากลับมาได้",
       composerAtBottom: "ช่องเขียนข้อความอยู่ด้านล่าง",
       composerAtBottomDescription:
         "เริ่มแชทใหม่โดยให้ช่องเขียนข้อความอยู่ด้านล่างของหน้าแทนตรงกลาง",

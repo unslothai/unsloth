@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const vi = {
+  turns: {
+    label: "Lượt {number}",
+    bookmarkedLabel: "Lượt {number}, đã đánh dấu",
+    bookmark: "Đánh dấu lượt",
+    removeBookmark: "Bỏ đánh dấu",
+    navigator: "Các lượt",
+  },
   chatBackground: {
     noBackground: "Không có nền",
     sizing: "Kích thước ảnh",
@@ -3175,6 +3182,8 @@ export const vi = {
       inlineEditResponse: "Nút Sửa câu trả lời trên câu trả lời",
       inlineEditResponseDescription:
         "Giữ nút Sửa câu trả lời trên mọi câu trả lời, thay vì trong menu Thêm.",
+      turnNavigation: "Điều hướng lượt",
+      turnNavigationDescription: "Hiển thị tin nhắn của bạn thành một thanh ở mép trái các cuộc trò chuyện dài. Di chuột để xem trước, nhấp để chuyển đến lượt đó và đánh dấu để tìm lại.",
       composerAtBottom: "Khung soạn thảo ở dưới cùng",
       composerAtBottomDescription:
         "Bắt đầu cuộc trò chuyện mới với khung soạn thảo ở cuối trang thay vì ở giữa.",

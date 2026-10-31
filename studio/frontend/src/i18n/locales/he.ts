@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const he = {
+  turns: {
+    label: "סבב {number}",
+    bookmarkedLabel: "סבב {number}, מסומן",
+    bookmark: "סימון הסבב",
+    removeBookmark: "הסרת הסימון",
+    navigator: "סבבים",
+  },
   chatBackground: {
     noBackground: "ללא רקע",
     sizing: "התאמת גודל תמונה",
@@ -3005,6 +3012,8 @@ export const he = {
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
+      turnNavigation: "ניווט בין סבבים",
+      turnNavigationDescription: "הצגת ההודעות שלך כפס בקצה השמאלי של צ׳אטים ארוכים. רחפו לתצוגה מקדימה של סבב, לחצו כדי לקפוץ אליו וסמנו סבבים כדי למצוא אותם שוב.",
       composerAtBottom: "תיבת הכתיבה למטה",
       composerAtBottomDescription: "התחלת צ'אטים חדשים עם תיבת הכתיבה בתחתית הדף במקום באמצע.",
       projectAttachments: "שתף קבצים בכל הפרויקט",

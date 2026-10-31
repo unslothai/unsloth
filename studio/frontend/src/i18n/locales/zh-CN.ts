@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const zhCN = {
+  turns: {
+    label: "第 {number} 轮",
+    bookmarkedLabel: "第 {number} 轮，已加书签",
+    bookmark: "为此轮加书签",
+    removeBookmark: "移除书签",
+    navigator: "轮次",
+  },
   chatBackground: {
     noBackground: "无背景",
     sizing: "图片缩放方式",
@@ -2881,6 +2888,8 @@ export const zhCN = {
         "详情 速度 统计 层 卸载 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
+      turnNavigation: "轮次导航",
+      turnNavigationDescription: "在长对话的左边缘以导轨形式显示你的消息。悬停可预览某一轮，点击可跳转，并可加书签以便再次找到。",
       composerAtBottom: "输入框置底",
       composerAtBottomDescription: "新聊天时将输入框放在页面底部，而不是中间。",
       projectAttachments: "在项目内共享文件",
