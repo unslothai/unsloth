@@ -456,12 +456,9 @@ def test_torch_fallback_without_the_zoo_kernel(monkeypatch):
     assert torch.equal(dequantize_mxfp4_packed(packed, scale, torch.bfloat16), with_zoo)
 
 
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
-def test_torch_fallback_runs_ldexp_on_the_operands_gpu(dtype, monkeypatch):
-    # float32 always takes this path (the zoo decoder serves only fp16 / bf16).
+def _fake_current_cuda_device(monkeypatch):
+    """Replace torch.cuda.device with a guard that only records the current device."""
     import contextlib
-    from torch._subclasses.fake_tensor import FakeTensorMode
-    import unsloth.models.mxfp4_compressed_linear as mcl
 
     current = ["cuda:0"]
 
@@ -473,6 +470,44 @@ def test_torch_fallback_runs_ldexp_on_the_operands_gpu(dtype, monkeypatch):
         finally:
             current[0] = previous
 
+    monkeypatch.setattr(torch.cuda, "device", fake_cuda_device)
+    return current
+
+
+def test_the_torch_decode_runs_inside_its_operands_device_guard(monkeypatch):
+    # Any torch build, CPU-only included: the fake-tensor test below needs a CUDA-linked one.
+    import types
+    import unsloth.models.mxfp4_compressed_linear as mcl
+
+    current = _fake_current_cuda_device(monkeypatch)
+    seen = []
+
+    def spy_impl(blocks, scales, dtype):
+        seen.append(current[0])
+        return "decoded"
+
+    monkeypatch.setattr(mcl, "_dequantize_torch_impl", spy_impl)
+    on_gpu1 = types.SimpleNamespace(device = torch.device("cuda:1"))
+    assert mcl._dequantize_torch(on_gpu1, None, torch.float32) == "decoded"
+    assert seen == ["cuda:1"] and current == ["cuda:0"]
+    # A CPU operand, or a CUDA one with no index, keeps the current device.
+    for device in ("cpu", "cuda"):
+        seen.clear()
+        mcl._dequantize_torch(types.SimpleNamespace(device = torch.device(device)), None, None)
+        assert seen == ["cuda:0"], device
+
+
+@pytest.mark.skipif(
+    not torch.backends.cuda.is_built(),
+    reason = "FakeTensorMode places a tensor on cuda only in a CUDA-linked torch build",
+)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_torch_fallback_runs_ldexp_on_the_operands_gpu(dtype, monkeypatch):
+    # float32 always takes this path (the zoo decoder serves only fp16 / bf16).
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    import unsloth.models.mxfp4_compressed_linear as mcl
+
+    current = _fake_current_cuda_device(monkeypatch)
     seen = []
     real_ldexp = torch.ldexp
 
@@ -480,7 +515,6 @@ def test_torch_fallback_runs_ldexp_on_the_operands_gpu(dtype, monkeypatch):
         seen.append((str(x.device), current[0]))
         return real_ldexp(x, other, *args, **kwargs)
 
-    monkeypatch.setattr(torch.cuda, "device", fake_cuda_device)
     monkeypatch.setattr(torch, "ldexp", spy_ldexp)
     monkeypatch.setattr(mcl, "_LUT_CACHE", {})
     monkeypatch.setattr(mcl, "_zoo_mxfp4_dequantize", None)

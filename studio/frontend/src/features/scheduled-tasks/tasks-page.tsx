@@ -118,12 +118,25 @@ function repeatsText(
   t: (key: TranslationKey, values?: InterpolationValues) => string,
 ): string {
   const summary = summarizeRepeats(schedule, locale);
+  if (summary.key === "everyHours") {
+    return t("scheduledTasks.schedule.everyHours", { hours: summary.hours });
+  }
   if (summary.key === "weekly") return summary.days;
   if (summary.key === "monthly") return t("scheduledTasks.monthlyDay", { day: summary.day });
   return t(`scheduledTasks.form.${summary.key}`);
 }
 
-function clockText(schedule: TaskSchedule, locale: string): string {
+function clockText(task: ScheduledTask, locale: string): string {
+  const { schedule } = task;
+  if (schedule.kind === "hourly") {
+    return task.nextRunAt === null
+      ? "—"
+      : new Intl.DateTimeFormat(locale, {
+          hour: "numeric",
+          minute: "2-digit",
+          timeZone: task.timezone,
+        }).format(task.nextRunAt);
+  }
   return formatClock(schedule.kind === "once" ? schedule.at.split("T")[1] : schedule.time, locale);
 }
 
@@ -183,7 +196,7 @@ function TaskRow({
     formatRelativeTime(locale, ...relativeTimeParts(Math.min(at, now - 1_000), now));
   const finishedAt = run?.finishedAt ?? null;
   const repeats = repeatsText(task.schedule, locale, t);
-  const clock = clockText(task.schedule, locale);
+  const clock = clockText(task, locale);
   const nextDay = task.nextRunAt === null ? "—" : formatRunDay(task.nextRunAt, now, locale, task.timezone);
 
   return (

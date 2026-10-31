@@ -251,6 +251,16 @@ def test_disabled_or_merged_adapter_without_grad_stays_fused(
         torch.testing.assert_close(a, b, **tol)
 
 
+# Two bf16 ulps of the output's largest value: the two GEMMs and the MLP's second projection compound.
+_BF16_TOL = 2.0**-6
+
+
+def _dequantize_then_linear(self, x):
+    import bitsandbytes as bnb
+    W = bnb.functional.dequantize_4bit(self.weight.data, self.weight.quant_state)
+    return torch.nn.functional.linear(x, W.to(x.dtype))
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "bitsandbytes 4-bit needs CUDA")
 @pytest.mark.parametrize("path", _paths("cuda"))
 def test_disabled_adapter_without_grad_on_4bit_base_stays_fused(monkeypatch, path):
@@ -296,11 +306,21 @@ def test_disabled_adapter_without_grad_on_4bit_base_stays_fused(monkeypatch, pat
     with torch.no_grad():
         fused = PATHS[path][0](block)(X)
         ref = PATHS[path][1](block)(X)
+        # The fused kernels dequantize and run one matmul in X's dtype. bitsandbytes >= 0.50 answers
+        # few-row inference calls with its fused 4-bit GEMM instead, which rounds differently.
+        with monkeypatch.context() as m:
+            m.setattr(bnb.nn.Linear4bit, "forward", _dequantize_then_linear)
+            base_only = PATHS[path][1](block)(X)
     assert [name for name, _ in spy.calls] == FUSED_NAMES[path]
-    for a, b in zip(
-        fused if isinstance(fused, tuple) else (fused,), ref if isinstance(ref, tuple) else (ref,)
-    ):
-        torch.testing.assert_close(a, b, rtol = 0, atol = 0)
+    outs = [t if isinstance(t, tuple) else (t,) for t in (fused, base_only, ref)]
+    # On ROCm the MLP's SwiGLU and GEMMs need not round like torch's SiLU * up and F.linear (1 ulp seen on gfx1151).
+    exact = path != "mlp" or torch.version.hip is None
+    for a, b, c in zip(*outs):
+        torch.testing.assert_close(
+            a, b, rtol = 0, atol = 0 if exact else _BF16_TOL * b.abs().max().item()
+        )
+        # PEFT's own forward agrees to bf16 rounding (the LoRA term here is over 90x larger).
+        torch.testing.assert_close(a, c, rtol = 0, atol = _BF16_TOL * c.abs().max().item())
 
 
 def test_patch_summary_names_a_lora_variant():
