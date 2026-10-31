@@ -259,3 +259,24 @@ def test_marker_lives_outside_the_manifest_dirs(home):
     manifests = state_dir.manifests_dir()
     assert _marker().parent != manifests
     assert manifests not in _marker().parents
+
+
+def test_deeply_nested_marker_still_migrates(home):
+    # json.loads raises RecursionError (not ValueError) on this; it must not abort the migration.
+    _populate(home)
+    _settle(state_dir.manifests_dir())
+    _marker().parent.mkdir(parents = True, exist_ok = True)
+    _marker().write_text("[" * 60_000, encoding = "utf-8")
+    assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() >= 3
+
+
+def test_marker_check_error_falls_back_to_the_full_scan(home, monkeypatch):
+    _populate(home)
+    _settle(state_dir.manifests_dir())
+
+    def boom(*a, **k):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(download_manifest, "_migration_already_clean", boom)
+    assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() >= 3
+    assert not _marker().exists()

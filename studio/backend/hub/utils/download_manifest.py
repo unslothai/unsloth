@@ -690,7 +690,8 @@ def _migration_already_clean(parent: Path) -> bool:
         if not isinstance(recorded, dict) or not isinstance(recorded.get("dirs"), dict):
             return False
         scopes = [name for name in recorded["dirs"] if name != "."]
-    except (OSError, ValueError):
+    # RecursionError: a corrupt marker of deeply nested brackets must not abort the migration itself.
+    except (OSError, ValueError, RecursionError):
         return False
     current = _migration_fingerprint(parent, scopes)
     return current is not None and current == recorded
@@ -717,10 +718,15 @@ def migrate_ordinary_v2_manifests_for_downgrade() -> int:
     parent = manifests_dir()
     if parent is None:
         return 0
-    if _migration_already_clean(parent):
-        return 0
-    started_ns = time.time_ns()
-    before = _migration_fingerprint(parent)
+    # The skip is an optimisation only: anything unexpected while checking it falls back to the full scan.
+    try:
+        if _migration_already_clean(parent):
+            return 0
+        started_ns = time.time_ns()
+        before = _migration_fingerprint(parent)
+    except Exception as exc:
+        logger.debug("Could not check the Hub manifest migration marker: %s", exc)
+        started_ns, before = time.time_ns(), None
 
     migrated = 0
     clean = True
