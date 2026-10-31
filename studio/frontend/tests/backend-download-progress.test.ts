@@ -10,6 +10,14 @@ import * as jsxRuntime from "react/jsx-runtime";
 import { parseBackendDownloadProgress } from "../src/components/tauri/backend-download-progress.ts";
 import type * as UpdateScreenModule from "../src/components/tauri/update-screen.tsx";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { en } from "../src/i18n/locales/en.ts";
+
+function translate(key: string, values: Record<string, string | number> = {}) {
+  const message = key
+    .split(".")
+    .reduce<unknown>((value, part) => (value as Record<string, unknown>)[part], en) as string;
+  return message.replace(/\{([^}]+)\}/g, (_match, name: string) => String(values[name] ?? ""));
+}
 
 const { UpdateScreen } = loadWithStubs<typeof UpdateScreenModule>(
   new URL("../src/components/tauri/update-screen.tsx", import.meta.url),
@@ -28,6 +36,7 @@ const { UpdateScreen } = loadWithStubs<typeof UpdateScreenModule>(
     },
     "@/components/ui/button": { Button: () => null },
     "@/components/ui/spinner": { Spinner: () => null },
+    "@/i18n": { useT: () => translate },
   },
 );
 
