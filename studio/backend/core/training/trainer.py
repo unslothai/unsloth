@@ -2350,7 +2350,7 @@ class UnslothTrainer:
                 return col
         from hub.utils.dataset_format import (
             _first_row,
-            _holds_images,
+            _is_image_list_item,
             _is_image_value,
             detect_multimodal_dataset,
         )
@@ -2362,6 +2362,10 @@ class UnslothTrainer:
             inner = feature[0] if isinstance(feature, list) and feature else feature
             return isinstance(getattr(inner, "feature", inner), Image)
 
+        # Not _holds_images: it also matches a messages column with image parts.
+        def image_list(value):
+            return isinstance(value, list) and bool(value) and all(map(_is_image_list_item, value))
+
         # The detector also takes a column by its name (file_name), which may hold audio paths;
         # the schema settles it even when row 0 has no image.
         sample = _first_row(dataset) or {}
@@ -2369,7 +2373,7 @@ class UnslothTrainer:
             c
             for c in detect_multimodal_dataset(dataset)["multimodal_columns"]
             if c != audio_col
-            and (image_typed(c) or _is_image_value(sample.get(c)) or _holds_images(sample.get(c)))
+            and (image_typed(c) or _is_image_value(sample.get(c)) or image_list(sample.get(c)))
         ]
         candidates += [c for c in cols if c != audio_col and c not in candidates and image_typed(c)]
         return candidates[0] if candidates else None

@@ -312,3 +312,19 @@ def test_a_non_decoding_image_feature_is_decoded(audio_vlm_trainer, many):
     cells = cell if many else [cell]
     assert len(cells) == (2 if many else 1)
     assert all(isinstance(x, PIL_Image.Image) for x in cells)
+
+
+def test_a_messages_column_with_image_parts_is_not_taken_for_images(audio_vlm_trainer):
+    image = PIL_Image.new("RGB", (8, 8), "red")
+    turn = [{"role": "user", "content": [{"type": "image", "image": image}]}]
+    ds = _NoAudioCast(
+        datasets.Dataset.from_dict(
+            {
+                "audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * 2,
+                "text": ["one", "two"],
+                "messages": [turn, turn],
+            }
+        )
+    )
+
+    assert audio_vlm_trainer._resolve_audio_vlm_image_column(ds, None, "audio") is None
