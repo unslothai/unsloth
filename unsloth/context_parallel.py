@@ -168,6 +168,22 @@ _ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
 _BUFFER_NAMES = ("input_ids", "attention_mask", "labels", "position_ids", "shift_labels")
 _PAD_VALUES = {"labels": -100, "shift_labels": -100, "attention_mask": 0, "input_ids": 0}
+# Only the text buffers above are sharded; image / video / audio features would stay whole on every rank.
+_MULTIMODAL_INPUTS = (
+    "pixel_values",
+    "pixel_values_videos",
+    "image_grid_thw",
+    "video_grid_thw",
+    "input_features",
+)
+
+
+def _multimodal_inputs(inputs: dict) -> list:
+    return sorted(
+        name
+        for name, value in inputs.items()
+        if value is not None and (name in _MULTIMODAL_INPUTS or name.startswith("pixel_values"))
+    )
 
 
 _INSTALLED_MESH = []
@@ -194,9 +210,7 @@ def _positions_restart(position_ids, attention_mask) -> bool:
 
 def _hybrid_config_blocker(model) -> Optional[str]:
     config = getattr(model, "config", None)
-    if getattr(config, "vision_config", None) is not None:
-        # Only text buffers are sharded; image / video features would stay whole on every rank.
-        return "multimodal models"
+    # vision_config is allowed (Qwen3.5 ships one); image / video batches are refused in _prepare_inputs.
     text_config = getattr(config, "text_config", None) or config
     if getattr(text_config, "output_router_logits", False):
         # The load balancing loss is a product of per-sequence means, not a sum over shards.
@@ -306,6 +320,13 @@ class ContextParallelManager:
         if not isinstance(input_ids, torch.Tensor) or inputs.get("inputs_embeds") is not None:
             raise ValueError(
                 "Unsloth: context parallelism needs input_ids batches (not inputs_embeds)."
+            )
+        multimodal = _multimodal_inputs(inputs)
+        if multimodal:
+            raise ValueError(
+                "Unsloth: context parallelism shards text tokens only; batches with image / video "
+                f"inputs ({', '.join(multimodal)}) are not supported. Train on text-only data, or "
+                "use context_parallel_size = 1."
             )
         bsz, seq_len = input_ids.shape
         packed_seq_lengths = inputs.get("packed_seq_lengths")
@@ -616,12 +637,77 @@ def _install_accelerator_state(self):
         _install_fsdp2_parallelism_config(accelerator.state, manager)
     else:
         _restore_parallelism_config(accelerator.state)
+    _cp_scaler_start(self, accelerator)
     # PEFT makes the Trainer ask DDP for find_unused_parameters, which breaks reentrant checkpointing.
     if getattr(self.args, "ddp_find_unused_parameters", None) in (None, False):
         self.args.ddp_find_unused_parameters = False
         handler = getattr(accelerator, "ddp_handler", None)
         if handler is not None:
             handler.find_unused_parameters = False
+
+
+def _cp_scaler_start(trainer, accelerator) -> None:
+    """float16: start the GradScaler at 2**16 / world, as native FSDP2 and tensor parallel do.
+    CP rank grads are world x one GPU's (loss is multiplied by world). Only touches a scaler still at the default."""
+    scaler = getattr(accelerator, "scaler", None)
+    if scaler is None or getattr(scaler, "_unsloth_cp_init_scale", False):
+        return
+    try:
+        if not scaler.is_enabled() or getattr(scaler, "_scale", None) is not None:
+            return
+        if float(getattr(scaler, "_init_scale", 0.0)) != 2.0**16:
+            return
+        handler = getattr(accelerator, "scaler_handler", None)
+        user = handler.to_kwargs() if handler is not None and hasattr(handler, "to_kwargs") else {}
+        if "init_scale" in user:
+            return
+        from .models.fsdp2_native import _loss_scale_ranks
+
+        world = _loss_scale_ranks(trainer)
+    except Exception:
+        return
+    if world > 1:
+        scaler._init_scale = 2.0**16 / world
+    scaler._unsloth_cp_init_scale = True
+
+
+def _model_parallel_axes(model) -> list:
+    """Tensor / pipeline parallel axes in use: UNSLOTH_TP_SIZE or a model split by hand."""
+    import os
+
+    axes = []
+    raw = str(os.environ.get("UNSLOTH_TP_SIZE", "")).strip()
+    try:
+        tp = int(raw) if raw else 1  # as tp_env._int_env, which raises its own error on a bad value
+    except ValueError:
+        tp = 1
+    if tp > 1:
+        axes.append(f"tensor parallel (UNSLOTH_TP_SIZE={raw})")
+    if isinstance(model, torch.nn.Module):
+        try:
+            from .models.pp_native import is_pipeline_parallel
+            from .models.tp_native import is_tensor_parallel
+        except Exception:
+            return axes
+        if is_pipeline_parallel(model):
+            axes.append("pipeline parallel (apply_pipeline_parallel)")
+        if is_tensor_parallel(model) and not axes:
+            axes.append("tensor parallel (apply_tensor_parallel)")
+    return axes
+
+
+def _refuse_model_parallel_cp(size: int, args, kwargs) -> None:
+    """The CP mesh (world // cp, cp) would reuse a tp launch's groups and silently train on mixed-up shards."""
+    model = kwargs["model"] if "model" in kwargs else (args[0] if args else None)
+    axes = _model_parallel_axes(model)
+    if not axes:
+        return
+    raise NotImplementedError(
+        f"Unsloth: context parallelism (context_parallel_size = {size}) does not compose with "
+        f"{' and '.join(axes)} yet: its context parallel groups would be the other axis' groups, and training "
+        "would run with wrong gradients. Use context parallelism alone (with DDP or UNSLOTH_FSDP2=1), or "
+        "tensor / pipeline parallelism with context_parallel_size = 1."
+    )
 
 
 def _check_cp_runtime(self, size: int, backend: str) -> None:
@@ -690,6 +776,33 @@ def _check_cp_model(
         )
 
 
+# Encoders and projectors a text-only batch never runs; context parallelism only takes text batches.
+_MEDIA_TOWER_NAMES = frozenset(
+    (
+        "visual",
+        "vision_tower",
+        "vision_model",
+        "vision_encoder",
+        "multi_modal_projector",
+        "mm_projector",
+        "embed_vision",
+        "audio_tower",
+        "audio_model",
+        "embed_audio",
+    )
+)
+
+
+def _trainable_media_tower_parameters(model) -> list:
+    if not isinstance(model, torch.nn.Module):
+        return []
+    return [
+        name
+        for name, param in model.named_parameters()
+        if param.requires_grad and not _MEDIA_TOWER_NAMES.isdisjoint(name.split("."))
+    ]
+
+
 def _check_cp_trainer(
     self,
     size: int,
@@ -721,6 +834,20 @@ def _check_cp_trainer(
         )
     if fsdp2:
         _check_fsdp2_parallelism_config(accelerator)
+    elif (
+        distributed_type.startswith("MULTI_")
+        and (getattr(accelerator, "num_processes", 2) or 2) > 1
+    ):
+        # Unused trainable towers break DDP (find_unused_parameters = False for reentrant checkpointing).
+        for model in models:
+            unused = _trainable_media_tower_parameters(model)
+            if unused:
+                raise NotImplementedError(
+                    "Unsloth: context parallelism trains on text-only batches, so the trainable "
+                    f"vision / audio tower ({len(unused)} parameters, e.g. {unused[0]}) never gets a "
+                    "gradient and DDP fails at the second step. Freeze it (for LoRA, "
+                    "finetune_vision_layers = False) or train with FSDP2."
+                )
     if getattr(accelerator, "dispatch_batches", None):
         raise NotImplementedError("Unsloth: context parallelism does not support dispatch_batches.")
     _refuse_iterable_datasets(
@@ -774,6 +901,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             valid = isinstance(forwarded, int) and not isinstance(forwarded, bool)
             requested = forwarded if valid else 1
         if requested > 1:
+            _refuse_model_parallel_cp(requested, args, kwargs)
             # Before the original __init__: Unsloth wraps instance methods there (auto packing's
             # train reset, the token budget's training_step), and they must capture the CP ones.
             install_methods()
@@ -1391,6 +1519,7 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
         except ValueError:
             requested = 1  # Raised again after the original __init__.
         if requested > 1:
+            _refuse_model_parallel_cp(requested, args, kwargs)
             # Before the original __init__, so instance wrappers made there capture the CP methods.
             install_methods()
         original_init(self, *args, **kwargs)

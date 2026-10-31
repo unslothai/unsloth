@@ -9,12 +9,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   AiEditingIcon,
   FileEmpty02Icon,
   FilterMailIcon,
   FlimSlateIcon,
-  Folder01Icon,
   GridViewIcon,
   ImageIcon,
   LeftToRightListBulletIcon,
@@ -25,12 +25,14 @@ import {
   Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderClosedIcon } from "@/lib/folder-icons";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { AiSpeechIcon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowDownUpIcon } from "lucide-react";
+import { SortIcon } from "@/lib/sort-icon";
+import type { ReactNode } from "react";
 import type { LibrarySource } from "../api";
 import type { LibraryAudioWorkflow } from "../audio-items";
 import type { LibraryTypeFilter } from "../file-kind";
@@ -41,6 +43,15 @@ import { Tick02Icon } from "@/lib/tick-icon";
 const ICON = "size-icon";
 export const ROUND_BUTTON =
   "flex size-9 shrink-0 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring data-[active=true]:bg-white data-[active=true]:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:data-[active=true]:bg-card dark:data-[active=true]:shadow-none data-open:bg-muted";
+
+export function ToolbarTip({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{children}</TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 interface MenuOption<T extends string> {
   value: T;
@@ -64,9 +75,9 @@ const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
 ];
 
 export const VIEW_OPTIONS = [
-  { value: "grid", label: "library.toolbar.gridView", icon: GridViewIcon },
-  { value: "list", label: "library.toolbar.listView", icon: LeftToRightListBulletIcon },
-] satisfies MenuOption<LibraryView>[];
+  { value: "grid", label: "library.toolbar.gridView", tip: "library.toolbar.grid", icon: GridViewIcon },
+  { value: "list", label: "library.toolbar.listView", tip: "library.toolbar.list", icon: LeftToRightListBulletIcon },
+] satisfies (MenuOption<LibraryView> & { tip: TranslationKey })[];
 
 export type LibrarySortChoice = "default" | LibrarySortKey;
 
@@ -131,16 +142,18 @@ function FilterMenu({
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={t("library.toolbar.filter")}
-          data-active={filtersActive(filters)}
-          className={ROUND_BUTTON}
-        >
-          <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
-        </button>
-      </DropdownMenuTrigger>
+      <ToolbarTip label={t("library.toolbar.filter")}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={t("library.toolbar.filter")}
+            data-active={filtersActive(filters)}
+            className={ROUND_BUTTON}
+          >
+            <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
+          </button>
+        </DropdownMenuTrigger>
+      </ToolbarTip>
       <DropdownMenuContent align="end" sideOffset={4} className="library-menu w-max min-w-36">
         {showTypes && (
           <>
@@ -237,15 +250,17 @@ function SortMenu({
   const current = options.find((option) => option.value === value);
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-14 text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-open:bg-muted data-open:text-foreground dark:text-foreground/70"
-        >
-          <ArrowDownUpIcon strokeWidth={1.75} className="size-[calc(16px*var(--ui-space-scale,1))]" />
-          {value === "default" || !current ? t("library.toolbar.sort") : t(current.label)}
-        </button>
-      </DropdownMenuTrigger>
+      <ToolbarTip label={t("library.toolbar.sort")}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-14 text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-open:bg-muted data-open:text-foreground dark:text-foreground/70"
+          >
+            <HugeiconsIcon icon={SortIcon} strokeWidth={1.75} className="size-[calc(16px*var(--ui-space-scale,1))]" />
+            {value === "default" || !current ? t("library.toolbar.sort") : t(current.label)}
+          </button>
+        </DropdownMenuTrigger>
+      </ToolbarTip>
       <DropdownMenuContent align="start" sideOffset={4} className="library-menu w-max min-w-36">
         {options.map(({ value: option, label }) => (
           <SortRadio
@@ -290,7 +305,7 @@ const NEW_OPTIONS: MenuOption<NewAction>[] = [
   { value: "video", label: "library.create.video", icon: FlimSlateIcon },
   { value: "audio", label: "library.create.audio", icon: AiSpeechIcon },
   { value: "model", label: "library.create.model", icon: TestTubeOutlineIcon },
-  { value: "folder", label: "library.create.folder", icon: Folder01Icon },
+  { value: "folder", label: "library.create.folder", icon: FolderClosedIcon },
 ];
 
 function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
@@ -362,18 +377,19 @@ export function LibraryToolbar({
           />
         )}
         {sort && <SortMenu {...sort} />}
-        {VIEW_OPTIONS.map(({ value, label, icon }) => (
-          <button
-            key={value}
-            type="button"
-            aria-label={t(label)}
-            data-active={view === value}
-            aria-pressed={view === value}
-            onClick={() => onViewChange(value)}
-            className={ROUND_BUTTON}
-          >
-            <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
-          </button>
+        {VIEW_OPTIONS.map(({ value, label, tip, icon }) => (
+          <ToolbarTip key={value} label={t(tip)}>
+            <button
+              type="button"
+              aria-label={t(label)}
+              data-active={view === value}
+              aria-pressed={view === value}
+              onClick={() => onViewChange(value)}
+              className={ROUND_BUTTON}
+            >
+              <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
+            </button>
+          </ToolbarTip>
         ))}
         <label className="relative ml-2 flex h-9 w-[clamp(10rem,calc(100cqw-30rem),min(15rem,24vw))] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
           <HugeiconsIcon
@@ -390,14 +406,16 @@ export function LibraryToolbar({
           />
         </label>
         <NewMenu onSelect={onNew} />
-        <button
-          type="button"
-          aria-label={t("library.toolbar.settings")}
-          onClick={onSettings}
-          className={cn(ROUND_BUTTON, "text-muted-foreground hover:text-foreground dark:text-foreground")}
-        >
-          <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-5" />
-        </button>
+        <ToolbarTip label={t("library.toolbar.settings")}>
+          <button
+            type="button"
+            aria-label={t("library.toolbar.settings")}
+            onClick={onSettings}
+            className={cn(ROUND_BUTTON, "text-muted-foreground hover:text-foreground dark:text-foreground")}
+          >
+            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-5" />
+          </button>
+        </ToolbarTip>
       </div>
   );
 }

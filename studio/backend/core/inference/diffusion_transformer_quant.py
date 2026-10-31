@@ -109,6 +109,181 @@ def runtime_quant_tokens_for_scheme(scheme: str, family: Optional[str] = None) -
     return _INT8_FAMILY_RUNTIME_QUANT_TOKENS.get(str(family or "").strip().lower(), ())
 
 
+_INT8_FAMILY_STREAMED_WO_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
+    "int8_streamed_weight_only_tokens", quant = True
+)
+# Kill switches (=0): UNSLOTH_DIFFUSION_INT8_MODULATION keeps modulations bf16, UNSLOTH_DIFFUSION_INT8_GEMV uses
+# torchao's forward, UNSLOTH_DIFFUSION_INT8_MOD_OUTLIERS keeps no dense outlier columns.
+INT8_MODULATION_ENV = "UNSLOTH_DIFFUSION_INT8_MODULATION"
+
+
+INT8_MOD_OUTLIERS_ENV = "UNSLOTH_DIFFUSION_INT8_MOD_OUTLIERS"
+DEFAULT_MOD_OUTLIERS = 8
+
+
+def int8_modulation_mode() -> str:
+    """``wo`` (default) int8 weight-only; ``w8a8`` dynamic int8 activations, row-padded; ``w8a8rot`` the same behind a
+    ConvRot rotation (both diagnostic); ``off``."""
+    raw = (_os.environ.get(INT8_MODULATION_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no", "none"):
+        return "off"
+    return raw if raw in ("w8a8", "w8a8rot") else "wo"
+
+
+def int8_mod_outliers() -> int:
+    """Timestep-embedding outlier channels the weight-only modulations keep dense (0 = none)."""
+    raw = (_os.environ.get(INT8_MOD_OUTLIERS_ENV) or "").strip()
+    try:
+        return max(0, min(16, int(raw))) if raw else DEFAULT_MOD_OUTLIERS
+    except ValueError:
+        return DEFAULT_MOD_OUTLIERS
+
+
+def streamed_weight_only_tokens_for_scheme(
+    scheme: str, family: Optional[str] = None
+) -> tuple[str, ...]:
+    """Name tokens a streamed int8 build stores weight-only; () outside ``int8_text_stream_scope(True)``."""
+    if scheme != TQ_INT8 or not _TEXT_STREAM_SCOPE.get() or int8_modulation_mode() == "off":
+        return ()
+    return _INT8_FAMILY_STREAMED_WO_TOKENS.get(str(family or "").strip().lower(), ())
+
+
+def _weight_only_config() -> Any:
+    """torchao int8 weight-only (Int8Tensor, per-row weight scale, no activation quant) or None on an old torchao."""
+    from torchao.quantization import Int8WeightOnlyConfig
+
+    if "version" not in _inspect.signature(Int8WeightOnlyConfig).parameters:
+        return None
+    from torchao.quantization import Int8Tensor  # noqa: F401 - 0.14 has the config but no Int8Tensor
+
+    return _quiet_config(Int8WeightOnlyConfig, version = 2)
+
+
+def streamed_weight_only_layout(scheme: str, family: Optional[str] = None) -> dict:
+    """What a streamed build stores for the weight-only modulations (the prequant-cache key carries it): {} outside the
+    scope, else the name tokens, the mode and the dense outlier-channel count."""
+    tokens = streamed_weight_only_tokens_for_scheme(scheme, family)
+    if not tokens:
+        return {}
+    mode = int8_modulation_mode()
+    return {
+        "weight_only_name_tokens": sorted(tokens),
+        "weight_only_mode": mode,
+        "weight_only_outliers": int8_mod_outliers() if mode == "wo" else 0,
+    }
+
+
+def _modulation_fqns(
+    transformer: Any, tokens: tuple, min_features: int, *, quantized: bool
+) -> list:
+    import torch
+
+    from .diffusion_int8_gemv import weight_only_parts
+    from .diffusion_quant_pad import is_quantized_linear
+
+    out = []
+    for name, module in transformer.named_modules():
+        lname = name.lower()
+        if (
+            not isinstance(module, torch.nn.Linear)
+            or "lora_" in lname
+            or not any(t in lname for t in tokens)
+        ):
+            continue
+        if module.in_features < min_features or module.out_features < min_features:
+            continue
+        if quantized:
+            if weight_only_parts(module.weight) is not None:
+                out.append(name)
+        elif getattr(module.weight, "dtype", None) == torch.bfloat16 and not is_quantized_linear(
+            module
+        ):
+            out.append(name)
+    return out
+
+
+def quantize_streamed_weight_only(
+    transformer: Any,
+    scheme: str,
+    family: Optional[str],
+    *,
+    min_features: int = DEFAULT_MIN_LINEAR_FEATURES,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Quantise the still-dense Linears named by ``streamed_weight_only_tokens_for_scheme``; returns their fqns.
+    Weight-only (default): the timestep-embedding outlier channels stay dense beside the int8 codes and the fused GEMV
+    runs them (``diffusion_int8_gemv``). An artifact loaded with them already weight-only only gets the GEMV forward.
+    Best effort: any failure leaves them dense (the build is still valid, only bigger)."""
+    layout = streamed_weight_only_layout(scheme, family)
+    if not layout:
+        return ()
+    tokens = tuple(layout["weight_only_name_tokens"])
+    mode = layout["weight_only_mode"]
+    used = 0
+    try:
+        from torchao.quantization import quantize_
+
+        from .diffusion_int8_gemv import install, split_outliers_, timestep_outlier_channels
+        from .diffusion_quant_pad import wrap_small_m_linears
+
+        names = _modulation_fqns(transformer, tokens, min_features, quantized = False)
+        if not names:
+            if mode == "wo":
+                install(
+                    transformer,
+                    _modulation_fqns(transformer, tokens, min_features, quantized = True),
+                    logger = logger,
+                )
+            return ()
+        config = _weight_only_config() if mode == "wo" else _make_quant_config(scheme)
+        if config is None:
+            return ()
+        wanted = frozenset(names)
+        outliers = (
+            timestep_outlier_channels(transformer, layout["weight_only_outliers"])
+            if mode == "wo"
+            else ()
+        )
+        if outliers:
+            modules = dict(transformer.named_modules())
+            used = min(split_outliers_(modules[name], outliers) for name in names)
+        if mode == "w8a8rot":
+            from .diffusion_convrot import DEFAULT_CONVROT_GROUPSIZE, rotate_linears_
+            rotate_linears_(
+                transformer,
+                [
+                    n
+                    for n in names
+                    if transformer.get_submodule(n).in_features % DEFAULT_CONVROT_GROUPSIZE == 0
+                ],
+            )
+        quantize_(transformer, config, filter_fn = lambda _m, fqn = "": fqn in wanted)
+        if mode == "wo":
+            install(transformer, names, logger = logger)
+        else:
+            wrap_small_m_linears(transformer, names)
+    except Exception as exc:  # noqa: BLE001 - optimisation only: the rest of the build stands
+        _warn(logger, f"{scheme}:streamed weight-only", exc)
+        return ()
+    try:
+        transformer._unsloth_weight_only_layout = {**layout, "weight_only_outliers": used}
+    except Exception:  # noqa: BLE001 - marker is best-effort
+        pass
+    if logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: %s %d streamed modulation Linear(s) (%s; %d dense outlier channels)",
+            {
+                "wo": "int8 weight-only",
+                "w8a8": "int8 W8A8 padded",
+                "w8a8rot": "int8 W8A8 ConvRot padded",
+            }[mode],
+            len(names),
+            ", ".join(tokens),
+            used,
+        )
+    return tuple(names)
+
+
 # ALL-scheme PER-FAMILY exclusions (``FamilyProfile.quant_exclude_tokens``): unlike the int8 table above, these also
 # apply to fp8 / mxfp8 / nvfp4, whose scaled_mm paths otherwise quantise every eligible Linear.
 _FAMILY_QUANT_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
@@ -1618,12 +1793,12 @@ def _quiet_config(cls: Any, **kwargs: Any) -> Any:
     return cls(**kwargs)
 
 
-def _install_fp8_unit_scale() -> None:
+def _install_fp8_unit_scale(fast_accum: Optional[bool] = None) -> None:
     try:
         import logging
 
         from .diffusion_fp8_unit_scale import install
-        install(logger = logging.getLogger(__name__))
+        install(logger = logging.getLogger(__name__), fast_accum = fast_accum)
     except Exception:  # noqa: BLE001 - never block a load on a speed path
         pass
 
@@ -1643,7 +1818,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # activation_value_lb floors the scale: an all-zero row otherwise gives NaN.
         from torchao.quantization import PerRow
 
-        _install_fp8_unit_scale()
+        _install_fp8_unit_scale(fast_accum = _resolve_fast_accum(fast_accum))
         fp8_kwargs: dict = {"granularity": PerRow()}
         config_params = _inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:
@@ -1813,6 +1988,9 @@ def quantize_transformer(
             _make_quant_config(scheme, fast_accum = fast_accum),
             filter_fn = filter_fn,
         )
+        weight_only = quantize_streamed_weight_only(
+            transformer, scheme, family, min_features = min_features, logger = logger
+        )
         # Not best-effort: a raise means quantized but not compilable, so the caller loads GGUF.
         apply_small_m_padding(transformer, scheme, family, logger = logger)
         apply_zero_row_guard(transformer, scheme, family, logger = logger)
@@ -1831,6 +2009,10 @@ def quantize_transformer(
                 "convrot_fqns": list(rotated or ()),
                 "dtype": str(getattr(target, "dtype", None) or _first_weight_dtype(transformer)),
             }
+            if weight_only:
+                transformer._unsloth_runtime_quant_info.update(
+                    getattr(transformer, "_unsloth_weight_only_layout", None) or {}
+                )
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         return scheme

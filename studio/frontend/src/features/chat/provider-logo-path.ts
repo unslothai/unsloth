@@ -13,6 +13,7 @@ const HUB_PROVIDER_IDS = new Map([
   ["qwen", "qwen"],
   ["qwencloud", "qwen"],
   ["zai", "zai-org"],
+  ["minimax", "minimax"],
 ]);
 
 const HUB_LOGO_PATHS = new Map(
@@ -29,6 +30,8 @@ const CONNECTION_LOGO_PATHS = new Map([
   ["liquid", "/provider-logos/liquid.svg"],
   ["typesafe", "/provider-logos/typesafe.svg"],
   ["replicate", "/provider-logos/replicate.svg"],
+  ["opencode", "/provider-logos/opencode.svg"],
+  ["opencode_go", "/provider-logos/opencode.svg"],
 ]);
 
 export function providerLogoPath(
