@@ -98,6 +98,11 @@ def _load(
     pinned = True,
     torch_label = "2.9.1+xpu",
     verify_ok = True,
+    xpu_ok = True,
+    healthy = True,
+    healthy_after_failed_uninstall = True,
+    uninstall_rc = 1,
+    offline = False,
 ):
     """Import the module with the world stubbed, and return (module, action log)."""
     log: list[str] = []
@@ -106,6 +111,8 @@ def _load(
     codes: list[str] = []
     # The cleared resolver inputs as each step saw them: (step, {name: value}).
     env_seen: list = []
+    # Every state probe: (argv, cwd).
+    probes: list = []
 
     mod = types.ModuleType("_stack_under_test")
     src = STACK.read_text(encoding = "utf-8")
@@ -159,8 +166,21 @@ def _load(
             see_env("download", kw.get("env"))
         if "uninstall" in cmd:
             see_env("uninstall")
+        if "XPUOK=" in joined:
+            # The state probe, run before the swap, after a failed uninstall and after the install.
+            probes.append((list(cmd), kw.get("cwd")))
+            if "INSTALL" in log:
+                # The post-install check: a fresh interpreter, never the first probe's canned answer.
+                verified.append(spec)
+                g, x, h = ("", verify_ok, verify_ok)
+            elif "UNINSTALL" in log:
+                g, x, h = (generic, xpu_ok, healthy_after_failed_uninstall)
+            else:
+                g, x, h = (generic, xpu_ok, healthy)
+            out = f"SPEC={spec}\nGENERIC={g}\nXPUOK={int(x)}\nHEALTHY={int(h)}\n".encode()
+            return subprocess.CompletedProcess(cmd, 0, stdout = out)
         if "triton.language" in joined:
-            # The post-install check: a fresh interpreter, never the probe's canned answer.
+            # c1967cb9c's separate post-install check.
             verified.append(cmd[-1])
             return subprocess.CompletedProcess(cmd, 0 if verify_ok else 1)
         if "-m pip --version" in joined or ("pip" in cmd and "--version" in cmd):
@@ -182,7 +202,7 @@ def _load(
             return subprocess.CompletedProcess(cmd, 0 if download_ok else 1, stdout = b"")
         if "uninstall" in cmd:
             log.append("UNINSTALL")
-            return subprocess.CompletedProcess(cmd, 0 if uninstall_ok else 1)
+            return subprocess.CompletedProcess(cmd, 0 if uninstall_ok else uninstall_rc)
         return subprocess.CompletedProcess(cmd, 0, stdout = b"")
 
     def fake_pip_install_try(label, *args, **kw):
@@ -232,6 +252,7 @@ def _load(
         "pip_install": fake_pip_install,
         "_count_install_action": lambda: counted.append(1),
         "_red": lambda s: s,
+        "_uv_is_offline": lambda: offline,
         "_strip_index_url_credentials": lambda url: url,
         # The slice calls _handover_torch_flavor_tag by name; same semantics as the real one.
         "_handover_torch_flavor_tag": (
@@ -250,6 +271,7 @@ def _load(
     mod.__dict__["_test_verified"] = verified
     mod.__dict__["_test_codes"] = codes
     mod.__dict__["_test_env_seen"] = env_seen
+    mod.__dict__["_test_probes"] = probes
     return mod, log
 
 
@@ -339,7 +361,7 @@ class TestFailedSwapIsNotSurvivable:
             generic = "3.7.1",
             uninstall_ok = False,
         )
-        assert log == ["DOWNLOAD", "UNINSTALL"]
+        assert log[:2] == ["DOWNLOAD", "UNINSTALL"]
         assert "INSTALL" not in log
 
     def test_a_failed_install_propagates(self, monkeypatch, tmp_path):
@@ -388,6 +410,104 @@ class TestTheInstallIsVerified:
         assert mod.__dict__["_test_verified"] == []
 
 
+class TestTheXpuTritonItselfIsRepaired:
+    """No generic triton to trigger on, but torch's XPU triton is missing its files or the wrong version."""
+
+    def test_a_backup_with_the_files_gone_is_reinstalled(self, monkeypatch, tmp_path):
+        mod, log = _load(
+            monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "", healthy = False
+        )
+        mod.__dict__["_ensure_xpu_triton"]()
+        assert log == ["DOWNLOAD", "INSTALL"]
+        assert mod.__dict__["_test_verified"] == ["pytorch-triton-xpu==3.5.0"]
+
+    def test_a_version_torch_does_not_accept_is_reinstalled(self, monkeypatch, tmp_path):
+        log = _run(
+            monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "", xpu_ok = False
+        )
+        assert log == ["DOWNLOAD", "INSTALL"]
+
+    def test_a_repair_that_does_not_verify_fails(self, monkeypatch, tmp_path):
+        with pytest.raises(SystemExit):
+            _run(
+                monkeypatch,
+                tmp_path,
+                spec = "pytorch-triton-xpu==3.5.0",
+                generic = "",
+                healthy = False,
+                verify_ok = False,
+            )
+
+    def test_a_dead_mirror_fails_when_triton_is_already_broken(self, monkeypatch, tmp_path):
+        # Nothing can certify it, and returning would let the completion manifest land over it.
+        with pytest.raises(SystemExit):
+            _run(
+                monkeypatch,
+                tmp_path,
+                spec = "pytorch-triton-xpu==3.5.0",
+                generic = "",
+                healthy = False,
+                download_ok = False,
+            )
+
+    def test_a_dead_mirror_leaves_a_working_triton_alone(self, monkeypatch, tmp_path):
+        log = _run(
+            monkeypatch,
+            tmp_path,
+            spec = "pytorch-triton-xpu==3.5.0",
+            generic = "",
+            xpu_ok = False,
+            download_ok = False,
+        )
+        assert "UNINSTALL" not in log and "INSTALL" not in log
+
+
+class TestAFailedUninstallIsChecked:
+    def test_one_that_broke_triton_fails_with_its_exit_code(self, monkeypatch, tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            _run(
+                monkeypatch,
+                tmp_path,
+                spec = "pytorch-triton-xpu==3.5.0",
+                generic = "3.7.1",
+                uninstall_ok = False,
+                uninstall_rc = 5,
+                healthy_after_failed_uninstall = False,
+            )
+        assert exc.value.code == 5
+
+    def test_one_that_left_triton_working_returns(self, monkeypatch, tmp_path):
+        log = _run(
+            monkeypatch,
+            tmp_path,
+            spec = "pytorch-triton-xpu==3.5.0",
+            generic = "3.7.1",
+            uninstall_ok = False,
+            uninstall_rc = 5,
+        )
+        assert "INSTALL" not in log
+
+
+class TestOffline:
+    """As the ROCm repair: pip has no offline mode, so the fetch waits for an online run."""
+
+    @pytest.mark.parametrize(
+        "generic, healthy, xpu_ok",
+        [("3.7.1", True, True), ("", False, True), ("", True, False)],
+    )
+    def test_nothing_is_fetched_or_removed(self, monkeypatch, tmp_path, generic, healthy, xpu_ok):
+        log = _run(
+            monkeypatch,
+            tmp_path,
+            spec = "pytorch-triton-xpu==3.5.0",
+            generic = generic,
+            healthy = healthy,
+            xpu_ok = xpu_ok,
+            offline = True,
+        )
+        assert log == []
+
+
 class TestTheSwapIgnoresInheritedResolverInputs:
     def test_every_step_runs_with_them_cleared_and_they_come_back(self, monkeypatch, tmp_path):
         for name in _CLEARED:
@@ -424,18 +544,19 @@ class TestTheSwapIgnoresInheritedResolverInputs:
 
 
 class TestTheProbesRunForReal:
-    """The probe and the post-install check, run by a real interpreter against hand-made dist-infos."""
+    """The state probe, run by a real interpreter against hand-made dist-infos."""
 
     @staticmethod
     def _site(
         tmp_path,
         *dists,
         payload = True,
+        name = "site",
     ):
-        site = tmp_path / "site"
+        site = tmp_path / name
         site.mkdir()
-        for folder, name, version, requires in dists:
-            meta = f"Metadata-Version: 2.1\nName: {name}\n"
+        for folder, dist, version, requires in dists:
+            meta = f"Metadata-Version: 2.1\nName: {dist}\n"
             if version:
                 meta += f"Version: {version}\n"
             if requires:
@@ -451,49 +572,58 @@ class TestTheProbesRunForReal:
         return site
 
     @staticmethod
-    def _codes(monkeypatch, tmp_path):
-        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+    def _code(monkeypatch, tmp_path):
+        own = tmp_path / "code"
+        own.mkdir(exist_ok = True)
+        mod, _ = _load(monkeypatch, own, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         codes = mod.__dict__["_test_codes"]
-        probe = next(c for c in codes if "GENERIC=" in c)
-        check = next((c for c in codes if "triton.language" in c), None)
-        return probe, check
+        return next(c for c in codes if "XPUOK=" in c)
 
     @staticmethod
-    def _python(site, code, *argv):
-        env = dict(os.environ, PYTHONPATH = str(site))
-        return subprocess.run(
-            [sys.executable, "-S", "-c", code, *argv],
+    def _python(code, *path, root):
+        env = dict(os.environ, PYTHONPATH = os.pathsep.join(str(p) for p in path))
+        out = subprocess.run(
+            [sys.executable, "-S", "-c", code, str(root)],
             env = env,
             capture_output = True,
             text = True,
             timeout = 60,
         )
+        assert out.returncode == 0, out.stderr
+        return dict(ln.split("=", 1) for ln in out.stdout.splitlines() if "=" in ln)
 
     TORCH = ("torch-2.9.0+xpu.dist-info", "torch", "2.9.0+xpu", "pytorch-triton-xpu==3.5.0")
     XPU = ("pytorch_triton_xpu-3.5.0.dist-info", "pytorch-triton-xpu", "3.5.0", "")
+    XPU_OLD = ("pytorch_triton_xpu-3.4.0.dist-info", "pytorch-triton-xpu", "3.4.0", "")
+    XPU_NOVER = ("pytorch_triton_xpu-0.dist-info", "pytorch-triton-xpu", "", "")
     BACKUP = ("~riton-3.7.1.dist-info", "triton", "3.7.1", "")
     GENERIC = ("triton-3.7.1.dist-info", "triton", "3.7.1", "")
 
     def test_a_backup_alone_is_not_a_generic_triton(self, monkeypatch, tmp_path):
-        probe, _ = self._codes(monkeypatch, tmp_path)
         site = self._site(tmp_path, self.TORCH, self.XPU, self.BACKUP)
-        out = self._python(site, probe)
-        assert out.returncode == 0, out.stderr
-        assert "SPEC=pytorch-triton-xpu==3.5.0" in out.stdout
-        assert "GENERIC=\n" in out.stdout
+        out = self._python(self._code(monkeypatch, tmp_path), site, root = site)
+        assert out["SPEC"] == "pytorch-triton-xpu==3.5.0"
+        assert out["GENERIC"] == ""
 
     def test_an_active_generic_triton_is_found(self, monkeypatch, tmp_path):
-        probe, _ = self._codes(monkeypatch, tmp_path)
         site = self._site(tmp_path, self.TORCH, self.XPU, self.GENERIC)
-        out = self._python(site, probe)
-        assert "GENERIC=3.7.1" in out.stdout, out.stderr
+        out = self._python(self._code(monkeypatch, tmp_path), site, root = site)
+        assert out["GENERIC"] == "3.7.1"
 
     def test_a_record_without_version_still_counts(self, monkeypatch, tmp_path):
-        probe, _ = self._codes(monkeypatch, tmp_path)
         site = self._site(tmp_path, self.TORCH, ("triton-0.dist-info", "triton", "", ""))
-        out = self._python(site, probe)
-        assert "GENERIC=?" in out.stdout, out.stderr
+        out = self._python(self._code(monkeypatch, tmp_path), site, root = site)
+        assert out["GENERIC"] == "?"
+
+    def test_a_generic_triton_outside_this_environment_is_not_this_swaps(
+        self, monkeypatch, tmp_path
+    ):
+        # A shared or system site seen through .pth or system-site-packages: the local XPU payload wins imports.
+        site = self._site(tmp_path, self.TORCH, self.XPU)
+        shared = self._site(tmp_path, self.GENERIC, payload = False, name = "shared")
+        out = self._python(self._code(monkeypatch, tmp_path), site, shared, root = site)
+        assert out["GENERIC"] == "" and out["XPUOK"] == "1" and out["HEALTHY"] == "1"
 
     @pytest.mark.parametrize(
         "dists, payload, ok",
@@ -503,14 +633,49 @@ class TestTheProbesRunForReal:
             ((XPU, GENERIC), True, False),  # generic triton still registered
             ((), True, False),  # the XPU dist was never installed
             ((XPU,), False, False),  # recorded, but no files
+            ((XPU_OLD,), True, False),  # a version torch's requirement does not accept
+            ((XPU_NOVER,), True, False),  # a record without Version proves no version
         ],
     )
     def test_the_post_install_check(self, monkeypatch, tmp_path, dists, payload, ok):
-        _, check = self._codes(monkeypatch, tmp_path)
-        assert check is not None, "no post-install check ran"
-        site = self._site(tmp_path, *dists, payload = payload)
-        out = self._python(site, check, "pytorch-triton-xpu==3.5.0")
-        assert (out.returncode == 0) is ok, out.stderr
+        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        site = self._site(tmp_path, self.TORCH, *dists, payload = payload)
+        out = self._python(self._code(monkeypatch, tmp_path), site, root = site)
+        state = {
+            "spec": out["SPEC"],
+            "generic": out["GENERIC"],
+            "xpu_ok": out["XPUOK"] == "1",
+            "healthy": out["HEALTHY"] == "1",
+        }
+        assert mod.__dict__["_xpu_triton_installed"](state) is ok
+
+    def test_the_probe_is_isolated_from_the_callers_directory_and_pythonpath(
+        self, monkeypatch, tmp_path
+    ):
+        # A triton.py in the working directory or on PYTHONPATH must not certify a venv whose triton is gone.
+        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod.__dict__["_ensure_xpu_triton"]()
+        argv, cwd = mod.__dict__["_test_probes"][0]
+        assert argv[:2] == [sys.executable, "-I"] and cwd == sys.prefix
+        # An interpreter with no triton of its own, so only the planted one could answer.
+        bare = tmp_path / "bare"
+        subprocess.run(
+            [sys.executable, "-m", "venv", "--without-pip", str(bare)], check = True, timeout = 120
+        )
+        argv[0] = str(
+            next(
+                p for p in (bare / "bin" / "python", bare / "Scripts" / "python.exe") if p.exists()
+            )
+        )
+        planted = tmp_path / "planted"
+        (planted / "triton" / "language").mkdir(parents = True)
+        (planted / "triton" / "__init__.py").write_text("def jit(f):\n    return f\n")
+        (planted / "triton" / "language" / "__init__.py").write_text(
+            "def program_id(a):\n    return 0\n"
+        )
+        env = dict(os.environ, PYTHONPATH = str(planted))
+        out = subprocess.run(argv, cwd = planted, env = env, capture_output = True, text = True, timeout = 60)
+        assert "HEALTHY=0" in out.stdout, out.stdout + out.stderr
 
 
 class TestTheInstalledWheelIsThePin:
