@@ -3578,14 +3578,23 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       config.gpuMemoryMode ?? currentStore.gpuMemoryMode;
     const effectiveGpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
     const effectiveNCpuMoe = config.nCpuMoe ?? 0;
-    if (config.selectedGpuIds != null) {
-      // Warm the device cache first: on a cold cache the reconcile passes a stale cross-host pick through unvalidated.
+    // Warm first: a cold cache passes a stale pick through and loses a GGUF's Automatic default.
+    if (candidate.kind === "gguf" || config.selectedGpuIds != null) {
       await ensureGpuDeviceCache();
     }
     let isDiffusion = false;
+    // An unclassifiable GGUF may still be DiffusionGemma, which /load rejects gpu_ids for: no default pick.
+    let diffusionUnknown = false;
+    // Automatic pins a default pick on a mixed iGPU host, and /load rejects gpu_ids for DiffusionGemma on
+    // some hosts, so classify the GGUF first in that case too.
+    const automaticPinsDefault =
+      config.selectedGpuIds == null &&
+      reconcilePersistedGpuIds(null, undefined, false, true) != null;
     if (
       candidate.kind === "gguf" &&
-      (config.selectedGpuIds != null || config.tensorParallel === true)
+      (config.selectedGpuIds != null ||
+        config.tensorParallel === true ||
+        automaticPinsDefault)
     ) {
       // The Hub 401s an invalid Authorization header even for public repos.
       const preparedToken = await prepareHfTokenForUse(hfToken);
@@ -3597,17 +3606,17 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         recordCandidateFailure(failureLabel, cancelled);
         throw cancelled;
       }
-      isDiffusion = (
-        await fetchGgufStagedMetadata({
-          model_path: modelPath,
-          gguf_variant: candidate.ggufVariant,
-          hf_token: preparedToken.token,
-        }).catch((error: unknown) => {
-          // Same authFetch as validate and load, so a dead backend throws here first.
-          recordCandidateFailure(failureLabel, error);
-          throw error;
-        })
-      ).isDiffusion;
+      const staged = await fetchGgufStagedMetadata({
+        model_path: modelPath,
+        gguf_variant: candidate.ggufVariant,
+        hf_token: preparedToken.token,
+      }).catch((error: unknown) => {
+        // Same authFetch as validate and load, so a dead backend throws here first.
+        recordCandidateFailure(failureLabel, error);
+        throw error;
+      });
+      isDiffusion = staged.isDiffusion;
+      diffusionUnknown = staged.diffusionUnknown;
     }
     // The override may live only on the server, and nothing is resident at startup to inherit;
     // sanitized into an explicit list /load validates strictly.
@@ -3650,14 +3659,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const effectiveTensorParallel = isDiffusion ? false : config.tensorParallel;
     // The diffusion runner has no projector to skip, so the toggle is inert there.
     const effectiveDisableVision = isDiffusion ? false : config.disableVision;
-    const effectiveGpuIds =
-      config.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(
-            config.selectedGpuIds,
-            config.selectedGpuIndexKind,
-            isDiffusion,
-          )
-        : null;
+    // No saved pick reconciles as Automatic, so it still gets the default pick.
+    const effectiveGpuIds = reconcilePersistedGpuIds(
+      config.selectedGpuIds ?? null,
+      config.selectedGpuIndexKind,
+      isDiffusion,
+      candidate.kind === "gguf" && !diffusionUnknown,
+    );
     // Reconciled against the raw pick: a ratio only applies to the GPU set it was saved with.
     const effectiveTensorSplit = reconcileTensorSplit(
       config.tensorSplit,
@@ -4111,12 +4119,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // Fetch the default as a managed download job and hand it to /api/inference/load only once the bytes are here.
     try {
       const rt = useChatRuntimeStore.getState();
-      if (rt.selectedGpuIds != null) {
-        await ensureGpuDeviceCache();
-      }
+      await ensureGpuDeviceCache();
       const defaultGpuIds = reconcilePersistedGpuIds(
         rt.selectedGpuIds,
         rt.selectedGpuIndexKind,
+        false,
+        true,
       );
       const request: LoadModelRequest = {
         model_path: DEFAULT_CHAT_MODEL_REPO,
