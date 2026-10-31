@@ -5881,7 +5881,15 @@ def apply_memory_plan(
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
-    if policy == OFFLOAD_MODEL:
+    if policy == OFFLOAD_MODEL and _stream_unet_instead_of_model_offload(pipe, placement, logger):
+        policy = OFFLOAD_GROUP
+        try:
+            pipe._unsloth_applied_plan = replace(
+                plan, offload_policy = OFFLOAD_GROUP, stream_text_encoders = True
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    elif policy == OFFLOAD_MODEL:
         pipe.enable_model_cpu_offload(device = placement)
         keep_cpu_weights_on_offload(pipe, logger)
     elif policy == OFFLOAD_GROUP:
@@ -5990,6 +5998,60 @@ def apply_memory_plan(
         with fast_upload(modules, placement, logger = logger):
             pipe.to(placement)
     return policy, tiling_engaged
+
+
+UNET_STREAM_ENV = "UNSLOTH_DIFFUSION_UNET_STREAM"
+# activations + workspace of one SDXL-class UNet call at 1024^2 (CFG batch 2, fp16 SDPA), beside the streamed weights
+_UNET_STREAM_RESERVE_MIB = 1536
+
+
+def _stream_unet_instead_of_model_offload(pipe: Any, placement: str, logger: Any = None) -> bool:
+    """Whole-module offload moves the whole UNet onto the card for every call: a UNet larger than the free VRAM
+    (SDXL's 4.8 GiB fp16 UNet on a 4-6 GiB card) then OOMs on the first step. Stream it leaf by leaf instead (text
+    encoders streamed too, the VAE resident), keeping as many leaves resident as the free VRAM holds. Only when the
+    whole-module path cannot fit; ``UNSLOTH_DIFFUSION_UNET_STREAM=0`` keeps whole-module offload."""
+    if _env_off(UNET_STREAM_ENV):
+        return False
+    try:
+        import torch
+
+        unet = getattr(pipe, "unet", None)
+        if not isinstance(unet, torch.nn.Module) or getattr(pipe, "transformer", None) is not None:
+            return False
+        onload = torch.device(placement)
+        if onload.type != "cuda" or not torch.cuda.is_available():
+            return False
+        free_mib = int(torch.cuda.mem_get_info(onload)[0]) >> 20
+        def _mib(m: Any) -> int:
+            if not isinstance(m, torch.nn.Module):
+                return 0
+            ts = {id(t): t for t in list(m.parameters()) + list(m.buffers())}
+            return sum(t.numel() * t.element_size() for t in ts.values()) >> 20
+
+        unet_mib = _mib(unet)
+        if unet_mib + _UNET_STREAM_RESERVE_MIB <= free_mib:
+            return False
+        vae_mib = _mib(getattr(pipe, "vae", None))
+        room = max(0, free_mib - vae_mib - _UNET_STREAM_RESERVE_MIB - 512)
+    except Exception:  # noqa: BLE001 - keep the stock whole-module path
+        return False
+    _set_group_offload_failure(pipe, None)
+    applied = _apply_group_offload(
+        pipe,
+        placement,
+        logger,
+        stream_text_encoders = True,
+        resident_transformer_mib = room or None,
+        denoiser = "unet",
+    )
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: UNet (%d MiB) does not fit %d MiB free for whole-module offload; %s",
+            unet_mib,
+            free_mib,
+            f"streaming it leaf by leaf, {room} MiB kept resident" if applied else "streaming failed, whole-module offload",
+        )
+    return applied
 
 
 _GROUP_OFFLOAD_FAILURE_ATTR = "_unsloth_group_offload_failure"
@@ -7439,9 +7501,11 @@ def _apply_group_offload(
     background_pin: Optional[bool] = None,
     resident_transformer_mib: Optional[int] = None,
     resident_text_encoder_mib: Optional[int] = None,
+    denoiser: str = "transformer",
 ) -> bool:
-    """Streams transformer blocks in groups; encoders stay resident unless stream_text_encoders is set; returns False on any failure, caller falls back."""
-    transformer = getattr(pipe, "transformer", None)
+    """Streams transformer blocks in groups; encoders stay resident unless stream_text_encoders is set; returns False on any failure, caller falls back.
+    ``denoiser="unet"`` streams a UNet leaf by leaf instead (its down / up blocks are too coarse to be groups)."""
+    transformer = getattr(pipe, denoiser, None)
     if transformer is None:
         return False
     if not stream_transformer and not stream_text_encoders:
@@ -7472,7 +7536,9 @@ def _apply_group_offload(
 
         # Dual-DiT pipelines (Ideogram 4): second DiT is as large as the first, so stream all DiTs.
         streamed: dict[str, Any] = {}
-        if stream_transformer:
+        if stream_transformer and denoiser != "transformer":
+            streamed[denoiser] = transformer
+        elif stream_transformer:
             streamed["transformer"] = transformer
             for extra in ("transformer_2", "unconditional_transformer"):
                 module = getattr(pipe, extra, None)
@@ -7496,6 +7562,9 @@ def _apply_group_offload(
             "num_blocks_per_group": DEFAULT_GROUP_BLOCKS,
             "use_stream": use_stream,
         }
+        if denoiser != "transformer":
+            gkwargs["offload_type"] = "leaf_level"
+            gkwargs.pop("num_blocks_per_group")
         # Gated on the signature so older diffusers still works.
         _params = inspect.signature(apply_group_offloading).parameters
         if use_stream:
