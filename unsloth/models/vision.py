@@ -310,6 +310,7 @@ from .loader_utils import (
     planner_class_mismatch_reason,
     planner_model_class,
     exclude_no_placement_params,
+    backfill_fp8_modules_to_convert,
     planner_quantization_kwargs,
     raise_if_bnb_cpu_spill,
     requested_device_map,
@@ -3853,6 +3854,16 @@ class FastBaseModel:
                 local_files_only = local_files_only,
                 revision = _revision,
             )
+        backfill_fp8_modules_to_convert(
+            auto_config,
+            model_name,
+            token,
+            _revision,
+            local_files_only = local_files_only,
+            subfolder = kwargs.get("subfolder"),
+            cache_dir = kwargs.get("cache_dir"),
+            variant = kwargs.get("variant"),
+        )
         # Remote classes shadowing a native name can differ in attention flags.
         _builds_remote_class, _remote_class = resolve_remote_code_model_class(
             auto_model,
