@@ -6005,7 +6005,8 @@ class MLXInferenceBackend:
         if speculates:
             spec_reason = mlx_speculative.speculation_refusal(
                 distributed = is_distributed,
-                lora = is_lora,
+                # A text architecture's adapter loads only through mlx-lm, and speculation runs on mlx-vlm.
+                lora = is_lora and not (is_vision or zoo_multimodal),
             )
             speculates = spec_reason is None
             if (

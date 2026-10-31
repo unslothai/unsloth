@@ -5387,8 +5387,19 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
         )
     ]
     assert reasons == [mlx_speculative.RUNTIME_ERROR, "refused"]
-    # A diffusion model gets no draft at load, so the resident batch cannot speculate on it either.
     failing.clear()
+    # An adapter drafts on mlx-vlm's route, which a text architecture's adapter cannot take.
+    asked = []
+    monkeypatch.setattr(
+        mlx_speculative, "speculation_refusal", lambda **k: asked.append(k["lora"]) or "refused"
+    )
+    monkeypatch.setattr(mlx_inference, "load_mlx_adapter_processor", lambda p, *_a: p)
+    monkeypatch.setattr(mlx_inference, "load_mlx_adapter_tokenizer", lambda t, *_a: t)
+    for is_vision in (False, True):
+        adapter = SimpleNamespace(**{**vars(config), "is_lora": True, "is_vision": is_vision})
+        backend.load_model(adapter, spec_draft_model = "org/d")
+    assert asked == [True, False]
+    # A diffusion model gets no draft at load, so the resident batch cannot speculate on it either.
     monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
     monkeypatch.setattr(mlx_inference, "_vlm_generation_is_diffusion", lambda model: True)
     backend.load_model(config, max_seq_length = 0, speculative_type = "ngram")
