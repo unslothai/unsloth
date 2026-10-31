@@ -25,6 +25,8 @@ const ACCENTS: Record<string, string> = {
   preparing: "#93c5fd",
   recording: "#f87171",
   transcribing: "#fcd34d",
+  fixing: "#a78bfa",
+  refining: "#67e8f9",
 };
 
 function formatElapsed(milliseconds: number): string {
@@ -109,7 +111,11 @@ export function VoiceTypingHud() {
       const timer = window.setInterval(tick, 250);
       return () => window.clearInterval(timer);
     }
-    if (state === "transcribing") {
+    if (
+      state === "transcribing" ||
+      state === "fixing" ||
+      state === "refining"
+    ) {
       if (startedAt.current !== null) {
         frozenMs.current = performance.now() - startedAt.current;
         setElapsedMs(frozenMs.current);

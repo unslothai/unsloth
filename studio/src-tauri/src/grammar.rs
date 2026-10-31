@@ -282,6 +282,103 @@ static NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
     ))
     .expect("number regex")
 });
+static HYPHENATED_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b([a-z]+)-([a-z]+)\b").expect("hyphenated number regex")
+});
+static DIGIT_HYPHEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"(?i)\b(\d{{2}})-(one|two|three|four|five|six|seven|eight|nine|\d)\b"
+    ))
+    .expect("digit hyphen regex")
+});
+static DECIMAL_WORDS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"(?i)\b((?:{NUMBER_WORDS})(?:\s+{NUMBER_WORDS}){{0,4}})\s+point\s+((?:{NUMBER_WORDS})(?:\s+{NUMBER_WORDS}){{0,4}})\b"
+    ))
+    .expect("decimal words regex")
+});
+static DECIMAL_DIGITS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(\d+)\s+point\s+(\d+)\b").expect("decimal digits regex")
+});
+static NUMERIC_CURRENCY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"(?i)\b(\d[\d,]*(?:\.\d+)?)\s+({CURRENCY_WORDS})\b"
+    ))
+    .expect("numeric currency regex")
+});
+static CURRENCY_HYPHEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(\d{2})-\$(\d{1,3}(?:,\d{3})+)\b")
+        .expect("currency hyphen regex")
+});
+static NUMERIC_PERCENT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(\d+(?:\.\d+)?)\s+(?:percent|per\s+cent)\b")
+        .expect("numeric percent regex")
+});
+static ORDINAL_CONTEXT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"(?i)\b({ORDINAL_WORDS})\s+(position|place|rank|prize|grade|class|division|attempt|try|round|lap|spot|choice)\b"
+    ))
+    .expect("ordinal context regex")
+});
+static DOMAIN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b([a-z0-9][a-z0-9-]{1,})\s+dot\s+(com|org|net|io|ai|dev|co|app|cpp|js|py|rs)\b",
+    )
+    .expect("domain regex")
+});
+static KILO_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(\d+)\s+k\b").expect("kilo regex"));
+static APPROX_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bapproximately\s+").expect("approximately regex")
+});
+static EQUAL_TO_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:is\s+)?equal\s+to\b").expect("equal-to regex")
+});
+static TIMES_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(\d+)\s+times\s+(\d+)\b").expect("times regex")
+});
+static RATIO_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(\d+)\s+by\s+(\d+)\b").expect("ratio regex")
+});
+static DIMENSION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(\d+)\s+by\s+(\d+)\s+(feet|foot|ft|inches|inch|in|meters?|metres?|m|cm|mm|yards?|miles?|km)\b",
+    )
+    .expect("dimension regex")
+});
+static MULTIPLIER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(\d+)\s*[xX]\s+(smaller|larger|bigger|faster|slower|more|less)\b")
+        .expect("multiplier regex")
+});
+static VALUE_OF_PI_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bvalue\s+of\s+pi\b").expect("value-of-pi regex")
+});
+static PI_R_SQUARED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(\d+)?\s*pi\s+r\s+squared\b").expect("pi r squared regex")
+});
+static PI_R_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(\d+)?\s*pi\s+r\b").expect("pi r regex")
+});
+static JOIN_DAY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"(?i)\b(was|were|is|are)\s*\.\s*({MONTH_WORDS}|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    ))
+    .expect("join day regex")
+});
+static PI_WORD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bpi\b").expect("pi word regex"));
+static MODAL_CAP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i:(?:cannot|can|will|would|should|could|may|might|must|do|does|did))\s+([A-Z][a-z]+)\b",
+    )
+    .expect("modal capitalization regex")
+});
+static AUX_SENTENCE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\.\s+(is|are|was|were|do|does|did|has|have|had|can|could|will|would|should|may|might|must)\b",
+    )
+    .expect("auxiliary sentence regex")
+});
 
 fn format_number(value: u64) -> String {
     let digits = value.to_string();
@@ -505,11 +602,111 @@ fn parse_word_clock(phrase: &str) -> Option<(u32, u32)> {
 /// Normalise dictated numbers, currency, percentages, times and dates into
 /// their conventional written forms. Returns the text and how many spans
 /// changed, so the history can report a fix count.
+fn ordinal_suffix(value: u32) -> &'static str {
+    if (11..=13).contains(&(value % 100)) {
+        return "th";
+    }
+    match value % 10 {
+        1 => "st",
+        2 => "nd",
+        3 => "rd",
+        _ => "th",
+    }
+}
+
+fn format_numeric_amount(raw: &str) -> String {
+    let cleaned = raw.replace(',', "");
+    match cleaned.split_once('.') {
+        Some((integer, fraction)) => {
+            let integer = integer.parse::<u64>().unwrap_or(0);
+            format!("{}.{}", format_number(integer), fraction)
+        }
+        None => cleaned
+            .parse::<u64>()
+            .map(format_number)
+            .unwrap_or_else(|_| cleaned),
+    }
+}
+
+fn is_number_word(word: &str) -> bool {
+    number_word_value(word).is_some()
+        || matches!(word, "hundred" | "thousand" | "million" | "billion" | "and")
+}
+
 fn normalize_numbers(text: &str) -> (String, usize) {
     let changes = Cell::new(0usize);
 
-    let mut out = CURRENCY_RE
+    // Repair the speech model's hyphenated or split number words before any
+    // currency/number rule sees them: "twenty-five" -> "twenty five".
+    let mut out = HYPHENATED_NUMBER_RE
         .replace_all(text, |caps: &regex::Captures<'_>| {
+            let first = caps[1].to_ascii_lowercase();
+            let second = caps[2].to_ascii_lowercase();
+            if is_number_word(&first) && is_number_word(&second) {
+                changes.set(changes.get() + 1);
+                format!("{} {}", caps[1].trim(), caps[2].trim())
+            } else {
+                caps[0].to_string()
+            }
+        })
+        .into_owned();
+
+    // "80-nine" / "90-9%" are a tens digit plus a unit: 89 / 99.
+    out = DIGIT_HYPHEN_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let first: u32 = caps[1].parse().unwrap_or(0);
+            if first % 10 != 0 {
+                return caps[0].to_string();
+            }
+            let second = caps[2]
+                .parse::<u32>()
+                .ok()
+                .or_else(|| number_word_value(&caps[2].to_ascii_lowercase()).map(|v| v as u32));
+            match second {
+                Some(second) if second <= 9 => {
+                    changes.set(changes.get() + 1);
+                    format!("{}", first + second)
+                }
+                _ => caps[0].to_string(),
+            }
+        })
+        .into_owned();
+
+    // "five point two six" -> 5.26.
+    out = DECIMAL_WORDS_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let Some(integer) = parse_number_words(&caps[1]) else {
+                return caps[0].to_string();
+            };
+            let fraction_words: Vec<String> = caps[2]
+                .split_whitespace()
+                .map(|word| word.to_ascii_lowercase())
+                .collect();
+            let fraction = fraction_words
+                .iter()
+                .map(|word| match number_word_value(word) {
+                    Some(value) if value <= 9 => Some(value.to_string()),
+                    _ => None,
+                })
+                .collect::<Option<String>>()
+                .or_else(|| parse_number_words(&caps[2]).map(|value| value.to_string()));
+            let Some(fraction) = fraction else {
+                return caps[0].to_string();
+            };
+            changes.set(changes.get() + 1);
+            format!("{}.{}", format_number(integer), fraction)
+        })
+        .into_owned();
+
+    out = DECIMAL_DIGITS_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            changes.set(changes.get() + 1);
+            format!("{}.{}", &caps[1], &caps[2])
+        })
+        .into_owned();
+
+    out = CURRENCY_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
             let Some(value) = parse_number_words(&caps[1]) else {
                 return caps[0].to_string();
             };
@@ -607,7 +804,7 @@ fn normalize_numbers(text: &str) -> (String, usize) {
                 || phrase.contains("million")
                 || phrase.contains("billion");
             let multi_word = phrase.split_whitespace().count() > 1;
-            if !has_scale && !multi_word && value < 10 {
+            if !has_scale && !multi_word && value < 10 && phrase == "one" {
                 return caps[0].to_string();
             }
             changes.set(changes.get() + 1);
@@ -615,7 +812,344 @@ fn normalize_numbers(text: &str) -> (String, usize) {
         })
         .into_owned();
 
+    // Digit forms the word passes cannot see.
+    out = CURRENCY_HYPHEN_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let first: u64 = caps[1].parse().unwrap_or(0);
+            let second: u64 = caps[2].replace(',', "").parse().unwrap_or(0);
+            if first % 10 == 0 && second >= 1000 && second % 1000 == 0 {
+                changes.set(changes.get() + 1);
+                format!("${}", format_number(first * 1000 + second))
+            } else {
+                caps[0].to_string()
+            }
+        })
+        .into_owned();
+
+    out = NUMERIC_CURRENCY_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let (symbol, spaced) = currency_symbol(&caps[2]);
+            changes.set(changes.get() + 1);
+            if spaced {
+                format!("{symbol} {}", format_numeric_amount(&caps[1]))
+            } else {
+                format!("{symbol}{}", format_numeric_amount(&caps[1]))
+            }
+        })
+        .into_owned();
+
+    out = NUMERIC_PERCENT_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            changes.set(changes.get() + 1);
+            format!("{}%", caps[1].trim())
+        })
+        .into_owned();
+
+    out = ORDINAL_CONTEXT_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let Some(value) = parse_ordinal(&caps[1]) else {
+                return caps[0].to_string();
+            };
+            changes.set(changes.get() + 1);
+            format!("{value}{} {}", ordinal_suffix(value), &caps[2])
+        })
+        .into_owned();
+
+    out = DOMAIN_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let word = caps[1].to_ascii_lowercase();
+            if matches!(
+                word.as_str(),
+                "the"
+                    | "and"
+                    | "but"
+                    | "for"
+                    | "this"
+                    | "that"
+                    | "with"
+                    | "from"
+                    | "your"
+                    | "our"
+                    | "their"
+                    | "his"
+                    | "her"
+                    | "my"
+            ) {
+                return caps[0].to_string();
+            }
+            changes.set(changes.get() + 1);
+            format!("{}.{}", &caps[1], &caps[2].to_ascii_lowercase())
+        })
+        .into_owned();
+
+    out = KILO_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            changes.set(changes.get() + 1);
+            format!("{}k", &caps[1])
+        })
+        .into_owned();
+
+    out = APPROX_RE.replace_all(&out, "~").into_owned();
+
     (out, changes.get())
+}
+
+fn modal_verb(word: &str) -> bool {
+    matches!(
+        word,
+        "go" | "come"
+            | "see"
+            | "eat"
+            | "do"
+            | "make"
+            | "take"
+            | "get"
+            | "give"
+            | "know"
+            | "think"
+            | "say"
+            | "tell"
+            | "find"
+            | "work"
+            | "call"
+            | "try"
+            | "ask"
+            | "need"
+            | "feel"
+            | "become"
+            | "leave"
+            | "put"
+            | "mean"
+            | "keep"
+            | "let"
+            | "begin"
+            | "seem"
+            | "help"
+            | "talk"
+            | "turn"
+            | "start"
+            | "show"
+            | "hear"
+            | "play"
+            | "run"
+            | "move"
+            | "like"
+            | "live"
+            | "believe"
+            | "hold"
+            | "bring"
+            | "happen"
+            | "write"
+            | "provide"
+            | "sit"
+            | "stand"
+            | "lose"
+            | "pay"
+            | "meet"
+            | "include"
+            | "continue"
+            | "set"
+            | "learn"
+            | "change"
+            | "lead"
+            | "understand"
+            | "watch"
+            | "follow"
+            | "stop"
+            | "create"
+            | "speak"
+            | "read"
+            | "spend"
+            | "grow"
+            | "open"
+            | "walk"
+            | "win"
+            | "offer"
+            | "remember"
+            | "love"
+            | "consider"
+            | "appear"
+            | "buy"
+            | "wait"
+            | "serve"
+            | "die"
+            | "send"
+            | "expect"
+            | "build"
+            | "stay"
+            | "fall"
+            | "cut"
+            | "reach"
+            | "kill"
+            | "remain"
+    )
+}
+
+fn join_auxiliary_sentences(text: &str) -> (String, usize) {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0usize;
+    let mut changes = 0usize;
+    for caps in AUX_SENTENCE_RE.captures_iter(text) {
+        let Some(full) = caps.get(0) else { continue };
+        let aux = caps[1].to_ascii_lowercase();
+        if !matches!(aux.as_str(), "is" | "are" | "was" | "were") {
+            continue;
+        }
+        let prefix = &text[..full.start()];
+        let sentence_start = prefix
+            .rfind(['.', '!', '?', '\n'])
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let sentence = &prefix[sentence_start..];
+        let lower = sentence.to_ascii_lowercase();
+        let joinable = lower.contains(", and ")
+            || lower.contains(", but ")
+            || lower.contains(", or ")
+            || lower.starts_with("and ")
+            || lower.starts_with("but ")
+            || lower.starts_with("or ");
+        if !joinable {
+            continue;
+        }
+        out.push_str(&text[last..full.start()]);
+        out.push(' ');
+        out.push_str(&aux);
+        last = full.end();
+        changes += 1;
+    }
+    out.push_str(&text[last..]);
+    (out, changes)
+}
+
+fn normalize_math(text: &str) -> (String, usize) {
+    let changes = Cell::new(0usize);
+    let count = || changes.set(changes.get() + 1);
+
+    let mut out = EQUAL_TO_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            let start = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            let window_start = start.saturating_sub(40);
+            let window_end = (start + 80).min(text.len());
+            let window = text
+                .get(window_start..window_end)
+                .unwrap_or(text)
+                .to_ascii_lowercase();
+            let maths = window.chars().any(|ch| ch.is_ascii_digit())
+                || [
+                    "area",
+                    "circumference",
+                    "radius",
+                    "value",
+                    "sum",
+                    "total",
+                    "equation",
+                    "formula",
+                    "squared",
+                ]
+                .iter()
+                .any(|word| window.contains(word));
+            if !maths {
+                return caps[0].to_string();
+            }
+            count();
+            "=".to_string()
+        })
+        .into_owned();
+
+    out = TIMES_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            count();
+            format!("{}*{}", &caps[1], &caps[2])
+        })
+        .into_owned();
+
+    out = DIMENSION_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            count();
+            format!("{}x{} {}", &caps[1], &caps[2], &caps[3])
+        })
+        .into_owned();
+
+    out = RATIO_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            count();
+            format!("{}/{}", &caps[1], &caps[2])
+        })
+        .into_owned();
+
+    out = MULTIPLIER_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            count();
+            format!("{}x {}", &caps[1], &caps[2].to_ascii_lowercase())
+        })
+        .into_owned();
+
+    out = VALUE_OF_PI_RE
+        .replace_all(&out, |_caps: &regex::Captures<'_>| {
+            count();
+            "value of π".to_string()
+        })
+        .into_owned();
+
+    out = PI_R_SQUARED_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            count();
+            match caps.get(1) {
+                Some(coefficient) => format!("{}πr^2", coefficient.as_str()),
+                None => "πr^2".to_string(),
+            }
+        })
+        .into_owned();
+
+    out = PI_R_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            count();
+            match caps.get(1) {
+                Some(coefficient) => format!("{}πr", coefficient.as_str()),
+                None => "πr".to_string(),
+            }
+        })
+        .into_owned();
+
+    let maths_context = out.contains('=')
+        || out.to_ascii_lowercase().contains("circle")
+        || out.to_ascii_lowercase().contains("area")
+        || out.to_ascii_lowercase().contains("radius")
+        || out.to_ascii_lowercase().contains("circumference")
+        || out.to_ascii_lowercase().contains("squared")
+        || out.contains('π');
+    if maths_context {
+        out = PI_WORD_RE
+            .replace_all(&out, |_caps: &regex::Captures<'_>| {
+                count();
+                "π".to_string()
+            })
+            .into_owned();
+    }
+
+    out = JOIN_DAY_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            count();
+            format!("{} {}", &caps[1], &caps[2])
+        })
+        .into_owned();
+
+    out = MODAL_CAP_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            let lower = caps[1].to_ascii_lowercase();
+            if modal_verb(&lower) {
+                count();
+                let prefix = &caps[0][..caps[0].len() - caps[1].len()];
+                format!("{prefix}{lower}")
+            } else {
+                caps[0].to_string()
+            }
+        })
+        .into_owned();
+
+    let (joined, joined_count) = join_auxiliary_sentences(&out);
+    changes.set(changes.get() + joined_count);
+    (joined, changes.get())
 }
 
 fn correct(text: &str, language: &str, custom_words: &[String]) -> (String, usize) {
@@ -683,13 +1217,14 @@ fn correct(text: &str, language: &str, custom_words: &[String]) -> (String, usiz
     }
 
     let raw_fixed: String = source.into_iter().collect();
-    let mut fixed: Vec<char> = raw_fixed.chars().collect();
+    let (math_fixed, math_fixes) = normalize_math(&raw_fixed);
+    let mut fixed: Vec<char> = math_fixed.chars().collect();
     capitalize_start(&mut fixed);
     let fixed: String = fixed.into_iter().collect();
     if fixed.trim().is_empty() {
         (text.to_owned(), 0)
     } else {
-        (fixed, applied + number_fixes)
+        (fixed, applied + number_fixes + math_fixes)
     }
 }
 
@@ -770,6 +1305,55 @@ mod tests {
         assert!(percent.contains("50%"), "{percent}");
         let apples = fix("i bought twenty five apples");
         assert!(apples.contains("25 apples"), "{apples}");
+        let small = fix("i have five apples");
+        assert!(small.contains("5 apples"), "{small}");
+        let hyphenated = fix("i am earning twenty-five thousand dollars per month");
+        assert!(hyphenated.contains("$25,000"), "{hyphenated}");
+        let marks = fix("i got 80-nine marks out of 100 marks");
+        assert!(marks.contains("89 marks"), "{marks}");
+        let exam = fix("i achieved 90-9% in my final examination");
+        assert!(exam.contains("99%"), "{exam}");
+        let ordinal = fix("i got first position in this race");
+        assert!(ordinal.contains("1st position"), "{ordinal}");
+        let height = fix("his height is five feet 6 inches");
+        assert!(height.contains("5 feet 6 inches"), "{height}");
+        let model_split = fix("i am earning 20-$5,000 per month");
+        assert!(model_split.contains("$25,000"), "{model_split}");
+    }
+
+    #[test]
+    fn converts_math_and_units() {
+        let ratio = fix("10 by 20 marble pieces are two X smaller");
+        assert!(ratio.contains("10/20"), "{ratio}");
+        assert!(ratio.contains("2x smaller"), "{ratio}");
+        let pi_value = fix("what is the value of pi?");
+        assert!(pi_value.contains("value of π"), "{pi_value}");
+        let circumference = fix("circumference of a circle equal to two pi r");
+        assert!(circumference.contains("circle = 2πr"), "{circumference}");
+        let area = fix("area is equal to pi r squared");
+        assert!(area.contains("Area = πr^2"), "{area}");
+        let times = fix("two times five is equal to 10");
+        assert!(times.contains("2*5 = 10"), "{times}");
+        let approx = fix(
+            "we improved by approximately ninety eight point three seven percent",
+        );
+        assert!(approx.contains("~98.37%"), "{approx}");
+        let prose = fix("she is equal to the task");
+        assert!(prose.contains("is equal to"), "{prose}");
+        let domain = fix("we use llama dot cpp daily");
+        assert!(domain.contains("llama.cpp"), "{domain}");
+    }
+
+    #[test]
+    fn joins_paused_sentences_and_fixes_modal_case() {
+        let day = fix("today is thursday, and yesterday were. wednesday");
+        assert!(day.contains("were Wednesday"), "{day}");
+        let modal = fix("i cannot Go to college today");
+        assert!(modal.contains("cannot go"), "{modal}");
+        let clause = fix(
+            "people building crazy stuff with ai, and someone on youtube. is earning 40 k a month",
+        );
+        assert!(clause.contains("YouTube is earning 40k"), "{clause}");
     }
 
     #[test]

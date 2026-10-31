@@ -34,7 +34,6 @@ import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
   cleanDictationText,
   joinTranscriptParts,
-  stripShortPausePeriod,
 } from "./dictation-text";
 import { romanizeToLatin } from "./romanize";
 import type { SpeechSegment } from "./dictation-segmenter";
@@ -670,10 +669,13 @@ export interface StudioModelDictationOptions {
   microphone?: MediaStream | null;
   /** Remove filler words from every finished segment. */
   removeFillerWords?: boolean;
+  /** System-wide voice typing: shorter first segment so a short sentence
+   *  reaches the model sooner. */
+  minSegmentMs?: number;
+  /** Silence that ends a segment; defaults to the composer's 360 ms. */
+  silenceCutMs?: number;
   /** Turn spoken punctuation into marks. */
   spokenPunctuation?: boolean;
-  /** System-wide voice typing: drop the full stop a short pause segment ends with. */
-  stripPausePeriods?: boolean;
   /** Ask the local backend for NDJSON partials. Off for callers that only ever
    *  read the final transcript (system-wide voice typing): the partials are
    *  decoded text they would throw away, and skipping them keeps the response a
@@ -900,10 +902,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         removeFillers: this.options.removeFillerWords,
         spokenPunctuation: this.options.spokenPunctuation,
       });
-      const latinized = sessionRomanize ? romanizeToLatin(cleaned) : cleaned;
-      return this.options.stripPausePeriods
-        ? stripShortPausePeriod(latinized)
-        : latinized;
+      return sessionRomanize ? romanizeToLatin(cleaned) : cleaned;
     };
 
     const enqueueSegment = (index: number, segment: SpeechSegment) => {
@@ -1042,9 +1041,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         }
         capture = new PcmCapture(stream, {
           preRollMs: DEFAULT_PRE_ROLL_MS,
-          minSegmentMs: DEFAULT_MIN_SEGMENT_MS,
+          minSegmentMs: this.options.minSegmentMs ?? DEFAULT_MIN_SEGMENT_MS,
           maxSegmentMs: DEFAULT_MAX_SEGMENT_MS,
-          silenceCutMs: DEFAULT_SILENCE_CUT_MS,
+          silenceCutMs: this.options.silenceCutMs ?? DEFAULT_SILENCE_CUT_MS,
           onSegment: (segment) => enqueueSegment(segCounter++, segment),
         });
         capture.start();

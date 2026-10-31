@@ -25430,6 +25430,19 @@ async def stt_keep_alive(
         await asyncio.to_thread(stt_registry.set_keep_alive_seconds, keep_alive_seconds)
     target = _resolve_serving_stt_engine(engine) if engine is not None else None
     result = await asyncio.to_thread(stt_registry.keep_alive, target, model)
+    if model and not result.get("held"):
+        # A curated Whisper snapshot may be resident on Transformers while the
+        # caller asked for GGUF (or vice versa); hold whichever engine actually
+        # owns the model so the next press is warm.
+        for candidate in ("transformers", "gguf"):
+            if candidate == target:
+                continue
+            alternative = await asyncio.to_thread(
+                stt_registry.keep_alive, candidate, model
+            )
+            if alternative.get("held"):
+                result = alternative
+                break
     return JSONResponse(content = result)
 
 

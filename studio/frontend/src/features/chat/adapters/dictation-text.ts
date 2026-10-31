@@ -275,18 +275,6 @@ export function appendTranscriptText(base: string, text: string): string {
 
 /** Join segment transcripts without putting a space before punctuation that a
  *  segment started with (a spoken "comma" often begins the next segment). */
-/** A short segment that ends in a full stop is usually a pause the speech
- *  model punctuated, not the end of a sentence: drop it for voice typing. */
-export function stripShortPausePeriod(text: string): string {
-  if (!text.endsWith(".")) return text;
-  const words = text
-    .slice(0, -1)
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  return words.length <= 4 ? text.slice(0, -1) : text;
-}
-
 export function joinTranscriptParts(parts: string[]): string {
   let result = "";
   for (const part of parts) {

@@ -333,13 +333,23 @@ export function SettingsDialog() {
       lastTabRef.current = activeTab;
       return;
     }
-    const onAuxClick = (event: MouseEvent) => {
-      if (event.defaultPrevented) return;
+    const onMouseDown = (event: MouseEvent) => {
       if (event.button !== 3 && event.button !== 4) return;
-      if (event.button === 3) {
+      // The settings modal owns these buttons while it is open. Stop the
+      // event here so the chat page behind it never runs its own history
+      // navigation as well.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const direction = event.button === 3 ? "back" : "forward";
+      const detail: { direction: "back" | "forward"; handled: boolean } = {
+        direction,
+        handled: false,
+      };
+      window.dispatchEvent(new CustomEvent("settings-history", { detail }));
+      if (detail.handled) return;
+      if (direction === "back") {
         const previous = tabHistoryRef.current.pop();
         if (!previous) return;
-        event.preventDefault();
         suppressTabHistoryRef.current = true;
         tabFutureRef.current.push(activeTab);
         setActiveTab(previous);
@@ -347,13 +357,12 @@ export function SettingsDialog() {
       }
       const next = tabFutureRef.current.pop();
       if (!next) return;
-      event.preventDefault();
       suppressTabHistoryRef.current = true;
       tabHistoryRef.current.push(activeTab);
       setActiveTab(next);
     };
-    window.addEventListener("mousedown", onAuxClick);
-    return () => window.removeEventListener("mousedown", onAuxClick);
+    window.addEventListener("mousedown", onMouseDown, true);
+    return () => window.removeEventListener("mousedown", onMouseDown, true);
   }, [open, activeTab, setActiveTab]);
 
   // Prefetch other panels on idle once opened; nothing runs while closed.

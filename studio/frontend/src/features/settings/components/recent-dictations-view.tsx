@@ -26,13 +26,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import {
-  DeleteChatFilesSwitch,
-  deleteChatItem,
-  useChatPreferencesStore,
-  useChatRuntimeStore,
-  type SidebarItem,
-} from "@/features/chat";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
@@ -56,11 +49,6 @@ import {
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 const PAGE_SIZE = 20;
-
-type PendingDelete =
-  | { kind: "one"; dictation: RecentDictation }
-  | { kind: "all" }
-  | null;
 
 type SortOrder = "newest" | "oldest" | "az";
 
@@ -90,6 +78,57 @@ function formatElapsed(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
   const total = Math.floor(seconds);
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+interface DiffToken {
+  text: string;
+  changed: boolean;
+}
+
+function tokenizeTranscript(text: string): string[] {
+  return text.match(/\s+|[^\s]+/g) ?? [];
+}
+
+/** Word/punctuation diff used to highlight what the fixer changed. */
+function diffTranscript(original: string, corrected: string): DiffToken[] {
+  const before = tokenizeTranscript(original);
+  const after = tokenizeTranscript(corrected);
+  const rows = before.length;
+  const cols = after.length;
+  const lcs = Array.from({ length: rows + 1 }, () =>
+    new Uint32Array(cols + 1),
+  );
+  for (let i = rows - 1; i >= 0; i -= 1) {
+    for (let j = cols - 1; j >= 0; j -= 1) {
+      lcs[i][j] =
+        before[i] === after[j]
+          ? lcs[i + 1][j + 1] + 1
+          : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const result: DiffToken[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < rows && j < cols) {
+    if (before[i] === after[j]) {
+      result.push({ text: after[j], changed: false });
+      i += 1;
+      j += 1;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      i += 1;
+    } else {
+      result.push({
+        text: after[j],
+        changed: after[j].trim().length > 0,
+      });
+      j += 1;
+    }
+  }
+  while (j < cols) {
+    result.push({ text: after[j], changed: after[j].trim().length > 0 });
+    j += 1;
+  }
+  return result;
 }
 
 /**
@@ -216,13 +255,12 @@ export function RecentDictationsView({
   const clearRecentDictations = useVoiceSettingsStore(
     (s) => s.clearRecentDictations,
   );
-  const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
-  // Only "Delete chat and dictation" removes a chat, so only that path shows the switch.
-  const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
+  const [clearAllPending, setClearAllPending] = useState(false);
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [showOriginal, setShowOriginal] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const copyTimerRef = useRef<number | null>(null);
 
@@ -246,6 +284,7 @@ export function RecentDictationsView({
       audioRef.current = null;
     }
     setPlayingId(null);
+    setShowOriginal(false);
   }, [selectedId]);
 
   function togglePlayAudio(dictation: RecentDictation) {
@@ -287,12 +326,25 @@ export function RecentDictationsView({
   const [page, setPage] = useState({ key: pageKey, count: PAGE_SIZE });
   const visibleCount = page.key === pageKey ? page.count : PAGE_SIZE;
   const navigate = useNavigate();
-  const alwaysDeleteChatFiles = useChatPreferencesStore(
-    (s) => s.alwaysDeleteChatFiles,
-  );
   const closeSettings = useSettingsDialogStore((s) => s.closeDialog);
   const selected =
     recentDictations.find((dictation) => dictation.id === selectedId) ?? null;
+  const diff = useMemo(
+    () =>
+      selected?.originalText
+        ? diffTranscript(selected.originalText, selected.text)
+        : null,
+    [selected?.id, selected?.text, selected?.originalText],
+  );
+  const stats = useMemo(() => {
+    const text = selected?.text ?? "";
+    return {
+      words: text.trim() ? text.trim().split(/\s+/).length : 0,
+      characters: Array.from(text.replace(/\s/g, "")).length,
+      spaces: (text.match(/\s/g) ?? []).length,
+      symbols: (text.match(/[^\p{L}\p{N}\s]/gu) ?? []).length,
+    };
+  }, [selected?.text]);
 
   function openChat(chatId: string) {
     closeSettings();
@@ -335,59 +387,18 @@ export function RecentDictationsView({
     }
   }
 
-  function confirmDelete() {
-    try {
-      if (pendingDelete?.kind === "one") {
-        removeRecentDictation(pendingDelete.dictation.id);
-        if (pendingDelete.dictation.id === selectedId) {
-          onSelect(null);
-        }
-      } else if (pendingDelete?.kind === "all") {
-        clearRecentDictations();
-        onSelect(null);
-      }
-    } finally {
-      setPendingDelete(null);
-    }
-  }
-
-  async function confirmDeleteWithChat(deleteFiles: boolean) {
-    if (pendingDelete?.kind !== "one") {
-      return;
-    }
-    const dictation = pendingDelete.dictation;
-    setPendingDelete(null);
-    if (dictation.chatId) {
-      const item: SidebarItem = {
-        type: "single",
-        id: dictation.chatId,
-        title: "",
-        createdAt: 0,
-        updatedAt: 0,
-      };
-      try {
-        await deleteChatItem(
-          item,
-          useChatRuntimeStore.getState().activeThreadId ?? undefined,
-          () => {
-            void navigate({
-              to: "/chat",
-              search: { new: crypto.randomUUID() },
-            });
-          },
-          { deleteFiles },
-        );
-      } catch (error) {
-        toast.error(t("settings.voice.recents.deleteWithChatFailed"), {
-          description: error instanceof Error ? error.message : undefined,
-        });
-        return;
-      }
-    }
+  function deleteOne(dictation: RecentDictation) {
     removeRecentDictation(dictation.id);
     if (dictation.id === selectedId) {
       onSelect(null);
     }
+    toast.success(t("settings.voice.recents.deleted"));
+  }
+
+  function clearAll() {
+    clearRecentDictations();
+    onSelect(null);
+    setClearAllPending(false);
   }
 
   return (
@@ -436,15 +447,19 @@ export function RecentDictationsView({
         <div className="flex min-h-0 flex-col gap-4">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <span>
-              {t("settings.voice.recents.metaWords", {
-                count: selected.text.trim()
-                  ? selected.text.trim().split(/\s+/).length
-                  : 0,
-              })}
+              {t("settings.voice.recents.metaWords", { count: stats.words })}
             </span>
             <span>
               {t("settings.voice.recents.metaCharacters", {
-                count: selected.text.length,
+                count: stats.characters,
+              })}
+            </span>
+            <span>
+              {t("settings.voice.recents.metaSpaces", { count: stats.spaces })}
+            </span>
+            <span>
+              {t("settings.voice.recents.metaSymbols", {
+                count: stats.symbols,
               })}
             </span>
             <span>
@@ -461,14 +476,57 @@ export function RecentDictationsView({
                 {t("settings.voice.recents.metaLinkedChat")}
               </span>
             ) : null}
+            {selected.originalText && diff ? (
+              <div className="ml-auto inline-flex items-center rounded-full border border-border/60 p-0.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setShowOriginal(false)}
+                  className={`rounded-full px-2.5 py-1 transition-colors ${
+                    !showOriginal
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {t("settings.voice.recents.corrected")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowOriginal(true)}
+                  className={`rounded-full px-2.5 py-1 transition-colors ${
+                    showOriginal
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {t("settings.voice.recents.original")}
+                </button>
+              </div>
+            ) : null}
           </div>
           {selected.audioDataUrl ? (
             <DictationAudioPlayer src={selected.audioDataUrl} />
           ) : null}
           <article className="max-h-72 overflow-y-auto rounded-xl border border-border/60 bg-muted/20 p-4">
-            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
-              {selected.text}
-            </p>
+            {showOriginal || !diff ? (
+              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
+                {showOriginal ? selected.originalText : selected.text}
+              </p>
+            ) : (
+              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
+                {diff.map((token, index) =>
+                  token.changed ? (
+                    <mark
+                      key={index}
+                      className="rounded-sm bg-emerald-500/20 px-0.5 text-emerald-800 dark:text-emerald-200"
+                    >
+                      {token.text}
+                    </mark>
+                  ) : (
+                    <span key={index}>{token.text}</span>
+                  ),
+                )}
+              </p>
+            )}
           </article>
           <div className="flex justify-end gap-2">
             {selected.chatId ? (
@@ -502,12 +560,7 @@ export function RecentDictationsView({
             <Button
               variant="destructive"
               size="sm"
-              onClick={() =>
-                {
-                  setDeleteFilesOnDelete(alwaysDeleteChatFiles);
-                  setPendingDelete({ kind: "one", dictation: selected });
-                }
-              }
+              onClick={() => deleteOne(selected)}
               className="text-destructive hover:text-destructive"
             >
               <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
@@ -563,7 +616,7 @@ export function RecentDictationsView({
             <Button
               variant="destructive"
               size="sm"
-              onClick={() => setPendingDelete({ kind: "all" })}
+              onClick={() => setClearAllPending(true)}
               className="shrink-0 text-destructive hover:text-destructive"
             >
               <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
@@ -577,16 +630,18 @@ export function RecentDictationsView({
             </p>
           ) : (
             <div className="flex flex-col">
-              <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
-                <span className="min-w-0 flex-1">
-                  {t("settings.voice.recents.dictationColumn")}
-                </span>
-                <span className="hidden w-40 shrink-0 items-center gap-1.5 sm:flex">
-                  {/* Spacer matching the row's chat-link icon slot so the
-                      header starts exactly where the dates start. */}
-                  <span className="size-3.5 shrink-0" />
-                  {t("settings.voice.recents.dateColumn")}
-                </span>
+              <div className="flex items-center gap-2 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
+                <div className="flex min-w-0 flex-1 items-center gap-4">
+                  <span className="min-w-0 flex-1">
+                    {t("settings.voice.recents.dictationColumn")}
+                  </span>
+                  <span className="hidden w-40 shrink-0 items-center gap-1.5 sm:flex">
+                    {/* Spacer matching the row's chat-link icon slot so the
+                        header starts exactly where the dates start. */}
+                    <span className="size-3.5 shrink-0" />
+                    {t("settings.voice.recents.dateColumn")}
+                  </span>
+                </div>
                 <span className="w-[calc(7.75rem*var(--ui-space-scale,1))] shrink-0" />
               </div>
               {visible.slice(0, visibleCount).map((dictation) => (
@@ -694,12 +749,7 @@ export function RecentDictationsView({
                     <span className="flex items-center justify-center">
                       <button
                         type="button"
-                        onClick={() =>
-                          {
-                          setDeleteFilesOnDelete(alwaysDeleteChatFiles);
-                          setPendingDelete({ kind: "one", dictation });
-                        }
-                        }
+                        onClick={() => deleteOne(dictation)}
                         aria-label={t("settings.voice.recents.delete")}
                         title={t("settings.voice.recents.delete")}
                         className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -736,61 +786,30 @@ export function RecentDictationsView({
       )}
 
       <AlertDialog
-        open={pendingDelete !== null}
+        open={clearAllPending}
         onOpenChange={(open) => {
-          if (!open) {
-            setPendingDelete(null);
-          }
+          if (!open) setClearAllPending(false);
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {pendingDelete?.kind === "all"
-                ? t("settings.voice.recents.clearTitle")
-                : t("settings.voice.recents.deleteTitle")}
+              {t("settings.voice.recents.clearTitle")}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {pendingDelete?.kind === "all"
-                ? t("settings.voice.recents.clearDescription")
-                : pendingDelete?.kind === "one" &&
-                    pendingDelete.dictation.chatId
-                  ? t("settings.voice.recents.deleteLinkedDescription")
-                  : t("settings.voice.recents.deleteDescription")}
+              {t("settings.voice.recents.clearDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
-            <DeleteChatFilesSwitch
-              id="dictation-delete-files"
-              checked={deleteFilesOnDelete}
-              onCheckedChange={setDeleteFilesOnDelete}
-            />
-          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
-              <AlertDialogAction
-                variant="destructive"
-                className="text-destructive hover:text-destructive"
-                onClick={(event) => {
-                  // Close only through state so dismissal cannot race a click underneath.
-                  event.preventDefault();
-                  void confirmDeleteWithChat(deleteFilesOnDelete);
-                }}
-              >
-                {t("settings.voice.recents.deleteWithChat")}
-              </AlertDialogAction>
-            ) : null}
             <AlertDialogAction
               variant="destructive"
               onClick={(event) => {
                 event.preventDefault();
-                confirmDelete();
+                clearAll();
               }}
             >
-              {pendingDelete?.kind === "all"
-                ? t("settings.voice.recents.clearConfirm")
-                : t("common.delete")}
+              {t("settings.voice.recents.clearConfirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

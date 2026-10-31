@@ -33,6 +33,7 @@ import {
   readMicrophonePermission,
 } from "@/features/microphone";
 import {
+  applyDictationDictionary,
   useSettingsDialogStore,
   useVoiceSettingsStore,
 } from "@/features/settings";
@@ -61,7 +62,13 @@ interface VoiceTypingInfo {
 }
 
 type SignalAction = "start" | "stop" | "cancel";
-type HudPhase = "idle" | "preparing" | "recording" | "transcribing";
+type HudPhase =
+  | "idle"
+  | "preparing"
+  | "recording"
+  | "transcribing"
+  | "fixing"
+  | "refining";
 type Cue = VoiceTypingCue;
 
 /** Safety net so a forgotten toggle cannot record forever. */
@@ -84,10 +91,26 @@ const MAX_BOOT_RETRIES = 6;
  * fallback so an older desktop backend (or a dev web build) never blocks a
  * transcript.
  */
+/**
+ * Dictation often drops the final full stop. Add one only to a complete-ish
+ * sentence (four or more words), and use a question mark for a question. Short
+ * fragments are left alone: a pause is not a sentence.
+ */
+function ensureTerminalPeriod(text: string): string {
+  const trimmed = text.trimEnd();
+  if (!trimmed) return text;
+  if (/[.!?…:;)\]"']$/.test(trimmed)) return text;
+  const question =
+    /^(what|why|how|when|where|who|whom|whose|which|is|are|was|were|do|does|did|can|could|will|would|should|may|might|have|has|had)\b/i.test(
+      trimmed,
+    );
+  if (trimmed.split(/\s+/).length < 4 && !trimmed.includes("=")) return text;
+  return `${trimmed}${question ? "?" : "."}`;
+}
+
 async function fixGrammarOnDevice(
   text: string,
-): Promise<{ text: string; fixes: number }> {
-  const { dictationLanguage, dictionary } = useVoiceSettingsStore.getState();
+): Promise<{ text: string; fixes: number }> {  const { dictationLanguage, dictionary } = useVoiceSettingsStore.getState();
   try {
     const result = await invoke<{ text: string; fixes: number }>(
       "fix_grammar",
@@ -497,7 +520,10 @@ export class VoiceTypingController {
         microphone: warm,
         removeFillerWords: true,
         spokenPunctuation,
-        stripPausePeriods: true,
+        // Voice typing is short-form: a 1 s first segment reaches the model
+        // sooner than the composer's 2.8 s window.
+        minSegmentMs: 1_000,
+        silenceCutMs: 320,
         // Use a single JSON response per cut segment so system/UI resources are not
         // spent streaming partial tokens and HTTP disconnect aborts the backend immediately.
         stream: false,
@@ -631,8 +657,8 @@ export class VoiceTypingController {
       }
       if (!this.speechHeard) {
         // User activated voice typing and spoke nothing (only silence or ambient noise):
-        // close the pill automatically after a short grace period without transcribing.
-        const silentWaitMs = 2500;
+        // close the pill after the same idle window without transcribing.
+        const silentWaitMs = idleStopMs > 0 ? idleStopMs : 2500;
         if (
           this.recordingStartedAt > 0 &&
           now - this.recordingStartedAt >= silentWaitMs
@@ -760,14 +786,25 @@ export class VoiceTypingController {
       }
       return;
     }
+    const storeState = useVoiceTypingStore.getState();
+    const { grammarFixerEnabled, llmPostProcessEnabled } = storeState;
+    if (llmPostProcessEnabled) {
+      this.setPhase("refining");
+    }
     let text = await this.postProcessTranscript(rawText, token);
-    const { grammarFixerEnabled } = useVoiceTypingStore.getState();
+    if (this.disposed || token !== this.cancelToken) return;
     let fixes = 0;
     if (grammarFixerEnabled) {
+      this.setPhase("fixing");
       const corrected = await fixGrammarOnDevice(text);
       text = corrected.text;
       fixes = corrected.fixes;
     }
+    // Grammar rules can re-case a custom word; make the user's spelling win.
+    text = applyDictationDictionary(text, undefined, { snippets: false });
+    const withTerminal = ensureTerminalPeriod(text);
+    if (withTerminal !== text) fixes += 1;
+    text = withTerminal;
     // The dictation adapter records the pre-refinement transcript for the
     // history; replace it with what was actually inserted.
     useVoiceSettingsStore

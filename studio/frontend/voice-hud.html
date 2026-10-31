@@ -12,6 +12,11 @@
          still needed by the shared modules the overlay imports. -->
     <script src="/crypto-boot.js"></script>
     <style>
+      @property --vt-accent {
+        syntax: "<color>";
+        inherits: true;
+        initial-value: #f87171;
+      }
       :root {
         color-scheme: dark;
       }
@@ -47,9 +52,14 @@
         box-shadow:
           0 6px 16px rgba(0, 0, 0, 0.42),
           0 1px 3px rgba(0, 0, 0, 0.3),
+          0 0 16px -7px var(--vt-accent),
           inset 0 1px 0 rgba(255, 255, 255, 0.06);
         color: #e8eaee;
         animation: vt-in 140ms ease-out;
+        transition:
+          --vt-accent 220ms ease,
+          box-shadow 220ms ease,
+          border-color 220ms ease;
       }
       .vt-logo {
         position: relative;
@@ -129,7 +139,8 @@
         width: 3px;
         height: 4px;
         border-radius: 999px;
-        background: var(--vt-accent);
+        background-color: var(--vt-accent);
+        transition: background-color 220ms ease;
         will-change: height, opacity;
       }
       .vt-time {

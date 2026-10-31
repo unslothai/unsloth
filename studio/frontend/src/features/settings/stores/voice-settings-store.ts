@@ -27,6 +27,8 @@ export interface RecentDictation {
   at: number;
   chatId?: string;
   audioDataUrl?: string;
+  /** Pre-fix transcript, when the grammar/refinement pass changed it. */
+  originalText?: string;
   /** Number of grammar/formatting corrections applied to the inserted text. */
   fixes?: number;
 }
@@ -866,6 +868,9 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           recentDictations[index] = {
             ...current,
             text: trimmed,
+            ...(trimmed !== raw && !current.originalText
+              ? { originalText: rawText.trim() }
+              : {}),
             fixes,
           };
           return { recentDictations };
@@ -1081,6 +1086,14 @@ function normalizeRecentDictations(value: unknown): RecentDictation[] {
       candidate.fixes > 0
         ? { fixes: Math.floor(candidate.fixes) }
         : {}),
+      ...(typeof candidate.originalText === "string" &&
+      candidate.originalText.trim()
+        ? {
+            originalText: candidate.originalText
+              .trim()
+              .slice(0, MAX_RECENT_DICTATION_LENGTH),
+          }
+        : {}),
     });
   }
   return normalized;
@@ -1156,62 +1169,105 @@ interface CompiledDictionaryRule {
   replacement: string;
 }
 
+interface DictionaryRuleSource {
+  trigger: string;
+  replacement: string;
+  snippet: boolean;
+}
+
 // The default vocabulary has ~1,000 entries. Compiling that many patterns on
 // every dictation segment is wasteful, so keep them for the life of the
-// dictionary array (Zustand creates a new array whenever it changes).
+// dictionary array (Zustand creates a new array whenever it changes). Two
+// caches: one with snippet expansion, one for the final spelling pass.
 const DICTIONARY_RULE_CACHE = new WeakMap<string[], CompiledDictionaryRule[]>();
+const DICTIONARY_SPELLING_CACHE = new WeakMap<
+  string[],
+  CompiledDictionaryRule[]
+>();
 
-function compileDictionaryRules(entries: string[]): CompiledDictionaryRule[] {
-  const cached = DICTIONARY_RULE_CACHE.get(entries);
+function compileDictionaryRules(
+  entries: string[],
+  includeSnippets: boolean,
+): CompiledDictionaryRule[] {
+  const cache = includeSnippets
+    ? DICTIONARY_RULE_CACHE
+    : DICTIONARY_SPELLING_CACHE;
+  const cached = cache.get(entries);
   if (cached) return cached;
 
-  const rules: { trigger: string; replacement: string }[] = [];
+  const exact: DictionaryRuleSource[] = [];
+  const fuzzy: DictionaryRuleSource[] = [];
   for (const entry of entries) {
     const trimmed = entry.trim();
     if (!trimmed) continue;
     const arrowMatch = /^(.+?)\s*(?:->|=>)\s*(.+)$/.exec(trimmed);
     if (arrowMatch) {
+      if (!includeSnippets) continue;
       const trigger = arrowMatch[1].trim();
       const replacement = arrowMatch[2].trim();
       if (trigger && replacement) {
-        rules.push({ trigger, replacement });
+        exact.push({ trigger, replacement, snippet: true });
       }
     } else {
-      rules.push({ trigger: trimmed, replacement: trimmed });
+      exact.push({ trigger: trimmed, replacement: trimmed, snippet: false });
+      // A custom word the model split or hyphenated ("un sloth", "un-sloth")
+      // should still resolve to the user's spelling.
+      if (
+        trimmed.length >= 4 &&
+        trimmed.length <= 40 &&
+        /^[\p{L}]+$/u.test(trimmed)
+      ) {
+        fuzzy.push({ trigger: trimmed, replacement: trimmed, snippet: false });
+      }
     }
   }
-  rules.sort((a, b) => b.trigger.length - a.trigger.length);
+  exact.sort((a, b) => b.trigger.length - a.trigger.length);
+  fuzzy.sort((a, b) => b.trigger.length - a.trigger.length);
 
   const compiled: CompiledDictionaryRule[] = [];
-  for (const { trigger, replacement } of rules) {
-    const pattern = trigger.split(/\s+/).map(escapeRegExp).join("\\s+");
-    try {
-      // Capture the boundary instead of a lookbehind, which Safari < 16.4 cannot compile.
-      compiled.push({
-        regex: new RegExp(
-          `(^|[^\\p{L}\\p{N}])(${pattern})(?![\\p{L}\\p{N}])`,
-          "giu",
-        ),
-        replacement,
-      });
-    } catch {
-      // Skip entries that produce an invalid pattern.
+  const compile = (
+    source: DictionaryRuleSource[],
+    flexible: boolean,
+  ): void => {
+    for (const { trigger, replacement } of source) {
+      const parts = flexible
+        ? Array.from(trigger).map(escapeRegExp)
+        : trigger.split(/\s+/).map(escapeRegExp);
+      const pattern = parts.join(flexible ? "[ \\t-]*" : "\\s+");
+      try {
+        // Capture the boundary instead of a lookbehind, which Safari < 16.4 cannot compile.
+        compiled.push({
+          regex: new RegExp(
+            `(^|[^\\p{L}\\p{N}])(${pattern})(?![\\p{L}\\p{N}])`,
+            "giu",
+          ),
+          replacement,
+        });
+      } catch {
+        // Skip entries that produce an invalid pattern.
+      }
     }
-  }
-  DICTIONARY_RULE_CACHE.set(entries, compiled);
+  };
+  compile(exact, false);
+  compile(fuzzy, true);
+  cache.set(entries, compiled);
   return compiled;
 }
 
 export function applyDictationDictionary(
   transcript: string,
   dictionary?: string[],
+  options: { snippets?: boolean } = {},
 ): string {
   const entries =
     dictionary ?? useVoiceSettingsStore.getState().dictionary;
   if (!transcript || entries.length === 0) return transcript;
 
   let result = transcript;
-  for (const { regex, replacement } of compileDictionaryRules(entries)) {
+  for (const { regex, replacement } of compileDictionaryRules(
+    entries,
+    options.snippets !== false,
+  )) {
     // Callback form avoids $-pattern expansion.
     result = result.replace(
       regex,

@@ -10,18 +10,7 @@ import {
   collapseStutters,
   joinTranscriptParts,
   removeFillerWords,
-  stripShortPausePeriod,
 } from "../src/features/chat/adapters/dictation-text.ts";
-
-test("short pause periods are dropped without touching real sentences", () => {
-  assert.equal(stripShortPausePeriod("Thanks."), "Thanks");
-  assert.equal(stripShortPausePeriod("Okay."), "Okay");
-  assert.equal(
-    stripShortPausePeriod("This is a longer sentence."),
-    "This is a longer sentence.",
-  );
-  assert.equal(stripShortPausePeriod("Are you coming?"), "Are you coming?");
-});
 
 test("filler words go without taking the sentence's capital with them", () => {
   assert.equal(

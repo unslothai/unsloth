@@ -322,6 +322,7 @@ function SoundThemePicker({
           <PickerRow
             key={choice}
             selected={choice === value}
+            className="py-2 text-sm"
             onClick={() => {
               onChange(choice);
               setOpen(false);

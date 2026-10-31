@@ -691,12 +691,18 @@ export function VoiceTab() {
   }, [subpage, selectedDictationId]);
 
   useEffect(() => {
-    const onAuxClick = (event: MouseEvent) => {
-      if (event.button !== 3 && event.button !== 4) return;
-      if (event.button === 3) {
+    const onHistory = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          direction: "back" | "forward";
+          handled: boolean;
+        }>
+      ).detail;
+      if (!detail) return;
+      if (detail.direction === "back") {
         const previous = voicePastRef.current.pop();
         if (!previous) return;
-        event.preventDefault();
+        detail.handled = true;
         suppressVoiceHistoryRef.current = true;
         voiceFutureRef.current.push(voiceViewRef.current);
         voiceViewRef.current = previous;
@@ -706,15 +712,15 @@ export function VoiceTab() {
       }
       const next = voiceFutureRef.current.pop();
       if (!next) return;
-      event.preventDefault();
+      detail.handled = true;
       suppressVoiceHistoryRef.current = true;
       voicePastRef.current.push(voiceViewRef.current);
       voiceViewRef.current = next;
       setSubpage(next.subpage);
       setSelectedDictationId(next.selected);
     };
-    window.addEventListener("mousedown", onAuxClick, true);
-    return () => window.removeEventListener("mousedown", onAuxClick, true);
+    window.addEventListener("settings-history", onHistory);
+    return () => window.removeEventListener("settings-history", onHistory);
   }, []);
 
   useEffect(() => {
@@ -840,6 +846,8 @@ export function VoiceTab() {
   // so one throttled timer or bursty poll set the displayed speed outright.
   // Model whose download this tab watched; completion auto-loads it.
   const watchedDownloadRef = useRef<string | null>(null);
+  // On first open, reflect a model another surface already has resident.
+  const residentSyncedRef = useRef(false);
   // The quant this tab started downloading; an adopted transfer's quant is unknown.
   const startedDownloadRef = useRef<{
     model: string;
@@ -959,6 +967,24 @@ export function VoiceTab() {
         );
         setDownloadedSttModels(allDownloaded);
         setLoadedSttModels(allLoaded);
+
+        if (!residentSyncedRef.current) {
+          const resident = engines
+            .map((engine) => engine?.loaded_model)
+            .find(
+              (model): model is string =>
+                typeof model === "string" &&
+                model.length > 0 &&
+                isSttModelId(model),
+            );
+          residentSyncedRef.current = true;
+          if (resident && resident !== sttModel && !allLoaded.has(sttModel)) {
+            // A model loaded from Transcribe or another surface should be the
+            // one this picker shows, not the last saved preference.
+            setSttModel(resident);
+            return;
+          }
+        }
 
         const engineStatus = sttEngineStatusFor(status, sttModel);
         if (
@@ -1543,6 +1569,13 @@ export function VoiceTab() {
                             repoId: nextRepo,
                             state: "downloaded",
                           });
+                          // Selecting a downloaded model should make it the
+                          // resident one, not leave the previous model loaded.
+                          const variant = sttModelVariant(
+                            next,
+                            useVoiceSettingsStore.getState().sttGgufVariant,
+                          );
+                          void autoLoadSttModel(next, variant);
                         }
                       }}
                     />
@@ -2086,7 +2119,7 @@ export function VoiceTab() {
                 max={2}
                 step={0.05}
                 onValueChange={([v]) => v !== undefined && setTtsRate(v)}
-                className="w-48"
+                className="w-56"
                 aria-label={t("settings.voice.readAloud.speedLabel")}
               />
             </SettingsRow>
@@ -2102,7 +2135,7 @@ export function VoiceTab() {
                   max={2}
                   step={0.05}
                   onValueChange={([v]) => v !== undefined && setTtsPitch(v)}
-                  className="w-48"
+                  className="w-56"
                   aria-label={t("settings.voice.readAloud.pitchLabel")}
                 />
               </SettingsRow>
@@ -2118,7 +2151,7 @@ export function VoiceTab() {
                 max={1}
                 step={0.05}
                 onValueChange={([v]) => v !== undefined && setTtsVolume(v)}
-                className="w-48"
+                className="w-56"
                 aria-label={t("settings.voice.readAloud.volumeLabel")}
               />
             </SettingsRow>

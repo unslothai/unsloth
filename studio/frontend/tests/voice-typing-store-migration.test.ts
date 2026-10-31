@@ -79,7 +79,7 @@ test("voice typing is off by default", async () => {
   assert.equal(store.getState().llmPostProcessEnabled, false);
   assert.equal(store.getState().llmPostProcessModel, "");
   assert.ok(store.getState().llmPostProcessPrompt.includes("${output}"));
-  assert.equal(store.getState().idleStopMs, 60_000);
+  assert.equal(store.getState().idleStopMs, 6000);
 });
 
 test("an older enabled preference is reset to off", async () => {
@@ -162,7 +162,7 @@ test("out-of-range values are repaired instead of shown", async () => {
   assert.equal(store.getState().hudPosition, "bottom");
   assert.equal(store.getState().muteWhileRecording, false);
   assert.equal(store.getState().autoStopDelayMs, 2500);
-  assert.equal(store.getState().idleStopMs, 60_000);
+  assert.equal(store.getState().idleStopMs, 6000);
 });
 
 test("new writes carry the current schema version", async () => {
@@ -190,6 +190,11 @@ test("default dictation dictionary has 1000 curated base words plus user name wo
     DEFAULT_DICTATION_DICTIONARY_WORDS: readonly string[];
     extractUserNameWords: (name?: string) => string[];
     buildDefaultDictationDictionary: (name?: string) => string[];
+    applyDictationDictionary: (
+      text: string,
+      dictionary?: string[],
+      options?: { snippets?: boolean },
+    ) => string;
   };
 
   assert.equal(
@@ -210,6 +215,39 @@ test("default dictation dictionary has 1000 curated base words plus user name wo
   assert.equal(combined[0], "Fahad");
   assert.equal(combined[1], "Khan");
   assert.equal(combined[2], "Unsloth");
+});
+
+test("custom spellings match split words and win the final pass", async () => {
+  const settingsModule = (await import(
+    new URL(
+      "../src/features/settings/stores/voice-settings-store.ts",
+      import.meta.url,
+    ).href
+  )) as {
+    applyDictationDictionary: (
+      text: string,
+      dictionary?: string[],
+      options?: { snippets?: boolean },
+    ) => string;
+  };
+  const apply = settingsModule.applyDictationDictionary;
+  assert.equal(
+    apply("i use un sloth daily", ["Unsloth"], { snippets: false }),
+    "i use Unsloth daily",
+  );
+  assert.equal(
+    apply("i use UNSLOTH daily", ["Unsloth"], { snippets: false }),
+    "i use Unsloth daily",
+  );
+  assert.equal(
+    apply("send it k8s now", ["k8s -> Kubernetes"], { snippets: true }),
+    "send it Kubernetes now",
+  );
+  assert.equal(
+    apply("send it k8s now", ["k8s -> Kubernetes"], { snippets: false }),
+    "send it k8s now",
+    "the final spelling pass leaves snippets alone",
+  );
 });
 
 test("turning history off keeps past dictations so they can still be managed", async () => {
