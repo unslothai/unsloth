@@ -20,7 +20,6 @@ const { buildChatSearchIndex } = await import(
 const { chatSearchBatchRequests, configureChatSearchHistoryStub } =
   await import("./helpers/store-stubs/chat-search-history.ts");
 
-// Seeded, so a failure reproduces.
 function randomStrings(alphabet: string[], count: number): string[] {
   let seed = 12345;
   const next = () => {

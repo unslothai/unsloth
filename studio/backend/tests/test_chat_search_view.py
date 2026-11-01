@@ -118,7 +118,6 @@ def test_search_view_keeps_what_the_index_reads_and_drops_the_rest(history):
             assert kept[key] == source[key]
         assert kept["metadata"] is None
     assert user["content"] == [{"type": "text", "text": "look"}]
-    # Only the pasted-text body is searchable; the document body and image never are.
     assert user["attachments"] == [{"content": [{"type": "text", "text": PASTED}]}]
     assert assistant["content"] == TEXT_PARTS
 
@@ -170,7 +169,6 @@ def test_search_view_drops_parts_the_index_skips():
     assert chat_history._search_view_message(message)["content"] == [
         {"type": "text", "text": "kept"}
     ]
-    # A non-list content is read as stored.
     for value in ("plain", None, {"type": "text", "text": "x"}):
         message["content"] = value
         assert chat_history._search_view_message(message)["content"] == value
