@@ -517,3 +517,198 @@ def test_compiled_graph_has_no_fp8_transpose_outside_the_ops():
     assert targets == [], targets
     names = {str(n.target) for g in graphs for n in g.graph.nodes if n.op == "call_function"}
     assert any("fp8_lora_fwd" in t for t in names) and any("fp8_lora_dgrad" in t for t in names), names
+
+
+# ---- host master: the GPU keeps only the fp8 copy (memory at or below bf16 LoRA) ----------------------------
+@pytest.fixture
+def offload_on_cpu(monkeypatch):
+    # The compute device is the CPU here, so offload to a separate host copy: every code path of the GPU case
+    # runs, only the device copy itself is trivial (the GPU job checks that part).
+    monkeypatch.setattr(FL, "_OFFLOAD_CPU_WEIGHTS", True)
+    monkeypatch.setattr(FL, "_OFFLOAD_MASTER", True)
+    monkeypatch.delenv("WORLD_SIZE", raising = False)
+
+
+def _frozen_linear(K = 256, N = 384, bias = False, seed = 0):
+    torch.manual_seed(seed)
+    lin = torch.nn.Linear(K, N, bias = bias, dtype = torch.bfloat16)
+    return lin.requires_grad_(False)
+
+
+def test_host_master_leaves_only_fp8_bytes_on_the_compute_device(offload_on_cpu):
+    lin, ref = _frozen_linear(), _frozen_linear()
+    W0, param = lin.weight.detach().clone(), lin.weight
+    state = FL.attach_fp8_lora_base(lin)
+    ref_state = FL.attach_fp8_lora_base(ref, offload = False)
+    assert state.offloaded and not ref_state.offloaded
+    assert lin.weight is param  # optimizer / PEFT / named_parameters keep the same Parameter
+    assert torch.equal(lin.weight, W0)  # the host master is the exact 16-bit weight
+    numel = 256 * 384
+    # Per converted layer: fp8 copy (1 byte / weight) + one fp32 scale; no 16-bit bytes on the device.
+    assert state.resident_bytes(lin) == {"fp8": numel + 4, "master_device": 0, "master_host": 2 * numel}
+    # Before: the 16-bit master stayed beside the fp8 copy (3 bytes / weight on the device).
+    assert ref_state.resident_bytes(ref) == {"fp8": numel + 4, "master_device": 2 * numel, "master_host": 0}
+    assert FL.fp8_lora_memory(torch.nn.Sequential(lin, ref))["total"] == {
+        "fp8": 2 * (numel + 4),
+        "master_device": 2 * numel,
+        "master_host": 2 * numel,
+    }
+
+
+def test_host_master_gives_the_same_fp8_results(offload_on_cpu):
+    lin, ref = _frozen_linear(bias = True), _frozen_linear(bias = True)
+    FL.attach_fp8_lora_base(lin)
+    FL.attach_fp8_lora_base(ref, offload = False)
+    x = torch.randn(2, 16, 256).bfloat16()
+    xa, xb = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+    ya, yb = lin(xa), ref(xb)
+    dy = torch.randn_like(ya)
+    ya.backward(dy)
+    yb.backward(dy)
+    assert torch.equal(ya, yb) and torch.equal(xa.grad, xb.grad)
+    assert FL.FP8_LORA_STATS["fwd"] == 2 and FL.FP8_LORA_STATS["dgrad"] == 2
+    assert FL.FP8_LORA_STATS["quantize"] == 2  # quantized once each, never again from the host copy
+
+
+def test_host_master_decode_rows_use_the_dequantized_fp8_weight(offload_on_cpu):
+    lin = _frozen_linear()
+    W0 = lin.weight.detach().clone()
+    state = FL.attach_fp8_lora_base(lin)
+    x = torch.randn(1, 1, 256).bfloat16()
+    dense = (state.w8.float() * state.w_inv).bfloat16()
+    torch.testing.assert_close(state.matmul(x, lin.weight), x @ dense.t())
+    torch.testing.assert_close(lin(x), x @ dense.t())
+    # Its orientation follows W: the transposed view gives the input-gradient form.
+    dy = torch.randn(1, 1, 384).bfloat16()
+    torch.testing.assert_close(state.matmul(dy, lin.weight.t()), dy @ dense)
+    assert _rel(lin(x), x @ W0.t()) < FP8_FWD_TOL
+    assert FL.FP8_LORA_STATS["fwd"] == 0
+
+
+def test_host_master_dequantize_is_exact(offload_on_cpu):
+    lin = _frozen_linear()
+    W0 = lin.weight.detach().clone()
+    state = FL.attach_fp8_lora_base(lin)
+    # fast_dequantize (unsloth's merged save) gets the exact weight, never the fp8 reconstruction.
+    from unsloth.kernels.utils import fast_dequantize
+
+    assert torch.equal(fast_dequantize(lin.weight, state), W0)
+    assert torch.equal(fast_dequantize(lin.weight.t(), state), W0.t())
+
+
+def test_module_moves_keep_or_restore_the_host_master(offload_on_cpu):
+    lin = _frozen_linear(bias = True)
+    state = FL.attach_fp8_lora_base(lin)
+    w8 = state.w8
+    # The Trainer's model.to(device) onto the device the fp8 copy lives on: master stays in host RAM.
+    lin.to(state.device)
+    lin.to(torch.bfloat16)
+    assert state.offloaded and state.w8 is w8
+    # A real conversion brings the exact master back first, then converts it.
+    W0 = lin.weight.detach().clone()
+    lin.half()
+    assert not state.offloaded and lin.weight.dtype == torch.float16
+    assert torch.equal(lin.weight, W0.half())
+    x = torch.randn(32, 256).half()
+    y = lin(x)  # requantized from the converted weight
+    assert y.dtype == torch.float16 and _rel(y, x.float() @ W0.float().t() + lin.bias.float()) < FP8_FWD_TOL
+
+
+def test_no_host_master_for_16bit_dgrad_or_distributed(offload_on_cpu, monkeypatch):
+    monkeypatch.setattr(FL, "_DGRAD_DTYPE", None)
+    assert not FL.offload_supported()
+    monkeypatch.setattr(FL, "_DGRAD_DTYPE", "auto")
+    assert FL.offload_supported()
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    assert not FL.offload_supported()
+    monkeypatch.delenv("WORLD_SIZE")
+    monkeypatch.setattr(FL, "_OFFLOAD_MASTER", False)
+    assert not FL.offload_supported()
+
+
+def test_save_and_merge_exact_with_host_master(offload_on_cpu):
+    import copy
+
+    model = _tiny_qwen3_peft()
+    ref = copy.deepcopy(model)
+    frozen = {n: p.detach().clone() for n, p in model.named_parameters() if not p.requires_grad}
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    converted = f8t.enable_fp8_lora(model, allow_cpu = True)
+    assert len(converted) == 14
+    assert P.engaged(model)[f8t.FP8_LORA_RECIPE]["detail"]["master_offloaded"] == 14
+    memory = FL.fp8_lora_memory(model)
+    assert len(memory["layers"]) == 14 and memory["total"]["master_device"] == 0
+    # Train a few steps: LoRA moves, the frozen base must not.
+    opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr = 0.1)
+    for _ in range(3):
+        _loss_and_grads_keep(model)
+        opt.step()
+        opt.zero_grad(set_to_none = True)
+    sd = model.state_dict()
+    for name, value in frozen.items():
+        assert torch.equal(sd[name], value), name
+    # Serialized base weights round trip bit for bit.
+    from safetensors.torch import load, save
+
+    base = {n: sd[n].contiguous() for n in frozen if "base_layer" in n}
+    assert len(base) == 14
+    loaded = load(save(base))
+    assert all(torch.equal(loaded[n], frozen[n]) for n in base)
+    # Same LoRA weights into the untouched copy, then merge both ways: bitwise equal to the 16-bit merge.
+    ref.load_state_dict({n: p for n, p in sd.items() if "lora_" in n}, strict = False)
+    from unsloth.save import _merge_lora
+
+    mods, ref_mods = dict(model.named_modules()), dict(ref.named_modules())
+    for name in converted:
+        W, _ = _merge_lora(mods[name], name)
+        W_ref, _ = _merge_lora(ref_mods[name], name)
+        assert W.dtype == W_ref.dtype and torch.equal(W, W_ref), name
+    merged = model.merge_and_unload().state_dict()
+    merged_ref = ref.merge_and_unload().state_dict()
+    assert merged.keys() == merged_ref.keys()
+    for name in merged_ref:
+        assert torch.equal(merged[name], merged_ref[name]), name
+    # PEFT merge put the masters back on the compute device before adding the delta.
+    assert all(
+        not m.__dict__["_unsloth_fp8_lora"].offloaded
+        for m in model.modules()
+        if "_unsloth_fp8_lora" in m.__dict__
+    )
+
+
+def _loss_and_grads_keep(model):
+    torch.manual_seed(1)
+    ids = torch.randint(0, 256, (2, 32))
+    model(input_ids = ids, labels = ids).loss.backward()
+
+
+def test_square_tile_transpose_kernel_byte_exact_under_the_triton_interpreter():
+    triton = pytest.importorskip("triton")
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    path = os.path.abspath(FL.__file__)
+    code = textwrap.dedent(
+        f"""
+        import importlib.util, torch
+        spec = importlib.util.spec_from_file_location("fp8_lora_standalone", {path!r})
+        FL = importlib.util.module_from_spec(spec); spec.loader.exec_module(FL)
+        assert FL.triton is not None
+        for R, C in ((64, 64), (128, 192), (100, 37), (1, 300), (65, 129), (256, 64)):
+            x = torch.randint(0, 255, (R, C), dtype = torch.uint8).view(torch.float8_e4m3fn)
+            y = FL.fp8_transpose(x, use_triton = True)
+            assert y.shape == (C, R) and y.is_contiguous() and y.dtype == x.dtype
+            assert torch.equal(y.view(torch.uint8), x.t().contiguous().view(torch.uint8)), (R, C)
+        print("TRANSPOSE_OK")
+        """
+    )
+    env = dict(os.environ, TRITON_INTERPRET = "1", CUDA_VISIBLE_DEVICES = "")
+    p = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, env = env, timeout = 600)
+    assert "TRANSPOSE_OK" in p.stdout, p.stdout[-2000:] + p.stderr[-4000:]
+    # One BLOCK constexpr for both tile sides: non-square tiles miscompile fp8 transposed stores on sm89.
+    import inspect
+
+    src = inspect.getsource(FL.fp8_transpose)
+    assert "_TRANSPOSE_BLOCK), triton.cdiv(C, _TRANSPOSE_BLOCK)" in src

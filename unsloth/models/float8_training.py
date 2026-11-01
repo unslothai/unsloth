@@ -532,6 +532,24 @@ def _load_fp8_lora_kernels():
         return module
 
 
+def _restore_master_before_merge(lora_module, base, kernels):
+    """PEFT merge / unmerge add to base.weight.data on the LoRA device: bring a host master back first."""
+    import types
+
+    for method in ("merge", "unmerge"):
+        original = getattr(lora_module, method, None)
+        if original is None or getattr(original, "_unsloth_fp8_restore", False):
+            continue
+
+        def wrapped(self, *args, _original = original, **kwargs):
+            kernels.restore_fp8_lora_master(base)
+            return _original(*args, **kwargs)
+
+        bound = types.MethodType(wrapped, lora_module)
+        bound.__func__._unsloth_fp8_restore = True
+        object.__setattr__(lora_module, method, bound)
+
+
 def enable_fp8_lora(model, recipe = None, allow_cpu = False):
     """Attach the fp8 frozen-base state to every LoRA base nn.Linear (frozen, 16-bit, dims % 16, not a
     high-precision layer). Returns the converted names. A no-op unless the model was loaded with it."""
@@ -545,6 +563,13 @@ def enable_fp8_lora(model, recipe = None, allow_cpu = False):
     except Exception:
         is_hp = lambda module, fqn: False
     converted, skipped = [], {}
+    # A Parameter shared by two modules (tied weights) keeps its 16-bit copy on the GPU: the other reader is
+    # not an fp8 base.
+    uses = {}
+    for _, p in model.named_parameters(remove_duplicate = False):
+        uses[id(p)] = uses.get(id(p), 0) + 1
+    offload = kernels.offload_supported()
+    offloaded = 0
     for name, module in model.named_modules():
         base = getattr(module, "base_layer", None)
         if base is None or not hasattr(module, "lora_A") or not isinstance(base, torch.nn.Module):
@@ -562,11 +587,17 @@ def enable_fp8_lora(model, recipe = None, allow_cpu = False):
         if why is not None:
             skipped[name] = why
             continue
-        kernels.attach_fp8_lora_base(base)
+        state = kernels.attach_fp8_lora_base(base, offload = offload and uses.get(id(base.weight), 0) == 1)
+        offloaded += int(state.offloaded)
+        _restore_master_before_merge(module, base, kernels)
         converted.append(name)
-    _record_engagement(
-        model, recipe, len(converted), detail = {"skipped": len(skipped)} if skipped else None
-    )
+    if offloaded and torch.cuda.is_available():
+        # Return the freed 16-bit blocks to the driver (they are 2 bytes per converted weight).
+        torch.cuda.empty_cache()
+    detail = {"skipped": len(skipped)} if skipped else {}
+    if offloaded:
+        detail["master_offloaded"] = offloaded
+    _record_engagement(model, recipe, len(converted), detail = detail or None)
     if not _require_engagement(recipe, len(converted), "no frozen 16-bit LoRA base Linear layers"):
         print(
             "Unsloth: float8_training with LoRA found no eligible base layers"

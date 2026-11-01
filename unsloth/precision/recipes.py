@@ -513,8 +513,7 @@ _add(
 )
 
 _FP8_LORA_RUNS = (
-    "Qwen3 LoRA r=16, seq 2048, bs 2, 30 steps, Unsloth GC, vs bf16 LoRA in the same VM "
-    "(outputs/fp8_lora, scripts/fp8_lora/gpu_job.py)"
+    "Qwen3 LoRA r=16, seq 2048, bs 2, 30 steps, Unsloth GC, vs bf16 LoRA in the same Colab VM"
 )
 _add(
     Recipe(

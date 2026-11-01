@@ -14,7 +14,13 @@ fp8 through torch._scaled_mm, the LoRA branch stays in the activation dtype (Meg
 split). The base weight is frozen, so it is quantized once (tensorwise e4m3) and cached; the 16-bit weight stays
 the source of truth for merge / save. A weight changed in place (merge, unmerge, load) is requantized on its
 next eager use. cuBLAS fp8 GEMMs are TN only, so dgrad needs a K-major copy: transposed per backward inside the
-opaque op (UNSLOTH_FP8_LORA_CACHE_T=1 caches it instead: +1 byte per weight, 1-7% faster).
+opaque op by a square-tile Triton kernel (UNSLOTH_FP8_LORA_CACHE_T=1 caches it instead: +1 byte per weight).
+
+Memory: once quantized, the 16-bit weight moves to host RAM (pinned; same Parameter object, so state_dict, save
+and merge read the exact weight) and the GPU keeps only the fp8 copy, 1 byte per weight against bf16 LoRA's 2.
+fast_dequantize hands back the exact weight on the GPU (merged save), PEFT merge / unmerge and moves to another
+device or dtype bring it back first, and decode rows use the dequantized fp8 weight. Kept on the GPU for 16-bit
+dgrad, distributed runs and shared Parameters; UNSLOTH_FP8_LORA_OFFLOAD_MASTER=0 keeps it there always.
 
 Scales (UNSLOTH_FP8_LORA_SCALING): tensor = activations e4m3 / output gradients e5m2, one scale per tensor;
 row = one e4m3 scale per token for both. auto picks row on compute capability 12.x and tensor elsewhere (L4's
@@ -40,6 +46,10 @@ __all__ = [
     "quantize_tensorwise",
     "quantize_rowwise",
     "attach_fp8_lora_base",
+    "detach_fp8_lora_base",
+    "fp8_lora_memory",
+    "fp8_transpose",
+    "restore_fp8_lora_master",
     "has_fp8_dgrad",
     "reset_fp8_lora_stats",
 ]
@@ -99,6 +109,10 @@ _DGRAD_FAST_ACCUM = os.environ.get("UNSLOTH_FP8_LORA_DGRAD_FAST_ACCUM", "0") == 
 # opaque op: 1% slower tensorwise (L4, RTX PRO 6000), 7% slower rowwise at Qwen3-1.7B (RTX PRO 6000), and
 # 0.4 / 1.3 GB less peak memory at Qwen3-0.6B / 1.7B.
 _CACHE_T = os.environ.get("UNSLOTH_FP8_LORA_CACHE_T", "0") == "1"
+# 1: the 16-bit master lives in host RAM once quantized (see the module docstring).
+_OFFLOAD_MASTER = os.environ.get("UNSLOTH_FP8_LORA_OFFLOAD_MASTER", "1") != "0"
+# Tests only: offload a CPU-resident weight too (to a separate host copy), so the logic runs without a GPU.
+_OFFLOAD_CPU_WEIGHTS = False
 # Fewer rows than this (decode) use the 16-bit weight: an fp8 GEMM there is launch bound and less exact.
 _MIN_ROWS = int(os.environ.get("UNSLOTH_FP8_LORA_MIN_ROWS", "16"))
 
@@ -256,6 +270,40 @@ def quantize_rowwise(x: torch.Tensor, fp8_dtype = E4M3):
     return y, amax / fp8_max
 
 
+if triton is not None:
+
+    @triton.jit
+    def _transpose_u8_kernel(x_ptr, y_ptr, R, C, BLOCK: tl.constexpr):
+        # x [R, C] -> y [C, R], both row-major bytes. One BLOCK for both tile sides on purpose: Triton writes
+        # corrupt bytes for 2D fp8 transposed stores from non-square tiles on sm89 (L4, triton 3.x), square tiles
+        # are byte exact there.
+        rows = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        cols = tl.program_id(1).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        mask = (rows[:, None] < R) & (cols[None, :] < C)
+        tile = tl.load(x_ptr + rows[:, None] * C + cols[None, :], mask = mask)
+        tl.store(y_ptr + cols[None, :] * R + rows[:, None], tile, mask = mask)
+
+
+_TRANSPOSE_BLOCK = 64
+
+
+def fp8_transpose(w8: torch.Tensor, use_triton: Optional[bool] = None) -> torch.Tensor:
+    """w8 [R, C] (contiguous, 1 byte per element) -> contiguous [C, R], byte for byte."""
+    if use_triton is None:
+        use_triton = triton is not None and w8.is_cuda
+    if not use_triton or w8.dim() != 2 or w8.numel() == 0:
+        return w8.t().contiguous()
+    w8 = w8.contiguous()
+    R, C = w8.shape
+    out = torch.empty((C, R), dtype = w8.dtype, device = w8.device)
+    grid = (triton.cdiv(R, _TRANSPOSE_BLOCK), triton.cdiv(C, _TRANSPOSE_BLOCK))
+    with torch.cuda.device(w8.device) if (_MULTI_GPU and w8.is_cuda) else contextlib.nullcontext():
+        _transpose_u8_kernel[grid](
+            w8.view(torch.uint8), out.view(torch.uint8), R, C, BLOCK = _TRANSPOSE_BLOCK, num_warps = 4
+        )
+    return out
+
+
 def _out_dtype(dtype):
     # The fp8 GEMM never writes float16 (outputs past 65504 overflow there); bf16 out, the caller casts back.
     return torch.float32 if dtype == torch.float32 else torch.bfloat16
@@ -330,10 +378,10 @@ def fp8_lora_dgrad(
     dy: torch.Tensor, w8: torch.Tensor, w_inv: torch.Tensor, w_is_t: bool
 ) -> torch.Tensor:
     """dy [M, N] (16-bit) @ dequant(W [N, K]) -> dx [M, K] in dy.dtype. w8 is the cached K-major copy [K, N]
-    (w_is_t) or the forward copy [N, K], transposed here: inside the op it is an eager aten copy, never an
-    Inductor-generated fp8 transpose (those write corrupt bytes for some tile configs on sm89)."""
+    (w_is_t) or the forward copy [N, K], transposed here by the square-tile kernel inside the op, never by an
+    Inductor-generated fp8 transpose (those write corrupt bytes for non-square tile configs on sm89)."""
     FP8_LORA_STATS["dgrad"] += 1
-    w8t = w8 if w_is_t else w8.t().contiguous()
+    w8t = w8 if w_is_t else fp8_transpose(w8)
     if w_inv.dim() == 2:
         # Rowwise gradients are e4m3 (torchao's rowwise recipe; per-token scales need no e5m2 range).
         dy8, dy_inv = quantize_rowwise(dy, E4M3)
@@ -365,8 +413,10 @@ class Fp8LoRABaseState:
 
     def __init__(self, weight: torch.Tensor):
         self.dtype = weight.dtype
+        self.device = weight.device  # where the fp8 copy and the GEMMs live
         self.w8 = self.w8t = self.w_inv = self.w_inv_fwd = self.w_inv_dgrad = None
         self.scaling = "tensor"
+        self.offloaded = False  # True: the module's 16-bit weight is the host copy
         self._key = None
         self.quantizations = 0
         self.refresh(weight)
@@ -385,8 +435,13 @@ class Fp8LoRABaseState:
             return self
         with torch.no_grad():
             w = weight.detach()
+            if self.offloaded:
+                # The host master changed in place (load_state_dict): requantize on the compute device.
+                w = w.to(self.device)
+            else:
+                self.device = w.device
             self.w8, self.w_inv = quantize_tensorwise(w, E4M3)
-            self.w8t = self.w8.t().contiguous() if _CACHE_T else None
+            self.w8t = fp8_transpose(self.w8) if _CACHE_T else None
             self.scaling = _scaling_for(w.device)
             if self.scaling == "row":
                 # _scaled_mm's rowwise form takes [M, 1] x [1, N] scales: the weight's one scale per column.
@@ -404,9 +459,72 @@ class Fp8LoRABaseState:
         """(fp8 weight, is it the K-major copy) for fp8_lora_dgrad."""
         return (self.w8t, True) if self.w8t is not None else (self.w8, False)
 
+    # ---- host master -----------------------------------------------------------------------------------
+    def offload(self, module):
+        """Move module.weight (the 16-bit master) to host RAM, keeping the Parameter object. The fp8 copy
+        stays; the GPU no longer holds 16-bit bytes for this layer."""
+        weight = module.weight
+        if self.offloaded or (weight.device.type == "cpu" and not _OFFLOAD_CPU_WEIGHTS):
+            return False
+        self.refresh(weight)
+        host = None
+        if weight.is_cuda:
+            try:
+                host = torch.empty(weight.shape, dtype = weight.dtype, device = "cpu", pin_memory = True)
+            except RuntimeError:  # pinned host memory exhausted: pageable works, restores are slower
+                host = None
+        if host is None:
+            host = torch.empty(weight.shape, dtype = weight.dtype, device = "cpu")
+        host.copy_(weight.detach())
+        weight.data = host
+        self.offloaded = True
+        self._key = self._weight_key(weight)
+        return True
+
+    def restore(self, module):
+        """Bring the exact 16-bit master back to the compute device (merge, other devices / dtypes)."""
+        if not self.offloaded:
+            return False
+        weight = module.weight
+        weight.data = weight.data.to(self.device)
+        self.offloaded = False
+        # Same values, so the fp8 copy is still valid.
+        self._key = self._weight_key(weight)
+        return True
+
+    def _dense(self, W):
+        """A 16-bit operand on the compute device for the non-fp8 fallbacks: W itself, or (master on the host)
+        the dequantized fp8 weight in W's orientation, which is what the fp8 forward uses anyway."""
+        if W is not None and not self.offloaded and W.device == self.device:
+            return W
+        dense = self.w8.to(torch.float32) * self.w_inv
+        dense = dense.to(self.dtype if W is None else W.dtype)
+        return dense.t() if W is not None and _is_transposed(W) else dense
+
+    def resident_bytes(self, module = None):
+        """{'fp8': fp8 copies + scales on the compute device, 'master_device': 16-bit master bytes on the
+        compute device, 'master_host': master bytes in host RAM}."""
+        fp8 = sum(
+            t.numel() * t.element_size()
+            for t in {id(t): t for t in (self.w8, self.w8t, self.w_inv, self.w_inv_fwd, self.w_inv_dgrad)
+                      if t is not None}.values()
+        )
+        out = {"fp8": fp8, "master_device": 0, "master_host": 0}
+        if module is not None:
+            w = module.weight
+            nbytes = w.numel() * w.element_size()
+            if self.offloaded:
+                out["master_host"] = nbytes
+            elif w.device == self.device:
+                out["master_device"] = nbytes
+        return out
+
     # ---- kernels.utils packed-state protocol ------------------------------------------------------------
     def dequantize(self, W = None, dtype = None):
-        # W is the 16-bit weight (or its .t()): exact, nothing to decode.
+        # W is the 16-bit weight (or its .t()): exact, nothing to decode. A host master is copied to the compute
+        # device as is (merged save must not lose precision), never rebuilt from fp8.
+        if W is not None and W.device != self.device:
+            return W.to(self.device)
         return W
 
     def _use_fp8(self, X):
@@ -421,7 +539,7 @@ class Fp8LoRABaseState:
         X2 = X.reshape(-1, shape[-1])
         if not self._use_fp8(X2):
             FP8_LORA_STATS["fwd_16bit"] += 1
-            result = torch.matmul(X2, W.t().to(X2.dtype))
+            result = torch.matmul(X2, self._dense(W).t().to(X2.dtype))
         elif _is_transposed(W):
             result = self.dgrad(X2, W.t())
         else:
@@ -435,9 +553,9 @@ class Fp8LoRABaseState:
         dY2 = dY.reshape(-1, shape[-1])
         if _DGRAD_DTYPE is None or not self._use_fp8(dY2):
             FP8_LORA_STATS["dgrad_16bit"] += 1
-            if W is None:
+            if W is None and not self.offloaded:
                 raise RuntimeError("Unsloth: 16-bit dgrad needs the base weight")
-            result = torch.matmul(dY2, W.to(dY2.dtype))
+            result = torch.matmul(dY2, self._dense(W).to(dY2.dtype))
         else:
             w8, w_is_t = self._dgrad_weight()
             result = fp8_lora_dgrad(dY2, w8, self.w_inv_dgrad, w_is_t)
@@ -481,6 +599,11 @@ def _fp8_base_forward(self, x):
     weight = self.weight
     if state is None or weight.requires_grad or not state._use_fp8(x.reshape(-1, x.shape[-1])):
         FP8_LORA_STATS["fwd_16bit"] += 1
+        if state is not None and state.offloaded:
+            if weight.requires_grad:  # unfrozen: train the exact weight
+                state.restore(self)
+            else:
+                weight = state._dense(weight)
         return torch.nn.functional.linear(x, weight.to(x.dtype), self.bias)
     state.refresh(weight)
     # Tensorwise: one scale serves both GEMMs (Dynamo rejects the same tensor passed twice to apply).
@@ -510,17 +633,78 @@ def eligible_base(module) -> Optional[str]:
     return None
 
 
-def attach_fp8_lora_base(module) -> Fp8LoRABaseState:
-    """Quantize the frozen base `module` (nn.Linear) once and route its GEMMs through fp8."""
+def offload_supported() -> bool:
+    """The host master needs a quantized-weight dgrad and one process owning the weights."""
+    if not _OFFLOAD_MASTER or _DGRAD_DTYPE is None:
+        return False
+    try:
+        if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+            return False
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _fp8_base_apply(self, fn, recurse = True):
+    # nn.Module.to / cuda / half reach the base layer here. A move to where the fp8 copy already lives (the
+    # Trainer's model.to(device)) leaves the host master alone; anything else brings it back first.
+    state = self.__dict__.get("_unsloth_fp8_lora")
+    if state is not None and state.offloaded:
+        probe = fn(torch.empty(0, dtype = state.dtype, device = state.device))
+        if probe.device == state.device and probe.dtype == state.dtype:
+            weight = self._parameters.pop("weight")
+            try:
+                return torch.nn.Module._apply(self, fn, recurse)
+            finally:
+                self._parameters["weight"] = weight
+        state.restore(self)
+    return torch.nn.Module._apply(self, fn, recurse)
+
+
+def attach_fp8_lora_base(module, offload: Optional[bool] = None) -> Fp8LoRABaseState:
+    """Quantize the frozen base `module` (nn.Linear) once and route its GEMMs through fp8. offload: move the
+    16-bit master to host RAM (None: offload_supported())."""
     import types
+
     state = module.__dict__.get("_unsloth_fp8_lora")
     if state is None:
         state = Fp8LoRABaseState(module.weight)
         module.__dict__["_unsloth_fp8_lora"] = state
         module.forward = types.MethodType(_fp8_base_forward, module)
+        module._apply = types.MethodType(_fp8_base_apply, module)
+    if offload is None:
+        offload = offload_supported()
+    if offload:
+        state.offload(module)
     return state
 
 
+def restore_fp8_lora_master(module) -> bool:
+    """Bring a base layer's exact 16-bit weight back to its compute device (PEFT merge, export)."""
+    state = module.__dict__.get("_unsloth_fp8_lora")
+    return state.restore(module) if state is not None else False
+
+
 def detach_fp8_lora_base(module):
+    restore_fp8_lora_master(module)
     module.__dict__.pop("_unsloth_fp8_lora", None)
     module.__dict__.pop("forward", None)
+    module.__dict__.pop("_apply", None)
+
+
+def fp8_lora_memory(model) -> dict:
+    """Bytes per converted base layer and in total: fp8 copies on the compute device, the 16-bit master on the
+    compute device (0 when offloaded) and in host RAM."""
+    layers, total = {}, {"fp8": 0, "master_device": 0, "master_host": 0}
+    for name, module in model.named_modules():
+        state = module.__dict__.get("_unsloth_fp8_lora")
+        if state is None:
+            continue
+        layers[name] = state.resident_bytes(module)
+        for key in total:
+            total[key] += layers[name][key]
+    return {"layers": layers, "total": total}
