@@ -163,22 +163,33 @@ def find_embeddings(model) -> Dict[str, str]:
 
 def decoder_layers(model):
     """(fqn prefix of the decoder layer list, number of layers): the longest ModuleList of same-type blocks
-    that hold Linear layers. (None, 0) when there is none."""
-    best = (None, 0)
+    that hold Linear layers, ignoring experts lists and any list nested inside another such list (an MoE
+    model can have more experts per block than blocks). (None, 0) when there is none."""
+    candidates = []
     for name, module in model.named_modules():
         if not isinstance(module, torch.nn.ModuleList) or len(module) < 2:
+            continue
+        if any("expert" in part.lower() for part in name.split(".")):
             continue
         types = {type(m) for m in module}
         if len(types) != 1:
             continue
         if not any(isinstance(m, torch.nn.Linear) for m in module[0].modules()):
             continue
-        # experts lists (ModuleList of MLPs inside a block) are shorter than the layer list on real models, but
-        # a tie goes to the shallower list.
-        if len(module) > best[1] or (
-            len(module) == best[1] and best[0] is not None and name.count(".") < best[0].count(".")
+        candidates.append((name, len(module)))
+    # A list inside a block of another candidate list (`layers.0.<...>`) is part of that block, not the stack.
+    outer = [
+        (name, n)
+        for name, n in candidates
+        if not any(o != name and o and name.startswith(o + ".") for o, _ in candidates)
+    ]
+    best = (None, 0)
+    for name, n in outer:
+        # A tie goes to the shallower list.
+        if n > best[1] or (
+            n == best[1] and best[0] is not None and name.count(".") < best[0].count(".")
         ):
-            best = (name, len(module))
+            best = (name, n)
     return best
 
 

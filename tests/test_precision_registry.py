@@ -426,3 +426,30 @@ def test_require_and_counter(monkeypatch):
     except (RuntimeError, NotImplementedError):
         pytest.skip("no CPU _scaled_mm in this torch")
     assert c["_scaled_mm"] == 1
+
+
+def test_decoder_layers_is_the_block_stack_not_an_experts_list():
+    # Failing before: the longest ModuleList won, so a model with more experts than layers returned
+    # model.layers.0.mlp.experts and first_n / last_n kept experts in high precision instead of blocks.
+    from transformers import Qwen2MoeConfig, Qwen2MoeForCausalLM
+
+    config = Qwen2MoeConfig(
+        vocab_size = 256,
+        hidden_size = 64,
+        intermediate_size = 128,
+        moe_intermediate_size = 32,
+        shared_expert_intermediate_size = 64,
+        num_hidden_layers = 4,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_experts = 12,
+        num_experts_per_tok = 2,
+    )
+    with torch.device("meta"):
+        m = Qwen2MoeForCausalLM(config)
+    assert P.decoder_layers(m) == ("model.layers", 4)
+    is_hp = P.hp_filter(m, P.HPLayerPolicy(first_n = 1, last_n = 1))
+    assert is_hp(None, "model.layers.0.self_attn.q_proj")
+    assert is_hp(None, "model.layers.3.mlp.experts.5.up_proj")
+    assert not is_hp(None, "model.layers.1.self_attn.q_proj")
+    assert not is_hp(None, "model.layers.1.mlp.experts.0.up_proj")
