@@ -670,9 +670,7 @@ def test_xlsx_reads_each_number_format_once_per_workbook(tmp_path, monkeypatch):
         office_formats, "_format_tokens", lambda code: tokenized.append(code) or real_tokens(code)
     )
     text = _text(path)
-    # One read per distinct format in the whole workbook, not one per cell.
     assert sorted(tokenized) == ["#,##0", money, "0.0%"]
-    # Every cell matches a fresh, uncached reading of its format.
     expected = "\n".join(
         " | ".join(
             office_formats._cell_number(float(value * r), *formats[style], False)
