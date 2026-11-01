@@ -1160,7 +1160,7 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
-    # Pure in the name and the tables, and every inventory request asks again for each row.
+    # Pure in name + tables; every inventory request asks again per row.
     memo = _detect_video_family_memo()
     try:
         return memo[repo_id]
