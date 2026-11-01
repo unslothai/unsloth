@@ -162,6 +162,13 @@ def set_compile_cache_tag(prefix: str, tag: str | None) -> None:
     current = getattr(cfg, "cache_key_tag", None)
     if not isinstance(current, str):
         return
+    # Studio's patches outlive the load context. Keep their recorded tokens while
+    # preserving foreign tokens from the caller's context.
+    recorded_tag = get_knob("torch.compiler.config", "cache_key_tag", current)
+    current = ";".join(
+        [p for p in current.split(";") if not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+        + [p for p in recorded_tag.split(";") if p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+    )
     set_knob(
         "torch.compiler.config", "cache_key_tag", canonical_compile_cache_tag(current, prefix, tag)
     )
