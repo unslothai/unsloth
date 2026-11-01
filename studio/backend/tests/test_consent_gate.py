@@ -485,7 +485,6 @@ class TestConsentGate:
         probe_error = None,
         snapshot = None,
     ):
-        """``x/y`` cannot be listed; its configs read as ``config_state``, anything else is real."""
         real_config, real_files = consent._config_has_auto_map, consent.repo_remote_code_files
 
         def files(name, **kwargs):
@@ -525,7 +524,6 @@ class TestConsentGate:
     @pytest.mark.parametrize(
         ("source", "has_code", "expected"),
         [
-            # What the snapshot holds decides, on ModelScope only.
             ("modelscope", False, (False, False, None)),
             ("modelscope", True, (True, True, "critical_findings")),
             ("huggingface", False, (False, True, "not_on_source")),

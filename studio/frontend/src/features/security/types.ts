@@ -35,7 +35,6 @@ export type RemoteCodeBlockCause =
 
 export interface RemoteCodeScan {
   blockCause: RemoteCodeBlockCause | null;
-  // The active model source, and the repo it lacks when that is the block.
   blockSource: string;
   blockTarget: string | null;
   requiresTrustRemoteCode: boolean;
