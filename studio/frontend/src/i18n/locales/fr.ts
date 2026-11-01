@@ -615,8 +615,6 @@ export const fr = {
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
     plainTextDescription: "Conserver le code, le Markdown et les liens en texte brut. Désactivez pour afficher un aperçu mis en forme.",
-    richPaste: "Coller le texte enrichi",
-    richPasteDescription: "Conserve les liens, tableaux, listes et le texte en gras ou en italique en Markdown lors d’un collage depuis des pages web et des documents. {shortcut} colle toujours du texte brut.",
     showContext: "Afficher l’utilisation de la fenêtre de contexte",
     sendShortcut: "Raccourci d’envoi",
     sendMultiline: "{mod} + Enter pour les messages sur plusieurs lignes",

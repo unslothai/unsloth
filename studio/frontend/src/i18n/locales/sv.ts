@@ -658,8 +658,6 @@ export const sv = {
     plainText: "Skrivfält med oformaterad text",
     plainTextDescription:
       "Behåll kod, Markdown och länkar som ren text. Stäng av för att visa en formaterad förhandsvisning.",
-    richPaste: "Klistra in formaterad text",
-    richPasteDescription: "Behåller länkar, tabeller, listor och fet eller kursiv text som Markdown när du klistrar in från webbsidor och dokument. {shortcut} klistrar alltid in oformaterad text.",
     showContext: "Användning av kontextfönstret",
     sendShortcut: "Kortkommando för att skicka",
     sendMultiline: "{mod} + Enter för uppmaningar med flera rader",

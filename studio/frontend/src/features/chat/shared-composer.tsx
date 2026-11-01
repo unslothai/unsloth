@@ -625,7 +625,6 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
-  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
   const navigate = useNavigate();
   const handleExitCompare = useCallback(() => {
     if (onExitCompare) {
@@ -1360,7 +1359,7 @@ export function SharedComposer({
             description: "Compare supports images and audio within the attachment size limits.",
           }),
       );
-      if (event.defaultPrevented || !richTextPaste) return;
+      if (event.defaultPrevented) return;
       const markdown = richPasteMarkdown(event.clipboardData);
       if (markdown === null) return;
       event.preventDefault();
@@ -1370,7 +1369,7 @@ export function SharedComposer({
         requestAnimationFrame(() => input.setSelectionRange(caret, caret));
       });
     },
-    [trackAttaching, addFilesUntracked, richTextPaste, setCurrentText],
+    [trackAttaching, addFilesUntracked, setCurrentText],
   );
 
   const removePendingImage = useCallback((id: string) => {

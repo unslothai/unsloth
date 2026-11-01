@@ -616,8 +616,6 @@ export const ja = {
     title: "入力欄",
     plainText: "プレーンテキスト入力",
     plainTextDescription: "コード、Markdown、リンクをそのままのテキストで表示します。オフにすると書式付きプレビューを表示します。",
-    richPaste: "書式付きテキストの貼り付け",
-    richPasteDescription: "Web ページや文書から貼り付けるとき、リンク、表、リスト、太字や斜体を Markdown として保持します。{shortcut} では常にプレーンテキストで貼り付けます。",
     showContext: "コンテキストウィンドウの使用量を表示",
     sendShortcut: "送信ショートカット",
     sendMultiline: "複数行のメッセージは {mod} + Enter",

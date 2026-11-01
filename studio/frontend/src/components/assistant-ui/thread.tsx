@@ -2979,7 +2979,6 @@ const Composer: FC<{
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
-  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
   const submitIntentRef = useRef<ComposerSubmitIntent>("default");
   const submitOnKey = useCallback(
@@ -3095,7 +3094,7 @@ const Composer: FC<{
       );
       if (event.defaultPrevented) return;
       const markdown =
-        richTextPaste && !plainPaste ? richPasteMarkdown(event.clipboardData) : null;
+        plainPaste ? null : richPasteMarkdown(event.clipboardData);
       if (markdown !== null) {
         event.preventDefault();
         if (pastedYoutubeUrl) setYoutubeLink(pastedYoutubeUrl);
@@ -3140,7 +3139,7 @@ const Composer: FC<{
         justSentRef.current = null;
       }
     },
-    [aui, overlay, pastedTextMinChars, richTextPaste],
+    [aui, overlay, pastedTextMinChars],
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);

@@ -615,8 +615,6 @@ export const ptBR = {
     title: "Composição de mensagens",
     plainText: "Composição em texto simples",
     plainTextDescription: "Manter código, Markdown e links como texto literal. Desative para mostrar uma prévia formatada.",
-    richPaste: "Colar texto formatado",
-    richPasteDescription: "Mantém links, tabelas, listas e texto em negrito ou itálico como Markdown ao colar de páginas da web e documentos. {shortcut} sempre cola texto simples.",
     showContext: "Mostrar uso da janela de contexto",
     sendShortcut: "Atalho de envio",
     sendMultiline: "{mod} + Enter para mensagens de várias linhas",

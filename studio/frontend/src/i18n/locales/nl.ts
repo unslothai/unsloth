@@ -704,8 +704,6 @@ export const nl = {
     plainText: "Invoerveld met platte tekst",
     plainTextDescription:
       "Behoud code, Markdown en links als letterlijke tekst. Schakel uit om een opgemaakt voorbeeld te tonen.",
-    richPaste: "Opgemaakte tekst plakken",
-    richPasteDescription: "Behoudt links, tabellen, lijsten en vette of cursieve tekst als Markdown bij plakken vanuit webpagina’s en documenten. {shortcut} plakt altijd platte tekst.",
     showContext: "Gebruik van contextvenster",
     sendShortcut: "Sneltoets voor versturen",
     sendMultiline: "{mod} + Enter voor prompts met meerdere regels",

@@ -612,8 +612,6 @@ export const it = {
     title: "Composizione dei messaggi",
     plainText: "Composizione in testo semplice",
     plainTextDescription: "Mantieni codice, Markdown e link come testo letterale. Disattiva per mostrare un’anteprima formattata.",
-    richPaste: "Incolla testo formattato",
-    richPasteDescription: "Mantiene link, tabelle, elenchi e testo in grassetto o corsivo come Markdown quando incolli da pagine web e documenti. {shortcut} incolla sempre testo semplice.",
     showContext: "Mostra l’utilizzo della finestra di contesto",
     sendShortcut: "Scorciatoia di invio",
     sendMultiline: "{mod} + Enter per i messaggi su più righe",

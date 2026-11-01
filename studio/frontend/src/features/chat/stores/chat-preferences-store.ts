@@ -71,8 +71,6 @@ export interface ChatPreferencesState {
   setFilesPanelCollapsed: (value: boolean) => void;
   newChatComposerAtBottom: boolean;
   setNewChatComposerAtBottom: (value: boolean) => void;
-  richTextPaste: boolean;
-  setRichTextPaste: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -135,8 +133,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       newChatComposerAtBottom: false,
       setNewChatComposerAtBottom: (newChatComposerAtBottom) =>
         set({ newChatComposerAtBottom }),
-      richTextPaste: true,
-      setRichTextPaste: (richTextPaste) => set({ richTextPaste }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -182,7 +178,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
           notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
           filesPanelCollapsed: saved?.filesPanelCollapsed === true,
-          richTextPaste: saved?.richTextPaste !== false,
           newChatComposerAtBottom: saved?.newChatComposerAtBottom === true,
         };
       },

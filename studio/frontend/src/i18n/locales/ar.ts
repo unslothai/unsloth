@@ -615,8 +615,6 @@ export const ar = {
     title: "كتابة الرسائل",
     plainText: "محرر نص عادي",
     plainTextDescription: "إبقاء التعليمات البرمجية وMarkdown والروابط كنص حرفي. عطّل هذا الخيار لعرض معاينة منسقة.",
-    richPaste: "لصق النص المنسّق",
-    richPasteDescription: "احتفظ بالروابط والجداول والقوائم والنص الغامق أو المائل بصيغة Markdown عند اللصق من صفحات الويب والمستندات. يلصق {shortcut} نصًا عاديًا دائمًا.",
     showContext: "إظهار استخدام نافذة السياق",
     sendShortcut: "اختصار الإرسال",
     sendMultiline: "{mod} + Enter للرسائل متعددة الأسطر",
