@@ -36,7 +36,6 @@ from core.inference.key_exchange import (
 from core.inference.providers import (
     answers_decisions_only,
     get_base_url,
-    get_connectable_provider_info,
     get_provider_info,
     list_available_providers,
     validate_provider_base_url,
@@ -313,7 +312,7 @@ async def create_provider_config(
     """Create a saved provider configuration and optional encrypted API key."""
 
     require_ui_session(via_api_key)
-    info = get_connectable_provider_info(payload.provider_type)
+    info = get_provider_info(payload.provider_type)
     if info is None:
         raise HTTPException(
             status_code = 400,
@@ -940,7 +939,7 @@ async def test_provider(
 
     shared = _is_shared_saved_target(payload)
     payload = _bind_saved_provider_target(payload)
-    info = get_connectable_provider_info(payload.provider_type)
+    info = get_provider_info(payload.provider_type)
     if info is None:
         raise HTTPException(
             status_code = 400,
@@ -1132,7 +1131,7 @@ async def list_provider_model_capabilities(
 
 async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: bool):
     payload = _bind_saved_provider_target(payload)
-    info = get_connectable_provider_info(payload.provider_type)
+    info = get_provider_info(payload.provider_type)
     if info is None:
         raise HTTPException(
             status_code = 400,
@@ -1214,7 +1213,7 @@ async def list_provider_models(
 
     shared_models = _shared_target_models(payload)
     payload = _bind_saved_provider_target(payload)
-    info = get_connectable_provider_info(payload.provider_type)
+    info = get_provider_info(payload.provider_type)
     if info is None:
         raise HTTPException(
             status_code = 400,
@@ -1287,6 +1286,7 @@ async def list_provider_models(
         _NATIVE_HOSTS = {
             "gemini": ("generativelanguage.googleapis.com",),
             "openai": ("api.openai.com",),
+            "replicate": ("api.replicate.com",),
         }
         apply_registry_model_filters = True
         native_hosts = _NATIVE_HOSTS.get(payload.provider_type)

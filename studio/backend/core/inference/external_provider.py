@@ -38,16 +38,12 @@ from models.providers import (
     validate_provider_reasoning_contract,
 )
 
-# custom endpoints are treated as local because skipping their chat template can forge a turn (#7066).
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom", "lemonade"})
 
 # only vLLM and llama.cpp document both continuation flags on /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
-# custom may reject include_usage; OpenAI Responses returns usage without it; listed streams need it.
-_USAGE_STREAM_OPTION_PROVIDERS = frozenset(
-    {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen", "qwencloud"}
-)
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen", "qwencloud"})
 
 
 # LM Studio 400s on {"type": "json_object"} ("must be 'json_schema' or 'text'"); a json_schema of the same object is the
@@ -986,8 +982,6 @@ def _create_shared_http_client() -> httpx.AsyncClient:
 
 
 _http_client = _create_shared_http_client()
-# Studio's own loopback runtime: an env proxy would receive its key and prompts, or fail to reach it.
-_loopback_http_client = httpx.AsyncClient(trust_env = False)
 
 
 class _PinnedPublicTransport(httpx.AsyncBaseTransport):
@@ -1526,7 +1520,8 @@ class ExternalProviderClient:
             base_url.rstrip("/") if managed_loopback else validate_provider_base_url(base_url)
         )
         self._managed_loopback = managed_loopback
-        # Strip legacy `/openai` suffix from Google bases so pre-switch configs route; custom proxies keep it.
+        # Strip a legacy `/openai` suffix from Google-hosted bases so configs saved before the native switch still
+        # route correctly. Custom proxy paths ending in `/openai` are left untouched.
         if self.provider_type == "gemini":
             _parsed_base = urlparse(self.base_url)
             if (
@@ -1707,6 +1702,21 @@ class ExternalProviderClient:
                 fast_mode = fast_mode,
                 tools = tools,
                 response_format = response_format,
+            ):
+                yield line
+            return
+
+        if self.provider_type == "replicate":
+            from .replicate_bridge import stream_replicate
+            async for line in stream_replicate(
+                _client(),
+                self.base_url,
+                self._auth_headers(),
+                messages,
+                model,
+                temperature,
+                max_tokens,
+                tools,
             ):
                 yield line
             return

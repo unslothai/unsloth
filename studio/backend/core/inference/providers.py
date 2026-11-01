@@ -12,6 +12,17 @@ from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
+    "replicate": {
+        "display_name": "Replicate",
+        "base_url": "https://api.replicate.com/v1",
+        "default_models": ["meta/meta-llama-3-70b-instruct", "meta/meta-llama-3-8b-instruct"],
+        "supports_streaming": True,
+        "supports_vision": False,
+        "supports_tool_calling": False,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+    },
     "openai_codex": {
         "display_name": "ChatGPT / Codex subscription",
         "base_url": "https://chatgpt.com/backend-api",
@@ -499,22 +510,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_chat_template_kwargs": True,
         "hidden": True,
     },
-    "lemonade": {
-        "display_name": "AMD NPU (FastFlowLM)",
-        "base_url": "",
-        "default_models": [],
-        "supports_streaming": True,
-        "supports_vision": True,
-        "supports_tool_calling": True,
-        "studio_tools": True,
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "notes": "Unsloth-managed Lemonade serving FastFlowLM on the AMD NPU.",
-        # FastFlowLM 1.0.3 parses min_p into an integer, so 0.05 arrives as 0.
-        "body_omit": ("min_p",),
-        "hidden": True,
-        "managed": True,
-    },
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
@@ -594,8 +589,6 @@ def answers_decisions_only(provider_type: str | None, api_type: str | None = Non
     return bool(info and info.get("decisions_only")) or (
         provider_type == "custom" and api_type == "systemone"
     )
-
-
 def get_base_url(provider_type: str) -> str | None:
     info = PROVIDER_REGISTRY.get(provider_type)
     return info["base_url"] if info else None
@@ -1071,7 +1064,7 @@ def list_available_providers(
     """Hidden rows need include_hidden (old cached bundles would duplicate presets); OAuth rows are opt-in too (pre-OAuth bundles break); either flag opts in."""
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
-        if (info.get("hidden") and not include_hidden) or info.get("managed"):
+        if info.get("hidden") and not include_hidden:
             continue
         if info.get("auth_kind") == "chatgpt_oauth" and not (include_hidden or include_oauth):
             continue
