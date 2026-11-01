@@ -22,6 +22,8 @@ import {
 } from "@/components/assistant-ui/markdown-table";
 import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math as streamdownMath } from "@streamdown/math";
+// Its own: the chat renderers that also import this are not loaded before the Hub.
+import "katex/dist/katex.min.css";
 import { mermaid as streamdownMermaid } from "@/components/assistant-ui/mermaid-plugin";
 import {
   createContext,

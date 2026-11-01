@@ -27,13 +27,6 @@ import {
 } from "../stores/chat-runtime-store";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
 import {
-  exportConversationCsv,
-  exportConversationMarkdown,
-  exportConversationMessagesJsonl,
-  exportConversationRawJsonl,
-  exportConversationShareGPT,
-} from "../prompt-storage/prompt-storage-dialog";
-import {
   getStoredChatThread,
   listStoredChatMessages,
   listStoredChatThreads,
@@ -74,6 +67,14 @@ export async function exportConversationByFormat(
   threadId: string,
   format: ConversationExportFormat,
 ): Promise<void> {
+  // The exporters (and the markdown renderer beside them) load with the chat page, not at startup.
+  const {
+    exportConversationCsv,
+    exportConversationMarkdown,
+    exportConversationMessagesJsonl,
+    exportConversationRawJsonl,
+    exportConversationShareGPT,
+  } = await import("../prompt-storage/prompt-storage-dialog");
   switch (format) {
     case "raw-jsonl":
       return exportConversationRawJsonl(threadId);

@@ -356,7 +356,6 @@ import {
   useSidebarDrag,
 } from "@/features/chat/hooks/use-sidebar-drag";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
-import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
 import { type PinnedPage, PinnedPageRow, usePinnedPages } from "@/features/browser";
 import { useUnseenScheduledRuns } from "@/features/scheduled-tasks";
@@ -3973,6 +3972,10 @@ export function AppSidebar() {
     const empty = { value: false };
     // Read inside the write: Safari drops the gesture across an await.
     const copied = await copyToClipboardFrom(async () => {
+      // The exporters load with the chat page; usually already in memory by the time a menu opens.
+      const { buildChatItemMarkdown } = await import(
+        "@/features/chat/prompt-storage/prompt-storage-dialog"
+      );
       const markdown = await buildChatItemMarkdown(item);
       if (!markdown) {
         empty.value = true;

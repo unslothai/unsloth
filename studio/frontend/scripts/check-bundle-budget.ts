@@ -449,8 +449,12 @@ export const BUDGET = {
   // instead of through their feature indexes: -1,097,488 B raw / -303,508 B transfer (5,389,395 -> 4,291,907
   // B raw, 1,685,149 -> 1,381,641 B transfer against 23329d5ade, Node 24, 120 -> 138 chunks). Lowered by that,
   // so the headroom stays what it was and a regression of that size fails here.
-  transferBytes: 1_550_491,
-  rawBytes: 4_900_267,
+  // The markdown renderer (Streamdown, KaTeX, Shiki, parse5) loading with the release notes panel and the
+  // chat exporters rather than at startup: -929,085 B raw / -278,771 B transfer (4,291,907 -> 3,362,822 B raw,
+  // 1,381,641 -> 1,102,870 B transfer, Node 24, 138 -> 148 chunks), plus KaTeX's 28.8 KB stylesheet. Lowered
+  // by that.
+  transferBytes: 1_271_720,
+  rawBytes: 3_971_182,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

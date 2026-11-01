@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import {
   UPDATE_NOTES_BULLET_CLASS,
   UPDATE_NOTES_EXPANDED_SCROLL_CLASS,
@@ -19,10 +18,66 @@ import { releaseNotesPreview } from "@/lib/release-notes-preview";
 import {
   type ReactElement,
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
+
+type MarkdownPreviewComponent =
+  typeof import("@/components/markdown/markdown-preview")["MarkdownPreview"];
+
+// Streamdown, KaTeX and Shiki load with the panel, beside the notes, not at startup.
+let markdownPreviewModule: Promise<MarkdownPreviewComponent> | null = null;
+let loadedMarkdownPreview: MarkdownPreviewComponent | null = null;
+
+function loadMarkdownPreview(): Promise<MarkdownPreviewComponent> {
+  if (!markdownPreviewModule) {
+    markdownPreviewModule = import("@/components/markdown/markdown-preview").then(
+      (module) => {
+        loadedMarkdownPreview = module.MarkdownPreview;
+        return module.MarkdownPreview;
+      },
+      (error: unknown) => {
+        // Dropped so a retry fetches again.
+        markdownPreviewModule = null;
+        throw error;
+      },
+    );
+  }
+  return markdownPreviewModule;
+}
+
+function useMarkdownPreview(): {
+  Preview: MarkdownPreviewComponent | null;
+  failed: boolean;
+  retry: () => void;
+} {
+  const [Preview, setPreview] = useState(() => loadedMarkdownPreview);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (Preview || failed) return;
+    let live = true;
+    loadMarkdownPreview().then(
+      (component) => {
+        if (live) setPreview(() => component);
+      },
+      () => {
+        if (live) setFailed(true);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [Preview, failed, attempt]);
+  const retry = useCallback(() => {
+    setFailed(false);
+    setAttempt((n) => n + 1);
+  }, []);
+  return { Preview, failed, retry };
+}
 
 interface ReleaseNotesPanelProps {
   version: string;
@@ -74,6 +129,7 @@ export function ReleaseNotesPanel({
   const t = useT();
   // Fetched with the popup: the collapsed preview needs the notes too.
   const { state, notes, retry } = useReleaseNotes({ version, enabled: true });
+  const renderer = useMarkdownPreview();
   const scrollRef = useRef<HTMLElement | null>(null);
 
   // No fallback body: the updater's `notes` is install boilerplate the backend strips.
@@ -91,11 +147,12 @@ export function ReleaseNotesPanel({
   );
 
   // Start at the top on expand, and again once async notes land.
+  const Preview = renderer.Preview;
   useEffect(() => {
-    if (open && markdown && scrollRef.current) {
+    if (open && markdown && Preview && scrollRef.current) {
       scrollRef.current.scrollTop = 0;
     }
-  }, [open, markdown]);
+  }, [open, markdown, Preview]);
 
   // The page the notes are on wins, then the caller's URL, then the API's.
   const notesUrl = notes?.htmlUrl ?? releaseNotesUrl ?? notes?.releaseNotesUrl;
@@ -141,11 +198,21 @@ export function ReleaseNotesPanel({
               className={UPDATE_NOTES_EXPANDED_SCROLL_CLASS}
               data-testid="update-release-notes-scroll"
             >
-              <MarkdownPreview
-                markdown={markdown}
-                // Rescale Streamdown's headings, code and max-width; `anywhere` splits words.
-                className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-11 [&_[data-streamdown=link-safety-modal]>*]:max-w-md [&_img]:h-auto [&_img]:max-w-full [&>*:first-child]:mt-0 [&>*>*:first-child]:mt-0 [&_code]:text-[0.92em] [&_h1]:mt-4 [&_h1]:font-heading [&_h1]:text-ui-13 [&_h2]:mt-4 [&_h2]:font-heading [&_h2]:text-ui-13 [&_h3]:mt-4 [&_h3]:font-heading [&_h3]:text-ui-11 [&_pre]:text-[0.92em] [&_td]:break-words [&_th]:break-words"
-              />
+              {Preview ? (
+                <Preview
+                  markdown={markdown}
+                  // Rescale Streamdown's headings, code and max-width; `anywhere` splits words.
+                  className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-11 [&_[data-streamdown=link-safety-modal]>*]:max-w-md [&_img]:h-auto [&_img]:max-w-full [&>*:first-child]:mt-0 [&>*>*:first-child]:mt-0 [&_code]:text-[0.92em] [&_h1]:mt-4 [&_h1]:font-heading [&_h1]:text-ui-13 [&_h2]:mt-4 [&_h2]:font-heading [&_h2]:text-ui-13 [&_h3]:mt-4 [&_h3]:font-heading [&_h3]:text-ui-11 [&_pre]:text-[0.92em] [&_td]:break-words [&_th]:break-words"
+                />
+              ) : (
+                // Only if expanded before the renderer arrives: the notes' own loading and error rows.
+                <NotesStatus
+                  state={renderer.failed ? "error" : "loading"}
+                  release={notes?.tag ?? null}
+                  link={link}
+                  retry={renderer.retry}
+                />
+              )}
               {notes?.truncated ? (
                 <p className="mt-2 text-ui-10 text-muted-foreground/80">
                   {t("updateNotes.notesTruncated")}

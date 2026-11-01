@@ -71,6 +71,16 @@ test("startup code imports lazy features' modules, not their indexes", () => {
   assert.deepEqual(reached, []);
 });
 
+test("the markdown renderer (Streamdown, KaTeX, Shiki) is not in the startup graph", () => {
+  const parent = startupGraph();
+  const preview = join(SRC, "components/markdown/markdown-preview.tsx");
+  const exporters = join(SRC, "features/chat/prompt-storage/prompt-storage-dialog.tsx");
+  const reached = [preview, exporters].flatMap((file) =>
+    parent.has(file) ? [chain(parent, file)] : [],
+  );
+  assert.deepEqual(reached, []);
+});
+
 test("the startup graph walk sees the shell", () => {
   const parent = startupGraph();
   for (const shell of ["app/routes/__root.tsx", "components/app-sidebar.tsx", "app/provider.tsx"]) {
