@@ -375,13 +375,12 @@ _FILE_MANAGER1 = "org.freedesktop.FileManager1"
 
 
 def _linux_show_items(path: Path, is_file: bool) -> bool:
-    """Asks the session's file manager over D-Bus (FileManager1, which Nautilus, Dolphin, Nemo,
-    Caja and Thunar serve) to show *path*, a file selected in its folder. False when nothing
-    answers, so the caller falls back to xdg-open."""
+    """FileManager1 over D-Bus (Nautilus, Dolphin, Nemo, Caja, Thunar) shows *path*, a file
+    selected in its folder; False when nothing answers."""
     import subprocess
 
     # as_uri percent-encodes quotes and commas, so the URI is safe in both argument syntaxes.
-    uri = path.as_uri()
+    uri = Path(os.path.abspath(path)).as_uri()
     method = f"{_FILE_MANAGER1}.{'ShowItems' if is_file else 'ShowFolders'}"
     object_path = "/org/freedesktop/FileManager1"
     commands = (
@@ -407,8 +406,7 @@ def _linux_show_items(path: Path, is_file: bool) -> bool:
 
 
 def _linux_xdg_open(folder: str) -> None:
-    """xdg-open on *folder*. It exits non-zero when the desktop has no handler for folders, which
-    must surface as an error rather than a click that does nothing."""
+    """Raises when xdg-open exits non-zero (no handler for folders) instead of doing nothing."""
     import subprocess
 
     launcher = subprocess.Popen(
@@ -420,7 +418,7 @@ def _linux_xdg_open(folder: str) -> None:
     try:
         status = launcher.wait(timeout = 5)
     except subprocess.TimeoutExpired:
-        return  # Some fallbacks keep xdg-open running as long as the window is open.
+        return  # Generic fallbacks run the file manager in the foreground.
     if status != 0:
         raise RuntimeError(f"xdg-open exited with status {status}")
 
