@@ -98,13 +98,13 @@ def _set_compile_cache_tag(tag: Optional[str]) -> None:
         import torch.compiler.config as _cc
     except Exception:  # noqa: BLE001 - torch without compiler config: no persistent compile cache to split
         return
-    current = getattr(_cc, "cache_key_tag", None)
-    if not isinstance(current, str):
+    if not isinstance(getattr(_cc, "cache_key_tag", None), str):
         return
-    from .diffusion_compile_config import canonical_compile_cache_tag
+    from .diffusion_compile_config import set_compile_cache_tag
 
     try:
-        _cc.cache_key_tag = canonical_compile_cache_tag(current, _CACHE_TAG_PREFIX, tag)
+        # Recorded, not just assigned: torch 2.12+ keeps the tag per context and renders compile on other threads.
+        set_compile_cache_tag(_CACHE_TAG_PREFIX, tag)
     except Exception:  # noqa: BLE001
         pass
 
@@ -126,6 +126,8 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
     """Patch torchao's fp8 addmm with the dispatcher; idempotent, False when off / no qualifying GPU / layout moved /
     it cannot engage."""
     if _STATE["installed"]:
+        from .diffusion_compile_config import apply
+        apply()
         return True
     mode = _mode()
     if mode == "off" or not can_engage(fast_accum):
