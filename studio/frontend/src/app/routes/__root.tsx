@@ -731,7 +731,7 @@ function RootLayout() {
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
-          <ChatBackground active={isChatRoute || BACKGROUND_ON_ALL_PAGES} />
+          <ChatBackground active={isChatRoute || BACKGROUND_ON_ALL_PAGES} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
           <SidebarInset

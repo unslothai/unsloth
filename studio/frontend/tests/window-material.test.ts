@@ -93,7 +93,7 @@ test("glass adds no outer shadows, only inset light", () => {
 
 test("other pages under glass read over one tinted pane with a readable floor", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  background-color: color-mix\(in srgb, var\(--glass-page-bg\) clamp\(var\(--glass-page-floor\)/);
+	assert.match(css, /html\[data-glass\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  background-color: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(max\(clamp\(var\(--glass-page-floor\)/);
 	// The pane must not be a backdrop root, or sticky headers inside re-tint it into bands.
 	const pane = /html\[data-glass\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{([^}]*)\}/.exec(css)?.[1] ?? "";
 	assert.doesNotMatch(pane, /backdrop-filter/);
@@ -110,4 +110,21 @@ test("glass lens modes repair malformed data and scale the right way", () => {
 	// The copy sits behind the composer's content, inside its stacking context.
 	assert.match(css, /\.glass-lens \{\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
 	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
+});
+
+test("glass panes thicken over images that would wash out their text", async () => {
+	const { glassReadability, toneOf } = await import("../src/features/chat-background/model.ts");
+	const light = toneOf(Array.from({ length: 100 }, (_, i) => 0.6 + i * 0.003));
+	const dark = toneOf(Array.from({ length: 100 }, () => 0.02));
+	// Dark mode: light text over a light image needs a nearly opaque pane; a dark image needs none.
+	assert.ok(glassReadability(light, true).floor > 0.75);
+	assert.equal(glassReadability(dark, true).floor, 0);
+	// Light mode: dark text over a dark image needs a lighter pane; a light image shades it instead.
+	assert.ok(glassReadability(dark, false).floor > 0.5);
+	assert.equal(glassReadability(light, false).floor, 0);
+	assert.ok(glassReadability(light, false).shade > 0);
+	assert.equal(glassReadability(toneOf([1, 1, 1]), false).floor, 0);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /var\(--glass-sidebar-fill\) min\(96%, calc\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \* var\(--glass-opacity, 1\)\)\)/);
+	assert.match(css, /var\(--glass-panel-fill\) min\(96%, calc\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \* var\(--glass-opacity, 1\)\)\)/);
 });
