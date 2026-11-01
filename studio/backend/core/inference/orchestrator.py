@@ -1246,13 +1246,13 @@ class InferenceOrchestrator:
         resp_queue = self._resp_queue
         if resp_queue is None:
             return None
-        deadline = None if timeout is None else time.monotonic() + timeout
+        started = time.monotonic()
         try:
-            while True:
-                left = None if deadline is None else max(deadline - time.monotonic(), 0.0)
+            resp = resp_queue.get(timeout = timeout)
+            while _is_dispatcher_wake(resp):
+                left = None if timeout is None else max(started + timeout - time.monotonic(), 0.0)
                 resp = resp_queue.get(timeout = left)
-                if not _is_dispatcher_wake(resp):
-                    return self._observe_response(resp, worker) if observe else resp
+            return self._observe_response(resp, worker) if observe else resp
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
@@ -1681,13 +1681,12 @@ class InferenceOrchestrator:
             logger.debug("Dispatcher thread stopped")
 
     def _wake_dispatcher(self) -> None:
-        """Unblock a dispatcher parked in its poll so a stop costs no poll interval. Best effort: if the
-        put fails the dispatcher still sees the stop flag on its next poll timeout."""
+        """Best effort: on failure the dispatcher still stops on its next poll timeout."""
         resp_queue = self._resp_queue
         if resp_queue is None:
             return
         try:
-            # Never let interpreter exit wait on this put if the reply pipe is full or dead.
+            # Interpreter exit must not wait on this put over a full or dead pipe.
             cancel_join = getattr(resp_queue, "cancel_join_thread", None)
             if cancel_join is not None:
                 cancel_join()
