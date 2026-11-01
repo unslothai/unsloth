@@ -136,3 +136,9 @@ test("resetting local preferences also resets the glass theme", () => {
 	assert.ok(key);
 	assert.ok(tab.includes(`"${key}",`));
 });
+
+test("the lens refreshes its tint when the composer's fill changes", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	// Glass strength or style change the fill without resizing anything; the cache key must see it.
+	assert.match(lens, /opacity,\n\s*fill\.backgroundColor,\n\s*fill\.backgroundImage,\n\s*\]\.join\(\)/);
+});

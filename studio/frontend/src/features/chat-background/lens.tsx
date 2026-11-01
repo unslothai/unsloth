@@ -78,6 +78,8 @@ function Lens({
       const w = wallpaper.getBoundingClientRect();
       const h = host.getBoundingClientRect();
       const opacity = getComputedStyle(wallpaper).opacity;
+      // The composer's own fill too: Glass strength and style change it with no resize to notice.
+      const fill = getComputedStyle(host);
       const key = [
         w.left,
         w.top,
@@ -88,6 +90,8 @@ function Lens({
         h.width,
         h.height,
         opacity,
+        fill.backgroundColor,
+        fill.backgroundImage,
       ].join();
       if (key === last) return;
       last = key;
@@ -116,9 +120,8 @@ function Lens({
         wash.style.backgroundImage = fills.join(", ");
       }
       if (tint) {
-        const style = getComputedStyle(host);
-        tint.style.backgroundColor = style.backgroundColor;
-        tint.style.backgroundImage = style.backgroundImage;
+        tint.style.backgroundColor = fill.backgroundColor;
+        tint.style.backgroundImage = fill.backgroundImage;
       }
     };
     const copy = () => {
