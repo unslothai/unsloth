@@ -44,6 +44,9 @@ _ARCHITECTURES = ("x86_64", "arm64")
 HOST_PREP_STEPS = ("prepare-system-drive", "prepare-null-device")
 HOST_PREP_PROBE_SECONDS = 10.0
 DACL_RECOVERY_SECONDS = 60.0
+# Older Windows (Server 2019/2022, Windows 10) lacks the hypervisor exports wxc-exec imports, and the
+# loader reports that in a modal "System Error" dialog, not an exit code (#16169).
+MIN_WINDOWS_BUILD = 26100
 
 _WXC_EXEC_NAME = "wxc-exec.exe"
 _WXC_HOST_PREP_NAME = "wxc-host-prep.exe"
@@ -266,7 +269,16 @@ def _open_artifact_guard(path: Path) -> object:
     return _WindowsHandleGuard(int(handle))
 
 
+def _require_supported_windows() -> None:
+    windows_version = getattr(sys, "getwindowsversion", None)
+    if windows_version is not None and windows_version().build < MIN_WINDOWS_BUILD:
+        raise MxcRuntimeUnavailable(
+            f"Microsoft MXC needs Windows 11 build {MIN_WINDOWS_BUILD} or newer"
+        )
+
+
 def _acquire(select, package_root: Path | None) -> RuntimeLease:
+    _require_supported_windows()
     with _lock:
         info = select(package_root = package_root)
         guard = _open_artifact_guard(info.path)
