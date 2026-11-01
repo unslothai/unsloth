@@ -14,6 +14,7 @@ import re
 import sys
 import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any, Optional
@@ -265,21 +266,22 @@ def _record(
     flags: Optional[dict[str, dict[str, Any]]] = None,
     *,
     directory: Optional[Path] = None,
+    mtime: Optional[float] = None,
 ) -> dict[str, Any]:
     if directory is None:
         directory = gallery_dir()
     # flags are library state, not recipe: they come from the sidecar store, never the PNG chunk
     if flags is None:
         flags = gallery_flags.read(directory)
+    if mtime is None:
+        mtime = _mtime(directory / f"{image_id}.png")
     return {
         **meta,
         "id": image_id,
         "url": f"/api/inference/images/gallery/{image_id}/file",
         **gallery_flags.flags_for(flags, image_id),
         # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
-        "order_at": gallery_flags.order_rank(
-            flags, image_id, _mtime(directory / f"{image_id}.png")
-        ),
+        "order_at": gallery_flags.order_rank(flags, image_id, mtime),
     }
 
 
@@ -307,9 +309,20 @@ def image_b64(image_id: str) -> Optional[str]:
 _REQUIRED_META = ("prompt", "width", "height", "steps", "guidance", "seed", "created_at")
 
 
+def _parse_meta(raw: Any) -> Optional[dict[str, Any]]:
+    if not raw:
+        return None
+    try:
+        meta = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
+        return None
+    return meta
+
+
 def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any]]:
     from PIL import Image
-
     try:
         with Image.open(path) as im:
             # The chunk is written before IDAT; im.text would decode every pixel to find later chunks.
@@ -320,15 +333,44 @@ def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any
         return None
     except Exception:
         return None
-    if not raw:
-        return None
+    return _parse_meta(raw)
+
+
+# Recipe chunks the listing read, by path, while the file keeps the identity it had then.
+_CHUNK_CACHE_MAX = 8192
+_chunk_cache: OrderedDict[str, tuple[tuple, Any]] = OrderedDict()
+_chunk_cache_lock = threading.Lock()
+
+
+def _listed_meta(path: Path, info: Optional[os.stat_result]) -> Optional[dict[str, Any]]:
+    """``_read_meta(path)`` for a listing that took ``info`` from ``path`` just before: a chunk
+    is parsed again only once its file changed."""
+    if info is None:
+        return _read_meta(path)
+    # A write moves mtime or ctime and a replace the inode, so a key that agrees means the same bytes.
+    key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    name = str(path)
+    with _chunk_cache_lock:
+        hit = _chunk_cache.get(name)
+        if hit is not None and hit[0] == key:
+            _chunk_cache.move_to_end(name)
+            return _parse_meta(hit[1])
+    from PIL import Image
+
     try:
-        meta = json.loads(raw)
-    except (ValueError, TypeError):
+        with Image.open(path) as im:
+            raw = im.info.get(_META_KEY) or im.text.get(_META_KEY)  # type: ignore[attr-defined]
+    except (OSError, MemoryError):
+        # Never kept: a read that may go through next time is tried again, as before.
         return None
-    if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
-        return None
-    return meta
+    except Exception:
+        raw = None
+    with _chunk_cache_lock:
+        _chunk_cache[name] = (key, raw)
+        _chunk_cache.move_to_end(name)
+        while len(_chunk_cache) > _CHUNK_CACHE_MAX:
+            _chunk_cache.popitem(last = False)
+    return _parse_meta(raw)
 
 
 def owned_image_path(image_id: str) -> Optional[Path]:
@@ -377,10 +419,20 @@ def list_images(
     flags = gallery_flags.read(directory)
     # Shelf split and pin sort use file stems before any recipe read, keeping the early break intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
+    # The stat the sort takes also keys the recipe read: it comes before that read.
+    stats: dict[Path, os.stat_result] = {}
+
+    def mtime(path: Path) -> float:
+        try:
+            stats[path] = info = path.stat()
+        except OSError:
+            return 0.0
+        return info.st_mtime
+
     paths.sort(
         key = lambda p: (
             gallery_flags.pin_rank(flags, p.stem),
-            gallery_flags.order_rank(flags, p.stem, _mtime(p)),
+            gallery_flags.order_rank(flags, p.stem, mtime(p)),
         ),
         reverse = True,
     )
@@ -388,10 +440,18 @@ def list_images(
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
-        meta = _read_meta(path)
+        info = stats.get(path)
+        meta = _listed_meta(path, info)
         if meta is None:
             continue
-        record = _record(path.stem, meta, flags, directory = directory)
+        # The mtime it was sorted by, so its order_at agrees with its place.
+        record = _record(
+            path.stem,
+            meta,
+            flags,
+            directory = directory,
+            mtime = None if info is None else info.st_mtime,
+        )
         if valid is not None and not valid(record):
             continue
         records.append(record)
