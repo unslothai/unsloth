@@ -178,14 +178,20 @@ def test_gemini_route_lists_allowlisted_models_from_later_pages(mock_http):
     filler = [_gemini_row(f"gemma-3-{n}b-it") for n in range(50)]
     pages = {
         None: {"models": [_gemini_row("gemini-2.5-flash"), *filler], "nextPageToken": "p2"},
-        "p2": {"models": [_gemini_row("gemini-3.6-pro"), _gemini_row("imagen-4.0")]},
+        "p2": {
+            "models": [
+                _gemini_row("gemini-4-argon"),
+                _gemini_row("gemini-2.5-flash-preview-tts"),
+                _gemini_row("imagen-4.0"),
+            ]
+        },
     }
     mock_http.state["handler"] = lambda request: httpx.Response(
         200, json = pages[request.url.params.get("pageToken")]
     )
     payload = ProviderModelsRequest(provider_type = "gemini")
     listed = _run(providers_route.list_provider_models(payload, "tester", False))
-    assert [m.id for m in listed] == ["gemini-2.5-flash", "gemini-3.6-pro"]
+    assert [m.id for m in listed] == ["gemini-2.5-flash", "gemini-4-argon"]
 
 
 @pytest.mark.parametrize(

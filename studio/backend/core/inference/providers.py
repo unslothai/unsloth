@@ -162,20 +162,15 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         ),
         # Shut down and auto-aliased to gemini-3.1-pro-preview; deny the old id so users see one card.
         "model_id_deny_exact": ("gemini-3-pro-preview",),
-        # `-preview` optional on image ids so a GA rollover does not drop them.
-        "model_id_allowlist": re.compile(
-            r"^("
-            r"gemini-3\.6-(?:flash|pro)(?:-preview)?|"
-            r"gemini-3\.5-(?:flash|pro|flash-lite)(?:-preview)?|"
-            r"gemini-3\.1-(?:flash|pro|flash-lite)(?:-preview)?(?:-customtools)?|"
-            r"gemini-3\.1-flash-image(?:-preview)?|"
-            r"gemini-3-(?:flash|pro)(?:-preview)?|"
-            r"gemini-3-pro-image(?:-preview)?|"
-            r"nano-banana-pro-preview|"
-            r"gemini-2\.5-pro|gemini-2\.5-flash|gemini-2\.5-flash-lite|"
-            r"gemini-2\.5-flash-image|"
-            r"gemini-pro-latest|gemini-flash-latest|gemini-flash-lite-latest"
-            r")$"
+        # Prefix allowlist plus denylist so a new family (gemini-4-*, gemini-3.8-*) appears on release.
+        "model_id_allowlist": re.compile(r"^(?:gemini|nano-banana)-"),
+        # Non-chat modalities still advertise generateContent, so _parse_gemini_models keeps them.
+        "model_id_denylist": re.compile(
+            r"(?:^|-)(?:tts|transcribe|embedding|live|native-audio|robotics|computer-use|aqa)(?:-|$)"
+            # Retired generations and experiments.
+            r"|^gemini-(?:1\.\d|2\.0|exp)(?:-|$)"
+            # Dated preview snapshots (-09-2025, -06-05); the undated id stays.
+            r"|-\d{2}-(?:\d{2}|\d{4})$"
         ),
     },
     "deepseek": {
