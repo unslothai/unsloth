@@ -8,10 +8,13 @@ export const fr = {
   chatBackground: {
     noBackground: "Aucun arrière-plan",
     sizing: "Dimensionnement de l’image",
+    sizingPosition: "Dimensionnement et position de l’image",
     fill: "Remplir",
     fit: "Ajuster",
     stretch: "Étirer",
     original: "Taille d’origine",
+    fitWidth: "Ajuster à la largeur",
+    fitHeight: "Ajuster à la hauteur",
     zoom: "Zoom",
     outline: "Contour du champ de message",
     fade: "Fondu vers l’arrière-plan",
@@ -30,6 +33,12 @@ export const fr = {
     visibility: "Visibilité",
     blur: "Flou de l’image",
     position: "Position",
+    horizontal: "Position horizontale",
+    vertical: "Position verticale",
+    scope: "Afficher sur",
+    scopeNewChat: "Page de nouvelle discussion",
+    scopeChats: "Discussions",
+    scopeAll: "Toutes les pages",
     positionValue: "Horizontal {x} %, vertical {y} %",
     newChat: "Nouveau chat",
     conversation: "Conversation",
@@ -2368,6 +2377,22 @@ export const fr = {
         label: "Un bonbon ou un sort",
         description:
           "Thèmes d’Halloween et salutations effrayantes, jusqu’au 1er novembre.",
+      },
+      code: {
+        title: "Code",
+        fontDescription: "Blocs de code dans le chat, aperçus de fichiers et exemples d’API.",
+        lineNumbers: {
+          label: "Numéros de ligne",
+          description: "Numéroter les lignes des blocs de code dans le chat.",
+        },
+        wordWrap: {
+          label: "Retour à la ligne",
+          description: "Renvoyer à la ligne les lignes longues des blocs de code au lieu de défiler horizontalement.",
+        },
+        ligatures: {
+          label: "Ligatures de police",
+          description: "Fusionner des symboles comme => et != en un seul glyphe quand la police de code le permet.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5316,6 +5341,18 @@ export const fr = {
     flaggedIntro: "Notre analyseur automatique a signalé des problèmes, notamment :",
     nothingFlagged:
       "Notre analyseur automatique n'a signalé aucun fichier préoccupant, mais vérifiez quand même.",
+    unscannedTitle: "Impossible d'analyser les fichiers du modèle",
+    unscannedBody: "{model} contient des poids pickle, qui peuvent exécuter du code au chargement, et aucune analyse antimalware n'est disponible pour eux : il ne peut donc pas être chargé. {note}",
+    unscannedIntro: "Fichiers qui n'ont pas pu être analysés :",
+    switchSourceNote: "Choisissez Hugging Face comme source de modèles dans les paramètres pour le charger.",
+    reconnectNote: "Connectez-vous à Hugging Face pour que son analyse puisse être lue, puis réessayez.",
+    managedTitle: "Le code personnalisé est désactivé pour ce compte",
+    managedNote: "Il est désactivé pour les comptes gérés. Demandez au propriétaire de l'installation de l'activer.",
+    notFoundTitle: "Introuvable sur {source}",
+    notFoundBody: "{model} est introuvable sur {source} : ses contrôles de sécurité n'ont donc pas pu s'exécuter. Vérifiez le nom, ou définissez un jeton avec accès si le dépôt est privé.",
+    notOnModelScopeBody: "{model} n'est pas disponible sur ModelScope : ses contrôles de sécurité n'ont donc pas pu s'exécuter et il ne peut pas être chargé depuis cette source. Choisissez Hugging Face comme source de modèles dans les paramètres pour l'utiliser.",
+    checksFailedTitle: "Impossible d'exécuter les contrôles de sécurité",
+    checksFailedBody: "Impossible de lire {model} depuis {source} : ses contrôles de sécurité n'ont pas pu aboutir et il ne peut pas être chargé. Vérifiez votre connexion et votre jeton, puis réessayez. {note}",
     enableAndContinue: "Activer et continuer",
   },
   tour: {

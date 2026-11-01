@@ -8,10 +8,13 @@ export const id = {
   chatBackground: {
     noBackground: "Tanpa latar belakang",
     sizing: "Ukuran gambar",
+    sizingPosition: "Ukuran dan posisi gambar",
     fill: "Isi",
     fit: "Sesuaikan",
     stretch: "Regangkan",
     original: "Ukuran asli",
+    fitWidth: "Sesuaikan lebar",
+    fitHeight: "Sesuaikan tinggi",
     zoom: "Zoom",
     outline: "Garis tepi kolom pesan",
     fade: "Pudarkan ke latar belakang",
@@ -30,6 +33,12 @@ export const id = {
     visibility: "Visibilitas",
     blur: "Keburaman gambar",
     position: "Posisi",
+    horizontal: "Posisi horizontal",
+    vertical: "Posisi vertikal",
+    scope: "Tampilkan di",
+    scopeNewChat: "Halaman chat baru",
+    scopeChats: "Chat",
+    scopeAll: "Semua halaman",
     positionValue: "Horizontal {x}%, vertikal {y}%",
     newChat: "Chat baru",
     conversation: "Percakapan",
@@ -2538,6 +2547,22 @@ export const id = {
       trickOrTreat: {
         label: "Trick or treat",
         description: "Tema Halloween dan sapaan seram, hingga 1 November.",
+      },
+      code: {
+        title: "Kode",
+        fontDescription: "Blok kode di chat, pratinjau file, dan contoh API.",
+        lineNumbers: {
+          label: "Nomor baris",
+          description: "Beri nomor pada baris blok kode di chat.",
+        },
+        wordWrap: {
+          label: "Bungkus baris",
+          description: "Bungkus baris panjang di blok kode alih-alih menggulir ke samping.",
+        },
+        ligatures: {
+          label: "Ligatur font",
+          description: "Gabungkan simbol seperti => dan != menjadi satu glif jika font kode mendukungnya.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5635,6 +5660,18 @@ export const id = {
     flaggedIntro: "Pemindai otomatis kami menandai masalah, termasuk:",
     nothingFlagged:
       "Pemindai otomatis kami tidak menandai file yang mengkhawatirkan, tetapi harap periksa kembali.",
+    unscannedTitle: "File model tidak dapat dipindai",
+    unscannedBody: "{model} berisi bobot pickle, yang dapat menjalankan kode saat dimuat, dan tidak ada pemindaian malware yang tersedia untuknya, sehingga tidak dapat dimuat. {note}",
+    unscannedIntro: "File yang tidak dapat dipindai:",
+    switchSourceNote: "Ubah sumber model ke Hugging Face di Pengaturan untuk memuatnya.",
+    reconnectNote: "Hubungkan ke Hugging Face agar hasil pemindaiannya dapat dibaca, lalu coba lagi.",
+    managedTitle: "Kode kustom dinonaktifkan untuk akun ini",
+    managedNote: "Fitur ini dinonaktifkan untuk akun terkelola. Minta pemilik instalasi untuk mengaktifkannya.",
+    notFoundTitle: "Tidak ditemukan di {source}",
+    notFoundBody: "{model} tidak ditemukan di {source}, sehingga pemeriksaan keamanannya tidak dapat dijalankan. Periksa namanya, atau atur token dengan akses jika repositorinya privat.",
+    notOnModelScopeBody: "{model} tidak tersedia di ModelScope, sehingga pemeriksaan keamanannya tidak dapat dijalankan dan tidak dapat dimuat dari sana. Ubah sumber model ke Hugging Face di Pengaturan untuk menggunakannya.",
+    checksFailedTitle: "Pemeriksaan keamanan tidak dapat dijalankan",
+    checksFailedBody: "{model} tidak dapat dibaca dari {source}, sehingga pemeriksaan keamanannya tidak dapat diselesaikan dan tidak dapat dimuat. Periksa koneksi dan token Anda, lalu coba lagi. {note}",
     enableAndContinue: "Aktifkan dan lanjutkan",
   },
   tour: {

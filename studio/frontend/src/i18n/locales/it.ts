@@ -5,10 +5,13 @@ export const it = {
   chatBackground: {
     noBackground: "Nessuno sfondo",
     sizing: "Dimensionamento immagine",
+    sizingPosition: "Dimensionamento e posizione immagine",
     fill: "Riempi",
     fit: "Adatta",
     stretch: "Allunga",
     original: "Dimensioni originali",
+    fitWidth: "Adatta alla larghezza",
+    fitHeight: "Adatta all’altezza",
     zoom: "Zoom",
     outline: "Bordo del campo messaggio",
     fade: "Sfuma verso lo sfondo",
@@ -27,6 +30,12 @@ export const it = {
     visibility: "Visibilità",
     blur: "Sfocatura immagine",
     position: "Posizione",
+    horizontal: "Posizione orizzontale",
+    vertical: "Posizione verticale",
+    scope: "Mostra in",
+    scopeNewChat: "Pagina nuova chat",
+    scopeChats: "Chat",
+    scopeAll: "Tutte le pagine",
     positionValue: "Orizzontale {x}%, verticale {y}%",
     newChat: "Nuova chat",
     conversation: "Conversazione",
@@ -2238,6 +2247,22 @@ export const it = {
         label: "Dolcetto o scherzetto",
         description:
           "Temi di Halloween e saluti spaventosi, fino al 1° novembre.",
+      },
+      code: {
+        title: "Codice",
+        fontDescription: "Blocchi di codice nella chat, anteprime dei file ed esempi API.",
+        lineNumbers: {
+          label: "Numeri di riga",
+          description: "Numera le righe dei blocchi di codice nella chat.",
+        },
+        wordWrap: {
+          label: "A capo automatico",
+          description: "Manda a capo le righe lunghe nei blocchi di codice invece di scorrere in orizzontale.",
+        },
+        ligatures: {
+          label: "Legature del carattere",
+          description: "Unisce simboli come => e != in un solo glifo se il carattere del codice lo supporta.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5301,6 +5326,18 @@ export const it = {
     flaggedIntro: "Il nostro scanner automatico ha segnalato problemi tra cui:",
     nothingFlagged:
       "Il nostro scanner automatico non ha segnalato file preoccupanti, ma ti consigliamo di verificare comunque.",
+    unscannedTitle: "Impossibile analizzare i file del modello",
+    unscannedBody: "{model} include pesi pickle, che possono eseguire codice al caricamento, e per essi non è disponibile alcuna scansione antimalware, quindi non può essere caricato. {note}",
+    unscannedIntro: "File che non è stato possibile analizzare:",
+    switchSourceNote: "Imposta Hugging Face come origine dei modelli nelle Impostazioni per caricarlo.",
+    reconnectNote: "Connettiti a Hugging Face per poter leggere la scansione, poi riprova.",
+    managedTitle: "Il codice personalizzato è disattivato per questo account",
+    managedNote: "È disattivato per gli account gestiti. Chiedi al proprietario dell'installazione di attivarlo.",
+    notFoundTitle: "Non trovato su {source}",
+    notFoundBody: "{model} non è stato trovato su {source}, quindi non è stato possibile eseguire i controlli di sicurezza. Controlla il nome o imposta un token con accesso se il repository è privato.",
+    notOnModelScopeBody: "{model} non è disponibile su ModelScope, quindi non è stato possibile eseguire i controlli di sicurezza e non può essere caricato da lì. Imposta Hugging Face come origine dei modelli nelle Impostazioni per usarlo.",
+    checksFailedTitle: "Impossibile eseguire i controlli di sicurezza",
+    checksFailedBody: "Impossibile leggere {model} da {source}: i controlli di sicurezza non sono stati completati e non può essere caricato. Controlla la connessione e il token, poi riprova. {note}",
     enableAndContinue: "Abilita e continua",
   },
   tour: {

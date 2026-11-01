@@ -85,6 +85,9 @@ def test_customization_defaults():
     assert c.reduceMotion == "system"
     assert c.fontSmoothing is True
     assert c.pointerCursors is False
+    assert c.codeLineNumbers is False
+    assert c.codeWordWrap is False
+    assert c.codeLigatures is True
     assert c.colors.light.accent is None
     assert c.headingFont is None
     assert c.chatFont is None
@@ -495,6 +498,9 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "pointerCursors": True,
                 "reduceMotion": "off",
                 "fontSmoothing": True,
+                "codeLineNumbers": True,
+                "codeWordWrap": True,
+                "codeLigatures": False,
                 "sidebarMenu": [
                     {"id": "darkMode", "visible": True},
                     {"id": "api", "visible": False},

@@ -238,6 +238,7 @@ function setup(
         await options.remoteGate;
         return options.remote ?? remotePersonalization("de");
       },
+      migrateAppearanceMenuDefault: (value: unknown) => value,
       migrateShippedSidebarNavDefault: (value: unknown) => value,
       sanitizeCustomization,
       savePersonalization: (data: SavedPayload) => {
@@ -358,7 +359,7 @@ function widthRemote(chatWidthSaved?: boolean, chatWidth?: string) {
   const remote = remotePersonalization("auto");
   return {
     ...remote,
-    version: 5,
+    version: 6,
     chatWidthSaved,
     appearance: {
       ...remote.appearance,
@@ -429,7 +430,7 @@ function attachmentsRemote(saved: boolean | undefined, customization: Record<str
   const remote = remotePersonalization("auto");
   return {
     ...remote,
-    version: 5,
+    version: 6,
     chatWidthSaved: true,
     sentAttachmentsSaved: saved,
     appearance: {
@@ -493,7 +494,7 @@ test("an edit made while the personalization request is in flight is not overwri
     localCustomization: { uiFontSize: 12 },
     remote: {
       ...remote,
-      version: 5,
+      version: 6,
       appearance: { ...remote.appearance, customization: { uiFontSize: 20 } },
     },
     remoteGate: new Promise<void>((resolve) => {
@@ -523,7 +524,7 @@ test("without an edit in flight the saved server customization still wins", asyn
     localCustomization: { uiFontSize: 12 },
     remote: {
       ...remote,
-      version: 5,
+      version: 6,
       appearance: { ...remote.appearance, customization: { uiFontSize: 20 } },
     },
   });

@@ -660,15 +660,20 @@ def _local_is_diffusers(model) -> bool:
             return True
     except Exception:
         pass
+    needles: Optional[tuple[str, ...]] = None
     try:
         from core.inference.diffusion_families import detect_family
-        if any(detect_family(needle) is not None for needle in _local_family_needles(model)):
+        needles = _local_family_needles(model)
+        if any(detect_family(needle) is not None for needle in needles):
             return True
     except Exception:
         pass
     try:
         from core.inference.video_families import detect_video_family
-        families = (detect_video_family(needle) for needle in _local_family_needles(model))
+
+        if needles is None:
+            needles = _local_family_needles(model)
+        families = (detect_video_family(needle) for needle in needles)
         return any(
             family is not None and not _pipeline_only_video_family(family) for family in families
         )

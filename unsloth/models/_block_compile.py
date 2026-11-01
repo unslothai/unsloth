@@ -65,12 +65,13 @@ def _new_cudagraph_state():
 
 
 # Auto mode: phase "probe" (graphs off, watching), "on" or "off" (final). first: the layer whose
-# call starts a forward pass; passes: forward passes seen, all with batch shape `shape`.
+# call starts a forward pass; passes: forward passes seen, all with batch shape `shape` on `device`.
 def _new_auto_state():
     return {
         "phase": "probe",
         "first": None,
         "shape": None,
+        "device": None,
         "passes": 0,
         "host": [],
         "gpu": [],
@@ -529,6 +530,10 @@ def _auto_call_reason(layer, hidden_states, args, kwargs):
     return None
 
 
+def _auto_block_device(hidden_states):
+    return hidden_states.device
+
+
 def _auto_observe(layer, hidden_states, args, kwargs):
     """Auto mode, per block call while undecided: "graphs", "plain", or "measure" (plain, timed)."""
     auto = _CUDAGRAPH_STATE["auto"]
@@ -546,9 +551,13 @@ def _auto_observe(layer, hidden_states, args, kwargs):
             return "plain"
         auto["first"] = weakref.ref(layer)
         auto["shape"] = tuple(hidden_states.shape)
+        auto["device"] = _auto_block_device(hidden_states)
     why = _auto_call_reason(layer, hidden_states, args, kwargs)
     if why is None and tuple(hidden_states.shape) != auto["shape"]:
         why = "batch shape changed"
+    if why is None and _auto_block_device(hidden_states) != auto["device"]:
+        # A device_map split: timing and free memory are only read on one device.
+        why = "blocks on several devices"
     if why is not None:
         _auto_off(auto, why)
         return "plain"

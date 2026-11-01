@@ -8,10 +8,13 @@ export const ko = {
   chatBackground: {
     noBackground: "배경 없음",
     sizing: "이미지 크기 조정",
+    sizingPosition: "이미지 크기 및 위치",
     fill: "채우기",
     fit: "맞추기",
     stretch: "늘이기",
     original: "원본 크기",
+    fitWidth: "너비에 맞추기",
+    fitHeight: "높이에 맞추기",
     zoom: "확대",
     outline: "메시지 입력창 테두리",
     fade: "배경으로 페이드",
@@ -30,6 +33,12 @@ export const ko = {
     visibility: "표시 강도",
     blur: "이미지 흐림",
     position: "위치",
+    horizontal: "가로 위치",
+    vertical: "세로 위치",
+    scope: "표시 위치",
+    scopeNewChat: "새 채팅 페이지",
+    scopeChats: "채팅",
+    scopeAll: "모든 페이지",
     positionValue: "가로 {x}%, 세로 {y}%",
     newChat: "새 채팅",
     conversation: "대화",
@@ -2333,6 +2342,22 @@ export const ko = {
         label: "트릭 오어 트릿",
         description:
           "11월 1일까지 핼러윈 테마와 으스스한 인사말을 즐겨 보세요.",
+      },
+      code: {
+        title: "코드",
+        fontDescription: "채팅의 코드 블록, 파일 미리보기, API 예시.",
+        lineNumbers: {
+          label: "줄 번호",
+          description: "채팅 코드 블록의 줄에 번호를 붙입니다.",
+        },
+        wordWrap: {
+          label: "자동 줄바꿈",
+          description: "코드 블록의 긴 줄을 가로로 스크롤하지 않고 줄바꿈합니다.",
+        },
+        ligatures: {
+          label: "글꼴 합자",
+          description: "코드 글꼴이 지원하면 => 및 != 같은 기호를 하나의 글리프로 합칩니다.",
+        },
       },
       custom: {
         chatWidth: {
@@ -5221,6 +5246,18 @@ export const ko = {
     flaggedIntro: "자동 검사기가 다음을 포함한 문제를 발견했습니다:",
     nothingFlagged:
       "자동 검사기가 우려되는 파일을 발견하지 않았지만, 한 번 더 확인하세요.",
+    unscannedTitle: "모델 파일을 스캔할 수 없습니다",
+    unscannedBody: "{model}에는 로드할 때 코드를 실행할 수 있는 pickle 가중치가 있고 사용할 수 있는 악성코드 스캔 결과가 없어 로드할 수 없습니다. {note}",
+    unscannedIntro: "스캔할 수 없는 파일:",
+    switchSourceNote: "설정에서 모델 소스를 Hugging Face로 전환하면 로드할 수 있습니다.",
+    reconnectNote: "스캔 결과를 읽을 수 있도록 Hugging Face에 연결한 후 다시 시도하세요.",
+    managedTitle: "이 계정에서는 사용자 지정 코드가 꺼져 있습니다",
+    managedNote: "관리형 계정에서는 꺼져 있습니다. 설치 소유자에게 활성화를 요청하세요.",
+    notFoundTitle: "{source}에서 찾을 수 없음",
+    notFoundBody: "{source}에서 {model}을(를) 찾을 수 없어 보안 검사를 실행하지 못했습니다. 이름을 확인하거나, 비공개 저장소라면 액세스 권한이 있는 토큰을 설정하세요.",
+    notOnModelScopeBody: "{model}은(는) ModelScope에서 사용할 수 없어 보안 검사를 실행하지 못했고 그곳에서 로드할 수도 없습니다. 설정에서 모델 소스를 Hugging Face로 전환하세요.",
+    checksFailedTitle: "보안 검사를 실행할 수 없습니다",
+    checksFailedBody: "{source}에서 {model}을(를) 읽지 못해 보안 검사를 완료할 수 없었으며 로드할 수 없습니다. 연결과 토큰을 확인한 후 다시 시도하세요. {note}",
     enableAndContinue: "사용 설정 후 계속",
   },
   tour: {

@@ -71,6 +71,7 @@ from utils.personalization_settings import (
 from utils.upload_limits import (
     MAX_UPLOAD_LIMIT_MB,
     MIN_UPLOAD_LIMIT_MB,
+    audio_input_max_bytes,
     default_upload_limit_mb,
     get_upload_limit_mb,
     set_upload_limit_mb,
@@ -593,6 +594,8 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+    # Audio page upload cap; None means no cap.
+    audio_input_max_bytes: Optional[int] = None
 
 
 class ToolResultLimitPayload(BaseModel):
@@ -1168,6 +1171,7 @@ def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
         max_upload_size_bytes = upload_limit_bytes(limit_mb),
         max_upload_size_label = upload_limit_label(limit_mb),
         default_upload_size_mb = default_upload_limit_mb(),
+        audio_input_max_bytes = audio_input_max_bytes(limit_mb),
     )
 
 
@@ -4750,6 +4754,9 @@ class PersonalizationCustomization(BaseModel):
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
     fontSmoothing: bool = True
+    codeLineNumbers: bool = False
+    codeWordWrap: bool = False
+    codeLigatures: bool = True
     sidebarMenu: list[PersonalizationSidebarMenuItem] = Field(
         default_factory = _default_sidebar_menu,
         max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,

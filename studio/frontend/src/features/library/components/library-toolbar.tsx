@@ -22,13 +22,12 @@ import {
   Pdf01Icon,
   Presentation01Icon,
   Search01Icon,
-  Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { FolderClosedIcon } from "@/lib/folder-icons";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, Settings01Icon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { SortIcon } from "@/lib/sort-icon";
@@ -413,7 +412,7 @@ export function LibraryToolbar({
             onClick={onSettings}
             className={cn(ROUND_BUTTON, "text-muted-foreground hover:text-foreground dark:text-foreground")}
           >
-            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-5" />
+            <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-5" />
           </button>
         </ToolbarTip>
       </div>

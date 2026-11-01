@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useChatFavoritesStore } from "@/features/library/chats/favorites-store";
 import { useT } from "@/i18n";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { Settings01Icon, StarPointedIcon } from "@/lib/hugeicons-derived";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -24,7 +24,6 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
-  Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { FolderExportIcon } from "@/lib/folder-icons";
@@ -109,7 +108,7 @@ export function ProjectMenuItems({
           <DropdownMenuSeparator />
         </>
       )}
-      <Item icon={Settings02Icon} onSelect={onEdit}>
+      <Item icon={Settings01Icon} onSelect={onEdit}>
         {t("library.chats.menu.edit")}
       </Item>
       <Item icon={pinned ? PinOffIcon : PinIcon} onSelect={() => togglePin(project.id)}>

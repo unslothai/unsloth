@@ -11,6 +11,8 @@ import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useChatPreferencesStore } from "@/features/chat";
+import { useUserProfileStore } from "@/features/profile";
 import { TrickOrTreatSettingsRow } from "@/features/halloween/trick-or-treat-settings-row";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -18,6 +20,7 @@ import {
   ActiveColorControl,
   ChatFontRow,
   ChatWidthSelect,
+  CodeDisplaySwitch,
   SentAttachmentsSelect,
   CodeFontRow,
   CodeFontSizeRow,
@@ -31,6 +34,7 @@ import {
   UiFontRow,
   UiFontSizeRow,
 } from "../components/appearance-custom-controls";
+import { CodeDisplayPreview } from "../components/code-display-preview";
 import { ColorThemeSelect } from "../components/color-theme-select";
 import { GpuRenderingSegmented } from "../components/gpu-rendering-segmented";
 import { SettingsRow } from "../components/settings-row";
@@ -44,6 +48,11 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 const FONT_CONTROL_CLASS = "flex w-76 max-w-full items-center gap-2";
 const FONT_SELECT_CLASS = "w-auto min-w-0 flex-1";
+const CODE_SWITCHES = [
+  { field: "codeLineNumbers", key: "lineNumbers" },
+  { field: "codeWordWrap", key: "wordWrap" },
+  { field: "codeLigatures", key: "ligatures" },
+] as const;
 const NOTE_CLASS =
   "max-w-[calc(280px*var(--ui-space-scale,1))] text-right text-xs";
 
@@ -154,6 +163,16 @@ function GpuRenderingRow() {
 export function AppearanceTab() {
   const t = useT();
   const { pinned, setPinned } = useSidebarPin();
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
+  const setComposerAtBottom = useChatPreferencesStore(
+    (s) => s.setNewChatComposerAtBottom,
+  );
+  const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const setShowGreetingSloth = useUserProfileStore(
+    (s) => s.setShowGreetingSloth,
+  );
   const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -231,12 +250,6 @@ export function AppearanceTab() {
             <ChatFontRow className={FONT_SELECT_CLASS} />
           </div>
         </SettingsRow>
-        <SettingsRow label={t("settings.appearance.custom.codeFont.label")}>
-          <div className={FONT_CONTROL_CLASS}>
-            <CodeFontRow className={FONT_SELECT_CLASS} />
-            <CodeFontSizeRow />
-          </div>
-        </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.interfaceScale.label")}
           description={t(
@@ -250,6 +263,27 @@ export function AppearanceTab() {
           description={t("settings.appearance.custom.chatWidth.description")}
         >
           <ChatWidthSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.profile.greetingSloth")}
+          description={t("settings.profile.greetingSlothDescription")}
+        >
+          <Switch
+            aria-label={t("settings.profile.greetingSloth")}
+            id="profile-greeting-sloth"
+            checked={showGreetingSloth}
+            onCheckedChange={setShowGreetingSloth}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.composerAtBottom")}
+          description={t("settings.chat.composerAtBottomDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.composerAtBottom")}
+            checked={composerAtBottom}
+            onCheckedChange={setComposerAtBottom}
+          />
         </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.sentAttachments.label")}
@@ -281,6 +315,33 @@ export function AppearanceTab() {
         >
           <FontSmoothingSwitch />
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.appearance.code.title")}>
+        <SettingsRow
+          label={t("settings.appearance.custom.codeFont.label")}
+          description={t("settings.appearance.code.fontDescription")}
+        >
+          <div className={FONT_CONTROL_CLASS}>
+            <CodeFontRow className={FONT_SELECT_CLASS} />
+            <CodeFontSizeRow />
+          </div>
+        </SettingsRow>
+        <div className="pb-3">
+          <CodeDisplayPreview />
+        </div>
+        {CODE_SWITCHES.map(({ field, key }) => (
+          <SettingsRow
+            key={field}
+            label={t(`settings.appearance.code.${key}.label`)}
+            description={t(`settings.appearance.code.${key}.description`)}
+          >
+            <CodeDisplaySwitch
+              field={field}
+              label={t(`settings.appearance.code.${key}.label`)}
+            />
+          </SettingsRow>
+        ))}
       </SettingsSection>
 
       {isTauri ? (
