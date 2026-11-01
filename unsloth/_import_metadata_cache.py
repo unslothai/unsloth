@@ -3,15 +3,10 @@
 
 """Reuse `importlib.metadata.packages_distributions()` while `import unsloth` runs.
 
-transformers (>= 5) and TRL (>= 1) each call it at import time. Every call walks every installed
-distribution and stats every file listed in RECORD for wheels without top_level.txt: about
-0.5 s here and 0.8 s on Colab, paid twice. A repeat call returns a copy of the first result while
-sys.path, the mtime of each sys.path entry and the distribution finders on sys.meta_path are
-unchanged. importlib.metadata keys its own directory listing cache (FastPath.lookup) on the same
-mtimes, so a distribution installed or removed in between is seen exactly as without the cache.
-
-Stdlib only: Studio loads this file by path before transformers is imported, without running
-unsloth/__init__.py.
+transformers >= 5 and TRL >= 1 both scan every distribution at import. A repeat call returns a copy
+of the first result while sys.path, each entry's mtime and the distribution finders are unchanged:
+the same mtimes key importlib.metadata's own FastPath.lookup cache, so installs are still seen.
+Stdlib only: Studio loads this file by path, without running unsloth/__init__.py.
 """
 
 import importlib.metadata as _metadata
@@ -49,7 +44,6 @@ def _copy(mapping):
 
 
 def _live(scope):
-    """True while the window `install` opened is still open."""
     if not scope["open"]:
         return False
     owner = scope["owner"]
@@ -58,27 +52,22 @@ def _live(scope):
 
 
 def _close(wrapper):
-    """End the window: forget the memo and put the original back if nothing wrapped it since."""
     wrapper._unsloth_metadata_scope["open"] = False
     wrapper._unsloth_metadata_cache[0] = None
     if getattr(_metadata, "packages_distributions", None) is wrapper:
         restored = wrapper.__wrapped__
         _metadata.packages_distributions = restored
-        # An outer window that already closed (its uninstall found this one on top): unwrap it too.
+        # An outer window that closed while this one was on top.
         scope = getattr(restored, "_unsloth_metadata_scope", None)
         if scope is not None and not _live(scope):
             _close(restored)
 
 
 def install(owner = None):
-    """Wrap `importlib.metadata.packages_distributions`; returns a token for `uninstall`, else None.
-
-    `owner` is the module whose import opens the window: if that import raises, the wrapper closes
-    itself on its next call (and the next `install` unwraps it) instead of staying for good.
-    """
+    """Returns a token for `uninstall`, else None. If `owner`'s import raises, the wrapper closes itself."""
     with _lock:
         original = getattr(_metadata, "packages_distributions", None)
-        # Left behind by an earlier attempt whose import raised: take it out, never stack on it.
+        # Left by an earlier import that raised: never stack on it.
         scope = getattr(original, "_unsloth_metadata_scope", None)
         if scope is not None and not _live(scope):
             _close(original)
@@ -94,7 +83,6 @@ def install(owner = None):
 
         def packages_distributions():
             if not _live(scope):
-                # Window over (or its import failed): behave exactly like the original.
                 with _lock:
                     _close(packages_distributions)
                 return original()
@@ -119,10 +107,7 @@ def install(owner = None):
 
 
 def uninstall(token):
-    """Put back what `install` replaced, unless something wrapped it since (then leave both).
-
-    Either way the wrapper stops caching: a reference kept past the window reaches the original.
-    """
+    """Restore the original unless something wrapped it since; the wrapper stops caching either way."""
     if token is None:
         return
     with _lock:

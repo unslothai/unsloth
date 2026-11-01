@@ -17,9 +17,7 @@ from ._import_gc import raise_gc_threshold as _raise_gc_threshold
 _raise_gc_threshold(sys.modules.get(__name__))
 del _raise_gc_threshold
 
-# transformers and TRL both scan every installed distribution at import; the second scan reuses the
-# first while nothing on sys.path changed. Removed at the end of this file, or on its next call
-# once a failed import has dropped this module from sys.modules.
+# transformers and TRL both scan every installed distribution at import: share one scan until the end of this file.
 from ._import_metadata_cache import install as _install_metadata_cache
 
 _metadata_cache_token = _install_metadata_cache(sys.modules.get(__name__))

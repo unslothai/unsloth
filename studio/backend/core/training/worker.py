@@ -2113,13 +2113,9 @@ _TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
 
 
 def _install_metadata_scan_cache() -> Any:
-    """Share one importlib.metadata.packages_distributions() scan between transformers and TRL.
-
-    Both run it at import, about 0.8 s each on Colab. unsloth/__init__.py does the same for its own
-    import, but this worker imports transformers well before unsloth. The helper is loaded by path:
-    importing it through the package would run unsloth's whole init. Returns the token for
-    uninstall, or None when the helper is missing (an older unsloth) or fails to load.
-    """
+    """Share one packages_distributions() scan between transformers and TRL (unsloth's own window
+    opens after this worker's first transformers import). Loaded by path: the package would run
+    unsloth's whole init. None when the helper is missing (older unsloth) or fails."""
     try:
         spec = importlib.util.find_spec("unsloth")
         for root in list(getattr(spec, "submodule_search_locations", None) or ()):
