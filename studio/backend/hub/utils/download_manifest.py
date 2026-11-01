@@ -632,12 +632,41 @@ def _read_migration_payload(path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def _migration_manifest_paths(parent: Path) -> Iterator[Path]:
-    yield from parent.glob("*.json")
-    for scoped in parent.glob("cache-*"):
+def _listed(directory: Path) -> list[tuple[str, str]]:
+    # Eager like pathlib's glob, so writes made while migrating cannot disturb the listing; names folded
+    # on Windows, where glob matches case-insensitively.
+    with os.scandir(directory) as entries:
+        return [
+            (entry.name, entry.name.casefold() if os.name == "nt" else entry.name)
+            for entry in entries
+        ]
+
+
+def _migration_manifest_paths(parent: Path, failed: list) -> Iterator[Path]:
+    """Like globbing ``*.json`` and ``cache-*/*.json``, but a scope that cannot be listed is appended to
+    ``failed`` instead of silently yielding nothing (``Path.glob`` swallows ``OSError``)."""
+    try:
+        top = _listed(parent)
+    except FileNotFoundError:
+        return
+    for name, folded in top:
+        if folded.endswith(".json"):
+            yield parent / name
+    for name, folded in top:
+        if not folded.startswith("cache-"):
+            continue
+        scoped = parent / name
         if scoped.is_symlink() or not scoped.is_dir():
             continue
-        yield from scoped.glob("*.json")
+        try:
+            listed = _listed(scoped)
+        except OSError as exc:
+            failed.append(scoped)
+            logger.debug("Could not list Hub manifest scope %s: %s", scoped, exc)
+            continue
+        for child, child_folded in listed:
+            if child_folded.endswith(".json"):
+                yield scoped / child
 
 
 def _migration_fingerprint(parent: Path, scopes: Optional[Iterable[str]] = None) -> Optional[dict]:
@@ -727,7 +756,8 @@ def migrate_ordinary_v2_manifests_for_downgrade() -> int:
     migrated = 0
     clean = True
     try:
-        candidates = _migration_manifest_paths(parent)
+        unlisted: list = []
+        candidates = _migration_manifest_paths(parent, unlisted)
         for index, path in enumerate(candidates):
             if index >= _MANIFEST_MIGRATION_MAX_FILES:
                 logger.debug("Stopped Hub manifest migration at the file limit")
@@ -800,7 +830,7 @@ def migrate_ordinary_v2_manifests_for_downgrade() -> int:
     except Exception as exc:
         logger.debug("Could not enumerate Hub manifests for migration: %s", exc)
         return migrated
-    if clean:
+    if clean and not unlisted:
         try:
             _record_clean_migration(parent, before, started_ns)
         except Exception as exc:

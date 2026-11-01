@@ -258,6 +258,40 @@ def test_unreadable_manifest_is_not_recorded_and_retries(home, monkeypatch):
     assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() >= 3
 
 
+def test_unlistable_scope_is_not_recorded_and_retries(home, monkeypatch):
+    _populate(home)
+    _settle(state_dir.manifests_dir())
+    real = download_manifest._listed
+
+    def locked(directory):
+        if directory.name.startswith("cache-"):
+            raise PermissionError(13, "access denied", str(directory))
+        return real(directory)
+
+    with monkeypatch.context() as m:
+        m.setattr(download_manifest, "_listed", locked)
+        download_manifest.migrate_ordinary_v2_manifests_for_downgrade()
+    assert not _marker().exists()
+    assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() >= 2
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason = "POSIX permission bits")
+def test_unreadable_scope_dir_is_not_recorded(home):
+    _populate(home)
+    manifests = state_dir.manifests_dir()
+    _settle(manifests)
+    scopes = [p for p in manifests.iterdir() if p.name.startswith("cache-")]
+    for scope in scopes:
+        scope.chmod(0)
+    try:
+        download_manifest.migrate_ordinary_v2_manifests_for_downgrade()
+    finally:
+        for scope in scopes:
+            scope.chmod(0o700)
+    assert not _marker().exists()
+    assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() >= 1
+
+
 def test_file_cap_is_not_recorded(home, monkeypatch):
     _populate(home)
     _settle(state_dir.manifests_dir())
