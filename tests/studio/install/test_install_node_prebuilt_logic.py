@@ -1661,7 +1661,8 @@ def test_swap_into_place_reports_the_managed_parent_when_aside_is_denied(
 def test_detect_host_without_lzma_keeps_tar_gz(monkeypatch):
     monkeypatch.setattr(M.platform, "system", lambda: "Linux")
     monkeypatch.setattr(M.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(M.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.delitem(sys.modules, "lzma", raising = False)
+    monkeypatch.setitem(sys.modules, "_lzma", None)
     assert M.detect_host().archive_ext == ".tar.gz"
 
 

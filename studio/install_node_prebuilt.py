@@ -13,7 +13,6 @@ import argparse
 import errno
 import hashlib
 import http.client
-import importlib.util
 import json
 import os
 import stat
@@ -116,8 +115,12 @@ class HostInfo:
 
 
 def tar_archive_ext() -> str:
-    # .tar.xz is about half the download; a Python built without lzma cannot open it.
-    return ".tar.xz" if importlib.util.find_spec("lzma") else ".tar.gz"
+    # .tar.xz is about half the download. Import, not find_spec: lzma.py exists even when _lzma was not built.
+    try:
+        import lzma  # noqa: F401
+    except ImportError:
+        return ".tar.gz"
+    return ".tar.xz"
 
 
 def detect_host() -> HostInfo:
