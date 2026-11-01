@@ -226,31 +226,35 @@ function setup(
     },
   );
 
+  // The hook imports these from the settings store, theme store and personalization API modules.
+  const settings = {
+    isDefaultCustomization: (value: unknown) =>
+      Object.keys(value as object).length === 0,
+    isPalette: (value: unknown) => typeof value === "string",
+    loadPersonalization: async () => {
+      await options.remoteGate;
+      return options.remote ?? remotePersonalization("de");
+    },
+    migrateAppearanceMenuDefault: (value: unknown) => value,
+    migrateShippedSidebarNavDefault: (value: unknown) => value,
+    sanitizeCustomization,
+    savePersonalization: (data: SavedPayload) => {
+      saves.push(data);
+      return Promise.resolve();
+    },
+    setPalette: () => undefined,
+    setTheme: () => undefined,
+    useAppearanceCustomStore: appearanceStore,
+    usePalette: () => ({ palette: "standard" }),
+    useTheme: () => ({ theme: "system" }),
+  };
   const { usePersonalizationSync } = loadWithStubs<{
     usePersonalizationSync: (enabled: boolean) => void;
   }>(HOOK_URL, {
     react: host.react,
-    "@/features/settings": {
-      isDefaultCustomization: (value: unknown) =>
-        Object.keys(value as object).length === 0,
-      isPalette: (value: unknown) => typeof value === "string",
-      loadPersonalization: async () => {
-        await options.remoteGate;
-        return options.remote ?? remotePersonalization("de");
-      },
-      migrateAppearanceMenuDefault: (value: unknown) => value,
-      migrateShippedSidebarNavDefault: (value: unknown) => value,
-      sanitizeCustomization,
-      savePersonalization: (data: SavedPayload) => {
-        saves.push(data);
-        return Promise.resolve();
-      },
-      setPalette: () => undefined,
-      setTheme: () => undefined,
-      useAppearanceCustomStore: appearanceStore,
-      usePalette: () => ({ palette: "standard" }),
-      useTheme: () => ({ theme: "system" }),
-    },
+    "@/features/settings/stores/appearance-custom-store": settings,
+    "@/features/settings/stores/theme-store": settings,
+    "@/features/settings/api/personalization": settings,
     "@/i18n": {
       DEFAULT_LOCALE_PREFERENCE: "auto",
       LOCALE_INITIALIZATION_TIMEOUT_MS: 2_000,

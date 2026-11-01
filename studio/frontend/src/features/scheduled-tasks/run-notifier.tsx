@@ -4,7 +4,8 @@
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { AUTH_SESSION_STORED_EVENT, getAuthSessionEpoch, hasSettledAuthSession } from "@/features/auth";
-import { notifyChatHistoryUpdated, useChatNavigationStore } from "@/features/chat";
+import { notifyChatHistoryUpdated } from "@/features/chat/api/chat-api";
+import { useChatNavigationStore } from "@/features/chat/stores/chat-navigation-store";
 import { translate } from "@/i18n";
 import { browserAccountKey } from "@/lib/account-transition";
 import { isTauri } from "@/lib/api-base";

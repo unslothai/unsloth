@@ -115,7 +115,7 @@ import {
 } from "../utils/conversation-markdown";
 import { planChatItemSources } from "../utils/project-source-plan";
 import { stripSearchImageTokens } from "../search-images/search-images.ts";
-import { saveMarkdownAsProjectSource } from "@/features/rag";
+import { saveMarkdownAsProjectSource } from "@/features/rag/api/save-markdown-source";
 
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);

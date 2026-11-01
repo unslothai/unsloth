@@ -33,10 +33,17 @@ const AUTH_STUB =
       " throw new Error(\"no network in tests\"); };",
   );
 
+// The browser stores import these chat modules directly rather than through the chat index.
+const CHAT_SPECIFIERS = new Set([
+  "@/features/chat",
+  "@/features/chat/stores/chat-runtime-store",
+  "@/features/chat/utils/chat-thread-tombstones",
+]);
+
 export function resolve(specifier, context, next) {
   if (specifier === "@/features/auth") return { url: AUTH_STUB, shortCircuit: true };
   if (specifier === "@/lib/toast") return { url: TOAST_STUB, shortCircuit: true };
-  if (specifier === "@/features/chat") return { url: CHAT_STUB, shortCircuit: true };
+  if (CHAT_SPECIFIERS.has(specifier)) return { url: CHAT_STUB, shortCircuit: true };
   if (specifier === "@/i18n") return { url: I18N_STUB, shortCircuit: true };
   if (specifier.startsWith("@/lib/")) {
     return next(new URL(`../../src/lib/${specifier.slice(6)}.ts`, import.meta.url).href, context);

@@ -22,26 +22,23 @@ import {
   hasSettledAuthSession,
   useIsAccountOwner,
 } from "@/features/auth";
+import type { ChatSearch } from "@/features/chat/chat-search";
+import { loadChatPage, loadedChatPage } from "@/features/chat/load-chat-page";
 import {
-  type ChatSearch,
-  loadChatPage,
-  loadedChatPage,
   openFolderAsProject,
-  startLlamaCppAutoReload,
-  StopRunningChatsDialog,
   useOpeningFolder,
-  useChatRuntimeStore,
-  usePinnedChatsSync,
-} from "@/features/chat";
+} from "@/features/chat/utils/open-folder-as-project";
+import { startLlamaCppAutoReload } from "@/features/chat/llama-cpp-auto-reload";
+import { StopRunningChatsDialog } from "@/features/chat/components/stop-running-chats-dialog";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { usePinnedChatsSync } from "@/features/chat/hooks/use-pinned-chats-sync";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { InterfaceZoom, zoomInterfaceFromMenu } from "@/features/interface-zoom";
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
-import {
-  ManagedEngineOfferDialog,
-  SharedRunConfigLinkHandler,
-} from "@/features/model-picker";
+import { ManagedEngineOfferDialog } from "@/features/model-picker/components/managed-engine-offer-dialog";
+import { SharedRunConfigLinkHandler } from "@/features/model-picker/sharing/link-handler";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { hydratePins } from "@/lib/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
@@ -49,20 +46,22 @@ import { ScheduledTaskRunNotifier } from "@/features/scheduled-tasks/run-notifie
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
   SETTINGS_TABS,
-  SettingsDialogMount,
-  settingsTabVisible,
-  triggerShortcut,
-  useHubSourceNotice,
   useSettingsDialogStore,
+} from "@/features/settings/stores/settings-dialog-store";
+import { SettingsDialogMount } from "@/features/settings/settings-dialog-mount";
+import { settingsTabVisible } from "@/features/settings/settings-tab-visibility";
+import {
+  triggerShortcut,
   useShortcut,
   useShortcutAvailable,
-} from "@/features/settings";
+} from "@/features/settings/hooks/use-shortcut";
+import { useHubSourceNotice } from "@/features/settings/hooks/use-hub-source-notice";
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
-import { useTrainingUnloadGuard } from "@/features/training";
+import { useTrainingUnloadGuard } from "@/features/training/hooks/use-training-unload-guard";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { LlmCompressorConsentDialog } from "@/features/export/components/llm-compressor-consent-dialog";
 import { useNativePathLeasesSupported } from "@/features/native-intents";
-import { useRagAvailabilityStore } from "@/features/rag";
+import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useTypeToActivate } from "@/hooks/use-type-to-activate";

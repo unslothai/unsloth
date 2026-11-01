@@ -4,7 +4,7 @@
 /** desktop web pages use per-tab native views for bot checks. macOS puts each page under the app's webview, so
  *  overlays draw over the live page; elsewhere native views cover the DOM, so overlays use snapshots. */
 
-import { useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { getLocale, translate } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";

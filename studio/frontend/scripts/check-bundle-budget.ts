@@ -445,8 +445,12 @@ export const BUDGET = {
   // the eager English catalog and its search rows. Raised by that.
   // Chat wallpaper prefs, reset and English strings: +6,365 B raw / +3,589 B transfer (Node 24,
   // 85 -> 89 eager chunks). Renderer, contrast and pixel worker stay lazy.
-  transferBytes: 1_853_999,
-  rawBytes: 5_997_755,
+  // Startup code importing chat, hub, library, model-picker, rag, settings and training modules directly
+  // instead of through their feature indexes: -1,097,488 B raw / -303,508 B transfer (5,389,395 -> 4,291,907
+  // B raw, 1,685,149 -> 1,381,641 B transfer against 23329d5ade, Node 24, 120 -> 138 chunks). Lowered by that,
+  // so the headroom stays what it was and a regression of that size fails here.
+  transferBytes: 1_550_491,
+  rawBytes: 4_900_267,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

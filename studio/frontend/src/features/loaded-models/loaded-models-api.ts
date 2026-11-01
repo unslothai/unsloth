@@ -5,15 +5,12 @@
 // imported directly because their indexes re-export pages kept out of the eager bundle.
 
 import { authFetch, isAccountOwner } from "@/features/auth";
-import {
-  confirmStopRunningChatsIfNeeded,
-  getInferenceStatus,
-  isExternalModelId,
-  requestScopedLocalPromptQueueStop,
-  resolveInferenceCheckpointId,
-  unloadModel,
-  useChatRuntimeStore,
-} from "@/features/chat";
+import { confirmStopRunningChatsIfNeeded } from "@/features/chat/utils/confirm-stop-running-chats";
+import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
+import { isExternalModelId } from "@/features/chat/external-providers";
+import { requestScopedLocalPromptQueueStop } from "@/features/chat/utils/prompt-queue-boundary";
+import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import {

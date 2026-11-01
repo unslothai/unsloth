@@ -9,13 +9,13 @@ import {
   loadSttModel,
   sttEngineFor,
   sttEngineStatusFor,
-} from "@/features/chat";
+} from "@/features/chat/adapters/studio-model-dictation-adapter";
 import {
   finishExternalJob,
-  invalidateGgufVariantsCache,
   startExternalJob,
   updateExternalJob,
-} from "@/features/hub";
+} from "@/features/hub/download-manager/external-jobs";
+import { invalidateGgufVariantsCache } from "@/features/hub/inventory/api";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {

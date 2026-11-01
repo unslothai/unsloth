@@ -8,7 +8,10 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useShortcut, useShortcutLabel } from "@/features/settings";
+import {
+  useShortcut,
+  useShortcutLabel,
+} from "@/features/settings/hooks/use-shortcut";
 import { useT } from "@/i18n";
 import { InternetIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
