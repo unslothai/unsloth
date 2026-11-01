@@ -61,6 +61,16 @@ except ImportError:
             "__exit__": lambda s, *a: None,
         },
     )
+
+    # Any other httpx name: a cached Exception subclass, usable as a class and an except target.
+    def _httpx_placeholder(name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        value = type(name, (Exception,), {"__init__": lambda s, *a, **k: Exception.__init__(s, *a)})
+        setattr(_httpx_stub, name, value)
+        return value
+
+    _httpx_stub.__getattr__ = _httpx_placeholder
     sys.modules["httpx"] = _httpx_stub
 
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
@@ -194,7 +204,8 @@ def test_tensor_split_gate_is_self_healing_not_blanket():
 def test_tensor_split_skip_documents_layer_split_fallback():
     """When the skip fires (known-bad binary+model), it states the fallback."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    gate = src.find("self._tensor_split_aborts(")
+    # The downgrade gate, not the auto policy's earlier check.
+    gate = src.find("tensor_parallel and self._tensor_split_aborts(")
     assert gate != -1
     block = src[gate : gate + 600]
     assert "layer split" in block, "the skip should state it falls back to layer split"
