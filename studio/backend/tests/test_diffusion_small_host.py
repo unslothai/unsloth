@@ -580,7 +580,9 @@ def _header_only(
     (sub / filename).write_bytes(struct.pack("<Q", len(raw)) + raw)
 
 
-@pytest.mark.parametrize("cached", ["configs_only", "vae_only", "one_dit_shard"])
+@pytest.mark.parametrize(
+    "cached", ["configs_only", "vae_only", "one_dit_shard", "one_dit_shard_no_index"]
+)
 def test_a_partially_cached_snapshot_downloads_before_the_decision(tmp_path, monkeypatch, cached):
     """An interrupted download leaves some weights cached; sizing them alone hides the large denoiser."""
     from core.inference import diffusion as dif
@@ -604,10 +606,17 @@ def test_a_partially_cached_snapshot_downloads_before_the_decision(tmp_path, mon
     _header_only(full, "vae", 161)
     if cached == "vae_only":
         _header_only(partial, "vae", 161)
-    if cached == "one_dit_shard":
+    if cached in ("one_dit_shard", "one_dit_shard_no_index"):
         _header_only(
             partial, "transformer", 4096, "diffusion_pytorch_model-00001-of-00005.safetensors"
         )
+    if cached == "one_dit_shard_no_index":
+        # Isolate the missing index: every other component and model config is cached.
+        _header_only(partial, "text_encoder", 1000, "model.safetensors")
+        _header_only(partial, "vae", 161)
+        for name in ("transformer", "text_encoder", "vae"):
+            (partial / name / "config.json").write_text("{}")
+    if cached == "one_dit_shard":
         (partial / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
             json.dumps(
                 {
@@ -638,6 +647,47 @@ def test_a_partially_cached_snapshot_downloads_before_the_decision(tmp_path, mon
     )
     assert calls == [1]
     assert d.engaged and d.int8_spill
+
+
+@pytest.mark.parametrize(
+    "stem,extension,variant",
+    [
+        ("diffusion_pytorch_model", "safetensors", None),
+        ("model", "safetensors", None),
+        ("pytorch_model", "bin", None),
+        ("diffusion_pytorch_model", "safetensors", "fp16"),
+    ],
+)
+def test_numbered_shards_require_an_index_covering_them(tmp_path, stem, extension, variant):
+    (tmp_path / "model_index.json").write_text(
+        json.dumps({"transformer": ["diffusers", "X"], "vae": ["diffusers", "Y"]})
+    )
+    mark = f".{variant}" if variant else ""
+    _header_only(tmp_path, "vae", 1, f"diffusion_pytorch_model{mark}.safetensors")
+    sub = tmp_path / "transformer"
+    sub.mkdir()
+    (sub / "config.json").write_text("{}")
+    names = [f"{stem}{mark}-{i:05d}-of-00002.{extension}" for i in (1, 2)]
+    (sub / names[0]).touch()
+    assert not sh.snapshot_weights_complete(tmp_path, variant = variant)
+    assert sh.snapshot_weights_complete(tmp_path, skip = ("transformer",), variant = variant)
+    (sub / names[1]).touch()
+    # Even all numbered files require the index the loader opens.
+    assert not sh.snapshot_weights_complete(tmp_path, variant = variant)
+    shard_index = sub / f"{stem}.{extension}.index{mark}.json"
+    orphan = f"{stem}{mark}.{extension}"
+    (sub / orphan).touch()
+    for content in (
+        "{",
+        "{}",
+        json.dumps({"weight_map": {"other": orphan}}),
+    ):
+        shard_index.write_text(content)
+        assert not sh.snapshot_weights_complete(tmp_path, variant = variant)
+    shard_index.write_text(json.dumps({"weight_map": {f"w{i}": n for i, n in enumerate(names)}}))
+    assert sh.snapshot_weights_complete(tmp_path, variant = variant)
+    (sub / names[1]).unlink()
+    assert not sh.snapshot_weights_complete(tmp_path, variant = variant)
 
 
 def test_a_complete_snapshot_with_a_supplied_component_skips_the_download(tmp_path):
