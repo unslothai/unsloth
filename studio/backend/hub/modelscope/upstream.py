@@ -106,7 +106,7 @@ _PINNED_COMMITS = {
         "model",
         "ggml-org/openjev-gguf",
         "10840f375658dea7afc5ff4711127bca8218b560",
-    ): "2854133a5ac62b5355394f1f07400f0f40dac94f",
+    ): "0e92bdc0c205913a707db422da43a12914078026",
     (
         "model",
         "ggml-org/laya-gguf",
