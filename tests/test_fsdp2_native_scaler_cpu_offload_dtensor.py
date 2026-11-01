@@ -44,7 +44,9 @@ def test_cpu_dtensor_grads_unscale_as_local_shards(cpu_mesh, monkeypatch, overfl
 
     native = _load_native()
     old = torch.amp.GradScaler("cpu", init_scale = 2.0**8)
-    trainer = types.SimpleNamespace(accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _Handler()))
+    trainer = types.SimpleNamespace(
+        accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _Handler())
+    )
     assert native._scaler_for_native(trainer) is True
     scaler = trainer.accelerator.scaler
     torch.manual_seed(0)
@@ -58,11 +60,15 @@ def test_cpu_dtensor_grads_unscale_as_local_shards(cpu_mesh, monkeypatch, overfl
     parent = ShardedGradScaler._unscale_grads_
 
     def recording(self, optimizer, *a, **k):
-        seen.extend(type(q.grad) for g in optimizer.param_groups for q in g["params"] if q.grad is not None)
+        seen.extend(
+            type(q.grad) for g in optimizer.param_groups for q in g["params"] if q.grad is not None
+        )
         return parent(self, optimizer, *a, **k)
 
     monkeypatch.setattr(ShardedGradScaler, "_unscale_grads_", recording)
-    scaler.scale(torch.ones(()))  # initializes the scale (2 ** 8): the grads above stand for scaled ones
+    scaler.scale(
+        torch.ones(())
+    )  # initializes the scale (2 ** 8): the grads above stand for scaled ones
     scaler.unscale_(opt)
     assert seen and not any(issubclass(t, DTensor) for t in seen), seen
     assert isinstance(p.grad, DTensor)  # the parameter keeps its DTensor grad, unscaled in place
