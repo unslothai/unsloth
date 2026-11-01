@@ -324,12 +324,6 @@ export function ChatTab() {
   const setShowTurnNavigation = useChatPreferencesStore(
     (s) => s.setShowTurnNavigation,
   );
-  const composerAtBottom = useChatPreferencesStore(
-    (s) => s.newChatComposerAtBottom,
-  );
-  const setComposerAtBottom = useChatPreferencesStore(
-    (s) => s.setNewChatComposerAtBottom,
-  );
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
   );
@@ -827,16 +821,6 @@ export function ChatTab() {
             id="profile-greeting-sloth"
             checked={showGreetingSloth}
             onCheckedChange={setShowGreetingSloth}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.composerAtBottom")}
-          description={t("settings.chat.composerAtBottomDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.composerAtBottom")}
-            checked={composerAtBottom}
-            onCheckedChange={setComposerAtBottom}
           />
         </SettingsRow>
       </SettingsSection>

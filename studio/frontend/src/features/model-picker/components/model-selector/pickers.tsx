@@ -143,13 +143,12 @@ import {
   PlusSignIcon,
   RemoveCircleIcon,
   Search01Icon,
-  Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { Folder02Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { useT } from "@/i18n";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SortIcon } from "@/lib/sort-icon";
 import { useNavigate } from "@tanstack/react-router";
@@ -1141,7 +1140,7 @@ function ConnectedGroupHeading({
                 )}
               >
                 <HugeiconsIcon
-                  icon={Settings02Icon}
+                  icon={Settings01Icon}
                   strokeWidth={1.75}
                   className="size-3"
                 />
