@@ -2514,9 +2514,7 @@ def _linux_desktop(
     answers,
     xdg_status = 0,
 ):
-    """A Linux desktop session where each D-Bus client exits with its code in *answers* (None:
-    not installed) and xdg-open with *xdg_status* (None: still running). Returns the target file
-    and every command run, in order."""
+    """D-Bus clients exit with their code in *answers* (absent: not installed), xdg-open with *xdg_status* (None: still running)."""
     import subprocess
     from types import SimpleNamespace
 
