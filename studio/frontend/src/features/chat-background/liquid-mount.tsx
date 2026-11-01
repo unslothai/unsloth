@@ -4,7 +4,6 @@
 import { Suspense, lazy } from "react";
 import { useMaterialStore } from "./material";
 
-// The refraction library loads only once a Liquid Glass material and glass menus are on.
 const Layers = lazy(() =>
   import("./liquid-glass").then((module) => ({
     default: module.GlassMenuLayers,

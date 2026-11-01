@@ -6,12 +6,7 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMaterialStore } from "./material";
 
-/**
- * Liquid Glass surfaces drawn by @liqui-design/glass: an SVG displacement filter that bends whatever is
- * behind the rim (Chromium; WebKit and Firefox fall back to its frosted tier) and a normal-lit specular
- * rim. Rendered as a layer behind the host's content, so the host keeps its own markup.
- */
-// Narrow bezels: the bend and the lit rim stay within a few pixels of the edge, like real glass.
+/** @liqui-design/glass refraction is Chromium only; WebKit and Firefox fall back to its frosted tier. */
 const OPTICS = {
   composer: {
     liquid: { refraction: 30, bezel: 6, specular: 0.15, dispersion: 0 },
@@ -92,7 +87,6 @@ export function LiquidGlassLayer({
 const MENUS =
   '[data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"]';
 
-/** Liquid Glass layers for open menus, which Radix portals straight into <body>. */
 export function GlassMenuLayers({ active }: { active: boolean }) {
   const [hosts, setHosts] = useState<HTMLElement[]>([]);
   useEffect(() => {

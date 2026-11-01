@@ -20,7 +20,6 @@ export function ComposerGlassLenses({
   const [hosts, setHosts] = useState<HTMLElement[]>([]);
   const workspace = wallpaper?.parentElement ?? null;
   const on = Boolean(workspace) && material !== "solid";
-  // A magnifying or shrinking copy covers the whole composer, so it replaces the refraction layer.
   const liquid = isLiquidMaterial(material) && lens === "off";
   useEffect(() => {
     if (!workspace || !on) return;
