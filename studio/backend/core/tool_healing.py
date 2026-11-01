@@ -253,12 +253,14 @@ _TOOL_TAG_PREFIXES = (
     "</param",
     "<arg_",
     "</arg_",
+    "<minimax:",
+    "</minimax:",
     "<|",
     "<｜",
     "[",
 )
 _TOOL_TAG_HINT_RE = re.compile(
-    r"</?(?:tool|function|param|arg_)|<[|｜]|\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\]"
+    r"</?(?:tool|function|param|arg_|minimax:)|<[|｜]|\[/?(?:TOOL_CALLS|ARGS|CALL_ID)\]"
 )
 
 
@@ -1341,6 +1343,10 @@ def _tool_call_markup_spans(text: str) -> list[tuple[int, int]]:
             continue
         spans.extend(m.span() for m in pat.finditer(text, 0, scan_end))
     spans.extend((start, end) for start, end, _kind, _m in _iter_bracket_spans(text))
+    if "<minimax:tool_call>" in text:
+        # Parameter-aware block bounds, so a quoted closer cannot end the span; lazy, as that module imports this one.
+        from core.inference.tool_call_parser import _minimax_block_spans
+        spans.extend((start, end) for start, end, _closed in _minimax_block_spans(text))
     # An unclosed opener is a real incomplete call only outside closed/bracket spans.
     for pat in _TOOL_OPEN_XML_TAIL_PATS:
         for m in pat.finditer(text):
@@ -1371,7 +1377,20 @@ def _think_spans_outside_tool_markup(text: str) -> list[tuple[int, int]]:
         return think_spans
     if not call_spans:
         return think_spans
-    return [(s, e) for (s, e) in think_spans if not any(cs <= s < ce for cs, ce in call_spans)]
+    # Merged and bisected: a pairwise scan is quadratic on long output.
+    merged: list[list[int]] = []
+    for cs, ce in sorted(call_spans):
+        if merged and cs <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], ce)
+        else:
+            merged.append([cs, ce])
+    starts = [cs for cs, _ in merged]
+    kept = []
+    for s, e in think_spans:
+        i = bisect.bisect_right(starts, s) - 1
+        if i < 0 or s >= merged[i][1]:
+            kept.append((s, e))
+    return kept
 
 
 def strip_outside_think(text: str, strip_segment) -> str:
