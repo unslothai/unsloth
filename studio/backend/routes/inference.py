@@ -3452,6 +3452,8 @@ from models.inference import (
     ToolApprovalStatusRequest,
     ToolConfirmRequest,
     BrowserActionResultRequest,
+    ComputerActionResultRequest,
+    ComputerActionAbortRequest,
     ChatMessage,
     ChunkChoice,
     ChoiceDelta,
@@ -6096,11 +6098,21 @@ async def _select_request_tools(
         # asks by name. Without UI frames the action never reaches a tab, so the tool would only
         # wait out its timeout.
         from core.inference.browser_agent import BROWSER_SCREENSHOT, BROWSER_TOOLS
+
         tools += [
             tool
             for tool in BROWSER_TOOLS
             if tool["function"]["name"] in payload.enabled_tools
             and (supports_vision or tool["function"]["name"] != BROWSER_SCREENSHOT)
+        ]
+        # Visual Computer Use mode (#15532): offered when client enables computer tools.
+        from core.inference.computer_agent import COMPUTER_SCREENSHOT, COMPUTER_TOOLS
+
+        tools += [
+            tool
+            for tool in COMPUTER_TOOLS
+            if tool["function"]["name"] in payload.enabled_tools
+            and (supports_vision or tool["function"]["name"] != COMPUTER_SCREENSHOT)
         ]
     if tools_on and payload.enabled_tools is not None:
         # Opt-in by name too, and only while an image or video model this account may use is loaded.
@@ -21700,6 +21712,32 @@ async def browser_action_result(
     ):
         raise HTTPException(status_code = 404, detail = "No pending browser action")
     return {"resolved": True}
+
+
+@studio_router.post("/computer-action-result")
+async def computer_action_result(
+    body: ComputerActionResultRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Answer a pending visual Computer Use action (#15532)."""
+    from state.computer_actions import resolve_computer_action
+    from utils.account_context import current_account_id
+
+    if not resolve_computer_action(
+        body.action_id, body.result, body.session_id, current_account_id()
+    ):
+        raise HTTPException(status_code = 404, detail = "No pending computer action")
+    return {"resolved": True}
+
+
+@studio_router.post("/computer-action-abort")
+async def computer_action_abort(
+    body: ComputerActionAbortRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Emergency stop endpoint to abort any active computer actions immediately (#15532)."""
+    from state.computer_actions import abort_all_computer_actions
+
+    count = abort_all_computer_actions(body.session_id)
+    return {"aborted": count}
 
 
 @studio_router.post("/tool-approval-status")

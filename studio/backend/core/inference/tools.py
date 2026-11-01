@@ -47,6 +47,7 @@ from contextvars import ContextVar
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .computer_agent import COMPUTER_TOOL_NAMES, execute_computer_tool, is_computer_tool
 from .media_chat_tools import MEDIA_CHAT_TOOLS
 from . import file_history
 
@@ -6376,6 +6377,8 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         # Gated in the chat tab instead, which knows what each ref on the live page is: submits,
         # purchases, sign-ins and new sites ask there, in every permission mode.
         *BROWSER_TOOL_NAMES,
+        # Visual Computer Use mode (#15532): gated via client desktop permission modes (restricted / automatic).
+        *COMPUTER_TOOL_NAMES,
         # Render on the resident image/video model; never load/unload a model or reach the network.
         *MEDIA_CHAT_TOOLS,
     }
@@ -13329,6 +13332,15 @@ def execute_tool(
             output_callback = output_callback,
             session_id = session_id,
             website_policy = website_policy,
+            timeout = effective_timeout,
+        )
+    if is_computer_tool(name):
+        return execute_computer_tool(
+            name,
+            arguments,
+            cancel_event = cancel_event,
+            output_callback = output_callback,
+            session_id = session_id,
             timeout = effective_timeout,
         )
     if name == "create_skill":
