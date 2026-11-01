@@ -48,25 +48,47 @@ export function nativeMaterialAvailable(): boolean {
   return isTauri && isMacPlatform();
 }
 
+export type GlassStyle = Exclude<WindowMaterial, "solid">;
+const sanitizeStyle = (value: unknown): GlassStyle | null => {
+  const material = sanitizeMaterial(value);
+  return material === "solid" ? null : material;
+};
+
 export const useMaterialStore = create<{
+  /** What applies now: "solid" while the Glass switch is off. */
   material: WindowMaterial;
+  /** The style the Glass switch turns back on. */
+  style: GlassStyle;
   /** The desktop shell refused the native material (an older Unsloth Desktop). */
   nativeFailed: boolean;
   /** Dropdowns, menus and pickers take the glass too. */
   menus: boolean;
   strength: number;
   setMaterial: (material: WindowMaterial) => void;
+  setEnabled: (enabled: boolean) => void;
   setMenus: (menus: boolean) => void;
   setStrength: (strength: number) => void;
 }>()(
   persist(
     (set) => ({
       material: "solid",
+      style: "liquid",
       nativeFailed: false,
       menus: false,
       strength: 50,
-      setMaterial: (material) =>
-        set({ material: sanitizeMaterial(material), nativeFailed: false }),
+      setMaterial: (material) => {
+        const next = sanitizeMaterial(material);
+        set(
+          next === "solid"
+            ? { material: next, nativeFailed: false }
+            : { material: next, style: next, nativeFailed: false },
+        );
+      },
+      setEnabled: (enabled) =>
+        set((s) => ({
+          material: enabled ? s.style : "solid",
+          nativeFailed: false,
+        })),
       setMenus: (menus) => set({ menus }),
       setStrength: (strength) => set({ strength: sanitizeStrength(strength) }),
     }),
@@ -75,6 +97,7 @@ export const useMaterialStore = create<{
       storage: createJSONStorage(() => guardedLocalStorage),
       partialize: (s) => ({
         material: s.material,
+        style: s.style,
         menus: s.menus,
         strength: s.strength,
       }),
@@ -82,6 +105,7 @@ export const useMaterialStore = create<{
         const stored = persisted as
           | {
               material?: unknown;
+              style?: unknown;
               menus?: unknown;
               strength?: unknown;
             }
@@ -89,6 +113,10 @@ export const useMaterialStore = create<{
         return {
           ...current,
           material: sanitizeMaterial(stored?.material),
+          style:
+            sanitizeStyle(stored?.style) ??
+            sanitizeStyle(stored?.material) ??
+            "liquid",
           menus: stored?.menus === true,
           strength: sanitizeStrength(stored?.strength),
         };
@@ -110,12 +138,20 @@ export function WindowMaterialMount() {
   const menus = useMaterialStore((s) => s.menus);
   const strength = useMaterialStore((s) => s.strength);
   useEffect(() => {
-    // 0-100 onto a 0.2-2x multiplier of each material's tint and blur, 1x at 50.
+    // 0-100 onto multipliers, 1x at 50: blur 0.2-2x, and how opaque every pane is 0.35-2x (capped near
+    // solid), applied after the readability floors so the setting always shows.
     const root = document.documentElement;
-    const factor =
+    const blur =
       strength <= 50 ? 0.2 + (0.8 * strength) / 50 : 1 + (strength - 50) / 50;
-    if (strength === 50) root.style.removeProperty("--glass-strength");
-    else root.style.setProperty("--glass-strength", factor.toFixed(3));
+    const opacity =
+      strength <= 50 ? 0.35 + (0.65 * strength) / 50 : 1 + (strength - 50) / 50;
+    if (strength === 50) {
+      root.style.removeProperty("--glass-strength");
+      root.style.removeProperty("--glass-opacity");
+    } else {
+      root.style.setProperty("--glass-strength", blur.toFixed(3));
+      root.style.setProperty("--glass-opacity", opacity.toFixed(3));
+    }
   }, [strength]);
   useEffect(() => {
     // The menu rules also require data-glass, so a refused macOS material leaves menus solid.
