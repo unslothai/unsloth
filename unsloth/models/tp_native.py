@@ -1983,6 +1983,10 @@ def _check_pp_tp_composition(model, tp_mesh):
             "Unsloth: tensor parallelism does not compose with Unsloth pipeline parallelism "
             "(apply_pipeline_parallel) here: pass the model apply_pipeline_parallel was given."
         )
+    if stage.ctx.moe is not None:
+        from .pp_native import _PP_MOE_COMPOSED
+
+        raise ValueError(_PP_MOE_COMPOSED)
     if stage.dp_mesh is not None:
         raise ValueError(
             "Unsloth: apply_tensor_parallel must come before shard_model on a pipeline parallel model "
