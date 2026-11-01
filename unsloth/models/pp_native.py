@@ -1591,11 +1591,14 @@ class PipelineParallel:
         count summed over dp) and the returned loss is the global batch loss."""
         import torch.distributed as dist
 
+        from .pp_env import _note_trained, release_replica
+
         if self.replica is not None:
-            from .pp_env import release_replica
             release_replica(
                 self
             )  # a whole model gathered for generate / a save: back to this stage
+        # A later requires_grad_(False) before generate / export must still sync what native loops trained.
+        _note_trained(self)
         self._check_composed()
         if self.ctx.moe is not None and (
             self.composed or self.dp_mesh is not None or self.tp_mesh is not None
@@ -1856,6 +1859,8 @@ class PipelineParallel:
         cls = type(scaler)
         unscale = cls.unscale_.__get__(scaler)
         update = cls.update.__get__(scaler)
+        check_inf = getattr(cls, "_check_inf_per_device", None)
+        check_inf = check_inf.__get__(scaler) if check_inf is not None else None
         pipeline = weakref.ref(self)
 
         def unscale_(optimizer):
@@ -1864,11 +1869,19 @@ class PipelineParallel:
             if pp is not None and scaler.is_enabled():
                 pp._agree_found_inf(scaler, optimizer)
 
+        def check_inf_per_device_(optimizer):
+            # scaler.step on a fused optimizer (adamw_torch_fused) checks here instead of calling unscale_.
+            found = check_inf(optimizer)
+            pp = pipeline()
+            if pp is not None and scaler.is_enabled():
+                pp._agree_found_inf(scaler, optimizer)
+            return scaler._per_optimizer_states[id(optimizer)].get("found_inf_per_device", found)
+
         def update_(new_scale = None):
             try:
                 return update(new_scale)
             finally:
-                for name in ("unscale_", "update", "_unsloth_pp_agree"):
+                for name in ("unscale_", "update", "_check_inf_per_device", "_unsloth_pp_agree"):
                     scaler.__dict__.pop(name, None)
                 pp = pipeline()
                 if pp is not None and pp._step_scaler is scaler:
@@ -1878,6 +1891,8 @@ class PipelineParallel:
 
         scaler.unscale_ = unscale_
         scaler.update = update_
+        if check_inf is not None:
+            scaler._check_inf_per_device = check_inf_per_device_
         scaler._unsloth_pp_agree = pipeline
 
     def _check_unscaled(self):

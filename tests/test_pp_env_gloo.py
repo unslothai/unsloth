@@ -866,6 +866,12 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
     ids = ["ga1_bs4", "ga4_bs2", "mb1", "bs1_1f1b_padded", "gemma3_ga1_bs4"],
 )
 def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule, arch):
+    if mb == "1" and tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2]) < (
+        2,
+        13,
+    ):
+        # torch 2.10's gpipe needs micro-batches >= stages; Unsloth raises a ValueError naming both counts.
+        pytest.skip("gpipe with 1 micro-batch over 2 stages needs torch >= 2.13")
     # bs1_1f1b_padded: 1F1B needs 2 micro-batches, so the 1-row batch gets a fully masked filler row.
     # gemma3_ga1_bs4: the Gemma3_(270M) notebook's shape (scaled tied embedding, sliding layers).
     ref = _ref(bs, ga = ga, evaluate = False, post = False, arch = arch)

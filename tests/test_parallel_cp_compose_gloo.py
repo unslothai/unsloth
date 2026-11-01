@@ -696,6 +696,16 @@ def test_cp_x_pp_is_refused_by_the_registry_before_the_split(flag):
         assert res.get("stage") is None
 
 
+# The registry's BLOCK_COMPILE_TORCH (checked in test_parallel_env.py), read here without importing unsloth: below it
+# these cells run eager (torch 2.10 recompiles more than one process).
+_BLOCK_COMPILE_TORCH = (2, 13)
+needs_block_compile_torch = pytest.mark.skipif(
+    tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2]) < _BLOCK_COMPILE_TORCH,
+    reason = "block compile cells need torch >= 2.13 (the registry runs them eager below)",
+)
+
+
+@needs_block_compile_torch
 @pytest.mark.parametrize(
     "world, flag, ref_bs",
     [(4, "tp=2,cp=2", 2), (8, "dp=2,tp=2,cp=2,fsdp=1", 4)],
@@ -812,6 +822,7 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
 # LoRA on the experts is eager only under cp (the registry's qwen3_moe x lora+experts x cp row): its per instance
 # ParametrizedQwen3MoeTopKRouter type guards recompile more than one process once the router capture hooks are
 # installed before the first block compiles.
+@needs_block_compile_torch
 @pytest.mark.parametrize("mode", ["full"])
 def test_moe_block_compile_under_cp_is_compile_clean(mode):
     from unsloth.utils.compile_counters import not_above

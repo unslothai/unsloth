@@ -1925,22 +1925,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 cp_size,
                 model if not isinstance(model, str) else None,
             )
+            # Ring cannot keep packed rows apart: packing goes off below, as before 'auto' existed.
             is_ring_context_parallel = cp_backend == "ring"
-            if is_ring_context_parallel and (
-                getattr(config_arg, "packing", False)
-                or getattr(config_arg, "padding_free", None) is True
-            ):
-                chose = (
-                    "context_parallel_backend = 'auto' chose ring because the attention heads cannot be split "
-                    f"over {cp_size} ranks"
-                    if getattr(config_arg, "_unsloth_cp_backend_auto", False)
-                    else "context_parallel_backend = 'ring'"
-                )
-                raise NotImplementedError(
-                    f"Unsloth: cp backend: {chose}, and ring attention cannot keep packed rows apart. Instead: "
-                    "context_parallel_backend = 'ulysses' (or 'auto' with a head count cp divides), or "
-                    "packing = False / padding_free = False."
-                )
         boundary_blocker = packing_boundary_blocker(model, model_types)
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
@@ -2002,7 +1988,12 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             elif is_ring_context_parallel:
-                reason = "ring context parallelism"
+                reason = (
+                    "ring context parallelism ('auto' chose ring: the attention heads cannot be split over "
+                    f"{cp_size} ranks)"
+                    if getattr(config_arg, "_unsloth_cp_backend_auto", False)
+                    else "ring context parallelism; context_parallel_backend = 'ulysses' keeps it"
+                )
             elif is_pipeline_parallel_env:
                 reason = "pipeline parallel (UNSLOTH_PP_SIZE)"
             elif boundary_blocker is not None:

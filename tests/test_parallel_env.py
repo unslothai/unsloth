@@ -35,7 +35,7 @@ def clean_env(monkeypatch):
     yield monkeypatch
     for key in _ENV:  # what apply_parallel_env / parallelize wrote around monkeypatch
         os.environ.pop(key, None)
-    parallel_env._SET_BY_PARALLELIZE[0] = None
+    parallel_env._SET_BY_PARALLELIZE[:] = [None, {}]
     tp_env._reset_env_layout()
 
 
@@ -368,7 +368,8 @@ class _Packable(torch.nn.Module):
         return input_ids
 
 
-def test_auto_keeps_packing_and_explicit_ring_refuses_it(monkeypatch):
+def test_auto_keeps_packing_and_ring_turns_it_off(monkeypatch):
+    # Ring packing keeps its released behaviour (packing off with a notice), never a new refusal.
     from types import SimpleNamespace
 
     packed = lambda backend: SimpleNamespace(
@@ -381,12 +382,13 @@ def test_auto_keeps_packing_and_explicit_ring_refuses_it(monkeypatch):
     config = packed("auto")
     _auto_packing(monkeypatch, config, _Packable(4))
     assert config.packing is True, "auto (Ulysses) must keep packing on"
-    with pytest.raises(NotImplementedError, match = r"context_parallel_backend = 'ring'.*Instead"):
-        _auto_packing(monkeypatch, packed("ring"), _Packable(4))
+    config = packed("ring")
+    _auto_packing(monkeypatch, config, _Packable(4))
+    assert config.packing is False and config.padding_free is False
     config = packed("auto")
     config._unsloth_cp_backend_auto = True
-    with pytest.raises(NotImplementedError, match = "'auto' chose ring because the attention heads"):
-        _auto_packing(monkeypatch, config, _Packable(3))
+    _auto_packing(monkeypatch, config, _Packable(3))
+    assert config.packing is False
 
 
 def test_parallelize_refuses_a_legacy_variable_that_disagrees(clean_env):
@@ -786,17 +788,25 @@ def test_reserved_and_conflicting_dp_keys_are_refused(raw, match):
 # Muon on shards.
 
 
-def test_muon_is_refused_on_fsdp2_and_tp_shards():
+class Muon(torch.optim.SGD):
+    """A Muon outside torch.optim: whether it reads the local shard or the DTensor is unknown."""
+
+
+def test_a_shard_unaware_muon_is_refused_on_fsdp2_and_tp_shards():
     from unsloth import parallel_capabilities as caps
 
-    muon = torch.optim.Muon([torch.nn.Parameter(torch.randn(4, 4))])
+    muon = Muon([torch.nn.Parameter(torch.randn(4, 4))], lr = 0.1)
     adamw = torch.optim.AdamW([torch.nn.Parameter(torch.randn(4, 4))])
+    torch_muon = torch.optim.Muon([torch.nn.Parameter(torch.randn(4, 4))])
     for what in ("fsdp2", "tp"):
         with pytest.raises(
-            NotImplementedError, match = r"^Unsloth: fsdp2 / tp x optimizer: Muon .*Instead: adamw"
+            NotImplementedError,
+            match = r"^Unsloth: fsdp2 / tp x optimizer: Muon .*Instead: torch.optim.Muon",
         ):
             caps.refuse_shard_unaware_optimizer(muon, what)
         caps.refuse_shard_unaware_optimizer(adamw, what)
+        # torch.optim.Muon steps DTensor shards as whole matrices (tests/test_muon_dtensor_gloo.py), as before.
+        caps.refuse_shard_unaware_optimizer(torch_muon, what)
     caps.check(_q(dp = 2, optim = "muon"))  # DDP holds whole matrices
     from unsloth.models import fsdp2_native
 
@@ -804,16 +814,16 @@ def test_muon_is_refused_on_fsdp2_and_tp_shards():
         fsdp2_native._refuse_bnb_optimizer_instance(
             muon
         )  # every native FSDP2 optimizer hook calls it
+    fsdp2_native._refuse_bnb_optimizer_instance(torch_muon)
 
 
-def test_muon_is_refused_before_native_fsdp2_shards(clean_env):
+def test_a_shard_unaware_muon_is_refused_before_native_fsdp2_shards(clean_env):
     import transformers
 
     from unsloth.models import _utils
 
     clean_env.setenv("UNSLOTH_FSDP2", "1")
     clean_env.setenv("WORLD_SIZE", "2")
-    muon = torch.optim.Muon([torch.nn.Parameter(torch.randn(4, 4))])
 
     class Plain(transformers.Trainer):
         def __init__(
@@ -824,10 +834,15 @@ def test_muon_is_refused_before_native_fsdp2_shards(clean_env):
         ):
             pass
 
+    muon = Muon([torch.nn.Parameter(torch.randn(4, 4))], lr = 0.1)
     with pytest.raises(NotImplementedError, match = "Muon"):
         _utils._parallel_capabilities_pre(
             Plain(), Plain.__init__, (), {"optimizers": (muon, None)}, None
         )
+    torch_muon = torch.optim.Muon([torch.nn.Parameter(torch.randn(4, 4))])
+    _utils._parallel_capabilities_pre(
+        Plain(), Plain.__init__, (), {"optimizers": (torch_muon, None)}, None
+    )
 
 
 # MoE cells.
@@ -838,7 +853,11 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
 
     from unsloth import parallel_capabilities as caps
 
-    moe = [c for c in caps.CELLS if c.name.startswith("MoE ")]
+    moe = [
+        c
+        for c in caps.CELLS
+        if c.name.startswith("MoE ") and not c.name.endswith(", block compile")
+    ]
     assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 6
     proven = sorted(c.name for c in moe if not c.missing())
     assert "MoE qwen3_moe x lora+experts x aux off x cp" in proven
@@ -1318,3 +1337,62 @@ def test_pp_env_refuses_sft_loss_types_the_pipeline_skips():
         pp_env.pp_trainer_refusals(trl.SFTTrainer, dft, layout)
     nll = trl.SFTConfig(output_dir = "unused", report_to = "none")
     pp_env.pp_trainer_refusals(trl.SFTTrainer, nll, layout)
+
+
+def test_repeated_parallelize_keeps_inherited_variables(clean_env):
+    # Failing before: a second call cleared every legacy variable and restored only its own output, so an
+    # inherited UNSLOTH_FSDP2=1 left alone by both calls turned a native FSDP2 run into DDP.
+    import os
+
+    import unsloth as u
+    from unsloth.models import tp_env
+
+    clean_env.setenv("WORLD_SIZE", "4")
+    clean_env.setenv("UNSLOTH_FSDP2", "1")
+    tp_env._reset_env_layout()
+    try:
+        assert u.parallelize(tp = 2) == {"UNSLOTH_TP_SIZE": "2"}
+        tp_env._reset_env_layout()
+        assert u.parallelize(tp = 2) == {"UNSLOTH_TP_SIZE": "2"}
+        assert os.environ.get("UNSLOTH_FSDP2") == "1"
+        tp_env._reset_env_layout()
+        # What the earlier call wrote (cp) still goes away when the next call drops it.
+        u.parallelize(tp = 2, cp = 2)
+        tp_env._reset_env_layout()
+        u.parallelize(tp = 2)
+        assert "UNSLOTH_CP_SIZE" not in os.environ and os.environ["UNSLOTH_TP_SIZE"] == "2"
+        assert os.environ.get("UNSLOTH_FSDP2") == "1"
+    finally:
+        for key in _ENV:
+            os.environ.pop(key, None)
+        tp_env._reset_env_layout()
+
+
+def test_block_compile_cells_carry_a_torch_floor():
+    # torch 2.10 failed the block compile cells' own compile gates (recompiles 6 > 1 under cp x tp, 1 > 0 for MoE
+    # under cp), so those cells cover torch >= BLOCK_COMPILE_TORCH only and older versions get the eager cells.
+    from unsloth import parallel_capabilities as caps
+
+    assert caps.BLOCK_COMPILE_TORCH == (
+        2,
+        13,
+    )  # tests/test_parallel_cp_compose_gloo.py skips below the same floor
+    block = _q(tp = 2, cp = 2, cp_backend = "ulysses", compile = "block")
+    eager = _q(tp = 2, cp = 2, cp_backend = "ulysses", compile = "eager")
+    assert caps.cell_status(block)[0] == "supported"
+    assert caps.cell_status(eager)[0] == "supported"
+    old = _q(tp = 2, cp = 2, cp_backend = "ulysses", compile = "block", torch = (2, 10))
+    status, reason = caps.cell_status(old)
+    assert (
+        status == "unverified"
+        and "torch 2.10 < 2.13" in reason
+        and "UNSLOTH_BLOCK_COMPILE_LEGACY=0" in reason
+    ), reason
+    assert (
+        caps.cell_status(_q(tp = 2, cp = 2, cp_backend = "ulysses", compile = "eager", torch = (2, 10)))[0]
+        == "supported"
+    )
+    moe = dict(family = "qwen3_moe", moe = True, mode = "full", cp = 2, cp_backend = "ulysses")
+    assert caps.cell_status(_q(compile = "block", **moe))[0] == "supported"
+    assert caps.cell_status(_q(compile = "block", torch = (2, 10), **moe))[0] == "unverified"
+    assert caps.cell_status(_q(compile = "eager", torch = (2, 10), **moe))[0] == "supported"

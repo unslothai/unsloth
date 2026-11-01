@@ -32,6 +32,7 @@ model untouched.
 from __future__ import annotations
 
 import dataclasses
+import sys
 from typing import Callable, Optional
 
 __all__ = [
@@ -252,10 +253,11 @@ RULES = (
     Rule(
         "fsdp2 / tp x optimizer",
         "Muon under native FSDP2 or tensor parallel",
-        lambda q: (q.fsdp2 or q.tp > 1) and "muon" in q.optim,
-        "Muon orthogonalizes each weight matrix, and every rank holds only a shard of it, so it would "
-        "orthogonalize the shards",
-        "adamw_torch / adamw_8bit (they step shards exactly), or DDP (dp without fsdp) for Muon",
+        lambda q: (q.fsdp2 or q.tp > 1) and "muon" in q.optim and q.optim != "torch.optim.muon",
+        "Muon orthogonalizes each weight matrix, and every rank holds only a shard of it, so a Muon that "
+        "reads the local tensors would orthogonalize the shards",
+        "torch.optim.Muon (it steps DTensor shards as whole matrices), adamw_torch / adamw_8bit, or DDP "
+        "(dp without fsdp) for another Muon",
     ),
     Rule(
         "pp / tp x vLLM",
@@ -572,8 +574,11 @@ class Cell:
     engagement: Optional[str]
     compile: Optional[str]
     note: str = ""
+    min_torch: Optional[tuple] = None
 
     def covers(self, query: Query) -> bool:
+        if self.min_torch is not None and tuple(query.torch) < self.min_torch:
+            return False
         return all(getattr(query, k) in v for k, v in self.match.items())
 
     def missing(self) -> list:
@@ -581,6 +586,9 @@ class Cell:
 
 
 _GLOO = "tests/test_parallel_cp_compose_gloo.py::"
+# Block compile cells: their compile tests pass on torch 2.13 and 2.15; torch 2.10 recompiles more than one
+# process (6 > 1 under cp x tp, 1 > 0 for MoE under cp), so older versions run them eager.
+BLOCK_COMPILE_TORCH = (2, 13)
 _CP_TP = {
     "trainer": ("sft",),
     "family": ("llama",),
@@ -642,6 +650,7 @@ CELLS = (
         + "test_block_compile_composes_like_one_process (compiled classes, seq / cp tokens)",
         compile = _GLOO
         + "test_block_compile_composes_like_one_process (graph breaks / recompiles <= one process)",
+        min_torch = BLOCK_COMPILE_TORCH,
     ),
 )
 
@@ -749,22 +758,26 @@ def _moe_cells():
             for aux in (False, True):
                 for mode, mmatch in _MOE_MODES.items():
                     evidence = _MOE_EVIDENCE.get((family, precision, aux, mode))
-                    compile_modes = (
-                        ("eager", "block")
-                        if evidence and not evidence[2].startswith("eager:")
-                        else ("eager",)
-                    )
                     match = {
                         **_MOE_COMMON,
                         **pmatch,
                         **mmatch,
                         "family": (family,),
                         "router_aux_loss": (aux,),
-                        "compile": compile_modes,
+                        "compile": ("eager",),
                     }
                     name = f"MoE {family} x {precision} x aux {'on' if aux else 'off'} x {mode}"
                     if evidence:
                         cells.append(Cell(name, match, *evidence))
+                        if not evidence[2].startswith("eager:"):
+                            cells.append(
+                                Cell(
+                                    name + ", block compile",
+                                    {**match, "compile": ("block",)},
+                                    *evidence,
+                                    min_torch = BLOCK_COMPILE_TORCH,
+                                )
+                            )
                     else:
                         cells.append(
                             Cell(
@@ -812,6 +825,20 @@ def cell_status(query: Query) -> tuple:
             return ("unverified", f"cell {cell.name!r} lacks {', '.join(missing)} evidence{note}")
     if axes <= 1 and not _gated(query):
         return ("single", None)
+    for cell in CELLS:
+        if cell.min_torch is not None and all(
+            getattr(query, k) in v for k, v in cell.match.items()
+        ):
+            have, need = ".".join(map(str, query.torch)), ".".join(map(str, cell.min_torch))
+            eager = (
+                "; UNSLOTH_BLOCK_COMPILE_LEGACY=0 at load runs it eager"
+                if query.compile == "block"
+                else ""
+            )
+            return (
+                "unverified",
+                f"cell {cell.name!r} is proven on torch >= {need} only (torch {have} < {need}){eager}",
+            )
     differ = []
     for cell in CELLS:
         off = [
@@ -1079,6 +1106,10 @@ def _pending_expert_lora(model, peft_config) -> bool:
 def _optimizer_name(args, optimizer = None):
     if optimizer is not None:
         inner = getattr(optimizer, "optimizer", optimizer)
+        torch_muon = getattr(sys.modules.get("torch.optim"), "Muon", None)
+        if torch_muon is not None and isinstance(inner, torch_muon):
+            # DTensor math: its Newton-Schulz matmuls run on the whole matrix, so shards step exactly.
+            return "torch.optim.muon"
         return type(inner).__name__.lower()
     optim = getattr(args, "optim", "") if args is not None else ""
     return str(getattr(optim, "value", optim) or "").lower()

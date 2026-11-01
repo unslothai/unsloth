@@ -351,16 +351,23 @@ def parallelize(
             f'Unsloth: unsloth.parallelize({raw}) disagrees with {FLAG}="{current}" from the environment; '
             "use one of the two."
         )
+    # Our own earlier call: undo only what it wrote (back to the values it replaced), so inherited
+    # variables it left alone (UNSLOTH_FSDP2, a backend) stay, and the layout check below decides.
+    prior = dict(_SET_BY_PARALLELIZE[1]) if ours else {}
     environ = dict(os.environ)
-    if ours:
-        # Our own earlier call: its variables are not a conflict, the layout check below decides.
-        for name in _LEGACY.values():
+    for name, value in prior.items():
+        if value is None:
             environ.pop(name, None)
+        else:
+            environ[name] = value
     resolved = translate(spec, environ)
     _refuse_after_layout_read(resolved)
-    if ours:
-        for name in _LEGACY.values():
+    for name, value in prior.items():
+        if value is None:
             os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    _SET_BY_PARALLELIZE[1] = {name: os.environ.get(name) for name in resolved}
     os.environ.update(resolved)
     os.environ[FLAG] = raw
     _SET_BY_PARALLELIZE[0] = raw
@@ -368,7 +375,8 @@ def parallelize(
     return resolved
 
 
-_SET_BY_PARALLELIZE = [None]
+# The last call's flag value, and what each variable it wrote held before it.
+_SET_BY_PARALLELIZE = [None, {}]
 
 
 def _refuse_after_layout_read(resolved):
