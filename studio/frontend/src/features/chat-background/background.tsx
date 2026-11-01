@@ -9,7 +9,8 @@ import {
 import { useChatBackground, setBackgroundError } from "./storage";
 import { acquireRender } from "./render";
 import { safeArtworkOpacity, type RGB } from "./contrast";
-import type { ChatBackgroundValue } from "./model";
+import { type ChatBackgroundValue, effectiveFade } from "./model";
+import { useMaterialStore } from "./material";
 import { ComposerGlassLenses } from "./lens";
 import { type ImageTone, glassReadability, measureTone } from "./tone";
 
@@ -184,6 +185,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		[],
 	);
 	const shownReady = Boolean(value && active && frames.current);
+	const glass = useMaterialStore((s) => s.material !== "solid");
 	const [appWallpaper, setAppWallpaper] = useState<HTMLDivElement | null>(null);
 	const [tone, setTone] = useState<ImageTone | null>(null);
 	const frameUrl = frames.current?.url;
@@ -216,7 +218,8 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		const parent = host.current?.parentElement;
 		if (!shownReady || !parent) return;
 		const workspace = parent.hasAttribute("data-wallpaper-workspace");
-		if (workspace) setAppWallpaper(host.current);
+		if (workspace || parent.hasAttribute("data-auth-wallpaper"))
+			setAppWallpaper(host.current);
 		if (!workspace && !parent.hasAttribute("data-chat-content-root")) return;
 		const unmark = markRoot(
 			workspace ? [ROOT_READY, ROOT_WORKSPACE_READY] : [ROOT_READY],
@@ -250,11 +253,17 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 						data-entering={(i === 1 && Boolean(frames.previous)) || undefined}
 						style={
 							{
-								"--wallpaper-visibility": adjustment.visibility / 100,
+								"--wallpaper-visibility":
+									(skin.light
+										? adjustment.visibility
+										: adjustment.darkVisibility) / 100,
 							} as CSSProperties
 						}
 					>
-						<div className="chat-wallpaper-image" data-fade={adjustment.fade}>
+						<div
+							className="chat-wallpaper-image"
+							data-fade={effectiveFade(adjustment.fade, glass)}
+						>
 							<div
 								className="chat-wallpaper-artwork"
 								style={{
