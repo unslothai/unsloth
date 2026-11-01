@@ -675,6 +675,7 @@ def _install_accelerator_state(self):
     if manager.device_mesh is None:
         # A root-mesh manager (parallel_env): the tensor parallel hooks split the data and reduce gradients.
         _restore_parallelism_config(accelerator.state)
+        _cp_scaler_start(self, accelerator)
         return
     current = getattr(accelerator.state, "device_mesh", None)
     if _INSTALLED_MESH and current is _INSTALLED_MESH[0]:
