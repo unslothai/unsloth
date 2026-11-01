@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -87,7 +88,19 @@ def test_unchanged_sidecars_are_read_once(monkeypatch):
 
 @pytest.mark.parametrize(
     "change",
-    ["rewrite", "same_size_same_mtime", "replace_same_mtime", "corrupt", "remove"],
+    [
+        "rewrite",
+        pytest.param(
+            "same_size_same_mtime",
+            marks = pytest.mark.skipif(
+                sys.platform == "win32",
+                reason = "st_ctime is the creation time on Windows, not the change time",
+            ),
+        ),
+        "replace_same_mtime",
+        "corrupt",
+        "remove",
+    ],
 )
 def test_a_changed_sidecar_is_read_again(monkeypatch, change):
     directory = gallery.gallery_dir()
