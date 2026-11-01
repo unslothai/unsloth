@@ -175,6 +175,7 @@ import {
 } from "../../../audio/audio-cpp-catalog.ts";
 import { audioPickSearch } from "../../../audio/route-search.ts";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
+import { modelConfigTarget } from "../../model-config/model-config-handoff";
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
@@ -1086,7 +1087,7 @@ const downloadedRowShellClassName = (
 
 // One gutter for every row so columns never shift by a button.
 const ROW_ACTIONS_CLASS =
-  "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
+  "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 has-[[data-run-settings-saved]]:opacity-100 [@media(hover:none)]:opacity-100";
 
 const ROW_ACTIONS_VISIBLE_CLASS = ROW_ACTIONS_CLASS.replace("opacity-0 ", "");
 
@@ -2371,6 +2372,20 @@ function GgufVariantExpander({
         const unusableLocal = isLocalPath && v.partial === true;
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
+        const configMeta: ModelSelectorChangeMeta = {
+          source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
+          isLora: false,
+          loadId,
+          ggufVariant: v.quant,
+          isDownloaded: true,
+          expectedBytes,
+          contextLength: variantContext,
+          isGguf: variantsAreGguf,
+          isVision: variantVisionHint,
+        };
+        const configTarget = v.downloaded
+          ? modelConfigTarget(repoId, configMeta)
+          : undefined;
         const rowButton = (
           <button
             type="button"
@@ -2479,19 +2494,8 @@ function GgufVariantExpander({
               <ModelLoadSettingsAction
                 ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
                 className="relative left-0.5"
-                onConfigure={() =>
-                  onConfigure(repoId, {
-                    source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
-                    isLora: false,
-                    loadId,
-                    ggufVariant: v.quant,
-                    isDownloaded: true,
-                    expectedBytes,
-                    contextLength: variantContext,
-                    isGguf: variantsAreGguf,
-                    isVision: variantVisionHint,
-                  })
-                }
+                onConfigure={() => onConfigure(repoId, configMeta)}
+                savedFor={configTarget}
               />
             )}
             {(v.downloaded || v.partial === true) &&
@@ -2502,6 +2506,7 @@ function GgufVariantExpander({
                 <ModelRowMenu
                   ariaLabel={`More options for ${repoId} ${v.quant}`}
                   iconClassName="size-3"
+                  runSettings={onConfigure ? configTarget : undefined}
                   cachePath={
                     isLocalPath ? undefined : { repoId, variant: v.quant }
                   }
@@ -6073,21 +6078,22 @@ export function HubModelPicker({
         </div>
       );
     }
+    const configId = cachedIdFor(id) ?? id;
+    const configMeta: ModelSelectorChangeMeta = {
+      source: "hub",
+      isLora: false,
+      isGguf: false,
+      isDownloaded: cachedIdFor(id) !== null,
+      pipelineTag: pipelineTagById.get(id) ?? null,
+    };
     return (
       <div className={downloadedRowShellClassName(isValueRow(id))}>
         <div className="min-w-0 flex-1">{row}</div>
         <span className={ROW_ACTIONS_CLASS}>
           <ModelLoadSettingsAction
             ariaLabel={`Inference settings for ${id}`}
-            onConfigure={() =>
-              onConfigure(cachedIdFor(id) ?? id, {
-                source: "hub",
-                isLora: false,
-                isGguf: false,
-                isDownloaded: cachedIdFor(id) !== null,
-                pipelineTag: pipelineTagById.get(id) ?? null,
-              })
-            }
+            onConfigure={() => onConfigure(configId, configMeta)}
+            savedFor={modelConfigTarget(configId, configMeta)}
           />
         </span>
       </div>
@@ -6164,6 +6170,9 @@ export function HubModelPicker({
             ? { ...selectMeta, ggufVariant: undefined, isGguf: true }
             : selectMeta,
         ];
+    const configTarget = onConfigure
+      ? modelConfigTarget(...configureArgs)
+      : undefined;
     // A path load keeps the menu. A cached download pins and reveals as its repo: the local
     // reveal endpoint only lists non-cache sources, so it would 404.
     const pinRepoId = !isLocal
@@ -6207,10 +6216,12 @@ export function HubModelPicker({
               <ModelLoadSettingsAction
                 ariaLabel={`Inference settings for ${entry.id}`}
                 onConfigure={() => onConfigure(...configureArgs)}
+                savedFor={configTarget}
               />
             )}
             <ModelRowMenu
               ariaLabel={`More options for ${entry.id}`}
+              runSettings={configTarget}
               cachePath={
                 pinRepoId === null ? undefined : { repoId: pinRepoId, variant: quant ?? undefined }
               }
@@ -6432,6 +6443,18 @@ export function HubModelPicker({
     const hasVision =
       pinnedQuantValidation.visionByRepo.get(entry.repoId) ??
       sortedCachedGguf.find((c) => c.repo_id === entry.repoId)?.has_vision;
+    const configMeta: ModelSelectorChangeMeta = {
+      source: "hub",
+      isLora: false,
+      ggufVariant: entry.quant,
+      isDownloaded: true,
+      isGguf: true,
+      isVision: pinnedVisionHint,
+      pipelineTag: diffusionTaskById.get(entry.repoId.toLowerCase()) ?? null,
+    };
+    const configTarget = onConfigure
+      ? modelConfigTarget(entry.repoId, configMeta)
+      : undefined;
     return (
       <div
         key={optionKey}
@@ -6489,23 +6512,14 @@ export function HubModelPicker({
           {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${entry.repoId} ${entry.quant}`}
-              onConfigure={() =>
-                onConfigure(entry.repoId, {
-                  source: "hub",
-                  isLora: false,
-                  ggufVariant: entry.quant,
-                  isDownloaded: true,
-                  isGguf: true,
-                  isVision: pinnedVisionHint,
-                  pipelineTag:
-                    diffusionTaskById.get(entry.repoId.toLowerCase()) ?? null,
-                })
-              }
+              onConfigure={() => onConfigure(entry.repoId, configMeta)}
+              savedFor={configTarget}
             />
           )}
           <ModelRowMenu
             ariaLabel={`More options for ${entry.repoId} ${entry.quant}`}
             cachePath={{ repoId: entry.repoId, variant: entry.quant }}
+            runSettings={configTarget}
             pin={{
               pinned: true,
               pinLabel: "Pin",
@@ -6586,6 +6600,9 @@ export function HubModelPicker({
       isVision: sole.hasVision === false ? false : undefined,
       pipelineTag: c.task ?? null,
     };
+    const configTarget = onConfigure
+      ? modelConfigTarget(c.repo_id, selectMeta)
+      : undefined;
     return (
       <div
         key={c.repo_id}
@@ -6630,12 +6647,14 @@ export function HubModelPicker({
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
               onConfigure={() => onConfigure(c.repo_id, selectMeta)}
+              savedFor={configTarget}
             />
           )}
           <ModelRowMenu
             ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
             items={ejectMenuItems(c.repo_id)}
+            runSettings={configTarget}
             pin={{
               pinned: isPinned,
               pinLabel: "Pin",
@@ -6851,6 +6870,22 @@ export function HubModelPicker({
     const isSelected = value === c.repo_id;
     // A partial pick must not claim downloaded, or the load fails on missing shards.
     const isPartial = c.partial === true;
+    const configMeta: ModelSelectorChangeMeta = {
+      source: "hub",
+      isLora: false,
+      // Run spreads this meta straight back into a select, so it carries the
+      // row's rule: no load identity for a snapshot that is not all there.
+      // The config page keys its settings off the repo id, not this field.
+      loadId: isPartial ? undefined : c.load_id,
+      isDownloaded: !isPartial,
+      isGguf: false,
+      pipelineTag: c.task ?? null,
+      audioType: c.audio_type ?? null,
+      familyOverrideRequired: c.opaque === true,
+    };
+    const configTarget = onConfigure
+      ? modelConfigTarget(c.repo_id, configMeta)
+      : undefined;
     return (
       <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
         <div className="min-w-0 flex-1">
@@ -6896,25 +6931,15 @@ export function HubModelPicker({
           {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${c.repo_id}`}
-              onConfigure={() =>
-                onConfigure(c.repo_id, {
-                  source: "hub",
-                  isLora: false,
-                  // No load identity for an incomplete snapshot.
-                  loadId: isPartial ? undefined : c.load_id,
-                  isDownloaded: !isPartial,
-                  isGguf: false,
-                  pipelineTag: c.task ?? null,
-                  audioType: c.audio_type ?? null,
-                  familyOverrideRequired: c.opaque === true,
-                })
-              }
+              onConfigure={() => onConfigure(c.repo_id, configMeta)}
+              savedFor={configTarget}
             />
           )}
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id}`}
             cachePath={{ repoId: c.repo_id }}
             items={ejectMenuItems(c.repo_id)}
+            runSettings={configTarget}
             pin={{
               pinned: pinnedSet.has(pinKey(c.repo_id)),
               pinLabel: "Pin",
@@ -7117,16 +7142,13 @@ export function HubModelPicker({
         className={onDevice ? downloadedRowButtonClassName : undefined}
       />
     );
+    const configMeta = { ...meta, contextLength: model.max_context_length };
     const settings =
       onConfigure && model.downloaded && !downloading ? (
         <ModelLoadSettingsAction
           ariaLabel={`Inference settings for ${model.id}`}
-          onConfigure={() =>
-            onConfigure(model.model_path, {
-              ...meta,
-              contextLength: model.max_context_length,
-            })
-          }
+          onConfigure={() => onConfigure(model.model_path, configMeta)}
+          savedFor={modelConfigTarget(model.model_path, configMeta)}
         />
       ) : null;
     if (!onDevice && !onConfigure) return <div key={model.id}>{row}</div>;
@@ -7942,6 +7964,10 @@ export function HubModelPicker({
                                         localDirectGgufMeta(m.task),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localDirectGgufMeta(m.task),
+                                    )}
                                   />
                                 )}
                                 {!isGguf && onConfigure && (
@@ -7955,6 +7981,10 @@ export function HubModelPicker({
                                         localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                    )}
                                   />
                                 )}
                                 {renderLocalRowMenu(m)}
@@ -8088,6 +8118,10 @@ export function HubModelPicker({
                                         localDirectGgufMeta(m.task),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localDirectGgufMeta(m.task),
+                                    )}
                                   />
                                 )}
                                 {!isGguf && onConfigure && (
@@ -8101,6 +8135,10 @@ export function HubModelPicker({
                                         localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                    )}
                                   />
                                 )}
                                 {renderLocalRowMenu(m)}
@@ -8221,6 +8259,10 @@ export function HubModelPicker({
                                         localDirectGgufMeta(m.task),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localDirectGgufMeta(m.task),
+                                    )}
                                   />
                                 )}
                                 {!isGguf && onConfigure && (
@@ -8234,6 +8276,10 @@ export function HubModelPicker({
                                         localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                    )}
                                   />
                                 )}
                                 {renderLocalRowMenu(m)}
@@ -8859,6 +8905,10 @@ function FineTunedRows({
           audioType: adapter.audioType ?? null,
         };
         const canConfigure = !(isLocalGgufDir || isExportedGguf);
+        const configTarget =
+          canConfigure && onConfigure
+            ? modelConfigTarget(adapter.id, selectionMeta)
+            : undefined;
         const optionKey = makeModelOptionKey("lora", adapter.id);
         const tag = isLocal
           ? isLocalGgufDir || isLocalDirectGguf
@@ -8946,10 +8996,12 @@ function FineTunedRows({
                   <ModelLoadSettingsAction
                     ariaLabel={`Inference settings for ${adapter.name}`}
                     onConfigure={() => onConfigure(adapter.id, selectionMeta)}
+                    savedFor={configTarget}
                   />
                 )}
                 <ModelRowMenu
                   ariaLabel={`More options for ${adapter.name}`}
+                  runSettings={configTarget}
                   pin={{
                     pinned: pinnedKeys.includes(pinKey(adapter.id)),
                     pinLabel: "Pin",
