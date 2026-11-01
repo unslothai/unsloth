@@ -313,3 +313,10 @@ def test_wait_for_events_raw_waits_like_the_parsed_read(running_run):
     finally:
         timer.cancel()
     assert [event["payloadJson"] for event in events] == ['{"d":"é"}']
+
+
+def test_sqlite_without_json1_streams_the_old_bytes(running_run, monkeypatch):
+    monkeypatch.setattr(runs_db, "_SPLICE_OK_SQL", "json_valid_missing(payload_json)")
+    _fill(running_run)
+    _assert_old_bytes(_frames(asyncio.run(_stream())), settled_run = runs_db.get_run("run-1"))
+    assert runs_db._SPLICE_OK_SQL == "0"

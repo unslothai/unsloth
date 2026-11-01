@@ -277,6 +277,12 @@ def _prepare_connection() -> tuple[sqlite3.Connection, bool]:
     return conn, db_path.resolve() in _schema_ready
 
 
+_SPLICE_OK_SQL = (
+    "json_valid(payload_json) AND instr(payload_json, char(10))=0"
+    " AND instr(payload_json, char(13))=0"
+)
+
+
 def _dumps_payload(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii = False, separators = (",", ":"))
 
@@ -941,23 +947,24 @@ def list_events(
     *,
     raw: bool = False,
 ) -> list[dict[str, Any]]:
-    """raw=True hands back payload_json untouched as "payloadJson" instead of a parsed "payload".
-
-    Every row is written by _append_events_locked with the same dumps options the SSE route encodes
-    with, so the stored text is already the exact bytes a parse and re-encode would give back. A row
-    SQLite does not see as one line of valid JSON (corrupt, hand edited, NaN) takes the old parse and
-    re-encode, so the route never splices text the client cannot parse or that splits the SSE frame."""
+    """raw=True returns the stored text as "payloadJson": it is already _dumps_payload output, the SSE
+    route's encoding. Rows that are not one line of valid JSON (corrupt, hand edited, NaN) are
+    re-encoded so the route never splices text the client cannot parse or that splits the frame."""
+    global _SPLICE_OK_SQL
     conn = _connect()
     try:
         if raw:
-            rows = conn.execute(
-                """SELECT seq, event_type, payload_json, created_at,
-                          json_valid(payload_json) AND instr(payload_json, char(10))=0
-                              AND instr(payload_json, char(13))=0 AS splice_ok
-                   FROM chat_generation_events
-                   WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?""",
-                (run_id, after, limit),
-            ).fetchall()
+            query = """SELECT seq, event_type, payload_json, created_at, {} AS splice_ok
+                       FROM chat_generation_events
+                       WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?"""
+            try:
+                rows = conn.execute(query.format(_SPLICE_OK_SQL), (run_id, after, limit)).fetchall()
+            except sqlite3.OperationalError as exc:
+                # SQLite built without JSON1: re-encode every row, as the parsed read does.
+                if "json_valid" not in str(exc):
+                    raise
+                _SPLICE_OK_SQL = "0"
+                rows = conn.execute(query.format("0"), (run_id, after, limit)).fetchall()
             return [
                 {
                     "seq": int(row["seq"]),
