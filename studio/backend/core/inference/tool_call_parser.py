@@ -4354,14 +4354,13 @@ def _parse_minimax_tool_calls(
     out: list[dict] = []
     if _MINIMAX_BLOCK_OPEN not in content:
         return out
-    think_spans = [m.span() for m in _tool_healing._THINK_TAG_RE.finditer(content)]
+    # Tool-aware, so a think tag in another block's arguments neither hides nor opens reasoning.
+    think_spans = _merge_spans(_tool_healing._think_spans_outside_tool_markup(content))
     think_starts = [s for s, _ in think_spans]
-    stray_close = _unmatched_think_closer(content)
     inside = _MinimaxValueIndex(content).inside
     for start, end, closed in _minimax_block_spans(content):
-        # Think spans are disjoint and sorted, so only the last one opening at or before start can hold it.
         think_idx = bisect.bisect_right(think_starts, start) - 1
-        if (think_idx >= 0 and start < think_spans[think_idx][1]) or end <= stray_close:
+        if think_idx >= 0 and start < think_spans[think_idx][1]:
             continue
         body_end = end - len(_MINIMAX_BLOCK_CLOSE) if closed else end
         invokes = [

@@ -146,6 +146,17 @@ def test_a_think_tag_in_a_value_is_argument_text():
     assert shown.strip() == "Running it."
 
 
+@pytest.mark.parametrize("literal", ["</think>", "<think>"], ids = ["closer", "opener"])
+def test_a_think_tag_in_one_block_leaves_its_sibling_running(literal):
+    code = 'print("' + literal + '")'
+    python = SEARCH.replace("web_search", "python").replace(
+        '<parameter name="query">weather in Paris', '<parameter name="code">' + code
+    )
+    calls = [("web_search", {"query": "weather in Paris"}), ("python", {"code": code})]
+    assert _calls(SEARCH + "\n" + python) == calls
+    assert _calls(python + "\n" + SEARCH) == calls[::-1]
+
+
 def test_values_stay_strings_like_the_function_xml_form():
     text = SEARCH.replace("</invoke>", '<parameter name="max_results">5</parameter>\n</invoke>')
     assert _calls(text) == [("web_search", {"query": "weather in Paris", "max_results": "5"})]
