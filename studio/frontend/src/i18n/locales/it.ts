@@ -5,10 +5,13 @@ export const it = {
   chatBackground: {
     noBackground: "Nessuno sfondo",
     sizing: "Dimensionamento immagine",
+    sizingPosition: "Dimensionamento e posizione immagine",
     fill: "Riempi",
     fit: "Adatta",
     stretch: "Allunga",
     original: "Dimensioni originali",
+    fitWidth: "Adatta alla larghezza",
+    fitHeight: "Adatta all’altezza",
     zoom: "Zoom",
     outline: "Bordo del campo messaggio",
     fade: "Sfuma verso lo sfondo",
@@ -25,8 +28,15 @@ export const it = {
     halftone: "Mezzitoni",
     scanlines: "Linee di scansione",
     visibility: "Visibilità",
+    conversationVisibility: "Visibilità nelle conversazioni",
     blur: "Sfocatura immagine",
     position: "Posizione",
+    horizontal: "Posizione orizzontale",
+    vertical: "Posizione verticale",
+    scope: "Mostra in",
+    scopeNewChat: "Pagina nuova chat",
+    scopeChats: "Chat",
+    scopeAll: "Tutte le pagine",
     positionValue: "Orizzontale {x}%, verticale {y}%",
     newChat: "Nuova chat",
     conversation: "Conversazione",
@@ -37,6 +47,18 @@ export const it = {
     dimensionsError: "Scegli un’immagine inferiore a 40 megapixel.",
     decodeError: "Impossibile leggere l’immagine. Prova un altro file.",
     effectError: "Impossibile creare l’effetto. Scegli Nessuno o un’altra immagine.",
+    material: "Vetro",
+    materialSolid: "Disattivato",
+    materialTransparent: "Trasparente",
+    materialFrosted: "Smerigliato",
+    materialBlurred: "Sfocato",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    glassTheme: "Tema vetro",
+    materialStyle: "Stile",
+    materialMenus: "Menu in vetro",
+    materialMenusDescription: "Anche menu a discesa, menu e selettori usano il vetro.",
+    materialStrength: "Intensità del vetro",
   },
 
   linkMenu: {
@@ -840,7 +862,7 @@ export const it = {
       deleteProjects: "Elimina i progetti",
       deleteProjectsTitle: "Elimina i progetti",
       deleteProjectsDescription:
-        "Eliminare {count} progetti? Le loro chat vengono eliminate definitivamente.",
+        "{count} progetti e tutte le relative chat verranno eliminati definitivamente. Questa azione non può essere annullata.",
       deleteProjectsFilesDescription:
         "La cartella dello spazio di lavoro di ogni progetto viene rimossa dal disco.",
       countSelected: "{count} selezionate",
@@ -851,7 +873,7 @@ export const it = {
       markRead: "Segna come letta",
       deleteChats: "Elimina le chat",
       deleteTitle: "Elimina le chat",
-      deleteDescription: "Eliminare {count} chat? L'operazione non è reversibile.",
+      deleteDescription: "{count} chat e i relativi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
       deleteFilesDescription:
         "La cartella sandbox di ogni chat viene rimossa dal disco. I file scritti dentro un progetto restano nello spazio di lavoro di quel progetto.",
       deleteFilesLabel: "Elimina i file e la cartella sandbox",
@@ -899,7 +921,7 @@ export const it = {
     dialog: {
       deleteChat: {
         title: "Elimina la chat",
-        description: "Vuoi davvero eliminare la chat «{name}»?",
+        description: "La chat «{name}» e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
       },
       deleteRun: {
         title: "Elimina il run di addestramento",
@@ -2054,10 +2076,14 @@ export const it = {
         label: "Tipo di installazione",
         description:
           "Solo chat (GGUF). L'installazione completa aggiunge addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini.",
+        descriptionCpu:
+          "Solo chat (GGUF). Non è stata trovata una GPU supportata, quindi l'installazione completa aggiunge l'addestramento sulla CPU.",
         action: "Passa all'installazione completa",
         confirmTitle: "Passare all'installazione completa?",
         confirmDescription:
           "Questa installazione solo chat esegue modelli GGUF. L'installazione completa aggiunge PyTorch per la GPU di questa macchina, abilitando addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini. Scarica diversi gigabyte (almeno 5 GB di spazio su disco) e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
+        confirmDescriptionCpu:
+          "Questa installazione solo chat esegue modelli GGUF. Su questa macchina non è stata trovata una GPU supportata, quindi l'installazione completa aggiunge PyTorch per la CPU, abilitando l'addestramento sulla CPU. L'addestramento su CPU è molto più lento che su GPU. Richiede almeno 5 GB di spazio su disco e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
         confirmAction: "Aggiorna",
         keywords:
           "full install upgrade tipo di installazione installazione completa aggiorna solo chat chat only gguf add training addestramento addestrare train fine-tune pytorch torch esportazione video generazione di immagini safetensors",
@@ -2219,8 +2245,6 @@ export const it = {
         label: "Tema",
         description: "Colori usati in Unsloth, nei temi chiaro e scuro.",
         standard: "Standard",
-        classic: "Classica",
-        minimal: "Minimale",
         moreThemes: "Altri temi",
         halloween: "Halloween",
       },
@@ -2228,6 +2252,22 @@ export const it = {
         label: "Dolcetto o scherzetto",
         description:
           "Temi di Halloween e saluti spaventosi, fino al 1° novembre.",
+      },
+      code: {
+        title: "Codice",
+        fontDescription: "Blocchi di codice nella chat, anteprime dei file ed esempi API.",
+        lineNumbers: {
+          label: "Numeri di riga",
+          description: "Numera le righe dei blocchi di codice nella chat.",
+        },
+        wordWrap: {
+          label: "A capo automatico",
+          description: "Manda a capo le righe lunghe nei blocchi di codice invece di scorrere in orizzontale.",
+        },
+        ligatures: {
+          label: "Legature del carattere",
+          description: "Unisce simboli come => e != in un solo glifo se il carattere del codice lo supporta.",
+        },
       },
       custom: {
         chatWidth: {
@@ -3096,9 +3136,9 @@ export const it = {
         movedChatsToRecents: "Chat spostate in Recenti: {count}",
         moveFailed: "Impossibile spostare le chat",
         deleteChatsTitle: "Elimina chat ({count})",
-        deleteChatsWarning: "Eliminare le chat selezionate ({count})? L'azione non può essere annullata.",
+        deleteChatsWarning: "{count} chat e i relativi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
         deleteArchivedTitle: "Elimina {count} chat archiviate",
-        deleteArchivedWarning: "Eliminare le chat archiviate selezionate ({count})? L'azione non può essere annullata.",
+        deleteArchivedWarning: "{count} chat archiviate e i relativi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
         deleting: "Eliminazione...",
       },
       title: "Dati",
@@ -3631,6 +3671,8 @@ export const it = {
     imageTraining: "Addestramento immagini",
     goToImageTraining: "Addestra LoRA per immagini",
     routeTitle: "Addestra",
+    cpuTrainingNotice:
+      "Non è stata trovata alcuna GPU, quindi l'addestramento viene eseguito sulla CPU. È molto più lento che su GPU e supporta solo modelli di testo (LoRA o finetuning completo).",
     wizard: {
       modelTitle: "Modello",
       modelDescription: "Seleziona il modello e il metodo di addestramento",
@@ -4744,8 +4786,8 @@ export const it = {
       },
       dialog: {
         renameChat: "Rinomina chat",
-        deleteChatDescription: "Questa chat verrà eliminata definitivamente. L’operazione non può essere annullata.",
-        deleteProjectDescription: "Il progetto e le sue chat ({count}) verranno eliminati definitivamente. L’operazione non può essere annullata.",
+        deleteChatDescription: "La chat e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
+        deleteProjectDescription: "Il progetto e le sue chat ({count}) verranno eliminati definitivamente. Questa azione non può essere annullata.",
         deleteFilesMany: "Rimuovi anche i file e le cartelle sandbox create da queste chat.",
         deleteProjectFilesLabel: "Elimina la cartella di lavoro del progetto",
         deleteProjectFiles: "La cartella di lavoro del progetto verrà rimossa dal disco.",
@@ -5201,14 +5243,14 @@ export const it = {
     renameChat: "Rinomina chat",
     chatName: "Nome chat",
     deleteChat: "Elimina chat",
-    deleteChatDescription: "Vuoi davvero eliminare {name}? I suoi messaggi verranno eliminati definitivamente.",
+    deleteChatDescription: "La chat «{name}» e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
     importChats: "Importa chat",
     importDestination: "Scegli dove importare {name}:",
     selectDestination: "Seleziona destinazione",
     recents: "Recenti",
     import: "Importa",
     deleteProject: "Elimina progetto",
-    deleteProjectDescription: "Vuoi davvero eliminare {name}? Le sue chat verranno eliminate definitivamente.",
+    deleteProjectDescription: "Il progetto «{name}» e tutte le sue chat verranno eliminati definitivamente. Questa azione non può essere annullata.",
     deleteProjectFiles: "La cartella di lavoro del progetto verrà rimossa dal disco.",
     deleteAll: "Elimina tutto",
     projectFallback: "progetto",
@@ -5291,6 +5333,18 @@ export const it = {
     flaggedIntro: "Il nostro scanner automatico ha segnalato problemi tra cui:",
     nothingFlagged:
       "Il nostro scanner automatico non ha segnalato file preoccupanti, ma ti consigliamo di verificare comunque.",
+    unscannedTitle: "Impossibile analizzare i file del modello",
+    unscannedBody: "{model} include pesi pickle, che possono eseguire codice al caricamento, e per essi non è disponibile alcuna scansione antimalware, quindi non può essere caricato. {note}",
+    unscannedIntro: "File che non è stato possibile analizzare:",
+    switchSourceNote: "Imposta Hugging Face come origine dei modelli nelle Impostazioni per caricarlo.",
+    reconnectNote: "Connettiti a Hugging Face per poter leggere la scansione, poi riprova.",
+    managedTitle: "Il codice personalizzato è disattivato per questo account",
+    managedNote: "È disattivato per gli account gestiti. Chiedi al proprietario dell'installazione di attivarlo.",
+    notFoundTitle: "Non trovato su {source}",
+    notFoundBody: "{model} non è stato trovato su {source}, quindi non è stato possibile eseguire i controlli di sicurezza. Controlla il nome o imposta un token con accesso se il repository è privato.",
+    notOnModelScopeBody: "{model} non è disponibile su ModelScope, quindi non è stato possibile eseguire i controlli di sicurezza e non può essere caricato da lì. Imposta Hugging Face come origine dei modelli nelle Impostazioni per usarlo.",
+    checksFailedTitle: "Impossibile eseguire i controlli di sicurezza",
+    checksFailedBody: "Impossibile leggere {model} da {source}: i controlli di sicurezza non sono stati completati e non può essere caricato. Controlla la connessione e il token, poi riprova. {note}",
     enableAndContinue: "Abilita e continua",
   },
   tour: {

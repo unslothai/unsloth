@@ -8,10 +8,13 @@ export const es419 = {
   chatBackground: {
     noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
+    sizingPosition: "Tamaño y posición de imagen",
     fill: "Rellenar",
     fit: "Ajustar",
     stretch: "Estirar",
     original: "Tamaño original",
+    fitWidth: "Ajustar al ancho",
+    fitHeight: "Ajustar a la altura",
     zoom: "Zoom",
     outline: "Contorno del campo de mensaje",
     fade: "Desvanecer hacia el fondo",
@@ -28,8 +31,15 @@ export const es419 = {
     halftone: "Semitono",
     scanlines: "Líneas de barrido",
     visibility: "Visibilidad",
+    conversationVisibility: "Visibilidad en conversaciones",
     blur: "Desenfoque de imagen",
     position: "Posición",
+    horizontal: "Posición horizontal",
+    vertical: "Posición vertical",
+    scope: "Mostrar en",
+    scopeNewChat: "Página de chat nuevo",
+    scopeChats: "Chats",
+    scopeAll: "Todas las páginas",
     positionValue: "Horizontal {x} %, vertical {y} %",
     newChat: "Nuevo chat",
     conversation: "Conversación",
@@ -40,6 +50,18 @@ export const es419 = {
     dimensionsError: "Elige una imagen de menos de 40 megapíxeles.",
     decodeError: "No se pudo leer esta imagen. Prueba otro archivo.",
     effectError: "No se pudo generar el efecto. Elige Ninguno u otra imagen.",
+    material: "Vidrio",
+    materialSolid: "Desactivado",
+    materialTransparent: "Transparente",
+    materialFrosted: "Esmerilado",
+    materialBlurred: "Desenfocado",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    glassTheme: "Tema de vidrio",
+    materialStyle: "Estilo",
+    materialMenus: "Menús de vidrio",
+    materialMenusDescription: "Los desplegables, menús y selectores también usan vidrio.",
+    materialStrength: "Intensidad del vidrio",
   },
 
   linkMenu: {
@@ -1077,7 +1099,7 @@ export const es419 = {
       deleteProjects: "Eliminar proyectos",
       deleteProjectsTitle: "Eliminar proyectos",
       deleteProjectsDescription:
-        "¿Eliminar {count} proyectos? Sus chats se eliminan de forma permanente.",
+        "Se eliminarán permanentemente {count} proyectos y todos sus chats. Esta acción no se puede deshacer.",
       deleteProjectsFilesDescription:
         "La carpeta del espacio de trabajo de cada proyecto se elimina del disco.",
       countSelected: "{count} seleccionados",
@@ -1089,7 +1111,7 @@ export const es419 = {
       deleteChats: "Eliminar chats",
       deleteTitle: "Eliminar chats",
       deleteDescription:
-        "¿Eliminar {count} chats? Esta acción no se puede deshacer.",
+        "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
       deleteFilesDescription:
         "Se elimina del disco la carpeta de sandbox propia de cada chat. Los archivos que hayan escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
       deleteFilesLabel: "Eliminar archivos y carpeta del sandbox",
@@ -1137,7 +1159,7 @@ export const es419 = {
     dialog: {
       deleteChat: {
         title: "Eliminar chat",
-        description: '¿Seguro que quieres eliminar este chat "{name}"?',
+        description: 'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
       },
       deleteRun: {
         title: "Eliminar ejecución de entrenamiento",
@@ -2383,10 +2405,14 @@ export const es419 = {
         label: "Tipo de instalación",
         description:
           "Solo chat (GGUF). La instalación completa agrega entrenamiento, exportación, video, modelos safetensors y más funciones de generación de imágenes.",
+        descriptionCpu:
+          "Solo chat (GGUF). No se encontró una GPU compatible, así que la instalación completa agrega entrenamiento en la CPU.",
         action: "Actualizar a la instalación completa",
         confirmTitle: "¿Actualizar a la instalación completa?",
         confirmDescription:
           "Esta instalación de solo chat ejecuta modelos GGUF. La instalación completa agrega PyTorch para la GPU de esta computadora, lo que habilita el entrenamiento, la exportación, el video, los modelos safetensors y más funciones de generación de imágenes. Descarga varios gigabytes (al menos 5 GB de espacio en disco) y reinicia el servidor. Se conservan los chats, los modelos y la configuración. Puede tardar varios minutos.",
+        confirmDescriptionCpu:
+          "Esta instalación de solo chat ejecuta modelos GGUF. No se encontró una GPU compatible en esta computadora, así que la instalación completa agrega PyTorch para la CPU, lo que habilita el entrenamiento en la CPU. Entrenar en la CPU es mucho más lento que en una GPU. Necesita al menos 5 GB de espacio en disco y reinicia el servidor. Se conservan los chats, los modelos y la configuración. Puede tardar varios minutos.",
         confirmAction: "Actualizar",
         keywords:
           "full install upgrade tipo de instalación instalación completa actualizar solo chat chat only gguf entrenamiento entrenar train training fine-tune ajuste fino pytorch torch exportar export video generación de imágenes safetensors",
@@ -2554,8 +2580,6 @@ export const es419 = {
         label: "Tema",
         description: "Colores que se usan en Unsloth, en modo claro y oscuro.",
         standard: "Estándar",
-        classic: "Clásico",
-        minimal: "Minimalista",
         moreThemes: "Más temas",
         halloween: "Halloween",
       },
@@ -2563,6 +2587,22 @@ export const es419 = {
         label: "Dulce o truco",
         description:
           "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
+      },
+      code: {
+        title: "Código",
+        fontDescription: "Bloques de código en el chat, vistas previas de archivos y ejemplos de la API.",
+        lineNumbers: {
+          label: "Números de línea",
+          description: "Numerar las líneas de los bloques de código en el chat.",
+        },
+        wordWrap: {
+          label: "Ajuste de línea",
+          description: "Ajustar las líneas largas en los bloques de código en lugar de desplazarse de lado.",
+        },
+        ligatures: {
+          label: "Ligaduras tipográficas",
+          description: "Unir símbolos como => y != en un solo glifo cuando la fuente de código lo admite.",
+        },
       },
       custom: {
         chatWidth: {
@@ -3512,10 +3552,10 @@ export const es419 = {
         moveFailed: "No se pudieron mover los chats",
         deleteChatsTitle: "Eliminar chats ({count})",
         deleteChatsWarning:
-          "¿Eliminar los chats seleccionados ({count})? Esta acción no se puede deshacer.",
+          "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
         deleteArchivedTitle: "Eliminar {count} chats archivados",
         deleteArchivedWarning:
-          "¿Eliminar los chats archivados seleccionados ({count})? Esta acción no se puede deshacer.",
+          "Se eliminarán permanentemente {count} chats archivados y sus mensajes. Esta acción no se puede deshacer.",
         deleting: "Eliminando...",
       },
       title: "Datos",
@@ -3947,6 +3987,8 @@ export const es419 = {
   },
   studio: {
     routeTitle: "Entrenar",
+    cpuTrainingNotice:
+      "No se encontró ninguna GPU, así que el entrenamiento se ejecuta en la CPU. Es mucho más lento que en una GPU y solo admite modelos de texto (LoRA o ajuste fino completo).",
     wizard: {
       modelTitle: "Modelo",
       modelDescription: "Selecciona el modelo y el método de entrenamiento",
@@ -5115,9 +5157,9 @@ export const es419 = {
       dialog: {
         renameChat: "Renombrar chat",
         deleteChatDescription:
-          "Este chat se eliminará de forma permanente. Esta acción no se puede deshacer.",
+          "Se eliminarán permanentemente el chat y sus mensajes. Esta acción no se puede deshacer.",
         deleteProjectDescription:
-          "El proyecto y sus chats ({count}) se eliminarán de forma permanente. Esta acción no se puede deshacer.",
+          "Se eliminarán permanentemente el proyecto y sus chats ({count}). Esta acción no se puede deshacer.",
         deleteFilesMany:
           "Eliminar también los archivos y carpetas de sandbox que crearon estos chats.",
         deleteProjectFilesLabel: "Eliminar la carpeta de trabajo del proyecto",
@@ -5615,7 +5657,7 @@ export const es419 = {
     chatName: "Nombre del chat",
     deleteChat: "Eliminar chat",
     deleteChatDescription:
-      "¿Seguro que quieres eliminar {name}? Sus mensajes se eliminarán de forma permanente.",
+      'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
     importChats: "Importar chats",
     importDestination: "Elige dónde importar {name}:",
     selectDestination: "Seleccionar destino",
@@ -5623,7 +5665,7 @@ export const es419 = {
     import: "Importar",
     deleteProject: "Eliminar proyecto",
     deleteProjectDescription:
-      "¿Seguro que quieres eliminar {name}? Sus chats se eliminarán de forma permanente.",
+      'Se eliminarán permanentemente el proyecto "{name}" y todos sus chats. Esta acción no se puede deshacer.',
     deleteProjectFiles:
       "La carpeta de trabajo del proyecto se eliminará del disco.",
     deleteAll: "Eliminar todo",
@@ -5712,6 +5754,18 @@ export const es419 = {
       "Nuestro analizador automático detectó problemas, entre ellos:",
     nothingFlagged:
       "Nuestro analizador automático no detectó archivos preocupantes, pero verifícalo tú también.",
+    unscannedTitle: "No se pudieron analizar los archivos del modelo",
+    unscannedBody: "{model} incluye pesos pickle, que pueden ejecutar código al cargarse, y no hay ningún análisis de malware disponible para ellos, por lo que no se puede cargar. {note}",
+    unscannedIntro: "Archivos que no se pudieron analizar:",
+    switchSourceNote: "Cambia la fuente de modelos a Hugging Face en Configuración para cargarlo.",
+    reconnectNote: "Conéctate a Hugging Face para poder leer su análisis e inténtalo de nuevo.",
+    managedTitle: "El código personalizado está desactivado en esta cuenta",
+    managedNote: "Está desactivado en las cuentas administradas. Pídele al propietario de la instalación que lo active.",
+    notFoundTitle: "No se encontró en {source}",
+    notFoundBody: "{model} no se encontró en {source}, por lo que no se pudieron ejecutar sus comprobaciones de seguridad. Revisa el nombre o configura un token con acceso si el repositorio es privado.",
+    notOnModelScopeBody: "{model} no está disponible en ModelScope, por lo que no se pudieron ejecutar sus comprobaciones de seguridad y no se puede cargar desde allí. Cambia la fuente de modelos a Hugging Face en Configuración para usarlo.",
+    checksFailedTitle: "No se pudieron ejecutar las comprobaciones de seguridad",
+    checksFailedBody: "No se pudo leer {model} desde {source}, así que sus comprobaciones de seguridad no pudieron terminar y no se puede cargar. Revisa tu conexión y tu token e inténtalo de nuevo. {note}",
     enableAndContinue: "Activar y continuar",
   },
   tour: {

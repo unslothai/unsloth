@@ -255,7 +255,7 @@ test("the sidebar's Train hint stops doing the same", () => {
     chatOnlyHint: string | null = null,
   ) =>
     new Function(
-      "chatOnlyMeasured",
+      "trainBlocked",
       "chatOnlyReason",
       "chatOnlyDetail",
       "chatOnlyHint",
@@ -276,10 +276,12 @@ test("the sidebar's Train hint stops doing the same", () => {
     assert.ok(withoutDetail);
     assert.doesNotMatch(withoutDetail, /needs an NVIDIA or AMD GPU/);
   }
-  assert.equal(
-    forReason("no_gpu", null),
-    "Training needs an NVIDIA or AMD GPU.",
-  );
+  // A CPU-only host with PyTorch trains on CPU and never reaches the hint; without PyTorch the
+  // GPU is not what is missing either.
+  const noGpu = forReason("no_gpu", null);
+  assert.ok(noGpu);
+  assert.doesNotMatch(noGpu, /needs an NVIDIA or AMD GPU/);
+  assert.match(noGpu, /PyTorch/);
   assert.equal(forReason("detection_failed", null), undefined);
 });
 

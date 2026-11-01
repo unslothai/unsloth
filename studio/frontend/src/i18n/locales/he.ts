@@ -8,10 +8,13 @@ export const he = {
   chatBackground: {
     noBackground: "ללא רקע",
     sizing: "התאמת גודל תמונה",
+    sizingPosition: "גודל ומיקום התמונה",
     fill: "מילוי",
     fit: "התאמה",
     stretch: "מתיחה",
     original: "גודל מקורי",
+    fitWidth: "התאמה לרוחב",
+    fitHeight: "התאמה לגובה",
     zoom: "זום",
     outline: "מסגרת שדה ההודעה",
     fade: "דעיכה אל הרקע",
@@ -28,8 +31,15 @@ export const he = {
     halftone: "חצי גוון",
     scanlines: "קווי סריקה",
     visibility: "נראות",
+    conversationVisibility: "נראות בשיחות",
     blur: "טשטוש תמונה",
     position: "מיקום",
+    horizontal: "מיקום אופקי",
+    vertical: "מיקום אנכי",
+    scope: "הצגה ב",
+    scopeNewChat: "דף צ׳אט חדש",
+    scopeChats: "צ׳אטים",
+    scopeAll: "כל הדפים",
     positionValue: "אופקי {x}%, אנכי {y}%",
     newChat: "צ׳אט חדש",
     conversation: "שיחה",
@@ -40,6 +50,18 @@ export const he = {
     dimensionsError: "בחרו תמונה קטנה מ־40 מגה־פיקסל.",
     decodeError: "לא ניתן לקרוא את התמונה. נסו קובץ אחר.",
     effectError: "לא ניתן ליצור את האפקט. בחרו ללא או תמונה אחרת.",
+    material: "זכוכית",
+    materialSolid: "כבוי",
+    materialTransparent: "שקוף",
+    materialFrosted: "חלבי",
+    materialBlurred: "מטושטש",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    glassTheme: "ערכת נושא זכוכית",
+    materialStyle: "סגנון",
+    materialMenus: "תפריטי זכוכית",
+    materialMenusDescription: "גם תפריטים נפתחים, תפריטים ובוררים משתמשים בזכוכית.",
+    materialStrength: "עוצמת הזכוכית",
   },
 
   linkMenu: {
@@ -1004,7 +1026,7 @@ export const he = {
       deleteProjects: "מחק פרויקטים",
       deleteProjectsTitle: "מחיקת פרויקטים",
       deleteProjectsDescription:
-        "למחוק {count} פרויקטים? הצ'אטים שלהם יימחקו לצמיתות.",
+        "{count} פרויקטים וכל הצ'אטים שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       deleteProjectsFilesDescription:
         "תיקיית סביבת העבודה של כל פרויקט תוסר מהדיסק.",
       countSelected: "{count} נבחרו",
@@ -1015,7 +1037,7 @@ export const he = {
       markRead: "סמן כנקרא",
       deleteChats: "מחק צ'אטים",
       deleteTitle: "מחיקת צ'אטים",
-      deleteDescription: "למחוק {count} צ'אטים? פעולה זו אינה ניתנת לביטול.",
+      deleteDescription: "{count} צ'אטים וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       deleteFilesDescription:
         "תיקיית ארגז החול של כל צ'אט תוסר מהדיסק. קבצים שנכתבו בתוך פרויקט יישארו בסביבת העבודה שלו.",
       deleteFilesLabel: "מחק קבצים ותיקיית ארגז חול",
@@ -1063,7 +1085,7 @@ export const he = {
     dialog: {
       deleteChat: {
         title: "מחיקת צ'אט",
-        description: 'האם אתה בטוח שברצונך למחוק את הצ\'אט "{name}"?',
+        description: "הצ'אט \"{name}\" וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       },
       deleteRun: {
         title: "מחיקת הרצת אימון",
@@ -2211,10 +2233,14 @@ export const he = {
         label: "סוג התקנה",
         description:
           "צ'אט בלבד (GGUF). ההתקנה המלאה מוסיפה אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות.",
+        descriptionCpu:
+          "צ'אט בלבד (GGUF). לא נמצא GPU נתמך, ולכן ההתקנה המלאה מוסיפה אימון על ה-CPU.",
         action: "שדרג להתקנה מלאה",
         confirmTitle: "לשדרג להתקנה המלאה?",
         confirmDescription:
           "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF. ההתקנה המלאה מוסיפה את PyTorch עבור ה-GPU של מכונה זו, ומאפשרת אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות. היא מורידה כמה ג'יגה-בייט (לפחות 5 GB של שטח דיסק) ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
+        confirmDescriptionCpu:
+          "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF. לא נמצא GPU נתמך במכונה זו, ולכן ההתקנה המלאה מוסיפה את PyTorch עבור ה-CPU, ומאפשרת אימון על ה-CPU. אימון על CPU איטי בהרבה מאימון על GPU. היא דורשת לפחות 5 GB של שטח דיסק ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
         confirmAction: "שדרג",
         keywords:
           "full install upgrade סוג התקנה התקנה מלאה שדרוג צ'אט בלבד chat only gguf add training אימון train fine-tune pytorch torch ייצוא וידאו יצירת תמונות safetensors",
@@ -2376,8 +2402,6 @@ export const he = {
         label: "ערכת נושא",
         description: "הצבעים שבשימוש בכל רחבי Unsloth, במצב בהיר וכהה.",
         standard: "סטנדרטית",
-        classic: "קלאסית",
-        minimal: "מינימלית",
         moreThemes: "ערכות נושא נוספות",
         halloween: "האלווין",
       },
@@ -2385,6 +2409,22 @@ export const he = {
         label: "ממתק או תעלול",
         description:
           "ערכות נושא של ליל כל הקדושים וברכות מפחידות, עד 1 בנובמבר.",
+      },
+      code: {
+        title: "קוד",
+        fontDescription: "בלוקי קוד בצ׳אט, תצוגות מקדימות של קבצים ודוגמאות API.",
+        lineNumbers: {
+          label: "מספרי שורות",
+          description: "מספור השורות של בלוקי קוד בצ׳אט.",
+        },
+        wordWrap: {
+          label: "גלישת שורות",
+          description: "גלישת שורות ארוכות בבלוקי קוד במקום גלילה הצידה.",
+        },
+        ligatures: {
+          label: "ליגטורות גופן",
+          description: "איחוד סמלים כמו => ו-!= לגליף אחד כשגופן הקוד תומך בכך.",
+        },
       },
       custom: {
         chatWidth: {
@@ -3271,10 +3311,10 @@ export const he = {
         moveFailed: "העברת הצ'אטים נכשלה",
         deleteChatsTitle: "מחיקת צ'אטים ({count})",
         deleteChatsWarning:
-          "למחוק את הצ'אטים שנבחרו ({count})? פעולה זו אינה ניתנת לביטול.",
+          "{count} צ'אטים וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteArchivedTitle: "מחיקת {count} צ'אטים מהארכיון",
         deleteArchivedWarning:
-          "למחוק את הצ'אטים שנבחרו מהארכיון ({count})? פעולה זו אינה ניתנת לביטול.",
+          "{count} צ'אטים בארכיון וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleting: "מוחק...",
       },
       title: "נתונים",
@@ -3666,6 +3706,8 @@ export const he = {
   },
   studio: {
     routeTitle: "אימון",
+    cpuTrainingNotice:
+      "לא נמצא GPU, ולכן האימון רץ על ה-CPU. הוא איטי בהרבה מאימון על GPU ותומך במודלי טקסט בלבד (LoRA או כוונון מלא).",
     wizard: {
       modelTitle: "מודל",
       modelDescription: "בחר מודל ושיטת אימון",
@@ -4757,9 +4799,9 @@ export const he = {
       dialog: {
         renameChat: "שינוי שם צ'אט",
         deleteChatDescription:
-          "צ'אט זה יימחק לצמיתות. פעולה זו אינה ניתנת לביטול.",
+          "הצ'אט וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteProjectDescription:
-          "הפרויקט והצ'אטים שלו ({count}) יימחקו לצמיתות. פעולה זו אינה ניתנת לביטול.",
+          "הפרויקט והצ'אטים שלו ({count}) יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteFilesMany: "הסר גם את הקבצים ותיקיות ארגז החול שצ'אטים אלה יצרו.",
         deleteProjectFilesLabel: "מחק את תיקיית סביבת העבודה של הפרויקט",
         deleteProjectFiles: "תיקיית סביבת העבודה של הפרויקט תוסר מהדיסק.",
@@ -5228,14 +5270,14 @@ export const he = {
     renameChat: "שינוי שם הצ'אט",
     chatName: "שם הצ'אט",
     deleteChat: "מחיקת צ'אט",
-    deleteChatDescription: "למחוק את {name}? ההודעות שלו יימחקו לצמיתות.",
+    deleteChatDescription: "הצ'אט \"{name}\" וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
     importChats: "ייבוא צ'אטים",
     importDestination: "בחרו לאן לייבא את {name}:",
     selectDestination: "בחירת יעד",
     recents: "אחרונים",
     import: "ייבוא",
     deleteProject: "מחיקת פרויקט",
-    deleteProjectDescription: "למחוק את {name}? הצ'אטים שלו יימחקו לצמיתות.",
+    deleteProjectDescription: "הפרויקט \"{name}\" וכל הצ'אטים שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
     deleteProjectFiles: "תיקיית העבודה של הפרויקט תוסר מהדיסק.",
     deleteAll: "מחיקת הכול",
     projectFallback: "פרויקט",
@@ -5318,6 +5360,18 @@ export const he = {
     flaggedIntro: "הסורק האוטומטי שלנו סימן בעיות, ביניהן:",
     nothingFlagged:
       "הסורק האוטומטי שלנו לא סימן קבצים מדאיגים, אבל כדאי לבדוק שוב.",
+    unscannedTitle: "לא ניתן היה לסרוק את קובצי המודל",
+    unscannedBody: "{model} כולל משקלי pickle, שיכולים להריץ קוד בזמן הטעינה, ואין עבורם סריקת תוכנות זדוניות זמינה, ולכן לא ניתן לטעון אותו. {note}",
+    unscannedIntro: "קבצים שלא ניתן היה לסרוק:",
+    switchSourceNote: "כדי לטעון אותו, החליפו את מקור המודלים ל-Hugging Face בהגדרות.",
+    reconnectNote: "התחברו ל-Hugging Face כדי שאפשר יהיה לקרוא את הסריקה, ונסו שוב.",
+    managedTitle: "קוד מותאם אישית כבוי בחשבון זה",
+    managedNote: "הוא כבוי בחשבונות מנוהלים. בקשו מבעל ההתקנה להפעיל אותו.",
+    notFoundTitle: "לא נמצא ב-{source}",
+    notFoundBody: "{model} לא נמצא ב-{source}, ולכן לא ניתן היה להריץ את בדיקות האבטחה. בדקו את השם, או הגדירו אסימון עם גישה אם המאגר פרטי.",
+    notOnModelScopeBody: "{model} אינו זמין ב-ModelScope, ולכן לא ניתן היה להריץ את בדיקות האבטחה ולא ניתן לטעון אותו משם. כדי להשתמש בו, החליפו את מקור המודלים ל-Hugging Face בהגדרות.",
+    checksFailedTitle: "לא ניתן היה להריץ את בדיקות האבטחה",
+    checksFailedBody: "לא ניתן היה לקרוא את {model} מ-{source}, ולכן לא ניתן היה להשלים את בדיקות האבטחה ולא ניתן לטעון אותו. בדקו את החיבור ואת האסימון ונסו שוב. {note}",
     enableAndContinue: "הפעל והמשך",
   },
   tour: {

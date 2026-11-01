@@ -564,8 +564,6 @@ export function ProjectsPage({
   }
 
   // Split around {name} so the name can be emphasised.
-  const deleteChatText = t("projectsPage.deleteChatDescription").split("{name}");
-  const deleteProjectText = t("projectsPage.deleteProjectDescription").split("{name}");
   const importText = t("projectsPage.importDestination").split("{name}");
 
   const Shell = embedded ? "div" : "main";
@@ -1153,9 +1151,9 @@ export function ProjectsPage({
             <DialogTitle>{t("projectsPage.deleteChat")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            {deleteChatText[0]}
-            <em>{deletingChat?.title}</em>
-            {deleteChatText[1]}
+            {t("projectsPage.deleteChatDescription", {
+              name: deletingChat?.title ?? "",
+            })}
           </p>
           <DeleteChatFilesSwitch
             id="projects-delete-chat-files"
@@ -1224,9 +1222,9 @@ export function ProjectsPage({
             <DialogTitle>{t("projectsPage.deleteProject")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            {deleteProjectText[0]}
-            <em>{deleting?.name}</em>
-            {deleteProjectText[1]}
+            {t("projectsPage.deleteProjectDescription", {
+              name: deleting?.name ?? "",
+            })}
           </p>
           <DeleteChatFilesSwitch
             id="projects-delete-project-files"

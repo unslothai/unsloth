@@ -517,6 +517,11 @@ def _decode_forward(
 ):
     if torch.is_grad_enabled() or torch.compiler.is_compiling():
         return None
+    static = _decode_graphs.static()
+    # Whole-step graphs (UNSLOTH_DECODE_CUDA_GRAPHS_FULL) attend over a span with a device-side keep mask,
+    # which this step does not read: let the regular path record that step.
+    if static is not None and getattr(static, "span", None) is not None:
+        return None
     layers = model.model.layers
     new_sequence = not hasattr(layers[0].self_attn, "paged_attention")
     plan = model.__dict__.get(_PLAN)
@@ -539,7 +544,6 @@ def _decode_forward(
             plan = model.__dict__[_PLAN] = built
     if isinstance(plan, _Refused) or X.device != plan.device or X.dtype != plan.dtype:
         return None
-    static = _decode_graphs.static()
     device = X.device
     capability = plan.capability
     ropes = {}

@@ -548,7 +548,14 @@ def _cached_row_companion(repo_id: str, snapshot: Optional[Path] = None) -> bool
 
 
 _AUDIO_ONLY_GGUF_TASKS = frozenset(
-    {"text-to-speech", "text-to-audio", "automatic-speech-recognition", "audio-to-audio"}
+    {
+        "text-to-speech",
+        "text-to-audio",
+        "automatic-speech-recognition",
+        "audio-to-audio",
+        # Foreign ASR GGUFs (parakeet.cpp): not chat, and no Unsloth page can load them (#16273).
+        "speech-recognition-unsupported",
+    }
 )
 
 

@@ -18,7 +18,7 @@ from ..utils.packing import get_packed_info_from_kwargs
 from ..kernels import qk_norm_rope as _qk_norm_rope
 from ..kernels.qk_norm_rope import fast_qk_norm_rope, decode_qk_norm_rope
 from . import _decode_graphs
-from .llama import _decode_attention_core
+from .llama import _decode_attention_core, _decode_attention_span
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
@@ -272,9 +272,12 @@ def Qwen3Attention_fast_forward_inference(
         # between two captured segments (static.attention), over the true length.
         self.paged_attention_K.index_copy_(0, static.slot, Kn.permute(2, 0, 1, 3))
         self.paged_attention_V.index_copy_(0, static.slot, Vn.permute(2, 0, 1, 3))
-        A = static.attention(
-            lambda: _decode_attention_core(self, Qn, static.kv_len, static.mask, bsz, False)[0]
-        )
+        if static.span is not None:
+            A = _decode_attention_span(self, Qn, static, bsz, False)
+        else:
+            A = static.attention(
+                lambda: _decode_attention_core(self, Qn, static.kv_len, static.mask, bsz, False)[0]
+            )
         A = A.transpose(1, 2).reshape(bsz, 1, attention_size)
         return fast_linear_forward(self.o_proj, A, out = self.temp_O), (None, None)
     self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
