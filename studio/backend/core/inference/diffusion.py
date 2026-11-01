@@ -550,9 +550,8 @@ def _lora_file_sigs(loras: Any) -> Optional[dict]:
 
 
 def _lora_weights_only_change(state: Any, pipe: Any, current: Any, desired: Any) -> bool:
-    """Whether ``desired`` is the loaded adapter set with only its weights changed: same names and files in the same
-    order, each file unchanged on disk since it was loaded. ``set_adapters`` then reaches the scales a full reload
-    would set, on the same adapter tensors, so the reload is skipped. A block-streamed graph keeps the reload path."""
+    """Same adapter names and files in the same order, each file unchanged on disk since its load, and no
+    block-streamed graph: ``set_adapters`` alone then reaches the scales a full reload would set."""
     if not current or len(current) != len(desired):
         return False
     if any((n, p) != (dn, dp) for (n, p, _w), (dn, dp, _dw) in zip(current, desired)):
@@ -12916,19 +12915,18 @@ class DiffusionBackend:
             hf_token = state.hf_token,
             cancel = cancel,
         )
-        uniq = list(desired)
         if desired == current:
             return
+        names = [name for name, _p, _w in desired]
+        weights = [w for _n, _p, w in desired]
         if _lora_weights_only_change(state, pipe, current, desired):
             try:
-                pipe.set_adapters(
-                    [name for name, _p, _w in uniq], adapter_weights = [w for _n, _p, w in uniq]
-                )
+                pipe.set_adapters(names, adapter_weights = weights)
             except Exception:  # noqa: BLE001 -- the full reload below sets the same scales or fails cleanly
                 pass
             else:
                 pipe._unsloth_loras = desired
-                # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
+                # A captured graph bakes the scales in.
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
                 invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
                 return
@@ -12938,11 +12936,9 @@ class DiffusionBackend:
             if current:
                 pipe.unload_lora_weights()
             setattr(pipe, _LORA_FILE_SIGS_ATTR, None)
-            for name, path, _weight in uniq:
+            for name, path, _weight in desired:
                 pipe.load_lora_weights(path, adapter_name = name)
-            pipe.set_adapters(
-                [name for name, _p, _w in uniq], adapter_weights = [w for _n, _p, w in uniq]
-            )
+            pipe.set_adapters(names, adapter_weights = weights)
         except Exception as exc:  # noqa: BLE001 -- surface as a clean 400
             try:
                 pipe.unload_lora_weights()
