@@ -7073,7 +7073,14 @@ class DiffusionBackend:
         if dit_prequant is not None:
             # Staged, not just counted: leaving it out means a multi-GB inline pull under the load lock.
             prequant_repo, prequant_file, prequant_size = dit_prequant
-            add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
+            # This replaces the pipeline's denoiser weights: it is a model checkpoint,
+            # even when hosted separately from the selected pipeline's configuration.
+            add_missing_entry(
+                prequant_repo,
+                [prequant_file],
+                {prequant_file: prequant_size},
+                checkpoint = True,
+            )
         for ref in component_overrides.files.values() if component_overrides else ():
             if not ref.is_hub:
                 continue
