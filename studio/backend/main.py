@@ -555,6 +555,27 @@ def _start_helper_precache_if_enabled() -> None:
     threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
 
 
+def _start_offline_docs_refresh_if_due() -> None:
+    """Refresh the owner's offline copy of the Unsloth docs once per new release, off the startup path."""
+    try:
+        from utils.offline_docs_settings import offline_docs_refresh_due
+        if not offline_docs_refresh_due():
+            return
+    except Exception:
+        return
+
+    import threading
+
+    def _refresh():
+        try:
+            from utils.offline_docs_settings import refresh_offline_docs_if_due
+            refresh_offline_docs_if_due()
+        except Exception:
+            pass  # non-critical
+
+    threading.Thread(target = _refresh, daemon = True, name = "offline-docs-refresh").start()
+
+
 def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
     """Run llama.cpp probes off the startup path; GitHub freshness checks and macOS Gatekeeper stall
     them."""
@@ -950,6 +971,7 @@ async def lifespan(app: FastAPI):
 
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
+    _start_offline_docs_refresh_if_due()
 
     from core.inference.audio_inputs import start_sweeper as _start_audio_input_sweeper
 
