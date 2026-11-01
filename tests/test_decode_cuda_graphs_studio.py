@@ -100,6 +100,8 @@ def test_studio_generate_graphed_plain_generate_eager():
 
     if not G._DEFAULT_OK:
         pytest.skip("the default is NVIDIA CUDA only")
+    if not G._STUDIO_DEFAULT_OK:
+        pytest.skip("the Studio default stays eager on native Windows")
     model, tok = FastLanguageModel.from_pretrained(
         "trl-internal-testing/tiny-Qwen3ForCausalLM", max_seq_length = 2048, load_in_4bit = False
     )
