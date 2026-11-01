@@ -140,7 +140,6 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
-  Settings02Icon,
   Sun03Icon,
   UserCircleIcon,
   ViewIcon,
@@ -158,6 +157,7 @@ import {
   AiSpeechIcon,
   ChipIcon,
   MessageCircleIcon,
+  Settings01Icon,
   TestTubeOutlineIcon,
   withNoticeDot,
 } from "@/lib/hugeicons-derived";
@@ -336,29 +336,6 @@ import { translate, useT, type TranslationKey } from "@/i18n";
 import { Tick02Icon } from "@/lib/tick-icon";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
-
-const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
-
-type AppT = ReturnType<typeof useT>;
-
-function renderEmphasizedTranslation(
-  t: AppT,
-  key: TranslationKey,
-  emphasizedValue: string,
-): ReactNode {
-  const translated = t(key, { name: EMPHASIS_MARKER });
-  const parts = translated.split(EMPHASIS_MARKER);
-  if (parts.length === 1) return translated;
-
-  const nodes: ReactNode[] = [];
-  parts.forEach((part, index) => {
-    if (part.length > 0) nodes.push(part);
-    if (index < parts.length - 1) {
-      nodes.push(<em key={`emphasis-${index}`}>{emphasizedValue}</em>);
-    }
-  });
-  return nodes;
-}
 
 const SETTINGS_TAB_MENU_ITEMS: Record<
   "profile" | "appearance" | "resources" | "chat" | "connections",
@@ -1384,8 +1361,10 @@ export function AppSidebar() {
   }, [href, isMobile, setOpenMobile]);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const trainUnavailable = usePlatformStore((s) => s.isTrainUnavailable());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
+  const cpuTraining = usePlatformStore((s) => s.cpuTraining);
   const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
   const chatOnlyHint = usePlatformStore((s) => s.chatOnlyHint);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
@@ -1398,7 +1377,8 @@ export function AppSidebar() {
   // and Video on load; gate the rows on a measured verdict and spin until it lands.
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
   const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
-  const trainDisabledHint: string | undefined = !chatOnlyMeasured
+  const trainBlocked = trainUnavailable && !capabilitiesUnknown;
+  const trainDisabledHint: string | undefined = !trainBlocked
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
       ? // The gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, and a resolver
@@ -1430,10 +1410,11 @@ export function AppSidebar() {
               ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
               : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
           : chatOnlyReason === "no_gpu"
-            ? "Training needs an NVIDIA or AMD GPU."
+            ? // With PyTorch this host trains on CPU; without it there is nothing to train with.
+              "Training needs PyTorch, which is not installed. Reinstall without --no-torch to enable Train."
             : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
-  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn);
+  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining);
   const videoDisabled = videoDisabledHint !== undefined;
 
   // MLX self-heal or late detection can change the verdict after first health; re-poll.
@@ -1620,10 +1601,10 @@ export function AppSidebar() {
     hasMore: runsHaveMore,
     loadMore: loadMoreRuns,
   } = useTrainingHistorySidebarItems(
-    !chatOnly && trainingRecentsRoute,
+    !trainUnavailable && trainingRecentsRoute,
   );
   const showTrainingRecents =
-    !chatOnly && trainingRecentsRoute && runItems.length > 0;
+    !trainUnavailable && trainingRecentsRoute && runItems.length > 0;
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
   const { projects, hasLoaded: projectsLoaded } = useChatProjects();
@@ -3385,8 +3366,8 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnlyMeasured && !fullInstall,
-      dimmed: chatOnlyMeasured && fullInstall !== null,
+      disabled: trainBlocked && !fullInstall,
+      dimmed: trainBlocked && fullInstall !== null,
       tooltip: fullInstall
         ? "Training is not installed. It needs at least 5 GB of disk space."
         : trainDisabledHint,
@@ -3397,7 +3378,7 @@ export function AppSidebar() {
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
-        if (chatOnlyMeasured) {
+        if (trainBlocked) {
           if (fullInstall) {
             setFullInstallOpen(true);
             closeMobileIfOpen();
@@ -3408,7 +3389,7 @@ export function AppSidebar() {
         closeMobileIfOpen();
       },
       onIntent: () => {
-        if (chatOnlyMeasured) return;
+        if (trainBlocked) return;
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
     },
@@ -4525,7 +4506,7 @@ export function AppSidebar() {
       body = (
         <>
           <DropdownMenuItem onSelect={() => setSectionDialog({ mode: "rename", section })}>
-            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.sections.edit")}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -5651,7 +5632,7 @@ export function AppSidebar() {
             <span>{isProjectPinned ? "Unpin" : "Pin"}</span>
           </P.Item>
           <P.Item onSelect={() => setEditingProject(project)}>
-            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
             <span>Edit</span>
           </P.Item>
           <P.Separator />
@@ -6395,7 +6376,7 @@ export function AppSidebar() {
                             })
                         }
                       >
-                        <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+                        <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} />
                         <span className="min-w-0 flex-1 truncate">
                           {t("shell.navigation.customizeSidebar")}
                         </span>
@@ -6704,7 +6685,7 @@ export function AppSidebar() {
               sits above the avatar instead. */}
           <NavItem
             className="hidden group-data-[collapsible=icon]:block"
-            icon={Settings02Icon}
+            icon={Settings01Icon}
             label={t("shell.navigation.settings")}
             active={false}
             onClick={() => {
@@ -6746,7 +6727,7 @@ export function AppSidebar() {
                 <DropdownMenuItem
                   onSelect={() => useSettingsDialogStore.getState().openDialog()}
                 >
-                  <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
                   <span>{t("shell.navigation.settings")}</span>
                   {settingsShortcutLabel && (
                     <DropdownMenuShortcut>
@@ -6813,6 +6794,11 @@ export function AppSidebar() {
                     >
                       <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
                       <span>{t(tab.labelKey)}</span>
+                      {settingsTabId === "appearance" && (
+                        <Badge variant="accent" className="-my-0.5 ml-auto">
+                          {t("shell.navigation.newBadge")}
+                        </Badge>
+                      )}
                     </DropdownMenuItem>
                   );
                 })}
@@ -6889,7 +6875,7 @@ export function AppSidebar() {
               className="absolute right-2 top-1/2 flex size-[calc(32px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
             >
               <HugeiconsIcon
-                icon={Settings02Icon}
+                icon={Settings01Icon}
                 strokeWidth={1.5}
                 className="!size-[calc(18px*var(--ui-space-scale,1))]"
               />
@@ -6929,7 +6915,7 @@ export function AppSidebar() {
             {confirmingDelete?.kind === "run"
               ? t("shell.dialog.deleteRun.title")
               : confirmingDelete?.kind === "project"
-                ? "Delete project"
+                ? t("projectsPage.deleteProject")
                 : confirmingDelete?.kind === "chats"
                   ? t("shell.selection.deleteTitle")
                   : confirmingDelete?.kind === "projects"
@@ -6938,17 +6924,13 @@ export function AppSidebar() {
           </DialogTitle>
           <DialogDescription>
             {confirmingDelete?.kind === "run" ? (
-              renderEmphasizedTranslation(
-                t,
-                "shell.dialog.deleteRun.description",
-                getTrainingRunDisplayTitle(confirmingDelete.run),
-              )
+              t("shell.dialog.deleteRun.description", {
+                name: getTrainingRunDisplayTitle(confirmingDelete.run),
+              })
             ) : confirmingDelete?.kind === "chat" ? (
-              renderEmphasizedTranslation(
-                t,
-                "shell.dialog.deleteChat.description",
-                confirmingDelete.item.title,
-              )
+              t("shell.dialog.deleteChat.description", {
+                name: confirmingDelete.item.title,
+              })
             ) : confirmingDelete?.kind === "chats" ? (
               t("shell.selection.deleteDescription", {
                 count: confirmingDelete.items.length,
@@ -6958,13 +6940,9 @@ export function AppSidebar() {
                 count: confirmingDelete.projects.length,
               })
             ) : confirmingDelete?.kind === "project" ? (
-              <>
-                Delete{" "}
-                <span className="font-medium text-foreground">
-                  &quot;{confirmingDelete.project.name}&quot;
-                </span>
-                ? Its chats will be permanently deleted.
-              </>
+              t("projectsPage.deleteProjectDescription", {
+                name: confirmingDelete.project.name,
+              })
             ) : null}
           </DialogDescription>
         </DialogHeader>

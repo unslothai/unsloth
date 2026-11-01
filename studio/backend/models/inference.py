@@ -3551,6 +3551,13 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
             "the same id the completion sends to price them."
         ),
     )
+    session_id: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] The tool session the completion sends. A project's chosen working "
+            "folder adds a sentence to the tool nudge, so the count needs it to price that."
+        ),
+    )
     rag_scope: Optional[dict] = Field(
         None,
         description = "[x-unsloth] Hidden RAG retrieval scope for search_knowledge_base",

@@ -8,10 +8,13 @@ export const ko = {
   chatBackground: {
     noBackground: "배경 없음",
     sizing: "이미지 크기 조정",
+    sizingPosition: "이미지 크기 및 위치",
     fill: "채우기",
     fit: "맞추기",
     stretch: "늘이기",
     original: "원본 크기",
+    fitWidth: "너비에 맞추기",
+    fitHeight: "높이에 맞추기",
     zoom: "확대",
     outline: "메시지 입력창 테두리",
     fade: "배경으로 페이드",
@@ -30,6 +33,12 @@ export const ko = {
     visibility: "표시 강도",
     blur: "이미지 흐림",
     position: "위치",
+    horizontal: "가로 위치",
+    vertical: "세로 위치",
+    scope: "표시 위치",
+    scopeNewChat: "새 채팅 페이지",
+    scopeChats: "채팅",
+    scopeAll: "모든 페이지",
     positionValue: "가로 {x}%, 세로 {y}%",
     newChat: "새 채팅",
     conversation: "대화",
@@ -967,7 +976,7 @@ export const ko = {
       deleteProjects: "프로젝트 삭제",
       deleteProjectsTitle: "프로젝트 삭제",
       deleteProjectsDescription:
-        "프로젝트 {count}개를 삭제할까요? 포함된 채팅이 영구히 삭제됩니다.",
+        "프로젝트 {count}개와 모든 채팅이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
       deleteProjectsFilesDescription:
         "각 프로젝트의 작업 공간 폴더가 디스크에서 삭제됩니다.",
       countSelected: "{count}개 선택됨",
@@ -978,7 +987,7 @@ export const ko = {
       markRead: "읽음으로 표시",
       deleteChats: "채팅 삭제",
       deleteTitle: "채팅 삭제",
-      deleteDescription: "채팅 {count}개를 삭제할까요? 되돌릴 수 없습니다.",
+      deleteDescription: "채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
       deleteFilesDescription:
         "각 채팅 전용 샌드박스 폴더가 디스크에서 삭제됩니다. 프로젝트 안에서 만든 파일은 해당 프로젝트 작업 공간에 남습니다.",
       deleteFilesLabel: "파일 및 샌드박스 폴더 삭제",
@@ -1026,7 +1035,7 @@ export const ko = {
     dialog: {
       deleteChat: {
         title: "채팅 삭제",
-        description: '이름이 "{name}"인 채팅을 삭제하시겠습니까?',
+        description: '채팅 "{name}" 및 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
       },
       deleteRun: {
         title: "학습 실행 삭제",
@@ -2130,10 +2139,14 @@ export const ko = {
         label: "설치 유형",
         description:
           "채팅 전용(GGUF). 전체 설치에는 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능이 추가됩니다.",
+        descriptionCpu:
+          "채팅 전용(GGUF). 지원되는 GPU가 없어 전체 설치에는 CPU 학습이 추가됩니다.",
         action: "전체 설치로 업그레이드",
         confirmTitle: "전체 설치로 업그레이드할까요?",
         confirmDescription:
           "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 전체 설치는 이 컴퓨터의 GPU에 맞는 PyTorch를 추가하여 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능을 사용할 수 있게 합니다. 수 GB(디스크 공간 5GB 이상)를 다운로드하고 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmDescriptionCpu:
+          "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 이 컴퓨터에서 지원되는 GPU를 찾지 못했으므로 전체 설치는 CPU용 PyTorch를 추가하여 CPU에서 학습할 수 있게 합니다. CPU 학습은 GPU 학습보다 훨씬 느립니다. 디스크 공간이 5GB 이상 필요하며 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmAction: "업그레이드",
         keywords:
           "full install upgrade 설치 유형 전체 설치 업그레이드 채팅 전용 chat only gguf add training 학습 훈련 train fine-tune pytorch torch 내보내기 동영상 이미지 생성 safetensors",
@@ -2323,6 +2336,22 @@ export const ko = {
         label: "트릭 오어 트릿",
         description:
           "11월 1일까지 핼러윈 테마와 으스스한 인사말을 즐겨 보세요.",
+      },
+      code: {
+        title: "코드",
+        fontDescription: "채팅의 코드 블록, 파일 미리보기, API 예시.",
+        lineNumbers: {
+          label: "줄 번호",
+          description: "채팅 코드 블록의 줄에 번호를 붙입니다.",
+        },
+        wordWrap: {
+          label: "자동 줄바꿈",
+          description: "코드 블록의 긴 줄을 가로로 스크롤하지 않고 줄바꿈합니다.",
+        },
+        ligatures: {
+          label: "글꼴 합자",
+          description: "코드 글꼴이 지원하면 => 및 != 같은 기호를 하나의 글리프로 합칩니다.",
+        },
       },
       custom: {
         chatWidth: {
@@ -3181,9 +3210,9 @@ export const ko = {
         movedChatsToRecents: "최근 항목으로 이동한 채팅: {count}개",
         moveFailed: "채팅을 이동하지 못했습니다",
         deleteChatsTitle: "채팅 삭제 ({count}개)",
-        deleteChatsWarning: "선택한 채팅 {count}개를 삭제할까요? 이 작업은 취소할 수 없습니다.",
+        deleteChatsWarning: "채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleteArchivedTitle: "보관된 채팅 {count}개 삭제",
-        deleteArchivedWarning: "선택한 보관된 채팅 {count}개를 삭제할까요? 이 작업은 취소할 수 없습니다.",
+        deleteArchivedWarning: "보관된 채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleting: "삭제 중...",
       },
       title: "데이터",
@@ -3575,6 +3604,8 @@ export const ko = {
     imageTraining: "이미지 학습",
     goToImageTraining: "이미지 LoRA 학습",
     routeTitle: "학습",
+    cpuTrainingNotice:
+      "GPU를 찾지 못해 학습이 CPU에서 실행됩니다. GPU 학습보다 훨씬 느리며 텍스트 모델(LoRA 또는 전체 파인튜닝)만 지원합니다.",
     wizard: {
       modelTitle: "모델",
       modelDescription: "모델과 학습 방법 선택",
@@ -4664,8 +4695,8 @@ export const ko = {
       },
       dialog: {
         renameChat: "채팅 이름 변경",
-        deleteChatDescription: "이 채팅은 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
-        deleteProjectDescription: "프로젝트와 채팅({count}개)이 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+        deleteChatDescription: "채팅과 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
+        deleteProjectDescription: "프로젝트와 채팅({count}개)이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleteFilesMany: "이 채팅들이 만든 파일과 샌드박스 폴더도 삭제합니다.",
         deleteProjectFilesLabel: "프로젝트 작업 폴더 삭제",
         deleteProjectFiles: "프로젝트 작업 폴더가 디스크에서 삭제됩니다.",
@@ -5121,14 +5152,14 @@ export const ko = {
     renameChat: "채팅 이름 바꾸기",
     chatName: "채팅 이름",
     deleteChat: "채팅 삭제",
-    deleteChatDescription: "{name}을(를) 삭제하시겠습니까? 메시지가 영구적으로 삭제됩니다.",
+    deleteChatDescription: '채팅 "{name}" 및 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
     importChats: "채팅 가져오기",
     importDestination: "{name}을(를) 가져올 위치를 선택하세요:",
     selectDestination: "대상 선택",
     recents: "최근 항목",
     import: "가져오기",
     deleteProject: "프로젝트 삭제",
-    deleteProjectDescription: "{name}을(를) 삭제하시겠습니까? 채팅이 영구적으로 삭제됩니다.",
+    deleteProjectDescription: '프로젝트 "{name}" 및 모든 채팅이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
     deleteProjectFiles: "프로젝트 작업 폴더가 디스크에서 제거됩니다.",
     deleteAll: "모두 삭제",
     projectFallback: "프로젝트",
@@ -5211,6 +5242,18 @@ export const ko = {
     flaggedIntro: "자동 검사기가 다음을 포함한 문제를 발견했습니다:",
     nothingFlagged:
       "자동 검사기가 우려되는 파일을 발견하지 않았지만, 한 번 더 확인하세요.",
+    unscannedTitle: "모델 파일을 스캔할 수 없습니다",
+    unscannedBody: "{model}에는 로드할 때 코드를 실행할 수 있는 pickle 가중치가 있고 사용할 수 있는 악성코드 스캔 결과가 없어 로드할 수 없습니다. {note}",
+    unscannedIntro: "스캔할 수 없는 파일:",
+    switchSourceNote: "설정에서 모델 소스를 Hugging Face로 전환하면 로드할 수 있습니다.",
+    reconnectNote: "스캔 결과를 읽을 수 있도록 Hugging Face에 연결한 후 다시 시도하세요.",
+    managedTitle: "이 계정에서는 사용자 지정 코드가 꺼져 있습니다",
+    managedNote: "관리형 계정에서는 꺼져 있습니다. 설치 소유자에게 활성화를 요청하세요.",
+    notFoundTitle: "{source}에서 찾을 수 없음",
+    notFoundBody: "{source}에서 {model}을(를) 찾을 수 없어 보안 검사를 실행하지 못했습니다. 이름을 확인하거나, 비공개 저장소라면 액세스 권한이 있는 토큰을 설정하세요.",
+    notOnModelScopeBody: "{model}은(는) ModelScope에서 사용할 수 없어 보안 검사를 실행하지 못했고 그곳에서 로드할 수도 없습니다. 설정에서 모델 소스를 Hugging Face로 전환하세요.",
+    checksFailedTitle: "보안 검사를 실행할 수 없습니다",
+    checksFailedBody: "{source}에서 {model}을(를) 읽지 못해 보안 검사를 완료할 수 없었으며 로드할 수 없습니다. 연결과 토큰을 확인한 후 다시 시도하세요. {note}",
     enableAndContinue: "사용 설정 후 계속",
   },
   tour: {
