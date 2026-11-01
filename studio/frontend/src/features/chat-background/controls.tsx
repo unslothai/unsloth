@@ -24,7 +24,8 @@ import { ChatBackground } from "./index";
 import {
 	DEFAULT_ADJUSTMENTS,
 	EFFECTS,
-	effectiveFade,
+	fadeKey,
+	visibilityKey,
 	LENS_MODES,
 	type LensMode,
 	MATERIALS,
@@ -221,7 +222,7 @@ export function ChatBackgroundControls() {
 	const { value, error, ready, busy } = useChatBackground();
 	const input = useRef<HTMLInputElement>(null);
 	const adjustments = value ?? DEFAULT_ADJUSTMENTS;
-	// Visibility is kept per mode, so the slider edits the one on screen.
+	// Under glass, visibility and fade are their own per-mode values, so the controls edit the ones on screen.
 	const { resolved } = useTheme();
 	const glass = useMaterialStore((s) => s.material !== "solid");
 	return (
@@ -409,7 +410,7 @@ export function ChatBackgroundControls() {
 					</SettingsRow>
 					{(
 						[
-							resolved === "dark" ? "darkVisibility" : "visibility",
+							visibilityKey(glass, resolved === "dark"),
 							"blur",
 							"zoom",
 						] as const
@@ -459,9 +460,9 @@ export function ChatBackgroundControls() {
 					<SettingsRow label={t("chatBackground.fade")} className="items-start">
 						<Switch
 							aria-label={t("chatBackground.fade")}
-							checked={effectiveFade(adjustments.fade, glass)}
+							checked={adjustments[fadeKey(glass)]}
 							disabled={!value || busy}
-							onCheckedChange={(fade) => patchBackground({ fade })}
+							onCheckedChange={(fade) => patchBackground({ [fadeKey(glass)]: fade })}
 						/>
 					</SettingsRow>
 					<SettingsRow

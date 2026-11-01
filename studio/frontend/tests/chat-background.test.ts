@@ -6,7 +6,9 @@ import {
 	DEFAULT_ADJUSTMENTS,
 	EFFECTS,
 	sanitizeAdjustments,
+	fadeKey,
 	normalizedSize,
+	visibilityKey,
 	validUpload,
 } from "../src/features/chat-background/model.ts";
 import {
@@ -34,7 +36,7 @@ test("background preferences repair malformed persisted data", () => {
     assert.equal(sanitizeAdjustments({ zoom: 500 }).zoom, 300);
     assert.equal(sanitizeAdjustments({ zoom: 0 }).zoom, 100);
     assert.equal(sanitizeAdjustments({ zoom: NaN }).zoom, 100);
-	assert.equal(sanitizeAdjustments({ fade: "false" as never }).fade, null);
+	assert.equal(sanitizeAdjustments({ fade: "false" as never }).fade, true);
 });
 test("uploads bound processing dimensions", () => {
 	assert.deepEqual(normalizedSize(6000, 4000), [2048, 1365]);
@@ -191,4 +193,14 @@ test("effect textures retain their established appearance", () => {
 			);
 		}
 	}
+});
+
+test("glass image defaults apply only while glass is on", () => {
+	// An image saved before glass keeps its own visibility and fade without glass, in both modes.
+	const saved = sanitizeAdjustments({ visibility: 100, fade: true });
+	for (const dark of [false, true]) assert.equal(saved[visibilityKey(false, dark)], 100);
+	assert.equal(saved[fadeKey(false)], true);
+	assert.equal(saved[visibilityKey(true, false)], 70);
+	assert.equal(saved[visibilityKey(true, true)], 40);
+	assert.equal(saved[fadeKey(true)], false);
 });
