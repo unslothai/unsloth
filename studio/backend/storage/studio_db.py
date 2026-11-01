@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
+from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple, Optional
 
 
 from core import chat_originals
@@ -4346,6 +4346,13 @@ def upsert_chat_message(
         conn.close()
 
 
+class ExternalImportMark(NamedTuple):
+    source: str
+    session_id: str
+    turns: int
+    revision: str = ""
+
+
 def sync_chat_messages(
     thread_id: str,
     messages: list[dict],
@@ -4353,6 +4360,7 @@ def sync_chat_messages(
     *,
     allow_research_update: bool = False,
     deleted_message_ids: Iterable[str] = (),
+    external_import_mark: Optional[ExternalImportMark] = None,
 ) -> list[dict]:
     conn = get_connection()
     try:
@@ -4510,6 +4518,8 @@ def sync_chat_messages(
                 max(int(m["createdAt"]) for m in reconciled_messages),
             )
         _mark_chat_attachment_inventory_clean(conn)
+        if external_import_mark is not None:
+            _record_external_import_mark(conn, external_import_mark)
         conn.commit()
         return list_chat_messages(thread_id)
     except (ChatMessageConflictError, ChatMessageProtectedError):
@@ -6072,6 +6082,21 @@ def get_external_import_mark(source: str, session_id: str) -> Optional[tuple[int
         conn.close()
 
 
+def _record_external_import_mark(conn: sqlite3.Connection, mark: ExternalImportMark) -> None:
+    conn.execute(
+        """
+        INSERT INTO external_import_sessions (source, session_id, turns_imported, revision)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(source, session_id) DO UPDATE SET
+            turns_imported = CASE WHEN excluded.revision = external_import_sessions.revision
+                THEN MAX(excluded.turns_imported, external_import_sessions.turns_imported)
+                ELSE excluded.turns_imported END,
+            revision = excluded.revision
+        """,
+        (mark.source, mark.session_id, int(mark.turns), mark.revision),
+    )
+
+
 def record_external_import_mark(
     source: str,
     session_id: str,
@@ -6080,18 +6105,7 @@ def record_external_import_mark(
 ) -> None:
     conn = get_connection()
     try:
-        conn.execute(
-            """
-            INSERT INTO external_import_sessions (source, session_id, turns_imported, revision)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(source, session_id) DO UPDATE SET
-                turns_imported = CASE WHEN excluded.revision = external_import_sessions.revision
-                    THEN MAX(excluded.turns_imported, external_import_sessions.turns_imported)
-                    ELSE excluded.turns_imported END,
-                revision = excluded.revision
-            """,
-            (source, session_id, int(turns), revision),
-        )
+        _record_external_import_mark(conn, ExternalImportMark(source, session_id, turns, revision))
         conn.commit()
     finally:
         conn.close()
