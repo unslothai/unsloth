@@ -1974,6 +1974,9 @@ export function useChatModelRuntime() {
           const previousMlxAnePrefill = rollbackConfig
             ? (rollbackConfig.mlxAnePrefill ?? false)
             : useChatRuntimeStore.getState().mlxAnePrefill;
+          const previousMlxFastVerify = rollbackConfig
+            ? (rollbackConfig.mlxFastVerify ?? false)
+            : useChatRuntimeStore.getState().mlxFastVerify;
           const previousMlxPleOffload = rollbackConfig
             ? (rollbackConfig.mlxPleOffload ?? null)
             : useChatRuntimeStore.getState().mlxPleOffload;
@@ -2068,6 +2071,9 @@ export function useChatModelRuntime() {
           let loadMlxAnePrefill = pendingLoadConfig
             ? (pendingLoadConfig.mlxAnePrefill ?? false)
             : stateBeforeUnload.mlxAnePrefill;
+          let loadMlxFastVerify = pendingLoadConfig
+            ? (pendingLoadConfig.mlxFastVerify ?? false)
+            : stateBeforeUnload.mlxFastVerify;
           let loadMlxPleOffload = pendingLoadConfig
             ? (pendingLoadConfig.mlxPleOffload ?? null)
             : stateBeforeUnload.mlxPleOffload;
@@ -2242,6 +2248,7 @@ export function useChatModelRuntime() {
               loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
               loadMlxInt8Prefill = pendingLoadConfig?.mlxInt8Prefill ?? false;
               loadMlxAnePrefill = pendingLoadConfig?.mlxAnePrefill ?? false;
+              loadMlxFastVerify = pendingLoadConfig?.mlxFastVerify ?? false;
               loadMlxPleOffload = pendingLoadConfig?.mlxPleOffload ?? null;
               loadMlxExpertOffload = pendingLoadConfig?.mlxExpertOffload ?? null;
               loadChatTemplateOverride =
@@ -2346,6 +2353,7 @@ export function useChatModelRuntime() {
               mlx_kv_quant: loadMlxKvQuant ?? null,
               mlx_int8_prefill: loadMlxInt8Prefill,
               mlx_ane_prefill: loadMlxAnePrefill,
+              mlx_fast_verify: loadMlxFastVerify,
               mlx_ple_offload: loadMlxPleOffload,
               mlx_expert_offload: loadMlxExpertOffload,
               speculative_type: loadSpeculativeType,
@@ -2929,6 +2937,7 @@ export function useChatModelRuntime() {
                   mlx_kv_quant: rollbackState.loadedMlxKvQuantRequested,
                   mlx_int8_prefill: rollbackState.loadedMlxInt8PrefillRequested,
                   mlx_ane_prefill: rollbackState.loadedMlxAnePrefillRequested,
+                  mlx_fast_verify: rollbackState.loadedMlxFastVerifyRequested,
                   mlx_ple_offload: rollbackState.loadedMlxPleOffloadRequested,
                   mlx_expert_offload: rollbackState.loadedMlxExpertOffloadRequested,
                   speculative_type:
@@ -3027,6 +3036,7 @@ export function useChatModelRuntime() {
                   mlxKvQuant: previousMlxKvQuant,
                   mlxInt8Prefill: previousMlxInt8Prefill,
                   mlxAnePrefill: previousMlxAnePrefill,
+                  mlxFastVerify: previousMlxFastVerify,
                   mlxPleOffload: previousMlxPleOffload,
                   mlxExpertOffload: previousMlxExpertOffload,
                   loadedChatTemplateOverride:

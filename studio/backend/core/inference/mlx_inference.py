@@ -1160,10 +1160,20 @@ _MLX_LEGACY_SCOPES = (
 )
 
 
+def _fast_verify_kwargs(fast_verify):
+    return {} if fast_verify is None else {"fast_verify": fast_verify}
+
+
 @contextmanager
-def _mlx_inference_scopes(model, call, int8_prefill):
+def _mlx_inference_scopes(
+    model,
+    call,
+    int8_prefill,
+    fast_verify = None,
+):
     """Hold the Zoo scopes Zoo picks for `call` (its call traits), so a new Zoo scope needs no Studio change.
-    A Zoo without the registry keeps the scopes Studio listed before it (none for the text batch)."""
+    A Zoo without the registry keeps the scopes Studio listed before it (none for the text batch).
+    `fast_verify` is the load's settled decision (None under a Zoo without it): a refusal here would drop every scope."""
     compose = _mlx_inference_patch("inference_scopes")
     with ExitStack() as scope:
         if compose is None and "batch" not in call:
@@ -1179,6 +1189,7 @@ def _mlx_inference_scopes(model, call, int8_prefill):
                         call,
                         int8_prefill = int8_prefill,
                         on_error = _mlx_scope_refused,
+                        **_fast_verify_kwargs(fast_verify),
                     )
                 )
             except Exception as error:
@@ -1188,14 +1199,18 @@ def _mlx_inference_scopes(model, call, int8_prefill):
         yield model
 
 
-def _mlx_warm_inference(model, int8_prefill):
+def _mlx_warm_inference(
+    model,
+    int8_prefill,
+    fast_verify = None,
+):
     """Zoo's warm-up generation, so the first request skips the scopes' kernel builds and first-use
     checks. A Zoo without it, or a failed warm-up, leaves them to the first request."""
     warm = _mlx_inference_patch("warm_inference")
     if warm is None:
         return
     try:
-        warm(model, int8_prefill = int8_prefill)
+        warm(model, int8_prefill = int8_prefill, **_fast_verify_kwargs(fast_verify))
     except Exception as error:
         if is_metal_queue_dead(error):
             raise
@@ -1280,6 +1295,60 @@ def _ane_prefill_status(requested, model):
     else:
         logger.info("MLX Neural Engine prefill not applied: %s", verdict.reason)
     return status
+
+
+def _fast_verify_zoo():
+    """unsloth_zoo's MLX inference module when it can run Fast Verify, else None."""
+    try:
+        zoo = importlib.import_module("unsloth_zoo.mlx.inference")
+        if "fast_verify" in inspect.signature(zoo.inference_scopes).parameters:
+            return zoo
+    except Exception:
+        pass
+    return None
+
+
+def _fast_verify_status(requested, model):
+    """Whether a load builds any drafter for Fast Verify: asked for, and the loaded model can use it here."""
+    status = {"requested": bool(requested), "active": False, "reason": ""}
+    if not requested:
+        return status
+    zoo = _fast_verify_zoo()
+    if zoo is None:
+        status["reason"] = "unsupported_zoo"
+        return status
+    try:
+        verdict = zoo.fast_verify_available(model)
+    except Exception as exc:
+        if is_metal_queue_dead(exc):
+            raise
+        logger.warning("MLX Fast Verify check failed: %s", exc)
+        status["reason"] = "probe_failed"
+        return status
+    status["reason"] = verdict.reason
+    status["active"] = verdict.available
+    if not verdict.available:
+        logger.info("MLX Fast Verify not applied: %s", verdict.reason)
+    return status
+
+
+def _settle_fast_verify(status, model, drafter):
+    """Pin the load's decision on `model` once its drafter is built, so every later Zoo call agrees,
+    including those that take no argument and would read UNSLOTH_MLX_FAST_VERIFY. Without a drafter
+    it is off: Zoo's scopes serve only speculative calls, so a plain decode has nothing to gain."""
+    zoo = _fast_verify_zoo()
+    if zoo is None:
+        return status
+    decided = status["active"] and drafter is not None
+    try:
+        zoo.pin_fast_verify(model, decided)
+    except ValueError:
+        # A drafter that failed after pinning its target holds it until reload, so generations must follow.
+        logger.warning("MLX Fast Verify stays on without a drafter: a failed build pinned it")
+        return status
+    if decided == status["active"]:
+        return status
+    return {**status, "active": False, "reason": "no_drafter"}
 
 
 _MLX_OFFLOAD_PARTS = (("ple", "PLE tables"), ("experts", "quantized routed experts"))
@@ -1555,6 +1624,19 @@ def mlx_ane_prefill_checkpoint_status(model_dir) -> tuple[bool, str]:
             while len(_ane_prefill_checkpoint_cache) > 32:
                 _ane_prefill_checkpoint_cache.pop(next(iter(_ane_prefill_checkpoint_cache)))
     return answer
+
+
+def mlx_fast_verify_checkpoint_status(model_dir) -> tuple[bool, str]:
+    """(available, reason) of Fast Verify for a downloaded MLX checkpoint, without loading it."""
+    zoo = _fast_verify_zoo()
+    if zoo is None:
+        return False, "unsupported_zoo"
+    try:
+        verdict = zoo.fast_verify_checkpoint_available(model_dir)
+    except Exception as exc:
+        logger.debug("MLX Fast Verify checkpoint check failed for %s: %s", model_dir, exc)
+        return False, "probe_failed"
+    return bool(verdict.available), verdict.reason
 
 
 def _vlm_generation_context():
@@ -5169,6 +5251,7 @@ class MLXInferenceBackend:
         self._kv_quant = _kv_quant_status(None, None, False)
         self._int8_prefill = _int8_prefill_status(False, None)
         self._ane_prefill = _ane_prefill_status(False, None)
+        self._fast_verify = _fast_verify_status(False, None)
         self._kv_cache_window = None
         self._kv_context_budget = None
         self._served_context = None
@@ -5256,6 +5339,7 @@ class MLXInferenceBackend:
             self._kv_cache_window,
             bool(self._int8_prefill.get("active")),
             bool(self._ane_prefill.get("active")),
+            bool(self._fast_verify.get("active")),
             self._prefill_step,
             self._resume_load_args,
         )
@@ -5599,7 +5683,13 @@ class MLXInferenceBackend:
         """Zoo's scopes for a generation of this load, under its Int8 Prefill decision. Nested in
         _prefill_decision_scopes, which stays outermost."""
         active = (getattr(self, "_int8_prefill", None) or {}).get("active", False)
-        return _mlx_inference_scopes(self._model, call, active)
+        return _mlx_inference_scopes(self._model, call, active, self._fast_verify_decision())
+
+    def _fast_verify_decision(self):
+        """This load's settled Fast Verify, or None under a Zoo that takes no such argument."""
+        if _fast_verify_zoo() is None:
+            return None
+        return (getattr(self, "_fast_verify", None) or {}).get("active", False)
 
     def _kv_quant_bits(self):
         return (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
@@ -5867,6 +5957,7 @@ class MLXInferenceBackend:
         chat_template_override = None,
         int8_prefill = False,
         ane_prefill = False,
+        fast_verify = False,
         speculative_type = None,
         spec_draft_n_max = None,
         spec_draft_model = None,
@@ -6155,6 +6246,7 @@ class MLXInferenceBackend:
                 if spec_mode == "auto" and not spec_draft_model
                 else mlx_speculative.RUNTIME_ERROR
             )
+        self._fast_verify = _fast_verify_status(fast_verify, self._model)
         if speculates:
             model_dir = _snapshot_dir(self._model, model_name)
             resolution = mlx_speculative.resolve_speculation(
@@ -6197,6 +6289,7 @@ class MLXInferenceBackend:
                 fits = _fits,
                 stretch = _stretch,
                 draft_n_max = _positive_int(spec_draft_n_max),
+                fast_verify = self._fast_verify_decision(),
             )
             logger.info(
                 "MLX speculative decoding: %s (mode %s, reason %s)",
@@ -6204,6 +6297,9 @@ class MLXInferenceBackend:
                 spec_mode,
                 spec_reason,
             )
+        self._fast_verify = _settle_fast_verify(
+            self._fast_verify, self._model, getattr(self._speculative_draft, "drafter", None)
+        )
         # TurboQuant's layout is not one the planner prices, and a refused one stays full width:
         # fit either at full width, which only ever under-promises.
         _requested_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits)
@@ -6355,6 +6451,9 @@ class MLXInferenceBackend:
             "mlx_ane_prefill": self._ane_prefill["active"],
             "mlx_ane_prefill_requested": self._ane_prefill["requested"],
             "mlx_ane_prefill_reason": self._ane_prefill["reason"],
+            "mlx_fast_verify": self._fast_verify["active"],
+            "mlx_fast_verify_requested": self._fast_verify["requested"],
+            "mlx_fast_verify_reason": self._fast_verify["reason"],
             "mlx_offload": _offload,
             "chat_template_override_requested": self._template_override["requested"],
             "chat_template_override_reason": self._template_override["reason"],
@@ -6373,7 +6472,9 @@ class MLXInferenceBackend:
         # Every rank of a distributed load must run each forward together.
         if not is_distributed:
             with mlx_rng_preserved(), self._prefill_decision_scopes():
-                _mlx_warm_inference(model, self._int8_prefill["active"])
+                _mlx_warm_inference(
+                    model, self._int8_prefill["active"], self._fast_verify_decision()
+                )
             if self._ane_prefill["active"]:
                 self._ane_prefill = _ane_prefill_status(True, model)
                 self.models[model_name].update(
@@ -6484,6 +6585,7 @@ class MLXInferenceBackend:
             except Exception as exc:
                 logger.warning("MLX Neural Engine prefill release failed: %s", exc)
             self._ane_prefill = _ane_prefill_status(False, None)
+        self._fast_verify = _fast_verify_status(False, None)
         if model_name in self.models:
             del self.models[model_name]
         self._speculative_draft = None
