@@ -349,6 +349,23 @@ def _is_mlx() -> bool:
     return hardware.DEVICE == hardware.DeviceType.MLX
 
 
+def _lm_decision_head(model_name: str, token: str | None) -> str:
+    # LFM3-VL and LFM3-Omni train on MLX as what LiquidAI ships them as; a d1 needs no head of its own.
+    if not _is_mlx():
+        return "clef"
+    try:
+        folder = Path(model_name).expanduser()
+        if folder.is_dir():
+            config = folder / "config.json"
+        else:
+            from huggingface_hub import hf_hub_download
+            config = hf_hub_download(model_name, "config.json", token = token)
+        model_type = json.loads(Path(config).read_text(encoding = "utf-8")).get("model_type")
+    except (OSError, ValueError, AttributeError):
+        return "clef"
+    return "d1" if model_type in ("lfm3_vl", "lfm3_omni") else "clef"
+
+
 def _peak_memory_gb() -> float | None:
     import torch
 
@@ -503,7 +520,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
 
     model_name = config["model_name"]
     subfolder = config.get("model_subfolder") or None
-    # "llm": a plain text or vision LLM that gets a fresh Clef joint schema head.
+    # "llm": a plain text or vision LLM that gets a fresh Clef joint schema head, or trains as a d1.
     llm = config.get("decision_layout") == "llm"
     clef = llm or config.get("decision_layout") == "clef"
     hf_token = _worker_hf_token(config)
@@ -519,11 +536,12 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         check_stop()
         status("Loading decision model...")
         if llm:
+            head = config.get("decision_head") or _lm_decision_head(model_name, hf_token)
             model, tokenizer = FastDecisionModel.from_pretrained(
                 model_name,
-                decision_head = "clef",
+                decision_head = head,
                 max_seq_length = config.get("max_seq_length") or None,
-                load_in_4bit = use_lora and bool(config.get("load_in_4bit")),
+                load_in_4bit = use_lora and bool(config.get("load_in_4bit")) and head != "d1",
                 full_finetuning = not use_lora,
                 token = hf_token or None,
                 use_gradient_checkpointing = gradient_checkpointing,
@@ -721,7 +739,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     model.decision_config["training"] = {
         "base": model_name,
         "subfolder": subfolder,
-        "decision_head": "clef (new)" if llm else None,
+        "decision_head": f"{head} (new)" if llm else None,
         "method": ("qlora" if clef and config.get("load_in_4bit") else "lora")
         if use_lora
         else "full",

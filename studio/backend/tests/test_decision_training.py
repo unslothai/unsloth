@@ -884,3 +884,27 @@ def test_held_out_decisions_count_every_clef_question():
     laya = [{"row": 0}, {"row": 1}]
     clef = [{"row": 0, "labels": [0, 1, 2]}, {"row": 1, "labels": [1]}]
     assert (_decision_count(laya), _decision_count(clef)) == (2, 4)
+
+
+@pytest.mark.parametrize(
+    "model_type, mlx, head",
+    [
+        ("lfm3_omni", True, "d1"),
+        ("lfm3_vl", True, "d1"),
+        ("lfm3", True, "clef"),
+        ("qwen3_5", True, "clef"),
+        ("lfm3_omni", False, "clef"),
+    ],
+)
+def test_lfm3_vision_and_omni_train_as_a_d1_on_mlx(tmp_path, monkeypatch, model_type, mlx, head):
+    from core.training import decision_trainer
+
+    monkeypatch.setattr(decision_trainer, "_is_mlx", lambda: mlx)
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}), encoding = "utf-8")
+    assert decision_trainer._lm_decision_head(str(tmp_path), None) == head
+
+
+def test_an_unreadable_language_model_keeps_the_clef_head(tmp_path, monkeypatch):
+    from core.training import decision_trainer
+    monkeypatch.setattr(decision_trainer, "_is_mlx", lambda: True)
+    assert decision_trainer._lm_decision_head(str(tmp_path), None) == "clef"
