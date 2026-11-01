@@ -127,6 +127,19 @@ test("refreshes picker inventory only when it was ready at mount", () => {
   assert.deepEqual([false, true].map(shouldRefreshPickerInventoryOnMount), [false, true]);
 });
 
+test("explicit tab preference overrides a stale inferred lock", () => {
+  assert.equal(
+    resolvePickerTab({
+      ...inferredBase,
+      hasDeviceItems: true,
+      hasExplicitTabPreference: true,
+      lockedInferredTab: "device",
+      selectedTab: "hub",
+    }),
+    "hub",
+  );
+});
+
 test("preserves explicit, locked, and offline tab decisions", () => {
   assert.equal(
     resolvePickerTab({
