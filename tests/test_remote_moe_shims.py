@@ -132,7 +132,8 @@ class DeepseekV3MoE(nn.Module):
     linecache.cache[filename] = (len(src), None, src.splitlines(True), filename)
     exec(compile(src, filename, "exec"), mod.__dict__)
     sys.modules[name] = mod
-    for cls in (mod.MoEGate, getattr(mod, "DeepseekV3MoE", None) or mod.SarvamMLAMoE, mod.MLP):
+    gate_cls = getattr(mod, "MoEGate", None) or mod.KimiMoEGate
+    for cls in (gate_cls, getattr(mod, "DeepseekV3MoE", None) or mod.SarvamMLAMoE, mod.MLP):
         cls.__module__ = name
     return mod
 
@@ -190,6 +191,34 @@ def test_training_forward_matches_eval_and_backpropagates():
     assert expert_grads and any(g.abs().sum() > 0 for g in expert_grads)
     assert block.shared_experts.down_proj.weight.grad is not None
     assert block.gate.training and block.training
+
+
+def test_a_gate_adding_its_bias_in_place_still_backpropagates():
+    """Kimi-Linear's gate (renamed KimiMoEGate) adds e_score_correction_bias in place to the sigmoid
+    output that the sigmoid's backward saved; training through the shim must not trip autograd's
+    version check."""
+    inplace = (
+        ("class MoEGate(nn.Module):", "class KimiMoEGate(nn.Module):"),
+        ("self.gate = MoEGate(config)", "self.gate = KimiMoEGate(config)"),
+        (
+            "scores_for_choice = scores.view(bsz * seq_len, -1) + self.e_score_correction_bias.unsqueeze(0)",
+            "scores_for_choice = scores.view(bsz * seq_len, -1)\n"
+            "        scores_for_choice += self.e_score_correction_bias.unsqueeze(0)",
+        ),
+    )
+    grads = []
+    for name, edits in (("tiny_kimi_c", ()), ("tiny_kimi_inplace", inplace)):
+        mod = _remote_module(f"transformers_modules.{name}.modeling_deepseek", edits)
+        torch.manual_seed(0)
+        block = mod.DeepseekV3MoE(mod.Cfg())
+        assert len(prepare_remote_moe_for_training(block, verbose = False)) == 2
+        block.train()
+        x = torch.randn(2, 5, 16, requires_grad = True)
+        block(x).float().pow(2).sum().backward()
+        grads.append((x.grad, block.gate.weight.grad))
+    # The bias is zero, so the in-place port routes and weighs exactly like the reference one.
+    for got, expected in zip(grads[1], grads[0]):
+        torch.testing.assert_close(got, expected)
 
 
 def test_shims_reach_a_module_behind_an_accelerate_hook():
@@ -597,7 +626,11 @@ def test_a_latent_moe_trains_through_its_own_projections():
     block.train()
     with pytest.raises((AssertionError, NotImplementedError)):
         block(x)
-    assert prepare_remote_moe_for_training(block, verbose = False) == ["KimiSparseMoeBlock"]
+    # The renamed gate is shimmed through its inference-only block (in-place-safe backward).
+    assert sorted(prepare_remote_moe_for_training(block, verbose = False)) == [
+        "KimiMoEGate",
+        "KimiSparseMoeBlock",
+    ]
     block.eval()
     with torch.no_grad():
         reference = block(x)
@@ -621,3 +654,383 @@ def test_a_latent_moe_trains_through_its_own_projections():
     block.eval()
     with torch.no_grad():
         assert torch.allclose(block(x), reference)
+
+
+_KIMI_INPLACE = (
+    ("class MoEGate(nn.Module):", "class KimiMoEGate(nn.Module):"),
+    ("self.gate = MoEGate(config)", "self.gate = KimiMoEGate(config)"),
+    (
+        "scores_for_choice = scores.view(bsz * seq_len, -1) + self.e_score_correction_bias.unsqueeze(0)",
+        "scores_for_choice = scores.view(bsz * seq_len, -1)\n"
+        "        scores_for_choice += self.e_score_correction_bias.unsqueeze(0)",
+    ),
+)
+# The same gate written out of place. The in-place add goes through a view, so Kimi's `scores`
+# (later gathered into the routing weights) carries the bias too: keep that.
+_KIMI_OUT_OF_PLACE = _KIMI_INPLACE[:2] + (
+    (
+        "scores_for_choice = scores.view(bsz * seq_len, -1) + self.e_score_correction_bias.unsqueeze(0)",
+        "scores = scores + self.e_score_correction_bias.unsqueeze(0)\n"
+        "        scores_for_choice = scores.view(bsz * seq_len, -1)",
+    ),
+    ("torch.float32", "torch.float64"),
+)
+
+
+def _kimi_gate_block(name, edits, scoring, dtype):
+    if scoring == "softmax":
+        edits = edits + (("scores = logits.sigmoid()", "scores = logits.softmax(dim=-1)"),)
+    mod = _remote_module(f"transformers_modules.{name}.modeling_deepseek", edits)
+    torch.manual_seed(0)
+    block = mod.DeepseekV3MoE(mod.Cfg())
+    with torch.no_grad():
+        block.gate.e_score_correction_bias.normal_(0, 0.3)  # nonzero: Kimi's real bias
+    assert sorted(prepare_remote_moe_for_training(block, verbose = False)) == [
+        "DeepseekV3MoE",
+        "KimiMoEGate",
+    ]
+    return block.to(dtype).train()
+
+
+def _checkpointed(block, x, mode):
+    from torch.utils.checkpoint import checkpoint
+
+    if mode == "none":
+        return block(x)
+    if mode == "reentrant":
+        return checkpoint(block, x, use_reentrant = True)
+    if mode == "non_reentrant":
+        return checkpoint(block, x, use_reentrant = False)
+    # How vision.py runs non-reentrant checkpointing under DDP: inside the zoo offload hooks.
+    from unsloth_zoo.gradient_checkpointing import non_reentrant_offload_hooks
+
+    with non_reentrant_offload_hooks():
+        return checkpoint(block, x, use_reentrant = False)
+
+
+@pytest.mark.parametrize("scoring", ["sigmoid", "softmax"])
+@pytest.mark.parametrize("mode", ["none", "reentrant", "non_reentrant", "non_reentrant_offload"])
+def test_an_in_place_kimi_gate_matches_an_out_of_place_oracle(mode, scoring):
+    """Kimi-Linear adds its (nonzero) score bias in place to the sigmoid / softmax output that op's
+    backward saved. Without a copy, plain and reentrant backward raise autograd's version error and
+    non-reentrant checkpointing silently differentiates the biased scores."""
+    if mode == "non_reentrant_offload":
+        pytest.importorskip("unsloth_zoo.gradient_checkpointing").non_reentrant_offload_hooks
+    x = torch.randn(3, 7, 16, dtype = torch.float64, generator = torch.Generator().manual_seed(1))
+    oracle = _kimi_gate_block(f"kimi_oop_{scoring}", _KIMI_OUT_OF_PLACE, scoring, torch.float64)
+    x_oracle = x.clone().requires_grad_()
+    expected = oracle(x_oracle)
+    expected.pow(2).sum().backward()
+
+    block = _kimi_gate_block(
+        f"kimi_inplace_{mode}_{scoring}", _KIMI_INPLACE, scoring, torch.float32
+    )
+    x_block = x.float().requires_grad_()
+    out = _checkpointed(block, x_block, mode)
+    out.pow(2).sum().backward()
+    torch.testing.assert_close(out.double(), expected, rtol = 1e-5, atol = 1e-6)
+    torch.testing.assert_close(x_block.grad.double(), x_oracle.grad, rtol = 1e-4, atol = 1e-6)
+    for (name, got), want in zip(block.named_parameters(), oracle.parameters()):
+        assert (got.grad is None) == (want.grad is None), name
+        if got.grad is not None:
+            torch.testing.assert_close(
+                got.grad.double(), want.grad, rtol = 1e-4, atol = 1e-6, msg = lambda m: f"{name}: {m}"
+            )
+
+
+def test_the_gate_leaves_its_saved_tensors_to_checkpointing():
+    """Inside non-reentrant checkpointing (Unsloth's DDP / context parallel default) every saved
+    tensor belongs to the checkpoint, which drops it until backward. saved_tensors_hooks pushed
+    inside the gate would win over the checkpoint's and keep the gate's saved tensors (its fp32
+    input copy, scores, weights) alive through the whole forward."""
+    import gc
+    import weakref
+
+    from torch.utils._python_dispatch import TorchDispatchMode
+    from torch.utils.checkpoint import checkpoint
+
+    class Created(TorchDispatchMode):
+        def __init__(self):
+            super().__init__()
+            self.refs = []
+
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = func(*args, **(kwargs or {}))
+            for t in out if isinstance(out, (tuple, list)) else (out,):
+                if isinstance(t, torch.Tensor):
+                    self.refs.append(weakref.ref(t))
+            return out
+
+    block = _kimi_gate_block("kimi_resident", _KIMI_INPLACE, "sigmoid", torch.float32)
+    x = torch.randn(2, 64, 16, requires_grad = True)
+    with Created() as created:
+        out = checkpoint(block, x, use_reentrant = False)
+    gc.collect()
+    keep = {t.untyped_storage().data_ptr() for t in (out, x, *block.parameters())}
+    resident = {
+        t.untyped_storage().data_ptr(): t.untyped_storage().nbytes()
+        for t in (r() for r in created.refs)
+        if t is not None and t.untyped_storage().data_ptr() not in keep
+    }
+    assert sum(resident.values()) == 0, resident
+    out.pow(2).sum().backward()
+    assert x.grad is not None and block.gate.weight.grad is not None
+
+
+def test_a_non_remote_gate_is_not_patched():
+    mod = _remote_module("transformers_modules.kimi_local_gate.modeling_deepseek", _KIMI_INPLACE)
+    mod.KimiMoEGate.__module__ = "my_project.modeling"  # a local class an inference-only port uses
+    original = mod.KimiMoEGate.forward
+    block = mod.DeepseekV3MoE(mod.Cfg())
+    assert prepare_remote_moe_for_training(block, verbose = False) == ["DeepseekV3MoE"]
+    assert mod.KimiMoEGate.forward is original
+    assert prepare_remote_moe_for_training(block, verbose = False) == []
+
+
+def _moe_ddp_entry(rank, world, init_file, fn, args):
+    import datetime
+
+    import torch.distributed as dist
+
+    torch.set_num_threads(1)
+    dist.init_process_group(
+        "gloo",
+        init_method = f"file://{init_file}",
+        rank = rank,
+        world_size = world,
+        timeout = datetime.timedelta(seconds = 60),
+    )
+    try:
+        fn(rank, world, *args)
+    finally:
+        dist.destroy_process_group()
+
+
+def _moe_spawn(fn, world, *args):
+    import torch.multiprocessing as mp
+    if "fork" not in mp.get_all_start_methods():
+        pytest.skip("needs the fork start method")
+    with tempfile.TemporaryDirectory() as d:
+        mp.start_processes(
+            _moe_ddp_entry,
+            args = (world, os.path.join(d, "init"), fn, args),
+            nprocs = world,
+            join = True,
+            start_method = "fork",
+        )
+
+
+def _routed_tokens(experts, seed):
+    # The gate below scores expert e by feature e, so these tokens pick exactly `experts`.
+    x = 0.1 * torch.randn(1, 6, 16, generator = torch.Generator().manual_seed(seed))
+    for boost, expert in zip((5.0, 4.0), experts):
+        x[..., expert] += boost
+    return x
+
+
+def _complementary_block(lora):
+    mod = _remote_module("transformers_modules.kimi_ddp.modeling_deepseek", _KIMI_INPLACE)
+    torch.manual_seed(0)
+    block = mod.DeepseekV3MoE(mod.Cfg())
+    with torch.no_grad():
+        block.gate.weight.copy_(torch.eye(8, 16))
+    prepare_remote_moe_for_training(block, verbose = False)
+    if lora:
+        from peft import LoraConfig, inject_adapter_in_model
+
+        config = LoraConfig(r = 2, target_modules = r".*experts\.\d+\.(gate_proj|up_proj|down_proj)")
+        block = inject_adapter_in_model(config, block)
+        for name, param in block.named_parameters():
+            param.requires_grad_("lora_" in name)
+            if "lora_B" in name:
+                with torch.no_grad():
+                    param.normal_(0, 0.1)
+    return block.train()
+
+
+# Per step, the experts each rank routes to: disjoint across ranks and changing every step, so
+# with the shard-local routing of context parallelism each rank leaves experts its peer trains.
+_ROUTES = (((0, 1), (2, 3)), ((2, 3), (4, 5)), ((6, 7), (0, 1)))
+
+
+def _moe_ddp_worker(rank, world, cp_active, lora):
+    import copy
+
+    import torch.distributed as dist
+    from torch.nn.parallel import DistributedDataParallel
+
+    from unsloth import context_parallel as cp
+
+    block = _complementary_block(lora)
+    reference = copy.deepcopy(block)
+    model = DistributedDataParallel(block, find_unused_parameters = False)
+    params = [p for p in block.parameters() if p.requires_grad]
+    optimizer = torch.optim.SGD(params, lr = 0.1)
+    ref_optimizer = torch.optim.SGD([p for p in reference.parameters() if p.requires_grad], lr = 0.1)
+    cp._ACTIVE_MANAGER = object() if cp_active else None
+    try:
+        for step, routes in enumerate(_ROUTES):
+            optimizer.zero_grad(set_to_none = True)
+            model(_routed_tokens(routes[rank], step * 10 + rank)).pow(2).sum().backward()
+            # DDP averages over ranks: the reference sees both ranks' tokens at half weight.
+            ref_optimizer.zero_grad(set_to_none = True)
+            for peer in range(world):
+                loss = reference(_routed_tokens(routes[peer], step * 10 + peer)).pow(2).sum()
+                (loss / world).backward()
+            used = {e for pair in routes for e in pair}
+            for (name, got), want in zip(block.named_parameters(), reference.parameters()):
+                if not got.requires_grad:
+                    continue
+                expert = int(name.split(".")[1]) if name.startswith("experts.") else None
+                assert got.grad is not None, name  # a zero gradient, never None, for DDP
+                if want.grad is None:
+                    assert expert is not None and expert not in used, name
+                    assert not got.grad.any(), name
+                else:
+                    torch.testing.assert_close(got.grad, want.grad, msg = lambda m: f"{name}: {m}")
+            optimizer.step()
+            ref_optimizer.step()
+        for (name, got), want in zip(block.named_parameters(), reference.parameters()):
+            torch.testing.assert_close(got, want, msg = lambda m: f"{name} after 3 steps: {m}")
+    finally:
+        cp._ACTIVE_MANAGER = None
+
+
+@pytest.mark.parametrize("lora", [False, True], ids = ["full", "lora_experts"])
+def test_context_parallel_ranks_routing_disjoint_experts_train_under_ddp(lora):
+    """Under context parallelism each rank routes its own sequence shard, so an expert idle on one
+    rank trains on its peer. DDP with find_unused_parameters = False needs a gradient from every
+    rank: idle experts run on no tokens for a zero gradient, over several steps of shifting routes."""
+    _moe_spawn(_moe_ddp_worker, 2, True, lora)
+
+
+def test_without_context_parallelism_idle_experts_stall_ddp():
+    # Negative control: the CP-off dispatch leaves idle experts' gradients None, so DDP without
+    # find_unused_parameters never reduces that bucket (local gradients) and refuses the next step.
+    with pytest.raises(Exception, match = "not close|finished reduction|did not receive grad"):
+        _moe_spawn(_moe_ddp_worker, 2, False, False)
+
+
+# Per optimizer step, two gradient accumulation micro-batches, the experts each rank routes to.
+# Step 0: 6 and 7 idle everywhere; 4 and 5 used in the second micro-batch only. Step 1: 2 to 5
+# idle everywhere after training at step 0 (AdamW momentum and weight decay would move them).
+# Step 2: 4 to 7 idle everywhere.
+_GA_ROUTES = (
+    (((0, 1), (2, 3)), ((0, 1), (4, 5))),
+    (((6, 7), (0, 1)), ((0, 1), (6, 7))),
+    (((2, 3), (2, 3)), ((0, 1), (2, 3))),
+)
+
+
+def _moe_adamw_worker(rank, world, lora, hook):
+    import copy
+
+    from torch.nn.parallel import DistributedDataParallel
+
+    from unsloth import context_parallel as cp
+
+    block = _complementary_block(lora)
+    reference = copy.deepcopy(block)
+    model = DistributedDataParallel(block, find_unused_parameters = False)
+    adamw = dict(lr = 1e-2, weight_decay = 0.1)
+    optimizer = torch.optim.AdamW([p for p in block.parameters() if p.requires_grad], **adamw)
+    ref_optimizer = torch.optim.AdamW(
+        [p for p in reference.parameters() if p.requires_grad], **adamw
+    )
+    if hook:
+        assert cp.install_idle_expert_grad_hook(optimizer, model)
+        assert cp.install_idle_expert_grad_hook(optimizer, model)  # once per optimizer
+        assert len(optimizer._optimizer_step_pre_hooks) == 1
+    cp._ACTIVE_MANAGER = object()
+    try:
+        for step, micro_routes in enumerate(_GA_ROUTES):
+            optimizer.zero_grad(set_to_none = True)
+            ref_optimizer.zero_grad(set_to_none = True)
+            for micro, routes in enumerate(micro_routes):
+                seed = step * 100 + micro * 10
+                loss = model(_routed_tokens(routes[rank], seed + rank)).pow(2).sum()
+                (loss / len(micro_routes)).backward()
+                cp._ACTIVE_MANAGER = None  # the single-process reference
+                for peer in range(world):
+                    loss = reference(_routed_tokens(routes[peer], seed + peer)).pow(2).sum()
+                    (loss / (world * len(micro_routes))).backward()
+                cp._ACTIVE_MANAGER = object()
+            used = {e for routes in micro_routes for pair in routes for e in pair}
+            before = {n: p.detach().clone() for n, p in block.named_parameters()}
+            optimizer.step()
+            ref_optimizer.step()
+            for (name, got), want in zip(block.named_parameters(), reference.parameters()):
+                if not got.requires_grad:
+                    continue
+                expert = int(name.split(".")[1]) if name.startswith("experts.") else None
+                if hook and expert is not None:
+                    assert (got.grad is None) == (expert not in used), (step, name)
+                if expert is not None and expert not in used:
+                    assert torch.equal(got, before[name]), f"idle {name} moved at step {step}"
+                torch.testing.assert_close(got, want, msg = lambda m: f"{name} step {step}: {m}")
+    finally:
+        cp._ACTIVE_MANAGER = None
+
+
+@pytest.mark.parametrize("lora", [False, True], ids = ["full", "lora_experts"])
+def test_context_parallel_idle_experts_follow_single_process_adamw(lora):
+    """An expert no rank routes to runs on no tokens under CP, so DDP hands it a zero gradient.
+    The optimizer step pre-hook must turn that back into None so AdamW (weight decay, moments,
+    step count) treats it like the single-process run, over gradient accumulation micro-batches
+    where an expert used in only one micro-batch keeps its gradient."""
+    _moe_spawn(_moe_adamw_worker, 2, lora, True)
+
+
+def test_without_the_hook_idle_experts_move_under_adamw():
+    # Negative control: the zero gradients alone decay idle experts and advance their moments.
+    with pytest.raises(Exception, match = "moved at step|not close"):
+        _moe_spawn(_moe_adamw_worker, 2, False, False)
+
+
+def test_idle_expert_hook_is_inert_without_every_expert_blocks_and_when_all_are_routed():
+    from unsloth import context_parallel as cp
+
+    optimizer = torch.optim.AdamW(nn.Linear(2, 2).parameters())
+    assert not cp.install_idle_expert_grad_hook(optimizer, nn.Linear(2, 2))
+    assert not optimizer._optimizer_step_pre_hooks
+    block = _complementary_block(False)
+    cp._ACTIVE_MANAGER = object()
+    try:
+        x = torch.cat([_routed_tokens((e, (e + 1) % 8), e) for e in range(0, 8, 2)], dim = 1)
+        block(x).pow(2).sum().backward()
+        with torch.no_grad():  # a graph-free forward does not count
+            block(_routed_tokens((0, 1), 0))
+    finally:
+        cp._ACTIVE_MANAGER = None
+    assert block._unsloth_cp_expert_tokens.gt(0).all()
+    grads = {n: p.grad.clone() for n, p in block.named_parameters() if p.grad is not None}
+    assert cp.drop_idle_expert_grads([block]) == 0
+    assert "_unsloth_cp_expert_tokens" not in block.__dict__
+    for n, p in block.named_parameters():
+        if n in grads:
+            assert torch.equal(p.grad, grads[n]), n
+    # No counts recorded (CP off): every expert counts as idle, but CP never installs the hook.
+    block(_routed_tokens((0, 1), 0)).pow(2).sum().backward()
+    assert "_unsloth_cp_expert_tokens" not in block.__dict__
+
+
+def test_an_expert_parallel_block_is_not_counted_as_running_every_expert():
+    """ep_size > 1 keeps the remote forward (its own expert all-to-all), not the zero-token
+    dispatch, so the context parallel MoE refusal must still apply to it."""
+    from unsloth import context_parallel as cp
+
+    mod = _remote_module("transformers_modules.kimi_ep.modeling_deepseek", _KIMI_INPLACE)
+    block = mod.DeepseekV3MoE(mod.Cfg())
+    prepare_remote_moe_for_training(block, verbose = False)
+    assert cp._runs_every_expert(block)
+    block.ep_size = 2
+    assert not cp._runs_every_expert(block)
+    block.train()
+    with pytest.raises(Exception):  # the port has no training path of its own
+        block(torch.randn(1, 3, 16))
