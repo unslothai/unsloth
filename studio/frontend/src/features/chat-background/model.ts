@@ -96,7 +96,7 @@ export const DEFAULT_ADJUSTMENTS = {
 	sizing: "cover" as ImageSizing,
 	zoom: 100,
 	position: "50% 50%",
-	// Used only while glass is on, so turning glass on never changes how the image looked without it.
+	// Glass-only, so toggling glass never changes the non-glass look.
 	glassLightVisibility: 70,
 	glassDarkVisibility: 40,
 	glassFade: false,

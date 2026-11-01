@@ -6724,7 +6724,7 @@ html.dark[data-glass][data-chat-wallpaper-workspace-ready] {
   --glass-line: rgb(255 255 255 / .13);
   --glass-line-strong: rgb(255 255 255 / .17);
 }
-/* Light panes keep only their 1px glass border: an inset line beside it doubles the edge. Mid-grey ink takes a darker step on glass. */
+/* An inset line beside the 1px border would double the edge. */
 html:not(.dark):not([data-glass^="liquid"])[data-glass][data-chat-wallpaper-workspace-ready] :is([data-slot="sidebar-inner"], [data-slot="chat-settings-panel"]) {
   box-shadow: none;
 }
@@ -7000,7 +7000,6 @@ html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] :is([
   background: var(--glass-hover) !important;
   box-shadow: var(--glass-hover-rim);
 }
-/* Light glass controls are frosted white, not grey: tracks, filled buttons and dropdowns alike, with no outline. */
 html[data-glass]:not(.dark) {
   --glass-control: rgb(255 255 255 / .3);
   --glass-control-hover: rgb(255 255 255 / .45);
