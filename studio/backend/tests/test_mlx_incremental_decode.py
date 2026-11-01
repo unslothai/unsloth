@@ -331,3 +331,17 @@ def test_a_row_stream_snapshots_equal_a_full_redecode():
     for count in range(1, len(ids) + 1):
         expected = tokenizer.decode(ids[:count], skip_special_tokens = True).rstrip("\ufffd")
         assert row.feed(token = ids[count - 1]) == [expected]
+
+
+def test_a_cached_profile_does_not_keep_its_tokenizer_alive():
+    import gc
+    import weakref
+
+    tokenizer = _byte_level()
+    profile = split_profile(tokenizer)
+    assert profile is not None
+    profile.splits(5, 6, True)
+    ref = weakref.ref(tokenizer)
+    del tokenizer, profile
+    gc.collect()
+    assert ref() is None

@@ -66,7 +66,8 @@ def _fast_tokenizer(tokenizer):
 
 class _SplitProfile:
     def __init__(self, tokenizer, added_ids, size):
-        self._tokenizer = tokenizer
+        # A strong ref would keep this _PROFILES key alive; IncrementalDecode holds the tokenizer.
+        self._tokenizer = weakref.proxy(tokenizer)
         self._added = added_ids
         self.size = size
         self._whole = {}
