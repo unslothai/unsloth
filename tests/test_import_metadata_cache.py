@@ -1,18 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """`import unsloth` scans the installed distributions once, not once per library that asks."""
 
 import ast
@@ -191,7 +178,6 @@ def test_uninstall_leaves_a_later_wrapper_in_place(cache_module, counted):
     metadata.packages_distributions = outer
     cache_module.uninstall(token)
     assert metadata.packages_distributions is outer
-    # Still reachable, but the window is over: every call is the real scan, nothing memoised.
     metadata.packages_distributions()
     metadata.packages_distributions()
     assert len(counted) == 2
@@ -265,7 +251,6 @@ def test_inner_failure_inside_an_outer_window(cache_module, counted, monkeypatch
 
 
 def test_nested_scopes_share_the_outer_scan(cache_module, counted):
-    # Studio's worker installs its copy before transformers; unsloth/__init__.py installs another.
     outer = cache_module.install()
     metadata.packages_distributions()  # transformers
     inner_module = _load("_unsloth_import_metadata_cache_inner")

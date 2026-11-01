@@ -126,7 +126,6 @@ def test_installed_before_any_ml_import_and_removed_after_unsloth():
         hits = [i for i, l in enumerate(body) if helper in l]
         assert all(i > install for i in hits), helper
 
-    # Uninstalled in the finally of the try that imports unsloth through core.training.trainer.
     tries = [n for n in ast.walk(func) if isinstance(n, ast.Try)]
     owner = [
         t
