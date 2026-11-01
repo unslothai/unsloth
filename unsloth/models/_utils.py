@@ -6603,6 +6603,14 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
             compute_loss_func = bound.arguments.get("compute_loss_func", compute_loss_func)
         except (TypeError, ValueError):
             pass
+    if layout.tp > 1 and _prebuilt_optimizer(trainer, init, args, kwargs) is not None:
+        # The tensor parallel split happens in Trainer.__init__ under a pipeline launch and replaces the
+        # trainable parameters: an optimizer built before it would step the old ones (training does nothing).
+        raise NotImplementedError(
+            f"Unsloth: {layout.env_vars} (pipeline x tensor parallel): Trainer(optimizers = (optimizer, ...)) holds "
+            "parameters the tensor parallel split replaces, so it would never update the model. Let the Trainer "
+            "build the optimizer (TrainingArguments optim / learning_rate), or override create_optimizer."
+        )
     from .pp_env import pp_trainer_refusals
 
     pp_trainer_refusals(type(trainer), training_args, layout, compute_loss_func = compute_loss_func)

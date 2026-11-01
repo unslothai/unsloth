@@ -197,6 +197,26 @@ def _case_units(rank, world, tmp):
     tp_env._LAYOUT = tp_env.TPEnvLayout(1, 1, 2, False, 2)
     tp_env._LAYOUT._mesh = object()  # the refusal comes from the model, not the mesh
     out["moe"] = _raised(lambda: moe("m", load_in_4bit = False))
+    # Failing before: under pp x tp the tensor split in Trainer.__init__ replaced the parameters a prebuilt
+    # optimizer held, so training stepped the old ones (no update, no error).
+    from unsloth.models import _utils as unsloth_utils
+
+    tp_env._LAYOUT = tp_env.TPEnvLayout(2, 1, 4, False, 2)
+    trainer_like = object.__new__(transformers.Trainer)
+    prebuilt = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr = 0.1)
+    out["prebuilt_optimizer"] = _raised(
+        lambda: unsloth_utils._pipeline_parallel_env_refusals(
+            trainer_like,
+            transformers.Trainer.__init__,
+            (),
+            {"args": args, "optimizers": (prebuilt, None)},
+        )
+    )
+    out["no_prebuilt_optimizer"] = _raised(
+        lambda: unsloth_utils._pipeline_parallel_env_refusals(
+            trainer_like, transformers.Trainer.__init__, (), {"args": args}
+        )
+    )
     # Hidden states sent between stages: float32 for a model Unsloth trains in float32 (Gemma 3 on a T4).
     import types
 
@@ -705,6 +725,8 @@ def test_pp_env_layout_and_refusals():
     assert "load_best_model_at_end" in (res["best"] or ""), res["best"]
     assert "label_smoothing_factor" in (res["smoothing"] or ""), res["smoothing"]
     assert "compute_loss_func" in (res["loss_func"] or ""), res["loss_func"]
+    assert "optimizers = (optimizer" in (res["prebuilt_optimizer"] or ""), res["prebuilt_optimizer"]
+    assert res["no_prebuilt_optimizer"] is None, res["no_prebuilt_optimizer"]
     if res["sft"] != "no trl":
         assert res["sft"] is None, res["sft"]
         assert "packing" in (res["packing"] or ""), res["packing"]
