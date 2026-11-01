@@ -344,6 +344,8 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/export",
   // Must stay reachable on chat-only hosts: the overlay "Expand" and Settings API card link here.
   "/api-monitor",
+  // Inference only: a sweep reloads the chat model, which chat-only hosts run like any other.
+  "/benchmarks",
 ]);
 
 // Paths that render their own "still checking" state and self-gate once the verdict lands.
