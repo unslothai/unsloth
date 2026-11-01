@@ -32,7 +32,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Delete02Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
+import { MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -234,7 +235,7 @@ export function ArchivedChatsView() {
           disabled={busy || filtered.length === 0}
           onClick={() => requestDelete(filtered, true)}
         >
-          <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-4" />
+          <HugeiconsIcon icon={TrashIcon} className="mr-1.5 size-4" />
           {narrowed
             ? t("settings.data.library.deleteResults")
             : t("settings.data.deleteAllAction")}
@@ -282,7 +283,7 @@ export function ArchivedChatsView() {
                     variant="destructive"
                     onSelect={() => requestDelete(groupItems, true)}
                   >
-                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                    <HugeiconsIcon icon={TrashIcon} className="size-4" />
                     {group.id
                       ? t("settings.data.library.deleteAllInProject")
                       : t("settings.data.deleteAllAction")}
@@ -312,7 +313,7 @@ export function ArchivedChatsView() {
                     title={t("shell.dialog.deleteChat.title")}
                     className="text-muted-foreground hover:text-destructive"
                   >
-                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                    <HugeiconsIcon icon={TrashIcon} className="size-4" />
                   </Button>
                   <Button
                     variant="ghost"

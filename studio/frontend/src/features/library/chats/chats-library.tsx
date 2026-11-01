@@ -54,7 +54,7 @@ import {
   useFileProjectInSection,
 } from "@/features/chat";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
-import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -62,7 +62,6 @@ import {
   Archive03Icon,
   ArchiveRestoreIcon,
   Cancel01Icon,
-  Delete02Icon,
   LayerIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -1541,7 +1540,7 @@ export function ChatsLibrary({
                   "bg-destructive/10 text-destructive transition-colors hover:bg-destructive/15",
                 )}
               >
-                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+                <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
                 {t("common.delete")}
               </button>
               <DropdownMenu>

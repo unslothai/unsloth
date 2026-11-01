@@ -4,7 +4,6 @@
 import {
   Archive03Icon,
   ArchiveRestoreIcon,
-  Delete02Icon,
   Download01Icon,
   MoreVerticalIcon,
   PinIcon,
@@ -23,7 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useT } from "@/i18n";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { type MediaNoun, useProjectSubmenu } from "./project-submenu";
 
@@ -145,7 +144,7 @@ export function GalleryItemMenu({
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onClick={onDelete}>
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
           Delete
         </DropdownMenuItem>
       </DropdownMenuContent>

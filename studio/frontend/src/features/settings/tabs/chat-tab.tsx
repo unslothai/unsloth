@@ -30,14 +30,13 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Bookmark02Icon,
   Download01Icon,
   LibrariesIcon,
   McpServerIcon,
   Scroll01Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
-import { FileSearchIcon } from "@/lib/hugeicons-derived";
+import { BookmarkIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
@@ -138,7 +137,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "settings.chat.menu.savedPrompts",
     icon: (
       <HugeiconsIcon
-        icon={Bookmark02Icon}
+        icon={BookmarkIcon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />

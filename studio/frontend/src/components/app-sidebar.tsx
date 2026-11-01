@@ -114,7 +114,6 @@ import {
   CursorInfo02Icon,
   DashboardCircleIcon,
   DashboardSquareEditIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   FlimSlateIcon,
@@ -146,14 +145,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
-import {
-  AiSpeechIcon,
-  ChipIcon,
-  MessageCircleIcon,
-  Settings01Icon,
-  TestTubeOutlineIcon,
-  withNoticeDot,
-} from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, ChipIcon, MessageCircleIcon, Settings01Icon, TestTubeOutlineIcon, TrashIcon, withNoticeDot } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -5115,7 +5107,7 @@ export function AppSidebar() {
           variant="destructive"
           onSelect={() => deleteSelectedProjects()}
         >
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.selection.deleteProjects")}</span>
         </ContextMenuItem>
       </ContextMenuContent>
@@ -5169,7 +5161,7 @@ export function AppSidebar() {
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onSelect={() => deleteSelected()}>
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
           <span>{t("shell.selection.deleteChats")}</span>
         </ContextMenuItem>
       </ContextMenuContent>
@@ -5305,7 +5297,7 @@ export function AppSidebar() {
                     })
               }
             >
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
               <span>Delete</span>
             </P.Item>
       </>
@@ -5669,7 +5661,7 @@ export function AppSidebar() {
               openDeleteDialog({ kind: "project", project });
             }}
           >
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
             <span>Delete project</span>
           </P.Item>
       </>
@@ -6579,7 +6571,7 @@ export function AppSidebar() {
                               openDeleteDialog({ kind: "run", run })
                             }
                           >
-                            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
                             <span>{t("common.delete")}</span>
                           </DropdownMenuItem>
                         </NonModalDropdownMenu>

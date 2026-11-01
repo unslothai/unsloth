@@ -35,13 +35,12 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
-import { MessageCircleIcon, Settings01Icon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, Settings01Icon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   Archive03Icon,
   ArchiveRestoreIcon,
   Cancel01Icon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   LayerIcon,
@@ -547,7 +546,7 @@ function ChatMenu({
             />
           )}
           <MenuItem
-            icon={Delete02Icon}
+            icon={TrashIcon}
             label={t("common.delete")}
             destructive
             onSelect={() => actions.remove([chat])}
@@ -1390,7 +1389,7 @@ function ProjectMenu({
           />
           <DropdownMenuSeparator className="mx-3" />
           <MenuItem
-            icon={Delete02Icon}
+            icon={TrashIcon}
             label={t("library.chats.menu.deleteProject")}
             destructive
             onSelect={() => actions.deleteProject(project)}
@@ -1618,7 +1617,7 @@ export function SectionMenuItems({
       />
       <DropdownMenuSeparator className="mx-3" />
       <MenuItem
-        icon={Delete02Icon}
+        icon={TrashIcon}
         label={t("shell.sections.remove")}
         destructive
         onSelect={() => actions.removeSection(section)}
