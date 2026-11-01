@@ -61,7 +61,6 @@ function ThemeChip({
   );
 }
 
-/** A clear chip for glass, which lays over whichever colour theme is chosen. */
 function GlassChip() {
   return (
     <span
@@ -71,7 +70,6 @@ function GlassChip() {
   );
 }
 
-/** Glass sits beside the colour themes: it applies on top of any of them. */
 function GlassThemeSub() {
   const t = useT();
   const material = useMaterialStore((s) => s.material);

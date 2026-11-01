@@ -5,11 +5,7 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { ROOT_READY, ROOT_WORKSPACE_READY, markRoot } from "./background";
 import { ComposerGlassLenses } from "./lens";
 
-/**
- * Glass without a background image: a soft built-in backdrop in the wallpaper's place, so every glass
- * surface (and the lens) has colour behind it. It is a ready .chat-wallpaper, so the glass rules apply
- * exactly as they do over an image.
- */
+/** A ready .chat-wallpaper, so the glass rules apply exactly as over an image. */
 const BACKDROP_SAFE = "0.55";
 
 export function GlassBackdrop() {
@@ -19,7 +15,6 @@ export function GlassBackdrop() {
 		const parent = host.current?.parentElement;
 		if (!parent?.hasAttribute("data-wallpaper-workspace")) return;
 		setAppWallpaper(host.current);
-		// Soft and low in contrast, so reading surfaces can let more of it through than of an image.
 		parent.style.setProperty("--wallpaper-safe", BACKDROP_SAFE);
 		const unmark = markRoot([ROOT_READY, ROOT_WORKSPACE_READY]);
 		return () => {

@@ -25,7 +25,6 @@ test("every glass material has its stylesheet tokens", () => {
 			material,
 		);
 	}
-	// The page only clears its fills once the shell has put the system material under it.
 	assert.match(css, /html\[data-glass="macos"\],\nhtml\[data-glass="macos"\] body \{\n  background: transparent;/);
 });
 
@@ -107,7 +106,6 @@ test("glass lens modes repair malformed data and scale the right way", () => {
 	assert.equal(LENS_SCALE.off, 1);
 	assert.ok(LENS_SCALE.magnify > 1 && LENS_SCALE.shrink < 1);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	// The copy sits behind the composer's content, inside its stacking context.
 	assert.match(css, /\.glass-lens \{\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
 	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
 });
@@ -122,10 +120,8 @@ test("glass panes thicken over images that would wash out their text", async () 
 	const { glassReadability, toneOf } = await import("../src/features/chat-background/model.ts");
 	const light = toneOf(Array.from({ length: 100 }, (_, i) => 0.6 + i * 0.003));
 	const dark = toneOf(Array.from({ length: 100 }, () => 0.02));
-	// Dark mode: light text over a light image needs a nearly opaque pane; a dark image needs none.
 	assert.ok(glassReadability(light, true).floor > 0.75);
 	assert.equal(glassReadability(dark, true).floor, 0);
-	// Light mode: dark text over a dark image needs a lighter pane; a light image shades it instead.
 	assert.ok(glassReadability(dark, false).floor > 0.5);
 	assert.equal(glassReadability(light, false).floor, 0);
 	assert.ok(glassReadability(light, false).shade > 0);
@@ -145,7 +141,6 @@ test("resetting local preferences also resets the glass theme", () => {
 
 test("the lens refreshes its tint when the composer's fill changes", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
-	// Glass strength or style change the fill without resizing anything; the cache key must see it.
 	assert.match(lens, /opacity,\n\s*fill\.backgroundColor,\n\s*fill\.backgroundImage,\n\s*\]\.join\(\)/);
 });
 

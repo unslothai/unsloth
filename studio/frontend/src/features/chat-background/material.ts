@@ -57,13 +57,9 @@ const sanitizeStyle = (value: unknown): GlassStyle | null => {
 };
 
 export const useMaterialStore = create<{
-  /** What applies now: "solid" while the Glass switch is off. */
   material: WindowMaterial;
-  /** The style the Glass switch turns back on. */
   style: GlassStyle;
-  /** The desktop shell refused the native material (an older Unsloth Desktop). */
   nativeFailed: boolean;
-  /** Dropdowns, menus and pickers take the glass too. */
   menus: boolean;
   strength: number;
   lens: LensMode;
@@ -141,14 +137,12 @@ async function setNativeVibrancy(enabled: boolean): Promise<boolean> {
 
 let nativeApplied = false;
 
-/** Mirrors the material onto <html data-glass>; the macOS one waits for the shell to apply it. */
 export function WindowMaterialMount() {
   const material = useMaterialStore((s) => s.material);
   const menus = useMaterialStore((s) => s.menus);
   const strength = useMaterialStore((s) => s.strength);
   useEffect(() => {
-    // 0-100 onto multipliers, 1x at 50: blur 0.2-2x, and how opaque every pane is 0.35-2x (capped near
-    // solid), applied after the readability floors so the setting always shows.
+    // 0-100 onto multipliers, 1x at 50, applied after the readability floors so the setting always shows.
     const root = document.documentElement;
     const blur =
       strength <= 50 ? 0.2 + (0.8 * strength) / 50 : 1 + (strength - 50) / 50;
