@@ -51,8 +51,7 @@ _V2_MANIFEST_PREFIX = re.compile(rb'^\s*\{\s*"version"\s*:\s*2\s*,')
 # Bump when the migration's selection rules change, so a recorded clean pass no longer applies.
 _MANIFEST_MIGRATION_ID = "ordinary-v2-to-v1:1"
 _MANIFEST_MIGRATION_MARKER = "manifest_migration.json"
-# A directory changed this recently may still be inside the filesystem's mtime granularity, so a
-# clean pass over it is not recorded (the same "racy" rule git uses for its index).
+# A dir changed this recently may sit inside the mtime granularity: not recorded (git's "racy" index rule).
 _MANIFEST_MIGRATION_SETTLE_NS = 2_000_000_000
 
 # Verbatim phrase the worker emits on a degraded completion; shared so emit and match stay coupled.
@@ -641,10 +640,8 @@ def _migration_manifest_paths(parent: Path) -> Iterator[Path]:
 
 
 def _migration_fingerprint(parent: Path, scopes: Optional[Iterable[str]] = None) -> Optional[dict]:
-    """Directory mtimes plus the active cache setting the selection depends on. Every manifest write is
-    ``tmp + os.replace``, so any added or replaced manifest moves the mtime of the directory holding it,
-    and a new ``cache-*`` scope moves the parent's. ``scopes`` given: stat just those (the parent's mtime
-    vouches that the set is unchanged); else enumerate them. ``None`` when anything cannot be read."""
+    """Dir mtimes + active cache. Manifest writes are ``tmp + os.replace``, so any write moves its dir's
+    mtime and a new ``cache-*`` scope moves the parent's. ``None`` when anything cannot be read."""
     try:
         active, raw = _hub_cache_spellings(None)
         dirs = {".": os.stat(parent).st_mtime_ns}
@@ -690,7 +687,7 @@ def _migration_already_clean(parent: Path) -> bool:
         if not isinstance(recorded, dict) or not isinstance(recorded.get("dirs"), dict):
             return False
         scopes = [name for name in recorded["dirs"] if name != "."]
-    # RecursionError: a corrupt marker of deeply nested brackets must not abort the migration itself.
+    # RecursionError: deeply nested corrupt marker.
     except (OSError, ValueError, RecursionError):
         return False
     current = _migration_fingerprint(parent, scopes)
@@ -711,14 +708,12 @@ def _record_clean_migration(parent: Path, before: Optional[dict], started_ns: in
 
 
 def migrate_ordinary_v2_manifests_for_downgrade() -> int:
-    """Rewrite ordinary v2 manifests as v1 so an older Studio can still read them. A complete pass that
-    found nothing left to do is recorded (directory mtimes + active cache), and the next start skips the
-    scan while none of that has changed since; any manifest write, a new cache scope, a cache setting
-    change or a new migration id re-runs it."""
+    """Rewrite ordinary v2 manifests as v1 for older Studios. A clean pass is recorded and later starts
+    skip the scan until a manifest dir, the active cache or the migration id changes."""
     parent = manifests_dir()
     if parent is None:
         return 0
-    # The skip is an optimisation only: anything unexpected while checking it falls back to the full scan.
+    # Optimisation only: any failure here falls back to the full scan.
     try:
         if _migration_already_clean(parent):
             return 0
@@ -745,7 +740,7 @@ def migrate_ordinary_v2_manifests_for_downgrade() -> int:
                     continue
                 if _is_reserved_dataset_completion_payload(data):
                     continue
-                # An ordinary v2 record: from here on this pass is not a clean one, whatever happens to it.
+                # Any ordinary v2 record makes the pass unclean, migrated or not.
                 clean = False
 
                 repo_type = data.get("repo_type")
