@@ -1774,9 +1774,34 @@ def _inference_mode() -> bool:
     return not _is_compiling() and torch.is_inference_mode_enabled()
 
 
+def _built_in_inference_mode():
+    """Cache entry tag. None marks a grad-off traced build: dynamo cannot read inference_mode, so
+    _cache_hit checks its tensors eagerly or rebuilds it in a grad-enabled trace."""
+    if _is_compiling():
+        return None if not torch.is_grad_enabled() else False
+    return torch.is_inference_mode_enabled()
+
+
+def _holds_inference_tensor(value) -> bool:
+    if isinstance(value, torch.Tensor):
+        return torch.is_inference(value)
+    if isinstance(value, (tuple, list)):
+        return any(_holds_inference_tensor(item) for item in value)
+    # Opaque objects (an xformers mask) cannot be checked: rebuild them.
+    return not isinstance(value, (int, float, bool, type(None)))
+
+
 def _cache_hit(entry) -> bool:
     # Inference tensors may serve inference mode only; normal tensors serve both.
-    return not entry["inference"] or _inference_mode()
+    inference = entry["inference"]
+    if inference is None:
+        if _is_compiling():
+            # Tracing cannot inspect the tensors: rebuild uncertain entries before autograd use.
+            return not torch.is_grad_enabled()
+        if torch.is_inference_mode_enabled():
+            return True
+        return not _holds_inference_tensor(entry.get("result", entry.get("mask")))
+    return not inference or _inference_mode()
 
 
 def _pinned_to_device(tensor: torch.Tensor, device) -> torch.Tensor:
@@ -1822,7 +1847,7 @@ def get_packed_info_from_kwargs(
         _PACKED_INFO_CACHE[device] = {
             "seq_lengths": seq_lengths,
             "result": result,
-            "inference": False,
+            "inference": _built_in_inference_mode(),
         }
         return result
 
@@ -1849,7 +1874,7 @@ def get_packed_info_from_kwargs(
     _PACKED_INFO_CACHE[device] = {
         "seq_lengths": seq_lengths,
         "result": result,
-        "inference": _inference_mode(),
+        "inference": _built_in_inference_mode(),
     }
     _PACKED_HOST_LENGTHS_CACHE[lengths.device] = (lengths, cu_seqlens, host)
     return result
@@ -1922,7 +1947,7 @@ def cover_padded_cu_seqlens(
         "cu_seqlens": cu_seqlens,
         "total": total_tokens,
         "result": result,
-        "inference": _inference_mode(),
+        "inference": _built_in_inference_mode(),
     }
     return result
 
@@ -1965,7 +1990,7 @@ def build_xformers_block_causal_mask(
             "seq_lengths": seq_lengths,
             "params": params,
             "mask": mask,
-            "inference": _inference_mode(),
+            "inference": _built_in_inference_mode(),
         }
     else:
         mask = base_mask
@@ -2060,7 +2085,7 @@ def build_sdpa_packed_attention_mask(
         "seq_lengths": seq_lengths,
         "params": params,
         "mask": result,
-        "inference": _inference_mode(),
+        "inference": _built_in_inference_mode(),
     }
     return result
 
