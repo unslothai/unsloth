@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for Unsloth",
-  "webviews": ["main"],
+  "webviews": ["main", "voice-hud"],
   "permissions": [
     "core:default",
     "core:window:default",

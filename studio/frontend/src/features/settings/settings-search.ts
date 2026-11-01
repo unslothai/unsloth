@@ -262,6 +262,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   connections: [],
   voice: [
+    "settings.voice.voiceTyping.sectionTitle",
+    "settings.voice.voiceTyping.enableLabel",
     "settings.voice.dictation.sectionTitle",
     "settings.voice.dictation.microphoneLabel",
     "settings.voice.dictation.languageLabel",

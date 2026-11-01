@@ -25,26 +25,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  DeleteChatFilesSwitch,
-  deleteChatItem,
-  useChatPreferencesStore,
-  useChatRuntimeStore,
-  type SidebarItem,
-} from "@/features/chat";
+import { Slider } from "@/components/ui/slider";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import {
   Delete02Icon,
+  PauseIcon,
+  PlayIcon,
   Search01Icon,
+  Tick02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type RecentDictation,
   useVoiceSettingsStore,
@@ -52,11 +49,6 @@ import {
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 const PAGE_SIZE = 20;
-
-type PendingDelete =
-  | { kind: "one"; dictation: RecentDictation }
-  | { kind: "all" }
-  | null;
 
 type SortOrder = "newest" | "oldest" | "az";
 
@@ -68,6 +60,193 @@ function formatDictationDate(ms: number): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatDictationDateTime(ms: number): string {
+  return new Date(ms).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+/** `m:ss`, used for both the seek-bar position and the recording length. */
+function formatElapsed(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
+  const total = Math.floor(seconds);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+interface DiffToken {
+  text: string;
+  changed: boolean;
+}
+
+/** ~16 MB of Uint32 cells at the absolute worst case. */
+const MAX_DIFF_CELLS = 4_000_000;
+
+function tokenizeTranscript(text: string): string[] {
+  return text.match(/\s+|[^\s]+/g) ?? [];
+}
+
+/** Word/punctuation diff used to highlight what the fixer changed. */
+function diffTranscript(original: string, corrected: string): DiffToken[] {
+  const before = tokenizeTranscript(original);
+  const after = tokenizeTranscript(corrected);
+  const rows = before.length;
+  const cols = after.length;
+  // The LCS table is rows*cols Uint32s. A very long dictation would allocate
+  // hundreds of megabytes, so it degrades to plain corrected text instead.
+  if ((rows + 1) * (cols + 1) > MAX_DIFF_CELLS) {
+    return after.map((text) => ({ text, changed: false }));
+  }
+  const lcs = Array.from({ length: rows + 1 }, () =>
+    new Uint32Array(cols + 1),
+  );
+  for (let i = rows - 1; i >= 0; i -= 1) {
+    for (let j = cols - 1; j >= 0; j -= 1) {
+      lcs[i][j] =
+        before[i] === after[j]
+          ? lcs[i + 1][j + 1] + 1
+          : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const result: DiffToken[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < rows && j < cols) {
+    if (before[i] === after[j]) {
+      result.push({ text: after[j], changed: false });
+      i += 1;
+      j += 1;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      i += 1;
+    } else {
+      result.push({
+        text: after[j],
+        changed: after[j].trim().length > 0,
+      });
+      j += 1;
+    }
+  }
+  while (j < cols) {
+    result.push({ text: after[j], changed: after[j].trim().length > 0 });
+    j += 1;
+  }
+  return result;
+}
+
+/**
+ * Compact recording player: play/pause, a short seek bar and elapsed/total
+ * time. Replaces the native audio controls, whose chunky chrome broke the
+ * settings page and hid the recording length.
+ */
+function DictationAudioPlayer({ src }: { src: string }) {
+  const t = useT();
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  useEffect(() => {
+    setCurrent(0);
+    setDuration(0);
+    setPlaying(false);
+    const audio = new Audio(src);
+    audio.preload = "metadata";
+    audioRef.current = audio;
+    const onLoaded = () => {
+      if (Number.isFinite(audio.duration)) setDuration(audio.duration);
+    };
+    const onTime = () => setCurrent(audio.currentTime);
+    const onEnded = () => {
+      setPlaying(false);
+      setCurrent(0);
+    };
+    const onPause = () => setPlaying(false);
+    const onPlay = () => setPlaying(true);
+    audio.addEventListener("loadedmetadata", onLoaded);
+    audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("ended", onEnded);
+    audio.addEventListener("pause", onPause);
+    audio.addEventListener("play", onPlay);
+    return () => {
+      audio.pause();
+      audio.removeEventListener("loadedmetadata", onLoaded);
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("pause", onPause);
+      audio.removeEventListener("play", onPlay);
+      // Release the decoded media instead of leaving it attached until GC.
+      audio.removeAttribute("src");
+      audio.load();
+      audioRef.current = null;
+    };
+  }, [src]);
+
+  const toggle = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) {
+      void audio.play().catch(() => setPlaying(false));
+    } else {
+      audio.pause();
+    }
+  };
+
+  const seek = (value: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const next = Math.min(Math.max(value, 0), audio.duration || value);
+    audio.currentTime = next;
+    setCurrent(next);
+  };
+
+  return (
+    <div
+      className="flex w-full items-center gap-3 rounded-xl border border-border/60 bg-muted/20 p-3"
+      data-testid="dictation-audio-player"
+    >
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label={
+          playing
+            ? t("settings.voice.recents.pauseAudio")
+            : t("settings.voice.recents.playAudio")
+        }
+        className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <HugeiconsIcon
+          icon={playing ? PauseIcon : PlayIcon}
+          strokeWidth={2}
+          className="size-4"
+        />
+      </button>
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <span className="w-10 shrink-0 text-right text-ui-10 tabular-nums text-muted-foreground">
+          {formatElapsed(current)}
+        </span>
+        <Slider
+          value={[current]}
+          min={0}
+          max={Math.max(duration, current, 0.1)}
+          step={0.05}
+          onValueChange={([value]) => {
+            if (value !== undefined) seek(value);
+          }}
+          aria-label={t("settings.voice.recents.seekLabel")}
+          className="min-w-0 flex-1"
+        />
+        <span className="w-10 shrink-0 text-left text-ui-10 tabular-nums text-muted-foreground">
+          {formatElapsed(duration)}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 export function RecentDictationsView({
@@ -87,22 +266,96 @@ export function RecentDictationsView({
   const clearRecentDictations = useVoiceSettingsStore(
     (s) => s.clearRecentDictations,
   );
-  const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
-  // Only "Delete chat and dictation" removes a chat, so only that path shows the switch.
-  const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
+  const [clearAllPending, setClearAllPending] = useState(false);
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Opening the detail view stops a row preview so only one recording plays.
+  useEffect(() => {
+    if (!selectedId) return;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    setPlayingId(null);
+    setShowOriginal(false);
+  }, [selectedId]);
+
+  function togglePlayAudio(dictation: RecentDictation) {
+    if (!dictation.audioDataUrl) return;
+    if (playingId === dictation.id && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+      setPlayingId(null);
+      return;
+    }
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    const audio = new Audio(dictation.audioDataUrl);
+    audioRef.current = audio;
+    setPlayingId(dictation.id);
+    audio.addEventListener("ended", () => {
+      if (audioRef.current === audio) {
+        audioRef.current = null;
+        setPlayingId(null);
+      }
+    });
+    audio.addEventListener("error", () => {
+      if (audioRef.current === audio) {
+        audioRef.current = null;
+        setPlayingId(null);
+      }
+    });
+    void audio.play().catch(() => {
+      if (audioRef.current === audio) {
+        audioRef.current = null;
+        setPlayingId(null);
+      }
+    });
+  }
   // Keyed on the inputs so a change restarts from page one without an effect.
   const pageKey = `${sortOrder}::${search}`;
   const [page, setPage] = useState({ key: pageKey, count: PAGE_SIZE });
   const visibleCount = page.key === pageKey ? page.count : PAGE_SIZE;
   const navigate = useNavigate();
-  const alwaysDeleteChatFiles = useChatPreferencesStore(
-    (s) => s.alwaysDeleteChatFiles,
-  );
   const closeSettings = useSettingsDialogStore((s) => s.closeDialog);
   const selected =
     recentDictations.find((dictation) => dictation.id === selectedId) ?? null;
+  const diff = useMemo(
+    () =>
+      selected?.originalText
+        ? diffTranscript(selected.originalText, selected.text)
+        : null,
+    [selected?.id, selected?.text, selected?.originalText],
+  );
+  const stats = useMemo(() => {
+    const text = selected?.text ?? "";
+    return {
+      words: text.trim() ? text.trim().split(/\s+/).length : 0,
+      characters: Array.from(text.replace(/\s/g, "")).length,
+      spaces: (text.match(/\s/g) ?? []).length,
+      symbols: (text.match(/[^\p{L}\p{N}\s]/gu) ?? []).length,
+    };
+  }, [selected?.text]);
 
   function openChat(chatId: string) {
     closeSettings();
@@ -125,67 +378,38 @@ export function RecentDictationsView({
     return sorted;
   }, [recentDictations, search, sortOrder]);
 
-  async function handleCopy(text: string) {
+  function markCopied(id: string) {
+    setCopiedId(id);
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = window.setTimeout(() => {
+      copyTimerRef.current = null;
+      setCopiedId(null);
+    }, 1500);
+  }
+
+  async function handleCopy(id: string, text: string) {
     if (await copyToClipboard(text)) {
+      markCopied(id);
       toast.success(t("settings.voice.recents.copied"));
     } else {
       toast.error(t("settings.voice.recents.copyFailed"));
     }
   }
 
-  function confirmDelete() {
-    try {
-      if (pendingDelete?.kind === "one") {
-        removeRecentDictation(pendingDelete.dictation.id);
-        if (pendingDelete.dictation.id === selectedId) {
-          onSelect(null);
-        }
-      } else if (pendingDelete?.kind === "all") {
-        clearRecentDictations();
-        onSelect(null);
-      }
-    } finally {
-      setPendingDelete(null);
-    }
-  }
-
-  async function confirmDeleteWithChat(deleteFiles: boolean) {
-    if (pendingDelete?.kind !== "one") {
-      return;
-    }
-    const dictation = pendingDelete.dictation;
-    setPendingDelete(null);
-    if (dictation.chatId) {
-      const item: SidebarItem = {
-        type: "single",
-        id: dictation.chatId,
-        title: "",
-        createdAt: 0,
-        updatedAt: 0,
-      };
-      try {
-        await deleteChatItem(
-          item,
-          useChatRuntimeStore.getState().activeThreadId ?? undefined,
-          () => {
-            void navigate({
-              to: "/chat",
-              search: { new: crypto.randomUUID() },
-            });
-          },
-          { deleteFiles },
-        );
-      } catch (error) {
-        toast.error(t("settings.voice.recents.deleteWithChatFailed"), {
-          description: error instanceof Error ? error.message : undefined,
-        });
-        return;
-      }
-    }
+  function deleteOne(dictation: RecentDictation) {
     removeRecentDictation(dictation.id);
     if (dictation.id === selectedId) {
       onSelect(null);
     }
+    toast.success(t("settings.voice.recents.deleted"));
+  }
+
+  function clearAll() {
+    clearRecentDictations();
+    onSelect(null);
+    setClearAllPending(false);
   }
 
   return (
@@ -209,24 +433,111 @@ export function RecentDictationsView({
       </header>
 
       <div className="flex flex-col gap-1">
-        <h2 className="settings-heading text-sm font-semibold">
-          {selected
-            ? t("settings.voice.recents.detailTitle")
-            : t("settings.voice.recents.sectionTitle")}
-        </h2>
-        <p className="text-xs text-muted-foreground">
-          {selected
-            ? formatDictationDate(selected.at)
-            : t("settings.voice.recents.pageDescription")}
-        </p>
+        {selected ? (
+          <div className="flex items-baseline justify-between gap-4">
+            <h2 className="settings-heading text-sm font-semibold">
+              {t("settings.voice.recents.detailTitle")}
+            </h2>
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+              {formatDictationDateTime(selected.at)}
+            </span>
+          </div>
+        ) : (
+          <>
+            <h2 className="settings-heading text-sm font-semibold">
+              {t("settings.voice.recents.sectionTitle")}
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.voice.recents.pageDescription")}
+            </p>
+          </>
+        )}
       </div>
 
       {selected ? (
         <div className="flex min-h-0 flex-col gap-4">
-          <article className="rounded-xl border border-border/60 bg-muted/20 p-4">
-            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
-              {selected.text}
-            </p>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span>
+              {t("settings.voice.recents.metaWords", { count: stats.words })}
+            </span>
+            <span>
+              {t("settings.voice.recents.metaCharacters", {
+                count: stats.characters,
+              })}
+            </span>
+            <span>
+              {t("settings.voice.recents.metaSpaces", { count: stats.spaces })}
+            </span>
+            <span>
+              {t("settings.voice.recents.metaSymbols", {
+                count: stats.symbols,
+              })}
+            </span>
+            <span>
+              {t("settings.voice.recents.metaFixes", {
+                count: selected.fixes ?? 0,
+              })}
+            </span>
+            {selected.chatId ? (
+              <span className="inline-flex items-center gap-1">
+                <HugeiconsIcon
+                  icon={MessageCircleIcon}
+                  className="size-3"
+                />
+                {t("settings.voice.recents.metaLinkedChat")}
+              </span>
+            ) : null}
+            {selected.originalText && diff ? (
+              <div className="ml-auto inline-flex items-center rounded-full border border-border/60 p-0.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setShowOriginal(false)}
+                  className={`rounded-full px-2.5 py-1 transition-colors ${
+                    !showOriginal
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {t("settings.voice.recents.corrected")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowOriginal(true)}
+                  className={`rounded-full px-2.5 py-1 transition-colors ${
+                    showOriginal
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {t("settings.voice.recents.original")}
+                </button>
+              </div>
+            ) : null}
+          </div>
+          {selected.audioDataUrl ? (
+            <DictationAudioPlayer src={selected.audioDataUrl} />
+          ) : null}
+          <article className="max-h-72 overflow-y-auto rounded-xl border border-border/60 bg-muted/20 p-4">
+            {showOriginal || !diff ? (
+              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
+                {showOriginal ? selected.originalText : selected.text}
+              </p>
+            ) : (
+              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
+                {diff.map((token, index) =>
+                  token.changed ? (
+                    <mark
+                      key={index}
+                      className="rounded-sm bg-emerald-500/20 px-0.5 text-emerald-800 dark:text-emerald-200"
+                    >
+                      {token.text}
+                    </mark>
+                  ) : (
+                    <span key={index}>{token.text}</span>
+                  ),
+                )}
+              </p>
+            )}
           </article>
           <div className="flex justify-end gap-2">
             {selected.chatId ? (
@@ -246,21 +557,21 @@ export function RecentDictationsView({
               variant="outline"
               size="sm"
               onClick={async () => {
-                await handleCopy(selected.text);
+                await handleCopy(selected.id, selected.text);
               }}
             >
-              <HugeiconsIcon icon={Copy01Icon} className="mr-1.5 size-3.5" />
-              {t("settings.voice.recents.copy")}
+              <HugeiconsIcon
+                icon={copiedId === selected.id ? Tick02Icon : Copy01Icon}
+                className="mr-1.5 size-3.5"
+              />
+              {copiedId === selected.id
+                ? t("settings.voice.recents.copiedShort")
+                : t("settings.voice.recents.copy")}
             </Button>
             <Button
               variant="destructive"
               size="sm"
-              onClick={() =>
-                {
-                  setDeleteFilesOnDelete(alwaysDeleteChatFiles);
-                  setPendingDelete({ kind: "one", dictation: selected });
-                }
-              }
+              onClick={() => deleteOne(selected)}
               className="text-destructive hover:text-destructive"
             >
               <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
@@ -316,7 +627,7 @@ export function RecentDictationsView({
             <Button
               variant="destructive"
               size="sm"
-              onClick={() => setPendingDelete({ kind: "all" })}
+              onClick={() => setClearAllPending(true)}
               className="shrink-0 text-destructive hover:text-destructive"
             >
               <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
@@ -330,39 +641,33 @@ export function RecentDictationsView({
             </p>
           ) : (
             <div className="flex flex-col">
-              <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
-                <span className="min-w-0 flex-1">
-                  {t("settings.voice.recents.dictationColumn")}
-                </span>
-                <span className="hidden w-40 shrink-0 items-center gap-1.5 sm:flex">
-                  {/* Spacer matching the row's chat-link icon slot so the
-                      header starts exactly where the dates start. */}
-                  <span className="size-3.5 shrink-0" />
-                  {t("settings.voice.recents.dateColumn")}
-                </span>
-                <span className="w-24 shrink-0" />
+              <div className="flex items-center gap-2 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
+                <div className="flex min-w-0 flex-1 items-center gap-4">
+                  <span className="min-w-0 flex-1">
+                    {t("settings.voice.recents.dictationColumn")}
+                  </span>
+                  <span className="hidden w-40 shrink-0 items-center gap-1.5 sm:flex">
+                    {/* Spacer matching the row's chat-link icon slot so the
+                        header starts exactly where the dates start. */}
+                    <span className="size-3.5 shrink-0" />
+                    {t("settings.voice.recents.dateColumn")}
+                  </span>
+                </div>
+                <span className="w-[calc(7.75rem*var(--ui-space-scale,1))] shrink-0" />
               </div>
               {visible.slice(0, visibleCount).map((dictation) => (
                 <div
                   key={dictation.id}
-                  className="group flex items-stretch gap-2 border-b border-border/40 last:border-0"
+                  className="group flex items-stretch gap-2 border-b border-border/40 transition-colors last:border-0 hover:bg-muted/50"
                 >
                   <button
                     type="button"
-                    onClick={() =>
-                      dictation.chatId
-                        ? openChat(dictation.chatId)
-                        : onSelect(dictation.id)
-                    }
-                    aria-label={
-                      dictation.chatId
-                        ? t("settings.voice.recents.openChat")
-                        : t("settings.voice.recents.view")
-                    }
-                    className="flex min-w-0 flex-1 items-start gap-4 rounded-md px-1 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => onSelect(dictation.id)}
+                    aria-label={t("settings.voice.recents.view")}
+                    className="flex min-w-0 flex-1 items-start gap-4 px-1 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span className="min-w-0 flex-1">
-                      <span className="line-clamp-3 whitespace-pre-wrap break-words text-sm text-foreground">
+                      <span className="line-clamp-1 whitespace-pre-wrap break-words text-sm text-foreground">
                         {dictation.text}
                       </span>
                       <span className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground sm:hidden">
@@ -392,8 +697,35 @@ export function RecentDictationsView({
                       </span>
                     </span>
                   </button>
-                  <span className="flex w-24 shrink-0 items-center justify-end gap-1">
-                    {dictation.chatId ? (
+                  <span className="grid w-[calc(7.75rem*var(--ui-space-scale,1))] shrink-0 grid-cols-4 items-center">
+                    <span className="flex items-center justify-center">
+                      {dictation.audioDataUrl ? (
+                        <button
+                          type="button"
+                          onClick={() => togglePlayAudio(dictation)}
+                          aria-label={
+                            playingId === dictation.id
+                              ? t("settings.voice.recents.pauseAudio")
+                              : t("settings.voice.recents.playAudio")
+                          }
+                          title={
+                            playingId === dictation.id
+                              ? t("settings.voice.recents.pauseAudio")
+                              : t("settings.voice.recents.playAudio")
+                          }
+                          className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <HugeiconsIcon
+                            icon={
+                              playingId === dictation.id ? PauseIcon : PlayIcon
+                            }
+                            strokeWidth={1.75}
+                            className="size-4"
+                          />
+                        </button>
+                      ) : null}
+                    </span>
+                    <span className="flex items-center justify-center">
                       <button
                         type="button"
                         onClick={() => onSelect(dictation.id)}
@@ -407,40 +739,39 @@ export function RecentDictationsView({
                           className="size-4"
                         />
                       </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await handleCopy(dictation.text);
-                      }}
-                      aria-label={t("settings.voice.recents.copy")}
-                      title={t("settings.voice.recents.copy")}
-                      className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <HugeiconsIcon
-                        icon={Copy01Icon}
-                        strokeWidth={1.75}
-                        className="size-4"
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        {
-                        setDeleteFilesOnDelete(alwaysDeleteChatFiles);
-                        setPendingDelete({ kind: "one", dictation });
-                      }
-                      }
-                      aria-label={t("settings.voice.recents.delete")}
-                      title={t("settings.voice.recents.delete")}
-                      className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <HugeiconsIcon
-                        icon={Delete02Icon}
-                        strokeWidth={1.75}
-                        className="size-4"
-                      />
-                    </button>
+                    </span>
+                    <span className="flex items-center justify-center">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await handleCopy(dictation.id, dictation.text);
+                        }}
+                        aria-label={t("settings.voice.recents.copy")}
+                        title={t("settings.voice.recents.copy")}
+                        className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <HugeiconsIcon
+                          icon={copiedId === dictation.id ? Tick02Icon : Copy01Icon}
+                          strokeWidth={1.75}
+                          className="size-4"
+                        />
+                      </button>
+                    </span>
+                    <span className="flex items-center justify-center">
+                      <button
+                        type="button"
+                        onClick={() => deleteOne(dictation)}
+                        aria-label={t("settings.voice.recents.delete")}
+                        title={t("settings.voice.recents.delete")}
+                        className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <HugeiconsIcon
+                          icon={Delete02Icon}
+                          strokeWidth={1.75}
+                          className="size-4"
+                        />
+                      </button>
+                    </span>
                   </span>
                 </div>
               ))}
@@ -466,61 +797,30 @@ export function RecentDictationsView({
       )}
 
       <AlertDialog
-        open={pendingDelete !== null}
+        open={clearAllPending}
         onOpenChange={(open) => {
-          if (!open) {
-            setPendingDelete(null);
-          }
+          if (!open) setClearAllPending(false);
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {pendingDelete?.kind === "all"
-                ? t("settings.voice.recents.clearTitle")
-                : t("settings.voice.recents.deleteTitle")}
+              {t("settings.voice.recents.clearTitle")}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {pendingDelete?.kind === "all"
-                ? t("settings.voice.recents.clearDescription")
-                : pendingDelete?.kind === "one" &&
-                    pendingDelete.dictation.chatId
-                  ? t("settings.voice.recents.deleteLinkedDescription")
-                  : t("settings.voice.recents.deleteDescription")}
+              {t("settings.voice.recents.clearDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
-            <DeleteChatFilesSwitch
-              id="dictation-delete-files"
-              checked={deleteFilesOnDelete}
-              onCheckedChange={setDeleteFilesOnDelete}
-            />
-          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
-              <AlertDialogAction
-                variant="destructive"
-                className="text-destructive hover:text-destructive"
-                onClick={(event) => {
-                  // Close only through state so dismissal cannot race a click underneath.
-                  event.preventDefault();
-                  void confirmDeleteWithChat(deleteFilesOnDelete);
-                }}
-              >
-                {t("settings.voice.recents.deleteWithChat")}
-              </AlertDialogAction>
-            ) : null}
             <AlertDialogAction
               variant="destructive"
               onClick={(event) => {
                 event.preventDefault();
-                confirmDelete();
+                clearAll();
               }}
             >
-              {pendingDelete?.kind === "all"
-                ? t("settings.voice.recents.clearConfirm")
-                : t("common.delete")}
+              {t("settings.voice.recents.clearConfirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

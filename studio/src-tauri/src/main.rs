@@ -23,6 +23,7 @@ mod desktop_update_policy;
 mod desktop_updater;
 mod diagnostics;
 mod gpu_rendering;
+mod grammar;
 mod install;
 mod install_watchdog;
 #[cfg(target_os = "linux")]
@@ -47,6 +48,7 @@ mod shell_path;
 mod staged_update;
 mod studio_home;
 mod update;
+mod voice_typing;
 mod webview_permissions;
 mod windows_job;
 mod x11_threads;
@@ -2586,6 +2588,8 @@ fn main() {
             native_intents::reveal_path_token,
             native_intents::open_path_token,
             webview_permissions::reset_microphone_permission,
+            webview_permissions::microphone_permission_state,
+            webview_permissions::set_microphone_permission,
             has_saved_window_state,
             was_launched_hidden,
             mark_in_app_relaunch,
@@ -2602,6 +2606,15 @@ fn main() {
             get_tray_icon_visible,
             set_tray_icon_visible,
             set_tray_server_status,
+            voice_typing::voice_typing_info,
+            grammar::fix_grammar,            voice_typing::voice_typing_configure,
+            voice_typing::voice_typing_suspend_shortcut,
+            voice_typing::voice_typing_hud_state,
+            voice_typing::voice_typing_hud_level,
+            voice_typing::voice_typing_hud_prewarm,
+            voice_typing::voice_typing_cancel,
+            voice_typing::voice_typing_set_audio_mute,
+            voice_typing::paste::voice_typing_insert,
             ];
             handler(invoke)
         })
@@ -2670,6 +2683,14 @@ fn main() {
                 setup_terminate_interception(app);
             }
             setup_tray(app)?;
+            // The in-app microphone dialog is the only consent prompt; the WebView2
+            // gate answers every engine request from the stored answer.
+            webview_permissions::init(app.handle());
+            // Resident global-shortcut poll for system-wide voice typing; the
+            // overlay window is created on first use.
+            voice_typing::init(app.handle());
+            // Warm the on-device grammar linter off the UI thread.
+            grammar::init();
             #[cfg(unix)]
             setup_unix_termination_signals(app)?;
             Ok(())

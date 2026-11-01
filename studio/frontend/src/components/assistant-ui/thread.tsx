@@ -489,6 +489,12 @@ import {
   useSyncExternalStore,
 } from "react";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
+import { setInAppDictationActive } from "@/features/chat/adapters/dictation-activity";
+import {
+  playInAppDictationCue,
+  setInAppDictationMuted,
+} from "@/features/voice-typing/in-app-dictation";
+import { useVoiceTypingStore } from "@/features/voice-typing/voice-typing-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
@@ -2908,6 +2914,28 @@ const Composer: FC<{
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
+  const dictationActivityOwner = useRef(Symbol("composer-dictation"));
+  const muteWhileRecording = useVoiceTypingStore(
+    (state) => state.muteWhileRecording,
+  );
+  const idleStopMs = useVoiceTypingStore((state) => state.idleStopMs);
+  // The global voice-typing chord reads this to toggle the built-in dictation
+  // while the Unsloth window is focused, instead of opening the overlay.
+  useEffect(() => {
+    setInAppDictationActive(dictationActivityOwner.current, isDictating);
+    return () => setInAppDictationActive(dictationActivityOwner.current, false);
+  }, [isDictating]);
+  useEffect(() => {
+    setInAppDictationMuted(isDictating && muteWhileRecording);
+    return () => {
+      if (isDictating) setInAppDictationMuted(false);
+    };
+  }, [isDictating, muteWhileRecording]);
+  useEffect(() => {
+    if (!isDictating) return;
+    playInAppDictationCue("start");
+    return () => playInAppDictationCue("stop");
+  }, [isDictating]);
   const pageDragging = useContext(PageDragContext);
   const nativeDragging = useContext(NativeAttachmentDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
@@ -3134,6 +3162,17 @@ const Composer: FC<{
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
+  useEffect(() => {
+    if (!isDictating || idleStopMs <= 0) return;
+    const timer = window.setTimeout(() => {
+      try {
+        aui.composer().stopDictation();
+      } catch {
+        // The session may already have ended.
+      }
+    }, idleStopMs);
+    return () => window.clearTimeout(timer);
+  }, [aui, composerText, idleStopMs, isDictating]);
   // Derived, not cleared in an effect: the offer retracts when the link leaves the draft.
   const youtubeOfferUrl =
     youtubeLink !== null && composerText.includes(youtubeLink)

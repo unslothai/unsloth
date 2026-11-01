@@ -308,6 +308,78 @@ export function SettingsDialog() {
   const Tab = LAZY_TABS[panelTab];
   const [query, setQuery] = useState("");
 
+  // Mouse back/forward walks the settings tabs when the active panel has no
+  // deeper subpage history of its own (VoiceTab handles its own with capture).
+  const tabHistoryRef = useRef<SettingsTab[]>([]);
+  const tabFutureRef = useRef<SettingsTab[]>([]);
+  const lastTabRef = useRef<SettingsTab>(activeTab);
+  const suppressTabHistoryRef = useRef(false);
+  useEffect(() => {
+    if (lastTabRef.current === activeTab) return;
+    if (suppressTabHistoryRef.current) {
+      suppressTabHistoryRef.current = false;
+      lastTabRef.current = activeTab;
+      return;
+    }
+    tabHistoryRef.current.push(lastTabRef.current);
+    tabFutureRef.current = [];
+    lastTabRef.current = activeTab;
+  }, [activeTab]);
+  useEffect(() => {
+    if (!open) {
+      tabHistoryRef.current = [];
+      tabFutureRef.current = [];
+      lastTabRef.current = activeTab;
+      return;
+    }
+    const isHistoryButton = (event: MouseEvent) =>
+      event.button === 3 || event.button === 4;
+    const onMouseDown = (event: MouseEvent) => {
+      if (!isHistoryButton(event)) return;
+      // The settings modal owns these buttons while it is open. Stop the
+      // event here so the chat page behind it never runs its own history
+      // navigation as well.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const direction = event.button === 3 ? "back" : "forward";
+      const detail: { direction: "back" | "forward"; handled: boolean } = {
+        direction,
+        handled: false,
+      };
+      window.dispatchEvent(new CustomEvent("settings-history", { detail }));
+      if (detail.handled) return;
+      if (direction === "back") {
+        const previous = tabHistoryRef.current.pop();
+        if (!previous) return;
+        suppressTabHistoryRef.current = true;
+        tabFutureRef.current.push(activeTab);
+        setActiveTab(previous);
+        return;
+      }
+      const next = tabFutureRef.current.pop();
+      if (!next) return;
+      suppressTabHistoryRef.current = true;
+      tabHistoryRef.current.push(activeTab);
+      setActiveTab(next);
+    };
+    // Chromium can still turn the release or the follow-up auxclick into
+    // history navigation after a prevented mousedown. Swallow every phase
+    // while the dialog owns the buttons.
+    const swallowHistoryButton = (event: MouseEvent) => {
+      if (!isHistoryButton(event)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("mouseup", swallowHistoryButton, true);
+    window.addEventListener("auxclick", swallowHistoryButton, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("mouseup", swallowHistoryButton, true);
+      window.removeEventListener("auxclick", swallowHistoryButton, true);
+    };
+  }, [open, activeTab, setActiveTab]);
+
   // Prefetch other panels on idle once opened; nothing runs while closed.
   useEffect(() => {
     if (!open) {

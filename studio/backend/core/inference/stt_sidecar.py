@@ -1273,12 +1273,31 @@ class WhisperSttSidecar:
     def keep_alive_seconds(self) -> float:
         return self._keep_alive_seconds
 
+    def set_keep_alive_seconds(self, seconds: float) -> None:
+        with self._lock:
+            self._keep_alive_seconds = max(0.0, float(seconds))
+            self._schedule_idle_unload_locked()
+
     def _cancel_idle_unload_locked(self) -> None:
         self._idle_generation += 1
         timer = self._idle_timer
         self._idle_timer = None
         if timer is not None:
             timer.cancel()
+
+    def keep_alive(self) -> bool:
+        """Push the idle unload back for a model that is already loaded.
+
+        Voice typing heartbeats this while it is enabled so the first press after a
+        pause does not pay for a load. A model that has already gone is reported,
+        never reloaded: the heartbeat must stay cheap, and the next real press owns
+        the load.
+        """
+        with self._lock:
+            if self._engine is None:
+                return False
+            self._schedule_idle_unload_locked()
+            return True
 
     def _schedule_idle_unload_locked(self) -> None:
         self._cancel_idle_unload_locked()

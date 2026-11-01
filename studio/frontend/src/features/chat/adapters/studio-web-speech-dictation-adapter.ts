@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ensureMicrophonePermission } from "@/features/microphone";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   applyDictationDictionary,
@@ -374,6 +375,14 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
 
     void (async () => {
       try {
+        // The shared consent dialog is the only prompt in the desktop app; the
+        // native gate then lets the browser engine open the microphone.
+        if (!(await ensureMicrophonePermission("dictation"))) {
+          throw new DOMException(
+            "Microphone access was not granted.",
+            "NotAllowedError",
+          );
+        }
         const { micDeviceId } = useVoiceSettingsStore.getState();
         const baseAudio: MediaTrackConstraints = {
           echoCancellation: true,

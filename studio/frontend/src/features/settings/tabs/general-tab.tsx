@@ -193,6 +193,7 @@ const PREFS_KEYS: string[] = [
   ...Object.values(FLOATING_PANEL_POSITION_KEYS),
   // Voice settings
   "unsloth_voice_settings",
+  "unsloth_voice_typing",
   // Retired keys: installs that ran the old onboarding wizard still carry its flag.
   "unsloth_onboarding_done",
 ];

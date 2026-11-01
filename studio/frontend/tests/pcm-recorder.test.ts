@@ -389,7 +389,7 @@ test("a MediaRecorder that refuses to start falls back to PCM", () => {
 
 // --- Neither call site may construct a MediaRecorder directly again ----------
 
-test("the recording call sites go through createAudioRecorder", () => {
+test("the recording call sites go through the shared recorder or raw capture", () => {
   for (const path of [
     "../src/features/chat/adapters/studio-model-dictation-adapter.ts",
     "../src/features/audio/hooks/use-audio-source.ts",
@@ -400,6 +400,11 @@ test("the recording call sites go through createAudioRecorder", () => {
       false,
       `${path} must not construct a MediaRecorder directly: WebKitGTK's records nothing`,
     );
-    assert.equal(source.includes("createAudioRecorder("), true, path);
+    // Dictation reads raw PCM so it can cut at a pause; the Audio page keeps the
+    // MediaRecorder wrapper with its PCM fallback.
+    const records = path.includes("studio-model-dictation")
+      ? source.includes("new PcmCapture(")
+      : source.includes("createAudioRecorder(");
+    assert.equal(records, true, path);
   }
 });
