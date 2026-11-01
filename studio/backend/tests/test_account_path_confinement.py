@@ -298,7 +298,6 @@ def test_a_module_path_that_reads_as_the_root_but_lands_elsewhere_has_its_index_
 
 @symlinks
 def test_a_module_index_climbing_back_into_the_folder_from_where_it_lands_passes(tmp_path):
-    # link/.. opens deep/, so its ../model.safetensors is the root's shard.
     from utils.security.file_security import escaping_weight_references
 
     folder = _write(
