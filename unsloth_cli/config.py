@@ -29,8 +29,6 @@ class TrainingConfig(BaseModel):
     training_type: Literal["lora", "full"] = "lora"
     max_seq_length: int = 2048
     load_in_4bit: bool = True
-    # Models that ship custom modelling code (e.g. LiquidAI/LFM3-Omni-2B) fail to load without
-    # this, and the loader's own error tells the user to pass it, so it has to be reachable.
     trust_remote_code: bool = False
     output_dir: Path = Path("./outputs")
     num_epochs: int = 3
