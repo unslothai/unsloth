@@ -23,7 +23,9 @@ def _load_precision():
         name = "_unsloth_precision_standalone"
         if name in sys.modules:
             return sys.modules[name]
-        root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "precision")
+        root = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "precision"
+        )
         spec = importlib.util.spec_from_file_location(
             name, os.path.join(root, "__init__.py"), submodule_search_locations = [root]
         )
@@ -381,11 +383,15 @@ def convert_model_to_float8_training(
     converted = [name for name, m in model.named_modules() if isinstance(m, Float8Linear)]
     if dispatch_hooks:
         _reattach_dispatch_hooks(model, converted, dispatch_hooks)
-    name = recipe if isinstance(recipe, str) else "Float8LinearConfig(" + _recipe_scaling(recipe) + ")"
+    name = (
+        recipe if isinstance(recipe, str) else "Float8LinearConfig(" + _recipe_scaling(recipe) + ")"
+    )
     _record_engagement(model, "float8_training:" + name, len(converted))
     # UNSLOTH_STRICT_ENGAGE=1 raises here instead of training in the original precision.
     _require_engagement(
-        "float8_training", len(converted), "no eligible Linear layer: dims divisible by 16 and large enough"
+        "float8_training",
+        len(converted),
+        "no eligible Linear layer: dims divisible by 16 and large enough",
     )
     if not converted:
         import warnings

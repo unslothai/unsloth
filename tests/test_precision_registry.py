@@ -17,16 +17,28 @@ import torch
 from unsloth import precision as P
 from unsloth.models import float8_training as f8t
 
-needs_torchao = pytest.mark.skipif(importlib.util.find_spec("torchao") is None, reason = "require torchao")
+needs_torchao = pytest.mark.skipif(
+    importlib.util.find_spec("torchao") is None, reason = "require torchao"
+)
 
 
-def _tiny_qwen3(layers = 2, tie = False, dtype = torch.float32):
+def _tiny_qwen3(
+    layers = 2,
+    tie = False,
+    dtype = torch.float32,
+):
     from transformers import Qwen3Config, Qwen3ForCausalLM
 
     torch.manual_seed(0)
     config = Qwen3Config(
-        vocab_size = 256, hidden_size = 128, intermediate_size = 256, num_hidden_layers = layers,
-        num_attention_heads = 4, num_key_value_heads = 2, head_dim = 32, tie_word_embeddings = tie,
+        vocab_size = 256,
+        hidden_size = 128,
+        intermediate_size = 256,
+        num_hidden_layers = layers,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 32,
+        tie_word_embeddings = tie,
     )
     return Qwen3ForCausalLM(config).to(dtype)
 
@@ -36,9 +48,18 @@ def _tiny_qwen3_moe():
 
     torch.manual_seed(0)
     config = Qwen3MoeConfig(
-        vocab_size = 256, hidden_size = 128, intermediate_size = 256, moe_intermediate_size = 64,
-        num_hidden_layers = 2, num_attention_heads = 4, num_key_value_heads = 2, head_dim = 32,
-        num_experts = 8, num_experts_per_tok = 2, decoder_sparse_step = 1, mlp_only_layers = [],
+        vocab_size = 256,
+        hidden_size = 128,
+        intermediate_size = 256,
+        moe_intermediate_size = 64,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 32,
+        num_experts = 8,
+        num_experts_per_tok = 2,
+        decoder_sparse_step = 1,
+        mlp_only_layers = [],
     )
     return Qwen3MoeForCausalLM(config)
 
@@ -56,7 +77,11 @@ class _Expert(torch.nn.Module):
 class _RemoteMoE(torch.nn.Module):
     """Remote-code style MoE block: the router is called `wg`, which no name rule matches."""
 
-    def __init__(self, h = 2048, e = 64):
+    def __init__(
+        self,
+        h = 2048,
+        e = 64,
+    ):
         super().__init__()
         self.wg = torch.nn.Linear(h, e, bias = False)
         self.experts = torch.nn.ModuleList([_Expert(h, 32) for _ in range(e)])
@@ -74,6 +99,7 @@ class _RemoteModel(torch.nn.Module):
 
 
 # ---- the table ----------------------------------------------------------------------------------------
+
 
 def test_float8_names_and_gates_unchanged():
     # The literals main had before the registry; byte-identical behaviour for the shipped recipe.
@@ -101,9 +127,18 @@ def test_every_recipe_is_well_formed():
 
 def test_paper_recipes_encoded():
     mx = P.get_recipe("mxfp8")
-    for gemm in (mx.fwd, mx.dgrad, mx.wgrad):  # arXiv 2506.08027: e4m3 everywhere, 1x32, e8m0, round up
+    for gemm in (
+        mx.fwd,
+        mx.dgrad,
+        mx.wgrad,
+    ):  # arXiv 2506.08027: e4m3 everywhere, 1x32, e8m0, round up
         for op in (gemm.a, gemm.b):
-            assert (op.dtype, op.granularity, op.scale_dtype, op.rounding) == ("e4m3", "block1x32", "e8m0", "rceil")
+            assert (op.dtype, op.granularity, op.scale_dtype, op.rounding) == (
+                "e4m3",
+                "block1x32",
+                "e8m0",
+                "rceil",
+            )
     nv = P.get_recipe("nvfp4")  # arXiv 2509.25149
     assert nv.fwd.b.granularity == "block16x16" and nv.dgrad.b.granularity == "block16x16"
     assert nv.fwd.a.rounding == "rn" and nv.dgrad.a.rounding == "sr" and nv.wgrad.a.rounding == "sr"
@@ -122,16 +157,21 @@ def test_qat_schemes_match_prepare_model_for_qat():
     tree = ast.parse(inspect.getsource(_utils._prepare_model_for_qat))
     names = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name) and node.left.id == "qat_scheme":
+        if (
+            isinstance(node, ast.Compare)
+            and isinstance(node.left, ast.Name)
+            and node.left.id == "qat_scheme"
+        ):
             for c in node.comparators:
                 if isinstance(c, ast.Constant) and isinstance(c.value, str):
                     names.add(c.value)
     assert names, "no scheme comparisons found"
-    rows = {n[len("qat:"):] for n in P.recipes_of_kind("qat")}
+    rows = {n[len("qat:") :] for n in P.recipes_of_kind("qat")}
     assert names == rows
 
 
 # ---- refusals -----------------------------------------------------------------------------------------
+
 
 def test_resolve_shipped_values_unchanged():
     assert f8t.resolve_float8_training(None) is None
@@ -176,12 +216,16 @@ def test_gw_hp_refused_by_name_with_the_config_hint():
 def test_refusal_happens_before_any_load():
     # The loader resolves float8_training before it looks the (nonexistent) repo up or builds anything.
     from unsloth.models import loader
-
     with pytest.raises(P.PrecisionRefused, match = "MXFP6"):
-        loader.FastModel.from_pretrained(model_name = "unsloth/does-not-exist", full_finetuning = True, float8_training = "mxfp6")
+        loader.FastModel.from_pretrained(
+            model_name = "unsloth/does-not-exist", full_finetuning = True, float8_training = "mxfp6"
+        )
     with pytest.raises(P.PrecisionRefused, match = "float16"):
         loader.FastModel.from_pretrained(
-            model_name = "unsloth/does-not-exist", full_finetuning = True, float8_training = "mxfp8", dtype = torch.float16
+            model_name = "unsloth/does-not-exist",
+            full_finetuning = True,
+            float8_training = "mxfp8",
+            dtype = torch.float16,
         )
 
 
@@ -210,8 +254,16 @@ def test_gate_table_agrees_with_float8_hardware_check():
 
 
 def test_gpu_class_and_scaler_kind():
-    assert P.gpu_class((7, 5)) == "sm75" and P.gpu_class((8, 6)) == "sm80" and P.gpu_class((8, 9)) == "sm89"
-    assert P.gpu_class((9, 0)) == "sm90" and P.gpu_class((10, 0)) == "sm100" and P.gpu_class((12, 0)) == "sm120"
+    assert (
+        P.gpu_class((7, 5)) == "sm75"
+        and P.gpu_class((8, 6)) == "sm80"
+        and P.gpu_class((8, 9)) == "sm89"
+    )
+    assert (
+        P.gpu_class((9, 0)) == "sm90"
+        and P.gpu_class((10, 0)) == "sm100"
+        and P.gpu_class((12, 0)) == "sm120"
+    )
     assert P.gpu_class(None) is None and P.gpu_class((9, 0), hip = True) == "rocm"
     assert P.grad_scaler_kind("fp16", torch.float16) == "GradScaler"
     assert P.grad_scaler_kind("fp16", torch.float16, fsdp2 = True) == "ShardedGradScaler"
@@ -222,6 +274,7 @@ def test_gpu_class_and_scaler_kind():
 
 
 # ---- structural high-precision layers ------------------------------------------------------------------
+
 
 def test_routers_found_by_structure():
     moe = _tiny_qwen3_moe()
@@ -235,9 +288,14 @@ def test_hp_layers_policy():
     m = _tiny_qwen3(layers = 8, tie = True)
     keep = P.high_precision_layers(m, P.get_recipe("nvfp4").hp_layers)
     assert "lm_head" in keep and "model.embed_tokens" in keep
-    assert {k for k in keep if k.startswith("model.layers.")} == {"model.layers.6", "model.layers.7"}  # ceil(0.15 * 8)
+    assert {k for k in keep if k.startswith("model.layers.")} == {
+        "model.layers.6",
+        "model.layers.7",
+    }  # ceil(0.15 * 8)
     is_hp = P.hp_filter(m, P.HPLayerPolicy(first_n = 1, last_n = 1))
-    assert is_hp(None, "model.layers.0.mlp.up_proj") and is_hp(None, "model.layers.7.self_attn.q_proj")
+    assert is_hp(None, "model.layers.0.mlp.up_proj") and is_hp(
+        None, "model.layers.7.self_attn.q_proj"
+    )
     assert not is_hp(None, "model.layers.3.mlp.up_proj")
     assert P.decoder_layers(m) == ("model.layers", 8)
 
@@ -273,6 +331,7 @@ def test_float8_filter_unchanged_on_standard_models(build, monkeypatch):
 
 # ---- engagement ------------------------------------------------------------------------------------------
 
+
 def _emulated_config(recipe = "tensorwise"):
     from torchao.float8 import Float8LinearConfig
 
@@ -285,7 +344,9 @@ def _emulated_config(recipe = "tensorwise"):
 def test_engagement_recorded_and_strict(monkeypatch):
     m = _tiny_qwen3()
     converted = f8t.convert_model_to_float8_training(m, _emulated_config(), size_filter = False)
-    assert converted and P.engaged(m)["float8_training:Float8LinearConfig(tensorwise)"]["modules"] == len(converted)
+    assert converted and P.engaged(m)["float8_training:Float8LinearConfig(tensorwise)"][
+        "modules"
+    ] == len(converted)
 
     tiny = _tiny_qwen3()  # 128 / 256 wide: the size filter keeps every layer out
     monkeypatch.delenv("UNSLOTH_STRICT_ENGAGE", raising = False)

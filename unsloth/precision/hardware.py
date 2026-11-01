@@ -61,13 +61,21 @@ def dtype_tag(dtype) -> Optional[str]:
     if dtype is None:
         return None
     s = str(dtype).replace("torch.", "").lower()
-    return {"bfloat16": "bf16", "bf16": "bf16", "float16": "fp16", "half": "fp16", "fp16": "fp16",
-            "float32": "fp32", "float": "fp32", "fp32": "fp32"}.get(s)
+    return {
+        "bfloat16": "bf16",
+        "bf16": "bf16",
+        "float16": "fp16",
+        "half": "fp16",
+        "fp16": "fp16",
+        "float32": "fp32",
+        "float": "fp32",
+        "fp32": "fp32",
+    }.get(s)
 
 
 _DTYPE_WHY = {
     "fp16": "float16 activations are rejected by its quantizer (torchao to_mx / NVFP4 training accept "
-            "bfloat16 / float32 only); load with dtype = torch.bfloat16",
+    "bfloat16 / float32 only); load with dtype = torch.bfloat16",
     "fp32": "float32 activations are not supported by this recipe; load with dtype = torch.bfloat16",
     "bf16": "bfloat16 activations are not supported by this recipe",
 }
@@ -90,7 +98,9 @@ def check_recipe(
         raise PrecisionRefused(f"Unsloth: {r.name} training is refused: {r.refusal}")
     tag = dtype_tag(input_dtype)
     if tag is not None and tag not in r.input_dtypes:
-        raise PrecisionRefused(f"Unsloth: {r.name} cannot train with {tag} activations: {_DTYPE_WHY[tag]}.")
+        raise PrecisionRefused(
+            f"Unsloth: {r.name} cannot train with {tag} activations: {_DTYPE_WHY[tag]}."
+        )
     if mode is not None and mode not in r.modes:
         raise PrecisionRefused(
             f"Unsloth: {r.name} supports training modes {r.modes}, not {mode!r}."
@@ -110,7 +120,11 @@ def check_recipe(
     return gate
 
 
-def grad_scaler_kind(recipe, input_dtype, fsdp2: bool = False) -> str:
+def grad_scaler_kind(
+    recipe,
+    input_dtype,
+    fsdp2: bool = False,
+) -> str:
     """'none', 'GradScaler' or 'ShardedGradScaler': the loss scaler this recipe needs with these activations."""
     r: Recipe = get_recipe(recipe) if isinstance(recipe, str) else recipe
     tag = dtype_tag(input_dtype)

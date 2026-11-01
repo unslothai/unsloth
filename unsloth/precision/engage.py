@@ -35,12 +35,20 @@ def strict_engage() -> bool:
     return os.environ.get(_ENV, "0").strip().lower() in ("1", "true", "yes", "on")
 
 
-def record(model, recipe: str, count: int, detail = None) -> None:
+def record(
+    model,
+    recipe: str,
+    count: int,
+    detail = None,
+) -> None:
     try:
         table = getattr(model, "_unsloth_precision_engaged", None)
         if not isinstance(table, dict):
             table = {}
-        table[recipe] = {"modules": int(count), **({"detail": detail} if detail is not None else {})}
+        table[recipe] = {
+            "modules": int(count),
+            **({"detail": detail} if detail is not None else {}),
+        }
         model._unsloth_precision_engaged = table
     except Exception:
         pass
@@ -50,7 +58,11 @@ def engaged(model) -> Dict[str, dict]:
     return dict(getattr(model, "_unsloth_precision_engaged", None) or {})
 
 
-def require(recipe: str, count: int, why: str = "") -> bool:
+def require(
+    recipe: str,
+    count: int,
+    why: str = "",
+) -> bool:
     """True when engaged. Count 0 under strict mode raises EngagementError; otherwise returns False."""
     if count > 0:
         return True
@@ -81,7 +93,13 @@ def count_lowp_gemms():
     counts = {name: 0 for name in targets}
 
     class _Counter(TorchDispatchMode):
-        def __torch_dispatch__(self, func, types, args = (), kwargs = None):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
             packet = getattr(func, "overloadpacket", None)
             for name, op in targets.items():
                 if packet is op:

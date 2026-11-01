@@ -23,7 +23,13 @@ __all__ = [
     "hp_filter",
 ]
 
-_EXPERT_COUNT_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts", "num_routed_experts")
+_EXPERT_COUNT_KEYS = (
+    "num_experts",
+    "num_local_experts",
+    "n_routed_experts",
+    "moe_num_experts",
+    "num_routed_experts",
+)
 _SUBCONFIG_KEYS = ("text_config", "language_config", "llm_config", "decoder")
 
 
@@ -79,7 +85,8 @@ def find_routers(model) -> Dict[str, str]:
     found = {}
     for parent_name, parent in model.named_modules():
         experts = [
-            (n, c) for n, c in parent.named_children()
+            (n, c)
+            for n, c in parent.named_children()
             if "expert" in n.lower() and "shared" not in n.lower()
         ]
         counts = {_experts_count(c) for _, c in experts} - {None}
@@ -92,10 +99,19 @@ def find_routers(model) -> Dict[str, str]:
             out = _out_features(child)
             if out is None or out not in widths:
                 continue
-            if not counts and child_name.lower() not in ("gate", "router", "wg", "gate_proj", "router_proj", "score"):
+            if not counts and child_name.lower() not in (
+                "gate",
+                "router",
+                "wg",
+                "gate_proj",
+                "router_proj",
+                "score",
+            ):
                 continue
             fqn = f"{parent_name}.{child_name}" if parent_name else child_name
-            found[fqn] = f"router: {out} outputs = expert count, beside {experts[0][0] if experts else 'config'}"
+            found[fqn] = (
+                f"router: {out} outputs = expert count, beside {experts[0][0] if experts else 'config'}"
+            )
     return found
 
 
@@ -154,7 +170,9 @@ def decoder_layers(model):
             continue
         # experts lists (ModuleList of MLPs inside a block) are shorter than the layer list on real models, but
         # a tie goes to the shallower list.
-        if len(module) > best[1] or (len(module) == best[1] and best[0] is not None and name.count(".") < best[0].count(".")):
+        if len(module) > best[1] or (
+            len(module) == best[1] and best[0] is not None and name.count(".") < best[0].count(".")
+        ):
             best = (name, len(module))
     return best
 
