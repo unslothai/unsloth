@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Engagement: proof that a requested low-precision path really ran.
-
-`record` stores how many modules a recipe converted on the model (`model._unsloth_precision_engaged`).
-`require` turns "converted nothing" into an error under UNSLOTH_STRICT_ENGAGE=1 (certification runs), and is a
-no-op otherwise, so callers keep their own warning. `count_lowp_gemms` counts the scaled GEMM ops that
-actually dispatched inside a block of code."""
+"""Engagement: proof that a requested low-precision path really ran (strict mode: UNSLOTH_STRICT_ENGAGE=1)."""
 
 from __future__ import annotations
 
@@ -93,8 +88,7 @@ def count_lowp_gemms():
     counts = {name: 0 for name in targets}
 
     class _Counter(TorchDispatchMode):
-        # Stay out of torch.compile's tracing (a plain mode makes Dynamo refuse fullgraph frames) and observe the
-        # compiled artifact at runtime. Older torch has no such hook and just ignores the classmethod.
+        # Skip Dynamo tracing (a plain mode breaks fullgraph); older torch ignores this hook.
         @classmethod
         def ignore_compile_internals(cls):
             return True
