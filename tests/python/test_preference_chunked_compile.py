@@ -224,3 +224,54 @@ def test_traces_without_graph_breaks_and_matches_trl(kind, kwargs, split, masked
         for a, b in zip(out + grads, got + got_grads):
             torch.testing.assert_close(a, b, rtol = 1e-10, atol = 1e-12)
     torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("dynamic", [False, True, None], ids = ["static", "dynamic", "auto"])
+def test_engagement_counter_compiles_once(dynamic):
+    # A traced counter would recompile every step until fullgraph=True hits the limit.
+    from torch._dynamo.testing import CompileCounterWithBackend
+
+    forward = _load(True)
+    trainer = _Trainer()
+    head, batch, states = _batch(False)
+
+    def body(states):
+        outputs, _ = forward(trainer, head, head, batch, PAIRS, states, "cpo")
+        return _scalar(outputs)
+
+    body(states).backward()
+    assert trainer._unsloth_pref_chunked_calls == 1
+    torch._dynamo.reset()
+    counter = CompileCounterWithBackend("aot_eager")
+    compiled = torch.compile(body, fullgraph = True, backend = counter, dynamic = dynamic)
+    compiled(states).backward()
+    first = counter.frame_count  # dynamic=True may restart the first compile once ([0/0_1])
+    for _ in range(9):
+        compiled(states).backward()
+    assert counter.frame_count == first
+    body(states).backward()
+    assert trainer._unsloth_pref_chunked_calls == 2
+    torch._dynamo.reset()
+
+
+def test_every_engagement_counter_skips_tracing():
+    import re
+
+    root = SOURCE.parent
+    sites = 0
+    for path in (SOURCE, root / "_fused_rl_logprobs.py"):
+        tree = ast.parse(path.read_text(encoding = "utf-8"))
+        guarded = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.If)
+                and ast.unparse(node.test) == "not torch.compiler.is_compiling()"
+            ):
+                guarded.update(id(n) for n in ast.walk(node))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and re.search(
+                r"_unsloth_\w+_calls", ast.unparse(node.targets[0])
+            ):
+                sites += 1
+                assert id(node) in guarded, f"{path.name}:{node.lineno} counts inside traced code"
+    assert sites >= 10

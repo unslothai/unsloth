@@ -250,9 +250,10 @@ def ppo_score(
             "forward returned logits, not hidden states",
         )
         return None
-    route.trainer.__dict__["_unsloth_ppo_fused_calls"] = (
-        route.trainer.__dict__.get("_unsloth_ppo_fused_calls", 0) + 1
-    )
+    if not torch.compiler.is_compiling():
+        route.trainer.__dict__["_unsloth_ppo_fused_calls"] = (
+            route.trainer.__dict__.get("_unsloth_ppo_fused_calls", 0) + 1
+        )
     return out
 
 
@@ -379,9 +380,10 @@ def rloo_fused_logps(
         all_logps.append(out[0])
         if compute_entropy:
             all_entropies.append(out[1])
-    self.__dict__["_unsloth_rloo_fused_calls"] = (
-        self.__dict__.get("_unsloth_rloo_fused_calls", 0) + 1
-    )
+    if not torch.compiler.is_compiling():
+        self.__dict__["_unsloth_rloo_fused_calls"] = (
+            self.__dict__.get("_unsloth_rloo_fused_calls", 0) + 1
+        )
     logps = torch.cat(all_logps, dim = 0)
     entropies = torch.cat(all_entropies, dim = 0) if compute_entropy else None
     if traits["aux"]:
