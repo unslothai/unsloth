@@ -342,7 +342,7 @@ def test_response_payload_shape():
     status = {"scansDone": True, "filesWithIssues": [{"path": "a.pkl", "level": "malicious"}]}
     with _patch_status(status):
         payload = evaluate_file_security("evil/repo").response_payload()
-    assert set(payload) == {"unsafe_files", "security_blocked", "reason"}
+    assert set(payload) == {"unsafe_files", "security_blocked", "reason", "block_cause"}
     assert payload["security_blocked"] is True
     assert payload["unsafe_files"] == [{"path": "a.pkl", "level": "malicious"}]
 
@@ -661,6 +661,86 @@ def test_modelscope_has_no_scan_so_pickle_weights_fail_closed(monkeypatch, files
     assert [f["path"] for f in d.unsafe_files] == blocked
     if blocked:
         assert "Switch the model source to Hugging Face" in d.reason
+
+
+def _hub_error(cls):
+    response = SimpleNamespace(status_code = 404, headers = {}, url = "http://adapter", request = None)
+    return cls("404", response = response)
+
+
+def test_modelscope_missing_repo_blocks_and_names_the_source(monkeypatch):
+    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
+    with (
+        _patch_status(None),
+        patch(
+            "huggingface_hub.HfApi.list_repo_files",
+            side_effect = _hub_error(RepositoryNotFoundError),
+        ),
+    ):
+        decision = evaluate_file_security("x/y")
+    assert decision.blocked is True
+    assert decision.block_cause == "not_on_source"
+    assert "not on ModelScope" in decision.reason and "Hugging Face" in decision.reason
+
+    # A gated repo exists, so it stays "could not check".
+    with (
+        _patch_status(None),
+        patch("huggingface_hub.HfApi.list_repo_files", side_effect = _hub_error(GatedRepoError)),
+    ):
+        decision = evaluate_file_security("x/y")
+    assert decision.blocked is True
+    assert decision.block_cause == "unscannable"
+
+
+@pytest.mark.parametrize(
+    ("weight", "blocked", "cause"),
+    [("model.safetensors", False, None), ("pytorch_model.bin", True, "unscanned_weights")],
+)
+def test_modelscope_missing_repo_judges_the_cached_snapshot(
+    monkeypatch, tmp_path, weight, blocked, cause
+):
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    (tmp_path / weight).write_bytes(b"x")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
+    with (
+        _patch_status(None),
+        patch(
+            "huggingface_hub.HfApi.list_repo_files",
+            side_effect = _hub_error(RepositoryNotFoundError),
+        ),
+        patch("utils.utils.hf_cache_snapshot_dir_for_repo", return_value = tmp_path),
+    ):
+        decision = evaluate_file_security("x/y")
+    assert decision.blocked is blocked
+    assert decision.block_cause == cause
+
+
+def test_each_block_names_its_cause(monkeypatch, tmp_path):
+    with _patch_status({"filesWithIssues": [{"path": "model.pkl", "level": "unsafe"}]}):
+        assert evaluate_file_security("x/y").block_cause == "unsafe_files"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
+    with (
+        _patch_status(None),
+        patch("huggingface_hub.HfApi.list_repo_files", return_value = ["pytorch_model.bin"]),
+    ):
+        assert evaluate_file_security("x/y").block_cause == "unscanned_weights"
+    snapshot = tmp_path / "models--x--y" / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "pytorch_model.bin").write_bytes(b"x")
+    with _patch_status(None):
+        assert evaluate_file_security(str(snapshot)).block_cause == "unscanned_weights"
+
+
+def test_strongest_block_prefers_a_finding_over_a_failed_check():
+    from utils.security.file_security import strongest_block
+
+    assert strongest_block([]) == (None, None)
+    assert strongest_block([("not_on_source", "a"), ("critical_findings", "b")])[1] == "b"
+    assert strongest_block([("critical_findings", "a"), ("unsafe_files", "b")])[1] == "b"
+    assert strongest_block([(None, "a")]) == ("unscannable", "a")
 
 
 def test_modelscope_listing_failure_blocks(monkeypatch):

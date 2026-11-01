@@ -218,8 +218,8 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
-  // Chat-only hosts redirect /studio, so a Train-tab load would strand the user.
-  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  // Hosts that cannot train redirect /studio, so a Train-tab load would strand the user.
+  const trainUnavailable = usePlatformStore((s) => s.isTrainUnavailable());
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const ragAvailabilityUnknown = useRagAvailabilityStore((s) =>
     s.availabilityUnknown(),
@@ -233,9 +233,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const restoredAction = FINE_TUNE_ACTIONS.includes(storedFineTuneAction)
     ? storedFineTuneAction
     : "export";
-  // derived, not corrected: a stored "train" returns when chat-only flips off.
+  // derived, not corrected: a stored "train" returns when Train becomes available.
   const fineTuneAction =
-    chatOnly && restoredAction === "train" ? "export" : restoredAction;
+    trainUnavailable && restoredAction === "train" ? "export" : restoredAction;
   const fineTuneFormat: FineTuneFormat = "openai";
   // Search needs the main-page anchors even when a subpage is open.
   useEffect(() => {
@@ -571,7 +571,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const fineTuneBusy = loadingTraining || openingRecipe || fineTuneExporting;
   const runFineTuneAction = () => {
     if (fineTuneAction === "train") {
-      if (chatOnly) return;
+      if (trainUnavailable) return;
       void handleUseInTraining();
     } else if (fineTuneAction === "recipes") void handleOpenInRecipes();
     else void handleFineTuneExport();
@@ -1026,7 +1026,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 {FINE_TUNE_ACTIONS.map((action) => (
                   <DropdownMenuItem
                     key={action}
-                    disabled={action === "train" && chatOnly}
+                    disabled={action === "train" && trainUnavailable}
                     onSelect={() => setFineTuneAction(action)}
                   >
                     <span className="flex-1">

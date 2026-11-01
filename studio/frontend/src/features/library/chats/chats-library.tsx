@@ -1020,7 +1020,9 @@ export function ChatsLibrary({
         {filedProjects}
         {filedProjects && (
           <div className="mt-2">
-            <GroupHeading count={visibleChats.length}>{t("library.chats.sections.chats")}</GroupHeading>
+            <GroupHeading count={visibleChats.length} divider={view === "list"}>
+              {t("library.chats.sections.chats")}
+            </GroupHeading>
           </div>
         )}
         {chatListing()}
@@ -1109,7 +1111,7 @@ export function ChatsLibrary({
           groups.map((group) => (
             <section key={group.key} aria-label={groupBy === "none" ? undefined : groupLabel(group)} className="not-first:mt-6">
               {groupBy !== "none" && (
-                <GroupHeading count={groupTotals.get(group.key) ?? group.items.length}>
+                <GroupHeading count={groupTotals.get(group.key) ?? group.items.length} divider={list}>
                   {groupLabel(group)}
                 </GroupHeading>
               )}
@@ -1211,6 +1213,7 @@ export function ChatsLibrary({
       <div className="@container mt-6">
         <GroupHeading
           count={sectionProjects.length}
+          divider={view === "list"}
           countLabel={t(
             sectionProjects.length === 1
               ? "library.chats.project.oneProject"
