@@ -85,7 +85,7 @@ def _opaque_under_compile(name, fake):
         # Eager calls launch Triton directly and never dispatch the op, so count_lowp_gemms() is told here.
         @functools.wraps(fn)
         def counted(*args, **kwargs):
-            if not engage._ACTIVE or torch.compiler.is_compiling():
+            if torch.compiler.is_compiling() or not engage._active():
                 return fn(*args, **kwargs)
             entered = engage.note_lowp_gemm(f"unsloth::{name}")
             try:

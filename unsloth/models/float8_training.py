@@ -143,7 +143,8 @@ def float8_training_filter(
             return False
         if id(module) in out_heads or any(p in fqn for p in _SKIP_NAME_PARTS):
             return False
-        if fqn.rsplit(".", 1)[-1] in _SKIP_LEAF_NAMES or fqn in routers:
+        # A router found structurally can be a gating wrapper: its inner Linear is the router too.
+        if fqn.rsplit(".", 1)[-1] in _SKIP_LEAF_NAMES or any(fqn == r or fqn.startswith(r + ".") for r in routers):
             return False
         weight = module.weight
         if not weight.is_floating_point() or weight.element_size() < 2 or not weight.requires_grad:

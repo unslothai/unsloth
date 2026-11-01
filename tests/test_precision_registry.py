@@ -11,6 +11,8 @@ import importlib.util
 import inspect
 import warnings
 
+import types
+
 import pytest
 import torch
 
@@ -616,7 +618,7 @@ def test_counter_hears_eager_fp8_triton_launchers_and_not_the_fp16_gemv():
         engage.release_lowp_gemm(engage.note_lowp_gemm("unsloth::fp8_block_small_m_linear"))
     assert c["unsloth::fp8_block_small_m_linear"] == 1
     engage.note_lowp_gemm("unsloth::fp8_block_small_m_linear")  # no counter open: a no-op
-    assert c["unsloth::fp8_block_small_m_linear"] == 1 and not engage._ACTIVE
+    assert c["unsloth::fp8_block_small_m_linear"] == 1 and not engage._active()
 
     fp8 = pytest.importorskip("unsloth.kernels.fp8")
     names = fp8._EAGER_COUNTED_LOWP_GEMMS
@@ -640,15 +642,81 @@ def test_nested_counters_close_by_identity_and_delegated_gemms_count_once():
     with P.count_lowp_gemms() as outer:
         with P.count_lowp_gemms() as inner:
             pass
-        assert any(a is outer for a in engage._ACTIVE) and not any(
-            a is inner for a in engage._ACTIVE
+        assert any(a is outer for a in engage._active()) and not any(
+            a is inner for a in engage._active()
         )
         entered = engage.note_lowp_gemm("unsloth::fp8_block_matmul_torchao")
         try:  # the delegated Triton launch inside the torchao one
             engage.release_lowp_gemm(engage.note_lowp_gemm("unsloth::fp8_block_matmul_triton"))
         finally:
             engage.release_lowp_gemm(entered)
-    assert not engage._ACTIVE
+    assert not engage._active()
     assert outer["unsloth::fp8_block_matmul_torchao"] == 1
     assert outer.get("unsloth::fp8_block_matmul_triton", 0) == 0
     assert inner.get("unsloth::fp8_block_matmul_torchao", 0) == 0
+
+
+def test_float8_filter_keeps_a_wrapped_router_and_its_inner_linear_in_high_precision():
+    # Failing before: find_routers returns the gating wrapper `wg`, and only that exact fqn was excluded, so
+    # its inner `wg.proj` Linear was converted to fp8 and could flip expert choices.
+    class Gate(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(64, 16, bias = False)
+
+        def forward(self, x):
+            return self.proj(x)
+
+    class Moe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.wg = Gate()
+            self.experts = torch.nn.ModuleList(torch.nn.Linear(64, 64, bias = False) for _ in range(16))
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.moe = Moe()
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = types.SimpleNamespace(num_experts = 16, num_local_experts = 16)
+            self.layers = torch.nn.ModuleList([Block(), Block()])
+
+    m = Model()
+    routers = P.find_routers(m)
+    assert any(r.endswith("moe.wg") for r in routers), routers
+    fn = f8t.float8_training_filter(m, "tensorwise", size_filter = False)
+    assert not fn(m.layers[0].moe.wg.proj, "layers.0.moe.wg.proj")
+    assert fn(m.layers[0].moe.experts[0], "layers.0.moe.experts.0")
+
+
+def test_gemm_counters_are_per_thread():
+    # Failing before: the active-counter list was process-global, so an eager launch on one thread was
+    # counted by a counter open on another.
+    import threading
+
+    from unsloth.precision import engage
+
+    seen = {}
+    ready, go = threading.Barrier(2), threading.Event()
+
+    def worker(tag, launches):
+        with P.count_lowp_gemms() as c:
+            ready.wait()
+            for _ in range(launches):
+                engage.release_lowp_gemm(engage.note_lowp_gemm("unsloth::fp8_block_small_m_linear"))
+            go.wait(5)
+        seen[tag] = c.get("unsloth::fp8_block_small_m_linear", 0)
+
+    threads = [threading.Thread(target = worker, args = ("busy", 1)), threading.Thread(target = worker, args = ("idle", 0))]
+    for t in threads:
+        t.start()
+    import time
+
+    time.sleep(0.2)
+    go.set()
+    for t in threads:
+        t.join()
+    assert seen == {"busy": 1, "idle": 0}, seen

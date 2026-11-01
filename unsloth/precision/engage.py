@@ -93,17 +93,23 @@ LOWP_GEMM_CUSTOM_OPS = (
 )
 
 
-# Counters open right now; eager launchers that bypass dispatch (Triton fp8 kernels) report through note_lowp_gemm.
-_ACTIVE = []
-# ids of the counters already inside a counted GEMM on this thread: a GEMM that delegates to another counted
-# launcher or op (torchao block matmul -> Triton) counts once, at its outer boundary.
-_INSIDE = threading.local()
+# Per thread, like torch's dispatch-mode stack: the counters open on this thread, and the ids of those already
+# inside a counted GEMM (a GEMM that delegates to another counted launcher or op, torchao block matmul ->
+# Triton, counts once at its outer boundary). Eager launchers that bypass dispatch report via note_lowp_gemm.
+_STATE = threading.local()
+
+
+def _active():
+    active = getattr(_STATE, "active", None)
+    if active is None:
+        active = _STATE.active = []
+    return active
 
 
 def _inside():
-    ids = getattr(_INSIDE, "ids", None)
+    ids = getattr(_STATE, "inside", None)
     if ids is None:
-        ids = _INSIDE.ids = set()
+        ids = _STATE.inside = set()
     return ids
 
 
@@ -111,8 +117,8 @@ def note_lowp_gemm(name):
     """Count one GEMM in every open counter not already inside a counted GEMM; returns the ids to release
     with `release_lowp_gemm` once the call returns."""
     inside = _inside()
-    entered = [id(counts) for counts in _ACTIVE if id(counts) not in inside]
-    for counts in _ACTIVE:
+    entered = [id(counts) for counts in _active() if id(counts) not in inside]
+    for counts in _active():
         if id(counts) in entered:
             counts[name] = counts.get(name, 0) + 1
     inside.update(entered)
@@ -162,14 +168,15 @@ def count_lowp_gemms():
             finally:
                 inside.discard(id(counts))
 
-    _ACTIVE.append(counts)
+    _active().append(counts)
     try:
         with _Counter():
             yield counts
     finally:
         # By identity: nested counters start as equal dicts, and list.remove compares by value.
-        for i, active in enumerate(_ACTIVE):
-            if active is counts:
-                del _ACTIVE[i]
+        active = _active()
+        for i, entry in enumerate(active):
+            if entry is counts:
+                del active[i]
                 break
         _inside().discard(id(counts))
