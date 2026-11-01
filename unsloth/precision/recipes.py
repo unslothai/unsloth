@@ -512,6 +512,41 @@ _add(
     )
 )
 
+_add(
+    Recipe(
+        name = "fp8_lora_tensorwise",
+        kind = "frozen_base",
+        modes = ("lora",),
+        fwd = GemmPolicy(_op(E4M3, "tensor"), _op(E4M3, "tensor")),
+        dgrad = GemmPolicy(_op(E5M2, "tensor"), _op(E4M3, "tensor")),
+        hp_layers = _HP_FP8,
+        input_dtypes = ("bf16", "fp16"),
+        grad_scaler = "per_dtype",
+        compile = "opaque",
+        backend = "unsloth.kernels.fp8_lora (float8_training with LoRA on a 16-bit base)",
+        gates = {
+            "sm75": _NO_FP8_HW,
+            "sm80": _NO_FP8_HW,
+            "sm89": Gate(
+                "explicit",
+                evidence = "frozen-weight fwd + dgrad compiled 1.38-1.50x bf16 at 4096-wide shapes; the "
+                "sm89 NaN is in the weight gradient, which a frozen base never computes (" + _PROBE_L4 + ")",
+            ),
+            "sm90": Gate("unprobed", "H100 is not available to test on"),
+            "sm100": Gate("unprobed"),
+            "sm120": Gate(
+                "explicit",
+                evidence = "frozen-weight fwd + dgrad compiled 1.42-1.43x bf16 at 4096-wide shapes ("
+                + _PROBE_G4
+                + ")",
+            ),
+            "rocm": Gate("refused", "ROCm fp8 (fnuz) GEMMs are not wired for the frozen base"),
+        },
+        notes = "base GEMMs fp8, LoRA branch 16-bit (Megatron-Bridge TEFusedLoRALinear split); weight "
+        "quantized once, cached in both orientations; the fp8 GEMM writes bf16 for fp16 activations",
+    )
+)
+
 
 def get_recipe(name: str) -> Recipe:
     try:

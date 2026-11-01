@@ -88,6 +88,7 @@ from .loader_utils import (
     warn_if_bitsandbytes_quantized_nothing,
 )
 from .fsdp2_qlora import prepare_fsdp2_qlora, set_fsdp2_quant_storage
+from .float8_training import enable_fp8_lora
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_boundary_labels,
@@ -5525,6 +5526,8 @@ class FastLlamaModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        # float8_training with LoRA: fp8 frozen base, before any block compile traces the layers.
+        enable_fp8_lora(model)
         _unsloth_install_pretrain_detector(model)
         _legacy_block_compile(model)
         return model

@@ -36,7 +36,12 @@ from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .fp8_to_nf4 import track_explicit_4bit_request
 from .fsdp2_load import sharded_load_env as fsdp2_sharded_load_env
-from .float8_training import convert_model_to_float8_training, resolve_float8_training
+from .float8_training import (
+    convert_model_to_float8_training,
+    mark_fp8_lora,
+    resolve_float8_training,
+    resolve_fp8_lora,
+)
 from .mistral_format import (
     MistralFormatRedirect,
     is_mistral_format_view,
@@ -1337,10 +1342,16 @@ class FastLanguageModel(FastLlamaModel):
                 device_map = distributed_device_map
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
+        fp8_lora = None
         if kwargs.get("float8_training", None) not in (None, False) and not full_finetuning:
-            raise ValueError(
-                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
-                "their base weights frozen, so there is no fp8 training step to take."
+            # LoRA: fp8 forward + input gradient on the frozen 16-bit base (kernels/fp8_lora.py).
+            fp8_lora = resolve_fp8_lora(
+                kwargs.pop("float8_training"),
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_fp8 = load_in_fp8,
+                qat_scheme = qat_scheme,
             )
         if kwargs.get("float8_training", None) not in (None, False) and qat_scheme is not None:
             raise ValueError(
@@ -1920,6 +1931,7 @@ class FastLanguageModel(FastLlamaModel):
                 *args,
                 **kwargs,
             )
+            delegated = mark_fp8_lora(delegated, fp8_lora)
             return _mark_requested_float32(delegated, user_float32), tokenizer
 
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
@@ -2151,6 +2163,7 @@ class FastLanguageModel(FastLlamaModel):
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
         model = _mark_full_finetuning(model, False)
+        model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 
@@ -2263,12 +2276,18 @@ class FastModel(FastBaseModel):
     ):
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         user_config = kwargs.pop("config", None)
-        float8_training = resolve_float8_training(kwargs.pop("float8_training", None), dtype = dtype)
-        if float8_training is not None and not full_finetuning:
-            raise ValueError(
-                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
-                "their base weights frozen, so there is no fp8 training step to take."
+        fp8_lora = None
+        if not full_finetuning and kwargs.get("float8_training", None) not in (None, False):
+            # LoRA: fp8 forward + input gradient on the frozen 16-bit base (kernels/fp8_lora.py).
+            fp8_lora = resolve_fp8_lora(
+                kwargs.pop("float8_training"),
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_fp8 = load_in_fp8,
+                qat_scheme = qat_scheme,
             )
+        float8_training = resolve_float8_training(kwargs.pop("float8_training", None), dtype = dtype)
         if float8_training is not None and qat_scheme is not None:
             raise ValueError(
                 "Unsloth: `float8_training` and `qat_scheme` cannot be combined. QAT swaps the Linear "
@@ -3641,6 +3660,7 @@ class FastModel(FastBaseModel):
             print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 

@@ -484,6 +484,14 @@ def _has_packed_qweight(proj):
     )
 
 
+def _fp8_lora_state(base_layer, W):
+    """The fp8 frozen-base state (kernels/fp8_lora.py, float8_training with LoRA), refreshed if W changed."""
+    state = base_layer.__dict__.get("_unsloth_fp8_lora")
+    if state is None or W.requires_grad:
+        return None
+    return state.refresh(W)
+
+
 def _is_packed_state(quant_state):
     return getattr(type(quant_state), "_unsloth_packed_weight_state", False)
 
@@ -527,6 +535,8 @@ def get_lora_parameters(proj):
 
     if packed is not None:
         W_quant = packed[1]
+    elif W_quant is None:
+        W_quant = _fp8_lora_state(base_layer, W)
 
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None
@@ -590,6 +600,8 @@ def get_lora_parameters_bias(proj):
 
     if packed is not None:
         W_quant = packed[1]
+    elif W_quant is None:
+        W_quant = _fp8_lora_state(base_layer, W)
 
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None, base_layer.bias
