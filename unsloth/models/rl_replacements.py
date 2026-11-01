@@ -3322,11 +3322,14 @@ def _unsloth_vllm_merged_weight(module, weight):
                 delta = module.get_delta_weight(adapter).float()
             else:
                 continue
-            delta = delta.to(weight.device).reshape(weight.shape)
-            merged = delta if merged is None else merged + delta
+            # A host weight (an fp8 LoRA base keeps its exact master in host RAM) merges on the adapter's
+            # device: the vLLM server broadcast (NCCL) takes CUDA tensors only.
+            device = weight.device if weight.device.type != "cpu" else delta.device
+            delta = delta.to(device).reshape(weight.shape)
+            merged = delta if merged is None else merged + delta.to(merged.device)
     if merged is None:
         return weight.data
-    return (weight.float() + merged).to(weight.dtype)
+    return (weight.to(merged.device).float() + merged).to(weight.dtype)
 
 
 def _unsloth_vllm_tuner_groups(model):

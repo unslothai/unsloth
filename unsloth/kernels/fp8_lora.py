@@ -319,14 +319,27 @@ def _out_dtype(dtype):
 _ROWWISE_BF16_ONLY = set()
 
 
+def _rowwise_ok(dtype, device) -> bool:
+    # fp16 needs float32 out; where rowwise cannot write it, the caller runs the tensorwise GEMM instead.
+    return dtype != torch.float16 or device not in _ROWWISE_BF16_ONLY
+
+
 def _rowwise_scaled_mm(a, b, scale_a, scale_b, dtype, fast_accum):
+    """None for fp16 when this device's rowwise GEMM refuses float32 out: bf16 would round 65504 to an inf."""
     out_dtype = _out_dtype(dtype)
     if out_dtype == torch.float32 and a.device not in _ROWWISE_BF16_ONLY:
         try:
             return _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum)
         except RuntimeError:
             _ROWWISE_BF16_ONLY.add(a.device)
+    if dtype == torch.float16:
+        return None
     return _scaled_mm(a, b, scale_a, scale_b, torch.bfloat16, fast_accum)
+
+
+def _weight_scale(w_inv):
+    # Rowwise w_inv is the weight's one tensorwise scale broadcast per output column.
+    return w_inv.reshape(-1)[0] if w_inv.dim() == 2 else w_inv
 
 
 def _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum):
@@ -381,12 +394,15 @@ def fp8_lora_fwd(x: torch.Tensor, w8: torch.Tensor, w_inv: torch.Tensor) -> torc
     """x [M, K] (16-bit) @ dequant(w8 [N, K]).T -> [M, N] in x.dtype. w_inv: 0-d (tensorwise activations) or
     [1, N] (rowwise activations: the weight's tensorwise scale per output column)."""
     FP8_LORA_STATS["fwd"] += 1
-    if w_inv.dim() == 2:
+    out = None
+    if w_inv.dim() == 2 and _rowwise_ok(x.dtype, x.device):
         x8, x_inv = quantize_rowwise(x, E4M3)
         out = _rowwise_scaled_mm(x8, w8.t(), x_inv, w_inv, x.dtype, _FWD_FAST_ACCUM)
-    else:
+    if out is None:
         x8, x_inv = quantize_tensorwise(x, E4M3)
-        out = _scaled_mm(x8, w8.t(), x_inv, w_inv, _out_dtype(x.dtype), _FWD_FAST_ACCUM)
+        out = _scaled_mm(
+            x8, w8.t(), x_inv, _weight_scale(w_inv), _out_dtype(x.dtype), _FWD_FAST_ACCUM
+        )
     return out if out.dtype == x.dtype else out.to(x.dtype)
 
 
@@ -403,15 +419,18 @@ def fp8_lora_dgrad(
     Inductor-generated fp8 transpose (those write corrupt bytes for non-square tile configs on sm89)."""
     FP8_LORA_STATS["dgrad"] += 1
     w8t = w8 if w_is_t else fp8_transpose(w8)
-    if w_inv.dim() == 2:
+    out = None
+    if w_inv.dim() == 2 and _rowwise_ok(dy.dtype, dy.device):
         # Rowwise gradients are e4m3 (torchao's rowwise recipe; per-token scales need no e5m2 range).
         dy8, dy_inv = quantize_rowwise(dy, E4M3)
         out = _rowwise_scaled_mm(dy8, w8t.t(), dy_inv, w_inv, dy.dtype, _DGRAD_FAST_ACCUM)
-    else:
+    if out is None:
         dy8, dy_inv = quantize_tensorwise(
             dy, E5M2 if _DGRAD_DTYPE in (None, "auto") else _DGRAD_DTYPE
         )
-        out = _scaled_mm(dy8, w8t.t(), dy_inv, w_inv, _out_dtype(dy.dtype), _DGRAD_FAST_ACCUM)
+        out = _scaled_mm(
+            dy8, w8t.t(), dy_inv, _weight_scale(w_inv), _out_dtype(dy.dtype), _DGRAD_FAST_ACCUM
+        )
     return out if out.dtype == dy.dtype else out.to(dy.dtype)
 
 

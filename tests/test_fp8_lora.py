@@ -1160,3 +1160,63 @@ def test_a_variant_adapter_restores_the_master_before_placement(
     except (TypeError, ValueError) as exc:
         pytest.skip(f"this PEFT cannot build {variant} here: {exc}")
     assert seen and not any(seen)
+
+
+def test_rowwise_fp16_without_float32_out_stays_finite(rowwise, monkeypatch):
+    # Failing before: where rowwise _scaled_mm refuses float32 out (torch 2.8), the retry wrote bf16, which rounds
+    # 65504 to 65536 and the fp16 cast made it inf. fp16 now takes the tensorwise GEMM there.
+    real = torch._scaled_mm
+
+    def refuse_fp32_rowwise(
+        a,
+        b,
+        *args,
+        scale_a = None,
+        out_dtype = None,
+        **kwargs,
+    ):
+        if out_dtype == torch.float32 and scale_a is not None and scale_a.numel() > 1:
+            raise RuntimeError(
+                "Only bf16 high precision output types are supported for row-wise scaling."
+            )
+        return real(a, b, *args, scale_a = scale_a, out_dtype = out_dtype, **kwargs)
+
+    monkeypatch.setattr(torch, "_scaled_mm", refuse_fp32_rowwise)
+    monkeypatch.setattr(FL, "_ROWWISE_BF16_ONLY", set())
+    W = torch.full((32, 64), 0.5, dtype = torch.float16)
+    state = FL.Fp8LoRABaseState(W)
+    assert state.w_inv_fwd.dim() == 2
+    x = torch.full((16, 64), 2047.0, dtype = torch.float16)
+    assert torch.isfinite(state.matmul(x, W)).all()
+    assert torch.isfinite(state.matmul(x, W)).all()  # the refusal is remembered, still finite
+    dy = torch.full((16, 32), 4094.0, dtype = torch.float16)
+    assert torch.isfinite(state.dgrad(dy, W)).all()
+    # bf16 activations keep the rowwise GEMM with bf16 out.
+    Wb = W.bfloat16()
+    y = FL.Fp8LoRABaseState(Wb).matmul(torch.randn(16, 64).bfloat16(), Wb)
+    assert y.dtype == torch.bfloat16
+
+
+def test_vllm_server_merge_of_a_host_master_lands_on_the_adapter_device():
+    # Failing before: the plain-LoRA merge moved the delta to weight.device, so an offloaded fp8 base (master in
+    # host RAM) produced a CPU tensor, which the vLLM server's NCCL broadcast refuses. Meta stands in for CUDA.
+    from types import SimpleNamespace
+
+    from unsloth.models.rl_replacements import _unsloth_vllm_merged_weight
+
+    lora_A = torch.nn.Linear(64, 4, bias = False, device = "meta")
+    lora_B = torch.nn.Linear(4, 32, bias = False, device = "meta")
+    module = SimpleNamespace(
+        active_adapters = ["default"],
+        lora_A = {"default": lora_A},
+        lora_B = {"default": lora_B},
+        scaling = {"default": 2.0},
+    )
+    weight = torch.nn.Parameter(torch.randn(32, 64).bfloat16(), requires_grad = False)
+    merged = _unsloth_vllm_merged_weight(module, weight)
+    assert merged.device.type == "meta" and merged.dtype == torch.bfloat16
+    # A resident base still merges on its own device.
+    lora_A.to_empty(device = "cpu")
+    lora_B.to_empty(device = "cpu")
+    module.lora_A["default"], module.lora_B["default"] = lora_A, lora_B
+    assert _unsloth_vllm_merged_weight(module, weight).device.type == "cpu"
