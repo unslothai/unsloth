@@ -2765,6 +2765,62 @@ class TestAnthropicPassthroughStreamAdapter:
         asyncio.run(run())
         assert captured["body"].get("chat_template_kwargs") == expected
 
+    @pytest.mark.parametrize("upstream_error", [False, True])
+    def test_stream_stopped_by_the_server_does_not_look_finished(self, monkeypatch, upstream_error):
+        import routes.inference as inf_mod
+
+        cancel_event = threading.Event()
+
+        async def upstream_lines():
+            chunk = {"choices": [{"delta": {"content": "Once"}}]}
+            yield f"data: {json.dumps(chunk)}\n\n".encode()
+            cancel_event.set()
+            await asyncio.sleep(0.2)
+            if upstream_error:
+                raise httpx.ReadError("closed by cancel")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content = upstream_lines(),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def _client(*args, **kwargs):
+            return real_async_client(transport = transport, timeout = kwargs.get("timeout", 600))
+
+        monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
+        backend = SimpleNamespace(
+            base_url = "http://llama.test",
+            context_length = 4096,
+            count_chat_tokens = lambda *args, **kwargs: 2,
+        )
+
+        async def run():
+            response = await _anthropic_passthrough_stream(
+                self._Request(),
+                cancel_event,
+                backend,
+                [{"role": "user", "content": "hi"}],
+                [{"type": "function", "function": {"name": "lookup", "parameters": {}}}],
+                0.7,
+                0.95,
+                20,
+                16,
+                "msg_1",
+                "test-model",
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "content_block_delta")[0]["delta"]["text"] == "Once"
+        assert self._payloads(lines, "message_delta") == []
+        assert self._payloads(lines, "message_stop") == []
+
 
 class TestReasoningContentReachesTheClient:
     """llama-server puts the thinking trace in `reasoning_content`, not `content`.

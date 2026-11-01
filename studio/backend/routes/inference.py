@@ -45570,6 +45570,9 @@ async def _anthropic_passthrough_stream(
             finally:
                 _release_admission(tracker = _tracker)
 
+        if cancel_event.is_set():
+            return
+
         for line in emitter.finish():
             yield line
 
