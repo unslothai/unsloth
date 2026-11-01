@@ -8,10 +8,13 @@ export const fr = {
   chatBackground: {
     noBackground: "Aucun arrière-plan",
     sizing: "Dimensionnement de l’image",
+    sizingPosition: "Dimensionnement et position de l’image",
     fill: "Remplir",
     fit: "Ajuster",
     stretch: "Étirer",
     original: "Taille d’origine",
+    fitWidth: "Ajuster à la largeur",
+    fitHeight: "Ajuster à la hauteur",
     zoom: "Zoom",
     outline: "Contour du champ de message",
     fade: "Fondu vers l’arrière-plan",
@@ -30,6 +33,12 @@ export const fr = {
     visibility: "Visibilité",
     blur: "Flou de l’image",
     position: "Position",
+    horizontal: "Position horizontale",
+    vertical: "Position verticale",
+    scope: "Afficher sur",
+    scopeNewChat: "Page de nouvelle discussion",
+    scopeChats: "Discussions",
+    scopeAll: "Toutes les pages",
     positionValue: "Horizontal {x} %, vertical {y} %",
     newChat: "Nouveau chat",
     conversation: "Conversation",
@@ -2358,6 +2367,22 @@ export const fr = {
         label: "Un bonbon ou un sort",
         description:
           "Thèmes d’Halloween et salutations effrayantes, jusqu’au 1er novembre.",
+      },
+      code: {
+        title: "Code",
+        fontDescription: "Blocs de code dans le chat, aperçus de fichiers et exemples d’API.",
+        lineNumbers: {
+          label: "Numéros de ligne",
+          description: "Numéroter les lignes des blocs de code dans le chat.",
+        },
+        wordWrap: {
+          label: "Retour à la ligne",
+          description: "Renvoyer à la ligne les lignes longues des blocs de code au lieu de défiler horizontalement.",
+        },
+        ligatures: {
+          label: "Ligatures de police",
+          description: "Fusionner des symboles comme => et != en un seul glyphe quand la police de code le permet.",
+        },
       },
       custom: {
         chatWidth: {

@@ -8,10 +8,13 @@ export const he = {
   chatBackground: {
     noBackground: "ללא רקע",
     sizing: "התאמת גודל תמונה",
+    sizingPosition: "גודל ומיקום התמונה",
     fill: "מילוי",
     fit: "התאמה",
     stretch: "מתיחה",
     original: "גודל מקורי",
+    fitWidth: "התאמה לרוחב",
+    fitHeight: "התאמה לגובה",
     zoom: "זום",
     outline: "מסגרת שדה ההודעה",
     fade: "דעיכה אל הרקע",
@@ -30,6 +33,12 @@ export const he = {
     visibility: "נראות",
     blur: "טשטוש תמונה",
     position: "מיקום",
+    horizontal: "מיקום אופקי",
+    vertical: "מיקום אנכי",
+    scope: "הצגה ב",
+    scopeNewChat: "דף צ׳אט חדש",
+    scopeChats: "צ׳אטים",
+    scopeAll: "כל הדפים",
     positionValue: "אופקי {x}%, אנכי {y}%",
     newChat: "צ׳אט חדש",
     conversation: "שיחה",
@@ -2385,6 +2394,22 @@ export const he = {
         label: "ממתק או תעלול",
         description:
           "ערכות נושא של ליל כל הקדושים וברכות מפחידות, עד 1 בנובמבר.",
+      },
+      code: {
+        title: "קוד",
+        fontDescription: "בלוקי קוד בצ׳אט, תצוגות מקדימות של קבצים ודוגמאות API.",
+        lineNumbers: {
+          label: "מספרי שורות",
+          description: "מספור השורות של בלוקי קוד בצ׳אט.",
+        },
+        wordWrap: {
+          label: "גלישת שורות",
+          description: "גלישת שורות ארוכות בבלוקי קוד במקום גלילה הצידה.",
+        },
+        ligatures: {
+          label: "ליגטורות גופן",
+          description: "איחוד סמלים כמו => ו-!= לגליף אחד כשגופן הקוד תומך בכך.",
+        },
       },
       custom: {
         chatWidth: {

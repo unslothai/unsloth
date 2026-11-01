@@ -5,10 +5,13 @@ export const sv = {
   chatBackground: {
     noBackground: "Ingen bakgrund",
     sizing: "Bildstorlek",
+    sizingPosition: "Bildstorlek och position",
     fill: "Fyll",
     fit: "Anpassa",
     stretch: "Sträck ut",
     original: "Originalstorlek",
+    fitWidth: "Anpassa till bredd",
+    fitHeight: "Anpassa till höjd",
     zoom: "Zoom",
     outline: "Kontur runt meddelandefältet",
     fade: "Tona ut mot bakgrunden",
@@ -27,6 +30,12 @@ export const sv = {
     visibility: "Synlighet",
     blur: "Bildoskärpa",
     position: "Position",
+    horizontal: "Horisontell position",
+    vertical: "Vertikal position",
+    scope: "Visa på",
+    scopeNewChat: "Sidan för ny chatt",
+    scopeChats: "Chattar",
+    scopeAll: "Alla sidor",
     positionValue: "Horisontellt {x} %, vertikalt {y} %",
     newChat: "Ny chatt",
     conversation: "Konversation",
@@ -2457,6 +2466,22 @@ export const sv = {
         label: "Bus eller godis",
         description:
           "Halloweenteman och kusliga hälsningar, till 1 november.",
+      },
+      code: {
+        title: "Kod",
+        fontDescription: "Kodblock i chatten, filförhandsvisningar och API-exempel.",
+        lineNumbers: {
+          label: "Radnummer",
+          description: "Numrera raderna i kodblock i chatten.",
+        },
+        wordWrap: {
+          label: "Radbrytning",
+          description: "Bryt långa rader i kodblock i stället för att rulla i sidled.",
+        },
+        ligatures: {
+          label: "Ligaturer",
+          description: "Slå ihop tecken som => och != till ett tecken när kodtypsnittet stöder det.",
+        },
       },
       custom: {
         chatWidth: {

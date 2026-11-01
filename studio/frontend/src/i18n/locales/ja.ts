@@ -9,10 +9,13 @@ export const ja = {
   chatBackground: {
     noBackground: "背景なし",
     sizing: "画像のサイズ調整",
+    sizingPosition: "画像のサイズと位置",
     fill: "埋める",
     fit: "全体を表示",
     stretch: "引き伸ばす",
     original: "元のサイズ",
+    fitWidth: "幅に合わせる",
+    fitHeight: "高さに合わせる",
     zoom: "ズーム",
     outline: "入力欄の枠線",
     fade: "背景にフェード",
@@ -31,6 +34,12 @@ export const ja = {
     visibility: "表示強度",
     blur: "画像のぼかし",
     position: "位置",
+    horizontal: "水平位置",
+    vertical: "垂直位置",
+    scope: "表示する場所",
+    scopeNewChat: "新規チャットページ",
+    scopeChats: "チャット",
+    scopeAll: "すべてのページ",
     positionValue: "横 {x}%、縦 {y}%",
     newChat: "新しいチャット",
     conversation: "会話",
@@ -2312,6 +2321,22 @@ export const ja = {
         label: "トリック・オア・トリート",
         description:
           "11月1日まで、ハロウィンのテーマと怖いあいさつを楽しめます。",
+      },
+      code: {
+        title: "コード",
+        fontDescription: "チャット内のコードブロック、ファイルのプレビュー、API の例。",
+        lineNumbers: {
+          label: "行番号",
+          description: "チャット内のコードブロックに行番号を表示します。",
+        },
+        wordWrap: {
+          label: "折り返し",
+          description: "コードブロックの長い行を横スクロールせずに折り返します。",
+        },
+        ligatures: {
+          label: "合字",
+          description: "コードフォントが対応していれば、=> や != などの記号を 1 つの字形で表示します。",
+        },
       },
       custom: {
         chatWidth: {

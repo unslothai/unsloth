@@ -8,10 +8,13 @@ export const ar = {
   chatBackground: {
     noBackground: "بدون خلفية",
     sizing: "تحجيم الصورة",
+    sizingPosition: "تحجيم الصورة والموضع",
     fill: "ملء",
     fit: "احتواء",
     stretch: "تمديد",
     original: "الحجم الأصلي",
+    fitWidth: "ملاءمة العرض",
+    fitHeight: "ملاءمة الارتفاع",
     zoom: "تكبير",
     outline: "إطار حقل الرسالة",
     fade: "تلاشي إلى الخلفية",
@@ -30,6 +33,12 @@ export const ar = {
     visibility: "الظهور",
     blur: "تمويه الصورة",
     position: "الموضع",
+    horizontal: "الموضع الأفقي",
+    vertical: "الموضع العمودي",
+    scope: "الإظهار في",
+    scopeNewChat: "صفحة المحادثة الجديدة",
+    scopeChats: "المحادثات",
+    scopeAll: "كل الصفحات",
     positionValue: "أفقي {x}%، عمودي {y}%",
     newChat: "دردشة جديدة",
     conversation: "محادثة",
@@ -2330,6 +2339,22 @@ export const ar = {
         label: "حلوى أم خدعة",
         description:
           "سمات الهالوين وتحيات مخيفة حتى 1 نوفمبر.",
+      },
+      code: {
+        title: "الشيفرة",
+        fontDescription: "كتل الشيفرة في المحادثة ومعاينات الملفات وأمثلة API.",
+        lineNumbers: {
+          label: "أرقام الأسطر",
+          description: "ترقيم أسطر كتل الشيفرة في المحادثة.",
+        },
+        wordWrap: {
+          label: "التفاف الأسطر",
+          description: "التفاف الأسطر الطويلة في كتل الشيفرة بدل التمرير أفقيًا.",
+        },
+        ligatures: {
+          label: "الحروف المركّبة",
+          description: "دمج رموز مثل => و != في حرف واحد عندما يدعم خط الشيفرة ذلك.",
+        },
       },
       custom: {
         chatWidth: {

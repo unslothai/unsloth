@@ -8,10 +8,13 @@ export const es419 = {
   chatBackground: {
     noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
+    sizingPosition: "Tamaño y posición de imagen",
     fill: "Rellenar",
     fit: "Ajustar",
     stretch: "Estirar",
     original: "Tamaño original",
+    fitWidth: "Ajustar al ancho",
+    fitHeight: "Ajustar a la altura",
     zoom: "Zoom",
     outline: "Contorno del campo de mensaje",
     fade: "Desvanecer hacia el fondo",
@@ -30,6 +33,12 @@ export const es419 = {
     visibility: "Visibilidad",
     blur: "Desenfoque de imagen",
     position: "Posición",
+    horizontal: "Posición horizontal",
+    vertical: "Posición vertical",
+    scope: "Mostrar en",
+    scopeNewChat: "Página de chat nuevo",
+    scopeChats: "Chats",
+    scopeAll: "Todas las páginas",
     positionValue: "Horizontal {x} %, vertical {y} %",
     newChat: "Nuevo chat",
     conversation: "Conversación",
@@ -2563,6 +2572,22 @@ export const es419 = {
         label: "Dulce o truco",
         description:
           "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
+      },
+      code: {
+        title: "Código",
+        fontDescription: "Bloques de código en el chat, vistas previas de archivos y ejemplos de la API.",
+        lineNumbers: {
+          label: "Números de línea",
+          description: "Numerar las líneas de los bloques de código en el chat.",
+        },
+        wordWrap: {
+          label: "Ajuste de línea",
+          description: "Ajustar las líneas largas en los bloques de código en lugar de desplazarse de lado.",
+        },
+        ligatures: {
+          label: "Ligaduras tipográficas",
+          description: "Unir símbolos como => y != en un solo glifo cuando la fuente de código lo admite.",
+        },
       },
       custom: {
         chatWidth: {

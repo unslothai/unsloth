@@ -8,10 +8,13 @@ export const th = {
   chatBackground: {
     noBackground: "ไม่มีพื้นหลัง",
     sizing: "การปรับขนาดภาพ",
+    sizingPosition: "ขนาดและตำแหน่งภาพ",
     fill: "เติมเต็ม",
     fit: "พอดี",
     stretch: "ยืด",
     original: "ขนาดต้นฉบับ",
+    fitWidth: "พอดีความกว้าง",
+    fitHeight: "พอดีความสูง",
     zoom: "ซูม",
     outline: "เส้นขอบช่องข้อความ",
     fade: "จางเข้าสู่พื้นหลัง",
@@ -30,6 +33,12 @@ export const th = {
     visibility: "การมองเห็น",
     blur: "ความเบลอของภาพ",
     position: "ตำแหน่ง",
+    horizontal: "ตำแหน่งแนวนอน",
+    vertical: "ตำแหน่งแนวตั้ง",
+    scope: "แสดงบน",
+    scopeNewChat: "หน้าแชทใหม่",
+    scopeChats: "แชท",
+    scopeAll: "ทุกหน้า",
     positionValue: "แนวนอน {x}% แนวตั้ง {y}%",
     newChat: "แชทใหม่",
     conversation: "การสนทนา",
@@ -2421,6 +2430,22 @@ export const th = {
       trickOrTreat: {
         label: "หลอกหรือเลี้ยง",
         description: "ธีมฮาโลวีนและคำทักทายสยองขวัญ จนถึง 1 พฤศจิกายน",
+      },
+      code: {
+        title: "โค้ด",
+        fontDescription: "บล็อกโค้ดในแชท ตัวอย่างไฟล์ และตัวอย่าง API",
+        lineNumbers: {
+          label: "หมายเลขบรรทัด",
+          description: "แสดงหมายเลขบรรทัดของบล็อกโค้ดในแชท",
+        },
+        wordWrap: {
+          label: "ตัดบรรทัด",
+          description: "ตัดบรรทัดยาวในบล็อกโค้ดแทนการเลื่อนด้านข้าง",
+        },
+        ligatures: {
+          label: "อักษรควบ",
+          description: "รวมสัญลักษณ์อย่าง => และ != เป็นอักขระเดียวเมื่อฟอนต์โค้ดรองรับ",
+        },
       },
       custom: {
         chatWidth: {

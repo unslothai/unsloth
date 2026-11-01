@@ -8,10 +8,13 @@ export const ru = {
   chatBackground: {
     noBackground: "Без фона",
     sizing: "Масштабирование изображения",
+    sizingPosition: "Масштаб и положение изображения",
     fill: "Заполнить",
     fit: "Вписать",
     stretch: "Растянуть",
     original: "Исходный размер",
+    fitWidth: "По ширине",
+    fitHeight: "По высоте",
     zoom: "Масштаб",
     outline: "Контур поля сообщения",
     fade: "Плавный переход к фону",
@@ -30,6 +33,12 @@ export const ru = {
     visibility: "Видимость",
     blur: "Размытие изображения",
     position: "Положение",
+    horizontal: "Положение по горизонтали",
+    vertical: "Положение по вертикали",
+    scope: "Показывать",
+    scopeNewChat: "На странице нового чата",
+    scopeChats: "В чатах",
+    scopeAll: "На всех страницах",
     positionValue: "По горизонтали {x}%, по вертикали {y}%",
     newChat: "Новый чат",
     conversation: "Переписка",
@@ -2340,6 +2349,22 @@ export const ru = {
         label: "Сладость или гадость",
         description:
           "Темы Хэллоуина и жуткие приветствия до 1 ноября.",
+      },
+      code: {
+        title: "Код",
+        fontDescription: "Блоки кода в чате, предпросмотр файлов и примеры API.",
+        lineNumbers: {
+          label: "Номера строк",
+          description: "Нумеровать строки блоков кода в чате.",
+        },
+        wordWrap: {
+          label: "Перенос строк",
+          description: "Переносить длинные строки в блоках кода вместо горизонтальной прокрутки.",
+        },
+        ligatures: {
+          label: "Лигатуры шрифта",
+          description: "Объединять символы вроде => и != в один глиф, если шрифт кода это поддерживает.",
+        },
       },
       custom: {
         chatWidth: {

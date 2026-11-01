@@ -8,10 +8,13 @@ export const pl = {
   chatBackground: {
     noBackground: "Brak tła",
     sizing: "Skalowanie obrazu",
+    sizingPosition: "Skalowanie i pozycja obrazu",
     fill: "Wypełnij",
     fit: "Dopasuj",
     stretch: "Rozciągnij",
     original: "Oryginalny rozmiar",
+    fitWidth: "Dopasuj do szerokości",
+    fitHeight: "Dopasuj do wysokości",
     zoom: "Powiększenie",
     outline: "Obramowanie pola wiadomości",
     fade: "Przenikanie do tła",
@@ -30,6 +33,12 @@ export const pl = {
     visibility: "Widoczność",
     blur: "Rozmycie obrazu",
     position: "Pozycja",
+    horizontal: "Pozycja w poziomie",
+    vertical: "Pozycja w pionie",
+    scope: "Pokazuj na",
+    scopeNewChat: "Stronie nowego czatu",
+    scopeChats: "Czatach",
+    scopeAll: "Wszystkich stronach",
     positionValue: "Poziomo {x}%, pionowo {y}%",
     newChat: "Nowy czat",
     conversation: "Rozmowa",
@@ -2558,6 +2567,22 @@ export const pl = {
       trickOrTreat: {
         label: "Cukierek albo psikus",
         description: "Motywy Halloween i upiorne powitania, do 1 listopada.",
+      },
+      code: {
+        title: "Kod",
+        fontDescription: "Bloki kodu na czacie, podglądy plików i przykłady API.",
+        lineNumbers: {
+          label: "Numery wierszy",
+          description: "Numeruj wiersze bloków kodu na czacie.",
+        },
+        wordWrap: {
+          label: "Zawijanie wierszy",
+          description: "Zawijaj długie wiersze w blokach kodu zamiast przewijać w poziomie.",
+        },
+        ligatures: {
+          label: "Ligatury czcionki",
+          description: "Łącz symbole takie jak => i != w jeden glif, jeśli czcionka kodu to obsługuje.",
+        },
       },
       custom: {
         chatWidth: {

@@ -5,10 +5,13 @@ export const en = {
   chatBackground: {
     noBackground: "No background",
     sizing: "Image sizing",
+    sizingPosition: "Image sizing & position",
     fill: "Fill",
     fit: "Fit",
     stretch: "Stretch",
     original: "Original size",
+    fitWidth: "Fit width",
+    fitHeight: "Fit height",
     zoom: "Zoom",
     outline: "Composer outline",
     fade: "Fade to background",
@@ -27,6 +30,12 @@ export const en = {
     visibility: "Visibility",
     blur: "Image blur",
     position: "Position",
+    horizontal: "Horizontal position",
+    vertical: "Vertical position",
+    scope: "Show on",
+    scopeNewChat: "New chat page",
+    scopeChats: "Chats",
+    scopeAll: "All pages",
     positionValue: "Horizontal {x}%, vertical {y}%",
     newChat: "New chat",
     conversation: "Conversation",
@@ -2345,6 +2354,22 @@ export const en = {
         label: "Trick or treat",
         description:
           "Halloween themes and spooky greetings, until November 1.",
+      },
+      code: {
+        title: "Code",
+        fontDescription: "Code blocks in chat, file previews and API examples.",
+        lineNumbers: {
+          label: "Line numbers",
+          description: "Number the lines of code blocks in chat.",
+        },
+        wordWrap: {
+          label: "Word wrap",
+          description: "Wrap long lines in code blocks instead of scrolling sideways.",
+        },
+        ligatures: {
+          label: "Font ligatures",
+          description: "Join symbols such as => and != into one glyph when the code font supports it.",
+        },
       },
       custom: {
         chatWidth: {

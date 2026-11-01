@@ -8,10 +8,13 @@ export const tr = {
   chatBackground: {
     noBackground: "Arka plan yok",
     sizing: "Görüntü boyutlandırma",
+    sizingPosition: "Görüntü boyutu ve konumu",
     fill: "Doldur",
     fit: "Sığdır",
     stretch: "Uzat",
     original: "Özgün boyut",
+    fitWidth: "Genişliğe sığdır",
+    fitHeight: "Yüksekliğe sığdır",
     zoom: "Yakınlaştırma",
     outline: "Mesaj kutusu kenarlığı",
     fade: "Arka plana doğru soldur",
@@ -30,6 +33,12 @@ export const tr = {
     visibility: "Görünürlük",
     blur: "Görüntü bulanıklığı",
     position: "Konum",
+    horizontal: "Yatay konum",
+    vertical: "Dikey konum",
+    scope: "Gösterileceği yer",
+    scopeNewChat: "Yeni sohbet sayfası",
+    scopeChats: "Sohbetler",
+    scopeAll: "Tüm sayfalar",
     positionValue: "Yatay %{x}, dikey %{y}",
     newChat: "Yeni sohbet",
     conversation: "Sohbet",
@@ -2520,6 +2529,22 @@ export const tr = {
         label: "Şeker mi şaka mı",
         description:
           "1 Kasım'a kadar Cadılar Bayramı temaları ve ürkütücü selamlamalar.",
+      },
+      code: {
+        title: "Kod",
+        fontDescription: "Sohbetteki kod blokları, dosya önizlemeleri ve API örnekleri.",
+        lineNumbers: {
+          label: "Satır numaraları",
+          description: "Sohbetteki kod bloklarının satırlarını numaralandırır.",
+        },
+        wordWrap: {
+          label: "Satır kaydırma",
+          description: "Kod bloklarındaki uzun satırları yana kaydırmak yerine alt satıra geçirir.",
+        },
+        ligatures: {
+          label: "Yazı tipi bitişik harfleri",
+          description: "Kod yazı tipi destekliyorsa => ve != gibi simgeleri tek bir karakterde birleştirir.",
+        },
       },
       custom: {
         chatWidth: {

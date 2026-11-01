@@ -8,10 +8,13 @@ export const ko = {
   chatBackground: {
     noBackground: "배경 없음",
     sizing: "이미지 크기 조정",
+    sizingPosition: "이미지 크기 및 위치",
     fill: "채우기",
     fit: "맞추기",
     stretch: "늘이기",
     original: "원본 크기",
+    fitWidth: "너비에 맞추기",
+    fitHeight: "높이에 맞추기",
     zoom: "확대",
     outline: "메시지 입력창 테두리",
     fade: "배경으로 페이드",
@@ -30,6 +33,12 @@ export const ko = {
     visibility: "표시 강도",
     blur: "이미지 흐림",
     position: "위치",
+    horizontal: "가로 위치",
+    vertical: "세로 위치",
+    scope: "표시 위치",
+    scopeNewChat: "새 채팅 페이지",
+    scopeChats: "채팅",
+    scopeAll: "모든 페이지",
     positionValue: "가로 {x}%, 세로 {y}%",
     newChat: "새 채팅",
     conversation: "대화",
@@ -2323,6 +2332,22 @@ export const ko = {
         label: "트릭 오어 트릿",
         description:
           "11월 1일까지 핼러윈 테마와 으스스한 인사말을 즐겨 보세요.",
+      },
+      code: {
+        title: "코드",
+        fontDescription: "채팅의 코드 블록, 파일 미리보기, API 예시.",
+        lineNumbers: {
+          label: "줄 번호",
+          description: "채팅 코드 블록의 줄에 번호를 붙입니다.",
+        },
+        wordWrap: {
+          label: "자동 줄바꿈",
+          description: "코드 블록의 긴 줄을 가로로 스크롤하지 않고 줄바꿈합니다.",
+        },
+        ligatures: {
+          label: "글꼴 합자",
+          description: "코드 글꼴이 지원하면 => 및 != 같은 기호를 하나의 글리프로 합칩니다.",
+        },
       },
       custom: {
         chatWidth: {

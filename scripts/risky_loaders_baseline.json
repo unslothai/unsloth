@@ -308,6 +308,14 @@
     },
     {
       "file": "studio/backend/core/training/worker.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "18d25a0356adb1dd",
+      "count": 1,
+      "reason": "Loads _import_metadata_cache.py, a fixed file name, from the installed unsloth package directory (find_spec of the literal 'unsloth'); stdlib only, nothing from a model repo."
+    },
+    {
+      "file": "studio/backend/core/training/worker.py",
       "rule": "trust-remote-code",
       "sink": "item",
       "digest": "64be60c61f04074b",
