@@ -22,7 +22,7 @@ from utils.log_redaction import redact_log_text
 
 
 class _Clock:
-    """One tick per call, so the deadline cuts at the same record on every run."""
+    """One tick per call: the deadline cuts at the same record every run."""
 
     def __init__(self) -> None:
         self.now = 0.0
@@ -68,7 +68,6 @@ def _mixed_body(seed: int, size: int) -> bytes:
         record += rng.choice([b"\n", b"\r\n", b"\n\n"])
         parts.append(record)
         total += len(record)
-    # Final line without a newline.
     return b"".join(parts) + b"tail without newline"
 
 

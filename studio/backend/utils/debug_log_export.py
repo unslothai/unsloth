@@ -162,8 +162,7 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
             break
         consumed += len(chunk)
         buffer += chunk
-        # Walks an offset instead of re-slicing the buffer per record, which copied the rest of
-        # the chunk once per line; the tail is sliced off once below.
+        # An offset, not a re-slice per record: that copied the rest of the chunk once per line.
         position = 0
         while True:
             if time.monotonic() > deadline:
@@ -257,7 +256,6 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
                 try:
                     with handle:
                         skipped, size = _seek_to_tail(handle, fd, allowance)
-                        # Check gid 0 before requiring a name: if lookup fails, unnamed gid 0 would let repair run groupadd -g 0 and usermod into root, the grant to refuse.
                         if size > 0 and skipped >= size:
                             # remaining is not spent: this is one file's property and the
                             # next source may still fit.
@@ -279,8 +277,7 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
                                     f"[skipped the first {skipped} bytes of this log]\n".encode()
                                 )
                             before = handle.tell()
-                            # Batched: one zipfile write per record spent more time in the
-                            # per-call CRC and compressor overhead than in deflate itself.
+                            # Batched: per-record writes cost more in per-call overhead than deflate.
                             pending: list[bytes] = []
                             pending_bytes = 0
                             try:
@@ -294,8 +291,7 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
                                         pending_bytes = 0
                                         destination.write(block)
                             finally:
-                                # Flushed even when the reader raises, so a partial log keeps
-                                # every record it yielded.
+                                # Also on a reader error, so a partial log keeps every record yielded.
                                 if pending:
                                     block = b"".join(pending)
                                     pending.clear()
