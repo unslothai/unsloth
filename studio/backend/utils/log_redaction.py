@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 REDACTED = "<redacted>"
 
@@ -207,6 +208,61 @@ def _redact_cookie(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('sep')}{REDACTED}{tail}"
 
 
+# Per _PATTERNS rule, a literal every one of its matches contains, so a text without it cannot change; None always runs the rule. These rules are case-sensitive, so plain substring tests are exact.
+_PATTERN_LITERALS: tuple[Optional[tuple[str, ...]], ...] = (
+    ("hf_",),
+    ("sk-",),
+    (
+        "gsk_",
+        "xai-",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "glpat-",
+        "xox",
+        "ya29.",
+    ),
+    ("AIza",),
+    ("AKIA", "ASIA"),
+    ("eyJ",),
+    None,
+    ("=",),
+)
+_PATTERN_GATES: tuple[Optional[re.Pattern[str]], ...] = tuple(
+    None if literals is None else re.compile("|".join(re.escape(literal) for literal in literals))
+    for literals in _PATTERN_LITERALS
+)
+if len(_PATTERN_GATES) != len(_PATTERNS):
+    raise RuntimeError("every _PATTERNS rule needs an entry in _PATTERN_GATES")
+
+# The IGNORECASE rules need a key word. Every _SECRET_KEYS alternative contains one of _SECRET_KEY_WORDS.
+_SECRET_KEY_WORDS = ("authorization", "key", "token", "secret", "pass")
+if not all(any(word in key for word in _SECRET_KEY_WORDS) for key in _SECRET_KEYS.split("|")):
+    raise RuntimeError("every _SECRET_KEYS alternative needs a word in _SECRET_KEY_WORDS")
+# Off ASCII the engine decides, with the same case folding as the rule itself (the Kelvin sign is a "k").
+_FOLDED_GATE_RES = {
+    words: re.compile("(?i)" + "|".join(words))
+    for words in (("authorization",), ("bearer",), ("cookie",), _SECRET_KEY_WORDS)
+}
+
+
+def _has_folded(text: str, lowered: Optional[str], words: tuple[str, ...]) -> bool:
+    """lowered is text.lower() for ASCII text, where lowercasing is exact, and None otherwise."""
+    if lowered is None:
+        return _FOLDED_GATE_RES[words].search(text) is not None
+    for word in words:
+        if word in lowered:
+            return True
+    return False
+
+
+def _lowered(text: str) -> Optional[str]:
+    return text.lower() if text.isascii() else None
+
+
 def redact_log_text(text: str) -> str:
     """Mask credentials. Idempotent, and a no-op on ordinary log content."""
     if not text:
@@ -214,14 +270,26 @@ def redact_log_text(text: str) -> str:
     # Nothing anchored below survives an escape between a key and its value, so strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
         text = _strip_ansi(text)
-    for pattern, replacement in _PATTERNS:
-        text = pattern.sub(replacement, text)
+    # A rule runs only when the text holds a literal every match of it needs, so the output equals running every rule.
+    for (pattern, replacement), gate in zip(_PATTERNS, _PATTERN_GATES):
+        if gate is None or gate.search(text) is not None:
+            text = pattern.sub(replacement, text)
+    lowered = _lowered(text)
     # Before the key/value rules: _KV_RE captures "Basic" from "Authorization: Basic dXNlcjpwdw==", masking the scheme and leaving the credential clear.
-    text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
-    text = _SCHEME_RE.sub(_redact_shaped, text)
-    text = _COOKIE_RE.sub(_redact_cookie, text)
-    text = _KV_RE.sub(_redact_kv, text)
-    text = _FLAG_RE.sub(_redact_kv, text)
+    if _has_folded(text, lowered, ("authorization",)):
+        text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
+        lowered = _lowered(text)
+    if _has_folded(text, lowered, ("bearer",)):
+        text = _SCHEME_RE.sub(_redact_shaped, text)
+        lowered = _lowered(text)
+    if _has_folded(text, lowered, ("cookie",)):
+        text = _COOKIE_RE.sub(_redact_cookie, text)
+        lowered = _lowered(text)
+    if (":" in text or "=" in text) and _has_folded(text, lowered, _SECRET_KEY_WORDS):
+        text = _KV_RE.sub(_redact_kv, text)
+        lowered = _lowered(text)
+    if "--" in text and _has_folded(text, lowered, _SECRET_KEY_WORDS):
+        text = _FLAG_RE.sub(_redact_kv, text)
     try:
         from utils.native_path_leases import redact_native_paths
         text = redact_native_paths(text)
