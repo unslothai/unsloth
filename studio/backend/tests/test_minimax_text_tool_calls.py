@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-# The tool-loop harness sits alongside and imports as a top-level module.
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 for _entry in (_BACKEND_DIR, _TESTS_DIR):
@@ -297,7 +296,6 @@ def test_a_megabyte_of_adversarial_markup_parses_in_linear_time(text):
     start = time.perf_counter()
     parse_tool_calls_from_text(text, enabled_tool_names = ENABLED)
     strip_tool_markup(text, final = True, enabled_tool_names = ENABLED)
-    # Each took 35-90 s with a per-tag scan of the text.
     assert time.perf_counter() - start < 5.0
 
 
