@@ -30,6 +30,8 @@ import {
 	EFFECTS,
 	fadeKey,
 	visibilityKey,
+	LENS_MODES,
+	type LensMode,
 	MATERIALS,
 	type WindowMaterial,
 	IMAGE_SIZING,
@@ -136,6 +138,7 @@ export function GlassControls() {
 				<>
 					<GlassStyleRow />
 					<MaterialStrengthRow />
+					<LensRow />
 					<MaterialMenusRow />
 				</>
 			)}
@@ -184,6 +187,40 @@ function MaterialStrengthRow() {
 					{strength}%
 				</span>
 			</div>
+		</SettingsRow>
+	);
+}
+const lensLabels: Record<LensMode, TranslationKey> = {
+	off: "chatBackground.lensOff",
+	magnify: "chatBackground.lensMagnify",
+	shrink: "chatBackground.lensShrink",
+};
+function LensRow() {
+	const t = useT();
+	const { material, lens, setLens } = useMaterialStore();
+	const off =
+		material === "solid" || (material === "macos" && !nativeMaterialAvailable());
+	return (
+		<SettingsRow
+			label={t("chatBackground.lens")}
+			description={t("chatBackground.lensDescription")}
+		>
+			<Select
+				disabled={off}
+				value={lens}
+				onValueChange={(next) => setLens(next as LensMode)}
+			>
+				<SelectTrigger aria-label={t("chatBackground.lens")} className="w-52">
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					{LENS_MODES.map((mode) => (
+						<SelectItem key={mode} value={mode}>
+							{t(lensLabels[mode])}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
 		</SettingsRow>
 	);
 }

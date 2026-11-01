@@ -16,7 +16,9 @@ import {
 import {
   DEFAULT_GLASS_STRENGTH,
   type GlassStrengths,
+  type LensMode,
   type WindowMaterial,
+  sanitizeLens,
   sanitizeMaterial,
   sanitizeStrength,
   sanitizeStrengths,
@@ -64,10 +66,12 @@ export const useMaterialStore = create<{
   nativeFailed: boolean;
   menus: boolean;
   strength: GlassStrengths;
+  lens: LensMode;
   setMaterial: (material: WindowMaterial) => void;
   setEnabled: (enabled: boolean) => void;
   setMenus: (menus: boolean) => void;
   setStrength: (strength: number, mode: keyof GlassStrengths) => void;
+  setLens: (lens: LensMode) => void;
 }>()(
   persist(
     (set) => ({
@@ -76,6 +80,7 @@ export const useMaterialStore = create<{
       nativeFailed: false,
       menus: true,
       strength: DEFAULT_GLASS_STRENGTH,
+      lens: "off",
       setMaterial: (material) => {
         const next = sanitizeMaterial(material);
         set(
@@ -94,6 +99,7 @@ export const useMaterialStore = create<{
         set((s) => ({
           strength: { ...s.strength, [mode]: sanitizeStrength(strength) },
         })),
+      setLens: (lens) => set({ lens: sanitizeLens(lens) }),
     }),
     {
       name: MATERIAL_STORAGE_KEY,
@@ -103,6 +109,7 @@ export const useMaterialStore = create<{
         style: s.style,
         menus: s.menus,
         strength: s.strength,
+        lens: s.lens,
       }),
       merge: (persisted, current) => {
         const stored = persisted as
@@ -111,6 +118,7 @@ export const useMaterialStore = create<{
               style?: unknown;
               menus?: unknown;
               strength?: unknown;
+              lens?: unknown;
             }
           | undefined;
         return {
@@ -122,6 +130,7 @@ export const useMaterialStore = create<{
             "liquid-3d",
           menus: typeof stored?.menus === "boolean" ? stored.menus : true,
           strength: sanitizeStrengths(stored?.strength),
+          lens: sanitizeLens(stored?.lens),
         };
       },
     },

@@ -64,6 +64,11 @@ export const id = {
     materialMenus: "Menu kaca",
     materialMenusDescription: "Dropdown, menu, dan pemilih juga menggunakan kaca.",
     materialStrength: "Kekuatan kaca",
+    lens: "Lensa kaca",
+    lensDescription: "Membengkokkan gambar di bawah kotak tulis seperti kaca sungguhan.",
+    lensOff: "Mati",
+    lensMagnify: "Perbesar",
+    lensShrink: "Perkecil",
   },
   linkMenu: {
     openInBrowser: "Buka di browser Unsloth",

@@ -64,6 +64,11 @@ export const pl = {
     materialMenus: "Szklane menu",
     materialMenusDescription: "Listy rozwijane, menu i selektory też używają szkła.",
     materialStrength: "Siła szkła",
+    lens: "Soczewka szklana",
+    lensDescription: "Zakrzywia obraz pod polem tekstowym jak prawdziwe szkło.",
+    lensOff: "Wyłączone",
+    lensMagnify: "Powiększ",
+    lensShrink: "Pomniejsz",
   },
   linkMenu: {
     openInBrowser: "Otwórz w przeglądarce Unsloth",

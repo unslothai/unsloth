@@ -7166,3 +7166,62 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
 }
+
+.glass-lens {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+.glass-lens-fill,
+.glass-lens-rim {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+}
+.glass-lens-copy,
+.glass-lens-layer {
+  position: absolute;
+}
+.glass-lens-layer { inset: 0; }
+.glass-lens-fill .glass-lens-copy {
+  filter: blur(var(--glass-blur, 12px)) saturate(var(--glass-saturate, 150%));
+}
+.glass-lens-rim {
+  padding: 1px;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  opacity: .55;
+}
+.glass-lens-rim .glass-lens-copy {
+  filter: blur(1.5px) saturate(1.5) brightness(1.4);
+}
+/* Brightening a light page's own colour leaves a white rim on white; light mode darkens it instead. */
+html:not(.dark) .glass-lens-rim .glass-lens-copy {
+  filter: blur(1.5px) saturate(1.5) brightness(.8);
+}
+.glass-lens-rim::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(rgb(255 255 255 / .35), transparent 30%, transparent 75%, rgb(255 255 255 / .15));
+}
+.glass-lens::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 1px 1px -.5px rgb(255 255 255 / .3), inset 0 4px 4px -4px rgb(255 255 255 / .22), inset 0 -3px 4px -3px rgb(0 0 0 / .1);
+}
+.dark .glass-lens::after {
+  box-shadow: inset 0 1px 1px -.5px rgb(255 255 255 / .14), inset 0 4px 4px -4px rgb(255 255 255 / .08), inset 0 -3px 4px -3px rgb(0 0 0 / .35);
+}
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface:has(> .glass-lens) {
+  --composer-shadow: none;
+}
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .glass-lens .glass-lens-rim,
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .glass-lens::after {
+  display: none;
+}

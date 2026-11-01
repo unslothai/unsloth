@@ -64,6 +64,11 @@ export const ru = {
     materialMenus: "Стеклянные меню",
     materialMenusDescription: "Раскрывающиеся списки, меню и средства выбора тоже используют стекло.",
     materialStrength: "Сила стекла",
+    lens: "Стеклянная линза",
+    lensDescription: "Искривляет изображение под полем ввода, как настоящее стекло.",
+    lensOff: "Выкл.",
+    lensMagnify: "Увеличить",
+    lensShrink: "Уменьшить",
   },
 
   linkMenu: {

@@ -64,6 +64,11 @@ export const nl = {
     materialMenus: "Glazen menu's",
     materialMenusDescription: "Ook dropdowns, menu's en kiezers gebruiken glas.",
     materialStrength: "Glassterkte",
+    lens: "Glaslens",
+    lensDescription: "Buigt de afbeelding onder het invoerveld als echt glas.",
+    lensOff: "Uit",
+    lensMagnify: "Vergroten",
+    lensShrink: "Verkleinen",
   },
   linkMenu: {
     openInBrowser: "Openen in Unsloth-browser",

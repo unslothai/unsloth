@@ -65,6 +65,11 @@ export const ja = {
     materialMenus: "ガラスのメニュー",
     materialMenusDescription: "ドロップダウン、メニュー、ピッカーにもガラスを使用します。",
     materialStrength: "ガラスの強さ",
+    lens: "ガラスレンズ",
+    lensDescription: "入力欄の下の画像を本物のガラスのように歪ませます。",
+    lensOff: "オフ",
+    lensMagnify: "拡大",
+    lensShrink: "縮小",
   },
 
   linkMenu: {

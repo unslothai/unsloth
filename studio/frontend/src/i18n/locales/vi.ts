@@ -64,6 +64,11 @@ export const vi = {
     materialMenus: "Menu kính",
     materialMenusDescription: "Danh sách thả xuống, menu và bộ chọn cũng dùng kính.",
     materialStrength: "Độ mạnh của kính",
+    lens: "Thấu kính kính",
+    lensDescription: "Bẻ cong hình ảnh bên dưới khung soạn thảo như kính thật.",
+    lensOff: "Tắt",
+    lensMagnify: "Phóng to",
+    lensShrink: "Thu nhỏ",
   },
   linkMenu: {
     openInBrowser: "Mở trong trình duyệt Unsloth",

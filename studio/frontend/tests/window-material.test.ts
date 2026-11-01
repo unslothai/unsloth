@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
 	MATERIALS,
+	LENS_SCALE,
+	sanitizeLens,
 	sanitizeMaterial,
 	sanitizeStrength,
 	sanitizeStrengths,
@@ -98,6 +100,17 @@ test("other pages under glass read over one tinted pane with a readable floor", 
 	assert.match(css, /\[data-wallpaper-route="page"\] > \.chat-wallpaper\[data-ready\] \.chat-wallpaper-artwork \{\n  filter: blur\(/);
 });
 
+test("glass lens modes repair malformed data and scale the right way", () => {
+	assert.equal(sanitizeLens("fisheye"), "off");
+	assert.equal(sanitizeLens(undefined), "off");
+	for (const mode of ["off", "magnify", "shrink"]) assert.equal(sanitizeLens(mode), mode);
+	assert.equal(LENS_SCALE.off, 1);
+	assert.ok(LENS_SCALE.magnify > 1 && LENS_SCALE.shrink < 1);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /\.glass-lens \{\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
+	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
+});
+
 test("glass panes thicken over images that would wash out their text", async () => {
 	const { glassReadability, toneOf } = await import("../src/features/chat-background/model.ts");
 	const light = toneOf(Array.from({ length: 100 }, (_, i) => 0.6 + i * 0.003));
@@ -120,6 +133,11 @@ test("resetting local preferences also resets the glass theme", () => {
 	const key = /MATERIAL_STORAGE_KEY = "([^"]+)"/.exec(material)?.[1];
 	assert.ok(key);
 	assert.ok(tab.includes(`"${key}",`));
+});
+
+test("the lens refreshes its tint when the composer's fill changes", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /opacity,\n\s*fill\.backgroundColor,\n\s*fill\.backgroundImage,\n\s*\]\.join\(\)/);
 });
 
 test("glass off writes no strength or tone to the page", () => {

@@ -64,6 +64,11 @@ export const fa = {
     materialMenus: "منوهای شیشه‌ای",
     materialMenusDescription: "منوهای کشویی، منوها و انتخابگرها هم از شیشه استفاده می‌کنند.",
     materialStrength: "شدت شیشه",
+    lens: "عدسی شیشه",
+    lensDescription: "تصویر زیر کادر نوشتن را مانند شیشه واقعی خم می‌کند.",
+    lensOff: "خاموش",
+    lensMagnify: "بزرگ‌نمایی",
+    lensShrink: "کوچک‌نمایی",
   },
   linkMenu: {
     openInBrowser: "باز کردن در مرورگر Unsloth",

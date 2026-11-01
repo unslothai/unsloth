@@ -64,6 +64,11 @@ export const zhCN = {
     materialMenus: "玻璃菜单",
     materialMenusDescription: "下拉列表、菜单和选择器也使用玻璃效果。",
     materialStrength: "玻璃强度",
+    lens: "玻璃透镜",
+    lensDescription: "像真实玻璃一样弯曲输入框下方的图像。",
+    lensOff: "关闭",
+    lensMagnify: "放大",
+    lensShrink: "缩小",
   },
 
   linkMenu: {

@@ -64,6 +64,11 @@ export const zhTW = {
     materialMenus: "玻璃選單",
     materialMenusDescription: "下拉式選單、選單和挑選器也使用玻璃效果。",
     materialStrength: "玻璃強度",
+    lens: "玻璃透鏡",
+    lensDescription: "像真實玻璃一樣彎曲輸入框下方的影像。",
+    lensOff: "關閉",
+    lensMagnify: "放大",
+    lensShrink: "縮小",
   },
   linkMenu: {
     openInBrowser: "在 Unsloth 瀏覽器中開啟",

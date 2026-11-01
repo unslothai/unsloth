@@ -64,6 +64,11 @@ export const fr = {
     materialMenus: "Menus en verre",
     materialMenusDescription: "Les listes déroulantes, menus et sélecteurs utilisent aussi le verre.",
     materialStrength: "Intensité du verre",
+    lens: "Lentille de verre",
+    lensDescription: "Courbe l’image sous la zone de saisie comme du vrai verre.",
+    lensOff: "Désactivé",
+    lensMagnify: "Agrandir",
+    lensShrink: "Réduire",
   },
 
   linkMenu: {
