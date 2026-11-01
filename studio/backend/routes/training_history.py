@@ -41,7 +41,7 @@ from utils.models.checkpoints import has_preview_model, preview_ref
 from utils.paths import outputs_root, resolve_output_dir
 from utils.preview_sharing_settings import get_preview_sharing_enabled
 from utils.preview_token import sign_preview_ref
-from utils.scan_memo import in_scan_memo, memoized
+from utils.scan_memo import in_scan_memo
 
 logger = get_logger(__name__)
 
@@ -73,7 +73,7 @@ def _canonical_output_dir(output_dir: Optional[str]) -> Optional[Path]:
 def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
     """The signed /p ref is a capability, omitted when public sharing is off so the UI hides the link."""
     previewable = has_preview_model(output_dir)
-    # preview_ref is None whenever there is no preview model, so skip its repeat of that check.
+    # preview_ref is None without a preview model.
     ref = preview_ref(output_dir) if previewable else None
     return {
         "has_preview_model": previewable,
@@ -82,41 +82,14 @@ def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
     }
 
 
-# Every config field resource_provenance_resume_blocker reads; rows that agree on them get one answer.
-_BLOCKER_CONFIG_FIELDS = (
-    "resource_provenance",
-    "model_name",
-    "actual_model_repo_id",
-    "model_snapshot_path",
-    "load_in_4bit",
-    "resume_model_load_mode",
-    "hf_dataset",
-    "dataset_snapshot_path",
-)
-
-
-def _provenance_blocker(config: dict) -> Optional[str]:
-    from core.training.provenance import resource_provenance_resume_blocker
-    try:
-        key = json.dumps(
-            {field: config.get(field) for field in _BLOCKER_CONFIG_FIELDS},
-            sort_keys = True,
-        )
-    except (TypeError, ValueError):
-        return resource_provenance_resume_blocker(config)
-    # Completed runs of one model ask the same snapshot question; answer it once per listing.
-    return memoized(("resume_blocker", key), lambda: resource_provenance_resume_blocker(config))
-
-
 def _resume_blocked_reason(row: dict) -> Optional[str]:
     """The provenance gate's own explanation, for runs it refuses. Only consulted for a row that is
     already known unresumable, so the extra work is bounded to those. Returns None when the
     checkpoint is what is missing, leaving the client's existing wording in place for that case."""
-    from core.training.resume import has_resume_state, training_run_config
+    from core.training.resume import has_resume_state, resource_resume_blocker, training_run_config
     try:
-        # Ask the provenance gate first: with no refusal the answer is None either way, so the
-        # checkpoint read (optimizer and scheduler state parse) is only paid for refused runs.
-        reason = _provenance_blocker(training_run_config(row))
+        # Gate first: the checkpoint read only changes the answer for refused runs.
+        reason = resource_resume_blocker(training_run_config(row))
         # A missing checkpoint is refused for that reason, not provenance.
         if reason is None or not has_resume_state(row.get("output_dir")):
             return None

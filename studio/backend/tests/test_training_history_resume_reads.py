@@ -135,3 +135,25 @@ def test_the_provenance_gate_answers_once_per_listing_for_runs_that_share_its_in
     training_history._summary_from_row(rows[0], False)
     training_history._summary_from_row(rows[0], False)
     assert asked == [None, "runtime_4bit", None, None]
+
+
+def test_runs_differing_only_in_resume_load_mode_get_their_own_resume_answer(monkeypatch):
+    monkeypatch.setattr(resume_mod, "has_resume_state", lambda output_dir: True)
+    monkeypatch.setattr(
+        provenance_mod,
+        "resource_provenance_resume_blocker",
+        lambda config: _REASON if config.get("resume_model_load_mode") == "runtime_4bit" else None,
+    )
+    rows = [
+        _row(
+            f"/tmp/run-{mode}",
+            id = f"run-{mode}",
+            status = "stopped",
+            final_step = 50,
+            config_json = json.dumps({"resume_model_load_mode": mode}),
+        )
+        for mode in ("unquantized", "runtime_4bit")
+    ]
+    cache: dict = {}
+
+    assert [resume_mod.can_resume_run(row, resource_cache = cache) for row in rows] == [True, False]
