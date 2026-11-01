@@ -3825,6 +3825,29 @@ def test_a_healed_truncated_tool_call_remains_incomplete(
     assert item_done["item"]["status"] == "incomplete"
 
 
+def test_a_call_cut_at_length_stays_text_in_a_responses_stream(monkeypatch):
+    api_monitor, tool, _xml = _shared_setup_6()
+    name = tool["name"]
+    cut = f"<tool_call><function={name}><parameter=q>line1\nli"
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": cut}, "finish_reason": "length"}]}],
+    )
+    messages, monitor_id, payload = _shared_setup_3(api_monitor, tool)
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
+    assert [item["type"] for item in incomplete["response"]["output"]] == ["message"]
+    assert incomplete["response"]["output"][0]["content"][0]["text"] == cut
+
+
 def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatch):
     TestResponsesStreamAdapter._install_stream_mock(
         monkeypatch,

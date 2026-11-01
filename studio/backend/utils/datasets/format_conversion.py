@@ -191,12 +191,9 @@ def standardize_chat_format(
     }
 
     if not is_streaming_dataset(dataset):
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Standardizing chat format"
@@ -348,12 +345,9 @@ def convert_chatml_to_alpaca(
     }
 
     if not is_iterable:
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
@@ -410,12 +404,9 @@ def convert_alpaca_to_chatml(
     }
 
     if not is_iterable:
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting Alpaca to ChatML format"

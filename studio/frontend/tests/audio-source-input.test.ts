@@ -164,7 +164,7 @@ test("recording starts and stops back to the empty card", () => {
   assert.match(hook, /createAudioRecorder\(stream\)/);
 });
 
-test("a too-large or empty file is refused before any upload, at the server's 200 MiB", () => {
+test("a too-large or empty file is refused before any upload, at the server's cap", () => {
   assert.equal(AUDIO_INPUT_MAX_BYTES, 200 * 1024 * 1024);
   assert.equal(
     audioFileProblem({ size: AUDIO_INPUT_MAX_BYTES, type: "audio/wav" }),
@@ -178,6 +178,26 @@ test("a too-large or empty file is refused before any upload, at the server's 20
     audioFileProblem({ size: 0, type: "audio/wav" }),
     "This file is empty.",
   );
+  // The server's cap follows the upload setting; null is no cap at all.
+  const mib = 1024 * 1024;
+  assert.equal(
+    audioFileProblem({ size: 300 * mib, type: "audio/wav" }, 500 * mib),
+    null,
+  );
+  assert.equal(
+    audioFileProblem({ size: 500 * mib + 1, type: "audio/wav" }, 500 * mib),
+    "Audio is too large. Keep it under 500 MB.",
+  );
+  assert.equal(
+    audioFileProblem({ size: 10 * 1024 * mib, type: "audio/wav" }, null),
+    null,
+  );
+  assert.equal(
+    audioFileProblem({ size: 0, type: "audio/wav" }, null),
+    "This file is empty.",
+  );
+  assert.match(hook, /await loadUploadLimitSettings\(\)/);
+  assert.match(hook, /audioFileProblem\(\s*\{[^}]*\},\s*maxBytes,\s*\)/);
   assert.match(
     audioFileProblem({ size: 10, type: "image/png", name: "a.png" }) ?? "",
     /not an audio file/,

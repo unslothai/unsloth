@@ -2814,7 +2814,7 @@ _CONTROLLER_MODULES = ("llama_cpp.py", "safetensors_agentic.py")
 
 # studio_tool_loop.py is a known gap; keyed by site count, so adding or removing a controller fails
 _CONTROLLER_SITES_OUT_OF_SCOPE = frozenset(
-    {("core/inference/studio_tool_loop.py", "stream_with_studio_tools", 1)}
+    {("core/inference/studio_tool_loop.py", "_stream_with_studio_tools", 1)}
 )
 
 _CONTROLLER_MODULE_PATHS = frozenset({f"core/inference/{module}" for module in _CONTROLLER_MODULES})
@@ -4470,11 +4470,11 @@ def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
     assert packed.count(gate + ",") + packed.count(gate + ")") == 1
     for call in (
         "StreamToolCallHealer(_sf_heal, _sf_healing_tools)",
-        "heal_openai_message(_msg, _sf_heal, _sf_healing_tools)",
+        "heal_openai_message(_msg, _sf_heal, _sf_healing_tools,",
         "nudge_should_retry(_data, _sf_heal, _sf_healing_tools)",
-        "heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools)",
+        "heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools,",
     ):
-        assert call in source, call
+        assert call in packed, call
 
 
 def test_a_dropped_tool_with_a_clean_name_is_not_promotable():
@@ -4685,7 +4685,8 @@ def test_the_vision_path_is_profiled():
     source = (_REPO_ROOT / "studio" / "backend" / "core" / "inference" / "inference.py").read_text(
         encoding = "utf-8"
     )
-    assert "markup_for_tokenizer(processor)" in source
+    vision = source.split("def _generate_vision_response(", 1)[1].split("\n    def ", 1)[0]
+    assert "self._apply_chat_template_for_generation(" in vision
     assert "neutralize_control_markup_in_messages(vision_messages)" not in source
 
 
@@ -4793,9 +4794,10 @@ def test_every_direct_renderer_carries_the_profile():
     backend = _REPO_ROOT / "studio" / "backend" / "core" / "inference"
     inference_src = (backend / "inference.py").read_text(encoding = "utf-8")
     mlx_src = (backend / "mlx_inference.py").read_text(encoding = "utf-8")
-    assert "markup_for_tokenizer(processor)" in inference_src
+    # The audio renders also carry a client tool catalogue, which needs the same sweep.
+    assert "neutralize_for_render(processor, audio_messages, tools)" in inference_src
     assert "markup_for_tokenizer(tokenizer)" in inference_src
-    assert "markup_for_tokenizer(processor)" in mlx_src
+    assert "neutralize_for_render(processor, messages, tools)" in mlx_src
     for source in (inference_src, mlx_src):
         assert "neutralize_control_markup_in_messages(messages)" not in source
         assert "neutralize_control_markup_in_messages(audio_messages)" not in source

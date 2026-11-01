@@ -643,6 +643,56 @@ def test_xlsx_shows_numbers_as_formatted(tmp_path, serial, number_format, expect
     assert _text(path) == f"Sheet: T\n{expected}"
 
 
+def test_xlsx_reads_each_number_format_once_per_workbook(tmp_path, monkeypatch):
+    # Styles 1 and 3 share a format; style 2 is a built-in date with no code; style 4 a built-in number.
+    styles = (
+        f'<styleSheet {S}><numFmts><numFmt numFmtId="164" formatCode="#,##0.00;(#,##0.00);&quot;zero&quot;"/>'
+        '<numFmt numFmtId="165" formatCode="0.0%"/></numFmts><cellXfs><xf numFmtId="0"/>'
+        '<xf numFmtId="164"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="3"/><xf numFmtId="165"/></cellXfs></styleSheet>'
+    )
+    money = '#,##0.00;(#,##0.00);"zero"'
+    formats = {1: (164, money), 2: (14, ""), 3: (164, money), 4: (3, ""), 5: (165, "0.0%")}
+    values = [(1234.5, 1), (-2.25, 3), (0, 1), (46000, 2), (1234567, 4), (0.125, 5), (-0.5, 5)]
+    rows = "".join(
+        f'<row r="{r}">'
+        + "".join(
+            f'<c r="{chr(65 + i)}{r}" s="{style}"><v>{value * r}</v></c>'
+            for i, (value, style) in enumerate(values)
+        )
+        + "</row>"
+        for r in range(1, 41)
+    )
+    path = _zip(
+        tmp_path / "formats.xlsx",
+        {
+            "xl/workbook.xml": f'<workbook {S}><sheets><sheet name="A" sheetId="1" r:id="rId1"/><sheet name="B" sheetId="2" r:id="rId2"/></sheets></workbook>',
+            "xl/_rels/workbook.xml.rels": f'<Relationships {REL}><Relationship Id="rId1" Target="worksheets/sheet1.xml"/>'
+            '<Relationship Id="rId2" Target="worksheets/sheet2.xml"/></Relationships>',
+            "xl/styles.xml": styles,
+            "xl/worksheets/sheet1.xml": f"<worksheet {S}><sheetData>{rows}</sheetData></worksheet>",
+            "xl/worksheets/sheet2.xml": f"<worksheet {S}><sheetData>{rows}</sheetData></worksheet>",
+        },
+    )
+    tokenized = []
+    real_tokens = office_formats._format_tokens
+    monkeypatch.setattr(
+        office_formats, "_format_tokens", lambda code: tokenized.append(code) or real_tokens(code)
+    )
+    text = _text(path)
+    assert sorted(tokenized) == ["#,##0", money, "0.0%"]
+    expected = "\n".join(
+        " | ".join(
+            office_formats._cell_number(float(value * r), *formats[style], False)
+            for value, style in values
+        )
+        for r in range(1, 41)
+    )
+    assert text == f"Sheet: A\n{expected}\nSheet: B\n{expected}"
+    assert (
+        text.splitlines()[1] == "1,234.50 | (2.25) | zero | 2025-12-09 | 1,234,567 | 12.5% | -50.0%"
+    )
+
+
 def test_xlsx_finds_the_workbook_through_package_relationships(tmp_path):
     path = _zip(
         tmp_path / "moved.xlsx",

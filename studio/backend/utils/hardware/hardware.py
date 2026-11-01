@@ -2334,8 +2334,11 @@ def _clear_mps_cache() -> None:
     """Return torch's MPS reservations to the shared pool: Apple Silicon also runs torch MPS, whose caching allocator keeps freed buffers reserved, and those bytes read as used system memory, so the next load budgets against a pool that looks smaller than it is."""
     try:
         import torch
+
         empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
-        if callable(empty_cache):
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        # Without a usable Metal device (a macOS VM's paravirtual GPU) empty_cache segfaults rather than raising.
+        if callable(empty_cache) and mps_backend is not None and mps_backend.is_available():
             empty_cache()
     except Exception as e:
         logger.debug("Failed to clear MPS cache: %s", e)
@@ -6587,7 +6590,9 @@ def auto_select_gpu_ids(
     gradient_checkpointing: str = "unsloth",
     optimizer: str = "adamw_8bit",
     required_override_gb: Optional[float] = None,
+    max_gpus: Optional[int] = None,
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
+    """``max_gpus`` caps how many cards may be pooled; past it the result is ``fallback_all``."""
     metadata: Dict[str, Any] = {"selection_mode": "auto"}
 
     # Auto-selection needs per-device free-VRAM telemetry, available on CUDA (nvidia-smi) and XPU (torch.xpu) but not MLX/CPU, which inherit parent visibility.
@@ -6726,7 +6731,7 @@ def auto_select_gpu_ids(
             if discrete is not None:
                 ranked = [discrete] + [c for c in ranked if c is not discrete]
 
-    for candidate in ranked:
+    for candidate in ranked[:max_gpus]:
         selected.append(candidate["index"])
         if len(selected) == 1:
             usable_gb = candidate["free_gb"]
@@ -6766,13 +6771,14 @@ def auto_select_gpu_ids(
     metadata["selection_mode"] = "fallback_all"
     if ranked:
         fallback_usable = ranked[0]["free_gb"] + sum(
-            c["free_gb"] * multi_gpu_overhead for c in ranked[1:]
+            c["free_gb"] * multi_gpu_overhead for c in ranked[1:max_gpus]
         )
     else:
         fallback_usable = 0.0
     metadata["usable_gb"] = round(fallback_usable, 3)
     metadata["selected_gpu_ids"] = fallback_all
-    logger.warning(
+    # A capped caller weighs these cards itself.
+    (logger.warning if max_gpus is None else logger.debug)(
         "Falling back to all visible GPUs; model may not fit: model=%s "
         "selected=%s usable_gb=%s required_gb=%s multi_gpu_overhead=%s",
         model_name,
@@ -6798,6 +6804,7 @@ def prepare_gpu_selection(
     gradient_checkpointing: str = "unsloth",
     optimizer: str = "adamw_8bit",
     required_override_gb: Optional[float] = None,
+    max_gpus: Optional[int] = None,
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
     """Resolve which physical GPUs to use for a model load. Explicit (gpu_ids=[5, 6, 7]) uses exactly those, sharded via device_map="balanced" even if fewer would do, validated against the parent-visible set; auto (None or []) lets auto_select_gpu_ids estimate VRAM and pick the minimum, preferring the most free memory. The result is passed to get_device_map() and to apply_gpu_ids() in the worker, which narrows CUDA_VISIBLE_DEVICES before torch init."""
     if gpu_ids and get_device() not in (DeviceType.CUDA, DeviceType.XPU):
@@ -6827,6 +6834,7 @@ def prepare_gpu_selection(
         gradient_checkpointing = gradient_checkpointing,
         optimizer = optimizer,
         required_override_gb = required_override_gb,
+        max_gpus = max_gpus,
     )
     return selected_gpu_ids, metadata
 
@@ -7859,6 +7867,14 @@ def dataset_map_num_proc(
                 logger.debug("torch.xpu.is_initialized() probe failed: %s", e)
 
     return _bounded_by_the_shared_policy(desired, serial_as_none)
+
+
+def light_map_num_proc(dataset, desired: Optional[int] = None) -> Optional[int]:
+    """num_proc for a cheap row map: in process for an in-memory Dataset, since a pool pickles every shard both ways (20k Alpaca rows: 0.13 s here vs 1.3 s over 8 workers). An explicit count, the env hatch or cache files keep the pool."""
+    asked = type(desired) is int
+    if not asked and not getattr(dataset, "cache_files", None) and not _num_proc_override_is_set():
+        return None
+    return dataset_map_num_proc(desired if asked else None)
 
 
 # sys.modules key for the copy loaded off disk below. Not "unsloth.dataset_num_proc": that name belongs to the package, and claiming it would make a later real import of unsloth return this module instead.

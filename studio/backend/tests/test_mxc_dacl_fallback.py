@@ -6,6 +6,7 @@ import base64
 import os
 import shutil
 import sys
+import sysconfig
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -549,15 +550,20 @@ def test_unconfirmed_restore_fails_only_a_run_that_was_not_forced(
 
 
 def test_mxc_workloads_install_into_and_import_from_the_session_packages(tmp_path):
-    """The interpreter is read-only inside the container, so without PIP_TARGET a pip install fails there."""
+    """The interpreter is read-only inside the container, so without PIP_PREFIX a pip install fails there."""
     packages = str(tmp_path / ".unsloth-packages")
     env = mxc_policy._with_session_packages(
         {"Path": "/windows/system32", "PYTHONPATH": "/shim"}, str(tmp_path)
     )
 
-    assert env["PIP_TARGET"] == packages
+    assert env["PIP_PREFIX"] == packages
+    assert env["PIP_IGNORE_INSTALLED"] == "1"
     assert env["PYTHONNOUSERSITE"] == "1"
-    assert env["PYTHONPATH"].split(os.pathsep) == ["/shim", packages]
+    pythonpath = env["PYTHONPATH"].split(os.pathsep)
+    assert pythonpath[0] == "/shim"
+    assert pythonpath[-1] == packages
+    site = sysconfig.get_path("purelib", vars = {"base": packages, "platbase": packages})
+    assert os.path.normcase(site) in map(os.path.normcase, pythonpath)
     assert "PATH" not in env, "a second PATH beside Path is ambiguous on Windows"
     assert env["Path"].split(os.pathsep)[0] == "/windows/system32"
     assert os.path.join(packages, "Scripts") in env["Path"].split(os.pathsep)

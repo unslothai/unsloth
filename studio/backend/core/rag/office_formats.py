@@ -210,6 +210,7 @@ _BUILTIN_DATE_FORMATS = {
 
 
 _BUILTIN_DURATION_FORMATS = {46}  # [h]:mm:ss
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 # Classified as openpyxl does: quoted text and locale tags aside, any date or time token.
 _FORMAT_STRIP = re.compile(r'".*?"|\[(?!hh?\]|mm?\]|ss?\])[^\]]*\]')
 _FORMAT_DURATION = re.compile(
@@ -324,10 +325,12 @@ def _group(digits: str) -> str:
     return ",".join([digits[:head]] + [digits[i : i + 3] for i in range(head, len(digits), 3)])
 
 
-def _format_section(value: float, tokens: list[tuple[str, str]]) -> str | None:
-    marks = [i for i, (kind, _) in enumerate(tokens) if kind in ("ph", "exp")]
+def _section_plan(tokens: list[tuple[str, str]]):
+    """The value-independent reading of one format section: its literal text when it shows no
+    digits, None when unsupported, else the layout ``_apply_section`` fills in."""
     if not any(kind == "ph" and ch in "0#?" for kind, ch in tokens):
         return "".join(text for kind, text in tokens if kind == "lit")
+    marks = [i for i, (kind, _) in enumerate(tokens) if kind in ("ph", "exp")]
     first, last = marks[0], marks[-1]
     if any(kind == "lit" for kind, _ in tokens[first:last]):
         return None
@@ -335,24 +338,60 @@ def _format_section(value: float, tokens: list[tuple[str, str]]) -> str | None:
     suffix = "".join(text for kind, text in tokens[last + 1 :] if kind == "lit")
     pattern = "".join(ch if kind == "ph" else "E" + ch for kind, ch in tokens[first : last + 1])
     percent = "%" * pattern.count("%")
-    value *= 100 ** len(percent)
     pattern = pattern.replace("%", "")
     mantissa, _, exponent = pattern.partition("E")
     sign_style, exponent = (exponent[:1], exponent[1:]) if exponent else ("", "")
     whole, dot, fraction = mantissa.partition(".")
+    thousands = 0
     while whole.endswith(","):  # trailing commas scale by thousands
-        whole, value = whole[:-1], value / 1000
+        whole, thousands = whole[:-1], thousands + 1
     grouped, whole = "," in whole, whole.replace(",", "")
     places, required = sum(fraction.count(c) for c in "0#?"), fraction.count("0")
-    min_whole = whole.count("0")
+    return (
+        prefix,
+        suffix,
+        percent,
+        thousands,
+        grouped,
+        dot,
+        places,
+        required,
+        whole.count("0"),
+        sign_style,
+        max(len(whole), 1),
+        "#" in whole,
+        exponent.count("0"),
+    )
+
+
+def _apply_section(value: float, plan) -> str | None:
+    if plan is None or isinstance(plan, str):
+        return plan
+    (
+        prefix,
+        suffix,
+        percent,
+        thousands,
+        grouped,
+        dot,
+        places,
+        required,
+        min_whole,
+        sign_style,
+        width,
+        hashed,
+        exp_digits,
+    ) = plan
+    value *= 100 ** len(percent)
+    for _ in range(thousands):
+        value = value / 1000
     power = 0
     if sign_style:
-        width = max(len(whole), 1)
         if value:
             power = math.floor(math.log10(value))
-            power = power - power % width if "#" in whole else power - (max(min_whole, 1) - 1)
+            power = power - power % width if hashed else power - (max(min_whole, 1) - 1)
         if float(_round(value / 10**power, places)) >= 10 ** max(width, min_whole, 1):
-            power += width if "#" in whole else 1
+            power += width if hashed else 1
         value /= 10**power
     digits = _round(value, places)
     int_part, _, frac_part = digits.partition(".")
@@ -364,12 +403,16 @@ def _format_section(value: float, tokens: list[tuple[str, str]]) -> str | None:
     text = int_part + (dot + frac_part if dot else "")
     if sign_style:
         exp_sign = "-" if power < 0 else ("+" if sign_style == "+" else "")
-        text += f"E{exp_sign}{str(abs(power)).zfill(exponent.count('0'))}"
+        text += f"E{exp_sign}{str(abs(power)).zfill(exp_digits)}"
     return prefix + text + percent + suffix
 
 
-def _format_number(value: float, code: str) -> str | None:
-    """``value`` as a numeric format displays it, or None for formats left as stored."""
+def _format_section(value: float, tokens: list[tuple[str, str]]) -> str | None:
+    return _apply_section(value, _section_plan(tokens))
+
+
+def _number_plan(code: str):
+    """Each section of a numeric format read once (with whether it has tokens), or None if unsupported."""
     tokens = _format_tokens(code) if code else None
     if not tokens:
         return None
@@ -386,26 +429,65 @@ def _format_number(value: float, code: str) -> str | None:
         sections.pop()
     if not sections or any(("text", "@") in section for section in sections):
         return None
-    if value < 0 and len(sections) > 1 and sections[1]:
-        return _format_section(-value, sections[1])
-    if value == 0 and len(sections) > 2 and sections[2]:
-        return _format_section(0.0, sections[2])
-    text = _format_section(abs(value), sections[0])
+    return [(bool(section), _section_plan(section)) for section in sections]
+
+
+def _apply_number(value: float, plan) -> str | None:
+    if plan is None:
+        return None
+    if value < 0 and len(plan) > 1 and plan[1][0]:
+        return _apply_section(-value, plan[1][1])
+    if value == 0 and len(plan) > 2 and plan[2][0]:
+        return _apply_section(0.0, plan[2][1])
+    text = _apply_section(abs(value), plan[0][1])
     return None if text is None else ("-" + text if value < 0 else text)
+
+
+def _format_number(value: float, code: str) -> str | None:
+    """``value`` as a numeric format displays it, or None for formats left as stored."""
+    return _apply_number(value, _number_plan(code))
+
+
+_NUMBER_ERRORS = (ArithmeticError, ValueError, decimal.InvalidOperation)
+
+
+def _cell_plan(format_id: int, code: str):
+    if len(code) > _MAX_FORMAT_CHARS:
+        code = ""
+    kind = _format_kind(format_id, code)
+    if kind:
+        return kind, None
+    try:
+        return None, _number_plan(code or _BUILTIN_NUMBER_FORMATS.get(format_id, ""))
+    except _NUMBER_ERRORS:
+        return None, None
+
+
+class _CellNumbers:
+    """Shows numeric cells as their formats display them, reading each distinct format once per workbook."""
+
+    def __init__(self, date1904: bool):
+        self.date1904 = date1904
+        self._plans: dict[tuple[int, str], tuple] = {}
+
+    def __call__(self, value: float, format_id: int, code: str) -> str:
+        key = (format_id, code)
+        plan = self._plans.get(key)
+        if plan is None:
+            plan = self._plans[key] = _cell_plan(format_id, code)
+        kind, number_plan = plan
+        if kind:
+            return _serial_text(value, kind, self.date1904)
+        try:
+            text = _apply_number(value, number_plan)
+        except _NUMBER_ERRORS:
+            text = None
+        return _number(value) if text is None else text
 
 
 def _cell_number(value: float, format_id: int, code: str, date1904: bool) -> str:
     """A numeric cell as its format displays it, falling back to the stored number."""
-    if len(code) > _MAX_FORMAT_CHARS:  # tokenized per cell
-        code = ""
-    kind = _format_kind(format_id, code)
-    if kind:
-        return _serial_text(value, kind, date1904)
-    try:
-        text = _format_number(value, code or _BUILTIN_NUMBER_FORMATS.get(format_id, ""))
-    except (ArithmeticError, ValueError, decimal.InvalidOperation):
-        text = None
-    return _number(value) if text is None else text
+    return _CellNumbers(date1904)(value, format_id, code)
 
 
 def _column_index(ref: str) -> int:
@@ -462,6 +544,7 @@ def xlsx(path: str) -> list[Section]:
                 fmt = int(xf.get("numFmtId", "0") or 0)
                 style_formats.append((fmt, custom.get(fmt, "")))
 
+        cell_number = _CellNumbers(date1904)
         sections: list[Section] = []
         seen: set[int] = set()
         budget = _Budget()
@@ -499,7 +582,7 @@ def xlsx(path: str) -> list[Section]:
                             fmt, code = (
                                 style_formats[style] if style < len(style_formats) else (0, "")
                             )
-                            value = _cell_number(number, fmt, code, date1904)
+                            value = cell_number(number, fmt, code)
                     cells.extend([""] * (col - len(cells)))
                     if col == len(cells):
                         cells.append(value)
@@ -1241,7 +1324,7 @@ def _word_text(raw: str) -> str:
     # A cell ends in 0x07; a row ends in one more.
     text = "".join(out).replace("\x07\x07", "\n").replace("\x07", " | ")
     text = text.translate({0x0D: "\n", 0x0B: "\n", 0x0C: "\n", 0x1E: "-", 0x1F: None})
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = _BLANK_LINE_RUN.sub("\n\n", text)
     return _clean_control(text).strip()
 
 
@@ -1386,9 +1469,11 @@ def xls(path: str) -> list[Section]:
         elif kind == 0x000A:  # end of the workbook globals
             break
 
+    cell_number = _CellNumbers(date1904)
+
     def number(value: float, xf: int) -> str:
         fmt = xf_formats[xf] if xf < len(xf_formats) else 0
-        return _cell_number(value, fmt, formats.get(fmt, ""), date1904)
+        return cell_number(value, fmt, formats.get(fmt, ""))
 
     sections: list[Section] = []
     # BIFF cell records are a few bytes each, so 200 MB of them would hold tens of millions of

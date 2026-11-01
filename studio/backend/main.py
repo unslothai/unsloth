@@ -1488,7 +1488,6 @@ if _DOCS_ASSETS_DIR.is_dir():
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
-    AUDIO_INPUT_MAX_BYTES,
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
@@ -1496,6 +1495,7 @@ from utils.upload_limits import (  # noqa: E402
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
+    audio_input_max_bytes,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
@@ -1589,7 +1589,9 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
-        return AUDIO_INPUT_MAX_BYTES
+        # None means no cap, as the route treats it.
+        cap = audio_input_max_bytes()
+        return sys.maxsize if cap is None else cap
     if _SANDBOX_UPLOAD_RE.match(path):
         return upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
     if _RAG_DOCUMENT_UPLOAD_RE.match(path):
@@ -3244,6 +3246,14 @@ def _match_assets_before_api_routes(app: FastAPI) -> None:
     routes.insert(position, mount)
 
 
+# Takes over at once, then unregisters: no fetch handler, so requests go straight to the network,
+# and no cache or storage is touched (another app's caches are not Studio's to clear).
+_RETIRING_SERVICE_WORKER = (
+    'self.addEventListener("install", () => self.skipWaiting());\n'
+    'self.addEventListener("activate", (event) => event.waitUntil(self.registration.unregister()));\n'
+)
+
+
 def setup_frontend(
     app: FastAPI,
     build_path: Path,
@@ -3319,6 +3329,15 @@ def setup_frontend(
         # A non-string type is unsupported too; an unhashable value would raise TypeError and escape as a 500 instead of a clean 400.
         if is_engine_probe_path(full_path):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
+
+        # Studio registers no service worker, so this is the browser updating one another app left on
+        # this origin. The app shell fails that update forever and the worker keeps every Studio request.
+        if request.headers.get("service-worker") == "script":
+            return Response(
+                content = _RETIRING_SERVICE_WORKER,
+                media_type = "text/javascript",
+                headers = {"Cache-Control": "no-store", "Service-Worker-Allowed": "/"},
+            )
 
         # Serve index.html as bytes - avoids Content-Length mismatch
         return _build_index_response(request)

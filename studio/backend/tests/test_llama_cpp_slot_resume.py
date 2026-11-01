@@ -46,6 +46,7 @@ class _Resp:
 
 
 def test_save_returns_none_when_slot_save_disabled(monkeypatch, tmp_path):
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     backend._slot_save_dir = None
     monkeypatch.setattr(
@@ -58,6 +59,7 @@ def test_save_returns_none_when_slot_save_disabled(monkeypatch, tmp_path):
 
 
 def test_save_skipped_when_prompt_cache_disabled(monkeypatch, tmp_path):
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     backend._prompt_cache_disabled = True
     monkeypatch.setattr(
@@ -268,6 +270,7 @@ def test_gguf_file_identity_covers_split_shards(tmp_path):
 
 
 def test_save_skipped_when_user_disabled_prompt_cache(monkeypatch, tmp_path):
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     backend._extra_args = ["--no-cache-prompt"]
     monkeypatch.setattr(
@@ -280,6 +283,7 @@ def test_save_skipped_when_user_disabled_prompt_cache(monkeypatch, tmp_path):
 
 
 def test_save_skipped_when_env_disables_prompt_cache(monkeypatch, tmp_path):
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     monkeypatch.setenv("LLAMA_ARG_CACHE_PROMPT", "0")
     monkeypatch.setattr(
@@ -505,6 +509,7 @@ def test_save_estimate_uses_total_context_and_active_cache_settings(monkeypatch,
 
 
 def test_compact_swa_slot_save_is_skipped(monkeypatch, tmp_path):
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     backend._sliding_window = 4096
     backend._kv_key_length = 256
@@ -522,6 +527,7 @@ def test_compact_swa_slot_save_is_skipped(monkeypatch, tmp_path):
 
 def test_window_without_kv_dims_still_saves(monkeypatch, tmp_path):
     # phi3 has a window but no key/value length and runs non-SWA in llama.cpp.
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     backend._sliding_window = 262144
     backend._kv_key_length = None
@@ -583,3 +589,25 @@ def test_save_skipped_when_estimate_unavailable_and_low_disk(monkeypatch, tmp_pa
         raising = False,
     )
     assert backend.save_slots_for_resume() is None
+
+
+def test_every_slot_save_test_fakes_the_disk():
+    # save_slots_for_resume skips on low free disk, so a test that leaves it to the host passes or fails
+    # with the runner's disk: a save test goes red there, and a skip test can pass for the wrong reason.
+    import ast
+    import inspect
+    import sys
+
+    module = sys.modules[__name__]
+    tree = ast.parse(inspect.getsource(module))
+    unfaked = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+            calls = {
+                n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "")
+                for n in ast.walk(node)
+                if isinstance(n, ast.Call)
+            }
+            if "save_slots_for_resume" in calls and "_fake_disk" not in calls:
+                unfaked.append(node.name)
+    assert not unfaked, f"call _fake_disk(monkeypatch) first: {unfaked}"
