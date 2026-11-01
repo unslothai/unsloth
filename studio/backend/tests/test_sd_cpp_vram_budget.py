@@ -558,6 +558,7 @@ def _rocm_linux_host(
     monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hardware, "_rocm_kfd_gpu_pci_ids", lambda: [c[0] for c in cards])
     monkeypatch.setattr(amd, "amd_kfd_gpu_gfx_targets", lambda *a, **k: [c[1] for c in cards])
+    monkeypatch.setattr(hardware, "_rocm_kfd_render_nodes_openable", lambda: True)
     monkeypatch.setattr(
         hardware,
         "_rocm_linux_sysfs_vram_by_pci_gb",
