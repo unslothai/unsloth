@@ -20,6 +20,12 @@ from utils.datasets.format_conversion import convert_chatml_to_alpaca
 from utils.datasets.iterable import is_streaming_dataset
 
 
+@pytest.fixture(autouse = True)
+def _pin_cuda_device(monkeypatch):
+    # The start-route tests assume a GPU host; a GPU-less or Apple Silicon runner would hit a platform refusal first.
+    monkeypatch.setattr(_hw, "DEVICE", _hw.DeviceType.CUDA)
+
+
 def _shared_setup_1(request, training_route):
     backend = SimpleNamespace(
         current_job_id = None,
@@ -30,8 +36,6 @@ def _shared_setup_1(request, training_route):
     with (
         patch.object(training_route, "get_training_backend", return_value = backend),
         patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
-        # Pinned: on a GPU-less or Apple Silicon runner a platform refusal would answer first.
-        patch.object(_hw, "DEVICE", _hw.DeviceType.CUDA),
     ):
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(training_route.start_training(request, current_subject = "test-user"))
