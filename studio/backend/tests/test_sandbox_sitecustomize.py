@@ -92,6 +92,28 @@ def test_windows_backslash_spelling_of_a_prefix_maps_into_cwd(monkeypatch):
     assert mod._remap("data\\out.txt") == "data\\out.txt"
 
 
+@pytest.mark.skipif(os.path.exists("/mnt/data"), reason = "the host has a real /mnt/data, which the shim never shadows")
+def test_a_pathlib_write_then_read_of_mnt_data_round_trips_in_a_child(tmp_path):
+    """End to end in a real interpreter with the shim on PYTHONPATH, on whatever OS runs the suite. Windows spells the
+    path with backslashes, which the prefix remap must still catch on the read as well as the write."""
+    import subprocess
+    import sys
+
+    code = (
+        "from pathlib import Path\n"
+        "p = Path('/mnt/data/round_trip.txt')\n"
+        "p.write_text('round trip')\n"
+        "print(p.read_text())\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(_SHIM.parent)}
+    proc = subprocess.run(
+        [sys.executable, "-c", code], cwd = tmp_path, env = env, capture_output = True, text = True, timeout = 60
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "round trip"
+    assert (tmp_path / "round_trip.txt").read_text(encoding = "utf-8") == "round trip"
+
+
 def test_prefix_remap_contains_parent_traversal_inside_cwd(monkeypatch, tmp_path):
     # '..' components are dropped so the remap never escapes the per-conversation CWD.
     mod = _load_shim()
