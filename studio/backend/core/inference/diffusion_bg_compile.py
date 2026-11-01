@@ -139,13 +139,13 @@ def warm_triton_key(logger: Any = None) -> bool:
 
 def warm_engage_imports(logger: Any = None) -> int:
     """Model-free first-use work of the engagement; returns how many steps ran."""
+
     def _zoo_patch_utils() -> None:
         # Import only: diffusion_patch_backend._helpers() keeps its own retry (import unsloth) for the 3rd image.
         import unsloth_zoo.temporary_patches.utils  # noqa: F401
 
     def _vae_kernels() -> None:
         from . import diffusion_vae_fused
-
         diffusion_vae_fused._kernels()
 
     done = 0
