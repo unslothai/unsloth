@@ -20532,7 +20532,6 @@ class LlamaCppBackend:
                     "a chat model. Open it from the Audio page instead."
                 )
             if is_foreign_asr_gguf_architecture(arch):
-                # mudler/parakeet.cpp GGUFs: Audio runs audiocpp Parakeet-TDT, not this file (#16273).
                 return (
                     f"This is a '{arch}' speech-recognition GGUF (parakeet.cpp / LocalAI), which "
                     "llama.cpp cannot load. Updating llama.cpp will not help. For Parakeet in "
@@ -21143,7 +21142,6 @@ class LlamaCppBackend:
                     "cannot run as a chat/completion model. Open it from Unsloth's Audio page instead."
                 )
             if is_foreign_asr_gguf_architecture(arch):
-                # Do not say "update llama.cpp": that arch lives in parakeet.cpp, never llama.cpp (#16273).
                 return (
                     f"'{arch}' is a speech-recognition GGUF for parakeet.cpp / LocalAI, which "
                     "llama-server cannot run as a chat/completion model. Updating llama.cpp will "
