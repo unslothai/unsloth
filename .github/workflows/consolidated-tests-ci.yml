@@ -1986,10 +1986,9 @@ jobs:
             trl_spec: "__from_pyproject__"
     name: "Core zoo (${{ matrix.combo.label }})"
     runs-on: ubuntu-24.04
-    # Same as consolidated: the zoo suite takes up to about 23 min on a busy runner, so a 25 min cap
-    # had cancelled passing cells during the pip cache save; the cap still bounds a hang, and
-    # PYTEST_TIMEOUT names the culprit.
-    timeout-minutes: 35
+    # A passing cell takes ~35 min (35 min cap cancelled it at 99%); PYTEST_TIMEOUT
+    # below names a hung test, this cap only bounds it.
+    timeout-minutes: 50
     # Same contract as `consolidated`: no job-level or per-step
     # `continue-on-error`, so a failing test fails the cell.
     env:
@@ -2034,17 +2033,42 @@ jobs:
           unsloth-zoo-ref: ${{ env.UNSLOTH_ZOO_REF }}
 
       - name: unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }} — full pytest (CPU)
-        # 106 of 111 test modules are CPU-only, so the CUDA case is deselected explicitly;
-        # PYTEST_TIMEOUT 300 (over 3x headroom above the slowest test) names a hang instead of
-        # letting it eat the job; sane only since unsloth-zoo #1139 stopped rebuilding
-        # dir(transformers.models) per call.
+        # 106 of 111 test_* in unsloth_zoo are CPU-only. The CUDA-skip case
+        # below auto-skips on a GPU-less runner; deselect it explicitly so the
+        # no-CUDA outcome is "deselected", not "skipped", making intent
+        # visible in the report. Env inherited from job block.
+        #
+        # -rs prints every skip reason, so a dependency that goes missing and
+        # turns a module into a skip shows up in the log instead of only in
+        # the skipped count.
+        #
+        # A test that hangs rather than fails used to consume the whole job
+        # budget and report nothing usable: the job ended as "cancelled", with
+        # no test name, no traceback, and every later step marked skipped. That is
+        # how unsloth_zoo's gather_qmm guard walking a chain forever under the mlx
+        # shim presented. PYTEST_TIMEOUT is read by pytest-timeout on every pytest
+        # invocation in this step, so one setting covers the xdist run and each
+        # serial file below, instead of the same flag on six command lines.
+        #
+        # 5 minutes. The slowest honest test in the suite is about 48s locally
+        # (test_fla_hopper_tile.py), and CI runs roughly 1.65x slower than that
+        # box, measured on the one test long enough to compare, so call it 80s
+        # here. That leaves well over 3x headroom, while a genuine hang is now
+        # named and stack-dumped in 5 minutes rather than silently eating the
+        # job's whole 25 minute cap.
+        #
+        # This only became a sane number once unsloth_zoo stopped rebuilding
+        # dir(transformers.models) on every call (unsloth-zoo#1139): before that,
+        # test_every_shipped_model_type_accepted alone ran past 600s, so any
+        # useful timeout would have failed a passing test.
         env:
           PYTEST_TIMEOUT: 300
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
-          # Each file stays on one worker (loadfile); MLX shim tests contaminate sys.modules, so
-          # they run separately below, and the other ignores leak process state or rely on timing
-          # needing a quiet process.
+          # Keep tests within each file on one worker. MLX shims contaminate sys.modules,
+          # so exclude that family from xdist and run it separately below. The other
+          # ignores either leak process state or use timing assertions that need a quiet
+          # process.
           python -m pytest -q -rs --tb=short -n 4 --dist loadfile tests/ \
             --ignore-glob='tests/test_mlx_*.py' \
             --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
