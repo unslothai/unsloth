@@ -268,3 +268,14 @@ def test_idle_switch_does_not_wait_for_readers(monkeypatch):
     assert o._shutdown_subprocess() is True
     # _let_readers_finish sleeps only while a reader is registered; wall time is load-dependent.
     assert rec.sleeps == [] and rec.terminated == []
+
+
+def test_stalled_reader_is_abandoned_after_the_idle_grace(monkeypatch):
+    rec = _Recorder(monkeypatch)
+    o = _live()
+    with o._mailbox_lock:
+        o._mailboxes["gone"] = orch_mod._WorkerMailbox(o._proc)
+    assert o._shutdown_subprocess() is True
+    waited = sum(rec.sleeps)
+    assert orch_mod._SHUTDOWN_READER_IDLE_S - 0.05 <= waited < orch_mod._SHUTDOWN_READER_MAX_S
+    assert rec.terminated == []

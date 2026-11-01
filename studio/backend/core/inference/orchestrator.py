@@ -217,8 +217,10 @@ _CANCELLED_ROWS_GRACE = 5.0
 # Old fixed post-cancel sleep, now added to the exit wait so a slow cancel keeps its full budget.
 _SHUTDOWN_CANCEL_GRACE_S = 0.5
 _SHUTDOWN_JOIN_SLICE_S = 0.05
-# Old fixed sleeps on a switch (0.3 + 0.5): now only a live stream waits, after worker exit, to read its tail.
-_SHUTDOWN_READER_GRACE_S = 0.8
+# Replaces the old fixed 0.3 + 0.5 s switch sleeps: after worker exit a live stream may read its tail
+# while it keeps making progress, abandoned after this long without a read.
+_SHUTDOWN_READER_IDLE_S = 0.8
+_SHUTDOWN_READER_MAX_S = 5.0
 
 # Transformers TTS only; generous since _ensure_subprocess_alive already catches dead workers.
 _AUDIO_GENERATION_TIMEOUT = 900.0
@@ -447,6 +449,8 @@ class InferenceOrchestrator:
     """Inference backend orchestrator, subprocess-based. Same API surface as InferenceBackend (so
     routes/inference.py needs minimal changes); all heavy ML work happens in a persistent
     subprocess."""
+
+    _replies_read = 0  # replies consumed by readers: progress signal for _let_readers_finish
 
     _load_download_keys: Sequence[str] = ()
 
@@ -903,7 +907,7 @@ class InferenceOrchestrator:
             )
             return False
 
-        self._let_readers_finish(time.monotonic() + _SHUTDOWN_READER_GRACE_S)
+        self._let_readers_finish()
         # Without this flag every model switch replayed a healthy worker's stderr at ERROR.
         self._worker_stopped_deliberately = True
         self._proc = None
@@ -951,14 +955,22 @@ class InferenceOrchestrator:
             if mbox is not None:
                 mbox.put(resp)
 
-    def _let_readers_finish(self, deadline: float) -> None:
+    def _let_readers_finish(self) -> None:
         """A stream reports a worker crash once the handle swaps, so let it read its tail first."""
-        while time.monotonic() < deadline:
+        now = time.monotonic()
+        hard_deadline = now + _SHUTDOWN_READER_MAX_S
+        idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+        seen = self._replies_read
+        while now < min(hard_deadline, idle_deadline):
             with self._mailbox_lock:
                 if not self._mailboxes and not self._direct_mailboxes:
                     return
             self._drain_unread_replies()
-            time.sleep(min(0.02, max(deadline - time.monotonic(), 0.0)))
+            time.sleep(0.02)
+            now = time.monotonic()
+            if self._replies_read != seen:
+                seen = self._replies_read
+                idle_deadline = now + _SHUTDOWN_READER_IDLE_S
 
     @staticmethod
     def _wait_for_worker_vram_settle(
@@ -1137,6 +1149,7 @@ class InferenceOrchestrator:
 
     def _observe_response(self, resp, worker):
         """Retire ``worker`` if its Metal queue is dead; nothing else reaps it."""
+        self._replies_read += 1
         detail = resp.get("error") or ""
         if worker is None or not is_metal_queue_dead(detail):
             return resp
