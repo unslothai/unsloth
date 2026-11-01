@@ -744,8 +744,7 @@ function rezipDocx(archive: Uint8Array, rewritten: Record<string, Uint8Array> | 
   return rewritten ? zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 }) : archive;
 }
 
-// fflate reads a central directory as zip64 when the 4 bytes 20 before its end say so; in its
-// own output those land in the last entry's local offset or name.
+// fflate takes the 4 bytes 20 before the end record as a zip64 locator; its own output puts the last offset or name there.
 const ZIP64_LOCATOR = "PK\u0006\u0007";
 const ZIP64_LOCATOR_OFFSET_FLOOR = 0x06000000;
 
