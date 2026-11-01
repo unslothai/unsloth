@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any, Optional
 
-from core.inference import gallery_flags
+from core.inference import gallery_flags, png_encode
 from loggers import get_logger
 from utils.account_context import is_owner_context
 from utils.paths import ensure_account_dir, studio_root
@@ -131,6 +131,9 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     info = PngInfo()
     info.add_text(_META_KEY, json.dumps(meta))
     info.add_text("parameters", _params_text(meta))
+    data = png_encode.encode(image, pnginfo = info, compress_level = png_compress_level())
+    if data is not None:
+        return data
     buf = io.BytesIO()
     image.save(buf, format = "PNG", pnginfo = info, compress_level = png_compress_level())
     return buf.getvalue()

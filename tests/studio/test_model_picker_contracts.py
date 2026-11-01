@@ -1973,9 +1973,14 @@ def test_chat_picker_routes_diffusion_picks_to_their_page():
     assert (
         'task === "image-diffusion-unsupported"' in caps
     ), "the never-loadable tag must stay hidden"
-    wrapper = re.search(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
-    assert wrapper, "the routing wrapper around onSelect is missing"
-    body = wrapper.group(0)
+    # Memoized rows forward onSelect too; the routing wrapper is the one that maps the task.
+    wrappers = [
+        m.group(0)
+        for m in re.finditer(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
+        if "mediaPageForTask" in m.group(0)
+    ]
+    assert wrappers, "the routing wrapper around onSelect is missing"
+    body = wrappers[0]
     assert "mediaPageForTask" in body and "navigateToPage" in body
     assert "if (!task)" in body
 
@@ -3174,8 +3179,9 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
     Give the parent row a gear and that inference silently inverts."""
     pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
     # Inside the parent row: a gear added beside the spacer would invert the driver's inference.
-    start = pickers.index("const renderDownloadedGgufRow")
-    parent = pickers[start : pickers.index("const renderDownloadedModelRow", start)]
+    # The parent row is the memoized DownloadedGgufDeviceRow that renderDownloadedGgufRow mounts.
+    start = pickers.index("const DownloadedGgufDeviceRow = memo(")
+    parent = pickers[start : pickers.index("\n});", start)]
     parent_row = parent[: parent.index("{expanderOpen && (")]
     # A partial repo puts a row menu in the gutter instead; the gear invariant is about the
     # branch that expands, so read that one when the row splits on it.
