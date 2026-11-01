@@ -418,3 +418,22 @@ def test_router_statistics_sum_over_stages_to_transformers_loss():
         assert torch.allclose(want, got, rtol = 1e-6, atol = 1e-7)
         for a, b in zip(want_grads, got_grads):
             assert torch.allclose(a, b, rtol = 1e-5, atol = 1e-8)
+
+
+@pytest.mark.parametrize(
+    "aux, reentrant, refused",
+    [(True, True, True), (True, False, False), (False, True, False), (True, None, False)],
+)
+def test_aux_loss_refuses_reentrant_checkpointing(aux, reentrant, refused):
+    # Failing before: reentrant checkpointing captured router logits under no_grad, so the auxiliary loss added
+    # its value to the pipeline loss but no gradient.
+    model = build(aux = aux)
+    if reentrant is not None:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs = {"use_reentrant": reentrant}
+        )
+    if refused:
+        with pytest.raises(ValueError, match = "non-reentrant"):
+            ppn._refuse_aux_with_reentrant_checkpointing(model, model.config)
+    else:
+        ppn._refuse_aux_with_reentrant_checkpointing(model, model.config)

@@ -995,6 +995,8 @@ class _PPStageModule(nn.Module):
         moe = ctx.moe
         if not getattr(moe.owner.config, "output_router_logits", False):
             return None
+        if torch.is_grad_enabled():  # checkpointing can be turned on after the split
+            _refuse_aux_with_reentrant_checkpointing(self, moe.owner.config)
         expected = sum(moe.routers.get(i, 0) for i in range(ctx.start, ctx.end))
         if len(captured) != expected:
             raise RuntimeError(
@@ -1118,6 +1120,21 @@ def _check_torch_pipelining():
                 f"Unsloth: pipeline parallelism needs torch >= 2.10 (Schedule scale_grads and "
                 f"step(return_outputs)); torch {torch.__version__} lacks them. The model was not modified."
             )
+
+
+def _refuse_aux_with_reentrant_checkpointing(model, config):
+    """Reentrant checkpointing (transformers' default, Unsloth smart checkpointing) runs the first layer forward
+    under no_grad, so the captured router logits carry no graph and the auxiliary loss would add its value but
+    no gradient."""
+    if not getattr(config, "output_router_logits", False):
+        return
+    if non_reentrant_checkpointing_only(model) is False:
+        raise ValueError(
+            "Unsloth: pipeline parallelism carries the router auxiliary loss only with gradient checkpointing "
+            "off or torch's non-reentrant checkpointing (gradient_checkpointing_kwargs = {'use_reentrant': "
+            "False}); reentrant checkpointing would drop its gradient. Or set config.output_router_logits = "
+            "False to train without the auxiliary loss."
+        )
 
 
 def _check_schedule(model, spec, props):
@@ -1915,6 +1932,8 @@ def apply_pipeline_parallel(
             f"carries the router auxiliary loss with schedule = {' / '.join(map(repr, _PP_MOE_AUX_SCHEDULES))} "
             f"(one stage per rank) only; got {schedule!r} with {stages_per_rank} stages per rank."
         )
+    if moe is not None:
+        _refuse_aux_with_reentrant_checkpointing(model, moe.owner.config)
     total_stages = pp * stages_per_rank
     rank = pp_mesh.get_local_rank()
     if stages_per_rank > 1:
