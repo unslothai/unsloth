@@ -1558,11 +1558,15 @@ def test_router_logits_after_a_forward_without_them(request, monkeypatch):
     model = _tiny_qwen3_moe(request, monkeypatch)
     ids = torch.randint(0, 100, (2, 8))
     want = model(input_ids = ids, labels = ids, use_cache = False, output_router_logits = True)
-    model = type(model).from_pretrained(
-        "trl-internal-testing/tiny-Qwen3MoeForCausalLM",
-        dtype = torch.float32,
-        experts_implementation = "batched_mm",
-    ).train()
+    model = (
+        type(model)
+        .from_pretrained(
+            "trl-internal-testing/tiny-Qwen3MoeForCausalLM",
+            dtype = torch.float32,
+            experts_implementation = "batched_mm",
+        )
+        .train()
+    )
     monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
     inner = _install_blocks(M, model, monkeypatch)
     torch._dynamo.reset()

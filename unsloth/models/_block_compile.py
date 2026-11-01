@@ -1869,13 +1869,19 @@ def _install_router_capture_hooks(model):
     registry = getattr(output_capturing, "_CAN_RECORD_REGISTRY", None)
     install = getattr(output_capturing, "maybe_install_capturing_hooks", None)
     collector = getattr(output_capturing, "CompileableContextVar", None)
-    if not isinstance(registry, dict) or install is None or not getattr(collector, "_unsloth_eager_mirror", False):
+    if (
+        not isinstance(registry, dict)
+        or install is None
+        or not getattr(collector, "_unsloth_eager_mirror", False)
+    ):
         return 0
     installed = 0
     # Outermost first, as transformers would: an install recurses into nested models and flags them.
     for module in model.modules():
         flags = registry.get(str(type(module))) or {}
-        if "router_logits" not in flags or getattr(module, "_output_capturing_hooks_installed", False):
+        if "router_logits" not in flags or getattr(
+            module, "_output_capturing_hooks_installed", False
+        ):
             continue
         try:
             install(module)
