@@ -4,7 +4,7 @@
 import { LiquiGlass } from "@liqui-design/glass";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { useMaterialStore } from "./material";
+import { useGlassStrength, useMaterialStore } from "./material";
 
 /** @liqui-design/glass refraction is Chromium only; WebKit and Firefox fall back to its frosted tier. */
 const OPTICS = {
@@ -51,7 +51,7 @@ export function LiquidGlassLayer({
   kind: "composer" | "menu";
 }) {
   const material = useMaterialStore((s) => s.material);
-  const strength = useMaterialStore((s) => s.strength);
+  const strength = useGlassStrength();
   const [radius, setRadius] = useState(0);
   useLayoutEffect(() => {
     setRadius(

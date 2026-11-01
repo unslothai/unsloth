@@ -3,6 +3,8 @@
 
 // eslint-disable-next-line no-restricted-imports
 import { isMacPlatform } from "@/features/settings/lib/keyboard-shortcuts";
+// eslint-disable-next-line no-restricted-imports
+import { useTheme } from "@/features/settings/stores/theme-store";
 import { isTauri } from "@/lib/api-base";
 import { useEffect } from "react";
 import { create } from "zustand";
@@ -12,11 +14,14 @@ import {
   persist,
 } from "zustand/middleware";
 import {
+  DEFAULT_GLASS_STRENGTH,
+  type GlassStrengths,
   type LensMode,
   type WindowMaterial,
   sanitizeLens,
   sanitizeMaterial,
   sanitizeStrength,
+  sanitizeStrengths,
 } from "./model";
 
 export const MATERIAL_STORAGE_KEY = "unsloth_window_material";
@@ -61,21 +66,21 @@ export const useMaterialStore = create<{
   style: GlassStyle;
   nativeFailed: boolean;
   menus: boolean;
-  strength: number;
+  strength: GlassStrengths;
   lens: LensMode;
   setMaterial: (material: WindowMaterial) => void;
   setEnabled: (enabled: boolean) => void;
   setMenus: (menus: boolean) => void;
-  setStrength: (strength: number) => void;
+  setStrength: (strength: number, mode: keyof GlassStrengths) => void;
   setLens: (lens: LensMode) => void;
 }>()(
   persist(
     (set) => ({
       material: "solid",
-      style: "liquid",
+      style: "liquid-3d",
       nativeFailed: false,
-      menus: false,
-      strength: 50,
+      menus: true,
+      strength: DEFAULT_GLASS_STRENGTH,
       lens: "off",
       setMaterial: (material) => {
         const next = sanitizeMaterial(material);
@@ -91,7 +96,10 @@ export const useMaterialStore = create<{
           nativeFailed: false,
         })),
       setMenus: (menus) => set({ menus }),
-      setStrength: (strength) => set({ strength: sanitizeStrength(strength) }),
+      setStrength: (strength, mode) =>
+        set((s) => ({
+          strength: { ...s.strength, [mode]: sanitizeStrength(strength) },
+        })),
       setLens: (lens) => set({ lens: sanitizeLens(lens) }),
     }),
     {
@@ -120,9 +128,9 @@ export const useMaterialStore = create<{
           style:
             sanitizeStyle(stored?.style) ??
             sanitizeStyle(stored?.material) ??
-            "liquid",
-          menus: stored?.menus === true,
-          strength: sanitizeStrength(stored?.strength),
+            "liquid-3d",
+          menus: typeof stored?.menus === "boolean" ? stored.menus : true,
+          strength: sanitizeStrengths(stored?.strength),
           lens: sanitizeLens(stored?.lens),
         };
       },
@@ -135,12 +143,18 @@ async function setNativeVibrancy(enabled: boolean): Promise<boolean> {
   return invoke<boolean>("set_native_vibrancy", { enabled });
 }
 
+/** Light and dark keep their own strength: a dark pane needs far less to read. */
+export function useGlassStrength(): number {
+  const { resolved } = useTheme();
+  return useMaterialStore((s) => s.strength[resolved]);
+}
+
 let nativeApplied = false;
 
 export function WindowMaterialMount() {
   const material = useMaterialStore((s) => s.material);
   const menus = useMaterialStore((s) => s.menus);
-  const strength = useMaterialStore((s) => s.strength);
+  const strength = useGlassStrength();
   useEffect(() => {
     // 0-100 onto multipliers, 1x at 50, applied after the readability floors so the setting always shows.
     const root = document.documentElement;

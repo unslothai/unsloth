@@ -18,10 +18,13 @@ import { useT, type TranslationKey } from "@/i18n";
 import { SettingsSection } from "@/features/settings/components/settings-section";
 // eslint-disable-next-line no-restricted-imports
 import { SettingsRow } from "@/features/settings/components/settings-row";
+// eslint-disable-next-line no-restricted-imports
+import { useTheme } from "@/features/settings/stores/theme-store";
 import { ChatBackground } from "./index";
 import {
 	DEFAULT_ADJUSTMENTS,
 	EFFECTS,
+	effectiveFade,
 	LENS_MODES,
 	type LensMode,
 	MATERIALS,
@@ -42,7 +45,11 @@ import {
 	useChatBackground,
 } from "./storage";
 import { canvasBlob, decodeImage } from "./image";
-import { nativeMaterialAvailable, useMaterialStore } from "./material";
+import {
+	nativeMaterialAvailable,
+	useGlassStrength,
+	useMaterialStore,
+} from "./material";
 import { MATERIAL_LABELS } from "./material-labels";
 
 const labels: Record<BackgroundEffect, TranslationKey> = {
@@ -144,7 +151,9 @@ function MaterialMenusRow() {
 }
 function MaterialStrengthRow() {
 	const t = useT();
-	const { material, strength, setStrength } = useMaterialStore();
+	const { material, setStrength } = useMaterialStore();
+	const strength = useGlassStrength();
+	const { resolved } = useTheme();
 	const off =
 		material === "solid" || (material === "macos" && !nativeMaterialAvailable());
 	return (
@@ -157,7 +166,7 @@ function MaterialStrengthRow() {
 					max={100}
 					step={1}
 					value={[strength]}
-					onValueChange={([v]) => setStrength(v)}
+					onValueChange={([v]) => setStrength(v, resolved)}
 				/>
 				<span className="w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
 					{strength}%
@@ -212,6 +221,9 @@ export function ChatBackgroundControls() {
 	const { value, error, ready, busy } = useChatBackground();
 	const input = useRef<HTMLInputElement>(null);
 	const adjustments = value ?? DEFAULT_ADJUSTMENTS;
+	// Visibility is kept per mode, so the slider edits the one on screen.
+	const { resolved } = useTheme();
+	const glass = useMaterialStore((s) => s.material !== "solid");
 	return (
 		<SettingsSection
 			title={t("chatBackground.title")}
@@ -395,7 +407,13 @@ export function ChatBackgroundControls() {
 							</SelectContent>
 						</Select>
 					</SettingsRow>
-					{(["visibility", "blur", "zoom"] as const).map((key) => (
+					{(
+						[
+							resolved === "dark" ? "darkVisibility" : "visibility",
+							"blur",
+							"zoom",
+						] as const
+					).map((key) => (
 						<SettingsRow
 							key={key}
 							className="items-start"
@@ -441,7 +459,7 @@ export function ChatBackgroundControls() {
 					<SettingsRow label={t("chatBackground.fade")} className="items-start">
 						<Switch
 							aria-label={t("chatBackground.fade")}
-							checked={adjustments.fade}
+							checked={effectiveFade(adjustments.fade, glass)}
 							disabled={!value || busy}
 							onCheckedChange={(fade) => patchBackground({ fade })}
 						/>
