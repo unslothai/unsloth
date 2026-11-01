@@ -597,10 +597,18 @@ def test_failing_text_engines_hold_back_the_early_image_lookup(monkeypatch, fake
     assert "img" in found
     assert tools._text_search_failed_at is None
     before = len(_FakeDDGS.image_queries)
-    t0 = time.perf_counter()
+    real_start = tools._ImageSweep.__dict__["start"].__func__
+    early: list = []
+
+    def start(cls, *a):
+        sweep = real_start(cls, *a)
+        early.append(sweep)
+        return sweep
+
+    monkeypatch.setattr(tools._ImageSweep, "start", classmethod(start))
     tools._web_search("paris", timeout = 20, include_images = True)
-    # Overlapped again: about one 0.3 s round trip, not two.
-    assert time.perf_counter() - t0 < 0.5
+    # Overlapped again (wall time is not asserted: it moves with host load).
+    assert len(early) == 1 and early[0] is not None
     assert len(_FakeDDGS.image_queries) == before + 1
     # The hold expires on its own too.
     monkeypatch.setattr(_FakeDDGS, "text_error", RuntimeError("202 Ratelimit"))
