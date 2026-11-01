@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -268,7 +269,8 @@ def snapshot_weights_complete(
     skip: Any = (),
     variant: Optional[str] = None,
 ) -> bool:
-    """False when a ``model_index.json`` component lacks weights or index-listed shards; True without an index.
+    """False for missing weights, unindexed numbered shards or missing index-listed shards.
+    True without ``model_index.json``.
     ``skip`` names caller-supplied components; ``variant`` checks only that layout's files."""
     try:
         root = Path(snapshot)
@@ -293,6 +295,7 @@ def snapshot_weights_complete(
             ]
         if not files and (sub / "config.json").is_file():
             return False  # a model folder without weights; tokenizer / scheduler folders have no config.json
+        indexed_shards = set()
         for shard_index in shard_indexes:
             try:
                 shards = set(
@@ -304,6 +307,15 @@ def snapshot_weights_complete(
                 return False
             if any(not (sub / shard).is_file() for shard in shards):
                 return False
+            indexed_shards.update(shards)
+        # A shard may arrive before its index during a concurrent snapshot download.
+        # The loader needs that index even if all numbered files are already cached.
+        if any(
+            re.search(r"-\d{5}-of-\d{5}(?:\.[^.]+)?\.(?:safetensors|bin)$", f.name)
+            and f.name not in indexed_shards
+            for f in files
+        ):
+            return False
     return True
 
 
