@@ -8,12 +8,7 @@ import { LENS_SCALE } from "./model";
 
 const COMPOSER = ".unsloth-composer-surface";
 
-/**
- * Glass that refracts. Each composer over the wallpaper gets a copy of the wallpaper behind its content,
- * lined up with the real one and scaled about the composer's centre, plus a brightened ring of the same
- * copy so the outline takes the colours behind it. A copy because backdrop-filter cannot scale, and SVG
- * backdrop filters are Chromium only (not the macOS app's WebKit).
- */
+/** A wallpaper copy, since backdrop-filter cannot scale and SVG backdrop filters are Chromium only (not WebKit). */
 export function ComposerGlassLenses({
   wallpaper,
 }: {
@@ -104,8 +99,6 @@ function Lens({
         copy.style.transformOrigin = `${h.left - w.left + h.width / 2}px ${h.top - w.top + h.height / 2}px`;
         copy.style.transform = `scale(${scale})`;
       }
-      // What sits between the wallpaper and the composer (the conversation's reading wash), then the
-      // composer's own fill, which the copy covers.
       if (wash) {
         const fills: string[] = [];
         for (
@@ -139,7 +132,6 @@ function Lens({
     const resize = new ResizeObserver(place);
     resize.observe(host);
     resize.observe(wallpaper);
-    // New frames, effects and adjustments re-render the wallpaper; a copy has to follow.
     const mutations = new MutationObserver(recopy);
     mutations.observe(wallpaper, {
       childList: true,

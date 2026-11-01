@@ -106,7 +106,6 @@ test("glass lens modes repair malformed data and scale the right way", () => {
 	assert.equal(LENS_SCALE.off, 1);
 	assert.ok(LENS_SCALE.magnify > 1 && LENS_SCALE.shrink < 1);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	// The copy sits behind the composer's content, inside its stacking context.
 	assert.match(css, /\.glass-lens \{\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
 	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
 });
@@ -136,6 +135,5 @@ test("resetting local preferences also resets the glass theme", () => {
 
 test("the lens refreshes its tint when the composer's fill changes", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
-	// Glass strength or style change the fill without resizing anything; the cache key must see it.
 	assert.match(lens, /opacity,\n\s*fill\.backgroundColor,\n\s*fill\.backgroundImage,\n\s*\]\.join\(\)/);
 });

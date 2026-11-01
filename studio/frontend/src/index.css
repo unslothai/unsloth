@@ -7066,8 +7066,6 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .
   backdrop-filter: blur(16px);
 }
 
-/* Glass lens (lens.tsx): a copy of the wallpaper inside the composer, below its content. The fill
-   refracts (magnify or shrink) and the rings brighten the copy into an outline lit by what is behind. */
 .glass-lens {
   position: absolute;
   inset: 0;
@@ -7091,8 +7089,7 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .
 .glass-lens-fill .glass-lens-copy {
   filter: blur(var(--glass-blur, 12px)) saturate(var(--glass-saturate, 150%));
 }
-/* A hairline: the padding box minus the content box, so the outline is the colour right behind it,
-   softened and lit more along the top and bottom edges than the sides. */
+/* A hairline: the padding box minus the content box, so the outline is the colour right behind it. */
 .glass-lens-rim {
   padding: 1px;
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
@@ -7107,7 +7104,6 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .
   inset: 0;
   background: linear-gradient(rgb(255 255 255 / .35), transparent 30%, transparent 75%, rgb(255 255 255 / .15));
 }
-/* A faint bevel: light along the inside of the top edge, a soft shade inside the bottom. */
 .glass-lens::after {
   content: "";
   position: absolute;
@@ -7118,7 +7114,6 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .
 .dark .glass-lens::after {
   box-shadow: inset 0 1px 1px -.5px rgb(255 255 255 / .14), inset 0 4px 4px -4px rgb(255 255 255 / .08), inset 0 -3px 4px -3px rgb(0 0 0 / .35);
 }
-/* The lit rim is the outline now. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface:has(> .glass-lens) {
   --composer-shadow: none;
 }
