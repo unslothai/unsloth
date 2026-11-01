@@ -90,25 +90,48 @@ def _unit_mesh(unit):
         return None
 
 
+def _mesh_ranks(mesh):
+    try:
+        return set(mesh.mesh.flatten().tolist())
+    except Exception:
+        return set()
+
+
 def mesh_writer_rank(model):
-    """Lowest global rank of the model's FSDP2 mesh: a sub-mesh without rank 0 never gathers there."""
+    """Lowest global rank in the model's save group. TP x FSDP2 uses the full DP x TP slice;
+    otherwise parameter and FSDP meshes identify the ranks, including sub-meshes without rank 0."""
     dist = _dist()
     if dist is None:
         return 0
     DTensor = _dtensor_class()
-    mesh = None
+    ranks = set()
     if isinstance(model, torch.nn.Module):
+        # TP and FSDP meshes are orthogonal slices of the same root mesh. Select
+        # the whole DP x TP slice, keeping any pipeline dimensions fixed.
+        tp_mesh = model.__dict__.get("_unsloth_tp_mesh")
+        dp_mesh = model.__dict__.get("_unsloth_tp_dp_mesh")
+        if tp_mesh is not None and dp_mesh is not None:
+            from torch.distributed.device_mesh import _mesh_resources
+
+            root = _mesh_resources.get_root_mesh(tp_mesh)
+            names = set(tp_mesh.mesh_dim_names + dp_mesh.mesh_dim_names)
+            coord = root.get_coordinate()
+            index = tuple(
+                slice(None) if name in names else coord[i]
+                for i, name in enumerate(root.mesh_dim_names)
+            )
+            return int(root.mesh[index].min())
         if DTensor is not None:
-            mesh = next((p.device_mesh for p in model.parameters() if isinstance(p, DTensor)), None)
-        if mesh is None:
+            for p in model.parameters():
+                if isinstance(p, DTensor):
+                    ranks |= _mesh_ranks(p.device_mesh)
+        if not ranks:
             # Unsharded parameters (eval forward, no reshard) carry no mesh; the units still do.
-            mesh = next(filter(None, map(_unit_mesh, fsdp2_units(model))), None)
-        if mesh is None:
-            mesh = model.__dict__.get("_unsloth_fsdp2_mesh", None)
-    try:
-        return int(mesh.mesh.min()) if mesh is not None else 0
-    except Exception:
-        return 0
+            for mesh in filter(None, map(_unit_mesh, fsdp2_units(model))):
+                ranks |= _mesh_ranks(mesh)
+        if not ranks:
+            ranks = _mesh_ranks(model.__dict__.get("_unsloth_fsdp2_mesh", None))
+    return min(ranks) if ranks else 0
 
 
 @contextlib.contextmanager
