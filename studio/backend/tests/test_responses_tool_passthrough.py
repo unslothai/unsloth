@@ -3825,6 +3825,29 @@ def test_a_healed_truncated_tool_call_remains_incomplete(
     assert item_done["item"]["status"] == "incomplete"
 
 
+def test_a_call_cut_at_length_stays_text_in_a_responses_stream(monkeypatch):
+    api_monitor, tool, _xml = _shared_setup_6()
+    name = tool["name"]
+    cut = f"<tool_call><function={name}><parameter=q>line1\nli"
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": cut}, "finish_reason": "length"}]}],
+    )
+    messages, monitor_id, payload = _shared_setup_3(api_monitor, tool)
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    incomplete = TestResponsesStreamAdapter._payloads(lines, "response.incomplete")[0]
+    assert [item["type"] for item in incomplete["response"]["output"]] == ["message"]
+    assert incomplete["response"]["output"][0]["content"][0]["text"] == cut
+
+
 def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatch):
     TestResponsesStreamAdapter._install_stream_mock(
         monkeypatch,
@@ -3958,6 +3981,52 @@ def test_admission_timeout_fails_the_stream_with_server_is_overloaded(monkeypatc
 
     [failed] = TestResponsesStreamAdapter._payloads(asyncio.run(run()), "response.failed")
     assert failed["response"]["error"]["code"] == "server_is_overloaded"
+    assert failed["sequence_number"] == 0
+
+
+def _sequence_numbers(lines):
+    return [
+        json.loads(line.split("data: ", 1)[1].strip())["sequence_number"]
+        for line in lines
+        if line.startswith("event: ")
+    ]
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [{"choices": [{"delta": {"content": "a whole answer"}, "finish_reason": "stop"}]}],
+        [{"error": {"code": 500, "message": "Context size has been exceeded."}}],
+    ],
+)
+def test_every_responses_stream_event_carries_its_sequence_number(monkeypatch, chunks):
+    TestResponsesStreamAdapter._install_stream_mock(monkeypatch, chunks)
+    lines = TestResponsesStreamAdapter()._stream_lines(
+        ResponsesRequest(input = "hi", stream = True), [ChatMessage(role = "user", content = "hi")]
+    )
+    numbers = _sequence_numbers(lines)
+    assert len(numbers) > 1
+    assert numbers == list(range(len(numbers)))
+
+
+def test_upstream_rejection_event_carries_its_sequence_number(monkeypatch):
+    import routes.inference as inf_mod
+
+    real_async_client = httpx.AsyncClient
+    TestResponsesStreamAdapter._install_stream_mock(monkeypatch, [])
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: real_async_client(
+            transport = httpx.MockTransport(
+                lambda request: httpx.Response(400, content = _OVERFLOW_BODY.encode())
+            )
+        ),
+    )
+    lines = TestResponsesStreamAdapter()._stream_lines(
+        ResponsesRequest(input = "hi", stream = True), [ChatMessage(role = "user", content = "hi")]
+    )
+    assert _sequence_numbers(lines) == [0, 1]
 
 
 class TestResponsesInProcessStream:

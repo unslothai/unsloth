@@ -234,6 +234,38 @@ def _effective_training_load_in_4bit(
     return effective_training_load_in_4bit(config, model_load_target, hf_token)
 
 
+def _training_weight_prefetch(config, trainer, hf_token, event_queue):
+    """Resolve only the ordinary SFT checkpoint; uncertain routes keep the existing sequential load."""
+    try:
+        from .model_weight_prefetch import ModelWeightPrefetch, prefetch_repo
+        from utils.hf_cache_settings import get_hf_cache_paths
+        from utils.hardware import dataset_map_num_proc
+
+        repo = prefetch_repo(
+            config,
+            trainer,
+            load_in_4bit = lambda: _effective_training_load_in_4bit(
+                config, _resolve_cached_model_load_name(config), hf_token
+            ),
+            capabilities = sys.modules.get("unsloth.device_type"),
+            offline = _model_offline_mode_enabled(),
+            formatting_can_fork = (
+                not config.get("dataset_streaming", False) and (dataset_map_num_proc() or 1) > 1
+            ),
+        )
+        if repo is not None:
+            return ModelWeightPrefetch(
+                repo,
+                token = hf_token,
+                cache_dir = get_hf_cache_paths().hub_cache,
+                emit = event_queue.put,
+                should_stop = lambda: trainer.should_stop,
+            )
+    except Exception as error:  # noqa: BLE001
+        logger.info("Skipping model checkpoint prefetch: %s", error)
+    return None
+
+
 def _drop_model_pin(config: dict) -> str:
     config["model_snapshot_path"] = None
     return config["model_name"]
@@ -2080,6 +2112,38 @@ def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj
 _TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
 
 
+def _install_metadata_scan_cache() -> Any:
+    """Share one packages_distributions() scan between transformers and TRL (unsloth's own window
+    opens after this worker's first transformers import). Loaded by path: the package would run
+    unsloth's whole init. None when the helper is missing (older unsloth) or fails."""
+    try:
+        spec = importlib.util.find_spec("unsloth")
+        for root in list(getattr(spec, "submodule_search_locations", None) or ()):
+            path = os.path.join(root, "_import_metadata_cache.py")
+            if not os.path.isfile(path):
+                continue
+            helper_spec = importlib.util.spec_from_file_location(
+                "_unsloth_studio_import_metadata_cache", path
+            )
+            helper = importlib.util.module_from_spec(helper_spec)
+            helper_spec.loader.exec_module(helper)
+            token = helper.install()
+            return None if token is None else (helper, token)
+    except Exception:
+        pass
+    return None
+
+
+def _uninstall_metadata_scan_cache(installed: Any) -> None:
+    if installed is None:
+        return
+    helper, token = installed
+    try:
+        helper.uninstall(token)
+    except Exception:
+        pass
+
+
 def _guard_fla_tilelang() -> None:
     """Default FLA_TILELANG to 0 on ROCm torch and on an apache-tvm-ffi that faults on sm_100."""
     try:
@@ -3848,7 +3912,6 @@ def run_mlx_training_process(
                 if security_error:
                     event_queue.put({"type": "error", **security_error, "ts": time.time()})
                 else:
-                    _download_decision_checkpoint(event_queue, config)
                     from core.training.decision_trainer import run_decision_training
                     run_decision_training(event_queue, stop_queue, config)
             else:
@@ -3951,6 +4014,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         "true" if sys.platform in ("win32", "darwin") else "false"
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
+    # Until unsloth is imported below; transformers is first imported well before that.
+    metadata_scan_cache = _install_metadata_scan_cache()
 
     from utils.security.hub_data_files import install as guard_hub_data_files
     from utils.security.dataset_media import allow_dataset_repos, install as guard_dataset_media
@@ -4628,6 +4693,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             }
         )
         return
+    finally:
+        _uninstall_metadata_scan_cache(metadata_scan_cache)
 
     if config.get("offload_layers"):
         from utils.models.diffusion_lm import diffusion_lm_profile_for_model
@@ -4687,9 +4754,23 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     if config.get("is_decision", False):
         try:
-            _download_decision_checkpoint(event_queue, config)
             from core.training.decision_trainer import run_decision_training
             run_decision_training(event_queue, stop_queue, config)
+        except Exception as exc:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": str(exc),
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
+        return
+
+    if config.get("batch_members"):
+        try:
+            from core.training.multi_lora_trainer import run_multi_lora_training
+            return run_multi_lora_training(event_queue, stop_queue, config)
         except Exception as exc:
             event_queue.put(
                 {
@@ -4865,7 +4946,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 return
 
         _send_status(event_queue, "Loading and formatting dataset...")
-        dataset, eval_dataset = _load_training_dataset()
+        from .model_weight_prefetch import prepare_dataset_with_prefetch
+
+        dataset, eval_dataset = prepare_dataset_with_prefetch(
+            _load_training_dataset,
+            _training_weight_prefetch(config, trainer, hf_token, event_queue),
+        )
 
         if dataset is None or trainer.should_stop:
             if trainer.should_stop:
@@ -5490,6 +5576,9 @@ def _create_embedding_progress_callback(
     """TrainerCallback that reports embedding training progress to the parent. ``should_stop`` is
     polled in on_train_begin and on_step_end, so a stop signal arriving mid-run is seen."""
     from transformers import TrainerCallback
+    from core.training.startup_progress import TrainingStartupProgress
+
+    startup = TrainingStartupProgress()
 
     class _EmbeddingProgressCallback(TrainerCallback):
         _start_step = 0
@@ -5499,10 +5588,17 @@ def _create_embedding_progress_callback(
             self._start_step = state.global_step
             if state.global_step > 0:
                 self._training_start_time = time.time()
-            # Progress events carry an empty status, else the parent keeps showing "Starting...".
             if should_stop():
                 return
-            _send_status(event_queue, "Training in progress...")
+            _send_status(event_queue, startup.begin(args, state))
+
+        def on_step_begin(self, args, state, control, **kwargs):
+            if not should_stop() and (message := startup.step_begin()):
+                _send_status(event_queue, message)
+
+        def on_substep_end(self, args, state, control, **kwargs):
+            if not should_stop() and (message := startup.substep_end()):
+                _send_status(event_queue, message)
 
         def on_log(
             self,
@@ -5553,7 +5649,7 @@ def _create_embedding_progress_callback(
                     "grad_norm": logs.get("grad_norm"),
                     "num_tokens": getattr(state, "num_input_tokens_seen", None),
                     "eval_loss": logs.get("eval_loss"),
-                    "status_message": "",
+                    "status_message": "" if should_stop() else startup.log(logs) or "",
                     "ts": time.time(),
                 }
             )
@@ -5563,6 +5659,8 @@ def _create_embedding_progress_callback(
                 logger.info("Embedding training: stop at step %d", state.global_step)
                 control.should_training_stop = True
                 return control
+            if message := startup.step_end(state):
+                _send_status(event_queue, message)
 
     return _EmbeddingProgressCallback()
 

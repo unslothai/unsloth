@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useT } from "@/i18n";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
 import { useState } from "react";
@@ -14,6 +15,7 @@ export function DiagnosticsCopyActions({
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
   children: React.ReactNode;
 }) {
+  const t = useT();
   const [copying, setCopying] = useState(false);
   const [manualReport, setManualReport] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState<string | null>(null);
@@ -27,11 +29,11 @@ export function DiagnosticsCopyActions({
         setManualMessage(null);
       } else {
         setManualReport(result.report);
-        setManualMessage(result.error ?? "Clipboard copy failed. Select and copy the diagnostics below.");
+        setManualMessage(result.error ?? t("desktopStartup.diagnostics.clipboardFailed"));
       }
     } catch (error) {
       setManualReport(null);
-      setManualMessage(`Diagnostics copy failed: ${String(error)}`);
+      setManualMessage(t("desktopStartup.diagnostics.copyFailed", { error: String(error) }));
     } finally {
       setCopying(false);
     }
@@ -45,7 +47,7 @@ export function DiagnosticsCopyActions({
           size="hero"
           onClick={() => void handleCopyDiagnostics()}
         >
-          {copying ? "Copying..." : "Copy Diagnostics"}
+          {copying ? t("desktopStartup.diagnostics.copying") : t("desktopStartup.diagnostics.copy")}
         </Button>
         {children}
       </div>

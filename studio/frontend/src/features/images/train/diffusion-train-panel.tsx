@@ -12,11 +12,11 @@ import {
 } from "react";
 
 import {
-  FolderAddIcon,
   PlusSignIcon,
   Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -32,7 +32,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
+import { DiffusionRunProgress } from "./diffusion-run-progress";
 import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
@@ -1124,7 +1124,7 @@ export function DiffusionTrainPanel({
         compile_transformer: supportsCompile ? compileTransformer : undefined,
         hf_token: hfApiToken(getHfToken()) || undefined,
       });
-      toast.success("Training started");
+      toast.success("Preparing training…");
       void poll();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to start training");
@@ -1636,7 +1636,7 @@ export function DiffusionTrainPanel({
   // row pan the page sideways on a phone.
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pr-5 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
-      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 max-sm:pl-5 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem+--spacing(8)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 max-sm:pl-5 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-var(--media-header-min-width,13rem)+--spacing(8)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
         <div
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
@@ -2016,7 +2016,7 @@ export function DiffusionTrainPanel({
             {starting
               ? "Starting..."
               : running
-                ? "Training in progress"
+                ? runProgress.preparing ? "Preparing training…" : "Training in progress"
                 : familyUntrainable
                   ? "Not supported on this GPU"
                   : "Start training"}
@@ -2186,20 +2186,7 @@ export function DiffusionTrainPanel({
         ) : (
           <>
             <div className="flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold capitalize">
-                  {runProgress.title}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {runProgress.count}
-                </span>
-              </div>
-              <Progress
-                className="h-2"
-                value={runProgress.percent ?? undefined}
-                indeterminate={runProgress.percent === null}
-                aria-label={runProgress.title}
-              />
+              <DiffusionRunProgress progress={runProgress} status={status} active={active} />
               {!runProgress.preparing && (
                 <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat
@@ -2227,11 +2214,6 @@ export function DiffusionTrainPanel({
                   }
                 />
                 </div>
-              )}
-              {runProgress.detail && (
-                <p role="status" className="text-ui-11 text-muted-foreground">
-                  {runProgress.detail}
-                </p>
               )}
               {running && (
                 <Button

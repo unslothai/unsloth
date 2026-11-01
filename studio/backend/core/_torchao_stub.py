@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared Windows-ROCm import stubs.
-
-torchao (pulled in by transformers.quantizers) imports distributed_c10d.py
-unconditionally, which crashes on Windows ROCm because the RCCL backend
-(torch._C._distributed_c10d) is absent. Stubbing torchao short-circuits its
-import chain; _StubSubpackageFinder handles any depth of torchao.xxx.yyy.
-Worker subprocesses call install_torchao_windows_rocm_stub() before importing
-transformers / unsloth_zoo.
-
-xformers hits the same absent backend and takes diffusers with it, so the diffusion paths
-install both stubs before importing diffusers. They also hide an xformers built for a newer
-torch than the venv has, which fails the same import on any platform.
-"""
+"""Stubs torchao and xformers on Windows ROCm, which lack RCCL; install before transformers/diffusers."""
 
 from __future__ import annotations
 

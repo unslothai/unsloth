@@ -18,7 +18,10 @@ import {
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { MediaPageLink } from "@/components/media-page-link";
+// eslint-disable-next-line no-restricted-imports -- the Images barrel would pull ImagesPage out of its lazy chunk.
+import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
 import {
+  Image03Icon,
   LibrariesIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
@@ -34,6 +37,7 @@ import { useTrainingCacheReconciliation } from "./hooks/use-training-cache-recon
 import { LiveTrainingView } from "./live-training-view";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { TrainSubNav } from "./studio-navigation";
+import { TrainingApiButton } from "./training-api-button";
 import {
   studioHistoryTourSteps,
   studioTourSteps,
@@ -52,6 +56,7 @@ import { TrainingWizard } from "./wizard/training-wizard";
 export function StudioPage(): ReactElement {
   const signalReady = useAppShellReadySignal();
   const t = useT();
+  const setImagesPageMode = useImageWorkflowStore((s) => s.setPageMode);
   const [paramMode, setParamMode] = useParamMode();
   useTrainingRuntimeLifecycle();
   useTrainingCacheReconciliation();
@@ -172,7 +177,7 @@ export function StudioPage(): ReactElement {
   const showHistoryBack = activeTab === "history" && !!selectedHistoryRunId;
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
+    <div data-wallpaper-page-canvas="" className="flex h-full min-h-0 flex-col bg-background">
       <Tabs
         value={activeTab}
         onValueChange={(value) => handleTabChange(value as TrainSubTab)}
@@ -205,12 +210,24 @@ export function StudioPage(): ReactElement {
                   showTrainingView={showTrainingView}
                 />
                 <div className="ml-auto flex items-center gap-2">
+                  <TrainingApiButton />
+                  <MediaPageLink
+                    to="/images"
+                    label={t("studio.imageTraining")}
+                    tooltip={t("studio.goToImageTraining")}
+                    icon={Image03Icon}
+                    onNavigate={() => setImagesPageMode("train")}
+                    labelClassName="max-sm:hidden"
+                    arrowClassName="max-sm:hidden"
+                  />
                   <MediaPageLink
                     to="/library"
                     libraryTab="models"
                     label={t("shell.navigation.library")}
                     tooltip={t("studio.goToLibrary")}
                     icon={LibrariesIcon}
+                    labelClassName="max-sm:hidden"
+                    arrowClassName="max-sm:hidden"
                   />
                 </div>
               </div>

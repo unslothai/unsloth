@@ -15,7 +15,9 @@ training is idle. The queue lives in this process: queued jobs do not survive a 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
+import os
 import re
 import secrets
 import weakref
@@ -280,12 +282,23 @@ _STARTED: dict[str, tuple[dict[str, Any], int]] = {}
 _STARTED_LIMIT = 16
 # Cancelled here while the worker finishes its step: the run row reads "running" until it stops.
 _CANCELLING: set[str] = set()
+# Multi-LoRA batches started here: member run id -> batch job id, batch job id -> member run ids.
+_BATCH_OF: dict[str, str] = {}
+_BATCHES: dict[str, list[str]] = {}
 
 
 def _remember_start(run_id: str, config: dict[str, Any], created_at: int) -> None:
     _STARTED[run_id] = (config, created_at)
     while len(_STARTED) > _STARTED_LIMIT:
         _STARTED.pop(next(iter(_STARTED)))
+
+
+def _remember_batch(batch_id: str, run_ids: list[str]) -> None:
+    _BATCHES[batch_id] = list(run_ids)
+    _BATCH_OF.update({run_id: batch_id for run_id in run_ids})
+    while len(_BATCHES) > _STARTED_LIMIT:
+        for run_id in _BATCHES.pop(next(iter(_BATCHES))):
+            _BATCH_OF.pop(run_id, None)
 
 
 def _for_caller(job: dict[str, Any], via_api_key: bool) -> dict[str, Any]:
@@ -320,12 +333,16 @@ async def _job(run_id: str, current_subject: str, via_api_key: bool) -> dict[str
         return _for_caller(await asyncio.to_thread(_job_from_run, run), via_api_key)
     # A started job has no history row until its worker is up; the live status still knows it.
     status = await _current_status(current_subject, via_api_key)
-    if status is not None and _status_field(status, "job_id") == run_id:
+    if status is not None and _status_field(status, "job_id") == _BATCH_OF.get(run_id, run_id):
         phase = _status_field(status, "phase")
         failed = _status_field(status, "start_request_state") == "rejected" or phase == "error"
         message = _status_field(status, "error") or _status_field(status, "message")
         config, created_at = _STARTED.get(run_id, ({}, None))
         state = _PHASE_STATUS.get(phase, "queued")
+        if run_id in _BATCH_OF and state in ("queued", "running"):
+            # A member's row appears with its first step; until then the batch's phase (read from its
+            # setup messages) would flip it between running and validating_files.
+            state = "validating_files"
         if failed:
             state = "failed"
         elif run_id in _CANCELLING:
@@ -425,6 +442,27 @@ _TRANSIENT_CONFLICTS = (
     "is replacing the latest sidecar",
 )
 _ALIAS_TABLE = "openai_fine_tuning_aliases"
+# Jobs that may differ only in these train as one multi-LoRA batch; every other training setting must match.
+_BATCH_MEMBER_FIELDS = frozenset(
+    {
+        "local_datasets",
+        "learning_rate",
+        "num_epochs",
+        "batch_size",
+        "lora_r",
+        "lora_alpha",
+        "random_seed",
+        "project_name",
+        "max_steps",
+        # Each member has its own optimizer group and scheduler, so these stay per job too.
+        "weight_decay",
+        "warmup_steps",
+        "warmup_ratio",
+        "packing",
+    }
+)
+_BATCH_OPTIMIZERS = ("adamw_8bit", "adamw_torch")
+_BATCH_MAX_DEFAULT = 4
 
 
 @dataclass
@@ -544,6 +582,228 @@ def _queued_job(entry: _Queued) -> dict[str, Any]:
     return {**job, "id": entry.alias}
 
 
+def _batch_max() -> int:
+    try:
+        return max(1, int(os.environ.get("UNSLOTH_STUDIO_FT_BATCH_MAX", _BATCH_MAX_DEFAULT)))
+    except ValueError:
+        return _BATCH_MAX_DEFAULT
+
+
+_multi_lora: Optional[bool] = None
+
+
+def _multi_lora_available() -> bool:
+    """Whether the installed Unsloth ships the multi-LoRA kernels; looked up on disk, so torch is not imported."""
+    global _multi_lora
+    if _multi_lora is None:
+        try:
+            spec = importlib.util.find_spec("unsloth")
+            roots = list(spec.submodule_search_locations or []) if spec is not None else []
+        except (ImportError, ValueError):
+            roots = []
+        _multi_lora = any(
+            (Path(root) / "kernels" / "multi_lora.py").is_file()
+            or (Path(root) / "kernels" / "multi_lora" / "__init__.py").is_file()
+            for root in roots
+        )
+    return _multi_lora
+
+
+_multi_lora_experts: Optional[bool] = None
+
+
+def _multi_lora_experts_available() -> bool:
+    """Whether the installed multi-LoRA kernels train fused MoE experts (inject_multi_lora_experts)."""
+    global _multi_lora_experts
+    if _multi_lora_experts is None:
+        try:
+            spec = importlib.util.find_spec("unsloth")
+            roots = list(spec.submodule_search_locations or []) if spec is not None else []
+        except (ImportError, ValueError):
+            roots = []
+        _multi_lora_experts = any(
+            "def inject_multi_lora_experts"
+            in (Path(root) / "kernels" / "multi_lora.py").read_text(
+                encoding = "utf-8", errors = "replace"
+            )
+            for root in roots
+            if (Path(root) / "kernels" / "multi_lora.py").is_file()
+        )
+    return _multi_lora_experts
+
+
+def _batchable(request: TrainingStartRequest) -> bool:
+    """Text LoRA/QLoRA on local files with nothing the batched trainer does not run; the rest trains alone."""
+    from core.training.eval_dataset import evaluation_enabled
+    from core.training.training import should_use_mlx_training_backend
+
+    return (
+        not should_use_mlx_training_backend()
+        and request.training_type == "LoRA/QLoRA"
+        and request.use_lora
+        and bool(request.local_datasets)
+        and not (request.hf_dataset or request.dataset_streaming or request.s3_config is not None)
+        and not (request.resume_from_checkpoint or request.start_request_id)
+        and not (request.local_eval_datasets or evaluation_enabled(request.eval_steps))
+        and request.lora_dropout == 0
+        and not (request.use_dora or request.use_loftq)
+        and not (
+            request.enable_wandb or request.enable_tensorboard or request.early_stopping_patience
+        )
+        and request.lr_scheduler_type != "reduce_lr_on_plateau"
+        and not request.offload_layers
+        and not (
+            request.is_dataset_image
+            or request.is_dataset_audio
+            or request.is_embedding
+            or request.is_decision
+            or request.finetune_vision_layers
+        )
+        and not (request.drafter is not None and request.drafter.enabled)
+        and request.optim in _BATCH_OPTIMIZERS
+        and len(request.gpu_ids or []) <= 1
+    )
+
+
+def _batch_key(entry: _Queued) -> Optional[tuple]:
+    if not _batchable(entry.request):
+        return None
+    shared = entry.request.model_dump(mode = "json", exclude = set(_BATCH_MEMBER_FIELDS))
+    return (
+        entry.account.account_id,
+        entry.subject,
+        entry.via_api_key,
+        json.dumps(shared, sort_keys = True),
+    )
+
+
+_MOE_COUNT_KEYS = ("num_experts", "n_routed_experts", "num_local_experts")
+# multi_lora_trainer.BATCHED_MOE_MODEL_TYPES.
+_BATCHED_MOE_TYPES = frozenset({"qwen3_moe", "qwen3_5_moe", "qwen3_5_moe_text"})
+# Recurrent / conv state is not checked batched; Gated DeltaNet ("linear_attention") is, and is not matched here.
+_SSM_MODEL_TYPES = frozenset(
+    {
+        "mamba",
+        "mamba2",
+        "falcon_mamba",
+        "falcon_h1",
+        "jamba",
+        "zamba",
+        "zamba2",
+        "nemotron_h",
+        "bamba",
+        "granitemoehybrid",
+        "lfm2",
+        "lfm2_moe",
+        "lfm2_vl",
+        "plamo2",
+        "hymba",
+        "mamba_ssm",
+    }
+)
+_SSM_LAYER_TYPES = ("mamba", "ssm", "conv", "mamba2")
+_SSM_KEYS = (
+    "ssm_state_size",
+    "mamba_d_state",
+    "mamba_n_heads",
+    "mamba_d_conv",
+    "state_size",
+    "conv_L_cache",
+)
+
+
+def _configs(config: dict) -> list[dict]:
+    return [c for c in (config, config.get("text_config") or {}) if isinstance(c, dict) and c]
+
+
+def _moe_config(config: dict) -> bool:
+    for cfg in _configs(config):
+        count = next((cfg[k] for k in _MOE_COUNT_KEYS if cfg.get(k) is not None), None)
+        if count is not None:
+            return isinstance(count, int) and count > 0
+    return False
+
+
+def _moe_batches(config: dict, request: TrainingStartRequest) -> bool:
+    from utils.transformers_version import get_transformers_tier
+    configs = _configs(config)
+    return (
+        any(c.get("model_type") in _BATCHED_MOE_TYPES for c in configs)
+        and not any(c.get("output_router_logits") for c in configs)
+        and _multi_lora_experts_available()
+        # The worker's transformers: 4.57 holds experts as per-expert Linears, which train alone.
+        and get_transformers_tier(request.model_name, request.hf_token, probe = False) != "457"
+    )
+
+
+def _ssm_config(config: dict) -> bool:
+    for cfg in _configs(config):
+        if cfg.get("model_type") in _SSM_MODEL_TYPES:
+            return True
+        kinds = (
+            cfg.get("layer_types")
+            or cfg.get("layers_block_type")
+            or cfg.get("hybrid_override_pattern")
+        )
+        if isinstance(kinds, str):
+            kinds = [kinds]
+        if isinstance(kinds, (list, tuple)) and any(
+            isinstance(k, str) and any(tag in k.lower() for tag in _SSM_LAYER_TYPES) for k in kinds
+        ):
+            return True
+        if any(cfg.get(k) is not None for k in _SSM_KEYS):
+            return True
+    return False
+
+
+async def _trains_alone(request: TrainingStartRequest) -> bool:
+    """Outside what the batched trainer runs: text-diffusion models (own denoising objective), saved LoRA
+    adapters (continued in place alone), state-space / conv mixers, and MoE layouts it has no expert LoRA for."""
+    from utils.models.diffusion_lm import diffusion_lm_profile_for_model
+    from utils.models.model_config import _read_raw_config_json, get_base_model_from_lora_identifier
+
+    def probe() -> bool:
+        from core.training.account_jobs import account_path
+
+        # Path guard first: a managed account's share path must not be touched (SMB sign-in); start_training refuses it.
+        try:
+            account_path(request.model_name, reference = True)
+        except HTTPException:
+            return True
+        if diffusion_lm_profile_for_model(request.model_name, request.hf_token):
+            return True
+        if get_base_model_from_lora_identifier(request.model_name, request.hf_token) is not None:
+            return True
+        try:
+            config = _read_raw_config_json(request.model_name, request.hf_token)
+        except Exception:
+            return True
+        if config is None or _ssm_config(config):
+            return True
+        return _moe_config(config) and not _moe_batches(config, request)
+
+    return await asyncio.to_thread(probe)
+
+
+def _batch_for(head: _Queued) -> list[_Queued]:
+    """The queue head plus the compatible jobs waiting behind it, in queue order, up to the cap."""
+    cap = _batch_max()
+    key = _batch_key(head) if cap > 1 and not head.cancel_requested else None
+    if key is None:
+        return [head]
+    group = [head]
+    for entry in _QUEUE:
+        if len(group) >= cap:
+            break
+        if entry is head or entry.status != "queued" or entry.cancel_requested:
+            continue
+        if _batch_key(entry) == key:
+            group.append(entry)
+    if len(group) > 1 and not _multi_lora_available():
+        return [head]
+    return group
+
+
 def _finish(
     entry: _Queued,
     status: str,
@@ -568,6 +828,13 @@ async def _start_queued(entry: _Queued) -> bool:
             return True
         if _training_busy():
             return False
+        group = _batch_for(entry)
+        if len(group) > 1 and await arun_as(entry.account, _trains_alone(entry.request)):
+            group = [entry]
+        if len(group) > 1:
+            outcome = await _start_batch(group)
+            if outcome is not None:
+                return outcome
         entry.status = "starting"
         try:
             started = await arun_as(
@@ -611,6 +878,57 @@ async def _start_queued(entry: _Queued) -> bool:
     if entry.cancel_requested:
         # Cancelled while its start was in flight: stop it as a cancel of the running job would.
         await arun_as(entry.account, _stop_run(started.job_id, entry.subject))
+    return True
+
+
+async def _start_batch(group: list[_Queued]) -> Optional[bool]:
+    """Start ``group`` as one multi-LoRA run, each job with its own run. None: start the head alone instead,
+    which reports any refusal exactly as an unbatched start does; False: training is busy."""
+    from core.training import get_training_backend
+    from routes import training as training_routes
+
+    head = group[0]
+    for member in group:
+        member.status = "starting"
+    try:
+        started = await arun_as(
+            head.account,
+            training_routes.start_training_batch(
+                [member.request for member in group],
+                current_subject = head.subject,
+                via_api_key = head.via_api_key,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Fine-tuning batch did not start (%s); starting %s alone", exc, head.alias)
+        started = None
+    if started is None or any(r.status == "error" or not r.job_id for r in started):
+        for member in group:
+            member.status = "queued"
+            if member.cancel_requested and member is not head:
+                _finish(member, "cancelled")
+        if started is not None and (started[0].error in _BUSY_ERRORS or _training_busy()):
+            if head.cancel_requested:
+                _finish(head, "cancelled")
+                return True
+            return False
+        return None
+    run_ids = [r.job_id for r in started]
+    batch_id = getattr(get_training_backend(), "current_job_id", None)
+    if batch_id:
+        _remember_batch(batch_id, run_ids)
+    for member, run_id in zip(group, run_ids):
+        await arun_as(
+            member.account,
+            asyncio.to_thread(
+                _save_alias, member.alias, run_id, member.account.account_id, member.created_at
+            ),
+        )
+        _remember_start(run_id, member.request.model_dump(), member.created_at)
+        _finish(member, "started")
+    for member, run_id in zip(group, run_ids):
+        if member.cancel_requested:
+            await arun_as(member.account, _cancel_run(run_id, member.subject))
     return True
 
 
@@ -680,6 +998,34 @@ async def _stop_run(run_id: str, current_subject: str) -> Any:
     )
     if stopped.status != "idle":
         # The worker stops at its next safe step; the job reads "cancelled" from then on.
+        _CANCELLING.add(run_id)
+    return stopped
+
+
+async def _cancel_run(run_id: str, current_subject: str) -> Any:
+    """A job training in a batch beside others still running stops alone; otherwise the whole run stops."""
+    batch_id = _BATCH_OF.get(run_id)
+    if batch_id is None:
+        return await _stop_run(run_id, current_subject)
+    from core.training import get_training_backend
+    from core.training.account_jobs import require_job_owner
+    from models.responses import TrainingStopResponse
+
+    backend = get_training_backend()
+    require_job_owner(backend)
+    running = await asyncio.to_thread(backend.batch_member_ids)
+    if run_id in running and len(running) > 1:
+        if await asyncio.to_thread(backend.stop_member, run_id):
+            _CANCELLING.add(run_id)
+            return TrainingStopResponse(
+                status = "stopped",
+                message = "Stop requested. This job will stop at the next safe step.",
+            )
+        running = await asyncio.to_thread(backend.batch_member_ids)
+    if run_id not in running:
+        return await _stop_run(run_id, current_subject)
+    stopped = await _stop_run(batch_id, current_subject)
+    if stopped.status != "idle":
         _CANCELLING.add(run_id)
     return stopped
 
@@ -780,18 +1126,24 @@ async def list_fine_tuning_jobs(
         pending = []
     after_run = await _resolve(after) if after else None
     runs = await asyncio.to_thread(_runs_after, after_run, limit + 1)
-    if after_run and not runs:
-        # The live job has no history row yet and is listed first, so the history follows it.
-        status = await _current_status(current_subject, via_api_key)
-        if status is not None and _status_field(status, "job_id") == after_run:
-            runs = await asyncio.to_thread(_runs_after, None, limit + 1)
+    status = await _current_status(current_subject, via_api_key)
+    live_id = _status_field(status, "job_id") if status is not None else None
+    # Live jobs without a history row yet (a batch's members while it sets up) are listed first.
+    live = []
+    if live_id and _status_field(status, "phase") != "idle":
+        live = [
+            r
+            for r in reversed(_BATCHES.get(live_id, [live_id]))
+            if await asyncio.to_thread(get_run, r) is None
+        ]
+    if after_run in live:
+        # The history follows the live jobs, so a cursor on one continues with the rest of them.
+        live = live[live.index(after_run) + 1 :]
+        runs = await asyncio.to_thread(_runs_after, None, limit + 1)
+    elif after_run:
+        live = []
     jobs = [_for_caller(await asyncio.to_thread(_job_from_run, run), via_api_key) for run in runs]
-    if after is None:
-        status = await _current_status(current_subject, via_api_key)
-        live_id = _status_field(status, "job_id") if status is not None else None
-        live_phase = _status_field(status, "phase") if status is not None else None
-        if live_id and live_phase != "idle" and all(run["id"] != live_id for run in runs):
-            jobs.insert(0, await _job(live_id, current_subject, via_api_key))
+    jobs = [await _job(r, current_subject, via_api_key) for r in live] + jobs
     # A job that ended before it started sorts by its creation; once a newer job ran, it is only retrievable.
     newest = max((job["created_at"] for job in jobs), default = 0)
     jobs = [
@@ -1007,7 +1359,7 @@ async def cancel_fine_tuning_job(
     job = await _job(run_id, current_subject, via_api_key)
     if job["status"] in ("succeeded", "failed", "cancelled"):
         raise _bad_request(f"Job {job['id']} has already {job['status']}.")
-    stopped = await _stop_run(run_id, current_subject)
+    stopped = await _cancel_run(run_id, current_subject)
     if stopped.status == "idle":
         raise _bad_request(f"Job {job['id']} is not running.", 409)
     return {**job, "status": "cancelled"}

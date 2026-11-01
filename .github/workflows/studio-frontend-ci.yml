@@ -22,6 +22,9 @@ on:
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_research_review.py'
+      - 'tests/studio/playwright_pinned_chat_persistence.py'
+      - 'studio/backend/routes/chat_history.py'
+      - 'studio/backend/storage/studio_db.py'
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_nonmodal_menus.py'
@@ -37,6 +40,7 @@ on:
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
+      - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -64,6 +68,9 @@ on:
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_research_review.py'
+      - 'tests/studio/playwright_pinned_chat_persistence.py'
+      - 'studio/backend/routes/chat_history.py'
+      - 'studio/backend/storage/studio_db.py'
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_nonmodal_menus.py'
@@ -79,6 +86,7 @@ on:
       - 'tests/studio/playwright_link_definition_probe.py'
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
+      - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -110,6 +118,9 @@ jobs:
   build:
     name: Frontend build + bundle sanity
     runs-on: ubuntu-latest
+    env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     # Must stay above the browser install step's own 33m bound so the step timeout fires first.
     timeout-minutes: 40
     defaults:
@@ -481,6 +492,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
+      - name: Browser regression for pinned chat persistence
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 3
+        run: |
+          python3 -m pip install fastapi httpx pyjwt argon2-cffi cryptography huggingface_hub python-multipart structlog
+          python3 tests/studio/playwright_pinned_chat_persistence.py
+
       # A gate, not a measurement. The released and streamdown variants are positive controls
       # that MUST flicker: a run where neither collapses means the detector stopped seeing, not
       # that the flicker stopped. Chromium only on a PR, the engine whose content-visibility
@@ -506,6 +524,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 5
         run: python3 tests/studio/playwright_progressive_rows.py
+
+      # A drag step moves one node; the other nodes of the graph must not re-render.
+      - name: Browser check for Recipe Studio drag re-renders
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_recipe_drag_renders.py
 
       # Two small sizes and one repetition on Chromium: enough to prove the fixture still
       # renders every kind of content it claims to and that the curve still rises, which is all
@@ -583,6 +607,9 @@ jobs:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Frontend unit tests (Windows)
     runs-on: windows-latest
+    env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     # The steps measured ~15m30s, so 15 always cut off the Firefox step.
     timeout-minutes: 30
     defaults:
@@ -598,7 +625,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 

@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import time
 import weakref
+from functools import partial
 from pathlib import Path
 from typing import Any, Iterable, Union
 
@@ -24,6 +25,7 @@ ACTIVE_STATUSES = frozenset({"queued", "running", "cancelling"})
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
 ALL_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 _EVENTS_CHANGED = threading.Condition()
+_EVENTS_COMMITS = 0
 _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
 ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
 
@@ -147,17 +149,6 @@ def _unregister_locked(entry: _PoolEntry | None) -> None:
             continue
         surviving.append(ref)
     _pool_registry[:] = surviving
-
-
-def _discard_pooled() -> None:
-    """Drop this thread's cached connection, for when it has errored or its database has gone."""
-    entry = getattr(_pool, "entry", None)
-    if entry is None:
-        return
-    _pool.entry = None
-    with _pool_lock:
-        _unregister_locked(entry)
-    entry.release()
 
 
 def _discard_all_pooled() -> None:
@@ -286,6 +277,16 @@ def _prepare_connection() -> tuple[sqlite3.Connection, bool]:
     return conn, db_path.resolve() in _schema_ready
 
 
+_SPLICE_OK_SQL = (
+    "json_valid(payload_json) AND instr(payload_json, char(10))=0"
+    " AND instr(payload_json, char(13))=0"
+)
+
+
+def _dumps_payload(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii = False, separators = (",", ":"))
+
+
 def _loads(value: str | None, fallback: Any) -> Any:
     if value is None:
         return fallback
@@ -376,7 +377,8 @@ def _append_events_locked(
                 run_id,
                 seq,
                 event_type,
-                json.dumps(payload, ensure_ascii = False, separators = (",", ":")),
+                # The events route splices this text into SSE frames as is, so it must stay its encoding.
+                _dumps_payload(payload),
                 created,
             ),
         )
@@ -416,9 +418,11 @@ def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -
 
 
 def _commit(conn: sqlite3.Connection, *, notify: bool = False) -> None:
+    global _EVENTS_COMMITS
     conn.commit()
     if notify:
         with _EVENTS_CHANGED:
+            _EVENTS_COMMITS += 1
             _EVENTS_CHANGED.notify_all()
 
 
@@ -649,6 +653,25 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict[str, Any] | N
                 (run_id, owner_subject),
             ).fetchone()
         return _run_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_run_state(run_id: str) -> dict[str, Any] | None:
+    """Status, lastEventSeq and updatedAt of get_run's row, without reading or parsing request_json."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT status, last_event_seq, updated_at FROM chat_generation_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "status": row["status"],
+            "lastEventSeq": int(row["last_event_seq"]),
+            "updatedAt": int(row["updated_at"]),
+        }
     finally:
         conn.close()
 
@@ -921,9 +944,38 @@ def list_events(
     run_id: str,
     after: int = 0,
     limit: int = 1000,
+    *,
+    raw: bool = False,
 ) -> list[dict[str, Any]]:
+    """raw=True returns the stored text as "payloadJson": it is already _dumps_payload output, the SSE
+    route's encoding. Rows that are not one line of valid JSON (corrupt, hand edited, NaN) are
+    re-encoded so the route never splices text the client cannot parse or that splits the frame."""
+    global _SPLICE_OK_SQL
     conn = _connect()
     try:
+        if raw:
+            query = """SELECT seq, event_type, payload_json, created_at, {} AS splice_ok
+                       FROM chat_generation_events
+                       WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?"""
+            try:
+                rows = conn.execute(query.format(_SPLICE_OK_SQL), (run_id, after, limit)).fetchall()
+            except sqlite3.OperationalError as exc:
+                # SQLite built without JSON1: re-encode every row, as the parsed read does.
+                if "json_valid" not in str(exc):
+                    raise
+                _SPLICE_OK_SQL = "0"
+                rows = conn.execute(query.format("0"), (run_id, after, limit)).fetchall()
+            return [
+                {
+                    "seq": int(row["seq"]),
+                    "type": row["event_type"],
+                    "payloadJson": row["payload_json"]
+                    if row["splice_ok"]
+                    else _dumps_payload(_loads(row["payload_json"], {})),
+                    "createdAt": int(row["created_at"]),
+                }
+                for row in rows
+            ]
         rows = conn.execute(
             """SELECT seq, event_type, payload_json, created_at
                FROM chat_generation_events
@@ -947,16 +999,21 @@ def wait_for_events(
     run_id: str,
     after: int = 0,
     timeout: float = 15,
+    raw: bool = False,
 ) -> list[dict[str, Any]]:
-    events = list_events(run_id, after)
+    read = partial(list_events, raw = True) if raw else list_events
+    # Bumped under the lock after each notifying commit: unchanged means the unlocked read saw them all.
+    seen = _EVENTS_COMMITS
+    events = read(run_id, after)
     if events:
         return events
     with _EVENTS_CHANGED:
-        events = list_events(run_id, after)
-        if events:
-            return events
+        if _EVENTS_COMMITS != seen:
+            events = read(run_id, after)
+            if events:
+                return events
         _EVENTS_CHANGED.wait(timeout)
-    return list_events(run_id, after)
+    return read(run_id, after)
 
 
 def reconcile_runs(

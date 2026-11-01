@@ -113,10 +113,8 @@ def _rank0():
 
 _REFUSED_LOAD_FLAGS = (
     ("fast_inference", "vLLM (fast_inference = True)"),
-    ("full_finetuning", "full finetuning (full_finetuning = True; use UNSLOTH_FSDP2=1 instead)"),
     ("load_in_8bit", "8-bit weights (load_in_8bit = True; load in 4-bit or 16-bit)"),
     ("load_in_fp8", "fp8 weights (load_in_fp8)"),
-    ("qat_scheme", "QAT (qat_scheme)"),
 )
 
 
@@ -190,7 +188,9 @@ def tensor_parallel_env_load(fn):
         mesh = layout.tp_mesh
         _DEPTH["load"] += 1
         try:
-            if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values):
+            # QAT swaps the loaded Linears for torchao FakeQuantizedLinear copies: load in full, shard later.
+            qat = values.get("qat_scheme") is not None
+            if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values) or qat:
                 out = fn(*args, **kwargs)  # full load; get_peft_model shards it (Params4bit included)
                 return _check_pipeline_model(out, layout) if layout.pp > 1 else out
             from .tp_native import sharded_loading
@@ -319,13 +319,17 @@ def _levels(model):
         return [model]
 
 
+def parallel_env_requested():
+    return any(
+        str(os.environ.get(name, "")).strip() not in ("", "1")
+        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+    )
+
+
 def install_tensor_parallel_env_trainer_init():
-    """Install the Trainer.__init__ wrapper at import: loads that all run inside model_init would otherwise
-    train in an unwrapped Trainer, without tensor / pipeline parallel."""
-    if all(
-        str(os.environ.get(k, "")).strip() in ("", "1")
-        for k in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
-    ):
+    """Install the Trainer.__init__ wrapper at import: loads that all run inside model_init (and non-Fast*
+    models such as encoders) would otherwise train in an unwrapped Trainer, without tensor / pipeline parallel."""
+    if not parallel_env_requested():
         return False
     from transformers import Trainer
 

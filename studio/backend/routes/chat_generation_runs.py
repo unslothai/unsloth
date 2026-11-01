@@ -33,6 +33,13 @@ from utils.current_date_prompt_settings import (
 )
 
 router = APIRouter()
+
+
+def _encode_json(value: Any) -> str:
+    """The SSE frame encoding; chat_generation_runs_db stores event payloads with the same options."""
+    return json.dumps(value, ensure_ascii = False, separators = (",", ":"))
+
+
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(
     max_workers = 32,
     thread_name_prefix = "chat-generation-events",
@@ -447,22 +454,32 @@ async def chat_generation_events(
                 run_id,
                 cursor,
                 15,
+                True,
             )
-            snapshot = await asyncio.to_thread(db.get_run, run_id)
+            # Only non-chunk events carry the run, so a chunk-only batch skips parsing request_json.
+            snapshot = await asyncio.to_thread(
+                db.get_run
+                if any(event["type"] != "chunk" for event in events)
+                else db.get_run_state,
+                run_id,
+            )
             if snapshot is None:
                 return
+            run_json = None
             for event in events:
                 cursor = int(event["seq"])
-                data = {
-                    "seq": cursor,
-                    "type": event["type"],
-                    "payload": event["payload"],
-                    "createdAt": event["createdAt"],
-                }
-                if event["type"] != "chunk":
-                    data["run"] = snapshot
-                encoded = json.dumps(data, ensure_ascii = False, separators = (",", ":"))
-                yield f"id: {cursor}\nevent: {event['type']}\ndata: {encoded}\n\n"
+                event_type = event["type"]
+                # Spliced, not re-encoded: the stored payload is already this encoder's output, so the
+                # bytes match json.dumps of the parsed event dict with the same key order.
+                encoded = (
+                    f'{{"seq":{cursor},"type":{_encode_json(event_type)},'
+                    f'"payload":{event["payloadJson"]},"createdAt":{int(event["createdAt"])}'
+                )
+                if event_type != "chunk":
+                    if run_json is None:
+                        run_json = _encode_json(snapshot)
+                    encoded += f',"run":{run_json}'
+                yield f"id: {cursor}\nevent: {event_type}\ndata: {encoded}}}\n\n"
             if snapshot["status"] in db.TERMINAL_STATUSES and cursor >= int(
                 snapshot["lastEventSeq"]
             ):

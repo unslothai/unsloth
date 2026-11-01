@@ -3,6 +3,7 @@
 
 """Dataset format conversion between Alpaca, ShareGPT, and ChatML."""
 
+import contextvars
 import os
 
 from .cells import cell_text
@@ -190,12 +191,9 @@ def standardize_chat_format(
     }
 
     if not is_streaming_dataset(dataset):
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Standardizing chat format"
@@ -212,6 +210,51 @@ def standardize_chat_format(
             ) from exc
 
     return result
+
+
+_CHATML_ROLES = {"system", "user", "assistant", "tool"}
+
+
+def normalize_chatml_roles(
+    dataset,
+    chat_column,
+    batch_size = 1000,
+):
+    def _fold_message(message):
+        if not isinstance(message, dict):
+            return message
+        role = _normalize_role_alias(message.get("role"))
+        if role in _CHATML_ROLES and message.get("role") != role:
+            return {**message, "role": role}
+        return message
+
+    try:
+        import pyarrow.compute as pc
+        roles = pc.unique(
+            pc.struct_field(pc.list_flatten(dataset.data.column(chat_column)), "role")
+        )
+        if not any(
+            _normalize_role_alias(r) in _CHATML_ROLES and _normalize_role_alias(r) != r
+            for r in roles.to_pylist()
+        ):
+            return dataset
+    except Exception:
+        pass
+
+    def _fold(examples):
+        return {
+            chat_column: [
+                [_fold_message(message) for message in convo] if isinstance(convo, list) else convo
+                for convo in examples[chat_column]
+            ]
+        }
+
+    return dataset.map(
+        _fold,
+        batched = True,
+        batch_size = batch_size,
+        features = getattr(dataset, "features", None),
+    )
 
 
 def _content_text(content):
@@ -302,12 +345,9 @@ def convert_chatml_to_alpaca(
     }
 
     if not is_iterable:
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
@@ -364,12 +404,9 @@ def convert_alpaca_to_chatml(
     }
 
     if not is_iterable:
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting Alpaca to ChatML format"
@@ -401,6 +438,10 @@ def _format_eta(seconds):
         return f"{h}h {m}m"
 
 
+# huggingface_hub snapshot_download's default; caps parallel requests to one image host or the Hub.
+_MAX_ROW_FETCH_WORKERS = 8
+
+
 def _fetch_row_image(url):
     from io import BytesIO
 
@@ -408,6 +449,27 @@ def _fetch_row_image(url):
 
     fetch = fetch_opted_in_image_bytes if private_sources_allowed() else fetch_untrusted_image_bytes
     return Image.open(BytesIO(fetch(url))).convert("RGB")
+
+
+def _non_null_rows(dataset, column):
+    """Row positions whose ``column`` is not None, read from Arrow validity so cells are never built or decoded."""
+    try:
+        # numpy / pandas / torch / custom formats turn nulls into values (NaN, pd.NA) the walk keeps.
+        if dataset.format["type"] not in (None, "python"):
+            raise TypeError("formatted dataset")
+        values = dataset.with_format("arrow")[column]
+        if values.null_count == 0:
+            return range(len(values))
+        import numpy as np
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        valid = pc.is_valid(values)
+        if isinstance(valid, pa.ChunkedArray):
+            valid = valid.combine_chunks()
+        return np.flatnonzero(valid.to_numpy(zero_copy_only = False)).tolist()
+    except Exception:
+        return [i for i, value in enumerate(dataset[column]) if value is not None]
 
 
 def convert_to_vlm_format(
@@ -452,13 +514,13 @@ def convert_to_vlm_format(
         instruction_column = None
         uses_dynamic = False
 
-    def _convert_single_sample(sample):
-        """Image may be a PIL Image, local path, URL, or bare filename."""
+    def _convert_single_sample(sample, fetched = None):
+        """Image may be a PIL Image, local path, URL, or bare filename; ``fetched`` = the URL's already-downloaded image."""
         image_data = sample[image_column]
 
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                image_data = _fetch_row_image(image_data)
+                image_data = fetched if fetched is not None else _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
@@ -508,14 +570,14 @@ def convert_to_vlm_format(
     has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
 
     if has_urls:
-        with_image = [i for i, url in enumerate(dataset[image_column]) if url is not None]
+        with_image = _non_null_rows(dataset, image_column)
         if len(with_image) < total:
             logger.info(f"Skipping {total - len(with_image)}/{total} rows without an image")
             dataset = dataset.select(with_image)
             total = len(with_image)
 
     # A null caption would render as the word "None" in the assistant turn, so leave those rows out like rows without an image.
-    with_text = [i for i, text in enumerate(dataset[text_column]) if text is not None]
+    with_text = _non_null_rows(dataset, text_column)
     if len(with_text) < total:
         logger.info(f"Skipping {total - len(with_text)}/{total} rows without text")
         dataset = dataset.select(with_text)
@@ -564,6 +626,9 @@ def convert_to_vlm_format(
     PROBE_SIZE = 200
     MAX_FAIL_RATE = 0.3
 
+    # Successful probe downloads by row, reused by the conversion.
+    probe_images = {}
+
     if has_urls and total > PROBE_SIZE:
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -578,8 +643,15 @@ def convert_to_vlm_format(
         probe_fail = 0
         probe_start = time.time()
 
+        def _probe_sample(index, sample):
+            url = sample[image_column]
+            if isinstance(url, str) and url.startswith(("http://", "https://")):
+                # A failed download is not kept, so the conversion retries it.
+                probe_images[index] = _fetch_row_image(url)
+            return _convert_single_sample(sample, probe_images.get(index))
+
         with ThreadPoolExecutor(max_workers = num_workers) as executor:
-            futures = {executor.submit(_convert_single_sample, s): s for s in probe_samples}
+            futures = {executor.submit(_probe_sample, i, s): s for i, s in enumerate(probe_samples)}
             for future in as_completed(futures):
                 try:
                     future.result()
@@ -656,7 +728,9 @@ def convert_to_vlm_format(
 
             with ThreadPoolExecutor(max_workers = num_workers) as executor:
                 futures = {
-                    executor.submit(_convert_single_sample, s): i
+                    executor.submit(
+                        _convert_single_sample, s, probe_images.pop(batch_start + i, None)
+                    ): i
                     for i, s in enumerate(batch_samples)
                 }
                 batch_results = [None] * len(batch_samples)
@@ -889,6 +963,28 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
+    def _record(future_or_sample):
+        nonlocal failed_count
+        try:
+            if isinstance(future_or_sample, Future):
+                converted_list.append(future_or_sample.result())
+            else:
+                converted_list.append(_convert_single_sample(future_or_sample))
+        except Exception as e:
+            failed_count += 1
+            if failed_count == 1:
+                logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
+        pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
+
+    from concurrent.futures import Future
+
+    num_workers = 1
+    if _image_lookup is not None or (
+        isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
+    ):
+        from utils.hardware import safe_thread_num_proc
+        num_workers = min(safe_thread_num_proc(), _MAX_ROW_FETCH_WORKERS)
+
     pbar = tqdm(
         dataset,
         total = total,
@@ -896,15 +992,34 @@ def convert_sharegpt_with_images_to_vlm_format(
         unit = "sample",
         **_quiet_bar_kwargs(),
     )
-    for sample in pbar:
-        try:
-            converted_list.append(_convert_single_sample(sample))
-        except Exception as e:
-            failed_count += 1
-            if failed_count == 1:
-                logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
-        pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
-    pbar.close()
+    try:
+        if num_workers <= 1:
+            for sample in pbar:
+                _record(sample)
+        else:
+            from collections import deque
+            from concurrent.futures import ThreadPoolExecutor
+
+            # Settled in row order (same output and first-failure log as serial); 2x workers bounds images held in memory.
+            pending = deque()
+            with ThreadPoolExecutor(max_workers = num_workers) as executor:
+                try:
+                    for sample in pbar:
+                        # A fresh context copy per task: the fetch sees the caller's account / HF cache settings.
+                        pending.append(
+                            executor.submit(
+                                contextvars.copy_context().run, _convert_single_sample, sample
+                            )
+                        )
+                        if len(pending) > 2 * num_workers:
+                            _record(pending.popleft())
+                    while pending:
+                        _record(pending.popleft())
+                except BaseException:
+                    executor.shutdown(wait = False, cancel_futures = True)
+                    raise
+    finally:
+        pbar.close()
 
     if failed_count > 0:
         logger.info(f"⚠️ Skipped {failed_count}/{total} ({failed_count*100//total}%) samples")

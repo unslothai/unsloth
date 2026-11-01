@@ -142,7 +142,7 @@ function SuggestedSite({ site, tabId }: { site: Site; tabId: string }) {
           type="button"
           title={`${site.title}\n${site.url}`}
           onClick={() => navigate(tabId, { url: site.url })}
-          className="flex w-full min-w-0 cursor-pointer flex-col items-center gap-4 rounded-2xl px-2 pb-4 pt-5 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[state=open]/site:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]"
+          className="flex w-full min-w-0 cursor-pointer flex-col items-center gap-4 rounded-xl px-2 pb-4 pt-5 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[state=open]/site:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]"
         >
           <SiteIcon site={site} />
           <span className="w-full truncate text-center text-ui-15 text-foreground">
@@ -193,7 +193,7 @@ function ToolButton({
       <HugeiconsIcon
         icon={icon}
         strokeWidth={1.75}
-        className="size-5 shrink-0 text-muted-foreground"
+        className="size-4.5 shrink-0 text-muted-foreground"
       />
       <span className="min-w-0 flex-1 truncate">{label}</span>
     </button>
@@ -310,6 +310,89 @@ export function NewTabPage({ tabId }: { tabId: string }) {
       ? timeFormat.format(time)
       : dateFormat.format(time);
 
+  const suggestedSection =
+    showSuggested && sites.length > 0 ? (
+      <section className="flex flex-col gap-3">
+        <SectionTitle>{t("browser.suggested")}</SectionTitle>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {sites.map((site) => (
+            <SuggestedSite key={site.url} site={site} tabId={tabId} />
+          ))}
+        </div>
+      </section>
+    ) : null;
+  const recentsSection =
+    showRecents && recents.length > 0 ? (
+      <section className="flex flex-col gap-3">
+        <SectionTitle
+          actions={
+            <div className="flex items-center gap-1">
+              <PageButton
+                label={t("browser.recentNewer")}
+                icon={ChevronUpStandardIcon}
+                disabled={shownPage === 0}
+                onClick={() => setPage(shownPage - 1)}
+              />
+              <PageButton
+                label={t("browser.recentOlder")}
+                icon={ChevronDownStandardIcon}
+                disabled={shownPage >= pages - 1}
+                onClick={() => setPage(shownPage + 1)}
+              />
+            </div>
+          }
+        >
+          {t("browser.recents")}
+        </SectionTitle>
+        <div className="flex flex-col gap-1">
+          {shown.map((item) => (
+            <LinkContextMenu
+              key={item.id}
+              url={item.url}
+              tabId={tabId}
+              extra={
+                <MenuRow
+                  icon={Delete02Icon}
+                  onSelect={() => removeFromHistory(item.url)}
+                >
+                  {t("browser.pages.removeFromHistory")}
+                </MenuRow>
+              }
+            >
+              <button
+                type="button"
+                title={item.url}
+                onClick={() => navigate(tabId, { url: item.url })}
+                className={cn(
+                  "flex min-w-0 cursor-pointer items-center gap-4 rounded-md px-3 py-3 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]",
+                )}
+              >
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
+                  <SiteFavicon
+                    url={item.url}
+                    className="size-5 rounded-[4px]"
+                    fallbackClassName="size-5 text-muted-foreground"
+                  />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-ui-15 text-foreground">
+                    {item.title || hostOf(item.url)}
+                  </span>
+                  <span className="block truncate text-ui-13 text-muted-foreground">
+                    {t("browser.website")}
+                  </span>
+                </span>
+                <span className="shrink-0 text-ui-13 tabular-nums text-muted-foreground">
+                  {when(item.visitedAt)}
+                </span>
+              </button>
+            </LinkContextMenu>
+          ))}
+        </div>
+      </section>
+    ) : null;
+  const visited = recentsSection !== null;
+
   return (
     <div className="size-full overflow-auto">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-9 px-6 pb-10 pt-8">
@@ -333,86 +416,9 @@ export function NewTabPage({ tabId }: { tabId: string }) {
             />
           </div>
         </section>
-        {showSuggested && sites.length > 0 ? (
-          <section className="flex flex-col gap-3">
-            <SectionTitle>{t("browser.suggested")}</SectionTitle>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {sites.map((site) => (
-                <SuggestedSite key={site.url} site={site} tabId={tabId} />
-              ))}
-            </div>
-          </section>
-        ) : null}
+        {visited ? recentsSection : suggestedSection}
         <BrowserUseToggle />
-        {showRecents && recents.length > 0 ? (
-          <section className="flex flex-col gap-3">
-            <SectionTitle
-              actions={
-                <div className="flex items-center gap-1">
-                  <PageButton
-                    label={t("browser.recentNewer")}
-                    icon={ChevronUpStandardIcon}
-                    disabled={shownPage === 0}
-                    onClick={() => setPage(shownPage - 1)}
-                  />
-                  <PageButton
-                    label={t("browser.recentOlder")}
-                    icon={ChevronDownStandardIcon}
-                    disabled={shownPage >= pages - 1}
-                    onClick={() => setPage(shownPage + 1)}
-                  />
-                </div>
-              }
-            >
-              {t("browser.recents")}
-            </SectionTitle>
-            <div className="flex flex-col gap-1">
-              {shown.map((item) => (
-                <LinkContextMenu
-                  key={item.id}
-                  url={item.url}
-                  tabId={tabId}
-                  extra={
-                    <MenuRow
-                      icon={Delete02Icon}
-                      onSelect={() => removeFromHistory(item.url)}
-                    >
-                      {t("browser.pages.removeFromHistory")}
-                    </MenuRow>
-                  }
-                >
-                  <button
-                    type="button"
-                    title={item.url}
-                    onClick={() => navigate(tabId, { url: item.url })}
-                    className={cn(
-                      "flex min-w-0 cursor-pointer items-center gap-4 rounded-md px-3 py-3 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]",
-                    )}
-                  >
-                    <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
-                      <SiteFavicon
-                        url={item.url}
-                        className="size-5 rounded-[4px]"
-                        fallbackClassName="size-5 text-muted-foreground"
-                      />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-ui-15 text-foreground">
-                        {item.title || hostOf(item.url)}
-                      </span>
-                      <span className="block truncate text-ui-13 text-muted-foreground">
-                        {t("browser.website")}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-ui-13 tabular-nums text-muted-foreground">
-                      {when(item.visitedAt)}
-                    </span>
-                  </button>
-                </LinkContextMenu>
-              ))}
-            </div>
-          </section>
-        ) : null}
+        {visited ? suggestedSection : null}
       </div>
     </div>
   );

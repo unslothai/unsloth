@@ -534,6 +534,17 @@ def test_cp2_alone_matches_one_process():
         _close(res, ref, what = rank)
 
 
+def test_cp2_with_ddp_dp2_matches_one_process():
+    """Plain DDP x cp 2 on 4 ranks: cp peers adjacent, dp replicas averaged, same as one process on the batch."""
+    ref = _ref(4)
+    for rank, res in enumerate(_spawn("train", 4, bs = 2, cp = 2)):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["cp_group"] == [rank - rank % 2, rank - rank % 2 + 1], (rank, res["cp_group"])
+        assert not res["native_fsdp2"] and not res["is_tp"]
+        assert res["seen_lengths"] == [SEQ // 2] and res["ulysses_calls"] >= N_LAYERS
+        _close(res, ref, what = ("ddp", rank))
+
+
 @pytest.mark.parametrize("env", [{"UNSLOTH_PP_SIZE": "2"}], ids = ["pp2"])
 def test_cp_with_pipeline_parallel_env_is_refused_before_the_split(env):
     for res in _spawn("train", 4, env, bs = 2, cp = 2):

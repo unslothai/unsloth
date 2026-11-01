@@ -11,6 +11,18 @@
 
 import os, importlib.util, platform, sys
 
+# Restored at the end of this file.
+from ._import_gc import raise_gc_threshold as _raise_gc_threshold
+
+_raise_gc_threshold(sys.modules.get(__name__))
+del _raise_gc_threshold
+
+# transformers and TRL both scan every installed distribution at import: share one scan until the end of this file.
+from ._import_metadata_cache import install as _install_metadata_cache
+
+_metadata_cache_token = _install_metadata_cache(sys.modules.get(__name__))
+del _install_metadata_cache
+
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 # Opt into ROCm AOTriton kernels torch still gates as experimental; setdefault keeps an explicit "0".
@@ -1556,9 +1568,8 @@ if _IS_MLX:
             )
         return _train_on_responses_only(*args, **kwargs)
 
-    def _safe_mlx_trl_star_exports(_trl):
+    def _safe_mlx_trl_star_exports(_trl, exports):
         """Return importable TRL star exports plus the MLX SFT shims."""
-        exports = list(getattr(_trl, "__all__", ()))
         safe_exports = []
         for name in exports:
             try:
@@ -1609,6 +1620,11 @@ if _IS_MLX:
                 kwargs.setdefault("num_train_epochs", 3)
             super().__init__(*args, **kwargs)
 
+    from ._mlx_trl_all import (
+        install_lazy_trl_all as _install_lazy_trl_all,
+        raw_trl_all as _raw_trl_all,
+    )
+
     def _install_mlx_trl_sft_shim():
         """Install MLX-backed TRL SFT shims without replacing the TRL module."""
         _trl = _sys.modules.get("trl")
@@ -1626,7 +1642,7 @@ if _IS_MLX:
         _trl.SFTTrainer = UnslothTrainer
         _trl.SFTConfig = _MLXSFTConfig
         # Names come from trl's __all__, never a getattr probe: that triggers trl's lazy import and pulls torch.
-        _trl_exports = set(getattr(_trl, "__all__", ()) or ())
+        _trl_exports = set(_raw_trl_all(_trl))
         # Stub every non-SFT trl trainer so newer ones fail clearly too; take names from __all__ and never resolve them, since that pulls torch.
         _unsupported = set(_MLX_UNSUPPORTED_TRL_TRAINERS) | {
             _n for _n in _trl_exports if _n.endswith("Trainer") and _n != "SFTTrainer"
@@ -1637,7 +1653,8 @@ if _IS_MLX:
                 continue
             if _name in _trl_exports or _current is not None:
                 setattr(_trl, _name, _make_mlx_unsupported_trl_trainer(_name))
-        _trl.__all__ = _safe_mlx_trl_star_exports(_trl)
+        # Filtered on first read of trl.__all__: resolving every name here imported all of trl (datasets, peft, ...).
+        _install_lazy_trl_all(_trl, _safe_mlx_trl_star_exports)
         _trl.__UNSLOTH_MLX_COMPAT__ = True
 
     def _install_mlx_unsloth_trainer_shim():
@@ -1756,6 +1773,8 @@ else:
             pass
 
 
+from .tiling import tile_mlp, untile_mlp
+
 # A pip --target / PYTHONPATH layout makes dill pickle modules by value, breaking dataset fingerprints.
 try:
     from .import_fixes import fix_dill_module_by_value_pickling as _fix_dill
@@ -1763,3 +1782,13 @@ try:
     del _fix_dill
 except Exception:
     pass
+
+from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
+
+_uninstall_metadata_cache(_metadata_cache_token)
+del _uninstall_metadata_cache, _metadata_cache_token
+
+from ._import_gc import restore_gc_threshold as _restore_gc_threshold
+
+_restore_gc_threshold()
+del _restore_gc_threshold

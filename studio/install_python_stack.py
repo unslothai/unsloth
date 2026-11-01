@@ -1094,6 +1094,17 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
     return _torch_accelerator_index_url(torch_version, _TORCHCODEC_INDEX_TAGS)
 
 
+def _torchao_index_url(torch_version: "str | None") -> "str | None":
+    """_torch_accelerator_index_url, but None on Windows for download.pytorch.org's cuNNN leaves:
+    they serve torchao for Linux only, so the pin always fails and the untagged fallback then
+    fails every later update's tag check. Mirrors, explicit indexes and cpu/xpu stay pinned."""
+    url = _torch_accelerator_index_url(torch_version)
+    tag = _torch_index_tag(torch_version)
+    if IS_WINDOWS and tag and _is_cuda_family_leaf(tag) and url == f"{_PYTORCH_DEFAULT_WHL}/{tag}":
+        return None
+    return url
+
+
 def _torch_index_tag(
     torch_version: "str | None", substitutions: "dict[str, str] | None" = None
 ) -> "str | None":
@@ -5434,7 +5445,7 @@ def _install_torchao_for_torch(torch_version: "str | None", default_index: bool 
     """
     spec = _select_torchao_spec(torch_version)
     # See _TORCHAO_DEFAULT_SPEC. Unlike torchcodec, rocm leaves do publish torchao.
-    index = None if default_index else _torch_accelerator_index_url(torch_version)
+    index = None if default_index else _torchao_index_url(torch_version)
     # --no-deps guards the second caller, which runs right after the torch repair.
     args = ["--no-deps", "--no-cache-dir"]
     needs_reinstall = _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else "")
@@ -5498,7 +5509,7 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
         try:
             _spec = _select_torchao_spec(_label_after)
             # Same pin as step 4, or PyPI's build lands over it; ==0.18.0 never equals 0.18.0+cu130.
-            _ao_index = _torch_accelerator_index_url(_label_after)
+            _ao_index = _torchao_index_url(_label_after)
             _ao_args = ["--force-reinstall", "--no-deps", "--no-cache-dir"]
             if _pin_needs_reinstall(_spec, _torch_index_tag(_label_after) if _ao_index else ""):
                 _note(f"torch {_label_after} after repair -- reinstalling {_spec}")
@@ -7187,7 +7198,6 @@ WINDOWS_ARM64_SKIP_PACKAGES = {
     "librosa",
     "openai-whisper",
     "torch-c-dlpack-ext",
-    "pytorch_tokenizers",
     "hf_transfer",
     "xformers",
 }
@@ -9139,8 +9149,7 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
         # By canonical project name: pip refuses `--upgrade-package mlx` beside `mlx==0.32.3` as a double
         # requirement where uv does not.
         def _project(requirement: str) -> str:
-            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.9) needs the
-            # rest.
+            # _requirement_name stops at "==" and "@", not at a range specifier.
             return _canonical_package_name(
                 re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
             )
@@ -10268,7 +10277,7 @@ def _has_working_git() -> bool:
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.9"
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.11"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
@@ -11374,7 +11383,7 @@ def _diffusers_release_target() -> "str | None":
 
 def _diffusers_release_behind() -> bool:
     """Resident diffusers older than diffusers-pin.txt's ``==``; a git / zip / checkout build is judged on
-    release numbers (the main build's 0.41.0.dev0 is current), an index prerelease is not."""
+    its release number (0.41.0.dev0 reads as 0.41.0), an index prerelease is not."""
     target = _diffusers_release_target()
     installed = _installed_distribution_version("diffusers")
     if target is None or installed is None:
@@ -12443,8 +12452,7 @@ def install_python_stack() -> int:
         )
 
     # 11b. The pinned Diffusers release, after every other requirements file and on every path.
-    # Stands down once 11c's build is resident (main reports 0.41.0.dev0, never ==0.40.0), else every
-    # update would install the release then main again.
+    # Stands down while 11c's main build is pinned and resident, else every update reinstalls both.
     if not _skip_step(
         REQ_ROOT / "diffusers-pin.txt",
         "diffusers pin",

@@ -2320,19 +2320,15 @@ export function ChatProvidersSettings({
 
       <section className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-2">
         <div className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]">
-          <button
-            type="button"
-            onClick={openAddProvider}
-            className="group/add flex w-full items-center justify-between gap-3 border-border/60 border-b px-3 py-2.5 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
-          >
-            <span className="flex min-w-0 items-center gap-2 rounded-full border border-border bg-background/50 px-3 py-1.5 transition-colors group-hover/add:border-control-accent/25 group-hover/add:text-control-accent">
-              <HugeiconsIcon icon={PlusSignIcon} className="size-4 shrink-0" />
-              <span>Add connection</span>
-            </span>
+          <div className="flex w-full items-center justify-between gap-3 border-border/60 border-b px-3 py-2.5">
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground/90">
               {providers.length} connections · {totalModels} models
             </span>
-          </button>
+            <Button variant="dark" size="sm" onClick={openAddProvider}>
+              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
+              Add connection
+            </Button>
+          </div>
           {providers.length === 0 ? (
             <div className="px-3 py-4">
               <div className="flex min-w-0 flex-col gap-0.5">

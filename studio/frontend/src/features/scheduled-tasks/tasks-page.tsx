@@ -2,11 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  Add01Icon,
   Delete02Icon,
+  Edit03Icon,
   FilterMailIcon,
   MoreHorizontalIcon,
-  PencilEdit02Icon,
+  PlusSignIcon,
   Search01Icon,
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
@@ -118,12 +118,25 @@ function repeatsText(
   t: (key: TranslationKey, values?: InterpolationValues) => string,
 ): string {
   const summary = summarizeRepeats(schedule, locale);
+  if (summary.key === "everyHours") {
+    return t("scheduledTasks.schedule.everyHours", { hours: summary.hours });
+  }
   if (summary.key === "weekly") return summary.days;
   if (summary.key === "monthly") return t("scheduledTasks.monthlyDay", { day: summary.day });
   return t(`scheduledTasks.form.${summary.key}`);
 }
 
-function clockText(schedule: TaskSchedule, locale: string): string {
+function clockText(task: ScheduledTask, locale: string): string {
+  const { schedule } = task;
+  if (schedule.kind === "hourly") {
+    return task.nextRunAt === null
+      ? "—"
+      : new Intl.DateTimeFormat(locale, {
+          hour: "numeric",
+          minute: "2-digit",
+          timeZone: task.timezone,
+        }).format(task.nextRunAt);
+  }
   return formatClock(schedule.kind === "once" ? schedule.at.split("T")[1] : schedule.time, locale);
 }
 
@@ -183,7 +196,7 @@ function TaskRow({
     formatRelativeTime(locale, ...relativeTimeParts(Math.min(at, now - 1_000), now));
   const finishedAt = run?.finishedAt ?? null;
   const repeats = repeatsText(task.schedule, locale, t);
-  const clock = clockText(task.schedule, locale);
+  const clock = clockText(task, locale);
   const nextDay = task.nextRunAt === null ? "—" : formatRunDay(task.nextRunAt, now, locale, task.timezone);
 
   return (
@@ -286,7 +299,7 @@ function TaskRow({
             className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-48 font-heading rounded-[14px] border-0"
           >
             <DropdownMenuItem onSelect={onEdit}>
-              <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               {t("scheduledTasks.edit")}
             </DropdownMenuItem>
             {task.status !== "completed" && (
@@ -437,8 +450,8 @@ export function TasksPage() {
               className="h-control w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
             />
           </div>
-          <Button onClick={() => setEditing(null)}>
-            <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
+          <Button variant="dark" onClick={() => setEditing(null)}>
+            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
             {t("scheduledTasks.newTask")}
           </Button>
         </div>
@@ -478,7 +491,7 @@ export function TasksPage() {
             className="mt-3 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
             onClick={() => setEditing(null)}
           >
-            <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
             {t("scheduledTasks.createFirst")}
           </Button>
         </div>

@@ -304,6 +304,37 @@ test("extractHtmlAttachmentText keeps the line structure of the page", async () 
   );
 });
 
+test("extractHtmlAttachmentText keeps the ticked state of check boxes", async () => {
+  const input = (attrs: Record<string, string>) => ({
+    ...element("input"),
+    getAttribute: (name: string) => attrs[name] ?? null,
+    hasAttribute: (name: string) => name in attrs,
+  });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "ul",
+          element("li", input({ type: "checkbox", checked: "" }), textNode("Ship")),
+          element("li", input({ type: "checkbox" }), textNode("Docs")),
+        ),
+        element(
+          "p",
+          textNode("Smoker:"),
+          input({ type: "radio", checked: "" }),
+          textNode("Yes"),
+          input({ type: "radio" }),
+          textNode("No"),
+          input({ type: "text" }),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(extracted, "☒ Ship\n\n☐ Docs\n\nSmoker: ☒ Yes ☐ No");
+});
+
 test("extractHtmlAttachmentText keeps the indentation of preformatted code", async () => {
   const extracted = await withStubDom(
     () =>

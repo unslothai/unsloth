@@ -95,6 +95,33 @@ except:
 from pathlib import Path
 from peft import PeftModelForCausalLM, PeftModel
 
+
+def _collect_garbage(
+    passes = 3,
+    before = None,
+    after = None,
+):
+    """Up to `passes` gc.collect() passes; stops after one that ran and found nothing (it ran no finalizer, so
+    the next finds nothing either). gc.callbacks, a non-zero result, or a pass skipped while another thread
+    collects (returns 0, stats unmoved) keep every pass."""
+    for _ in range(passes):
+        if before is not None:
+            before()
+        seen = gc.get_stats()[2]
+        found = gc.collect()
+        ran = gc.get_stats()[2]
+        if after is not None:
+            after()
+        if (
+            found == 0
+            and not gc.callbacks
+            and ran["collections"] == seen["collections"] + 1
+            and ran["collected"] == seen["collected"]
+            and ran["uncollectable"] == seen["uncollectable"]
+        ):
+            break
+
+
 __all__ = [
     "print_quantization_methods",
     "unsloth_save_model",
@@ -1467,9 +1494,7 @@ def unsloth_save_model(
 
     assert maximum_memory_usage > 0 and maximum_memory_usage <= 0.95
 
-    for _ in range(3):
-        clean_gpu_cache()
-        gc.collect()
+    _collect_garbage(before = clean_gpu_cache)
 
     save_method = save_method.lower().replace(" ", "_")
     raise_if_merging_mistral_format_view(model, save_method)
@@ -1972,11 +1997,11 @@ def unsloth_save_model(
 
     save_pretrained_settings["state_dict"] = None
 
+    # No collect per entry: the loop allocates nothing, so the collect below finds the same cycles.
     for j, (key, value) in enumerate(state_dict.items()):
         state_dict[key] = None
         if j % 10 == 0:
             clean_gpu_cache()
-            gc.collect()
     state_dict = None
     del state_dict
     clean_gpu_cache()
@@ -1984,9 +2009,7 @@ def unsloth_save_model(
 
     shutil.rmtree(temporary_location, ignore_errors = True)
 
-    for _ in range(3):
-        clean_gpu_cache()
-        gc.collect()
+    _collect_garbage(before = clean_gpu_cache)
     return save_directory, username
 
 
@@ -2396,6 +2419,121 @@ def _choose_first_conversion(
     return model_dtype
 
 
+def _convert_into_gguf_directory(
+    model_name,
+    model_directory,
+    model_dtype,
+    first_conversion,
+    first_conversion_dtype,
+    is_vlm,
+    is_gpt_oss,
+    print_output,
+    gguf_directory,
+    conversion_staging,
+):
+    """Convert to GGUF and place the files in `gguf_directory`; without a staging folder the converter writes to the CWD."""
+    print("Unsloth: Preparing converter script...")
+    with use_local_gguf():
+        converter_path, supported_text_archs, supported_vision_archs = (
+            _download_convert_hf_to_gguf()
+        )
+
+        print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
+        print(f"This might take 3 minutes...")
+
+        initial_files, is_vlm_update = convert_to_gguf(
+            model_name = (
+                model_name
+                if conversion_staging is None
+                else os.path.join(conversion_staging, model_name)
+            ),
+            input_folder = model_directory,
+            model_dtype = model_dtype,
+            quantization_type = first_conversion,
+            converter_location = converter_path,
+            supported_text_archs = supported_text_archs,
+            supported_vision_archs = supported_vision_archs,
+            is_vlm = is_vlm,
+            is_gpt_oss = is_gpt_oss,
+            max_shard_size = "50GB",
+            print_output = print_output,
+        )
+    for file in initial_files:
+        if not os.path.exists(file):
+            # Gated like the outer handler: disk advice is only right when disk is the problem, and a converter with no llama.cpp support fails here with space to spare.
+            if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
+                RuntimeError(f"Conversion produced no output at {file}"),
+                os.path.dirname(file) or None,
+            ):
+                raise RuntimeError(
+                    f"Unsloth: Conversion failed for {file}\n"
+                    "You are in a Kaggle environment with limited disk space (20GB).\n"
+                    "Try saving to /tmp for more space or use a smaller model.\n"
+                    "Alternatively, save the 16bit model first, then convert manually."
+                )
+            else:
+                raise RuntimeError(
+                    f"Unsloth: Conversion failed for {file}\nPlease check disk space and try again."
+                )
+
+    os.makedirs(gguf_directory, exist_ok = True)
+    moved_files = []
+    for fpath in initial_files:
+        dst = os.path.join(gguf_directory, os.path.basename(fpath))
+        _place_gguf_output(fpath, dst)
+        moved_files.append(dst)
+    return moved_files, is_vlm_update
+
+
+def _gguf_conversion_staging(gguf_directory):
+    """`(staging, created_gguf_directory)`: a hidden folder inside `gguf_directory` for the converter output, so placing it is a rename even when the CWD is on another filesystem, and a failed conversion is one rmtree. `(None, False)` on failure keeps the CWD placement."""
+    import tempfile
+
+    created = False
+    try:
+        if not os.path.isdir(gguf_directory):
+            os.makedirs(gguf_directory, exist_ok = True)
+            created = True
+        return tempfile.mkdtemp(prefix = ".unsloth_gguf_convert_", dir = gguf_directory), created
+    except Exception:
+        if created:
+            _remove_empty_directory(gguf_directory)
+        return None, False
+
+
+# MAX_PATH 260 incl. terminator without LongPathsEnabled; the converter appends at most `.BF16-mmproj-00001-of-00002.gguf` (32 chars).
+_WINDOWS_MAX_PATH_CHARS = 259
+_GGUF_CONVERTER_SUFFIX_CHARS = 40
+
+
+def _staged_conversion_fits_path_limit(staging, model_name):
+    """False on Windows when a converter output inside `staging` could pass MAX_PATH, so a deep destination keeps the CWD placement that worked before."""
+    if not IS_WINDOWS:
+        return True
+    try:
+        staged = os.path.abspath(os.path.join(staging, model_name))
+    except Exception:
+        return False
+    return len(staged) + _GGUF_CONVERTER_SUFFIX_CHARS <= _WINDOWS_MAX_PATH_CHARS
+
+
+def _remove_empty_directory(directory):
+    try:
+        os.rmdir(directory)
+    except OSError:
+        pass
+
+
+def _place_gguf_output(src, dst):
+    """`os.replace` is a rename that also overwrites on Windows; anything it refuses (cross-device, directory at `dst`, held file) falls back to `shutil.move`."""
+    if os.path.abspath(src) == os.path.abspath(dst):
+        return
+    try:
+        os.replace(src, dst)
+    except OSError:
+        shutil.move(src, dst)
+
+
 def save_to_gguf(
     model_name: str,
     model_type: str,
@@ -2522,58 +2660,40 @@ def save_to_gguf(
             print_output = print_output,
         )
 
-    print("Unsloth: Preparing converter script...")
-    with use_local_gguf():
-        converter_path, supported_text_archs, supported_vision_archs = (
-            _download_convert_hf_to_gguf()
-        )
-
-        print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
-        print(f"This might take 3 minutes...")
-
-        initial_files, is_vlm_update = convert_to_gguf(
-            model_name = model_name,
-            input_folder = model_directory,
-            model_dtype = model_dtype,
-            quantization_type = first_conversion,
-            converter_location = converter_path,
-            supported_text_archs = supported_text_archs,
-            supported_vision_archs = supported_vision_archs,
-            is_vlm = is_vlm,
-            is_gpt_oss = is_gpt_oss,
-            max_shard_size = "50GB",
-            print_output = print_output,
-        )
-    is_vlm = is_vlm_update
-    for file in initial_files:
-        if not os.path.exists(file):
-            # Gated like the outer handler: disk advice is only right when disk is the problem, and a converter with no llama.cpp support fails here with space to spare.
-            if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
-                RuntimeError(f"Conversion produced no output at {file}"),
-                os.path.dirname(file) or None,
-            ):
-                raise RuntimeError(
-                    f"Unsloth: Conversion failed for {file}\n"
-                    "You are in a Kaggle environment with limited disk space (20GB).\n"
-                    "Try saving to /tmp for more space or use a smaller model.\n"
-                    "Alternatively, save the 16bit model first, then convert manually."
-                )
-            else:
-                raise RuntimeError(
-                    f"Unsloth: Conversion failed for {file}\nPlease check disk space and try again."
-                )
-
     if gguf_directory is None:
         gguf_directory = f"{model_directory}_gguf"
     else:
         gguf_directory = os.fspath(gguf_directory)
-    os.makedirs(gguf_directory, exist_ok = True)
-    moved_files = []
-    for fpath in initial_files:
-        dst = os.path.join(gguf_directory, os.path.basename(fpath))
-        shutil.move(fpath, dst)
-        moved_files.append(dst)
-    initial_files = moved_files
+    conversion_staging, created_gguf_directory = _gguf_conversion_staging(gguf_directory)
+    if conversion_staging is not None and not _staged_conversion_fits_path_limit(
+        conversion_staging, model_name
+    ):
+        shutil.rmtree(conversion_staging, ignore_errors = True)
+        if created_gguf_directory:
+            _remove_empty_directory(gguf_directory)
+        conversion_staging, created_gguf_directory = None, False
+    try:
+        initial_files, is_vlm_update = _convert_into_gguf_directory(
+            model_name = model_name,
+            model_directory = model_directory,
+            model_dtype = model_dtype,
+            first_conversion = first_conversion,
+            first_conversion_dtype = first_conversion_dtype,
+            is_vlm = is_vlm,
+            is_gpt_oss = is_gpt_oss,
+            print_output = print_output,
+            gguf_directory = gguf_directory,
+            conversion_staging = conversion_staging,
+        )
+    except BaseException:
+        if conversion_staging is not None:
+            shutil.rmtree(conversion_staging, ignore_errors = True)
+            if created_gguf_directory:
+                _remove_empty_directory(gguf_directory)
+        raise
+    if conversion_staging is not None:
+        shutil.rmtree(conversion_staging, ignore_errors = True)
+    is_vlm = is_vlm_update
 
     print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
 
@@ -2907,8 +3027,7 @@ def unsloth_save_pretrained_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     _torchao = _normalize_torchao_method(save_method)
@@ -2934,8 +3053,7 @@ def unsloth_save_pretrained_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     arguments = dict(locals())
@@ -2950,8 +3068,7 @@ def unsloth_save_pretrained_merged(
     del arguments["max_seq_length"]
     del arguments["install_missing_dependencies"]
     unsloth_save_model(**arguments)
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
 
 @_model_parallel_refuses_save("push_to_hub_merged")
@@ -3033,8 +3150,7 @@ def unsloth_push_to_hub_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     _torchao = _normalize_torchao_method(save_method)
@@ -3062,8 +3178,7 @@ def unsloth_push_to_hub_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     arguments = dict(locals())
@@ -3079,8 +3194,7 @@ def unsloth_push_to_hub_merged(
     del arguments["max_seq_length"]
     del arguments["install_missing_dependencies"]
     unsloth_save_model(**arguments)
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
 
 MODEL_CARD = """---
@@ -4070,12 +4184,28 @@ def _directory_is_writable(directory):
 
 
 def _gguf_conversion_directory(model_directory):
-    """Where the intermediate GGUF is written, before it is moved. `unsloth_zoo.llama_cpp.convert_to_gguf` passes a BARE filename as `--outfile`, so llama.cpp resolves it against the process CWD, falling back to the input folder only when that CWD is unwritable; `save_to_gguf` then `shutil.move`s the file into the `_gguf` directory, which is a copy rather than a rename across filesystems. So on a Kaggle kernel the intermediate, two bytes per parameter and the largest single staging artefact, still lands in the 20GB /kaggle/working even after the export was redirected to /tmp, and that is the one filesystem the rest of this preflight never measures. None when the CWD cannot be read, and then nothing is charged."""
+    """Where an UNSTAGED intermediate GGUF is written: `convert_to_gguf` resolves a bare `--outfile` against the CWD, or the input folder when the CWD is unwritable. None when the CWD cannot be read, and then nothing is charged."""
     try:
         cwd = os.getcwd()
     except Exception:
         return None
     return cwd if _directory_is_writable(cwd) else model_directory
+
+
+def _gguf_conversion_is_staged(gguf_directory):
+    """Mirrors `_gguf_conversion_staging`: True when the intermediate will be written inside `gguf_directory`, so the CWD is never charged for it. Windows stays False because its MAX_PATH guard can still fall back to the CWD."""
+    if IS_WINDOWS:
+        return False
+    try:
+        probe = os.path.abspath(os.fspath(gguf_directory))
+        while not os.path.isdir(probe):
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                return False
+            probe = parent
+    except Exception:
+        return False
+    return _directory_is_writable(probe)
 
 
 def _gguf_model_input_directory(
@@ -4251,7 +4381,7 @@ def _preflight_gguf_disk(
 
     # Ask the redirect for the same figure the refusal reads. need_with_cache is the aggregate, but a disposable merge is reclaimed before the quants, so a phased peak that fits in /kaggle/working was relocated. Read before any move, and it can only lower the ask.
     phased_need = 0
-    # The intermediate conversion is written to the process CWD, not into `save_directory` and not into the `_gguf` sibling, and only afterwards moved, so when that CWD is on its own filesystem nothing above has measured the disk the largest staging artefact actually lands on: on Kaggle it is the 20GB working directory the redirect just moved the export away from. When that working directory is on THIS filesystem the checkpoint and the conversion are on it together, and charging each of them alone lets a 60GB checkpoint and a 60GB conversion both pass on 100GB and then it fills. Only the split branch needs this: on one filesystem the aggregate already counts them both, and a conversion sharing the sibling's disk is counted in `need_sibling`. `max` and not `+`, because the two figures are two PHASES and not two artefacts: the merge runs first and its guard wants the checkpoint over 0.95 with nothing else written yet, the conversion is written after against the unreserved checkpoint, and summing them charges the reserve on top of a conversion that does not exist while the guard runs, so a 60GB merge and a 60GB conversion on 122GB free clear both phases (63.2GB, then 120GB) while the sum asks 123.2GB and refuses.
+    # Single filesystem only: the merge and the conversion are two phases, so the peak is their max, not their sum (a 60GB merge and a 60GB conversion clear 122GB free; the sum asks 123.2GB).
     if (
         merge_is_disposable
         and needs_merge
@@ -4297,9 +4427,12 @@ def _preflight_gguf_disk(
         and _on_separate_filesystems(save_directory, gguf_directory)
     )
     # Resolved before the split is priced, because where the conversion lands decides which filesystem it is charged to.
-    conversion_directory = _gguf_conversion_directory(
-        _gguf_model_input_directory(model, save_directory, state_dict)
-    )
+    if _gguf_conversion_is_staged(gguf_directory):
+        conversion_directory = gguf_directory
+    else:
+        conversion_directory = _gguf_conversion_directory(
+            _gguf_model_input_directory(model, save_directory, state_dict)
+        )
 
     # Cleared when the cache shares a filesystem with room for the export but not a cached base too: dropping the optional half beats failing. The message travels with the flag, since more than one filesystem can set it and each has to name the one it measured.
     sibling_prewarm_ok = True
@@ -4337,7 +4470,7 @@ def _preflight_gguf_disk(
             need_here = max(need_here, reserved)
             # The cache copy is written BEFORE the merge and is still there when the guard runs, so it comes off the free space the guard sees. Riding on top of the reserved figure rather than beside it: 16GB checkpoint + 14GB cache on 30.5GB passes a max of 30GB and then the merge refuses under its own 5%. Added instead, this drops the pre-warm, not the export.
             need_here_with_cache = max(need_here_with_cache, reserved + cache_here)
-        # The intermediate conversion lands in the working directory before the move, so on THIS filesystem the checkpoint and conversion coexist and charging each alone lets 60GB + 60GB pass on 100GB. max, not +: they are two phases, and summing them refuses 122GB free that clears both.
+        # An unstaged intermediate on THIS filesystem coexists with the checkpoint. max, not +: they are two phases, and summing them refuses 122GB free that clears both.
         if (
             need_conversion > 0
             and conversion_directory is not None
@@ -4383,7 +4516,7 @@ def _preflight_gguf_disk(
             need_here = peak
             need_here_with_cache = peak + cache_here
 
-    # The intermediate conversion is written to the process CWD and only then moved, so when that CWD is its own filesystem nothing above has measured the disk the largest staging artefact lands on: on Kaggle, the 20GB working directory the redirect just left.
+    # An unstaged intermediate is written to the CWD and then moved; on its own filesystem (Kaggle's 20GB working directory after a /tmp redirect) nothing above measured it.
     if (
         need_conversion > 0
         and conversion_directory is not None
@@ -4871,10 +5004,7 @@ def unsloth_save_pretrained_gguf(
         if is_processor:
             tokenizer = tokenizer.tokenizer
 
-        for _ in range(3):
-            import gc
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
         try:
             model_dtype = dtype_from_config(self.config)
@@ -6969,8 +7099,7 @@ def unsloth_generic_save_pretrained_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     _torchao = _normalize_torchao_method(save_method)
@@ -6996,8 +7125,7 @@ def unsloth_generic_save_pretrained_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     arguments = dict(locals())
@@ -7010,8 +7138,7 @@ def unsloth_generic_save_pretrained_merged(
     del arguments["max_seq_length"]
     del arguments["install_missing_dependencies"]
     unsloth_generic_save(**arguments)
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
 
 # Like save_pretrained_merged: every rank calls it, rank 0 gathers, merges and uploads.
@@ -7119,8 +7246,7 @@ def unsloth_generic_push_to_hub_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     _torchao = _normalize_torchao_method(save_method)
@@ -7148,8 +7274,7 @@ def unsloth_generic_push_to_hub_merged(
             maximum_memory_usage = maximum_memory_usage,
             datasets = datasets,
         )
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
         return
 
     arguments = dict(locals())
@@ -7165,8 +7290,7 @@ def unsloth_generic_push_to_hub_merged(
     del arguments["max_seq_length"]
     del arguments["install_missing_dependencies"]
     unsloth_generic_save(**arguments)
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
 
 def _unsloth_save_torchao_with_attached_config(
@@ -7326,8 +7450,7 @@ def _unsloth_save_torchao_with_given_config(
     if untied_lm_head is not None:
         _untie_merged_checkpoint(save_directory, *untied_lm_head)
 
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
     from transformers import (
         AutoModelForCausalLM,
@@ -7359,9 +7482,7 @@ def _unsloth_save_torchao_with_given_config(
 
     # Else the original stays resident on every GPU while device_map="auto" below loads a second copy.
     model_restore = _offload_model_for_quantize_subprocess(model)
-    for _ in range(3):
-        gc.collect()
-        clean_gpu_cache()
+    _collect_garbage(after = clean_gpu_cache)
 
     # The original stays offloaded until the quantized copy is saved AND released, else both are resident at once and the restore OOMs.
     try:
@@ -7398,9 +7519,7 @@ def _unsloth_save_torchao_with_given_config(
         _exc = sys.exc_info()[1]
         if _exc is not None:
             traceback.clear_frames(_exc.__traceback__)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
         _restore_model_after_quantize_subprocess(model, model_restore)
 
     if os.path.exists(save_directory):
@@ -7897,9 +8016,7 @@ def _unsloth_save_compressed_tensors(
 
         # Free the in-memory model's CUDA memory before the subprocess loads its own copy, so the GPUs need not hold both. Best-effort, restored in finally.
         model_restore = _offload_model_for_quantize_subprocess(model)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
         # Same boundary as the LoRA GGUF converter: False scrubs, it does not merely withhold.
         env = os.environ.copy()
@@ -7963,9 +8080,7 @@ def _unsloth_save_compressed_tensors(
             shutil.rmtree(calib_tmp, ignore_errors = True)
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
 
 @_model_parallel_refuses_save("save_pretrained_torchao")
@@ -8092,9 +8207,7 @@ def _unsloth_save_torchao(
 
         # Free the in-memory model's accelerator memory before reloading from disk, else it sits beside the copy and OOMs a device that fit the model once. Covers CUDA, XPU and multi-GPU dispatched shards, which a plain .to("cpu") cannot move.
         model_restore = _offload_model_for_quantize_subprocess(model)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
         # Reload the staged 16bit checkpoint with torchao applied: bfloat16 is required, and device_map="auto" falls back to CPU, so this works on any hardware.
         print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
@@ -8113,9 +8226,7 @@ def _unsloth_save_torchao(
         quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)
         staged_tokenizer.save_pretrained(out_dir)
         del quantized_model
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
         cfg_path = os.path.join(out_dir, "config.json")
         cfg = {}
@@ -8163,15 +8274,11 @@ def _unsloth_save_torchao(
         _exc = sys.exc_info()[1]
         if _exc is not None:
             traceback.clear_frames(_exc.__traceback__)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
         _restore_model_after_quantize_subprocess(model, model_restore)
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        _collect_garbage(after = clean_gpu_cache)
 
 
 # Must match qat_scheme="int8-int4"; export_llm defaults (group_size 128, use_hqq true) do not.
@@ -8296,8 +8403,7 @@ def unsloth_save_pretrained_torchao(
             model_type = getattr(getattr(self, "config", None), "model_type", None),
         )
 
-    for _ in range(3):
-        gc.collect()
+    _collect_garbage()
 
 
 # quantization_type -> `optimum-cli export openvino` options. None and "fp16" still name a weight format: with none, optimum-intel int8-compresses every model over 1B parameters.
@@ -8559,8 +8665,7 @@ def _unsloth_save_openvino(
         return os.fspath(save_directory)
     finally:
         shutil.rmtree(work_tmp, ignore_errors = True)
-        for _ in range(3):
-            gc.collect()
+        _collect_garbage()
 
 
 @_model_parallel_refuses_save("save_pretrained_openvino")

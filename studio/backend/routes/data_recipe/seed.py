@@ -8,6 +8,7 @@ from __future__ import annotations
 from core.training.account_jobs import account_path, managed_account
 import base64
 import binascii
+import functools
 import json
 import os
 import re
@@ -131,11 +132,6 @@ def _list_hf_repo_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
         return api.list_repo_files(dataset_name, repo_type = "dataset", token = token)
     except (HfHubHTTPError, OSError, ValueError):
         return []
-
-
-def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
-    repo_files = _list_hf_repo_files(dataset_name = dataset_name, token = token)
-    return [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
 
 
 def _list_hf_dataset_configs(*, dataset_name: str, token: HfTokenArg) -> list[dict[str, Any]]:
@@ -307,26 +303,26 @@ def _class_end(pattern: str, start: int) -> int:
     return closing if closing > start else -1
 
 
-def _ignored_by_the_loader(path: str, pattern: str) -> bool:
-    """Loader drops names in data_files.FILES_TO_IGNORE from globs unless the pattern is that file
-    itself."""
-    name = PurePosixPath(path).name
-    return name in _IGNORED_DATA_FILENAMES and PurePosixPath(pattern).name != name
+def _posix_tail(path: str) -> list[str]:
+    """PurePosixPath(path).parts without the root: split on "/", empty and "." parts dropped."""
+    return [part for part in path.split("/") if part and part != "."]
 
 
-def _hidden_to_the_loader(path: str, pattern: str) -> bool:
-    """Loader skips hidden parts anywhere and dunder parts only in parents unless the pattern names them; data/__train.json is read."""
-    for prefix, parts in ((".", "parts"), ("__", "parent_parts")):
-        in_path = _marked_parts(path, prefix, parts)
-        in_pattern = _marked_parts(pattern, prefix, parts)
-        if len(in_path) != len(in_pattern):
-            return True
-    return False
+def _name_parts(path: str) -> tuple[str, str]:
+    """Path(path).suffix and .stem; by hand only for plain relative ASCII names, which every pathlib flavour and version reads alike."""
+    if path.isascii() and not path.startswith("/") and "\\" not in path and ":" not in path:
+        name = path[path.rfind("/") + 1 :]
+        dot = name.rfind(".")
+        if name[:1] not in ("", ".") and dot < len(name) - 1:
+            return (name[dot:], name[:dot]) if dot > 0 else ("", name)
+    parsed = Path(path)
+    return parsed.suffix, parsed.stem
 
 
 def _marked_parts(path: str, prefix: str, which: str) -> list[str]:
-    parsed = PurePosixPath(path)
-    parts = parsed.parts if which == "parts" else parsed.parent.parts
+    parts = _posix_tail(path)
+    if which != "parts":
+        parts = parts[:-1]
     return [part for part in parts if part.startswith(prefix) and set(part) != {"."}]
 
 
@@ -338,18 +334,42 @@ def _files_under_patterns(
 ) -> list[str]:
     """Card globs obey loader skip rules; module-written patterns are judged on what they plainly match."""
     matchers = [(pattern, _glob_to_regex(pattern)) for pattern in patterns]
-    return [
-        f
-        for f in data_files
-        if any(
-            m.match(f)
-            and not (
-                as_the_loader_would
-                and (_hidden_to_the_loader(f, p) or _ignored_by_the_loader(f, p))
-            )
-            for p, m in matchers
-        )
-    ]
+    if not as_the_loader_would:
+        return [f for f in data_files if any(m.match(f) for _, m in matchers)]
+    rules = [(m, _loader_path_facts(p)) for p, m in matchers]
+    kept = []
+    for f in data_files:
+        facts = None
+        for m, pattern_facts in rules:
+            if not m.match(f):
+                continue
+            if facts is None:
+                facts = _loader_path_facts(f)
+            if not _skipped_by_the_loader(facts, pattern_facts):
+                kept.append(f)
+                break
+    return kept
+
+
+def _loader_path_facts(path: str) -> tuple[int, int, str]:
+    """Hidden parts anywhere, dunder parts in parents, and the name."""
+    return (
+        len(_marked_parts(path, ".", "parts")),
+        len(_marked_parts(path, "__", "parent_parts")),
+        (_posix_tail(path) or [""])[-1],
+    )
+
+
+def _skipped_by_the_loader(
+    path_facts: tuple[int, int, str], pattern_facts: tuple[int, int, str]
+) -> bool:
+    """Loader skips hidden parts anywhere and dunder parts only in parents unless the pattern names them
+    (data/__train.json is read), and drops names in data_files.FILES_TO_IGNORE from globs unless the pattern is that
+    file itself."""
+    if path_facts[:2] != pattern_facts[:2]:
+        return True
+    name = path_facts[2]
+    return name in _IGNORED_DATA_FILENAMES and pattern_facts[2] != name
 
 
 def _common_parent(paths: list[str]) -> str:
@@ -364,7 +384,12 @@ def _common_parent(paths: list[str]) -> str:
 
 def _label_in_name(name: str, label: str) -> bool:
     """Match the label in place, not by tokens, so sample-10BT survives; digits count as separators: train1 is train, training is not."""
-    return re.search(rf"(?:^|{_SEP}){re.escape(label)}(?:$|{_SEP})", name) is not None
+    return _label_matcher(label).search(name) is not None
+
+
+@functools.lru_cache(maxsize = 256)
+def _label_matcher(label: str) -> re.Pattern[str]:
+    return re.compile(rf"(?:^|{_SEP}){re.escape(label)}(?:$|{_SEP})")
 
 
 def _split_folder(lowered_path: str, labels: tuple[str, ...]) -> bool:
@@ -399,7 +424,7 @@ def _split_rank(path: str, split_lower: str) -> int:
     if _split_folder(lowered, labels):
         return 0
     # Only the final extension comes off: questions.train.parquet keeps its split.
-    stem = Path(lowered).stem
+    stem = _name_parts(lowered)[1]
     if any(_label_in_name(stem, label) for label in labels):
         return 1
     return 2
@@ -416,7 +441,7 @@ def _in_subset(data_files: list[str], subset: str | None, split_lower: str) -> l
     ]
     if in_folder:
         return in_folder
-    named = [f for f in data_files if _label_in_name(Path(f.lower()).stem, subset_lower)]
+    named = [f for f in data_files if _label_in_name(_name_parts(f.lower())[1], subset_lower)]
     if any(_split_rank(f, split_lower) <= 1 for f in named):
         return named
     if any(_split_rank(f, split_lower) <= 1 for f in data_files):
@@ -525,7 +550,7 @@ def _builder_exts(suffix: str) -> tuple[str, ...]:
 
 def _of_suffix(paths: list[str], suffix: str) -> list[str]:
     group = _builder_exts(suffix)
-    return [p for p in paths if Path(p).suffix.lower() in group]
+    return [p for p in paths if _name_parts(p)[0].lower() in group]
 
 
 def _extension_glob(paths: list[str], suffix: str, repo_files: list[str]) -> str:

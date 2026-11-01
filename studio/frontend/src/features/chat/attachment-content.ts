@@ -734,6 +734,41 @@ export function repackDocxAttachmentArchive(
   return zipSync(archive.entries, { level: 0 });
 }
 
+type DocxPartSelect = (keep: (name: string, size: number) => boolean) => Record<string, Uint8Array>;
+
+function archiveParts(archive: Uint8Array): DocxPartSelect {
+  return (keep) => unzipSync(archive, { filter: (entry) => keep(entry.name, entry.originalSize) });
+}
+
+function rezipDocx(archive: Uint8Array, rewritten: Record<string, Uint8Array> | null): Uint8Array {
+  return rewritten ? zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 }) : archive;
+}
+
+// fflate takes the 4 bytes 20 before the end record as a zip64 locator; its own output puts the last offset or name there.
+const ZIP64_LOCATOR = "PK\u0006\u0007";
+const ZIP64_LOCATOR_OFFSET_FLOOR = 0x06000000;
+
+/** The entries when `unzipSync(zipSync(entries))` returns them unchanged, else null. */
+function repackedDocxParts(entries: Unzipped): Record<string, Uint8Array> | null {
+  if (Object.getPrototypeOf(entries) !== Object.prototype) return null;
+  const names = Object.keys(entries);
+  if (names.length >= 65535) return null;
+  let offset = 0;
+  for (const name of names) {
+    const encoded = strToU8(name);
+    offset += 30 + encoded.length + entries[name].length;
+    if (
+      encoded.length > 65535 ||
+      strFromU8(encoded) !== name ||
+      name.includes(ZIP64_LOCATOR) ||
+      offset >= ZIP64_LOCATOR_OFFSET_FLOOR
+    ) {
+      return null;
+    }
+  }
+  return entries;
+}
+
 const WORDPROCESSINGML_NAMESPACES = new Set([
   "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
   "http://purl.oclc.org/ooxml/wordprocessingml/main",
@@ -854,8 +889,12 @@ function docxMathText(element: Element, w: string): string {
 
 /** Each equation becomes a plain run where it sits; extractRawText drops OMML. */
 export function linearizeDocxMath(archive: Uint8Array): Uint8Array {
+  return rezipDocx(archive, linearizeDocxMathParts(archiveParts(archive)));
+}
+
+function linearizeDocxMathParts(select: DocxPartSelect): Record<string, Uint8Array> | null {
   const rewritten: Record<string, Uint8Array> = {};
-  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  const parts = select((name) => name.endsWith(".xml"));
   for (const [name, bytes] of Object.entries(parts)) {
     const xml = strFromU8(bytes);
     if (!xml.includes("oMath")) continue;
@@ -889,16 +928,19 @@ export function linearizeDocxMath(archive: Uint8Array): Uint8Array {
     visit(doc);
     if (found) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
   }
-  if (!Object.keys(rewritten).length) return archive;
-  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+  return Object.keys(rewritten).length ? rewritten : null;
 }
 
 const W14_NAMESPACE = "http://schemas.microsoft.com/office/word/2010/wordml";
 const DOCX_BREAK_OR_CHECKBOX_RE = /<(?:[\w.-]+:)?(?:br|cr|checkbox|checkBox)[\s/>]/;
 
 export function writeDocxBreaksAndCheckboxes(archive: Uint8Array): Uint8Array {
+  return rezipDocx(archive, writeDocxBreakAndCheckboxParts(archiveParts(archive)));
+}
+
+function writeDocxBreakAndCheckboxParts(select: DocxPartSelect): Record<string, Uint8Array> | null {
   const rewritten: Record<string, Uint8Array> = {};
-  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  const parts = select((name) => name.endsWith(".xml"));
   for (const [name, bytes] of Object.entries(parts)) {
     const xml = strFromU8(bytes);
     if (!DOCX_BREAK_OR_CHECKBOX_RE.test(xml)) continue;
@@ -944,15 +986,18 @@ export function writeDocxBreaksAndCheckboxes(archive: Uint8Array): Uint8Array {
     for (const br of breaks) br.parentNode?.replaceChild(text("\n"), br);
     if (boxes.length || breaks.length) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
   }
-  if (!Object.keys(rewritten).length) return archive;
-  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+  return Object.keys(rewritten).length ? rewritten : null;
 }
 
 const DOCX_TABLE_RE = /<(?:[\w.-]+:)?tbl[\s>]/;
 
 export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
+  return rezipDocx(archive, writeDocxTableRowParts(archiveParts(archive)));
+}
+
+function writeDocxTableRowParts(select: DocxPartSelect): Record<string, Uint8Array> | null {
   const rewritten: Record<string, Uint8Array> = {};
-  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  const parts = select((name) => name.endsWith(".xml"));
   for (const [name, bytes] of Object.entries(parts)) {
     const xml = strFromU8(bytes);
     if (!DOCX_TABLE_RE.test(xml)) continue;
@@ -1027,8 +1072,7 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
     }
     rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
   }
-  if (!Object.keys(rewritten).length) return archive;
-  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+  return Object.keys(rewritten).length ? rewritten : null;
 }
 
 function listNumber(n: number, format: string | undefined): string {
@@ -1059,14 +1103,22 @@ function wordValue(node: Element | undefined, name: string): string | undefined 
 // Labels are an extra: a numbering part this cannot read leaves the text as Mammoth reads it.
 export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
   try {
-    return injectDocxListNumbers(archive);
+    return rezipDocx(archive, injectDocxListNumbers(archiveParts(archive)));
   } catch {
     return archive;
   }
 }
 
-function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
-  const parts = unzipSync(archive, { filter: (entry) => /\.(?:xml|rels)$/.test(entry.name) });
+function writeDocxListNumberParts(select: DocxPartSelect): Record<string, Uint8Array> | null {
+  try {
+    return injectDocxListNumbers(select);
+  } catch {
+    return null;
+  }
+}
+
+function injectDocxListNumbers(select: DocxPartSelect): Record<string, Uint8Array> | null {
+  const parts = select((name) => /\.(?:xml|rels)$/.test(name));
   const resolve = (targets: string[] | undefined, fallback: string) =>
     targets?.find((path) => Object.hasOwn(parts, path)) ?? fallback;
   const main = resolve(readDocxXmlTargets(parts[DOCX_PACKAGE_RELATIONSHIPS], "").get(DOCX_MAIN_DOCUMENT_TYPE), DOCX_MAIN_DOCUMENT_FALLBACK);
@@ -1082,7 +1134,7 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   const related = (name: string) => parse(resolve(targets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`));
   const numbering = related("numbering");
   const body = numbering && parse(main);
-  if (!numbering || !body) return archive;
+  if (!numbering || !body) return null;
 
   const byId = (parent: Element, ns: string, name: string, id: string) =>
     new Map(childElements(parent, ns, name).map((node) => [node.getAttributeNS(ns, id) ?? "", node]));
@@ -1249,15 +1301,15 @@ function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
   for (const p of paragraphs) {
     const pPr = childElements(p, w, "pPr")[0];
     label(p, pPr);
-    if (budget < 0) return archive;
+    if (budget < 0) return null;
     // w15:restartNumberingAfterBreak
     if (pPr && restartable.size && childElements(pPr, w, "sectPr").length) {
       for (const id of restartable) counters.delete(id);
       restartable.clear();
     }
   }
-  if (!found) return archive;
-  return zipSync({ ...unzipSync(archive), [main]: strToU8(new XMLSerializer().serializeToString(doc)) }, { level: 0 });
+  if (!found) return null;
+  return { [main]: strToU8(new XMLSerializer().serializeToString(doc)) };
 }
 
 const DOCX_NOTE_REFERENCE_RE =
@@ -1292,13 +1344,22 @@ export function markDocxNotes(archive: Uint8Array): {
   archive: Uint8Array;
   label: (text: string) => string;
 } {
+  const { rewritten, label } = markDocxNoteParts(archiveParts(archive));
+  if (!rewritten) return { archive, label };
+  const entries: Record<string, Uint8Array> = unzipSync(archive);
+  for (const [name, bytes] of Object.entries(rewritten)) entries[name] = bytes;
+  return { archive: zipSync(entries, { level: 0 }), label };
+}
+
+function markDocxNoteParts(select: DocxPartSelect): {
+  rewritten: Record<string, Uint8Array> | null;
+  label: (text: string) => string;
+} {
   const names = new Set<string>();
   const read = (name: string) =>
-    unzipSync(archive, {
-      filter: (entry) => {
-        names.add(entry.name);
-        return entry.name === name;
-      },
+    select((entry) => {
+      names.add(entry);
+      return entry === name;
     })[name];
   const targetsOf = (path: string) =>
     readDocxXmlTargets(
@@ -1348,7 +1409,7 @@ export function markDocxNotes(archive: Uint8Array): {
     }
   }
   if (!kinds.footnote.bodies.size && !kinds.endnote.bodies.size) {
-    return { archive, label: (text) => text };
+    return { rewritten: null, label: (text) => text };
   }
 
   const refs: { kind: keyof typeof kinds; id: string }[] = [];
@@ -1412,10 +1473,8 @@ export function markDocxNotes(archive: Uint8Array): {
     }
     return body + sections.join("\n\n");
   };
-  if (!refs.length) return { archive, label };
-  const entries = unzipSync(archive);
-  entries[main] = strToU8(markedXml);
-  return { archive: zipSync(entries, { level: 0 }), label };
+  if (!refs.length) return { rewritten: null, label };
+  return { rewritten: { [main]: strToU8(markedXml) }, label };
 }
 
 const XML_TOKEN_RE =
@@ -1772,17 +1831,41 @@ export async function extractOfficeAttachmentText(
 
 export async function extractDocxAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "DOCX");
-  const [{ mammoth, writeDocxSymbols }, buffer] = await Promise.all([
+  const [{ mammoth, writeDocxSymbolParts, writeDocxSymbols }, buffer] = await Promise.all([
     import("./docx-reader"),
     file.arrayBuffer(),
   ]);
-  const repacked = repackDocxAttachmentArchive(
-    file.name,
-    new Uint8Array(buffer),
-  );
-  const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES)));
+  const unpacked = unpackDocxEntries(file.name, new Uint8Array(buffer));
+  assertDocxPartSizes(file.name, unpacked);
+  let parts: Record<string, Uint8Array> | null = repackedDocxParts(unpacked.entries);
+  if (!parts) {
+    const repacked = zipSync(unpacked.entries, { level: 0 });
+    const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES)));
+    const { value } = await mammoth.extractRawText({
+      arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)))),
+    });
+    return marked.label(value);
+  }
+  // Each rewrite reads the parts the one before it left, as it would from the rezipped archive.
+  const select: DocxPartSelect = (keep) => {
+    const picked: Record<string, Uint8Array> = {};
+    for (const [name, bytes] of Object.entries(parts!)) {
+      if (keep(name, bytes.length)) picked[name] = bytes;
+    }
+    return picked;
+  };
+  const apply = (rewritten: Record<string, Uint8Array> | null) => {
+    if (rewritten) parts = { ...parts, ...rewritten };
+  };
+  apply(writeDocxSymbolParts(select, MAX_OPEN_DOCUMENT_XML_BYTES));
+  apply(linearizeDocxMathParts(select));
+  const marked = markDocxNoteParts(select);
+  apply(marked.rewritten);
+  apply(writeDocxListNumberParts(select));
+  apply(writeDocxBreakAndCheckboxParts(select));
+  apply(writeDocxTableRowParts(select));
   const { value } = await mammoth.extractRawText({
-    arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)))),
+    arrayBuffer: toArrayBuffer(zipSync(parts, { level: 0 })),
   });
   return marked.label(value);
 }
@@ -1922,6 +2005,9 @@ function collectHtmlBlockText(
   const tag = element.tagName.toLowerCase();
   if (tag === "br") {
     return "\n";
+  }
+  if (tag === "input" && /^(checkbox|radio)$/i.test(element.getAttribute("type") ?? "")) {
+    return element.hasAttribute("checked") ? " ☒ " : " ☐ ";
   }
 
   if (tag === "pre" && preformatted) {

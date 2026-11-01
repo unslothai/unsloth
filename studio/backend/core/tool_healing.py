@@ -269,6 +269,12 @@ def _balanced_json_span(text: str, start: int) -> int | None:
     return None
 
 
+# Unrolled loops with nothing after them never backtrack; possessive quantifiers need Python 3.11+.
+_BRACE_SKIP_RE = re.compile(r'[^"{}]*')
+_BRACE_SKIP_GEMMA_RE = re.compile(r'[^"{}<]*(?:<(?!\|"\|>)[^"{}<]*)*')
+_JSON_STRING_BODY_RE = re.compile(r'[^"\\]*(?:\\.[^"\\]*)*', re.DOTALL)
+
+
 def _balanced_brace_end(
     content: str,
     brace_start: int,
@@ -278,30 +284,32 @@ def _balanced_brace_end(
     """Index of the brace matching brace_start, or None; shared with core/inference/tool_call_parser.py."""
     if brace_start >= len(content) or content[brace_start] != "{":
         return None
+    n = len(content)
+    skip = _BRACE_SKIP_GEMMA_RE.match if gemma_quotes else _BRACE_SKIP_RE.match
+    string_body = _JSON_STRING_BODY_RE.match
     depth = 0
     i = brace_start
-    in_string = False
-    in_gemma_string = False
-    while i < len(content):
-        if gemma_quotes and not in_string and content.startswith(_GEMMA_QUOTE, i):
-            in_gemma_string = not in_gemma_string
-            i += len(_GEMMA_QUOTE)
-            continue
+    while i < n:
+        i = skip(content, i).end()
+        if i >= n:
+            return None
         ch = content[i]
-        if in_gemma_string:
+        if ch == "<":
+            close = content.find(_GEMMA_QUOTE, i + len(_GEMMA_QUOTE))
+            if close < 0:
+                return None
+            i = close + len(_GEMMA_QUOTE)
+            continue
+        if ch == '"':
+            i = string_body(content, i + 1).end()
+            # The body stops at the closing quote, at the end, or before a trailing lone backslash.
+            if i >= n or content[i] != '"':
+                return None
             i += 1
             continue
-        if in_string:
-            if ch == "\\" and i + 1 < len(content):
-                i += 2
-                continue
-            if ch == '"':
-                in_string = False
-        elif ch == '"':
-            in_string = True
-        elif ch == "{":
+        if ch == "{":
             depth += 1
-        elif ch == "}":
+        else:
             depth -= 1
             if depth == 0:
                 return i
@@ -392,7 +400,15 @@ def _iter_bracket_spans(
         ("name", _MISTRAL_BRACKET_RE),
         ("rehearsal", _REHEARSAL_RE),
     )
-    nexts = {kind: rx.search(text, start) for kind, rx in specs}
+    # Each regex needs its case-sensitive literal tag, so str.find gates it exactly.
+    has_calls_tag = text.find("[TOOL_CALLS]", start) >= 0
+    nexts = {
+        "array": _MISTRAL_ARRAY_RE.search(text, start) if has_calls_tag else None,
+        "name": _MISTRAL_BRACKET_RE.search(text, start) if has_calls_tag else None,
+        "rehearsal": (
+            _REHEARSAL_RE.search(text, start) if text.find("[ARGS]", start) >= 0 else None
+        ),
+    }
     if not any(nexts.values()):
         return
     last_brace_close = text.rfind("}")
@@ -672,6 +688,17 @@ def _trim_param_value(val: str) -> str:
     return val
 
 
+def _json_object_body(body: str) -> dict | None:
+    """Arguments of a Hermes/XML mix ``<function=NAME>{json}</function>``; a heal, so Auto-Heal only."""
+    if not body.lstrip().startswith("{"):
+        return None
+    try:
+        value = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
     """Unbalanced braces cover to EOF; a closeless balanced call covers only braces, so siblings survive."""
     n = len(content)
@@ -754,6 +781,79 @@ def marker_coverage(content: str) -> list[tuple[int, int]]:
     return _marker_coverage(content, _build_markers(content))
 
 
+def _is_strict_json(text: str) -> bool:
+    try:
+        json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return True
+
+
+def _glued_call_objects(content: str, pos: int, end: int):
+    """Call objects glued after a parsed one inside the same ``<tool_call>``, up to its paired close at
+    ``end``: ``[(start, name, arguments_json)]``, or None unless every object between is a strict
+    ``{"name": .., "arguments"|"parameters": {..}}`` and only whitespace separates them and the close.
+    Braces are matched outside JSON strings, so a ``}{`` or closing tag inside an argument never splits
+    a call; the window is this marker's own coverage, so the scan stays linear."""
+    close_m = _TC_END_TAG_RE.search(content, pos, end)
+    if close_m is None or close_m.end() != end:
+        return None
+    window = content[pos : close_m.start()]
+    out = []
+    i = 0
+    n = len(window)
+    while True:
+        while i < n and window[i] in " \t\r\n":
+            i += 1
+        if i >= n:
+            break
+        if window[i] != "{":
+            return None
+        obj_end = _balanced_brace_end(window, i)
+        if obj_end is None:
+            return None
+        try:
+            obj = json.loads(window[i : obj_end + 1])
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(obj, dict):
+            return None
+        g_name = obj.get("name")
+        g_args = obj.get("arguments") if "arguments" in obj else obj.get("parameters")
+        if not isinstance(g_name, str) or not g_name or not isinstance(g_args, dict):
+            return None
+        out.append((pos + i, g_name, json.dumps(g_args)))
+        i = obj_end + 1
+    return out or None
+
+
+def _relaxed_allowed_at(content: str, pos: int) -> bool:
+    from core.inference.relaxed_json import relaxed_allowed_at  # noqa: PLC0415 -- cycle at import time
+    return relaxed_allowed_at(content, pos)
+
+
+def _relaxed_object_end(content: str, start: int):
+    from core.inference.relaxed_json import relaxed_object_end  # noqa: PLC0415 -- cycle at import time
+    return relaxed_object_end(content, start)
+
+
+def _loads_wrapped_call(text: str, *, relaxed: bool = True) -> dict:
+    """A wrapped call's JSON object; near-JSON a model sampled (single quotes, a trailing comma, True/None,
+    unquoted keys) is read only after strict JSON fails and only when healing is on. Raises ValueError
+    when neither reads an object."""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        if not relaxed:
+            raise
+        from core.inference.relaxed_json import relaxed_json_object  # noqa: PLC0415 -- failure path only
+
+        obj = relaxed_json_object(text)
+        if obj is None:
+            raise
+        return obj
+
+
 def parse_tool_calls_from_text(
     content: str,
     *,
@@ -790,11 +890,25 @@ def parse_tool_calls_from_text(
     ]
     coverage = _marker_coverage(content, markers)
     covered_until = -1
+    relaxed = allow_incomplete
     for idx, (start, brace_end, kind, m) in enumerate(markers):
         covered_by_earlier_marker = start < covered_until
         covered_until = max(covered_until, coverage[idx][1])
         if covered_by_earlier_marker:
             continue
+        relaxed_end = None
+        if relaxed and kind == "json" and not _relaxed_allowed_at(content, m.end() - 1):
+            relaxed = False
+        if relaxed and kind == "json":
+            # JSON brace matching ends a single-quoted argument at a brace inside it; markers in that
+            # argument are data. An object that never closes this way leaves the rest strict.
+            relaxed_end = _relaxed_object_end(content, m.end() - 1)
+            if relaxed_end is None:
+                relaxed = False
+            elif relaxed_end != brace_end:
+                brace_end = relaxed_end
+            else:
+                relaxed_end = None
         if brace_end < 0:
             continue
         if not allow_incomplete:
@@ -804,7 +918,14 @@ def parse_tool_calls_from_text(
                 continue
         try:
             if kind == "json":
-                obj = json.loads(content[m.end() - 1 : brace_end + 1])
+                try:
+                    obj = _loads_wrapped_call(content[m.end() - 1 : brace_end + 1], relaxed = relaxed)
+                except ValueError:
+                    if relaxed_end is not None:
+                        relaxed = False
+                    raise
+                if relaxed_end is not None:
+                    covered_until = max(covered_until, relaxed_end + 1)
                 name = obj.get("name", "")
                 # Accept "parameters" (Llama-3.2) and "args" (TML Inkling) as aliases.
                 arguments = obj.get("arguments")
@@ -832,6 +953,22 @@ def parse_tool_calls_from_text(
         close_m = close_re.match(content, span_end + ws)
         if close_m:
             span_end = close_m.end()
+        glued = None
+        if (
+            allow_incomplete
+            and kind == "json"
+            and close_m is None
+            and name
+            and _is_strict_json(content[m.end() - 1 : brace_end + 1])
+        ):
+            glued = _glued_call_objects(content, span_end, coverage[idx][1])
+        if glued:
+            # Heal: several call objects glued inside one closed tag; the spans tile up to the close.
+            parsed_items.append((start, glued[0][0], name, arguments))
+            for g_idx, (g_start, g_name, g_args) in enumerate(glued):
+                g_end = glued[g_idx + 1][0] if g_idx + 1 < len(glued) else coverage[idx][1]
+                parsed_items.append((g_start, g_end, g_name, g_args))
+            continue
         parsed_items.append((start, span_end, name, arguments))
 
     func_starts = [
@@ -899,6 +1036,8 @@ def parse_tool_calls_from_text(
                 arguments[param_name] = _trim_param_value(val)
             if not valid_params:
                 continue
+        if allow_incomplete and not param_starts:
+            arguments = _json_object_body(body) or arguments
 
         span_start = fm.start()
         wrap_open = re.search(r"<tool_call>\s*$", content[:span_start])
@@ -1034,10 +1173,14 @@ def _tool_call_markup_spans(text: str) -> list[tuple[int, int]]:
 
 def _think_spans_outside_tool_markup(text: str) -> list[tuple[int, int]]:
     """A think tag opening inside a tool-call span is argument data, so it is not a reasoning block."""
-    think_spans = [m.span() for m in _THINK_TAG_RE.finditer(text)]
+    think_spans = (
+        [m.span() for m in _THINK_TAG_RE.finditer(text)]
+        if "<think>" in text or "[THINK]" in text
+        else []
+    )
     call_spans = _tool_call_markup_spans(text)
     # Prefilled reasoning: the template opens <think> in the prompt, so a leading span skips calls rehearsed there.
-    close = _THINK_CLOSE_RE.search(text)
+    close = _THINK_CLOSE_RE.search(text) if "</think>" in text or "[/THINK]" in text else None
     if close is not None:
         opener = _THINK_OPEN_RE.search(text)
         if (

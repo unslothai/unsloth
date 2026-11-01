@@ -1,31 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load a *pre-quantized* transformer instead of quantising a dense one on the GPU.
-
-The runtime transformer_quant path loads the dense bf16 transformer and ``quantize_``s it in place,
-materialising the full bf16 weights on the GPU first (~2x the GGUF peak, plus the full bf16
-download). When a transformer was already quantised and saved
-(``scripts/build_prequant_checkpoint.py``), this loads those weights directly: build the skeleton on
-``meta`` (``init_empty_weights`` + ``from_config``), ``load_state_dict(assign=True)`` the quantized
-state dict (subclass tensors assigned, not copied, so dense bf16 never touches the GPU), then move
-to device. Measured (B200, Z-Image fp8): GPU load peak 12.9 -> 6.3 GB, download 12 -> 6.28 GB,
-output bit-identical (LPIPS 0.0). The checkpoint carries the same scheme + ``min_features`` as the
-runtime path, so the result matches quantising on the fly.
-
-Two containers, one dict. Historically the artifact could only be a ``torch.save`` pickle, because
-torchao's weight subclasses are wrapper tensors and safetensors stores flat ones; that pickle is read
-under ``weights_only`` plus the constructor ALLOWLIST below, never as a free one, since it is a
-mutable remote file reached by loads that never asked for a scheme (auto resolves an unset precision
-to a hosted checkpoint) and "first-party repo" cannot stand in for that restriction. torchao >= 0.16
-can flatten those subclasses, so an artifact may now also be ``.safetensors`` (see
-``prequant_safetensors``), which needs no allowlist at all and answers the validation questions from
-its header. ``_load_prequant_checkpoint`` returns the same ``{"format", "state_dict", "metadata"}``
-for both, so every check in this module applies to them identically and the two cannot drift apart.
-
-Best-effort and lazily imported: a missing / mismatched / unreadable checkpoint returns None and the
-caller falls back to dense-quantise (then GGUF). Inert with nothing configured.
-"""
+"""Pre-quantized transformer load, lazily imported; pickles use weights_only plus allowlist; bad
+files return None so the caller falls back to dense quantise"""
 
 from __future__ import annotations
 
@@ -230,11 +207,12 @@ def _register_prequant_safe_globals() -> bool:
 def restricted_prequant_load_supported(
     scheme: Optional[str] = None, filename: Optional[str] = None
 ) -> bool:
-    """Per scheme (torchao retires int8 constructors before fp8); with a safetensors filename, answer for that file, which needs no allowlist."""
-    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_prequant_supported
+    """Per scheme (torchao retires int8 constructors before fp8); with a safetensors filename, answer for that file, which needs no allowlist
+    but does need a torchao that can rebuild the scheme's subclass (0.16 cannot rebuild nvfp4 / mxfp8)."""
+    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_scheme_supported
 
     if is_safetensors_checkpoint(filename):
-        return safetensors_prequant_supported()
+        return safetensors_scheme_supported(scheme)
     if not _register_prequant_safe_globals():
         return False
     key = (scheme or "").strip().lower()
@@ -283,8 +261,7 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
         ckpt = load_prequant_safetensors(path, mmap = bool(kwargs.get("mmap")))
     else:
         ckpt = _torch_load_prequant(path, **kwargs)
-    if not _int8_only(ckpt):
-        _install_fp8_unit_scale()
+    _install_fp8_unit_scale_for(ckpt)
     return ckpt
 
 
@@ -304,25 +281,38 @@ def _int8_only(ckpt: Any) -> bool:
         return False
 
 
-def _install_fp8_unit_scale() -> None:
+def _install_fp8_unit_scale(fast_accum: Optional[bool] = None) -> None:
     try:
         from .diffusion_fp8_unit_scale import install
-        install()
+        install(fast_accum = fast_accum)
     except Exception:  # noqa: BLE001 - never block a load on a speed path
         pass
+
+
+def _install_fp8_unit_scale_for(ckpt: Any) -> None:
+    """Skip int8 checkpoints and ones baked at fast accumulate (the builder's default)."""
+    meta = (ckpt.get("metadata") if isinstance(ckpt, dict) else None) or {}
+    if str(meta.get("scheme") or "").lower() == "int8" or _int8_only(ckpt):
+        return
+    fast_accum = meta.get("fast_accum")
+    _install_fp8_unit_scale(fast_accum = fast_accum if isinstance(fast_accum, bool) else None)
 
 
 # 0 reads a pickle checkpoint headed for an accelerator into host memory instead of mapping it.
 _PREQUANT_MMAP_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MMAP"
 
 
-def prequant_mmap_enabled(destination: Any) -> bool:
-    """Map only for a non-CPU destination: a host-placed module would keep the file open (Windows then cannot delete it)."""
+def prequant_mmap_enabled(destination: Any, *, host_copy_follows: bool = False) -> bool:
+    """Map only for a non-CPU destination: a host-placed module would keep the file open (Windows then cannot delete it).
+    ``host_copy_follows``: host-placed but copied off before first render, so Linux maps (avoids a 20 GB copy)."""
     import os
+    import sys
 
     raw = (os.environ.get(_PREQUANT_MMAP_ENV) or "").strip().lower()
     if raw in ("0", "false", "no", "off"):
         return False
+    if host_copy_follows and sys.platform.startswith("linux"):
+        return True
     dest = str(destination or "").strip().lower()
     return bool(dest) and not dest.startswith("cpu") and dest != "meta"
 
@@ -331,9 +321,11 @@ def _read_prequant_for(
     path: str,
     destination: Any,
     logger: Any = None,
+    *,
+    host_copy_follows: bool = False,
 ) -> Any:
     """``_load_prequant_checkpoint`` mapped when enabled; anything the mapping cannot open is re-read in full."""
-    if prequant_mmap_enabled(destination):
+    if prequant_mmap_enabled(destination, host_copy_follows = host_copy_follows):
         try:
             return _load_prequant_checkpoint(path, map_location = "cpu", mmap = True)
         except Exception as exc:  # noqa: BLE001 - retried unmapped; the real error resurfaces there
@@ -718,6 +710,29 @@ def prefer_cached_pickle_twins(
     return out
 
 
+# 0 stops requesting the ``<stem>.safetensors`` twin ahead of a family-declared ``<stem>.pt`` (the older chain).
+SAFETENSORS_TWINS_ENV = "UNSLOTH_PREQUANT_SAFETENSORS_TWINS"
+
+
+def with_declared_safetensors_twins(names: Sequence[str], declared: Sequence[str]) -> list:
+    """Put ``<stem>.safetensors`` right before each declared root ``<stem>.pt`` / ``.pth``; the .pt stays as 404 fallback."""
+    import os
+
+    out = [n for n in names if n]
+    if (os.environ.get(SAFETENSORS_TWINS_ENV) or "").strip().lower() in ("0", "false", "no", "off"):
+        return out
+    wanted = {n for n in declared if n}
+    ordered: list = []
+    for name in out:
+        if name in wanted and "/" not in name and name.lower().endswith(_PICKLE_SUFFIXES):
+            twin = name[: name.rfind(".")] + ".safetensors"
+            if twin not in ordered:
+                ordered.append(twin)
+        if name not in ordered:
+            ordered.append(name)
+    return ordered
+
+
 _LOCAL_FILES_ONLY = contextvars.ContextVar("unsloth_prequant_local_files_only", default = False)
 # The load's Hub token for probes lacking one in their signature (cache freshness of a gated base); outer token wins.
 _LOAD_HF_TOKEN: contextvars.ContextVar = contextvars.ContextVar(
@@ -930,10 +945,13 @@ def resolve_prequant_source(
         # fallback: another partition's denoiser would pass every check with the wrong weights.
         task_specific = preferred is not None and preferred != agnostic
         if task_specific:
+            # Only the same artifact's safetensors twin goes ahead of it: same partition, same weights.
+            names = with_declared_safetensors_twins((preferred,), (preferred,))
             return PrequantSource(
                 kind = "repo",
                 location = repo_id,
-                filename = preferred,
+                filename = names[0],
+                fallback_filenames = tuple(names[1:]),
                 declared_filenames = (preferred,),
             )
         # Declared name first, then derived chain (safetensors ahead); dedup in order. Declared names are default-repo files; variant repos derive their own.
@@ -971,6 +989,7 @@ def resolve_prequant_source(
         for name in declared + derived:
             if name and name not in names:
                 names.append(name)
+        names = with_declared_safetensors_twins(names, declared)
         if comfy_prequant_enabled() and _comfy_prequant_family(fam):
             names = with_comfy_twins(names, lead = scheme in COMFY_TWIN_LEADS)
         return PrequantSource(
@@ -2165,6 +2184,7 @@ def load_prequantized_transformer(
     placement_device: Optional[str] = None,
     family: Optional[str] = None,
     into: Optional[Any] = None,
+    host_copy_follows: bool = False,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
 
@@ -2271,7 +2291,9 @@ def load_prequantized_transformer(
                 logger = logger,
             )
             # ComfyUI files never pass through _load_prequant_checkpoint, which installs this for Studio's own.
-            _install_fp8_unit_scale()
+            from .diffusion_transformer_quant import _resolve_fast_accum
+
+            _install_fp8_unit_scale(fast_accum = _resolve_fast_accum(fast_accum))
             from .diffusion_convrot import declares_rotation, is_rotated_linear, warm_rotation_cache
 
             comfy_rotated = any(is_rotated_linear(m) for m in transformer.modules())
@@ -2283,7 +2305,9 @@ def load_prequantized_transformer(
         else:
             # Pickles load only under the ALLOWLIST, never free-running: a mutated file must fail,
             # not run.
-            ckpt = _read_prequant_for(path, placement_device or device, logger)
+            ckpt = _read_prequant_for(
+                path, placement_device or device, logger, host_copy_follows = host_copy_follows
+            )
             if not _validate_checkpoint(
                 ckpt,
                 scheme,
@@ -2330,6 +2354,7 @@ def load_prequantized_transformer(
                     transformer = transformer_cls.from_config(config)
                 if prepare_model is not None:
                     prepare_model(transformer, metadata)
+                _prepare_outlier_buffers(transformer, state_dict)
                 transformer.load_state_dict(state_dict, strict = True, assign = True)
             if into is None and _has_meta_tensors(transformer):
                 # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
@@ -2339,6 +2364,7 @@ def load_prequantized_transformer(
                 # mismatches.
                 if prepare_model is not None:
                     prepare_model(transformer, metadata)
+                _prepare_outlier_buffers(transformer, state_dict)
                 transformer.load_state_dict(state_dict, strict = True, assign = True)
 
             # Online half of the rotation, applied here so no route skips it: after load_state_dict (meta retry rebuilds), before small-M padding reparents Linears.
@@ -2388,7 +2414,34 @@ def load_prequantized_transformer(
             except Exception:  # noqa: BLE001
                 pass
         # Small-M padding, else quantised small-M linears raise in _int_mm. After load and .to().
-        from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
+        from .diffusion_transformer_quant import (
+            apply_small_m_padding,
+            apply_zero_row_guard,
+            quantize_runtime_leftovers,
+            quantize_streamed_weight_only,
+        )
+
+        # Must run before padding (it reparents Linears); a failure keeps the artifact, leftovers stay dense.
+        try:
+            quantize_runtime_leftovers(
+                transformer,
+                scheme,
+                metadata.get("family") or family,
+                metadata.get("exclude_name_tokens"),
+                min_features = int(metadata.get("min_features") or min_features or 512),
+                device = device,
+                logger = logger,
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, f"{scheme}:runtime leftovers", exc)
+        # Streamed scope only; a no-op on an artifact whose modulations are already weight-only. Never raises.
+        quantize_streamed_weight_only(
+            transformer,
+            scheme,
+            metadata.get("family") or family,
+            min_features = int(metadata.get("min_features") or min_features or 512),
+            logger = logger,
+        )
 
         apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
         apply_zero_row_guard(transformer, scheme, metadata.get("family"), logger = logger)
@@ -2943,6 +2996,20 @@ def _validate_checkpoint(
                 ),
             )
             return False
+    # Weight-only modulations are a streamed-build layout: refuse them where this runtime keeps them dense.
+    ckpt_weight_only = meta.get("weight_only_name_tokens")
+    if ckpt_weight_only:
+        from .diffusion_transformer_quant import streamed_weight_only_tokens_for_scheme
+        allowed = set(streamed_weight_only_tokens_for_scheme(scheme, meta.get("family")))
+        if not isinstance(ckpt_weight_only, (list, tuple)) or not set(ckpt_weight_only) <= allowed:
+            _warn(
+                logger,
+                scheme,
+                ValueError(
+                    f"checkpoint stores {ckpt_weight_only!r} weight-only; this load keeps them dense"
+                ),
+            )
+            return False
     # Verify recorded require_bf16 so a _REQUIRE_BF16_SCHEMES change can't load old-filter checkpoints.
     ckpt_require_bf16 = meta.get("require_bf16")
     if ckpt_require_bf16 is not None:
@@ -3267,6 +3334,11 @@ class PrequantIntoError(RuntimeError):
     """The module is neither dense nor fully loaded."""
 
 
+def _prepare_outlier_buffers(transformer: Any, state_dict: dict) -> int:
+    from .diffusion_int8_gemv import prepare_outlier_buffers
+    return prepare_outlier_buffers(transformer, state_dict)
+
+
 def _load_into_dense(transformer: Any, state_dict: dict, prepare_model: Optional[Any]) -> None:
     """ValueError leaves the module untouched; PrequantIntoError means it was partly assigned."""
     if prepare_model is not None:
@@ -3274,6 +3346,16 @@ def _load_into_dense(transformer: Any, state_dict: dict, prepare_model: Optional
             "prepare_model reshapes a fresh skeleton; it cannot run on an existing transformer"
         )
     own = transformer.state_dict()
+    from .diffusion_int8_gemv import OUTLIER_IDX, OUTLIER_WEIGHT
+
+    # A streamed weight-only artifact also stores each modulation's dense outlier columns; the skeleton gets them below.
+    outlier_keys = {
+        k
+        for k in state_dict
+        if k.endswith((f".{OUTLIER_WEIGHT}", f".{OUTLIER_IDX}")) and k not in own
+    }
+    for name in outlier_keys:
+        own[name] = state_dict[name]
     if set(own) != set(state_dict):
         missing = sorted(set(own) - set(state_dict))[:3]
         extra = sorted(set(state_dict) - set(own))[:3]
@@ -3288,6 +3370,8 @@ def _load_into_dense(transformer: Any, state_dict: dict, prepare_model: Optional
             )
     del own
     try:
+        if outlier_keys:
+            _prepare_outlier_buffers(transformer, state_dict)
         transformer.load_state_dict(state_dict, strict = True, assign = True)
     except Exception as exc:  # noqa: BLE001
         raise PrequantIntoError(f"{type(exc).__name__}: {exc}") from exc

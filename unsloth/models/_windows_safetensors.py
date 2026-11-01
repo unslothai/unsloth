@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Windows, transformers 5.0 - 5.16: read safetensors shards with ``pread`` instead of a copy-on-write mmap.
-
-transformers 5.x keeps every shard open for the whole load, and Windows charges each copy-on-write view to the commit
-limit in full, so a dtype-converting load needs ~2x the model in commit (os error 1455 / access violation). Backports
-huggingface/transformers#48341 (5.17). Opt out with ``UNSLOTH_SAFETENSORS_PREAD=0``.
-"""
+"""Windows, transformers 5.0-5.16: pread, not mmap (commit limit); UNSLOTH_SAFETENSORS_PREAD=0 off."""
 
 import functools
 import os

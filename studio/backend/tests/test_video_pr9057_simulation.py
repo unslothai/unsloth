@@ -371,7 +371,7 @@ def _routes_source() -> str:
     "needle",
     [
         "raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)",
-        "_video_clip = _local_video_clip(payload, model_info)",
+        "_video_clips = _local_video_clips(payload, model_info)",
         'if not getattr(llama_backend, "_has_video_input", False):',
         '"Video input is not supported together with guided decoding or client-supplied tools yet."',
         '"Cannot count tokens for messages containing video."',

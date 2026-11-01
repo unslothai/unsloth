@@ -2334,8 +2334,11 @@ def _clear_mps_cache() -> None:
     """Return torch's MPS reservations to the shared pool: Apple Silicon also runs torch MPS, whose caching allocator keeps freed buffers reserved, and those bytes read as used system memory, so the next load budgets against a pool that looks smaller than it is."""
     try:
         import torch
+
         empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
-        if callable(empty_cache):
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        # Without a usable Metal device (a macOS VM's paravirtual GPU) empty_cache segfaults rather than raising.
+        if callable(empty_cache) and mps_backend is not None and mps_backend.is_available():
             empty_cache()
     except Exception as e:
         logger.debug("Failed to clear MPS cache: %s", e)
@@ -2912,8 +2915,8 @@ def get_gpu_summary() -> Dict[str, Any]:
 
 
 def get_package_versions() -> Dict[str, Optional[str]]:
-    """Installed versions of unsloth / torch / transformers / cuda via importlib.metadata, no subprocess; missing packages yield None."""
-    packages = ("unsloth", "torch", "transformers")
+    """Installed versions of unsloth / torch / transformers / mlx and torch's GPU runtimes, no subprocess; missing packages yield None."""
+    packages = ("unsloth", "torch", "transformers", "mlx")
     versions: Dict[str, Optional[str]] = {}
 
     for name in packages:
@@ -6587,7 +6590,9 @@ def auto_select_gpu_ids(
     gradient_checkpointing: str = "unsloth",
     optimizer: str = "adamw_8bit",
     required_override_gb: Optional[float] = None,
+    max_gpus: Optional[int] = None,
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
+    """``max_gpus`` caps how many cards may be pooled; past it the result is ``fallback_all``."""
     metadata: Dict[str, Any] = {"selection_mode": "auto"}
 
     # Auto-selection needs per-device free-VRAM telemetry, available on CUDA (nvidia-smi) and XPU (torch.xpu) but not MLX/CPU, which inherit parent visibility.
@@ -6726,7 +6731,7 @@ def auto_select_gpu_ids(
             if discrete is not None:
                 ranked = [discrete] + [c for c in ranked if c is not discrete]
 
-    for candidate in ranked:
+    for candidate in ranked[:max_gpus]:
         selected.append(candidate["index"])
         if len(selected) == 1:
             usable_gb = candidate["free_gb"]
@@ -6766,13 +6771,14 @@ def auto_select_gpu_ids(
     metadata["selection_mode"] = "fallback_all"
     if ranked:
         fallback_usable = ranked[0]["free_gb"] + sum(
-            c["free_gb"] * multi_gpu_overhead for c in ranked[1:]
+            c["free_gb"] * multi_gpu_overhead for c in ranked[1:max_gpus]
         )
     else:
         fallback_usable = 0.0
     metadata["usable_gb"] = round(fallback_usable, 3)
     metadata["selected_gpu_ids"] = fallback_all
-    logger.warning(
+    # A capped caller weighs these cards itself.
+    (logger.warning if max_gpus is None else logger.debug)(
         "Falling back to all visible GPUs; model may not fit: model=%s "
         "selected=%s usable_gb=%s required_gb=%s multi_gpu_overhead=%s",
         model_name,
@@ -6798,6 +6804,7 @@ def prepare_gpu_selection(
     gradient_checkpointing: str = "unsloth",
     optimizer: str = "adamw_8bit",
     required_override_gb: Optional[float] = None,
+    max_gpus: Optional[int] = None,
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
     """Resolve which physical GPUs to use for a model load. Explicit (gpu_ids=[5, 6, 7]) uses exactly those, sharded via device_map="balanced" even if fewer would do, validated against the parent-visible set; auto (None or []) lets auto_select_gpu_ids estimate VRAM and pick the minimum, preferring the most free memory. The result is passed to get_device_map() and to apply_gpu_ids() in the worker, which narrows CUDA_VISIBLE_DEVICES before torch init."""
     if gpu_ids and get_device() not in (DeviceType.CUDA, DeviceType.XPU):
@@ -6827,6 +6834,7 @@ def prepare_gpu_selection(
         gradient_checkpointing = gradient_checkpointing,
         optimizer = optimizer,
         required_override_gb = required_override_gb,
+        max_gpus = max_gpus,
     )
     return selected_gpu_ids, metadata
 
@@ -6996,34 +7004,114 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
     }
     try:
         for row in LlamaCppBackend.vulkan_device_inventory():
-            ordinal = row["index"]
-            shared_memory = bool(row["is_igpu"])
-            free_mib = _apply_igpu_host_reserve_mib(row["free_mib"], shared_memory)
-            total_mib = 0 if shared_memory else row["total_mib"]
-            budget_mib = total_mib or free_mib
-            used_mib = max(0, total_mib - free_mib) if total_mib else None
-            result["devices"].append(
-                {
-                    "index": ordinal,
-                    # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins, so unlike a torch-xpu relative ordinal these are selectable.
-                    "index_kind": "vulkan",
-                    "visible_ordinal": ordinal,
-                    "name": row["name"],
-                    "memory_total_gb": round(budget_mib / 1024, 2),
-                    "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
-                    "vram_free_gb": round(free_mib / 1024, 2),
-                    "vram_utilization_pct": round((used_mib / total_mib) * 100, 1)
-                    if used_mib is not None and total_mib > 0
-                    else None,
-                    "shared_memory": shared_memory,
-                }
-            )
+            result["devices"].append(_vulkan_inference_device(row, _apply_igpu_host_reserve_mib))
     except Exception as e:
         logger.debug("Vulkan GPU visibility query failed: %s", e)
         return result
 
     result["available"] = bool(result["devices"])
     return result
+
+
+def _vulkan_inference_device(row: Dict[str, Any], apply_igpu_host_reserve_mib) -> Dict[str, Any]:
+    ordinal = row["index"]
+    shared_memory = bool(row["is_igpu"])
+    free_mib = apply_igpu_host_reserve_mib(row["free_mib"], shared_memory)
+    total_mib = 0 if shared_memory else row["total_mib"]
+    budget_mib = total_mib or free_mib
+    used_mib = max(0, total_mib - free_mib) if total_mib else None
+    return {
+        "index": ordinal,
+        # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins, so unlike a torch-xpu relative ordinal these are selectable.
+        "index_kind": "vulkan",
+        "visible_ordinal": ordinal,
+        "name": row["name"],
+        "memory_total_gb": round(budget_mib / 1024, 2),
+        "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
+        "vram_free_gb": round(free_mib / 1024, 2),
+        "vram_utilization_pct": round((used_mib / total_mib) * 100, 1)
+        if used_mib is not None and total_mib > 0
+        else None,
+        "shared_memory": shared_memory,
+    }
+
+
+def get_mixed_vulkan_inference_gpu_info(
+    cuda_info: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """``cuda_info`` plus the Vulkan devices a llama.cpp build shipping both CUDA and Vulkan also
+    runs on (an AMD card beside NVIDIA ones), or None when it has none. llama.cpp skips a Vulkan
+    device whose PCI id a CUDA one already holds; a probe without ids falls back to the name.
+    Without a CUDA torch, ``cuda_info`` is not CUDA's and the nvidia-smi rows stand in for it."""
+    try:
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _apply_igpu_host_reserve_mib,
+        )
+
+        if not {"cuda", "vulkan"} <= LlamaCppBackend._installed_ggml_backends():
+            return None
+        if not cuda_info or cuda_info.get("backend") != "cuda":
+            if _backend_label(get_device()) == "cuda":
+                return None
+            devices = _nvidia_inference_devices()
+            # Capacity-less procfs rows read as 0 GB, as in get_cross_vendor_inference_gpu_info.
+            if not devices or not all((d["memory_total_gb"] or 0) > 0 for d in devices):
+                return None
+            # SMI row numbers, not the ordinals a pin is applied in.
+            cuda_info = {
+                "available": True,
+                "backend": "cuda",
+                "backend_cuda_visible_devices": None,
+                "parent_visible_gpu_ids": [],
+                "devices": devices,
+                "gguf_gpu_ids_supported": False,
+            }
+        if not cuda_info.get("devices"):
+            return None
+        rows = LlamaCppBackend.vulkan_device_inventory()
+    except Exception as e:
+        logger.debug("Could not inspect the llama.cpp Vulkan devices beside CUDA: %s", e)
+        return None
+    if not rows:
+        return None
+
+    from . import nvidia
+
+    cuda_devices = cuda_info["devices"]
+    bus_ids = nvidia.get_pci_bus_ids() if any(row.get("pci_id") for row in rows) else {}
+    cuda_bus_ids = {
+        bus_ids[d["index"]]
+        for d in cuda_devices
+        if d.get("index_kind") == "physical" and d.get("index") in bus_ids
+    }
+    # By id only when every CUDA row has one, else a card nvidia-smi missed would count twice.
+    by_id = bool(cuda_bus_ids) and len(cuda_bus_ids) == len(cuda_devices)
+    cuda_names = [d.get("name") for d in cuda_devices]
+    extra = []
+    for row in rows:
+        # llama.cpp adds an integrated GPU only when no discrete one was found, and CUDA's are.
+        if row["is_igpu"]:
+            continue
+        key = nvidia._normalize_bus_id(row.get("pci_id") or "")
+        if by_id and key is not None:
+            covered = key in cuda_bus_ids
+        else:
+            covered = row["name"] in cuda_names
+            if covered:
+                cuda_names.remove(row["name"])
+        if not covered:
+            extra.append(_vulkan_inference_device(row, _apply_igpu_host_reserve_mib))
+    if not extra:
+        return None
+    return {
+        **cuda_info,
+        "backend": "cuda+vulkan",
+        "devices": [*cuda_devices, *extra],
+        "index_kind": "mixed",
+        # A host aggregate counted on the CUDA cards does not describe the Vulkan ones.
+        "vram_used_gb_aggregate": None,
+    }
 
 
 def _installed_llama_backend() -> Optional[str]:
@@ -7779,6 +7867,14 @@ def dataset_map_num_proc(
                 logger.debug("torch.xpu.is_initialized() probe failed: %s", e)
 
     return _bounded_by_the_shared_policy(desired, serial_as_none)
+
+
+def light_map_num_proc(dataset, desired: Optional[int] = None) -> Optional[int]:
+    """num_proc for a cheap row map: in process for an in-memory Dataset, since a pool pickles every shard both ways (20k Alpaca rows: 0.13 s here vs 1.3 s over 8 workers). An explicit count, the env hatch or cache files keep the pool."""
+    asked = type(desired) is int
+    if not asked and not getattr(dataset, "cache_files", None) and not _num_proc_override_is_set():
+        return None
+    return dataset_map_num_proc(desired if asked else None)
 
 
 # sys.modules key for the copy loaded off disk below. Not "unsloth.dataset_num_proc": that name belongs to the package, and claiming it would make a later real import of unsloth return this module instead.

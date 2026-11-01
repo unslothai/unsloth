@@ -125,7 +125,7 @@ def test_an_instance_forward_swap_keys_apart():
 def test_graph_switches_key_apart_only_off_their_default(monkeypatch, name, default, quant):
     m = _int8() if quant else _model()
     k0 = _key(m, quant)
-    rows = default.partition(":")[2] if default.startswith("rows:") else None
+    rows = default.partition(":")[2] if default.startswith(("rows:", "count:")) else None
     for same in (
         ("",)
         + (() if default == "raw" else ("auto",))
@@ -134,7 +134,10 @@ def test_graph_switches_key_apart_only_off_their_default(monkeypatch, name, defa
     ):
         monkeypatch.setenv(name, same)
         assert _key(m, quant) == k0, same
-    if rows:
+    if default.startswith("count:"):
+        # 0 is a real value here (no dense channels), not an off word.
+        flipped = "0"
+    elif rows:
         flipped = "1"
     else:
         flipped = {"on": "0", "off": "1", "auto": "0", "raw": "torchao", "raw:auto": "torchao"}[
