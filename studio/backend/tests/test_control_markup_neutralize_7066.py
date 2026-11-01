@@ -4470,11 +4470,11 @@ def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
     assert packed.count(gate + ",") + packed.count(gate + ")") == 1
     for call in (
         "StreamToolCallHealer(_sf_heal, _sf_healing_tools)",
-        "heal_openai_message(_msg, _sf_heal, _sf_healing_tools)",
+        "heal_openai_message(_msg, _sf_heal, _sf_healing_tools,",
         "nudge_should_retry(_data, _sf_heal, _sf_healing_tools)",
-        "heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools)",
+        "heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools,",
     ):
-        assert call in source, call
+        assert call in packed, call
 
 
 def test_a_dropped_tool_with_a_clean_name_is_not_promotable():

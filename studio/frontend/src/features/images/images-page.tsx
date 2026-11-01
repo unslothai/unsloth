@@ -429,6 +429,7 @@ import {
   engineRequestField,
   engineSelectVisible,
   loadedEngineChoice,
+  loraUnavailableNote,
   nativeLoadAdvanced,
   nativeReloadTarget,
   offersCompiledLoraReload,
@@ -2154,6 +2155,7 @@ export function ImagesPage({
   // Refresh the LoRA picker when the loaded family changes, since a LoRA is family-specific.
   // Not on first load or unload (a restore can precede the load), so track it in a ref.
   const loraCapable = Boolean(!external && status?.loaded && status?.supports_lora);
+  const loraOffNote = external ? null : loraUnavailableNote(status);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   const bakedLorasOnLoad = useRef(false);
   useEffect(() => {
@@ -5883,12 +5885,12 @@ export function ImagesPage({
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
-      className="diffusion-surface @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+      className="diffusion-surface media-header-layout @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
     >
       <MediaRailResizeHandle kind="images" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(var(--media-header-min-width),1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden pr-3 @[50rem]:border-r @[50rem]:border-border/60",
@@ -6002,7 +6004,7 @@ export function ImagesPage({
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="images-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-var(--media-header-min-width)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
           <div
             ref={attachSettingsScroll}
@@ -6576,7 +6578,7 @@ export function ImagesPage({
             )}
             {!external && !loraCapable && offersNativeLoraReload(status) && (
               <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                <span>LoRAs need the native engine for this GGUF; diffusers runs it without them.</span>
+                <span>LoRAs are off on this load; the native engine applies them to this GGUF.</span>
                 <Button size="sm" variant="secondary" className="shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
                   Reload with native engine
                 </Button>
@@ -6591,6 +6593,9 @@ export function ImagesPage({
                   </Button>
                 )}
               </div>
+            )}
+            {loraOffNote && (
+              <div className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">{loraOffNote}</div>
             )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
