@@ -9,7 +9,6 @@ import {
   COLOR_THEMES,
   COLOR_THEME_IDS,
   FLAVOR_THEME_IDS,
-  HALLOWEEN_THEME_IDS,
   isColorThemeId,
 } from "../src/features/settings/lib/color-themes.ts";
 
@@ -19,7 +18,6 @@ const read = (path: string) =>
 const indexCss = read("../src/index.css");
 const themeBoot = read("../public/theme-boot.js");
 const backendSettings = read("../../backend/routes/settings.py");
-const SEEDED_THEME_IDS = [...FLAVOR_THEME_IDS, ...HALLOWEEN_THEME_IDS];
 
 test("every non-standard theme is applied by the boot script", () => {
   for (const id of COLOR_THEME_IDS) {
@@ -35,8 +33,8 @@ test("the backend accepts every theme id", () => {
   assert.deepEqual([...accepted].sort(), [...COLOR_THEME_IDS].sort());
 });
 
-test("every flavor and Halloween theme has light and dark seed blocks", () => {
-  for (const id of SEEDED_THEME_IDS) {
+test("every flavor theme has light and dark seed blocks", () => {
+  for (const id of FLAVOR_THEME_IDS) {
     assert.ok(
       indexCss.includes(`:root[data-palette="${id}"]:not(.dark) {`),
       `${id} light`,
@@ -66,6 +64,15 @@ test("isColorThemeId rejects unknown values", () => {
   assert.equal(isColorThemeId(null), false);
 });
 
+test("Trick or Treat is a year-round theme; retired Halloween ids fall back", () => {
+  assert.ok((FLAVOR_THEME_IDS as readonly string[]).includes("trick-or-treat"));
+  assert.equal(COLOR_THEMES["trick-or-treat"].light.accent, "#8f5c00");
+  assert.equal(COLOR_THEMES["trick-or-treat"].dark.accent, "#ffc400");
+  for (const id of ["pumpkin", "gothic", "black-cat", "candycorn"]) {
+    assert.equal(isColorThemeId(id), false, id);
+  }
+});
+
 function luminance(hex: string): number {
   const channel = (i: number) => {
     const c = Number.parseInt(hex.slice(i, i + 2), 16) / 255;
@@ -93,8 +100,8 @@ function mix(hex: string, target: string, amount: number): string {
   return `#${channel(1)}${channel(3)}${channel(5)}`;
 }
 
-test("flavor and Halloween accents used as text meet the accent-text floor", () => {
-  for (const id of SEEDED_THEME_IDS) {
+test("flavor accents used as text meet the accent-text floor", () => {
+  for (const id of FLAVOR_THEME_IDS) {
     for (const [mode, selector] of [
       ["light", `:root[data-palette="${id}"]:not(.dark) {`],
       ["dark", `:root[data-palette="${id}"].dark {`],

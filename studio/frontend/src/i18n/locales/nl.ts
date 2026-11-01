@@ -832,38 +832,6 @@ export const nl = {
     compactUnsupported:
       "Comprimeren vereist een GGUF- of MLX-model met toolondersteuning",
   },
-  halloween: {
-    navLabel: "Snoep of je leven…",
-    title: "Snoep of je leven?!",
-    description:
-      "We hebben een paar griezels voor Unsloth gebrouwen, hier voor de rest van oktober.",
-    chooseTheme: "Kies een griezelig thema",
-    spookyGreetings: "Spookachtige begroetingen",
-    spookyGreetingsDescription:
-      "De luiaard begroet nieuwe chats met een schrikmoment.",
-    decorations: "Spinnen en vleermuizen",
-    decorationsDescription:
-      "Spinnenwebben, plus af en toe een spin of vleermuis.",
-    surprise: "Snoep of je leven!",
-    surpriseDescription: "Laat de luiaard een thema voor je kiezen.",
-    themesTitle: "Griezelige thema's",
-    back: "Terug",
-    footer: "Unsloth wordt op 1 november om middernacht weer normaal.",
-    removeNow: "Nu verwijderen",
-    hideFromSidebar: "Verbergen in zijbalk",
-    greeting: {
-      pumpkins: "De pompoenen zijn uitgehold. Wat nu?",
-      brewing: "Laten we gaan brouwen",
-      trickOrTreat: "Snoep of je leven?",
-      manor: "Welkom in het landhuis",
-      manorName: "Welkom in het landhuis, {name}",
-      happyHalloween: "Fijne Halloween",
-      happyHalloweenName: "Fijne Halloween, {name}",
-      spirits: "De geesten luisteren mee…",
-      mysteries: "Welke mysteries gaan we vannacht ontrafelen?",
-      conjure: "Wat kan ik voor je tevoorschijn toveren?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Fijn je te zien",
     goodToSeeYouName: "Fijn je te zien, {name}",
@@ -2569,12 +2537,6 @@ export const nl = {
         classic: "Klassiek",
         minimal: "Minimaal",
         moreThemes: "Meer thema's",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Snoep of je leven",
-        description:
-          "Halloweenthema's en griezelige begroetingen, tot 1 november.",
       },
       code: {
         title: "Code",

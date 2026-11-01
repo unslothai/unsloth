@@ -821,38 +821,6 @@ export const id = {
     compactUnsupported:
       "Pemadatan memerlukan model GGUF atau MLX yang mendukung alat",
   },
-  halloween: {
-    navLabel: "Trick or treat…",
-    title: "Trick or Treat?!",
-    description:
-      "Kami menyiapkan beberapa kejutan seram untuk Unsloth, tersedia hingga akhir Oktober.",
-    chooseTheme: "Pilih tema seram",
-    spookyGreetings: "Sapaan seram",
-    spookyGreetingsDescription:
-      "Si sloth menyapa chat baru dengan kejutan seram.",
-    decorations: "Laba-laba dan kelelawar",
-    decorationsDescription:
-      "Sarang laba-laba, ditambah sesekali laba-laba atau kelelawar.",
-    surprise: "Trick or treat!",
-    surpriseDescription: "Biarkan si sloth memilihkan tema untuk Anda.",
-    themesTitle: "Tema seram",
-    back: "Kembali",
-    footer: "Unsloth kembali normal pada tengah malam 1 November.",
-    removeNow: "Hapus sekarang",
-    hideFromSidebar: "Sembunyikan dari bilah sisi",
-    greeting: {
-      pumpkins: "Labu sudah diukir. Apa selanjutnya?",
-      brewing: "Mari mulai meramu",
-      trickOrTreat: "Trick or treat?",
-      manor: "Selamat datang di rumah tua",
-      manorName: "Selamat datang di rumah tua, {name}",
-      happyHalloween: "Selamat Halloween",
-      happyHalloweenName: "Selamat Halloween, {name}",
-      spirits: "Para arwah sedang mendengarkan…",
-      mysteries: "Misteri apa yang akan kita ungkap malam ini?",
-      conjure: "Apa yang bisa saya sihirkan untuk Anda?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Senang bertemu Anda",
     goodToSeeYouName: "Senang bertemu Anda, {name}",
@@ -2532,11 +2500,6 @@ export const id = {
         classic: "Klasik",
         minimal: "Minimal",
         moreThemes: "Tema lainnya",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Trick or treat",
-        description: "Tema Halloween dan sapaan seram, hingga 1 November.",
       },
       code: {
         title: "Kode",

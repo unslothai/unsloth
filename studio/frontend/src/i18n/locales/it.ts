@@ -2231,12 +2231,6 @@ export const it = {
         classic: "Classica",
         minimal: "Minimale",
         moreThemes: "Altri temi",
-        halloween: "Halloween",
-      },
-      trickOrTreat: {
-        label: "Dolcetto o scherzetto",
-        description:
-          "Temi di Halloween e saluti spaventosi, fino al 1° novembre.",
       },
       code: {
         title: "Codice",
@@ -3559,38 +3553,6 @@ export const it = {
     compactQueued: "Compattazione richiesta per il prossimo messaggio",
     compactEmpty: "Ancora niente da compattare",
     compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
-  },
-  halloween: {
-    navLabel: "Dolcetto o scherzetto…",
-    title: "Dolcetto o scherzetto?!",
-    description:
-      "Abbiamo preparato qualche spavento per Unsloth, fino alla fine di ottobre.",
-    chooseTheme: "Scegli un tema da brivido",
-    spookyGreetings: "Saluti da brivido",
-    spookyGreetingsDescription:
-      "Il bradipo accoglie le nuove chat con uno spavento.",
-    decorations: "Ragni e pipistrelli",
-    decorationsDescription:
-      "Ragnatele negli angoli e ogni tanto un ragno o un pipistrello con un tema di Halloween.",
-    surprise: "Dolcetto o scherzetto!",
-    surpriseDescription: "Lascia che il bradipo scelga un tema per te.",
-    themesTitle: "Temi da brivido",
-    back: "Indietro",
-    footer: "Unsloth torna alla normalità alla mezzanotte del 1° novembre.",
-    removeNow: "Rimuovi ora",
-    hideFromSidebar: "Nascondi dalla barra laterale",
-    greeting: {
-      pumpkins: "Le zucche sono intagliate. E adesso?",
-      brewing: "Prepariamo la pozione",
-      trickOrTreat: "Dolcetto o scherzetto?",
-      manor: "Ti diamo il benvenuto nel maniero",
-      manorName: "Ti diamo il benvenuto nel maniero, {name}",
-      happyHalloween: "Buon Halloween",
-      happyHalloweenName: "Buon Halloween, {name}",
-      spirits: "Gli spiriti ci ascoltano…",
-      mysteries: "Quali misteri sveleremo stanotte?",
-      conjure: "Cosa posso evocare per te?",
-    },
   },
   welcome: {
     goodToSeeYou: "Che piacere vederti",

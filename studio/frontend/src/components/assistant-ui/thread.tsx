@@ -387,8 +387,6 @@ import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
-import { useSpookyGreetings } from "@/features/halloween/halloween-store";
-import { buildSpookyWelcome } from "@/features/halloween/spooky-greetings";
 import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
@@ -2698,12 +2696,7 @@ const pickRandom = <T,>(arr: T[]): T =>
 // same mascot. Greeting varies by local time; name-bearing lines drop the
 // name when none is set. Text is a message key, translated at render so a
 // language switch updates the open greeting.
-type Welcome = {
-  key: TranslationKey;
-  name?: string;
-  sloth: string;
-  enlarge?: boolean;
-};
+type Welcome = { key: TranslationKey; name?: string; sloth: string };
 const DEFAULT_WELCOME: Welcome = {
   key: "welcome.onYourMind",
   sloth: "sloth magnify final.png",
@@ -2758,7 +2751,6 @@ const ThreadWelcome: FC<{
   const composerAtBottom = useChatPreferencesStore(
     (s) => s.newChatComposerAtBottom,
   );
-  const spooky = useSpookyGreetings();
   useMarkChatWelcome();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
@@ -2766,12 +2758,8 @@ const ThreadWelcome: FC<{
   useEffect(() => {
     const raw = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
     const name = raw.length > 20 ? `${raw.slice(0, 20)}…` : raw;
-    setWelcome(
-      spooky
-        ? buildSpookyWelcome(name)
-        : buildWelcome(new Date().getHours(), name),
-    );
-  }, [displayName, nickname, spooky]);
+    setWelcome(buildWelcome(new Date().getHours(), name));
+  }, [displayName, nickname]);
 
   const currentEmojiSrc = `Sloth emojis/${welcome.sloth}`;
 
@@ -2799,10 +2787,7 @@ const ThreadWelcome: FC<{
               {!incognito && (
                 <MascotImg
                   src={currentEmojiSrc}
-                  className={cn(
-                    "unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]",
-                    welcome.enlarge && "scale-[1.15]",
-                  )}
+                  className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
                 />
               )}
               <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">

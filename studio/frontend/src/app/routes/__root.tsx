@@ -7,7 +7,6 @@ import { useAppShellReadySignal } from "@/components/app-readiness";
 import { LazyImportFailure } from "@/components/lazy-import-boundary";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
-import { SpookyDecorations } from "@/features/halloween/spooky-decorations";
 import { Navbar } from "@/components/navbar";
 import { SidebarEdgeTrigger } from "@/components/sidebar-edge-trigger";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -710,7 +709,6 @@ function RootLayout() {
       <StopRunningChatsDialog />
       <ImageViewer />
       {!hideNavbar && <CommandPalette />}
-      {!hideNavbar && <SpookyDecorations />}
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>

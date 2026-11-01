@@ -828,36 +828,6 @@ export const uk = {
     compactUnsupported:
       "Для стиснення потрібна модель GGUF або MLX з підтримкою інструментів",
   },
-  halloween: {
-    navLabel: "Солодощі або капость…",
-    title: "Солодощі або капость?!",
-    description:
-      "Ми наварили для Unsloth трохи страхіть — вони будуть тут до кінця жовтня.",
-    chooseTheme: "Виберіть моторошну тему",
-    spookyGreetings: "Моторошні привітання",
-    spookyGreetingsDescription: "Лінивець вітає нові чати переляком.",
-    decorations: "Павуки й кажани",
-    decorationsDescription: "Павутиння, а подекуди павук чи кажан.",
-    surprise: "Солодощі або капость!",
-    surpriseDescription: "Нехай лінивець вибере тему за вас.",
-    themesTitle: "Моторошні теми",
-    back: "Назад",
-    footer: "Unsloth повернеться до звичайного вигляду опівночі 1 листопада.",
-    removeNow: "Вилучити зараз",
-    hideFromSidebar: "Приховати з бічної панелі",
-    greeting: {
-      pumpkins: "Гарбузи вирізано. Що далі?",
-      brewing: "Час варити зілля",
-      trickOrTreat: "Солодощі або капость?",
-      manor: "Ласкаво просимо до маєтку",
-      manorName: "Ласкаво просимо до маєтку, {name}",
-      happyHalloween: "Щасливого Гелловіну",
-      happyHalloweenName: "Щасливого Гелловіну, {name}",
-      spirits: "Духи слухають…",
-      mysteries: "Які таємниці розкриємо сьогодні вночі?",
-      conjure: "Що мені для вас начаклувати?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Радий вас бачити",
     goodToSeeYouName: "Радий вас бачити, {name}",
@@ -2554,12 +2524,6 @@ export const uk = {
         classic: "Класична",
         minimal: "Мінімалістична",
         moreThemes: "Інші теми",
-        halloween: "Гелловін",
-      },
-      trickOrTreat: {
-        label: "Солодощі або капость",
-        description:
-          "Теми до Гелловіну та моторошні привітання до 1 листопада.",
       },
       code: {
         title: "Код",

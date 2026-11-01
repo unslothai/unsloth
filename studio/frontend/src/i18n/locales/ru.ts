@@ -724,37 +724,6 @@ export const ru = {
     compactEmpty: "Пока нечего сжимать",
     compactUnsupported: "Для сжатия нужна модель GGUF или MLX с поддержкой инструментов",
   },
-  halloween: {
-    navLabel: "Сладость или гадость…",
-    title: "Сладость или гадость?!",
-    description:
-      "Мы приготовили для Unsloth немного страшилок до конца октября.",
-    chooseTheme: "Выберите жуткую тему",
-    spookyGreetings: "Жуткие приветствия",
-    spookyGreetingsDescription: "Ленивец встречает новые чаты страшилкой.",
-    decorations: "Пауки и летучие мыши",
-    decorationsDescription:
-      "Паутина по углам, а иногда паук или летучая мышь с темой Хэллоуина.",
-    surprise: "Сладость или гадость!",
-    surpriseDescription: "Пусть ленивец выберет тему за вас.",
-    themesTitle: "Жуткие темы",
-    back: "Назад",
-    footer: "Unsloth вернётся к обычному виду в полночь 1 ноября.",
-    removeNow: "Убрать сейчас",
-    hideFromSidebar: "Скрыть с боковой панели",
-    greeting: {
-      pumpkins: "Тыквы вырезаны. Что дальше?",
-      brewing: "Пора варить зелье",
-      trickOrTreat: "Сладость или гадость?",
-      manor: "Добро пожаловать в особняк",
-      manorName: "Добро пожаловать в особняк, {name}",
-      happyHalloween: "С Хэллоуином",
-      happyHalloweenName: "С Хэллоуином, {name}",
-      spirits: "Духи слушают…",
-      mysteries: "Какие тайны мы раскроем этой ночью?",
-      conjure: "Что мне наколдовать для вас?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Рады вас видеть",
     goodToSeeYouName: "Рады вас видеть, {name}",
@@ -2343,12 +2312,6 @@ export const ru = {
         classic: "Классическая",
         minimal: "Минималистичная",
         moreThemes: "Другие темы",
-        halloween: "Хеллоуин",
-      },
-      trickOrTreat: {
-        label: "Сладость или гадость",
-        description:
-          "Темы Хэллоуина и жуткие приветствия до 1 ноября.",
       },
       code: {
         title: "Код",
