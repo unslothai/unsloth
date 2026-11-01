@@ -333,7 +333,8 @@ def _mlx_choice(
 def _native_target(checkpoint: Checkpoint) -> Checkpoint | None:
     """The llama.cpp form of an entry: ggml-org's GGUF for a stock Clef, a current export for a folder, a GGUF entry itself."""
     if checkpoint.layout == GGUF:
-        return checkpoint
+        # An MLX-only entry has no GGUF.
+        return None if _is_mlx(checkpoint) else checkpoint
     if checkpoint.layout != "clef" or _is_native(checkpoint):
         return None
     if checkpoint.is_local:

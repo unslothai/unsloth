@@ -1165,7 +1165,7 @@ def test_clef_serves_on_nvidia_and_amd_gpus(home, client, clef, monkeypatch, kin
     assert all(
         m["available"] and m["unavailable_reason"] is None
         for m in models
-        if not m["llama_cpp_only"] and m["name"] != "clef-omni"
+        if not m["llama_cpp_only"] and m["name"] not in ("clef-omni", "decider-2b")
     )
 
 
@@ -1653,6 +1653,19 @@ def test_a_clef_with_its_audio_tower_hears_through_the_mlx_engine(
     asked, connection = {"q": systemone.QuestionIn(type = "noul")}, catalog.Connection("p", "m")
     with pytest.raises(systemone.HTTPException, match = "Audio is not forwarded"):
         asyncio.run(systemone._decide(connection, "s", asked, None, [clip]))
+
+
+def test_decider_is_served_only_by_the_mlx_engine(home, client, engine):
+    entry = catalog.CHECKPOINTS["decider-2b"]
+    assert laya_runtime._mlx_family(laya_runtime._mlx_target(entry)) == "mlx_vlm"
+    assert laya_runtime.select(entry)[0].backend == "mlx"
+    plan = laya_runtime.download_plan(entry)
+    assert plan["repo"] == entry.source and "decider_config.json" in plan["files"]
+    assert not laya_runtime._mlx_reads(entry, "images") and not laya_runtime._mlx_reads(
+        entry, "audio"
+    )
+    with pytest.raises(laya_runtime.Unavailable, match = "served only by MLX"):
+        laya_runtime.select(entry, preference = "llama.cpp")
 
 
 def test_a_d1_is_served_by_the_mlx_engine_and_hears_only_on_omni(home, client, engine):

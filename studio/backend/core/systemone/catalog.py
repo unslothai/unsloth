@@ -192,6 +192,16 @@ CHECKPOINTS = {
             "LiquidAI d1 3B on LFM2.5-VL (Q8_0 GGUF): reads images.",
             2_874_781_280 + 583_109_728,
         ),
+        Checkpoint(
+            "decider-2b",
+            "nativ-community/decider-2b",
+            None,
+            "Decider 2B on Qwen3.5 (MLX only): text only, needs Apple Silicon.",
+            3_783_689_675,
+            "gguf",
+            "mlx",
+            label = "Decider 2B",
+        ),
     )
 }
 
@@ -504,6 +514,21 @@ MLX_COMPANIONS = {
         "9409cbf3bd5067e1a9b17437b1970f6a0c299ccd",
         _D1_PROCESSOR_FILES,
         3_736_722_967,
+    ),
+    "decider-2b": MlxCompanion(
+        "mlx_vlm",
+        "nativ-community/decider-2b",
+        "acbae4ecce4dbcc0aea8c5a501c9f54008458a70",
+        (
+            "config.json",
+            "decider_config.json",
+            "generation_config.json",
+            "chat_template.jinja",
+            "model.safetensors",
+            "tokenizer.json",
+            "tokenizer_config.json",
+        ),
+        3_783_689_675,
     ),
 }
 
