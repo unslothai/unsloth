@@ -414,7 +414,7 @@ test("a title on a saved connection is routed to it, and streamed", async () => 
   );
   assert.match(
     String(local?.messages?.[0]?.content),
-    /2-6 words, no quotes, no punctuation, ASCII only, do not echo input/,
+    /2-6 words, no quotes, no punctuation, do not echo input\. Write the title in the same language as the conversation\./,
   );
 });
 
@@ -617,7 +617,7 @@ test("the title is assembled from the deltas, unless it was cut short or reasone
   }
 });
 
-test("the answer is reduced to a short, plain, ASCII line", () => {
+test("the answer is reduced to a short, plain line in its own language", () => {
   for (const [raw, expected] of [
     ['  "Matrix Inversion" — Steps  ', "Matrix Inversion Steps"],
     [
@@ -632,7 +632,15 @@ test("the answer is reduced to a short, plain, ASCII line", () => {
     ["   User: what is this", null],
     [`${"a".repeat(59)} b`, "a".repeat(59)],
     ["Base: what is this", null],
-    ["Café — Résumé Matrix", "Caf R sum Matrix"],
+    ["Café — Résumé Matrix", "Café Résumé Matrix"],
+    ["Recette des crêpes à l’orange", "Recette des crêpes à l orange"],
+    ["行列の逆行列の求め方", "行列の逆行列の求め方"],
+    ["Привет мир", "Привет мир"],
+    ["هندسه\u200Cی ماشین", "هندسه\u200Cی ماشین"],
+    ["🚀 Rocket Launch ✨ Plan", "Rocket Launch Plan"],
+    ["Ünïcödé — ✓ Done", "Ünïcödé Done"],
+    [`${"é".repeat(59)}😀x`, "é".repeat(59)],
+    ["語".repeat(80), "語".repeat(60)],
     ["x".repeat(80), "x".repeat(60)],
     ["Inverting Title: A Matrix", "Inverting Title A Matrix"],
     ["Title : Matrix Steps", "Matrix Steps"],

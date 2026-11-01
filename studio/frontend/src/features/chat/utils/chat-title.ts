@@ -361,10 +361,10 @@ function titleMaxTokens(connection: ResolvedExternalConnection): number {
 }
 
 const TITLE_SYSTEM_PROMPT =
-  "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.";
+  "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, do not echo input. Write the title in the same language as the conversation. Output title only.";
 
 const TITLE_REFRESH_SYSTEM_PROMPT =
-  "Write 1 concise chat title for what this conversation is about now. The excerpt holds its latest messages, oldest first; weight the newest most. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.";
+  "Write 1 concise chat title for what this conversation is about now. The excerpt holds its latest messages, oldest first; weight the newest most. Rules: 2-6 words, no quotes, no punctuation, do not echo input. Write the title in the same language as the conversation. Output title only.";
 
 // About 250 tokens however long the chat: the last 2-3 turns, Open WebUI's {{MESSAGES:END:2}} window.
 const REFRESH_MESSAGE_CHARS = 300;
@@ -549,7 +549,9 @@ export async function titleFromStream(
 export function normalizeTitle(raw: string): string | null {
   let title = raw.split(/\r?\n/, 1)[0] ?? "";
   title = title.replace(/^\s*title\s*:\s*/i, "");
-  title = title.replace(/[^\x20-\x7E]+/g, " ");
+  // Any script's letters stay, so the title keeps the conversation's language; emoji and symbols go.
+  // U+200C (ZWNJ) is part of Persian spelling.
+  title = title.replace(/[^\x20-\x7E\p{L}\p{M}\p{N}‌]+/gu, " ");
   title = title.replace(/["'`]+/g, "");
 
   // Echo fail-safe: reject leading role labels before punctuation strips the ":".
@@ -563,5 +565,5 @@ export function normalizeTitle(raw: string): string | null {
   const words = title.split(" ").filter(Boolean).slice(0, 6);
   const joined = words.join(" ").trim();
   if (!joined) return null;
-  return joined.length > 60 ? joined.slice(0, 60).trimEnd() : joined;
+  return joined.length > 60 ? cutToUnits(joined, 60).trimEnd() : joined;
 }
