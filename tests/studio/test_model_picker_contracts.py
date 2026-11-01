@@ -1999,7 +1999,10 @@ def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
     """Cards show stills; only the selected clip mints a playback link, avoiding a pipeline per clip."""
     src = _read("features/video/video-page.tsx")
     assert "new IntersectionObserver(" in src
-    assert "ref={stripRef}" in src and "data-clip-id={video.id}" in src
+    assert "ref={stripRef}" in src
+    # The card is the memoized VideoStripTile, which tags itself with its own video's id.
+    tile = src[src.index("const VideoStripTile = memo(") :]
+    assert "const id = video.id;" in tile and "data-clip-id={id}" in tile
     assert 'root.querySelectorAll("[data-clip-id]")' in src
     # rootMargin applies to the root box only, so the clipping strip must BE the root.
     assert '{ root, rootMargin: "0px 600px" }' in src
