@@ -47707,6 +47707,44 @@ async def load_diffusion_model(
     )
 
 
+def _require_resolved_image_base_access(request, fam, kind: str, engine_name) -> None:
+    """A managed account must clear the base the engine will resolve (card tag or family default), the same
+    ``require_model_access`` that /images/generate runs on the resident's ``base_repo``. Without it a cached gated
+    base loads and every generate then 404s."""
+    if fam is None or kind == "pipeline" or not account_access.managed_account():
+        return
+    from core.inference.diffusion_families import resolve_base_repo
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    if engine_name == ENGINE_SD_CPP:
+        # sd.cpp reports the explicit base or the family default as its status base_repo.
+        base = resolve_base_repo(fam, request.base_repo)
+    else:
+        from core.inference.diffusion import _resolve_base_repo
+        base = _resolve_base_repo(
+            request.model_path,
+            request.base_repo,
+            fam,
+            request.hf_token,
+            request.gguf_filename,
+        )
+    if not base or base == request.model_path:
+        return
+    try:
+        account_access.require_model_access(base)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                f"This image model loads its base components from {base}, which this account "
+                "cannot access. Download that repository with your own Hugging Face token first, "
+                "or pick a model whose base you can access."
+            ),
+        ) from exc
+
+
 async def load_diffusion_model_gated(
     request: DiffusionLoadRequest,
     current_subject: str,
@@ -47963,6 +48001,10 @@ async def load_diffusion_model_gated(
             request.gguf_filename,
             request.hf_token,
             user_initiated,
+        )
+        # The base a GGUF / single-file pick resolves to is what generate rechecks, so refuse it before any teardown.
+        await asyncio.to_thread(
+            _require_resolved_image_base_access, request, fam, kind, pending_name
         )
         preflighted = None
         if pending_name is not None and (needs_gpu or pending_name != active_engine_name()):
