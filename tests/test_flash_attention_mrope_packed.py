@@ -187,6 +187,9 @@ def _compiled_boundaries(packed_rows, cases, warm):
             packing.get_packed_info_from_kwargs(
                 {"packed_seq_lengths": lengths}, torch.device("cpu")
             )
+        # Keep the recording stub's list length fixed across calls: Dynamo guards it,
+        # which would otherwise measure the harness's side effects as recompilations.
+        calls.clear()
         compiled(_query(length), lengths)
         kw = calls[-1]
         seen.append(
@@ -264,3 +267,58 @@ def test_packed_documents_do_not_see_each_other_under_flash_attention():
     torch.testing.assert_close(
         out, torch.cat([alone(0, first), alone(first, total)], dim = 1), atol = 2e-2, rtol = 2e-2
     )
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_warm_packed_rows_support_fullgraph_forward_backward(monkeypatch, dynamic):
+    from unsloth.utils import packing
+
+    def attention(q, k, v, mask, *args, **kwargs):
+        cu = kwargs.get("cu_seq_lens_q")
+        longest = kwargs.get("max_length_q")
+        offset = 0 if cu is None else cu.sum() + longest
+        return q.cos() + offset, cu, longest
+
+    monkeypatch.setattr(fa_integration, "_flash_attention_forward", attention)
+    fix_transformers_flash_attention_mrope_packed_rows()
+
+    def step(q, lengths):
+        q = q.sin()
+        return fa_integration._flash_attention_forward(
+            q, q, q, None, position_ids = _mrope(q.shape[1]), packed_seq_lengths = lengths
+        )
+
+    torch._dynamo.reset()
+    compiled = torch.compile(step, backend = "aot_eager", fullgraph = True, dynamic = dynamic)
+    try:
+        cases = [
+            (8, [3, 5], [0, 3, 8], 5),
+            (16, [3, 5], [0, 3, 8, 16], 8),
+            (7, [3, 5], None, None),
+            (16, [4, 12], [0, 4, 16], 12),
+            (16, [2, 14], [0, 2, 16], 14),
+        ]
+        for total, docs, expected_cu, expected_max in cases:
+            packing.clear_packed_caches()
+            lengths = torch.tensor(docs, dtype = torch.int32)
+            # Only warm the metadata producer, as the outer forward does; do not warm attention.
+            packing.get_packed_info_from_kwargs(
+                {"packed_seq_lengths": lengths}, torch.device("cpu")
+            )
+            q = torch.randn(1, total, 2, 8, requires_grad = True)
+            out, cu, longest = compiled(q, lengths)
+            assert (None if cu is None else cu.tolist()) == expected_cu
+            assert longest == expected_max
+            offset = 0 if expected_cu is None else sum(expected_cu) + expected_max
+            reference = q.sin().cos() + offset
+            torch.testing.assert_close(out, reference)
+            grad = torch.autograd.grad(out.sum(), q)[0]
+            expected_grad = torch.autograd.grad(reference.sum(), q)[0]
+            torch.testing.assert_close(grad, expected_grad)
+
+        report = torch._dynamo.explain(step)(q, lengths)
+        assert report.graph_count == 1
+        assert report.graph_break_count == 0
+    finally:
+        torch._dynamo.reset()
+        packing.clear_packed_caches()
