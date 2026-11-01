@@ -44,6 +44,7 @@ import { toast } from "@/lib/toast";
 import { fixGrammar } from "./grammar-fixer";
 import { containsAbusiveLanguage } from "./abusive-language";
 import { resolveInAppShortcut } from "./in-app-shortcut";
+import { ensureTerminalPunctuation } from "./terminal-punctuation";
 import { invoke } from "@tauri-apps/api/core";
 import { type UnlistenFn, listen } from "@tauri-apps/api/event";
 import {
@@ -99,23 +100,6 @@ const MAX_BOOT_RETRIES = 6;
  * fallback so an older desktop backend (or a dev web build) never blocks a
  * transcript.
  */
-/**
- * Dictation often drops the final full stop. Add one only to a complete-ish
- * sentence (four or more words), and use a question mark for a question. Short
- * fragments are left alone: a pause is not a sentence.
- */
-function ensureTerminalPeriod(text: string): string {
-  const trimmed = text.trimEnd();
-  if (!trimmed) return text;
-  if (/[.!?…:;)\]"']$/.test(trimmed)) return text;
-  const question =
-    /^(what|why|how|when|where|who|whom|whose|which|is|are|was|were|do|does|did|can|could|will|would|should|may|might|have|has|had)\b/i.test(
-      trimmed,
-    );
-  if (trimmed.split(/\s+/).length < 4 && !trimmed.includes("=")) return text;
-  return `${trimmed}${question ? "?" : "."}`;
-}
-
 async function fixGrammarOnDevice(
   text: string,
 ): Promise<{ text: string; fixes: number }> {
@@ -856,7 +840,7 @@ export class VoiceTypingController {
       },
     });
     fixes += dictionaryFixes;
-    const withTerminal = ensureTerminalPeriod(text);
+    const withTerminal = ensureTerminalPunctuation(text);
     if (withTerminal !== text) fixes += 1;
     text = withTerminal;
     if (containsAbusiveLanguage(text)) {
