@@ -24,7 +24,6 @@ import {
 
 export const MATERIAL_STORAGE_KEY = "unsloth_window_material";
 
-/** Per device, not synced: the macOS material means nothing in another browser. */
 const guardedLocalStorage: StateStorage = {
   getItem: (name) => {
     try {
@@ -160,7 +159,6 @@ export function WindowMaterialMount() {
     }
   }, [strength, material]);
   useEffect(() => {
-    // The menu rules also require data-glass, so a refused macOS material leaves menus solid.
     document.documentElement.toggleAttribute(
       "data-glass-menus",
       menus && material !== "solid",
