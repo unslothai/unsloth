@@ -111,15 +111,12 @@ def _shapes():
     as_int = Dataset.from_dict({"input_ids": [1, 2]})
     raw = Dataset.from_dict({"text": ["a", "b"]})
     empty = Dataset.from_dict({"input_ids": [[1, 2, 3, 4]]}).select([])
-    # An indices mapping: the long row is stored but not selected, and the other way round.
     hidden_long = over.select([0])
     shown_long = over.select([1, 0])
     filtered = big_over.filter(lambda e: len(e["input_ids"]) < 4)
     shuffled = big_over.shuffle(seed = 0)
-    torch_fmt = over.with_format("numpy")
-    cols_hidden = over.with_format(
-        None, columns = ["labels"] if "labels" in over.column_names else []
-    )
+    numpy_fmt = over.with_format("numpy")
+    cols_hidden = over.with_format(None, columns = [])
     with_image = Dataset.from_dict(
         {"input_ids": [[1, 2]], "image": [None]},
         features = Features({"input_ids": Sequence(Value("int32")), "image": Image()}),
@@ -146,7 +143,7 @@ def _shapes():
         "shown_long": shown_long,
         "filtered": filtered,
         "shuffled": shuffled,
-        "numpy_fmt": torch_fmt,
+        "numpy_fmt": numpy_fmt,
         "cols_hidden": cols_hidden,
         "with_image": with_image,
         "transformed": transformed,

@@ -1244,7 +1244,7 @@ def _attested_within_cap(dataset, cap):
 
 
 def _arrow_within_cap(dataset, cap):
-    """True when the Arrow lengths of ``input_ids`` prove every row the scan below would read fits ``cap``, else None so the scan runs. Only a plain ``datasets.Dataset`` in python format with nothing to decode, where a row's ``input_ids`` is its stored list. A null, a non-list column, or any row over the cap answers None."""
+    """True when Arrow list lengths prove every ``input_ids`` fits ``cap``, else None (the row scan decides). Only plain python-format splits with nothing to decode, where a row's ``input_ids`` is its stored list."""
     try:
         import datasets
         import pyarrow
@@ -2985,7 +2985,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _unsloth_claim = _unsloth_own.get('_unsloth_truncated_to')\n"
                     "            if isinstance(_unsloth_claim, int) and not isinstance(_unsloth_claim, bool):\n"
                     "                return _unsloth_claim <= _unsloth_cap\n"
-                    # Arrow lengths first, the row loop only when they cannot prove it: decoding every row to Python cost ~4 s per 100k rows right after the truncation map. Only a plain python-format Dataset with nothing to decode, where a row's input_ids is its stored list; a null, a non-list column or any row over the cap falls through to the loop, which keeps its verdict.
+                    # Inline copy of _arrow_within_cap: anything it cannot prove falls through to the row loop.
                     "        try:\n"
                     "            import datasets as _unsloth_hfds, pyarrow as _unsloth_pa, pyarrow.compute as _unsloth_pc\n"
                     "            from datasets.features.features import require_decoding as _unsloth_decodes\n"
