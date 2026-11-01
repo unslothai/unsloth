@@ -989,7 +989,7 @@ export const ja = {
       markRead: "既読にする",
       deleteChats: "チャットを削除",
       deleteTitle: "チャットを削除",
-      deleteDescription: "{count} 件のチャットを削除しますか。元に戻せません。",
+      deleteDescription: "{count} 件のチャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
       deleteFilesDescription:
         "各チャット専用のサンドボックスフォルダーがディスクから削除されます。プロジェクト内で作成したファイルは、そのプロジェクトのワークスペースに残ります。",
       deleteFilesLabel: "ファイルとサンドボックスフォルダーを削除",
@@ -1037,7 +1037,7 @@ export const ja = {
     dialog: {
       deleteChat: {
         title: "チャットの削除",
-        description: "チャット「{name}」を削除してもよろしいですか？",
+        description: "チャット「{name}」とそのメッセージは完全に削除されます。この操作は取り消せません。",
       },
       deleteRun: {
         title: "トレーニング実行の削除",
@@ -3189,9 +3189,9 @@ export const ja = {
         movedChatsToRecents: "最近のチャットに移動したチャット：{count} 件",
         moveFailed: "チャットを移動できませんでした",
         deleteChatsTitle: "チャットを削除（{count} 件）",
-        deleteChatsWarning: "選択した {count} 件のチャットを削除しますか？この操作は取り消せません。",
+        deleteChatsWarning: "{count} 件のチャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
         deleteArchivedTitle: "アーカイブ済みチャットを {count} 件削除",
-        deleteArchivedWarning: "選択した {count} 件のアーカイブ済みチャットを削除しますか？この操作は取り消せません。",
+        deleteArchivedWarning: "アーカイブ済みの {count} 件のチャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
         deleting: "削除中...",
       },
       title: "データ",
@@ -4649,7 +4649,7 @@ export const ja = {
       },
       dialog: {
         renameChat: "チャットの名前を変更",
-        deleteChatDescription: "このチャットは完全に削除されます。この操作は取り消せません。",
+        deleteChatDescription: "チャットとそのメッセージは完全に削除されます。この操作は取り消せません。",
         deleteProjectDescription: "プロジェクトとそのチャット（{count} 件）は完全に削除されます。この操作は取り消せません。",
         deleteFilesMany: "これらのチャットが作成したファイルとサンドボックスフォルダも削除します。",
         deleteProjectFilesLabel: "プロジェクトの作業フォルダを削除",
@@ -5106,7 +5106,7 @@ export const ja = {
     renameChat: "チャット名を変更",
     chatName: "チャット名",
     deleteChat: "チャットを削除",
-    deleteChatDescription: "{name} を削除してもよろしいですか？メッセージは完全に削除されます。",
+    deleteChatDescription: "チャット{name}とそのメッセージは完全に削除されます。この操作は取り消せません。",
     importChats: "チャットをインポート",
     importDestination: "{name} のインポート先を選択してください:",
     selectDestination: "インポート先を選択",

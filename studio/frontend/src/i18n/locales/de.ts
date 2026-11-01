@@ -993,7 +993,7 @@ export const de = {
       markRead: "Als gelesen markieren",
       deleteChats: "Chats löschen",
       deleteTitle: "Chats löschen",
-      deleteDescription: "{count} Chats löschen? Das lässt sich nicht rückgängig machen.",
+      deleteDescription: "Dadurch werden {count} Chats und ihre Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
       deleteFilesDescription:
         "Der eigene Sandbox-Ordner jedes Chats wird von der Festplatte entfernt. Dateien, die sie in einem Projekt erstellt haben, bleiben im Arbeitsbereich dieses Projekts.",
       deleteFilesLabel: "Dateien und Sandbox-Ordner löschen",
@@ -1041,7 +1041,7 @@ export const de = {
     dialog: {
       deleteChat: {
         title: "Chat löschen",
-        description: "Möchten Sie den Chat „{name}“ wirklich löschen?",
+        description: "Dadurch werden der Chat „{name}“ und seine Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
       },
       deleteRun: {
         title: "Trainingslauf löschen",
@@ -3259,9 +3259,9 @@ export const de = {
         movedChatsToRecents: "Nach Zuletzt verwendet verschobene Chats: {count}",
         moveFailed: "Chats konnten nicht verschoben werden",
         deleteChatsTitle: "Chats löschen ({count})",
-        deleteChatsWarning: "Ausgewählte Chats löschen ({count})? Dies kann nicht rückgängig gemacht werden.",
+        deleteChatsWarning: "Dadurch werden {count} Chats und ihre Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
         deleteArchivedTitle: "{count} archivierte Chats löschen",
-        deleteArchivedWarning: "Ausgewählte archivierte Chats löschen ({count})? Dies kann nicht rückgängig gemacht werden.",
+        deleteArchivedWarning: "Dadurch werden {count} archivierte Chats und ihre Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
         deleting: "Wird gelöscht...",
       },
       title: "Daten",
@@ -4774,7 +4774,7 @@ export const de = {
       },
       dialog: {
         renameChat: "Chat umbenennen",
-        deleteChatDescription: "Dieser Chat wird endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        deleteChatDescription: "Dadurch werden der Chat und seine Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
         deleteProjectDescription: "Das Projekt und seine Chats ({count}) werden endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
         deleteFilesMany: "Auch die Dateien und Sandbox-Ordner entfernen, die diese Chats erstellt haben.",
         deleteProjectFilesLabel: "Projekt-Arbeitsordner löschen",
@@ -5231,7 +5231,7 @@ export const de = {
     renameChat: "Chat umbenennen",
     chatName: "Chatname",
     deleteChat: "Chat löschen",
-    deleteChatDescription: "Möchtest du {name} wirklich löschen? Die Nachrichten werden dauerhaft gelöscht.",
+    deleteChatDescription: "Dadurch werden der Chat {name} und seine Nachrichten endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
     importChats: "Chats importieren",
     importDestination: "Wähle aus, wohin {name} importiert werden soll:",
     selectDestination: "Ziel auswählen",

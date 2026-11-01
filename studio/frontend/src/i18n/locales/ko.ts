@@ -987,7 +987,7 @@ export const ko = {
       markRead: "읽음으로 표시",
       deleteChats: "채팅 삭제",
       deleteTitle: "채팅 삭제",
-      deleteDescription: "채팅 {count}개를 삭제할까요? 되돌릴 수 없습니다.",
+      deleteDescription: "채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
       deleteFilesDescription:
         "각 채팅 전용 샌드박스 폴더가 디스크에서 삭제됩니다. 프로젝트 안에서 만든 파일은 해당 프로젝트 작업 공간에 남습니다.",
       deleteFilesLabel: "파일 및 샌드박스 폴더 삭제",
@@ -1035,7 +1035,7 @@ export const ko = {
     dialog: {
       deleteChat: {
         title: "채팅 삭제",
-        description: '이름이 "{name}"인 채팅을 삭제하시겠습니까?',
+        description: '채팅 "{name}" 및 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.',
       },
       deleteRun: {
         title: "학습 실행 삭제",
@@ -3206,9 +3206,9 @@ export const ko = {
         movedChatsToRecents: "최근 항목으로 이동한 채팅: {count}개",
         moveFailed: "채팅을 이동하지 못했습니다",
         deleteChatsTitle: "채팅 삭제 ({count}개)",
-        deleteChatsWarning: "선택한 채팅 {count}개를 삭제할까요? 이 작업은 취소할 수 없습니다.",
+        deleteChatsWarning: "채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleteArchivedTitle: "보관된 채팅 {count}개 삭제",
-        deleteArchivedWarning: "선택한 보관된 채팅 {count}개를 삭제할까요? 이 작업은 취소할 수 없습니다.",
+        deleteArchivedWarning: "보관된 채팅 {count}개와 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleting: "삭제 중...",
       },
       title: "데이터",
@@ -4689,7 +4689,7 @@ export const ko = {
       },
       dialog: {
         renameChat: "채팅 이름 변경",
-        deleteChatDescription: "이 채팅은 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+        deleteChatDescription: "채팅과 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
         deleteProjectDescription: "프로젝트와 채팅({count}개)이 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
         deleteFilesMany: "이 채팅들이 만든 파일과 샌드박스 폴더도 삭제합니다.",
         deleteProjectFilesLabel: "프로젝트 작업 폴더 삭제",
@@ -5146,7 +5146,7 @@ export const ko = {
     renameChat: "채팅 이름 바꾸기",
     chatName: "채팅 이름",
     deleteChat: "채팅 삭제",
-    deleteChatDescription: "{name}을(를) 삭제하시겠습니까? 메시지가 영구적으로 삭제됩니다.",
+    deleteChatDescription: "채팅 {name} 및 메시지가 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
     importChats: "채팅 가져오기",
     importDestination: "{name}을(를) 가져올 위치를 선택하세요:",
     selectDestination: "대상 선택",

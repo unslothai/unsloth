@@ -1087,7 +1087,7 @@ export const tr = {
       markRead: "Okundu olarak işaretle",
       deleteChats: "Sohbetleri sil",
       deleteTitle: "Sohbetleri sil",
-      deleteDescription: "{count} sohbet silinsin mi? Bu işlem geri alınamaz.",
+      deleteDescription: "{count} sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
       deleteFilesDescription:
         "Her sohbetin kendi korumalı alan klasörü diskten kaldırılır. Sohbetlerin bir proje içinde yazdığı dosyalar o projenin çalışma alanında kalır.",
       deleteFilesLabel: "Dosyaları ve korumalı alan klasörünü sil",
@@ -1136,7 +1136,7 @@ export const tr = {
     dialog: {
       deleteChat: {
         title: "Sohbeti sil",
-        description: "“{name}” sohbetini silmek istediğinizden emin misiniz?",
+        description: "“{name}” sohbeti ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
       },
       deleteRun: {
         title: "Eğitim çalıştırmasını sil",
@@ -3482,10 +3482,10 @@ export const tr = {
         moveFailed: "Sohbetler taşınamadı",
         deleteChatsTitle: "Sohbetleri sil ({count})",
         deleteChatsWarning:
-          "Seçilen sohbetler ({count}) silinsin mi? Bu işlem geri alınamaz.",
+          "{count} sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleteArchivedTitle: "Arşivlenen {count} sohbeti sil",
         deleteArchivedWarning:
-          "Seçilen arşivlenmiş sohbetler ({count}) silinsin mi? Bu işlem geri alınamaz.",
+          "Arşivlenmiş {count} sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleting: "Siliniyor...",
       },
       title: "Veriler",
@@ -5057,7 +5057,7 @@ export const tr = {
       dialog: {
         renameChat: "Sohbeti yeniden adlandır",
         deleteChatDescription:
-          "Bu sohbet kalıcı olarak silinecek. Bu işlem geri alınamaz.",
+          "Sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleteProjectDescription:
           "Proje ve sohbetleri ({count}) kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleteFilesMany:
@@ -5552,7 +5552,7 @@ export const tr = {
     chatName: "Sohbet adı",
     deleteChat: "Sohbeti sil",
     deleteChatDescription:
-      "{name} sohbetini silmek istediğinizden emin misiniz? Mesajları kalıcı olarak silinecek.",
+      "{name} sohbeti ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
     importChats: "Sohbetleri içe aktar",
     importDestination: "{name} öğesinin içe aktarılacağı yeri seçin:",
     selectDestination: "Hedef seçin",

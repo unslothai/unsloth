@@ -860,7 +860,7 @@ export const it = {
       markRead: "Segna come letta",
       deleteChats: "Elimina le chat",
       deleteTitle: "Elimina le chat",
-      deleteDescription: "Eliminare {count} chat? L'operazione non è reversibile.",
+      deleteDescription: "{count} chat e i relativi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
       deleteFilesDescription:
         "La cartella sandbox di ogni chat viene rimossa dal disco. I file scritti dentro un progetto restano nello spazio di lavoro di quel progetto.",
       deleteFilesLabel: "Elimina i file e la cartella sandbox",
@@ -908,7 +908,7 @@ export const it = {
     dialog: {
       deleteChat: {
         title: "Elimina la chat",
-        description: "Vuoi davvero eliminare la chat «{name}»?",
+        description: "La chat «{name}» e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
       },
       deleteRun: {
         title: "Elimina il run di addestramento",
@@ -3121,9 +3121,9 @@ export const it = {
         movedChatsToRecents: "Chat spostate in Recenti: {count}",
         moveFailed: "Impossibile spostare le chat",
         deleteChatsTitle: "Elimina chat ({count})",
-        deleteChatsWarning: "Eliminare le chat selezionate ({count})? L'azione non può essere annullata.",
+        deleteChatsWarning: "{count} chat e i relativi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
         deleteArchivedTitle: "Elimina {count} chat archiviate",
-        deleteArchivedWarning: "Eliminare le chat archiviate selezionate ({count})? L'azione non può essere annullata.",
+        deleteArchivedWarning: "{count} chat archiviate e i relativi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
         deleting: "Eliminazione...",
       },
       title: "Dati",
@@ -4769,7 +4769,7 @@ export const it = {
       },
       dialog: {
         renameChat: "Rinomina chat",
-        deleteChatDescription: "Questa chat verrà eliminata definitivamente. L’operazione non può essere annullata.",
+        deleteChatDescription: "La chat e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
         deleteProjectDescription: "Il progetto e le sue chat ({count}) verranno eliminati definitivamente. L’operazione non può essere annullata.",
         deleteFilesMany: "Rimuovi anche i file e le cartelle sandbox create da queste chat.",
         deleteProjectFilesLabel: "Elimina la cartella di lavoro del progetto",
@@ -5226,7 +5226,7 @@ export const it = {
     renameChat: "Rinomina chat",
     chatName: "Nome chat",
     deleteChat: "Elimina chat",
-    deleteChatDescription: "Vuoi davvero eliminare {name}? I suoi messaggi verranno eliminati definitivamente.",
+    deleteChatDescription: "La chat {name} e i suoi messaggi verranno eliminati definitivamente. Questa azione non può essere annullata.",
     importChats: "Importa chat",
     importDestination: "Scegli dove importare {name}:",
     selectDestination: "Seleziona destinazione",

@@ -1024,7 +1024,7 @@ export const he = {
       markRead: "סמן כנקרא",
       deleteChats: "מחק צ'אטים",
       deleteTitle: "מחיקת צ'אטים",
-      deleteDescription: "למחוק {count} צ'אטים? פעולה זו אינה ניתנת לביטול.",
+      deleteDescription: "{count} צ'אטים וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       deleteFilesDescription:
         "תיקיית ארגז החול של כל צ'אט תוסר מהדיסק. קבצים שנכתבו בתוך פרויקט יישארו בסביבת העבודה שלו.",
       deleteFilesLabel: "מחק קבצים ותיקיית ארגז חול",
@@ -1072,7 +1072,7 @@ export const he = {
     dialog: {
       deleteChat: {
         title: "מחיקת צ'אט",
-        description: 'האם אתה בטוח שברצונך למחוק את הצ\'אט "{name}"?',
+        description: "הצ'אט \"{name}\" וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       },
       deleteRun: {
         title: "מחיקת הרצת אימון",
@@ -3296,10 +3296,10 @@ export const he = {
         moveFailed: "העברת הצ'אטים נכשלה",
         deleteChatsTitle: "מחיקת צ'אטים ({count})",
         deleteChatsWarning:
-          "למחוק את הצ'אטים שנבחרו ({count})? פעולה זו אינה ניתנת לביטול.",
+          "{count} צ'אטים וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteArchivedTitle: "מחיקת {count} צ'אטים מהארכיון",
         deleteArchivedWarning:
-          "למחוק את הצ'אטים שנבחרו מהארכיון ({count})? פעולה זו אינה ניתנת לביטול.",
+          "{count} צ'אטים בארכיון וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleting: "מוחק...",
       },
       title: "נתונים",
@@ -4782,7 +4782,7 @@ export const he = {
       dialog: {
         renameChat: "שינוי שם צ'אט",
         deleteChatDescription:
-          "צ'אט זה יימחק לצמיתות. פעולה זו אינה ניתנת לביטול.",
+          "הצ'אט וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteProjectDescription:
           "הפרויקט והצ'אטים שלו ({count}) יימחקו לצמיתות. פעולה זו אינה ניתנת לביטול.",
         deleteFilesMany: "הסר גם את הקבצים ותיקיות ארגז החול שצ'אטים אלה יצרו.",
@@ -5253,7 +5253,7 @@ export const he = {
     renameChat: "שינוי שם הצ'אט",
     chatName: "שם הצ'אט",
     deleteChat: "מחיקת צ'אט",
-    deleteChatDescription: "למחוק את {name}? ההודעות שלו יימחקו לצמיתות.",
+    deleteChatDescription: "הצ'אט {name} וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
     importChats: "ייבוא צ'אטים",
     importDestination: "בחרו לאן לייבא את {name}:",
     selectDestination: "בחירת יעד",

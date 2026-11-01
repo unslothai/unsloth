@@ -1098,7 +1098,7 @@ export const es419 = {
       deleteChats: "Eliminar chats",
       deleteTitle: "Eliminar chats",
       deleteDescription:
-        "¿Eliminar {count} chats? Esta acción no se puede deshacer.",
+        "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
       deleteFilesDescription:
         "Se elimina del disco la carpeta de sandbox propia de cada chat. Los archivos que hayan escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
       deleteFilesLabel: "Eliminar archivos y carpeta del sandbox",
@@ -1146,7 +1146,7 @@ export const es419 = {
     dialog: {
       deleteChat: {
         title: "Eliminar chat",
-        description: '¿Seguro que quieres eliminar este chat "{name}"?',
+        description: 'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
       },
       deleteRun: {
         title: "Eliminar ejecución de entrenamiento",
@@ -3537,10 +3537,10 @@ export const es419 = {
         moveFailed: "No se pudieron mover los chats",
         deleteChatsTitle: "Eliminar chats ({count})",
         deleteChatsWarning:
-          "¿Eliminar los chats seleccionados ({count})? Esta acción no se puede deshacer.",
+          "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
         deleteArchivedTitle: "Eliminar {count} chats archivados",
         deleteArchivedWarning:
-          "¿Eliminar los chats archivados seleccionados ({count})? Esta acción no se puede deshacer.",
+          "Se eliminarán permanentemente {count} chats archivados y sus mensajes. Esta acción no se puede deshacer.",
         deleting: "Eliminando...",
       },
       title: "Datos",
@@ -5140,7 +5140,7 @@ export const es419 = {
       dialog: {
         renameChat: "Renombrar chat",
         deleteChatDescription:
-          "Este chat se eliminará de forma permanente. Esta acción no se puede deshacer.",
+          "Se eliminarán permanentemente el chat y sus mensajes. Esta acción no se puede deshacer.",
         deleteProjectDescription:
           "El proyecto y sus chats ({count}) se eliminarán de forma permanente. Esta acción no se puede deshacer.",
         deleteFilesMany:
@@ -5640,7 +5640,7 @@ export const es419 = {
     chatName: "Nombre del chat",
     deleteChat: "Eliminar chat",
     deleteChatDescription:
-      "¿Seguro que quieres eliminar {name}? Sus mensajes se eliminarán de forma permanente.",
+      "Se eliminarán permanentemente el chat {name} y sus mensajes. Esta acción no se puede deshacer.",
     importChats: "Importar chats",
     importDestination: "Elige dónde importar {name}:",
     selectDestination: "Seleccionar destino",

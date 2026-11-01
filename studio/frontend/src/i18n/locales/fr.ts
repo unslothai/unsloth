@@ -993,7 +993,7 @@ export const fr = {
       markRead: "Marquer comme lu",
       deleteChats: "Supprimer les discussions",
       deleteTitle: "Supprimer les discussions",
-      deleteDescription: "Supprimer {count} discussions ? Cette action est irréversible.",
+      deleteDescription: "{count} chats et leurs messages seront définitivement supprimés. Cette action est irréversible.",
       deleteFilesDescription:
         "Le dossier bac à sable propre à chaque discussion est supprimé du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
       deleteFilesLabel: "Supprimer les fichiers et le dossier bac à sable",
@@ -1041,7 +1041,7 @@ export const fr = {
     dialog: {
       deleteChat: {
         title: "Supprimer la discussion",
-        description: 'Voulez-vous vraiment supprimer cette discussion "{name}" ?',
+        description: 'Le chat "{name}" et ses messages seront définitivement supprimés. Cette action est irréversible.',
       },
       deleteRun: {
         title: "Supprimer l'entraînement",
@@ -3256,9 +3256,9 @@ export const fr = {
         movedChatsToRecents: "Discussions déplacées vers Récentes : {count}",
         moveFailed: "Impossible de déplacer les discussions",
         deleteChatsTitle: "Supprimer les discussions ({count})",
-        deleteChatsWarning: "Supprimer les discussions sélectionnées ({count}) ? Cette action est irréversible.",
+        deleteChatsWarning: "{count} chats et leurs messages seront définitivement supprimés. Cette action est irréversible.",
         deleteArchivedTitle: "Supprimer {count} discussions archivées",
-        deleteArchivedWarning: "Supprimer les discussions archivées sélectionnées ({count}) ? Cette action est irréversible.",
+        deleteArchivedWarning: "{count} chats archivés et leurs messages seront définitivement supprimés. Cette action est irréversible.",
         deleting: "Suppression...",
       },
       title: "Données",
@@ -4784,7 +4784,7 @@ export const fr = {
       },
       dialog: {
         renameChat: "Renommer la discussion",
-        deleteChatDescription: "Cette discussion sera définitivement supprimée. Cette action est irréversible.",
+        deleteChatDescription: "Le chat et ses messages seront définitivement supprimés. Cette action est irréversible.",
         deleteProjectDescription: "Le projet et ses discussions ({count}) seront définitivement supprimés. Cette action est irréversible.",
         deleteFilesMany: "Supprimer aussi les fichiers et dossiers sandbox créés par ces discussions.",
         deleteProjectFilesLabel: "Supprimer le dossier de travail du projet",
@@ -5241,7 +5241,7 @@ export const fr = {
     renameChat: "Renommer le chat",
     chatName: "Nom du chat",
     deleteChat: "Supprimer le chat",
-    deleteChatDescription: "Voulez-vous vraiment supprimer {name} ? Ses messages seront définitivement supprimés.",
+    deleteChatDescription: "Le chat {name} et ses messages seront définitivement supprimés. Cette action est irréversible.",
     importChats: "Importer des chats",
     importDestination: "Choisissez où importer {name} :",
     selectDestination: "Choisir la destination",

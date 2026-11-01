@@ -992,7 +992,7 @@ export const hi = {
       markRead: "पढ़ा हुआ चिह्नित करें",
       deleteChats: "चैट हटाएँ",
       deleteTitle: "चैट हटाएँ",
-      deleteDescription: "{count} चैट हटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
+      deleteDescription: "{count} चैट और उनके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
       deleteFilesDescription:
         "हर चैट का अपना सैंडबॉक्स फ़ोल्डर डिस्क से हटा दिया जाता है। किसी प्रोजेक्ट के अंदर लिखी गई फ़ाइलें उस प्रोजेक्ट के कार्यक्षेत्र में बनी रहती हैं।",
       deleteFilesLabel: "फ़ाइलें और सैंडबॉक्स फ़ोल्डर हटाएं",
@@ -1040,7 +1040,7 @@ export const hi = {
     dialog: {
       deleteChat: {
         title: "चैट हटाएँ",
-        description: 'क्या आप वाकई इस चैट "{name}" को हटाना चाहते हैं?',
+        description: 'चैट "{name}" और उसके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।',
       },
       deleteRun: {
         title: "ट्रेनिंग रन हटाएँ",
@@ -3223,9 +3223,9 @@ export const hi = {
         movedChatsToRecents: "हाल के में स्थानांतरित चैट: {count}",
         moveFailed: "चैट स्थानांतरित नहीं हो सकीं",
         deleteChatsTitle: "चैट मिटाएँ ({count})",
-        deleteChatsWarning: "चुनी गई चैट ({count}) मिटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
+        deleteChatsWarning: "{count} चैट और उनके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
         deleteArchivedTitle: "{count} संग्रहीत चैट मिटाएँ",
-        deleteArchivedWarning: "चुनी गई संग्रहीत चैट ({count}) मिटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
+        deleteArchivedWarning: "{count} संग्रहीत चैट और उनके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
         deleting: "मिटाया जा रहा है...",
       },
       title: "डेटा",
@@ -4710,7 +4710,7 @@ export const hi = {
       },
       dialog: {
         renameChat: "चैट का नाम बदलें",
-        deleteChatDescription: "यह चैट हमेशा के लिए हटा दी जाएगी। इसे पूर्ववत नहीं किया जा सकता।",
+        deleteChatDescription: "चैट और उसके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
         deleteProjectDescription: "प्रोजेक्ट और उसकी चैट ({count}) हमेशा के लिए हटा दी जाएँगी। इसे पूर्ववत नहीं किया जा सकता।",
         deleteFilesMany: "इन चैट द्वारा बनाई गई फ़ाइलें और सैंडबॉक्स फ़ोल्डर भी हटाएँ।",
         deleteProjectFilesLabel: "प्रोजेक्ट का वर्कस्पेस फ़ोल्डर हटाएँ",
@@ -5167,7 +5167,7 @@ export const hi = {
     renameChat: "चैट का नाम बदलें",
     chatName: "चैट का नाम",
     deleteChat: "चैट हटाएँ",
-    deleteChatDescription: "क्या आप वाकई {name} को हटाना चाहते हैं? इसके संदेश स्थायी रूप से हट जाएँगे।",
+    deleteChatDescription: "चैट {name} और उसके संदेश स्थायी रूप से मिटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
     importChats: "चैट इंपोर्ट करें",
     importDestination: "चुनें कि {name} को कहाँ इंपोर्ट करना है:",
     selectDestination: "गंतव्य चुनें",

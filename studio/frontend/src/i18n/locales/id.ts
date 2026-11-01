@@ -1092,7 +1092,7 @@ export const id = {
       deleteChats: "Hapus chat",
       deleteTitle: "Hapus chat",
       deleteDescription:
-        "Hapus {count} chat? Tindakan ini tidak dapat diurungkan.",
+        "{count} chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
       deleteFilesDescription:
         "Folder sandbox milik setiap chat akan dihapus dari disk. File yang ditulisnya di dalam proyek tetap berada di ruang kerja proyek tersebut.",
       deleteFilesLabel: "Hapus file dan folder sandbox",
@@ -1140,7 +1140,7 @@ export const id = {
     dialog: {
       deleteChat: {
         title: "Hapus chat",
-        description: 'Yakin ingin menghapus chat "{name}" ini?',
+        description: 'Chat "{name}" dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
       },
       deleteRun: {
         title: "Hapus proses pelatihan",
@@ -3485,10 +3485,10 @@ export const id = {
         moveFailed: "Gagal memindahkan chat",
         deleteChatsTitle: "Hapus chat ({count})",
         deleteChatsWarning:
-          "Hapus chat yang dipilih ({count})? Tindakan ini tidak dapat diurungkan.",
+          "{count} chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteArchivedTitle: "Hapus {count} chat yang diarsipkan",
         deleteArchivedWarning:
-          "Hapus chat yang diarsipkan yang dipilih ({count})? Tindakan ini tidak dapat diurungkan.",
+          "{count} chat yang diarsipkan dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleting: "Menghapus...",
       },
       title: "Data",
@@ -5061,7 +5061,7 @@ export const id = {
       dialog: {
         renameChat: "Ganti nama chat",
         deleteChatDescription:
-          "Chat ini akan dihapus secara permanen. Tindakan ini tidak dapat diurungkan.",
+          "Chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteProjectDescription:
           "Proyek beserta chat-nya ({count}) akan dihapus secara permanen. Tindakan ini tidak dapat diurungkan.",
         deleteFilesMany:
@@ -5557,7 +5557,7 @@ export const id = {
     chatName: "Nama chat",
     deleteChat: "Hapus chat",
     deleteChatDescription:
-      "Yakin ingin menghapus {name}? Pesan-pesannya akan dihapus secara permanen.",
+      "Chat {name} dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
     importChats: "Impor chat",
     importDestination: "Pilih tujuan impor {name}:",
     selectDestination: "Pilih tujuan",

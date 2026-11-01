@@ -985,7 +985,7 @@ export const zhCN = {
       markRead: "标记为已读",
       deleteChats: "删除对话",
       deleteTitle: "删除对话",
-      deleteDescription: "删除 {count} 个对话？此操作无法撤销。",
+      deleteDescription: "{count} 个聊天及其消息将被永久删除。此操作无法撤销。",
       deleteFilesDescription:
         "每个对话自己的沙盒文件夹会从磁盘中删除。它们在项目内写入的文件仍保留在该项目的工作区中。",
       deleteFilesLabel: "删除文件和沙盒文件夹",
@@ -1033,7 +1033,7 @@ export const zhCN = {
     dialog: {
       deleteChat: {
         title: "删除聊天",
-        description: "确定要删除聊天“{name}”吗？",
+        description: "聊天“{name}”及其消息将被永久删除。此操作无法撤销。",
       },
       deleteRun: {
         title: "删除训练运行",
@@ -3166,9 +3166,9 @@ export const zhCN = {
         movedChatsToRecents: "已将 {count} 个聊天移至最近使用",
         moveFailed: "无法移动聊天",
         deleteChatsTitle: "删除聊天（{count} 个）",
-        deleteChatsWarning: "删除所选的 {count} 个聊天？此操作无法撤销。",
+        deleteChatsWarning: "{count} 个聊天及其消息将被永久删除。此操作无法撤销。",
         deleteArchivedTitle: "删除 {count} 个已归档聊天",
-        deleteArchivedWarning: "删除所选的 {count} 个已归档聊天？此操作无法撤销。",
+        deleteArchivedWarning: "{count} 个已归档聊天及其消息将被永久删除。此操作无法撤销。",
         deleting: "正在删除...",
       },
       title: "数据",
@@ -4600,7 +4600,7 @@ export const zhCN = {
       },
       dialog: {
         renameChat: "重命名聊天",
-        deleteChatDescription: "此聊天将被永久删除，且无法撤销。",
+        deleteChatDescription: "该聊天及其消息将被永久删除。此操作无法撤销。",
         deleteProjectDescription: "该项目及其聊天（{count} 个）将被永久删除，且无法撤销。",
         deleteFilesMany: "同时删除这些聊天创建的文件和沙盒文件夹。",
         deleteProjectFilesLabel: "删除项目工作文件夹",
@@ -5057,7 +5057,7 @@ export const zhCN = {
     renameChat: "重命名聊天",
     chatName: "聊天名称",
     deleteChat: "删除聊天",
-    deleteChatDescription: "确定要删除 {name} 吗？其消息将被永久删除。",
+    deleteChatDescription: "聊天{name}及其消息将被永久删除。此操作无法撤销。",
     importChats: "导入聊天",
     importDestination: "选择 {name} 的导入位置：",
     selectDestination: "选择目标",

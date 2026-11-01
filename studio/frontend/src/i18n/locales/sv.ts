@@ -1044,7 +1044,7 @@ export const sv = {
       deleteChats: "Ta bort chattar",
       deleteTitle: "Ta bort chattar",
       deleteDescription:
-        "Ta bort {count} chattar? Åtgärden går inte att ångra.",
+        "{count} chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
       deleteFilesDescription:
         "Varje chatts egen sandlådemapp tas bort från disken. Filer som skrivits i ett projekt blir kvar i projektets arbetsyta.",
       deleteFilesLabel: "Ta bort filer och sandlådemapp",
@@ -1092,7 +1092,7 @@ export const sv = {
     dialog: {
       deleteChat: {
         title: "Ta bort chatt",
-        description: 'Är du säker på att du vill ta bort chatten "{name}"?',
+        description: 'Chatten "{name}" och dess meddelanden raderas permanent. Det går inte att ångra.',
       },
       deleteRun: {
         title: "Ta bort träningskörning",
@@ -3388,10 +3388,10 @@ export const sv = {
         moveFailed: "Det gick inte att flytta chattar",
         deleteChatsTitle: "Ta bort chattar ({count})",
         deleteChatsWarning:
-          "Ta bort de valda chattarna ({count})? Detta kan inte ångras.",
+          "{count} chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
         deleteArchivedTitle: "Ta bort {count} arkiverade chattar",
         deleteArchivedWarning:
-          "Ta bort de valda arkiverade chattarna ({count})? Detta kan inte ångras.",
+          "{count} arkiverade chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
         deleting: "Tar bort...",
       },
       title: "Data",
@@ -4919,7 +4919,7 @@ export const sv = {
       dialog: {
         renameChat: "Byt namn på chatt",
         deleteChatDescription:
-          "Den här chatten tas bort permanent. Det går inte att ångra.",
+          "Chatten och dess meddelanden raderas permanent. Det går inte att ångra.",
         deleteProjectDescription:
           "Projektet och dess chattar ({count}) tas bort permanent. Det går inte att ångra.",
         deleteFilesMany:
@@ -5400,7 +5400,7 @@ export const sv = {
     renameChat: "Byt namn på chatt",
     chatName: "Chattnamn",
     deleteChat: "Ta bort chatt",
-    deleteChatDescription: "Vill du verkligen ta bort {name}? Dess meddelanden tas bort permanent.",
+    deleteChatDescription: "Chatten {name} och dess meddelanden raderas permanent. Det går inte att ångra.",
     importChats: "Importera chattar",
     importDestination: "Välj var {name} ska importeras:",
     selectDestination: "Välj mål",

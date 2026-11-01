@@ -991,7 +991,7 @@ export const ru = {
       markRead: "Отметить как прочитанное",
       deleteChats: "Удалить чаты",
       deleteTitle: "Удалить чаты",
-      deleteDescription: "Удалить чаты ({count})? Это действие необратимо.",
+      deleteDescription: "Чаты ({count}) и их сообщения будут удалены навсегда. Это действие нельзя отменить.",
       deleteFilesDescription:
         "Собственная папка песочницы каждого чата удаляется с диска. Файлы, созданные внутри проекта, остаются в рабочей папке этого проекта.",
       deleteFilesLabel: "Удалить файлы и папку песочницы",
@@ -1039,7 +1039,7 @@ export const ru = {
     dialog: {
       deleteChat: {
         title: "Удалить чат",
-        description: 'Вы уверены, что хотите удалить чат «{name}»?',
+        description: "Чат «{name}» и его сообщения будут удалены навсегда. Это действие нельзя отменить.",
       },
       deleteRun: {
         title: "Удалить запуск обучения",
@@ -3225,9 +3225,9 @@ export const ru = {
         movedChatsToRecents: "Перемещено чатов в недавние: {count}",
         moveFailed: "Не удалось переместить чаты",
         deleteChatsTitle: "Удалить чаты ({count})",
-        deleteChatsWarning: "Удалить выбранные чаты ({count})? Это действие нельзя отменить.",
+        deleteChatsWarning: "Чаты ({count}) и их сообщения будут удалены навсегда. Это действие нельзя отменить.",
         deleteArchivedTitle: "Удалить архивные чаты ({count})",
-        deleteArchivedWarning: "Удалить выбранные архивные чаты ({count})? Это действие нельзя отменить.",
+        deleteArchivedWarning: "Архивные чаты ({count}) и их сообщения будут удалены навсегда. Это действие нельзя отменить.",
         deleting: "Удаление...",
       },
       title: "Данные",
@@ -4727,7 +4727,7 @@ export const ru = {
       },
       dialog: {
         renameChat: "Переименовать чат",
-        deleteChatDescription: "Этот чат будет удалён без возможности восстановления.",
+        deleteChatDescription: "Чат и его сообщения будут удалены навсегда. Это действие нельзя отменить.",
         deleteProjectDescription: "Проект и его чаты ({count}) будут удалены без возможности восстановления.",
         deleteFilesMany: "Также удалить файлы и папки песочницы, созданные этими чатами.",
         deleteProjectFilesLabel: "Удалить рабочую папку проекта",
@@ -5184,7 +5184,7 @@ export const ru = {
     renameChat: "Переименовать чат",
     chatName: "Название чата",
     deleteChat: "Удалить чат",
-    deleteChatDescription: "Удалить {name}? Его сообщения будут удалены безвозвратно.",
+    deleteChatDescription: "Чат {name} и его сообщения будут удалены навсегда. Это действие нельзя отменить.",
     importChats: "Импорт чатов",
     importDestination: "Выберите, куда импортировать {name}:",
     selectDestination: "Выберите место",

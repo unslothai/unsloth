@@ -988,7 +988,7 @@ export const ar = {
       markRead: "وضع علامة كمقروءة",
       deleteChats: "حذف المحادثات",
       deleteTitle: "حذف المحادثات",
-      deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
+      deleteDescription: "سيتم حذف المحادثات ({count}) ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
       deleteFilesDescription:
         "يُحذف مجلد بيئة العزل الخاص بكل محادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
       deleteFilesLabel: "حذف الملفات ومجلد بيئة العزل",
@@ -1036,7 +1036,7 @@ export const ar = {
     dialog: {
       deleteChat: {
         title: "حذف المحادثة",
-        description: "هل أنت متأكد من رغبتك في حذف هذه المحادثة «{name}»؟",
+        description: "سيتم حذف المحادثة «{name}» ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
       },
       deleteRun: {
         title: "حذف عملية التدريب",
@@ -3215,9 +3215,9 @@ export const ar = {
         movedChatsToRecents: "المحادثات المنقولة إلى الأخيرة: {count}",
         moveFailed: "تعذر نقل المحادثات",
         deleteChatsTitle: "حذف المحادثات ({count})",
-        deleteChatsWarning: "هل تريد حذف المحادثات المحددة ({count})؟ لا يمكن التراجع عن هذا الإجراء.",
+        deleteChatsWarning: "سيتم حذف المحادثات ({count}) ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
         deleteArchivedTitle: "حذف المحادثات المؤرشفة ({count})",
-        deleteArchivedWarning: "هل تريد حذف المحادثات المؤرشفة المحددة ({count})؟ لا يمكن التراجع عن هذا الإجراء.",
+        deleteArchivedWarning: "سيتم حذف المحادثات المؤرشفة ({count}) ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
         deleting: "جارٍ الحذف...",
       },
       title: "البيانات",
@@ -4699,7 +4699,7 @@ export const ar = {
       },
       dialog: {
         renameChat: "إعادة تسمية المحادثة",
-        deleteChatDescription: "سيتم حذف هذه المحادثة نهائيًا. لا يمكن التراجع عن ذلك.",
+        deleteChatDescription: "سيتم حذف المحادثة ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
         deleteProjectDescription: "سيتم حذف المشروع ومحادثاته ({count}) نهائيًا. لا يمكن التراجع عن ذلك.",
         deleteFilesMany: "احذف أيضًا الملفات ومجلدات بيئة الاختبار التي أنشأتها هذه المحادثات.",
         deleteProjectFilesLabel: "حذف مجلد مساحة عمل المشروع",
@@ -5156,7 +5156,7 @@ export const ar = {
     renameChat: "إعادة تسمية المحادثة",
     chatName: "اسم المحادثة",
     deleteChat: "حذف المحادثة",
-    deleteChatDescription: "هل تريد بالتأكيد حذف {name}؟ ستُحذف رسائلها نهائيًا.",
+    deleteChatDescription: "سيتم حذف المحادثة {name} ورسائلها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
     importChats: "استيراد المحادثات",
     importDestination: "اختر مكان استيراد {name}:",
     selectDestination: "اختر الوجهة",

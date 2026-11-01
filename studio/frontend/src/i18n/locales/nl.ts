@@ -1105,7 +1105,7 @@ export const nl = {
       deleteChats: "Chats verwijderen",
       deleteTitle: "Chats verwijderen",
       deleteDescription:
-        "{count} chats verwijderen? Dit kan niet ongedaan worden gemaakt.",
+        "Hiermee worden {count} chats en hun berichten definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
       deleteFilesDescription:
         "De eigen sandboxmap van elke chat wordt van de schijf verwijderd. Bestanden die ze in een project hebben geschreven, blijven in de werkruimte van dat project.",
       deleteFilesLabel: "Bestanden en sandboxmap verwijderen",
@@ -1154,7 +1154,7 @@ export const nl = {
     dialog: {
       deleteChat: {
         title: "Chat verwijderen",
-        description: 'Weet je zeker dat je de chat "{name}" wilt verwijderen?',
+        description: 'Hiermee worden de chat "{name}" en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.',
       },
       deleteRun: {
         title: "Trainingsrun verwijderen",
@@ -3528,10 +3528,10 @@ export const nl = {
         moveFailed: "Kan chats niet verplaatsen",
         deleteChatsTitle: "Chats verwijderen ({count})",
         deleteChatsWarning:
-          "De geselecteerde chats ({count}) verwijderen? Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden {count} chats en hun berichten definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleteArchivedTitle: "{count} gearchiveerde chats verwijderen",
         deleteArchivedWarning:
-          "De geselecteerde gearchiveerde chats ({count}) verwijderen? Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden {count} gearchiveerde chats en hun berichten definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleting: "Verwijderen...",
       },
       title: "Gegevens",
@@ -5111,7 +5111,7 @@ export const nl = {
       dialog: {
         renameChat: "Naam van chat wijzigen",
         deleteChatDescription:
-          "Deze chat wordt definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
+          "Hiermee worden de chat en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleteProjectDescription:
           "Het project en de bijbehorende chats ({count}) worden definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
         deleteFilesMany:
@@ -5612,7 +5612,7 @@ export const nl = {
     chatName: "Chatnaam",
     deleteChat: "Chat verwijderen",
     deleteChatDescription:
-      "Weet je zeker dat je {name} wilt verwijderen? De berichten worden definitief verwijderd.",
+      "Hiermee worden de chat {name} en de berichten ervan definitief verwijderd. Dit kan niet ongedaan worden gemaakt.",
     importChats: "Chats importeren",
     importDestination: "Kies waar je {name} wilt importeren:",
     selectDestination: "Bestemming selecteren",
