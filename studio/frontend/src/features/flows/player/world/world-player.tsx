@@ -543,6 +543,7 @@ export function WorldPlayer({
           {
             name: (id) => itemById.get(id)?.name ?? id,
             occupied: (p) =>
+              g.blocksProp?.(p) === true ||
               [g.playerTile(), ...Object.values(g.npcTiles())].some(
                 (q) => at(q) === at(p),
               ),
