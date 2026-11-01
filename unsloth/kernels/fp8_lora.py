@@ -14,7 +14,7 @@ fp8 through torch._scaled_mm, the LoRA branch stays in the activation dtype (Meg
 split). The base weight is frozen, so it is quantized once (tensorwise e4m3) and cached; the 16-bit weight stays
 the source of truth for merge / save. A weight changed in place (merge, unmerge, load) is requantized on its
 next eager use. cuBLAS fp8 GEMMs are TN only, so dgrad needs a K-major copy: transposed per backward inside the
-opaque op (UNSLOTH_FP8_LORA_CACHE_T=1 caches it instead, +1 byte per weight, about 1% faster).
+opaque op (UNSLOTH_FP8_LORA_CACHE_T=1 caches it instead: +1 byte per weight, 1-7% faster).
 
 Scales (UNSLOTH_FP8_LORA_SCALING): tensor = activations e4m3 / output gradients e5m2, one scale per tensor;
 row = one e4m3 scale per token for both. auto picks row on compute capability 12.x and tensor elsewhere (L4's
@@ -96,7 +96,8 @@ _DGRAD_DTYPE = _env_dgrad()
 _FWD_FAST_ACCUM = os.environ.get("UNSLOTH_FP8_LORA_FWD_FAST_ACCUM", "1") != "0"
 _DGRAD_FAST_ACCUM = os.environ.get("UNSLOTH_FP8_LORA_DGRAD_FAST_ACCUM", "0") == "1"
 # 1 keeps a transposed fp8 copy for dgrad (+1 byte / weight); default 0 transposes per backward inside the
-# opaque op: measured about 1% slower on L4 and RTX PRO 6000, 0.4 / 1.3 GB less at Qwen3-0.6B / 1.7B.
+# opaque op: 1% slower tensorwise (L4, RTX PRO 6000), 7% slower rowwise at Qwen3-1.7B (RTX PRO 6000), and
+# 0.4 / 1.3 GB less peak memory at Qwen3-0.6B / 1.7B.
 _CACHE_T = os.environ.get("UNSLOTH_FP8_LORA_CACHE_T", "0") == "1"
 # Fewer rows than this (decode) use the 16-bit weight: an fp8 GEMM there is launch bound and less exact.
 _MIN_ROWS = int(os.environ.get("UNSLOTH_FP8_LORA_MIN_ROWS", "16"))

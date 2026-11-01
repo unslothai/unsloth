@@ -533,9 +533,10 @@ _add(
             "sm80": _NO_FP8_HW,
             "sm89": Gate(
                 "explicit",
-                evidence = "L4: step 1.13x bf16 at Qwen3-0.6B (3 seeds, A/A 0.9%), 1.27-1.29x at 1.7B (A/A "
-                "0.5-1.6%); last-10 loss +0.7% vs bf16 (seed band 0.04%); peak memory +0.65 / +1.3 GB "
-                "without the transposed cache. " + _FP8_LORA_RUNS,
+                evidence = "L4, transposed cache on: step 1.13x bf16 at Qwen3-0.6B (3 seeds, A/A 0.9%), "
+                "1.27-1.29x at 1.7B (A/A 0.5-1.6%); cache off (default) 1.12x at 0.6B. Last-10 loss "
+                "+0.6-0.8% vs bf16 (seed band 0.04%), step-0 LoRA grad cosine 0.978 / 0.993; peak memory "
+                "+0.65 GB (0.6B, cache off) / +1.05 / +2.6 GB (0.6B / 1.7B, cache on). " + _FP8_LORA_RUNS,
             ),
             "sm90": Gate("unprobed", "H100 is not available to test on"),
             "sm100": Gate("unprobed"),
@@ -574,8 +575,10 @@ _add(
             "sm100": Gate("unprobed"),
             "sm120": Gate(
                 "explicit",
-                evidence = "RTX PRO 6000: 1.15x at Qwen3-0.6B, 1.24x at 1.7B (A/A < 3.5%); op level "
-                "1.52-1.73x; dgrad error 0.037 vs 0.059 tensorwise. " + _FP8_LORA_RUNS,
+                evidence = "RTX PRO 6000, cache off (default): 1.13x at Qwen3-0.6B (3 seeds, A/A 0.9%), "
+                "1.155x at 1.7B (A/A 0.01%), peak memory +0.62 / +1.3 GB; cache on: 1.15x / 1.24x. Last-10 "
+                "loss +0.6-0.7% vs bf16, step-0 LoRA grad cosine 0.979; dgrad error 0.037 vs 0.059 "
+                "tensorwise. " + _FP8_LORA_RUNS,
             ),
             "rocm": Gate("refused", "ROCm fp8 (fnuz) GEMMs are not wired for the frozen base"),
         },
