@@ -985,6 +985,72 @@ def _preserve_tokenizer_eos_token(
         )
 
 
+def _source_tokenizer_class(tokenizer, token = None):
+    """The tokenizer_class the checkpoint this tokenizer was loaded from ships, read from its local folder or cached Hub snapshot (no network). Call before saving: an in-place save overwrites the source file."""
+    if tokenizer is None:
+        return None
+    source_tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    source = getattr(source_tokenizer, "name_or_path", None)
+    if not isinstance(source, str) or not source:
+        return None
+    try:
+        if os.path.isdir(source):
+            source_config = os.path.join(source, "tokenizer_config.json")
+        else:
+            source_config = _resolve_hub_repo_cached_file(
+                source,
+                "tokenizer_config.json",
+                token = token,
+                local_files_only = True,
+                cache_dir = _tokenizer_cache_dir(source_tokenizer),
+                revision = _tokenizer_revision(source_tokenizer),
+            )
+        if not source_config or not os.path.isfile(source_config):
+            return None
+        with open(source_config, "r", encoding = "utf-8") as file:
+            source_class = json.load(file).get("tokenizer_class")
+    except Exception:
+        return None
+    if not isinstance(source_class, str) or source_class in ("", "TokenizersBackend"):
+        return None
+    return source_class
+
+
+def _restore_source_tokenizer_class(
+    tokenizer,
+    save_directory,
+    filename_prefix = None,
+    token = None,
+    source_class = None,
+):
+    """transformers 5.2-5.5 save a fast tokenizer as the generic TokenizersBackend, which transformers 4.x (vLLM 0.17 and older) cannot load. Write back the class the source checkpoint ships. Never fails the save."""
+    if tokenizer is None or save_directory is None:
+        return
+    tokenizer_config_name = (
+        f"{filename_prefix}-tokenizer_config.json" if filename_prefix else "tokenizer_config.json"
+    )
+    tokenizer_config = os.path.join(str(save_directory), tokenizer_config_name)
+    if not os.path.isfile(tokenizer_config):
+        return
+    try:
+        with open(tokenizer_config, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+        if config.get("tokenizer_class") != "TokenizersBackend":
+            return
+        if source_class is None:
+            source_class = _source_tokenizer_class(tokenizer, token = token)
+        if source_class is None:
+            return
+        config["tokenizer_class"] = source_class
+        with open(tokenizer_config, "w", encoding = "utf-8") as file:
+            json.dump(config, file, indent = 2, ensure_ascii = False)
+            file.write("\n")
+    except Exception as error:
+        logger.warning_once(
+            f"Unsloth: Could not restore tokenizer_class in {tokenizer_config}: {error}"
+        )
+
+
 def _preserve_repaired_tokenizer_class(
     tokenizer,
     save_directory,
@@ -1913,11 +1979,21 @@ def unsloth_save_model(
         old_padding_side = _tokenizer.padding_side
         _tokenizer.padding_side = "left"
 
+        source_tokenizer_class = _source_tokenizer_class(
+            tokenizer, token = tokenizer_save_settings.get("token")
+        )
         tokenizer.save_pretrained(**tokenizer_save_settings)
         _preserve_tokenizer_eos_token(
             tokenizer,
             tokenizer_save_settings["save_directory"],
             filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+        )
+        _restore_source_tokenizer_class(
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+            token = tokenizer_save_settings.get("token"),
+            source_class = source_tokenizer_class,
         )
         _preserve_repaired_tokenizer_class(
             tokenizer,
@@ -8807,6 +8883,7 @@ def _unsloth_tokenizer_save_pretrained(
         save_kwargs["legacy_format"] = legacy_format
     if filename_prefix is not None:
         save_kwargs["filename_prefix"] = filename_prefix
+    source_tokenizer_class = _source_tokenizer_class(self, token = kwargs.get("token", None))
     result = self.original_save_pretrained(
         save_directory,
         push_to_hub = False,
@@ -8821,6 +8898,13 @@ def _unsloth_tokenizer_save_pretrained(
         self,
         save_directory,
         filename_prefix = filename_prefix,
+    )
+    _restore_source_tokenizer_class(
+        self,
+        save_directory,
+        filename_prefix = filename_prefix,
+        token = kwargs.get("token", None),
+        source_class = source_tokenizer_class,
     )
     _preserve_repaired_tokenizer_class(
         self,
