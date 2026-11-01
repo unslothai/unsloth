@@ -110,15 +110,14 @@ def prewarm_enabled() -> bool:
 
 
 def _triton_key_fn() -> Optional[Callable[[], Any]]:
-    for name in ("triton.runtime.cache", "triton.compiler.compiler"):
+    try:
+        from triton.runtime.cache import triton_key
+    except Exception:  # noqa: BLE001 - another Triton layout
         try:
-            module = __import__(name, fromlist = ["triton_key"])
-        except Exception:  # noqa: BLE001 - another Triton layout
-            continue
-        fn = getattr(module, "triton_key", None)
-        if callable(fn):
-            return fn
-    return None
+            from triton.compiler.compiler import triton_key
+        except Exception:  # noqa: BLE001 - no Triton
+            return None
+    return triton_key if callable(triton_key) else None
 
 
 def warm_triton_key(logger: Any = None) -> bool:
@@ -140,14 +139,17 @@ def warm_triton_key(logger: Any = None) -> bool:
 
 def warm_engage_imports(logger: Any = None) -> int:
     """Model-free first-use work of the engagement; returns how many steps ran."""
-    import importlib
+    def _zoo_patch_utils() -> None:
+        # Import only: diffusion_patch_backend._helpers() keeps its own retry (import unsloth) for the 3rd image.
+        import unsloth_zoo.temporary_patches.utils  # noqa: F401
+
+    def _vae_kernels() -> None:
+        from . import diffusion_vae_fused
+
+        diffusion_vae_fused._kernels()
 
     done = 0
-    steps: list[Callable[[], Any]] = [
-        # Import only: diffusion_patch_backend._helpers() keeps its own retry (import unsloth) for the 3rd image.
-        lambda: importlib.import_module("unsloth_zoo.temporary_patches.utils"),
-        lambda: importlib.import_module(f"{__package__}.diffusion_vae_fused")._kernels(),
-    ]
+    steps: list[Callable[[], Any]] = [_zoo_patch_utils, _vae_kernels]
     for step in steps:
         try:
             step()

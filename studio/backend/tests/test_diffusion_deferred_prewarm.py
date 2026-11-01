@@ -171,24 +171,15 @@ def test_warm_triton_key_real_triton_is_cached():
 def test_engage_imports_keep_going_and_leave_the_patch_helpers_alone(monkeypatch):
     from core.inference import diffusion_patch_backend
 
+    from core.inference import diffusion_vae_fused
+
     monkeypatch.setattr(diffusion_patch_backend, "_HELPERS", None)
-    imported: list = []
-    import importlib
-
-    real = importlib.import_module
-
-    def fake_import(name, *args, **kwargs):
-        imported.append(name)
-        if name.startswith("unsloth_zoo"):
-            raise ImportError("no unsloth_zoo here")
-        if name.endswith("diffusion_vae_fused"):
-            return types.SimpleNamespace(_kernels = lambda: None)
-        return real(name, *args, **kwargs)
-
-    monkeypatch.setattr(importlib, "import_module", fake_import)
+    # None in sys.modules makes the import raise ImportError: the step fails, the next one still runs
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.temporary_patches.utils", None)
+    kernels: list = []
+    monkeypatch.setattr(diffusion_vae_fused, "_kernels", lambda: kernels.append(1))
     assert bg.warm_engage_imports(LOG) == 1
-    assert imported[0] == "unsloth_zoo.temporary_patches.utils"
-    assert imported[1].endswith("diffusion_vae_fused")
+    assert kernels == [1]
     # The 3rd image still runs the helpers' own resolution (and its import-unsloth retry).
     assert diffusion_patch_backend._HELPERS is None
 
