@@ -194,6 +194,8 @@ def test_exclusive_flash_needs_a_flash_kernel_and_falls_back_to_cudnn_only_where
     monkeypatch.setattr(att, "available_sdpa_kernels", lambda target: kernels)
     monkeypatch.setattr(att, "_native_dispatches_cudnn", lambda *a, **k: False)
     t = _Transformer(config = {"attention_head_dim": 128})
-    engaged = apply_attention_backend(types.SimpleNamespace(transformer = t), "_native_flash", target = _target())
+    engaged = apply_attention_backend(
+        types.SimpleNamespace(transformer = t), "_native_flash", target = _target()
+    )
     assert engaged == expected
     assert ("_native_flash" in t.calls) == (expected == "_native_flash")
