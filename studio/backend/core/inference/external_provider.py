@@ -34,7 +34,9 @@ from core.inference.openai_responses_shared import (
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from models.providers import (
+    normalize_provider_extra_headers,
     normalize_provider_reasoning_config,
+    render_provider_extra_headers,
     validate_provider_reasoning_contract,
 )
 
@@ -1510,6 +1512,7 @@ class ExternalProviderClient:
         *,
         api_type: str = "chat_completions",
         reasoning_config: Optional[dict] = None,
+        extra_headers: Optional[dict] = None,
         managed_loopback: bool = False,
     ):
         self.provider_type = provider_type
@@ -1519,6 +1522,8 @@ class ExternalProviderClient:
             if provider_type == "custom"
             else None
         )
+        self.extra_headers = normalize_provider_extra_headers(extra_headers)
+        self._header_vars: dict[str, str] = {}
         validate_provider_reasoning_contract(provider_type, self.api_type, self.reasoning_config)
         from core.inference.providers import validate_provider_base_url
 
@@ -1582,6 +1587,12 @@ class ExternalProviderClient:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
+        headers.update(
+            render_provider_extra_headers(
+                getattr(self, "extra_headers", {}),
+                getattr(self, "_header_vars", {}),
+            )
+        )
         return headers
 
     def _chat_headers(self, thread_id: Optional[str]) -> dict[str, str]:
@@ -1643,6 +1654,12 @@ class ExternalProviderClient:
         compaction_fallback: Optional[CompactionFallback] = None,
     ) -> AsyncGenerator[str, None]:
         """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
+        self._header_vars = {
+            "CHAT_SESSION_ID": (thread_id or "").strip(),
+            "THREAD_ID": (thread_id or "").strip(),
+            "MODEL": model or "",
+            "PROVIDER_TYPE": self.provider_type,
+        }
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )

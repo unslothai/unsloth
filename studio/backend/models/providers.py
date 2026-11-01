@@ -3,9 +3,12 @@
 
 """Pydantic schemas for the external LLM providers API."""
 
+from __future__ import annotations
+
+import re
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
 ProviderApiType = Literal["chat_completions", "responses", "systemone"]
 
@@ -42,6 +45,70 @@ def validate_provider_reasoning_contract(provider_type: str, api_type: str, conf
 
 
 MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
+_MAX_EXTRA_HEADERS = 16
+_MAX_HEADER_NAME = 64
+_MAX_HEADER_VALUE = 1024
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_HEADER_TEMPLATE_RE = re.compile(r"\{\{\s*([A-Z][A-Z0-9_]*)\s*\}\}")
+_FORBIDDEN_EXTRA_HEADERS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "host",
+        "content-length",
+        "content-type",
+        "connection",
+        "transfer-encoding",
+        "te",
+        "trailer",
+        "upgrade",
+        "keep-alive",
+        "api-key",
+        "x-api-key",
+        "x-goog-api-key",
+    }
+)
+
+
+def normalize_provider_extra_headers(value) -> dict[str, str]:
+    """Validate a connection's extra headers. Empty or absent becomes {}."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("extra_headers must be an object of header name to value.")
+    if len(value) > _MAX_EXTRA_HEADERS:
+        raise ValueError(f"At most {_MAX_EXTRA_HEADERS} extra headers are allowed.")
+    headers: dict[str, str] = {}
+    for raw_name, raw_value in value.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_value, str):
+            raise ValueError("extra_headers keys and values must be strings.")
+        name = raw_name.strip()
+        if not name or len(name) > _MAX_HEADER_NAME or not _HEADER_NAME_RE.fullmatch(name):
+            raise ValueError(f"Invalid extra header name: {raw_name!r}.")
+        if name.lower() in _FORBIDDEN_EXTRA_HEADERS:
+            raise ValueError(f"Cannot set reserved header {name!r}.")
+        if "\r" in raw_value or "\n" in raw_value:
+            raise ValueError(f"Header {name!r} cannot contain newlines.")
+        if len(raw_value) > _MAX_HEADER_VALUE:
+            raise ValueError(f"Header {name!r} is too long.")
+        headers[name] = raw_value
+    return headers
+
+
+def render_provider_extra_headers(
+    headers: dict[str, str] | None, variables: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Replace ``{{ VAR }}`` placeholders. Unknown names become empty strings."""
+    if not headers:
+        return {}
+    values = variables or {}
+
+    def replace(match: re.Match[str]) -> str:
+        return values.get(match.group(1), "")
+
+    return {name: _HEADER_TEMPLATE_RE.sub(replace, value) for name, value in headers.items()}
 
 
 class ProviderRegistryEntry(BaseModel):
@@ -82,7 +149,21 @@ class ProviderRegistryEntry(BaseModel):
     )
 
 
-class ProviderCreate(BaseModel):
+class ExtraHeadersMixin(BaseModel):
+    extra_headers: Optional[dict[str, str]] = Field(
+        default = None,
+        description = "Optional request headers. Values may include {{CHAT_SESSION_ID}}.",
+    )
+
+    @field_validator("extra_headers", mode = "before")
+    @classmethod
+    def _validate_extra_headers(cls, value):
+        if value is None:
+            return None
+        return normalize_provider_extra_headers(value)
+
+
+class ProviderCreate(ExtraHeadersMixin):
     """Request to create a saved provider configuration."""
 
     api_type: ProviderApiType = "chat_completions"
@@ -120,7 +201,7 @@ class ProviderCreate(BaseModel):
     )
 
 
-class ProviderUpdate(BaseModel):
+class ProviderUpdate(ExtraHeadersMixin):
     """Request to update a saved provider configuration."""
 
     api_type: Optional[ProviderApiType] = None
@@ -194,6 +275,10 @@ class ProviderResponse(BaseModel):
         None,
         description = "Configured maximum Max Tokens cap for this connection",
     )
+    extra_headers: dict[str, str] = Field(
+        default_factory = dict,
+        description = "Optional request headers. Values may include {{CHAT_SESSION_ID}}.",
+    )
     shared: bool = Field(False, description = "Whether every account on this installation can use it")
     shared_by_owner: bool = Field(
         False,
@@ -236,7 +321,7 @@ class ModelCatalogResponse(BaseModel):
     providers: dict[str, dict[str, dict]]
 
 
-class ProviderModelsRequest(BaseModel):
+class ProviderModelsRequest(ExtraHeadersMixin):
     """Request to list models from an external provider."""
 
     api_type: ProviderApiType = "chat_completions"
@@ -255,7 +340,7 @@ class ProviderModelsRequest(BaseModel):
     )
 
 
-class ProviderTestRequest(BaseModel):
+class ProviderTestRequest(ExtraHeadersMixin):
     """Request to test connectivity to an external provider."""
 
     api_type: ProviderApiType = "chat_completions"
