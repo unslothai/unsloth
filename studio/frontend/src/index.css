@@ -7202,7 +7202,7 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
   --lq-tint: color-mix(in srgb, var(--glass-page-popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
   --lq-tint-deep: color-mix(in srgb, var(--glass-page-popover) min(96%, calc(calc(var(--glass-tint) + 20%) * var(--glass-opacity, 1))), transparent);
 }
-/* A host keeping its backdrop-filter is a backdrop root, so the layer would refract only the host; !important beats the more specific glass rules. */
+/* A host keeping its backdrop-filter is a backdrop root, so the layer would refract only the host. */
 :is(.unsloth-composer-surface, [data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"]):has(> .unsloth-liquid-layer) {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;

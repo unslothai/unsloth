@@ -6,7 +6,6 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGlassStrength, useMaterialStore } from "./material";
 
-/** @liqui-design/glass refraction is Chromium only; WebKit and Firefox fall back to its frosted tier. */
 const OPTICS = {
   composer: {
     liquid: { refraction: 30, bezel: 6, specular: 0.15, dispersion: 0 },
@@ -22,7 +21,6 @@ const OPTICS = {
     "liquid-3d": { refraction: 44, bezel: 9, specular: 0.45, dispersion: 0 },
   },
 } as const;
-// Frost sets the library's tint opacity (0.25 + 0.75 * frost) and adds frost * 14px of blur.
 const FROST = { composer: 0.35, menu: 1 } as const;
 const BASE_BLUR = { composer: 10, menu: 18 } as const;
 // The library inflates the radius this much where corner-shape: squircle renders; we draw round corners.
