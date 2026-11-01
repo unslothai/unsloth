@@ -918,8 +918,7 @@ class InferenceOrchestrator:
         return True
 
     def _join_worker_draining(self, timeout: float) -> None:
-        """Wait for worker exit, emptying replies meanwhile: a child exits only once its queue
-        feeder flushes, and a full pipe would hold it until the terminate fallback."""
+        """Join while draining replies: a child exits only once its queue feeder flushes."""
         proc = self._proc
         try:
             if getattr(proc, "sentinel", None) is None:
@@ -938,9 +937,8 @@ class InferenceOrchestrator:
             pass
 
     def _drain_unread_replies(self) -> None:
-        """Route the reply queue to the dispatched mailboxes still waiting on it, standing in for the
-        stopped dispatcher; without the old sleeps a cancelled stream's tail and gen_done would be
-        discarded. A direct reader reads (and routes) the queue itself, so leave it to that reader."""
+        """Stand in for the stopped dispatcher so a cancelled stream keeps its tail; a direct reader
+        reads the queue itself."""
         with self._mailbox_lock:
             if self._direct_mailboxes:
                 return
@@ -954,8 +952,7 @@ class InferenceOrchestrator:
                 mbox.put(resp)
 
     def _let_readers_finish(self, deadline: float) -> None:
-        """A stream bails with a worker-crash error once the handle swaps, so give one still reading
-        its cancelled reply's tail until ``deadline``; an idle switch does not wait at all."""
+        """A stream reports a worker crash once the handle swaps, so let it read its tail first."""
         while time.monotonic() < deadline:
             with self._mailbox_lock:
                 if not self._mailboxes and not self._direct_mailboxes:
