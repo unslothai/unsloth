@@ -40,16 +40,15 @@ def voices_dir() -> Path:
     return directory
 
 
-def _sidecar(voice_id: str) -> Path:
-    return voices_dir() / f"{voice_id}.json"
+def _sidecar(voice_id: str, directory: Optional[Path] = None) -> Path:
+    return (directory or voices_dir()) / f"{voice_id}.json"
 
 
 def _read(voice_id: str, directory: Optional[Path] = None) -> Optional[dict[str, Any]]:
     if not _valid_id(voice_id):
         return None
     try:
-        sidecar = _sidecar(voice_id) if directory is None else directory / f"{voice_id}.json"
-        meta = json.loads(sidecar.read_text(encoding = "utf-8"))
+        meta = json.loads(_sidecar(voice_id, directory).read_text(encoding = "utf-8"))
     except (OSError, ValueError, UnicodeError):
         return None
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED):
@@ -85,8 +84,7 @@ def _clean_name(value: Optional[str]) -> str:
 
 
 def _scan() -> tuple[Optional[Path], list[tuple[str, dict[str, Any]]]]:
-    """The voices folder and each valid sidecar in it, read once: resolving the folder costs a
-    settings lookup and a mkdir, so it is done once per scan, not once per voice."""
+    """The voices folder (resolved once: a settings lookup + mkdir) and each valid sidecar."""
     try:
         directory = voices_dir()
         found = []
