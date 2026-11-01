@@ -4394,7 +4394,7 @@ async def upload_diffusion_dataset(
         seen_names: set = set()
         first_name_by_casefold: dict = {}
         media_names_by_stem_cf: dict = {}
-        # Existing media names by casefolded stem, in iterdir order; listed once, at the first media file.
+        # Listed lazily, once; iterdir order keeps the reported clash the first listed match.
         existing_media_by_stem_cf: Optional[dict] = None
         for f in files:
             # Path.name does not split on a backslash on POSIX, so fold them first.
@@ -4442,7 +4442,6 @@ async def upload_diffusion_dataset(
                             existing_media_by_stem_cf.setdefault(other.stem.casefold(), []).append(
                                 p
                             )
-                # Only a media name with this casefolded stem can share the sidecar.
                 clash = next(
                     (
                         p.name
