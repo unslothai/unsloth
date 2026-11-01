@@ -376,7 +376,6 @@ def test_install_is_idempotent(quantized):
 def test_arch_pick_moves_only_the_automatic_cudnn_pick_on_measured_archs(
     selected, cap, expected, monkeypatch
 ):
-    # Assume flash SDPA is present so the measured-arch upgrade itself is what is under test.
     monkeypatch.setattr(A, "_flash_sdpa_ready", lambda target = None: True)
     assert A.h3_attention_backend(selected, cap) == expected
 

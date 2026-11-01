@@ -11049,8 +11049,6 @@ class VideoBackend:
                 umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
             )
             try:
-                # Pass the same run dtype/device apply uses: Auto must not upgrade to flash when this
-                # torch build has no flash SDPA kernel (Windows CUDA wheels; #16294).
                 h3_attn_backend = h3_attention_backend(
                     h3_attn_backend,
                     requested = attention_backend,
