@@ -296,6 +296,7 @@ def _resource_resume_cache_key(config: dict) -> Optional[str]:
 def resource_resume_blocker(config: dict) -> Optional[str]:
     """resource_provenance_resume_blocker, answered once per scan_memo scope for runs with the same inputs."""
     from core.training.provenance import resource_provenance_resume_blocker
+
     key = _resource_resume_cache_key(config)
     if key is None:
         return resource_provenance_resume_blocker(config)
