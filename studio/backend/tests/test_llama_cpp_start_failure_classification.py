@@ -132,6 +132,16 @@ class TestUnsupportedNonDiffusionArchitecture:
         assert "updating llama.cpp" in msg.lower()
         assert "cannot be run" not in msg.lower()
 
+    def test_a_parakeet_cpp_arch_does_not_blame_an_old_llama_cpp(self):
+        """mudler/parakeet.cpp GGUFs must not get the 'update llama.cpp' toast (#16273)."""
+        out = "error loading model: unknown model architecture: 'parakeet'"
+        msg = _classify(out, "/models/parakeet-tdt.gguf", "mudler/parakeet-cpp-gguf")
+        assert "parakeet" in msg.lower()
+        assert "updating llama.cpp will not" in msg.lower()
+        assert "Parakeet-TDT-0.6B-v3-GGUF" in msg
+        assert "does not recognise" not in msg.lower()
+        assert "Images page" not in msg
+
     @pytest.mark.parametrize(
         "arch",
         [

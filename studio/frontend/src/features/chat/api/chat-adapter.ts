@@ -2886,6 +2886,7 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
   "text-to-audio",
   "audio-to-audio",
   "automatic-speech-recognition",
+  "speech-recognition-unsupported",
 ]);
 
 // ollama is excluded: local_model_resolver.py skips its scanner. hermes is read-only, so included.
