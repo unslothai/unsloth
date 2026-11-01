@@ -15,6 +15,8 @@ export interface OffloadCounts {
   offloadOverridden?: boolean | null;
   cpuFallbackReason?: string | null;
   gpuBackendUnavailable?: boolean | null;
+  gpuWeightsMib?: number | null;
+  hostWeightsMib?: number | null;
 }
 
 export interface OffloadCountsSource {
@@ -25,6 +27,8 @@ export interface OffloadCountsSource {
   offload_overridden?: boolean | null;
   cpu_fallback_reason?: string | null;
   gpu_backend_unavailable?: boolean | null;
+  gpu_weights_mib?: number | null;
+  host_weights_mib?: number | null;
 }
 
 export function offloadCountsFrom(
@@ -38,6 +42,8 @@ export function offloadCountsFrom(
     offloadOverridden: response.offload_overridden,
     cpuFallbackReason: response.cpu_fallback_reason,
     gpuBackendUnavailable: response.gpu_backend_unavailable,
+    gpuWeightsMib: response.gpu_weights_mib,
+    hostWeightsMib: response.host_weights_mib,
   };
 }
 
@@ -58,6 +64,8 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
     offloadOverridden,
     cpuFallbackReason,
     gpuBackendUnavailable,
+    gpuWeightsMib,
+    hostWeightsMib,
   } = counts;
   const cpuFallbackDescription = cpuFallbackMessage(cpuFallbackReason);
   if (cpuFallbackDescription) {
@@ -85,15 +93,16 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
     typeof gpuLayers === "number" &&
     gpuLayers >= 0;
   if (manualPin || offloadOverridden) return null;
+  const weights = weightsClause(gpuWeightsMib, hostWeightsMib);
   if (offloaded <= 0) {
     return {
       titleSuffix: ", on CPU",
-      description: `None of the ${total} layers fit on the GPU, so the model runs entirely on CPU and generation will be slow. A smaller quantization or a shorter context may leave room on the GPU.`,
+      description: `None of the ${total} layers fit on the GPU${weights}, so the model runs entirely on CPU and generation will be slow. A smaller quantization or a shorter context may leave room on the GPU.`,
     };
   }
   return {
     titleSuffix: ", partly on CPU",
-    description: `${offloaded} of ${total} layers are on the GPU. The rest run on CPU, so generation will be slower. A smaller quantization or a shorter context may let more of it fit on the GPU.`,
+    description: `${offloaded} of ${total} layers are on the GPU${weights}. The rest run on CPU, so generation will be slower. A smaller quantization or a shorter context may let more of it fit on the GPU.`,
   };
 }
 
@@ -108,6 +117,21 @@ function weightAmount(mib: number): string {
   return mib < 102.4
     ? `${Math.max(1, Math.round(mib))} MiB`
     : formatGiB(mib / 1024);
+}
+
+/** " (X in VRAM, Y in RAM)" from the load log's weight buffers, so the notice says how much memory the
+ *  model takes and not only how many layers moved; empty when the load reported neither figure. */
+function weightsClause(
+  gpuWeightsMib: number | null | undefined,
+  hostWeightsMib: number | null | undefined,
+): string {
+  const memory = describeWeights(
+    count(gpuWeightsMib),
+    count(hostWeightsMib),
+    null,
+    ", ",
+  );
+  return memory === null ? "" : ` (${memory})`;
 }
 
 function layerCount(n: number): string {
@@ -170,6 +194,7 @@ function describeWeights(
   gpuWeightsMib: number | null,
   hostWeightsMib: number | null,
   pool: string | null,
+  separator = " · ",
 ): string | null {
   const gpu = gpuWeightsMib !== null && gpuWeightsMib > 0 ? gpuWeightsMib : 0;
   const host =
@@ -179,7 +204,7 @@ function describeWeights(
   const parts: string[] = [];
   if (gpu > 0) parts.push(`${weightAmount(gpu)} in VRAM`);
   if (host > 0) parts.push(`${weightAmount(host)} in RAM`);
-  return parts.length > 0 ? parts.join(" · ") : null;
+  return parts.length > 0 ? parts.join(separator) : null;
 }
 
 export function describePlacement(
