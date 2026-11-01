@@ -185,7 +185,16 @@ def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
 
 def _mlx_reads(checkpoint: Checkpoint, media: str) -> bool:
     """Whether the MLX form of an entry reads `media` ("images" or "audio"): a Clef with that tower and its processor, on an unsloth-zoo that reads it."""
-    if checkpoint.layout != "clef" or _mlx_target(checkpoint) is None:
+    if _mlx_target(checkpoint) is None:
+        return False
+    if checkpoint.layout == GGUF:
+        companion = MLX_COMPANIONS.get(checkpoint.name)
+        return (
+            companion is not None
+            and companion.family == "d1"
+            and (media == "images" or checkpoint.audio)
+        )
+    if checkpoint.layout != "clef":
         return False
     try:
         from unsloth_zoo.mlx.decision import ClefModel
@@ -204,12 +213,12 @@ def _mlx_reads(checkpoint: Checkpoint, media: str) -> bool:
         return False
     if not isinstance(config, dict):
         return False
-    # Qwen3-Omni keeps its towers under the thinker, Phi-4-multimodal under `embd_layer`; Nemotron Omni hears through a sound tower.
+    # Qwen3-Omni keeps its towers under the thinker, Phi-4-multimodal under `embd_layer`; Nemotron Omni hears through a sound tower, LFM3-Omni an audio encoder.
     parts = (config, config.get("thinker_config"), config.get("embd_layer"))
     towers = (
         ("vision_config", "image_embd_layer")
         if media == "images"
-        else ("audio_config", "sound_config", "audio_embd_layer")
+        else ("audio_config", "audio_encoder_config", "sound_config", "audio_embd_layer")
     )
     return any(
         isinstance(part, dict) and part.get(tower) is not None for part in parts for tower in towers
@@ -227,7 +236,14 @@ def _mlx_repos(companion) -> tuple:
 
 
 def _mlx_family(checkpoint: Checkpoint) -> str:
-    return "clef" if checkpoint.layout == "clef" else MLX_COMPANIONS[checkpoint.name].family
+    if checkpoint.layout != "clef":
+        return MLX_COMPANIONS[checkpoint.name].family
+    from utils.models.model_config import is_d1_folder
+    return (
+        "d1"
+        if checkpoint.is_local and is_d1_folder(Path(checkpoint.source).expanduser())
+        else "clef"
+    )
 
 
 def _wants_gpu(checkpoint) -> bool:

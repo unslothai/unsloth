@@ -3639,8 +3639,18 @@ def clef_files_kind(has) -> Optional[str]:
     return None
 
 
+def is_d1_folder(folder: Path) -> bool:
+    """A LiquidAI d1 or one trained in Unsloth: a merged language model whose answers need no head files."""
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(config, dict) and "D1Model" in (config.get("architectures") or ())
+
+
 def clef_folder_kind(folder: Path) -> Optional[str]:
-    return clef_files_kind(lambda name: (folder / name).is_file())
+    kind = clef_files_kind(lambda name: (folder / name).is_file())
+    return kind or ("merged" if is_d1_folder(folder) else None)
 
 
 def _folder_decision_layout(folder: Path) -> Optional[str]:

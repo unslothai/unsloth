@@ -1655,6 +1655,52 @@ def test_a_clef_with_its_audio_tower_hears_through_the_mlx_engine(
         asyncio.run(systemone._decide(connection, "s", asked, None, [clip]))
 
 
+def test_a_d1_is_served_by_the_mlx_engine_and_hears_only_on_omni(home, client, engine):
+    clip = "data:audio/wav;base64,AA=="
+    for name, hears in (
+        ("d1-omni-600m", True),
+        ("d1-omni-2b", True),
+        ("d1-2b", False),
+        ("d1-3b", False),
+    ):
+        entry = catalog.CHECKPOINTS[name]
+        assert laya_runtime._mlx_family(laya_runtime._mlx_target(entry)) == "d1"
+        assert (
+            laya_runtime._mlx_reads(entry, "images")
+            and laya_runtime._mlx_reads(entry, "audio") == hears
+        )
+        repo = catalog.MLX_COMPANIONS[name]
+        assert "config.json" in repo.files and "model.safetensors" in repo.files
+    assert laya_runtime.select(catalog.CHECKPOINTS["d1-2b"], audio = None)[0].backend == "mlx"
+    with pytest.raises(laya_runtime.Unavailable, match = "does not hear audio here"):
+        laya_runtime.select(catalog.CHECKPOINTS["d1-2b"], audio = [clip])
+    # No other entry of a GGUF layout gains media from the d1 rule.
+    assert not laya_runtime._mlx_reads(catalog.CHECKPOINTS["kev-4b"], "images")
+
+
+def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine):
+    folder = home / "d1_ft"
+    folder.mkdir()
+    config = {
+        "architectures": ["D1Model"],
+        "model_type": "lfm3_omni",
+        "vision_config": {},
+        "audio_encoder_config": {},
+    }
+    (folder / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (folder / "processor_config.json").write_text("{}", encoding = "utf-8")
+    (folder / "model.safetensors").write_bytes(b"")
+    tuned = catalog.fine_tune(catalog.CLEF_FINE_TUNE_PREFIX + "d1_ft")
+    assert tuned.layout == "clef" and tuned.description.startswith("d1 fine-tuned")
+    assert laya_runtime._mlx_family(laya_runtime._mlx_target(tuned)) == "d1"
+    zoo = sys.modules["unsloth_zoo.mlx.decision"]
+    zoo.ClefModel = SimpleNamespace(takes_images = True, takes_audio = True)
+    assert laya_runtime.input_modalities(tuned) == ["text", "image", "audio"]
+    # A head on the same model makes it a Clef, not a d1 by name alone.
+    plain = catalog.fine_tune(_clef_fine_tune(home, "clef_ft"))
+    assert laya_runtime._mlx_family(laya_runtime._mlx_target(plain)) == "clef"
+
+
 def test_clef_omni_is_served_by_the_mlx_engine_or_not_at_all(home, client, engine, monkeypatch):
     omni, clip = catalog.CHECKPOINTS["clef-omni"], "data:audio/wav;base64,AA=="
     zoo = sys.modules["unsloth_zoo.mlx.decision"]
