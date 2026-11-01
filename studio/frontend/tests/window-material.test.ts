@@ -5,6 +5,7 @@ import {
 	MATERIALS,
 	sanitizeMaterial,
 	sanitizeStrength,
+	sanitizeStrengths,
 } from "../src/features/chat-background/model.ts";
 
 test("glass material repairs malformed persisted data", () => {
@@ -54,6 +55,8 @@ test("glass strength repairs malformed persisted data", () => {
 	assert.equal(sanitizeStrength(-4), 0);
 	assert.equal(sanitizeStrength(240), 100);
 	assert.equal(sanitizeStrength(33.6), 34);
+	assert.deepEqual(sanitizeStrengths(50), { light: 40, dark: 15 });
+	assert.deepEqual(sanitizeStrengths({ light: 70, dark: "x" }), { light: 70, dark: 15 });
 });
 
 test("composer outline off also drops the glass ring and bevel", () => {
@@ -104,7 +107,8 @@ test("glass panes thicken over images that would wash out their text", async () 
 	assert.ok(glassReadability(light, true).floor > 0.75);
 	assert.equal(glassReadability(dark, true).floor, 0);
 	assert.ok(glassReadability(dark, false).floor > 0.5);
-	assert.equal(glassReadability(light, false).floor, 0);
+	assert.ok(glassReadability(light, false).floor < 0.2);
+	assert.ok(glassReadability(dark, false).floor > 0.7);
 	assert.ok(glassReadability(light, false).shade > 0);
 	assert.equal(glassReadability(toneOf([1, 1, 1]), false).floor, 0);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");

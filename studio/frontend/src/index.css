@@ -6692,12 +6692,12 @@ html {
   --glass-page-secondary: var(--secondary);
   --glass-page-input: var(--panel-input-surface);
 }
-html { --glass-sidebar-floor: 52%; }
-html.dark { --glass-sidebar-floor: 40%; }
+html { --glass-sidebar-floor: 64%; --glass-pane-tone: 6%; --glass-menu-floor: 80%; }
+html.dark { --glass-sidebar-floor: 40%; --glass-pane-tone: 0%; --glass-menu-floor: 0%; }
 html[data-glass] {
   --glass-pane-floor: max(var(--glass-sidebar-floor), var(--glass-read-floor, 0%));
-  --glass-sidebar-fill: color-mix(in srgb, var(--sidebar), var(--foreground) var(--glass-shade, 0%));
-  --glass-panel-fill: color-mix(in srgb, var(--panel-surface), var(--foreground) var(--glass-shade, 0%));
+  --glass-sidebar-fill: color-mix(in srgb, var(--sidebar), var(--foreground) max(var(--glass-shade, 0%), var(--glass-pane-tone)));
+  --glass-panel-fill: color-mix(in srgb, var(--panel-surface), var(--foreground) max(var(--glass-shade, 0%), var(--glass-pane-tone)));
   --glass-composer-fill: color-mix(in srgb, var(--background), var(--foreground) var(--glass-shade, 0%));
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
@@ -6716,8 +6716,8 @@ html[data-glass="macos"] [data-slot="sidebar-inner"] .nav-badge {
 }
 html[data-glass][data-chat-wallpaper-workspace-ready],
 html[data-glass="macos"] {
-  --glass-line: color-mix(in srgb, var(--foreground-base) 13%, transparent);
-  --glass-line-strong: color-mix(in srgb, var(--foreground-base) 18%, transparent);
+  --glass-line: color-mix(in srgb, var(--foreground-base) 9%, transparent);
+  --glass-line-strong: color-mix(in srgb, var(--foreground-base) 14%, transparent);
   --border-base: var(--glass-line);
   --input-base: var(--glass-line-strong);
   --sidebar-border-base: var(--glass-line);
@@ -6728,6 +6728,21 @@ html.dark[data-glass][data-chat-wallpaper-workspace-ready],
 html.dark[data-glass="macos"] {
   --glass-line: rgb(255 255 255 / .13);
   --glass-line-strong: rgb(255 255 255 / .17);
+}
+/* Light panes keep only their 1px glass border: an inset line beside it doubles the edge. Mid-grey ink takes a darker step on glass. */
+html:not(.dark):not([data-glass^="liquid"])[data-glass][data-chat-wallpaper-workspace-ready] :is([data-slot="sidebar-inner"], [data-slot="chat-settings-panel"]) {
+  box-shadow: none;
+}
+html:not(.dark)[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] .nav-badge {
+  border-color: var(--glass-line-strong);
+}
+html:not(.dark):not([data-contrast-adjust])[data-glass] {
+  --muted-foreground: color-mix(in oklab, var(--panel-surface-fg-muted), var(--foreground-base) 35%);
+  --nav-fg-muted: color-mix(in oklab, var(--nav-fg-muted-base), var(--foreground-base) 35%);
+  --nav-icon-idle: color-mix(in oklab, var(--nav-icon-idle-base), var(--foreground-base) 30%);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-nav-fg-muted: var(--nav-fg-muted);
+  --color-nav-icon-idle: var(--nav-icon-idle);
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] .diffusion-surface,
 html[data-glass="macos"] .diffusion-surface {
@@ -6755,15 +6770,17 @@ html[data-glass="frosted"] .wallpaper-preview-composer {
 }
 html[data-glass^="liquid"] {
   --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .3), transparent 58%), linear-gradient(rgb(255 255 255 / .08), transparent 45%, rgb(255 255 255 / .06));
-  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .5), inset 0 0 0 1px rgb(255 255 255 / .12);
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .6), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent);
+  --glass-lift: 0 12px 32px -12px rgb(0 0 0 / .25), 0 2px 8px -4px rgb(0 0 0 / .1);
 }
 html.dark[data-glass^="liquid"] {
   --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .1), transparent 58%);
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .16), inset 0 0 0 1px rgb(255 255 255 / .05);
+  --glass-lift: 0 0 #0000;
 }
 html[data-glass="liquid-3d"] {
   --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .3), rgb(255 255 255 / .04) 30%, transparent 55%, rgb(255 255 255 / .04) 80%, rgb(255 255 255 / .18));
-  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .7), inset 0 16px 30px -20px rgb(255 255 255 / .8), inset 0 -18px 34px -20px rgb(255 255 255 / .6);
+  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .7), inset 0 16px 30px -20px rgb(255 255 255 / .8), inset 0 -18px 34px -20px rgb(255 255 255 / .6), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 9%, transparent);
   --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .55), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .4), transparent 62%), linear-gradient(172deg, rgb(255 255 255 / .14), transparent 50%);
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .6), rgb(255 255 255 / .14) 62%, rgb(255 255 255 / .28));
   --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .8), inset 0 -2px 5px rgb(255 255 255 / .3), inset 0 0 0 1px rgb(255 255 255 / .2);
@@ -6777,7 +6794,7 @@ html.dark[data-glass="liquid-3d"] {
 }
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
   background-image: var(--glass-sheen);
-  box-shadow: inset -1px 0 0 rgb(255 255 255 / .28), inset -14px 0 24px -16px rgb(255 255 255 / .3);
+  box-shadow: inset -14px 0 24px -16px rgb(255 255 255 / .3);
 }
 html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
   box-shadow: inset -1px 0 0 rgb(255 255 255 / .08);
@@ -6845,7 +6862,7 @@ html[data-glass="macos"] [data-slot="chat-settings-panel"] .bg-panel-surface {
 }
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
   background-image: var(--glass-sheen);
-  box-shadow: inset 1px 0 0 rgb(255 255 255 / .28), inset 14px 0 24px -16px rgb(255 255 255 / .3);
+  box-shadow: inset 14px 0 24px -16px rgb(255 255 255 / .3);
 }
 html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
   box-shadow: inset 1px 0 0 rgb(255 255 255 / .08);
@@ -6868,7 +6885,7 @@ html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   --secondary: var(--glass-field);
 }
 html[data-glass^="liquid"] {
-  --glass-hover: rgb(255 255 255 / .38);
+  --glass-hover: rgb(255 255 255 / .3);
   --glass-hover-rim: inset 0 1px 0 rgb(255 255 255 / .5);
 }
 html.dark[data-glass^="liquid"] {
@@ -6924,7 +6941,7 @@ html[data-glass="macos"] :is(.chat-header-fade, [data-slot="window-titlebar-deco
 }
 
 html[data-glass] {
-  --glass-menu-fill: color-mix(in srgb, var(--popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
+  --glass-menu-fill: color-mix(in srgb, var(--popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%), var(--glass-menu-floor)) * var(--glass-opacity, 1))), transparent);
 }
 html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
   --sidebar: var(--glass-menu-fill);
@@ -6949,7 +6966,11 @@ html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$=
 html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
   background-image: var(--glass-sheen);
   /* !important: the base dropdown shadow rules are. */
-  box-shadow: var(--glass-rim) !important;
+  box-shadow: var(--glass-rim), var(--glass-lift) !important;
+}
+/* A white Liquid hover vanishes on a near-white light menu. */
+html[data-glass^="liquid"][data-glass-menus]:not(.dark) :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+  --glass-hover: color-mix(in srgb, var(--foreground) 7%, transparent);
 }
 html[data-glass][data-glass-menus] :is([role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]):is([data-highlighted], :focus-visible) {
   box-shadow: var(--glass-hover-rim);
@@ -6964,7 +6985,7 @@ html[data-glass^="liquid"][data-glass-menus] :is(.tooltip-compact, .tooltip-rich
   box-shadow: var(--glass-rim);
 }
 html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
-  background-color: color-mix(in srgb, var(--glass-page-bg) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 40%)), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
+  background-color: color-mix(in srgb, var(--glass-page-bg) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 40%)), var(--glass-read-floor, 0%), var(--glass-menu-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
   backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
   --background: transparent;
@@ -6994,14 +7015,14 @@ html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] {
   --accent: var(--glass-hover);
   --muted: var(--glass-hover);
   --secondary: var(--glass-field);
-  background-color: color-mix(in srgb, var(--popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent) !important;
+  background-color: color-mix(in srgb, var(--popover) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 30%)), var(--glass-read-floor, 0%), var(--glass-menu-floor)) * var(--glass-opacity, 1))), transparent) !important;
   -webkit-backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate)) !important;
   backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate)) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent) !important;
 }
 html[data-glass^="liquid"][data-glass-menus] [data-sonner-toast][data-styled="true"] {
   background-image: var(--glass-sheen);
-  box-shadow: var(--glass-rim) !important;
+  box-shadow: var(--glass-rim), var(--glass-lift) !important;
 }
 html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] [data-close-button] {
   background: transparent !important;
@@ -7010,14 +7031,53 @@ html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] :is([
   background: var(--glass-hover) !important;
   box-shadow: var(--glass-hover-rim);
 }
+/* Light glass controls are frosted white, not grey: tracks, filled buttons and dropdowns alike, with no outline. */
+html[data-glass]:not(.dark) {
+  --glass-control: rgb(255 255 255 / .3);
+  --glass-control-hover: rgb(255 255 255 / .45);
+  --glass-control-pill: rgb(255 255 255 / .55);
+  --glass-control-rim: inset 0 1px 0 rgb(255 255 255 / .6), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+html[data-glass][data-glass-menus]:not(.dark) [data-slot="dialog-content"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]),
+html[data-glass][data-chat-wallpaper-workspace-ready]:not(.dark) [data-slot="chat-settings-panel"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]),
+html[data-glass]:not(.dark) [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]) {
+  border-color: transparent;
+  background-color: var(--glass-control);
+}
+html[data-glass][data-glass-menus]:not(.dark) [data-slot="dialog-content"] :is(.btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]):is(:hover, [data-state="open"]),
+html[data-glass][data-chat-wallpaper-workspace-ready]:not(.dark) [data-slot="chat-settings-panel"] :is(.btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]):is(:hover, [data-state="open"]),
+html[data-glass]:not(.dark) [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] :is(.btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]):is(:hover, [data-state="open"]) {
+  background-color: var(--glass-control-hover);
+}
+html[data-glass][data-glass-menus]:not(.dark) [data-slot="dialog-content"] .hub-tab-toggle-pill,
+html[data-glass][data-chat-wallpaper-workspace-ready]:not(.dark) [data-slot="chat-settings-panel"] .hub-tab-toggle-pill,
+html[data-glass]:not(.dark) [data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"] .hub-tab-toggle-pill {
+  background-color: var(--glass-control-pill);
+  box-shadow: var(--glass-control-rim);
+}
+/* A lit row shell lights its row button too; glass hovers are translucent, so two layers show as a second, narrower pill. */
+html[data-glass] [class*="hover:bg-sidebar-accent"]:is(:hover, :has(:focus-visible), :has([data-state="open"]), .bg-sidebar-accent) [class*="hover:bg-sidebar-accent"] {
+  background-color: transparent;
+}
+
+html[data-glass] [data-auth-wallpaper]:has(> .chat-wallpaper[data-ready]) > [data-slot="card"] {
+  background-color: color-mix(in srgb, var(--card) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 40%)), var(--glass-read-floor, 0%), var(--glass-menu-floor)) * var(--glass-opacity, 1))), transparent);
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent);
+}
+html[data-glass^="liquid"] [data-auth-wallpaper]:has(> .chat-wallpaper[data-ready]) > [data-slot="card"] {
+  background-image: var(--glass-sheen);
+  box-shadow: var(--glass-rim), var(--glass-lift);
+}
 
 .glass-backdrop {
   background:
-    radial-gradient(55% 60% at 14% 18%, color-mix(in oklab, var(--primary) 42%, transparent), transparent 70%),
-    radial-gradient(50% 55% at 86% 22%, rgb(236 72 153 / .32), transparent 70%),
-    radial-gradient(60% 55% at 72% 88%, rgb(59 130 246 / .30), transparent 70%),
-    radial-gradient(45% 50% at 22% 86%, rgb(245 158 11 / .24), transparent 70%),
-    var(--background);
+    radial-gradient(55% 60% at 14% 18%, color-mix(in oklab, var(--primary) 50%, transparent), transparent 70%),
+    radial-gradient(50% 55% at 86% 22%, rgb(236 72 153 / .4), transparent 70%),
+    radial-gradient(60% 55% at 72% 88%, rgb(59 130 246 / .38), transparent 70%),
+    radial-gradient(45% 50% at 22% 86%, rgb(245 158 11 / .3), transparent 70%),
+    color-mix(in srgb, var(--background), var(--foreground) 7%);
 }
 .dark .glass-backdrop {
   background:
