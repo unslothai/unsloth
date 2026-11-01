@@ -47,7 +47,7 @@ test("long API examples are capped and scroll inside a keyboard-reachable region
     highlightedCode,
     /aria-label=\{label\}[\s\S]*data-reload-snapshot-sensitive=\{redactFromReload \? "" : undefined\}/,
   );
-  // wrapped lines broke mid-token and ran back to the line-number gutter; only Word wrap opts in
+  // wrapped lines broke mid-token and ran back to the line-number gutter
   const cls =
     highlightedCode.match(/<section[\s\S]*?className="([^"]+)"/)?.[1] ?? "";
   assert.match(cls, /\[html:not\(\[data-code-wrap\]\)_&_pre\]:!whitespace-pre(?!-)/);

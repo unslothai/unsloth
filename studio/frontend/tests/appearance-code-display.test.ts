@@ -43,7 +43,6 @@ test("each code setting drives one root attribute the stylesheet keys on", () =>
   const css = readSrc("index.css");
   assert.match(css, /html\[data-code-wrap\] \[data-streamdown="code-block"\] :is\(pre, code\)/);
   assert.match(css, /html\[data-code-no-ligatures\] :is\(pre, code, kbd, samp\)/);
-  // Long fences size their pre to the longest line, which would leave nothing to wrap against.
   assert.match(css, /html\[data-code-wrap\] \.aui-thread-root \[data-unsloth-fence-paint\] pre \{\s*width: auto;/);
   assert.match(css, /html:not\(\[data-code-line-numbers\]\) :is\(\.aui-thread-root, \[data-code-preview\]\)/);
 });
