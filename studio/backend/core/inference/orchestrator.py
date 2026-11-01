@@ -1041,6 +1041,9 @@ class InferenceOrchestrator:
             and before_kill_free_mib.keys() == previous.keys()
             and _released(previous, before_kill_free_mib)
         )
+        # A release seen only against the pre-kill sample may be partial: ask for two stable polls.
+        stable_needed = 2 if observed_reclaim else 1
+        stable_run = 0
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1051,6 +1054,7 @@ class InferenceOrchestrator:
                 return not expected_free_gb
             if _released(current, previous):
                 observed_reclaim = True
+                stable_needed = 1
             if _threshold_reached(current):
                 return True
             stable = all(
@@ -1058,8 +1062,9 @@ class InferenceOrchestrator:
                 < max(tolerance_mib, int(max(current[index], previous[index]) * 0.02))
                 for index in current
             )
+            stable_run = stable_run + 1 if stable else 0
             # Stable low samples can precede delayed driver reclaim; trust stability only after a release.
-            if stable and observed_reclaim and not expected_mib:
+            if stable and observed_reclaim and not expected_mib and stable_run >= stable_needed:
                 return True
             previous = current
         return not expected_free_gb
@@ -2220,6 +2225,8 @@ class InferenceOrchestrator:
             worker_shutdown_at = 0.0
             before_kill_free_mib = None
             if self._ensure_subprocess_alive():
+                # _shutdown_subprocess cancels too and waits on worker exit, not a fixed sleep.
+                self._cancel_generation()
                 if post_handoff_expected_free_gb is None and not (
                     len(resolved_gpu_ids or ()) == 1
                     and isinstance(gpu_selection, dict)
@@ -2231,8 +2238,6 @@ class InferenceOrchestrator:
                         before_kill_free_mib = self._free_vram_mib()
                     except Exception:  # noqa: BLE001 - an unreadable sample keeps the plain settle wait
                         before_kill_free_mib = None
-                # _shutdown_subprocess cancels too and waits on worker exit, not a fixed sleep.
-                self._cancel_generation()
                 if self._shutdown_subprocess() is False:
                     # Worker survived kill (wedged CUDA syscall); do not spawn a second over its GPU memory.
                     raise RuntimeError(
