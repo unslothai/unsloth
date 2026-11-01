@@ -11032,18 +11032,27 @@ def _video_vlm_backend(monkeypatch, streams):
     return backend
 
 
-def test_a_quantized_speculative_load_replies_one_at_a_time(monkeypatch):
+def test_a_quantized_speculative_load_batches_unless_its_caches_are_turboquant(monkeypatch):
     from core.inference import mlx_inference
 
-    monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: None)
+    gaps = {"row": None, "drafted": "no drafted rows"}
+    monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: gaps["row"])
+    monkeypatch.setattr(mlx_inference, "_speculative_quantized_row_gap", lambda: gaps["drafted"])
     backend = mlx_inference.MLXInferenceBackend()
     backend._is_vlm, backend._kv_quant = True, {"kv_bits": 4}
     assert backend._kv_policy_batch_reason(resident = True) is None
     backend._speculative_draft = object()
-    assert "full-precision" in backend._kv_policy_batch_reason(resident = True)
+    assert backend._kv_policy_batch_reason(resident = True) == "no drafted rows"
+    gaps["drafted"] = None
+    assert backend._kv_policy_batch_reason(resident = True) is None
+    # The fixed multi-reply command of a speculative load is that resident session.
+    assert "does not carry" in backend._kv_policy_batch_reason()
+    backend._turboquant = True
+    assert "TurboQuant" in backend._kv_policy_batch_reason(resident = True)
     # A budget alone leaves the caches at full precision.
     backend._kv_quant, backend._kv_context_budget = {"kv_bits": None}, 1
-    assert backend._kv_policy_batch_reason(resident = True) is None
+    gaps["row"] = "no rows"
+    assert backend._kv_policy_batch_reason(resident = True) == "no rows"
 
 
 def test_a_speculative_load_drafts_a_video_reply_on_its_expanded_prompt(monkeypatch):

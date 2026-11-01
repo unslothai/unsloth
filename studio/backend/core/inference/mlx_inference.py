@@ -4991,6 +4991,14 @@ def _row_retire_gap():
     return row_retire_unavailable_reason()
 
 
+def _speculative_quantized_row_gap():
+    try:
+        from unsloth_zoo.mlx.generate import speculative_quantized_rows_unavailable_reason
+    except ImportError:
+        return "the installed unsloth-zoo cannot draft a batch on a quantized KV cache"
+    return speculative_quantized_rows_unavailable_reason()
+
+
 def _row_quantized_cache_gap():
     try:
         from unsloth_zoo.mlx.generate import row_quantized_prompt_cache_unavailable_reason
@@ -8327,7 +8335,9 @@ class MLXInferenceBackend:
         # Only resident vision rows carry their own cache, where the quantization lives.
         if resident and self._is_vlm:
             if self._kv_quant_bits() is not None and getattr(self, "_speculative_draft", None):
-                return "a speculative batch runs on full-precision KV caches"
+                if getattr(self, "_turboquant", False):
+                    return "a speculative batch cannot run TurboQuant caches"
+                return _speculative_quantized_row_gap()
             return _row_quantized_cache_gap()
         return "the load quantizes or budgets its KV cache, which a batch does not carry"
 
@@ -8341,7 +8351,10 @@ class MLXInferenceBackend:
         reason = self._video_batch_gap(requests)
         if reason is not None:
             return reason
-        reason = self._kv_policy_batch_reason()
+        # A speculative load's batch is the resident session, whose rows carry their own caches.
+        reason = self._kv_policy_batch_reason(
+            resident = getattr(self, "_speculative_draft", None) is not None
+        )
         if reason is not None:
             return reason
         if len(requests) < 2:
