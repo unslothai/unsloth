@@ -14,7 +14,7 @@ export const FLAVOR_THEME_IDS = [
   "earl-grey",
   "neon-cyberpunk",
   "macaron",
-  "pina-paraiso",
+  "trick-or-treat",
   "mint",
   "taro",
   "licorice",
@@ -29,7 +29,7 @@ export const FLAVOR_THEME_IDS = [
   "peach",
   "yuzu",
   "cotton-candy",
-  "trick-or-treat",
+  "pina-paraiso",
 ] as const;
 
 export const COLOR_THEME_IDS = [
@@ -398,10 +398,10 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
   "trick-or-treat": {
     name: "Trick or Treat",
     light: {
-      accent: "#8f5c00",
-      background: "#fffae6",
-      foreground: "#2e1f00",
-      surface: "#fff0c4",
+      accent: "#f0b400",
+      background: "#f8f2ff",
+      foreground: "#1f0b33",
+      surface: "#efe3ff",
     },
     dark: {
       accent: "#ffc400",

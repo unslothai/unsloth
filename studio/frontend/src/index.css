@@ -1604,28 +1604,39 @@
 }
 
 :root[data-palette="trick-or-treat"]:not(.dark) {
-	--th-bg: #fffae6;
-	--th-surface: #fff0c4;
-	--th-raised: #f8e8bf;
-	--th-hover: #f0e0bb;
-	--th-border: #c2b192;
-	--th-fg: #2e1f00;
-	--th-muted: #6f5b58;
-	--th-subtle: #a1977f;
-	--th-accent: #8f5c00;
-	--th-accent-fg: #ffffff;
-	--th-second: #7a2fe0;
-	--th-chart-1: #8f5c00;
-	--th-chart-2: #7a2fe0;
-	--th-chart-3: #c84a00;
-	--th-chart-4: #5f6f00;
-	--th-chart-5: #c20a7f;
-	--ring: #7a2fe0;
-	--sidebar-ring: #7a2fe0;
-	--control-accent: #7a2fe0;
+	--th-bg: #f8f2ff;
+	--th-surface: #efe3ff;
+	--th-raised: #e7d9fa;
+	--th-hover: #dfcff5;
+	--th-border: #b7a1d6;
+	--th-fg: #1f0b33;
+	--th-muted: #5e4a78;
+	--th-subtle: #9d8bb8;
+	--th-accent: #f0b400;
+	--th-accent-fg: #1f0b33;
+	--th-second: #d09a00;
+	--th-chart-1: #f0b400;
+	--th-chart-2: #6a1fd1;
+	--th-chart-3: #c20a7f;
+	--th-chart-4: #e05200;
+	--th-chart-5: #2f7d6b;
+	--ring: #6a1fd1;
+	--sidebar-ring: #6a1fd1;
+	--control-accent: #6a1fd1;
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #8e4de1;
+	--primary: #d09a00;
+	--primary-foreground: #1f0b33;
+	--sidebar-primary: #d09a00;
+	--sidebar-primary-foreground: #1f0b33;
 }
+
+/* Solid fills get the brightest gold; text keeps the slightly deeper --primary. */
+:root[data-palette="trick-or-treat"]:not(.dark) [class~="bg-primary"] {
+	--primary: var(--th-accent);
+	--primary-foreground: var(--th-accent-fg);
+}
+
 :root[data-palette="trick-or-treat"].dark {
 	--th-bg: #1a0b24;
 	--th-surface: #251135;

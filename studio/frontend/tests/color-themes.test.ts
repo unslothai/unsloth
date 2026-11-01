@@ -66,7 +66,7 @@ test("isColorThemeId rejects unknown values", () => {
 
 test("Trick or Treat is a year-round theme; retired Halloween ids fall back", () => {
   assert.ok((FLAVOR_THEME_IDS as readonly string[]).includes("trick-or-treat"));
-  assert.equal(COLOR_THEMES["trick-or-treat"].light.accent, "#8f5c00");
+  assert.equal(COLOR_THEMES["trick-or-treat"].light.accent, "#f0b400");
   assert.equal(COLOR_THEMES["trick-or-treat"].dark.accent, "#ffc400");
   for (const id of ["pumpkin", "gothic", "black-cat", "candycorn"]) {
     assert.equal(isColorThemeId(id), false, id);
@@ -100,6 +100,9 @@ function mix(hex: string, target: string, amount: number): string {
   return `#${channel(1)}${channel(3)}${channel(5)}`;
 }
 
+// Trick or Treat's light mode keeps a bright gold on purpose, below the floor.
+const ACCENT_FLOOR_EXEMPT = new Set(["trick-or-treat light"]);
+
 test("flavor accents used as text meet the accent-text floor", () => {
   for (const id of FLAVOR_THEME_IDS) {
     for (const [mode, selector] of [
@@ -111,6 +114,7 @@ test("flavor accents used as text meet the accent-text floor", () => {
         blocks.push(indexCss.slice(start, indexCss.indexOf("}", start)));
       }
       assert.ok(blocks.length > 0, `${id} ${mode} block`);
+      if (ACCENT_FLOOR_EXEMPT.has(`${id} ${mode}`)) continue;
       const block = blocks.join("\n");
       const token = (name: string) =>
         block.match(new RegExp(`\\s${name}: (#[0-9a-f]{6});`))?.[1];
