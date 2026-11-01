@@ -212,6 +212,20 @@ def _case_units(rank, world, tmp):
             {"args": args, "optimizers": (prebuilt, None)},
         )
     )
+    out["prebuilt_param_groups"] = _raised(
+        lambda: unsloth_utils._pipeline_parallel_env_refusals(
+            trainer_like,
+            transformers.Trainer.__init__,
+            (),
+            {
+                "args": args,
+                "optimizer_cls_and_kwargs": (
+                    torch.optim.SGD,
+                    {"params": prebuilt.param_groups, "lr": 0.1},
+                ),
+            },
+        )
+    )
     out["no_prebuilt_optimizer"] = _raised(
         lambda: unsloth_utils._pipeline_parallel_env_refusals(
             trainer_like, transformers.Trainer.__init__, (), {"args": args}
@@ -727,6 +741,10 @@ def test_pp_env_layout_and_refusals():
     assert "compute_loss_func" in (res["loss_func"] or ""), res["loss_func"]
     assert "optimizers = (optimizer" in (res["prebuilt_optimizer"] or ""), res["prebuilt_optimizer"]
     assert res["no_prebuilt_optimizer"] is None, res["no_prebuilt_optimizer"]
+    # Failing before: parameter groups passed through optimizer_cls_and_kwargs went around the guard.
+    assert "optimizers = (optimizer" in (res["prebuilt_param_groups"] or ""), res[
+        "prebuilt_param_groups"
+    ]
     if res["sft"] != "no trl":
         assert res["sft"] is None, res["sft"]
         assert "packing" in (res["packing"] or ""), res["packing"]

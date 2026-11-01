@@ -6540,6 +6540,21 @@ def _prebuilt_optimizer(trainer, init, args, kwargs):
     return None
 
 
+def _optimizer_kwargs_hold_params(trainer, init, args, kwargs):
+    """Trainer(optimizer_cls_and_kwargs = (cls, {"params": ...})) carries parameters chosen before __init__."""
+    value = kwargs.get("optimizer_cls_and_kwargs")
+    if value is None:
+        try:
+            import inspect
+            bound = inspect.signature(init).bind_partial(trainer, *args, **kwargs)
+            value = bound.arguments.get("optimizer_cls_and_kwargs")
+        except (TypeError, ValueError):
+            value = None
+    if not isinstance(value, (tuple, list)) or len(value) < 2 or not isinstance(value[1], dict):
+        return False
+    return "params" in value[1]
+
+
 def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
     from .. import fsdp2_launch as _launch
 
@@ -6603,11 +6618,15 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
             compute_loss_func = bound.arguments.get("compute_loss_func", compute_loss_func)
         except (TypeError, ValueError):
             pass
-    if layout.tp > 1 and _prebuilt_optimizer(trainer, init, args, kwargs) is not None:
+    if layout.tp > 1 and (
+        _prebuilt_optimizer(trainer, init, args, kwargs) is not None
+        or _optimizer_kwargs_hold_params(trainer, init, args, kwargs)
+    ):
         # The tensor parallel split happens in Trainer.__init__ under a pipeline launch and replaces the
         # trainable parameters: an optimizer built before it would step the old ones (training does nothing).
         raise NotImplementedError(
-            f"Unsloth: {layout.env_vars} (pipeline x tensor parallel): Trainer(optimizers = (optimizer, ...)) holds "
+            f"Unsloth: {layout.env_vars} (pipeline x tensor parallel): Trainer(optimizers = (optimizer, ...)) or "
+            "optimizer_cls_and_kwargs = (cls, {'params': ...}) holds "
             "parameters the tensor parallel split replaces, so it would never update the model. Let the Trainer "
             "build the optimizer (TrainingArguments optim / learning_rate), or override create_optimizer."
         )
