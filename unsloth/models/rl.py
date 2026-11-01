@@ -4719,11 +4719,13 @@ class _UnslothFusedLinearHead:
         # TRL 1.14's kernel (1.1 - 1.13 take no bias and are not wrapped) takes no ``outputs`` and returns ``(log_probs, entropy)``.
         try:
             forward = getattr(function, "forward", None)
-            self._legacy = (
-                forward is not None and "outputs" not in inspect.signature(forward).parameters
-            )
+            params = inspect.signature(forward).parameters if forward is not None else {}
+            self._legacy = forward is not None and "outputs" not in params
+            # TRL >= 1.17 passes score_ids after support_ids and unpacks a sixth output, score_log_probs.
+            self._score_ids = "score_ids" in params
         except (TypeError, ValueError):
             self._legacy = False
+            self._score_ids = False
         module = sys.modules.get(getattr(function, "__module__", None) or "")
         # TRL tiles the projection as [min(N, TOKEN_CHUNK_SIZE), chunk_size]: chunk_size counts vocab columns.
         self._token_rows = int(getattr(module, "TOKEN_CHUNK_SIZE", 4096))
@@ -4798,6 +4800,7 @@ class _UnslothFusedLinearHead:
         logit_scale = 1.0,
         outputs = ("entropy", "log_sum_sq_probs", "mean_logits", "is_top1"),
         support_ids = None,
+        score_ids = None,
     ):
         if self._legacy:
             args = (
@@ -4823,8 +4826,11 @@ class _UnslothFusedLinearHead:
                 logit_scale,
                 outputs,
             )
-        # support_ids (TRL > 1.16, per-row kept set) and a late UNSLOTH_FUSED_LINEAR=0 go to TRL's kernel.
-        if support_ids is not None:
+        # support_ids (TRL > 1.16, per-row kept set), score_ids and a late UNSLOTH_FUSED_LINEAR=0 go to TRL's kernel.
+        if self._score_ids:
+            if support_ids is not None or score_ids is not None:
+                return self.function.apply(*args, support_ids, score_ids)
+        elif support_ids is not None:
             return self.function.apply(*args, support_ids)
         if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
             return self.function.apply(*args)
@@ -4883,7 +4889,7 @@ class _UnslothFusedLinearHead:
             extra["log_sum_sq_probs"],
             extra["mean_logits"],
             extra["is_top1"],
-        )
+        ) + ((None,) if self._score_ids else ())
 
 
 def patch_trl_fused_lm_head_kernel():
