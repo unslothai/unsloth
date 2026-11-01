@@ -281,7 +281,7 @@
       "_markerless_blocked_execution": "core.tool_healing._markerless_blocked_execution(name, enabled_tool_names) -> 'bool'",
       "_markerless_execution_class": "core.tool_healing._markerless_execution_class(name) -> 'bool'",
       "_markerless_promotable": "core.tool_healing._markerless_promotable(name, enabled_tool_names) -> 'bool'",
-      "_mask_blocked_bodies": "core.inference.tool_call_parser._mask_blocked_bodies(text: 'str', enabled_tool_names, *, think: 'bool' = False) -> 'tuple'",
+      "_mask_blocked_bodies": "core.inference.tool_call_parser._mask_blocked_bodies(text: 'str', enabled_tool_names, *, think: 'bool' = False, mentions: 'bool' = False) -> 'tuple'",
       "_merge_spans": "core.inference.tool_call_parser._merge_spans(spans: 'list') -> 'list'",
       "_mistral_region_end": "core.inference.tool_call_parser._mistral_region_end(text: 'str', idx: 'int', *, open_envelope_runs_to_eof: 'bool' = False) -> 'int | None'",
       "_next_top_level_comma": "core.inference.tool_call_parser._next_top_level_comma(text: 'str', start: 'int', end: 'int') -> \"'int | None'\"",
@@ -379,6 +379,7 @@
       "_REHEARSAL_RE",
       "_REHEARSAL_STRIP_PATS",
       "_REHEARSAL_TAIL_STRIP_RE",
+      "_TAG_MENTION_RE",
       "_TC_END_TAG_RE",
       "_TC_FUNC_CLOSED_PAT",
       "_TC_FUNC_CLOSE_RE",
@@ -397,6 +398,8 @@
       "_TOOL_CLOSED_BLOCK_PATS",
       "_TOOL_CLOSED_PATS",
       "_TOOL_OPEN_XML_TAIL_PATS",
+      "_TOOL_TAG_HINT_RE",
+      "_TOOL_TAG_PREFIXES",
       "_WRAP_CLOSE_RE",
       "_WRAP_OPEN_RE",
       "_balanced_brace_end",
@@ -437,6 +440,7 @@
       "annotations",
       "apply_tool_strip_patterns",
       "bisect",
+      "in_tag_mention",
       "itertools",
       "json",
       "marker_coverage",
@@ -444,7 +448,8 @@
       "re",
       "strip_outside_think",
       "strip_tool_call_markup",
-      "strip_tool_patterns"
+      "strip_tool_patterns",
+      "tag_mention_spans"
     ],
     "functions": {
       "_balanced_brace_end": "core.tool_healing._balanced_brace_end(content: 'str', brace_start: 'int', *, gemma_quotes: 'bool' = False) -> 'int | None'",
@@ -487,7 +492,9 @@
       "parse_tool_calls_from_text": "core.tool_healing.parse_tool_calls_from_text(content: 'str', *, id_offset: 'int' = 0, allow_incomplete: 'bool' = True, enabled_tool_names=None, with_spans: 'bool' = False)",
       "strip_outside_think": "core.tool_healing.strip_outside_think(text: 'str', strip_segment) -> 'str'",
       "strip_tool_call_markup": "core.tool_healing.strip_tool_call_markup(text: 'str', *, final: 'bool' = False, enabled_tool_names=None) -> 'str'",
-      "strip_tool_patterns": "core.tool_healing.strip_tool_patterns(text: 'str', patterns) -> 'str'"
+      "strip_tool_patterns": "core.tool_healing.strip_tool_patterns(text: 'str', patterns) -> 'str'",
+      "in_tag_mention": "core.tool_healing.in_tag_mention(spans, pos: 'int') -> 'bool'",
+      "tag_mention_spans": "core.tool_healing.tag_mention_spans(text: 'str') -> 'list[tuple[int, int]]'"
     }
   }
 }
