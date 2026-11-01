@@ -254,6 +254,7 @@ from .diffusion_memory import (
     DECODE_LEND_ATTR,
     decode_lend_from_plan,
     with_workflow,
+    settled_memory_unchanged,
     settled_snapshot_device_memory,
     snapshot_device_memory,
     _torchao_stream_pinnable,
@@ -2231,6 +2232,45 @@ def _plans_at_requested_speed(fn: Callable[..., Any]) -> Callable[..., Any]:
             _PLANNED_SPEED_MODE.reset(token)
 
     return wrapper
+
+
+# One load's settled device reading per (device, backend), so a re-plan that finds the card unchanged skips the wait.
+_LOAD_SETTLED_MEMORY: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "_LOAD_SETTLED_MEMORY", default = None
+)
+
+
+def _load_scoped_settle(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        token = _LOAD_SETTLED_MEMORY.set({})
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _LOAD_SETTLED_MEMORY.reset(token)
+
+    return wrapper
+
+
+def _forget_load_settle() -> None:
+    """The next plan in this load settles afresh (a deliberate re-snapshot)."""
+    memo = _LOAD_SETTLED_MEMORY.get()
+    if memo is not None:
+        memo.clear()
+
+
+def _load_settled_memory(target: Any) -> DeviceMemory:
+    """settled_snapshot_device_memory, but a load's re-plan reuses its last settled reading while one fresh read of
+    the card still equals it: the spaced re-reads would only return that reading again, a second or two later."""
+    memo = _LOAD_SETTLED_MEMORY.get()
+    key = (getattr(target, "device", None), getattr(target, "backend", None))
+    previous = None if memo is None else memo.get(key)
+    if previous is not None and settled_memory_unchanged(target, previous):
+        return previous
+    memory = settled_snapshot_device_memory(target)
+    if memo is not None:
+        memo[key] = memory
+    return memory
 
 
 def _vae_on_other_card(pipe: Any, guard_target: Any) -> Any:
@@ -7954,6 +7994,7 @@ class DiffusionBackend:
     @scoped_local_files_only
     @_with_supplied_components
     @vram_budget_scope("image", load = True)
+    @_load_scoped_settle
     def load_pipeline(
         self,
         repo_id: str,
@@ -8560,6 +8601,7 @@ class DiffusionBackend:
                                 and plan_fits_total_capacity(replanned)
                             ):
                                 # Fits total capacity but not live free memory: re-snapshot and replan once.
+                                _forget_load_settle()
                                 replanned = _replan_candidate()
                             if not plan_keeps_transformer_resident(replanned):
                                 logger.info(
@@ -12417,7 +12459,7 @@ class DiffusionBackend:
         device_memory = (
             device_memory_override
             if device_memory_override is not None
-            else settled_snapshot_device_memory(target)
+            else _load_settled_memory(target)
         )
         load_dtype = getattr(target, "dtype", None)
         if _float_load_itemsize(load_dtype) is None:

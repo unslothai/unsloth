@@ -1336,6 +1336,33 @@ def _settle_delay(delay_s: float) -> float:
         return delay_s  # a typo in the env must not change production behaviour
 
 
+def _release_cuda_cache() -> None:
+    """Finish queued work and hand cached blocks back, so a CUDA read sees what this process really holds."""
+    try:
+        import torch
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture()
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - settle is best-effort; the snapshot below still runs
+        pass
+
+
+def settled_memory_unchanged(target: Any, previous: Optional[DeviceMemory]) -> bool:
+    """True when one fresh CUDA read equals ``previous`` (a settled reading of this device), so the spaced re-reads of
+    settled_snapshot_device_memory could only return it again. Any change, ours or another process's, reads False and
+    the caller settles as before. Off CUDA, or with an unknown count, always False. Never raises."""
+    try:
+        if previous is None or getattr(target, "device", None) != "cuda":
+            return False
+        if previous.free_mib is None or previous.total_mib is None:
+            return False
+        _release_cuda_cache()
+        return snapshot_device_memory(target) == previous
+    except Exception:  # noqa: BLE001 - a failed probe settles as before
+        return False
+
+
 def settled_snapshot_device_memory(
     target: Any,
     attempts: int = 3,
@@ -1354,14 +1381,7 @@ def settled_snapshot_device_memory(
         return snapshot_device_memory(target)
     if device != "cuda":
         return snapshot_device_memory(target)
-    try:
-        import torch
-        from .diffusion_cuda_graph import synchronize_outside_capture
-
-        synchronize_outside_capture()
-        torch.cuda.empty_cache()
-    except Exception:  # noqa: BLE001 - settle is best-effort; the snapshot below still runs
-        pass
+    _release_cuda_cache()
     best = snapshot_device_memory(target)
     delay_s = _settle_delay(delay_s)
     for _ in range(max(0, attempts - 1)):
