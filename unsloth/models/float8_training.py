@@ -568,7 +568,13 @@ def _move_adapter_with_master(self, adapter_name, *args, **kwargs):
     ):
         _load_fp8_lora_kernels().restore_fp8_lora_master(base)
     out = type(self)._move_adapter_to_device_of_base_layer(self, adapter_name, *args, **kwargs)
-    if state is None or not state.offloaded:
+    if state is None:
+        return out
+    # Adapter init can rewrite the base weight (PiSSA / OLoRA keep the residual): requantize now, not at the next
+    # eager forward, so compiled calls see it.
+    state._key = None
+    state.refresh(base.weight)
+    if not state.offloaded:
         return out
     for name in tuple(getattr(self, "adapter_layer_names", ())) + tuple(
         getattr(self, "other_param_names", ())

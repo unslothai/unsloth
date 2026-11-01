@@ -698,7 +698,13 @@ def _fp8_base_apply(
             finally:
                 self._parameters["weight"] = weight
         state.restore(self)
-    return torch.nn.Module._apply(self, fn, recurse)
+    out = torch.nn.Module._apply(self, fn, recurse)
+    if state is not None:
+        # Requantize where the weight now lives (eagerly: refresh() is skipped while compiled, so a compiled call
+        # after .to(other device / dtype) would otherwise mix the old fp8 copy with the moved activations).
+        state._key = None
+        state.refresh(self.weight)
+    return out
 
 
 def attach_fp8_lora_base(module, offload: Optional[bool] = None) -> Fp8LoRABaseState:

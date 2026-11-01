@@ -863,6 +863,8 @@ def test_an_added_adapter_lands_on_the_compute_device(offload_on_cpu, monkeypatc
         return real_to(self, *args, **kwargs)
 
     monkeypatch.setattr(torch.nn.Module, "to", spy)
+    # Requantizing onto the meta stand-in cannot run; placement is what this test checks.
+    monkeypatch.setattr(FL.Fp8LoRABaseState, "refresh", lambda self, weight: self)
     model.add_adapter("second", LoraConfig(r = 4, target_modules = ["q_proj"]))
     added = [m for m in layers if "second" in m.lora_A]
     assert added and all(any(x is m.lora_A["second"] for x in moved) for m in added)
@@ -917,3 +919,31 @@ def test_load_state_dict_requantizes_for_compiled_calls():
     assert compiled(x).abs().sum() > 0
     lin.load_state_dict({"weight": torch.zeros_like(lin.weight)})
     assert compiled(x).abs().sum() == 0
+
+
+def test_a_dtype_move_requantizes_for_compiled_calls():
+    # Failing before: .to() moved the master but kept the fp8 copy's dtype / device until an eager forward.
+    lin = _frozen_linear()
+    state = FL.attach_fp8_lora_base(lin, offload = False)
+    lin.half()
+    assert state.dtype == torch.float16 and state._key == state._weight_key(lin.weight)
+
+
+def test_a_pissa_adapter_requantizes_the_rewritten_base(offload_on_cpu):
+    # Failing before: PiSSA rewrites the base to its residual during add_adapter; compiled calls kept the old fp8.
+    from peft import LoraConfig
+
+    model = _tiny_qwen3_peft()
+    f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    model.add_adapter(
+        "pissa",
+        LoraConfig(
+            r = 8, lora_alpha = 16, target_modules = ["q_proj"], init_lora_weights = "pissa_niter_1"
+        ),
+    )
+    layers = [m for m in model.modules() if hasattr(m, "lora_A") and "pissa" in m.lora_A]
+    assert layers
+    for m in layers:
+        state = m.base_layer.__dict__["_unsloth_fp8_lora"]
+        assert state._key == state._weight_key(m.base_layer.weight)
