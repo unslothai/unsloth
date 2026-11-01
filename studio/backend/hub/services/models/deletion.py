@@ -181,7 +181,11 @@ def _has_remaining_main_gguf(target_repo) -> bool:
     )
 
 
-def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, list[str]]:
+def _remove_empty_variant_dirs(
+    target_repos: list,
+    variant: str,
+    protected_revisions: frozenset[str] = frozenset(),
+) -> tuple[int, list[str]]:
     """remove empty variant folders and return their count plus non-concurrent failures."""
     # qualified keys own only their exact folder because token-only folders can be another build.
     qualified = (
@@ -205,6 +209,8 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
         except OSError:
             continue
         for snap in snap_dirs:
+            if snap.name in protected_revisions:
+                continue
             try:
                 subs = list(snap.iterdir())
             except OSError:
@@ -577,8 +583,13 @@ def reclaim_replaced_gguf_variant(
     hf_token: Optional[str] = None,
     *,
     hub_cache: Optional[str | Path] = None,
+    protected_revisions: frozenset[str] = frozenset(),
 ) -> dict:
-    """Prune stale main-GGUF files for a variant after a replacement verified. Intentionally narrower than user-driven delete: it removes only same-variant main files whose local blob hash is not in *keep_main_hashes*, then unlinks their blobs only if no remaining snapshot references them. Shared companions and sibling variants are left intact."""
+    """Prune stale main-GGUF files for a variant after a replacement verified. Intentionally narrower than user-driven delete: it removes only same-variant main files whose local blob hash is not in *keep_main_hashes*, then unlinks their blobs only if no remaining snapshot references them. Shared companions and sibling variants are left intact.
+
+    A publication-protocol caller holds its lock throughout this call and passes
+    the published and in-flight commits as ``protected_revisions``.
+    """
     if not keep_main_hashes:
         logger.info(
             "Skipping stale GGUF reclaim for %s [%s]: current main hashes unresolved",
@@ -675,6 +686,16 @@ def reclaim_replaced_gguf_variant(
             if _main_key(match[0], main_keys) == variant_key
         ]
         for snap, blob, name in matches:
+            # The publication lock's caller protects its published commit and
+            # every in-flight peer, even when their hashes differ from ours.
+            if repo_dir is None:
+                continue
+            try:
+                commit = snap.relative_to(repo_dir / "snapshots").parts[0]
+            except (ValueError, IndexError):
+                continue
+            if commit in protected_revisions:
+                continue
             # prune confirmed stale blobs only; non-symlink snapshot files lack identifiable hashes.
             blob_hash = (
                 _blob_hash_from_path(blob)
@@ -718,8 +739,12 @@ def reclaim_replaced_gguf_variant(
     removed_dirs = 0
     dir_failures: list[str] = []
     if target_repos:
-        removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
-        removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+        removed_dirs, dir_failures = _remove_empty_variant_dirs(
+            target_repos, variant, protected_revisions
+        )
+        removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(
+            target_repos, protected_revisions
+        )
         removed_dirs += removed_snap_dirs
         dir_failures.extend(snap_dir_failures)
         failures.extend(dir_failures)
