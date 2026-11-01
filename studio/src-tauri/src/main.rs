@@ -1085,8 +1085,10 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
             settings.set_enable_media_stream(true);
         }
         // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
-        // installed; deferred because loading it blocks ~40 ms.
-        if let Some(context) = webview.context() {
+        // installed; deferred because loading it blocks ~40 ms. Not on a bundled AppImage: its
+        // libenchant would load the host's ABI-incompatible provider plugins.
+        let bundled = crate::appimage_webkit::bundled_runtime(|name| std::env::var_os(name));
+        if let Some(context) = webview.context().filter(|_| !bundled) {
             context.set_spell_checking_enabled(true);
             glib::idle_add_local_once(move || context.set_spell_checking_languages(&[]));
         }
