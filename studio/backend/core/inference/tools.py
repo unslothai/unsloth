@@ -9993,6 +9993,12 @@ def session_runs_in_user_folder(session_id: "str | None") -> bool:
     if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return False
     try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+
+        # Necessary for the check below and one read, versus the four the full resolution makes.
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        if not available_project_working_folder(project):
+            return False
         workdir = _project_workdir_for(session_id)
         return bool(workdir) and _is_user_project_folder(session_id, workdir)
     except Exception:
