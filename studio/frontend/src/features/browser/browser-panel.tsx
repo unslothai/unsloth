@@ -60,6 +60,7 @@ import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { asPng, copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { openExternalLink } from "@/lib/open-link";
+import { Settings01Icon, SiteInfoIcon } from "@/lib/hugeicons-derived";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { SquareDashedMousePointerIcon } from "@/lib/annotate-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -68,7 +69,6 @@ import { cn } from "@/lib/utils";
 import {
   Refresh01Icon,
   Search01Icon,
-  Settings02Icon,
   Delete02Icon,
   ArrowUpRight01Icon,
   BubbleChatAddIcon,
@@ -93,11 +93,7 @@ import {
 import { Folder01Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import {
-  ArrowLeft,
-  ArrowRight,
-  ShieldCheck,
-} from "lucide-react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -916,7 +912,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                 className="flex h-7 w-[calc(26px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
               >
                 {secure ? (
-                  <ShieldCheck strokeWidth={2} className="size-4" />
+                  <HugeiconsIcon icon={SiteInfoIcon} strokeWidth={2} className="size-4" />
                 ) : (
                   <ShieldAlertGlyph strokeWidth={2} className="size-4" />
                 )}
@@ -964,7 +960,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                   useSettingsDialogStore.getState().openDialog("browser");
                 }}
               >
-                <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
                 {t("browser.settings")}
               </button>
             </>

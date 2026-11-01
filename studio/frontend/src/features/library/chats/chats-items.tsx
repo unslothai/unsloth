@@ -35,7 +35,7 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
-import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, Settings01Icon, StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   Archive03Icon,
@@ -51,7 +51,6 @@ import {
   PinOffIcon,
   PlusSignIcon,
   Refresh01Icon,
-  Settings02Icon,
   Upload01Icon,
   ViewIcon,
   ViewOffSlashIcon,
@@ -1356,7 +1355,7 @@ function ProjectMenu({
           <OpenProjectFolderItem projectId={project.id} />
           <DropdownMenuSeparator className="mx-3" />
           <MenuItem
-            icon={Settings02Icon}
+            icon={Settings01Icon}
             label={t("library.chats.menu.edit")}
             onSelect={() => actions.editProject(project)}
           />
@@ -1597,7 +1596,7 @@ export function SectionMenuItems({
         </>
       )}
       <MenuItem
-        icon={Settings02Icon}
+        icon={Settings01Icon}
         label={t("shell.sections.edit")}
         onSelect={() => actions.renameSection(section)}
       />

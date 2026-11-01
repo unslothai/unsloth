@@ -33,11 +33,10 @@ import {
   HomeWifiIcon,
   LibrariesIcon,
   Search01Icon,
-  Settings02Icon,
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { ShieldCogIcon } from "@/lib/shield-cog-icon";
-import { ChipIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { ChipIcon, MessageCircleIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -180,13 +179,13 @@ class SettingsPanelBoundary extends Component<
 interface TabDef {
   id: SettingsTab;
   labelKey: TranslationKey;
-  icon?: typeof Settings02Icon;
+  icon?: typeof Settings01Icon;
   iconComponent?: FC<{ className?: string }>;
   badgeKey?: TranslationKey;
 }
 
 const TABS: TabDef[] = [
-  { id: "general", labelKey: "settings.tabs.general", icon: Settings02Icon },
+  { id: "general", labelKey: "settings.tabs.general", icon: Settings01Icon },
   {
     id: "profile",
     labelKey: "settings.tabs.profile",
