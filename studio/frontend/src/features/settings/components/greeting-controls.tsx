@@ -35,7 +35,7 @@ const MODES: { mode: GreetingMode; label: TranslationKey }[] = [
   { mode: "default", label: "settings.profile.greetingDefault" },
   { mode: "custom", label: "settings.profile.greetingCustom" },
   { mode: "image", label: "settings.profile.greetingImage" },
-  { mode: "off", label: "settings.profile.greetingOff" },
+  { mode: "off", label: "settings.profile.noneLabel" },
 ];
 // "Off" keeps writing showGreetingSloth, so the old switch's value maps straight onto a mode.
 const MODE_PATCH = {
