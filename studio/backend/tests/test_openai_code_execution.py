@@ -408,8 +408,7 @@ def test_expired_container_triggers_transparent_retry(monkeypatch):
     lines = _drive(run())
     events = _tool_events(lines)
 
-    # Two outbound calls: the expired-container attempt, then the retry
-    # without the container field.
+    # Two calls: the expired-container attempt, then a retry without the container field.
     assert len(calls) == 2
     shell_types = []
     for body in calls:
@@ -432,9 +431,7 @@ def test_expired_container_triggers_transparent_retry(monkeypatch):
 
 
 def test_expired_container_retries_only_once(monkeypatch):
-    """If the retry ALSO fails (any 4xx), the error surfaces normally —
-    no infinite retry loop.
-    """
+    """A retry that also fails with a 4xx surfaces its error; only one retry is ever made."""
     call_count = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:

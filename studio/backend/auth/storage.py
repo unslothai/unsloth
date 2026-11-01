@@ -192,9 +192,8 @@ class CredentialRotated(Exception):
 
 
 def credential_generation(jwt_secret: str) -> str:
-    """Marker for the credential version a refresh token was issued under. Every password change
-    rotates ``jwt_secret``, so a token stamped with the previous one is rejected even if it was
-    inserted after the revoking DELETE."""
+    """Credential version a refresh token was issued under; a password change rotates jwt_secret, so
+    the old stamp is rejected even if inserted after the revoking DELETE."""
     return hashlib.sha256(jwt_secret.encode("utf-8")).hexdigest()
 
 
@@ -1280,8 +1279,7 @@ def create_initial_user(
     *,
     must_change_password: bool = False,
 ) -> None:
-    """Create the initial admin user in the database. Raises sqlite3.IntegrityError if username already
-    exists."""
+    """Creates the first admin; raises sqlite3.IntegrityError if the username exists."""
     from .hashing import hash_password
     from utils.account_context import OWNER_ACCOUNT_ID, ROLE_OWNER, ROLE_USER
     import uuid
@@ -1333,8 +1331,7 @@ def create_initial_user(
 
 
 def delete_user(username: str) -> None:
-    """Delete a user from the database, for rollback when user creation fails partway through
-    bootstrap."""
+    """Delete a user, to roll back a failed bootstrap user creation."""
     conn = get_connection()
     try:
         conn.execute("DELETE FROM auth_user WHERE username = ?", (username,))
@@ -1587,9 +1584,7 @@ class RotatedRefresh(NamedTuple):
 def rotate_refresh_token(
     token: str, new_token: str, new_expires_at: str
 ) -> Optional[RotatedRefresh]:
-    """Consume ``token`` and store ``new_token`` in its place, in one transaction. If anything fails
-    before the commit, including a busy auth.db, the old token is still valid, so a retry can
-    succeed instead of logging the user out. None means the old token was invalid or expired."""
+    """Swap tokens in one transaction: on failure, including a busy auth.db, the old token stays valid."""
     from utils.account_context import ROLE_OWNER
 
     now = datetime.now(timezone.utc).isoformat()
@@ -1674,8 +1669,7 @@ def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
 
 
 def revoke_user_refresh_tokens(username: str, *, account_id: Optional[str] = None) -> None:
-    """Revoke a user's refresh tokens. ``account_id`` pins the username-keyed table to the
-    immutable identity, so a recreated namesake keeps its sessions."""
+    """Revoke refresh tokens by immutable account_id, so recreated namesakes keep sessions."""
     conn = get_connection()
     try:
         with conn:

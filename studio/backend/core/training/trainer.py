@@ -259,9 +259,7 @@ def _metadata_lookup_name(
 
 
 def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> dict:
-    """``subfolder`` for a Spark-TTS repo root, empty for anything else. Only the canonical repo
-    layout needs it: a local checkpoint or an alias that already names LLM/ points at the
-    tokenizer directly."""
+    """subfolder for a Spark-TTS repo root, empty otherwise; a local checkpoint or LLM/ alias needs none."""
     if audio_type != "bicodec":
         return {}
     name = str(lookup_name).replace("\\", "/").rstrip("/")
@@ -1165,8 +1163,7 @@ class UnslothTrainer:
         dataset,
         custom_format_mapping: dict = None,
     ):
-        """Resolve audio/text/speaker columns from user mapping or fallback. Returns dict with keys
-        audio_col, text_col, speaker_col (may be None)."""
+        """Resolve audio/text/speaker columns from mapping or fallback; speaker may be None."""
         cols = dataset.column_names
 
         if custom_format_mapping:
@@ -3525,8 +3522,7 @@ class UnslothTrainer:
                                     f"{available_splits}"
                                 )
                             eval_dataset = load_dataset(**eval_load_kwargs, streaming = True)
-                            # Streaming eval has no __len__; .take() stays lazy and survives the later format and
-                            # raw-text map() passes.
+                            # Streaming eval has no __len__; take() keeps it lazy across maps.
                             if not hasattr(eval_dataset, "__len__"):
                                 eval_dataset = eval_dataset.take(STREAMING_EVAL_MAX_SAMPLES)
                                 logger.info(
@@ -4275,8 +4271,7 @@ class UnslothTrainer:
                     next(iterator)
                 except StopIteration:
                     break
-            # Drop the local names: on the eager path that tears the loader down, while on the online path the memo
-            # still holds it so the workers survive.
+            # Drop locals: eager tears down the loader; the online memo keeps workers alive.
             del iterator, loader
         except StopIteration:
             return (
@@ -4372,8 +4367,7 @@ class UnslothTrainer:
                 self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
                 self._attach_early_stopping(training_args)
-                # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has
-                # no terminal; --verbose keeps them.
+                # HF stdout callbacks duplicate Unsloth's progress; --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
@@ -4846,8 +4840,7 @@ class UnslothTrainer:
                 completion_only = resolve_completion_only_loss(
                     dataset["dataset"], config_args.get("completion_only_loss")
                 )
-            # Each split goes by its own format: a separately supplied eval split can be pre-tokenized while the
-            # training split is text, and the reverse.
+            # Each split uses its own format: eval may be pre-tokenized while train is text.
             if pretokenized_mode:
                 # Packing on TRL < 1.7 keeps only input_ids, silently replacing the user's labels.
                 if config_args.get("packing"):
@@ -5157,8 +5150,7 @@ class UnslothTrainer:
 
             self.trainer.add_callback(self._create_progress_callback())
             self._attach_early_stopping(training_args)
-            # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has no
-            # terminal; --verbose keeps them.
+            # HF stdout callbacks duplicate Unsloth's progress; --verbose keeps them.
             _drop_hf_stdout_callbacks(self.trainer)
 
             train_dataset_obj = dataset["dataset"] if isinstance(dataset, dict) else dataset

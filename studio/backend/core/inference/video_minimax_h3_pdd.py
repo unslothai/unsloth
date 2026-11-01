@@ -139,13 +139,8 @@ def device_has_fp64(device: Any) -> bool:
 
 
 def pdd_head_weights(state: Any, heads: int) -> Any:
-    """Per-head blend weights ``(heads,)`` float64 for one step, from ``state = [sigma, sigma_next, select_shift,
-    stream_shift]`` (float64). Head 0 gets 0 here: it is always added whole.
-
-    ComfyUI: ``start, stop = round((1 - unshift(sigma)) * n), round((1 - unshift(sigma_next)) * n)`` with the unshift
-    in float32 (the sampler's sigma dtype), ``start = min(start, n - 1)``, ``stop = max(stop, start + 1)``, then
-    ``dt`` of the stream's shifted ``n``-interval grid over ``[start, stop)`` normalised to sum 1, applied to heads
-    ``max(start, 1) .. stop - 1``. Same here, as masks instead of slices so no index ever reaches the host."""
+    """Per-head blend weights (heads,) float64 for one step as masks, matching ComfyUI round/unshift
+    slicing (unshift in float32); head 0 gets 0, always added whole"""
     import torch
 
     sig = state[0:2].to(torch.float32)
@@ -378,8 +373,7 @@ def pipe_h3_pdd_heads(pipe: Any) -> int:
 def bind_h3_pdd_render(
     pipe: Any, video_shift: Optional[float], audio_shift: Optional[float]
 ) -> int:
-    """Bind every PDD denoiser of an H3 pipeline to its video scheduler for this render; returns the head count
-    (0: no PDD denoiser, nothing changed)."""
+    """Binds PDD denoisers to the scheduler for this render; gives the head count, 0 if none."""
     scheduler = getattr(pipe, "scheduler", None)
     heads = 0
     for module in _components(pipe):

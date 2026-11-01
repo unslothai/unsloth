@@ -187,8 +187,7 @@ def _slim_install(
 
 
 def test_slim_guard_flags_missing_ggml_links(monkeypatch, tmp_path):
-    # A slim marker whose linked ggml runtime is gone must read as engine
-    # unavailable (reinstall), never crash into a server launch.
+    # Missing ggml links in a slim marker mean unavailable (reinstall), never a server launch.
     binary = _slim_install(tmp_path, with_ggml = False)
     assert ggml_module.slim_runtime_intact(binary) is False
     monkeypatch.setattr(ggml_module, "find_whisper_server_binary", lambda: binary)
@@ -206,8 +205,7 @@ def test_slim_guard_passes_with_links_in_place(monkeypatch, tmp_path):
 
 
 def test_slim_guard_verifies_the_marker_linked_libraries(monkeypatch, tmp_path):
-    # New markers record the exact wired filenames; one missing name flips the
-    # install to unavailable even when the legacy core ggml names are present.
+    # New markers list exact filenames; any missing one fails even with legacy ggml names.
     names = ["libggml.dylib", "libggml-base.dylib", "libggml-metal.dylib"]
     binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
     bin_dir = Path(binary).parent
@@ -329,8 +327,7 @@ def test_slim_guard_rejects_rocm_wiring_with_no_version(tmp_path):
 
 
 def test_slim_guard_rejects_rocm_wiring_with_an_unknown_catalog(tmp_path):
-    # Membership is bounded by the catalogs this installer wires, so a name
-    # outside the pair fails closed even though rocblas is present.
+    # Only the wired catalog pair is accepted; other names fail closed, even with rocblas.
     names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
     binary = _slim_install(
         tmp_path,
@@ -344,8 +341,7 @@ def test_slim_guard_rejects_rocm_wiring_with_an_unknown_catalog(tmp_path):
 
 
 def test_slim_guard_accepts_newer_rocm_wiring_version(tmp_path):
-    # The guard pins a floor, not one version: an installer bump must not strand
-    # ROCm installs as unavailable when every wired library is present.
+    # A floor, not one version: newer ROCm wiring passes when every wired library is present.
     names = [*_core_ggml_names(), "libggml-hip.so"]
     binary = _slim_install(
         tmp_path,
@@ -388,8 +384,7 @@ def test_slim_guard_accepts_windows_rocm_dll_overlay(monkeypatch, tmp_path):
 
 
 def test_slim_guard_windows_rocm_still_expects_no_catalogs(monkeypatch, tmp_path):
-    # Windows is unchanged by #8364: the overlay wires DLLs and no catalogs, so
-    # any recorded catalog is a marker this installer did not write.
+    # Windows is unchanged (#8364): it wires DLLs and no catalogs, so any catalog is foreign.
     monkeypatch.setattr(ggml_module.sys, "platform", "win32")
     names = ["ggml.dll", "ggml-base.dll", "ggml-hip.dll", "amdhip64.dll"]
     binary = _slim_install(
@@ -434,8 +429,7 @@ def test_child_env_scrubs_secrets_and_adds_lib_dir(monkeypatch, tmp_path):
 
 
 def test_child_env_isolates_home_and_cred_locations(monkeypatch, tmp_path):
-    # The downloaded server must not see the real home (token caches live
-    # there) nor explicit cred-store pointers like HF_HOME / NETRC.
+    # The downloaded server must not see the real HOME (token caches), HF_HOME or NETRC.
     monkeypatch.setenv("HOME", "/real/home")
     monkeypatch.setenv("HF_HOME", "/real/hf")
     monkeypatch.setenv("NETRC", "/real/.netrc")
@@ -467,8 +461,7 @@ def test_child_env_wsl_rocm_prepends_system_hip(monkeypatch, tmp_path):
 
 
 def test_child_env_adds_cuda_runtime_dirs_for_cuda_bundle(monkeypatch, tmp_path):
-    # Versioned CUDA backend modules are valid too. They still need the
-    # CUDA-from-PyTorch wheel dirs for libcudart/libcublas at launch.
+    # Versioned CUDA backends still need CUDA-from-PyTorch wheel dirs for libcudart/libcublas.
     if sys.platform == "darwin":
         pytest.skip("no CUDA on macOS")
     import utils.prebuilt.runtime_libs as rl
@@ -786,8 +779,7 @@ def test_server_pid_is_tracked_for_parent_lifetime(monkeypatch):
 
 
 def test_training_forces_whisper_server_off_gpu(monkeypatch):
-    # Mirror the Transformers sidecar: keep whisper.cpp on CPU during training
-    # so a mid-training dictation cannot reclaim the VRAM training just freed.
+    # Keep whisper.cpp on CPU during training so dictation cannot take back VRAM just freed.
     _available(monkeypatch)
     monkeypatch.setattr(ggml_module, "_cached_model_path", lambda model_id: "/tmp/ggml.bin")
     commands: list[list[str]] = []

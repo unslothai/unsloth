@@ -2408,9 +2408,7 @@ def _tool_starts(events):
 
 
 def _diag(events, exec_fn):
-    """A compact dump of what the loop actually did, attached to the loop-driving
-    assertions so a full-suite-only failure on CI (which does not reproduce when
-    the file runs alone) reports the real event stream instead of a bare diff."""
+    """Attached to loop assertions, so a full-suite-only CI failure shows the real event stream."""
     return (
         f"calls={exec_fn.calls} sandbox_seen={exec_fn.disable_sandbox_seen} "
         f"events={[(e.get('type'), e.get('awaiting_confirmation'), e.get('tool_name')) for e in events]}"
@@ -2776,8 +2774,7 @@ def test_confirm_gate_needs_stream():
         _confirm_gate_needs_stream(req(permission_mode = "auto"), selected_names = ["mcp_tool_search"])
         is True
     )
-    # But a selectable unsafe tool, an unrestricted (omitted) selection, MCP, or an
-    # explicit confirm flag all still require streaming under auto.
+    # Unsafe tools, omitted selections, MCP, or a confirm flag still need streaming under auto.
     assert (
         _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["terminal"])) is True
     )
@@ -3686,8 +3683,7 @@ def test_auto_mode_stays_silent_inside_allowlisted_roots_python(code):
 
 
 def test_configured_cache_reads_stay_silent():
-    """A read under THIS install's own sandbox / model cache is ordinary work, unlike the same path
-    shape under someone else's home."""
+    """Reads under this install's own sandbox or model cache are ordinary work, not prompts."""
     from core.inference import tool_path_approval as path_gate
 
     read_roots, write_roots = path_gate._silent_roots()
@@ -3713,31 +3709,27 @@ def test_credential_paths_outrank_the_allowlist():
 
 
 def test_relative_paths_never_prompt():
-    """Relative paths resolve inside the per-session workdir, which is the whole reason ordinary
-    in-sandbox work stays silent."""
+    """Relative paths resolve in the per-session workdir, which keeps in-sandbox work silent."""
     from core.inference import tool_path_approval as path_gate
     for path in ("out.txt", "./data/train.csv", "build/artifacts/model.gguf", "-", ""):
         assert path_gate._path_needs_approval(path, writing = True) is False, path
 
 
 def test_windows_spellings_are_treated_as_absolute():
-    """Path syntax is judged on every host, so a Windows-only classifier bug cannot hide behind a
-    Linux test run."""
+    """Path syntax is judged on every host, so a Windows-only bug cannot hide behind Linux."""
     from core.inference import tool_path_approval as path_gate
     for path in ("C:\\Users\\kuser\\Documents\\taxes.xlsx", "\\\\fileserver\\share\\secret.docx"):
         assert path_gate._path_needs_approval(path) is True, path
 
 
 def test_unresolved_dynamic_paths_do_not_prompt():
-    """A path the folder could not resolve carries the NUL sentinel; it is not a decidable path, and
-    the dynamic-alias checks cover those separately."""
+    """An unresolved path carries the NUL sentinel, so dynamic-alias checks cover it."""
     from core.inference import tool_path_approval as path_gate
     assert path_gate._path_needs_approval("/media/\x00/file") is False
 
 
 def test_parent_escape_sentinel_asks():
-    """\x02 marks a pathlib .parent walking OUT of its root. It is an escape marker, so grouping it
-    with the unresolved marker would turn the signal into a pass."""
+    """The 0x02 marker is an escape out of the root; grouping it with NUL would pass it."""
     from core.inference import tool_path_approval as path_gate
     assert path_gate._path_needs_approval("\x02/file") is True
 
@@ -3870,9 +3862,7 @@ def test_credentials_inside_a_silent_root_still_ask():
 
 
 def test_studio_own_state_is_never_silent():
-    """The studio home holds studio.db (chat history, provider and MCP configuration) and auth/
-    next to the sandbox. Several root producers fall back to that directory when their own
-    subdirectory is unset, and one such fallback would grant a tool everything Studio owns."""
+    """The studio home holds studio.db and auth/; a root producer falling back to it grants too much."""
     from core.inference import tool_path_approval as path_gate
     from utils.paths.storage_roots import studio_root
 

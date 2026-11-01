@@ -124,11 +124,9 @@ def install_vae_sync(
     *,
     logger: Any = None,
 ) -> bool:
-    """Synchronise Metal after every VAE decoder / encoder call (one per tile or latent frame).
-
-    Metal cannot reuse a buffer until the queued work holding it completes, so an unsynchronised
-    tile loop accumulates every call's intermediates; ``empty_cache`` cannot return them.
-    """
+    """Synchronise Metal after every VAE decoder or encoder call (one per tile or latent frame):
+    Metal cannot reuse a buffer until queued work holding it completes, and empty_cache cannot
+    return the intermediates."""
     if target.device != "mps":
         return False
     vae = getattr(pipe, "vae", None)
@@ -849,13 +847,10 @@ _MPS_CAP_OS_RESERVE_FRAC = 0.10
 def mps_high_watermark_ratio(
     recommended_bytes: Optional[int], total_ram_bytes: Optional[int]
 ) -> Optional[float]:
-    """The MPS high watermark ratio (a multiple of the recommended working set) that caps Metal allocations at
-    physical RAM minus an OS reserve, never below the working set Apple recommends. None when either reading is
-    missing (no cap: the caller keeps the unbounded allocator).
-
-    torch's own default is 1.7x the working set, which is above physical RAM on every Apple Silicon Mac (the working
-    set is ~2/3 to 3/4 of RAM), so past RAM it swaps instead of raising; 0.0 removes the limit entirely. A finite cap
-    turns that into an "MPS backend out of memory" RuntimeError that the batch backoff and VAE tile retry handle."""
+    """Ratio capping Metal allocations at RAM minus an OS reserve, never below the recommended
+    working set; None if a reading is missing. torch's 1.7x default exceeds RAM and swaps; 0.0
+    removes the limit; a finite cap raises an out-of-memory RuntimeError that batch backoff and
+    VAE tile retry handle."""
     try:
         recommended = int(recommended_bytes or 0)
         total = int(total_ram_bytes or 0)

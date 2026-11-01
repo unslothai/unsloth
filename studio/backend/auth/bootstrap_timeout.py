@@ -31,17 +31,14 @@ def clear_bootstrap_deadline() -> None:
 
 
 def bootstrap_deadline_remaining_seconds() -> Optional[int]:
-    """Seconds until shutdown, or None when this launch is not time-boxed.
-    Floors at 0: a caller can land between expiry and the shutdown completing."""
+    """Seconds until shutdown, or None when untimed; floored at 0 for calls after expiry."""
     if _deadline_at is None:
         return None
     return max(0, int(round(_deadline_at - time.monotonic())))
 
 
 def bootstrap_timeout_seconds(env = None) -> int:
-    """Resolve the deadline in seconds. ``0`` (or invalid/negative) disables it. A malformed value falls back to
-    the default rather than disabling, so a typo cannot silently remove the protection.
-    """
+    """Deadline in seconds; 0 or negative disables it, but a malformed value uses the default."""
     env = os.environ if env is None else env
     raw = env.get(BOOTSTRAP_TIMEOUT_ENV_VAR)
     if raw is None or raw.strip() == "":
@@ -76,8 +73,7 @@ def should_arm_bootstrap_timeout(
     requires_change: bool,
     timeout_seconds: int,
 ) -> bool:
-    """Whether to arm the deadline: only for an exposed web UI whose seeded admin
-    password is still unchanged. Pure decision (no I/O) for cheap unit testing."""
+    """Arms the deadline only for an exposed web UI whose seeded admin password is unchanged."""
     if timeout_seconds <= 0:
         return False
     if api_only or not frontend_served or is_colab:

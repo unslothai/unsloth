@@ -89,8 +89,7 @@ class TestNonfiniteLossSoftHandling:
         assert b._should_stop is False
 
     def test_recovery_updates_loss_when_finite_again(self):
-        """If a NaN step is followed by a finite step, progress.loss must
-        reflect the new finite value (not stay stuck at None)."""
+        """A finite step after NaN must update progress.loss, not leave it stuck at None."""
         b = _make_backend()
         b._handle_event(_progress_event(step = 1, loss = 0.97))
         b._handle_event(_progress_event(step = 2, loss = float("nan")))

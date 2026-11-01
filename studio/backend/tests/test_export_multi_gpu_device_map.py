@@ -442,9 +442,8 @@ def test_is_device_map_infeasible_matches_by_class_name(monkeypatch):
 
 
 def test_planner_refusal_retries_on_the_single_device_loader(monkeypatch, tmp_path):
-    """The planner budgets from memory read before this process opens a context, so a
-    training or chat job holding the other cards can make it refuse a model the old
-    single-device load still fits. That was a working export before the switch."""
+    """The planner budgets from memory read before this process opens a context, so other jobs on
+    the cards can make it refuse a model the single-device load fits."""
     mod = _export_mod(monkeypatch)
 
     class DeviceMapInfeasible(RuntimeError):

@@ -442,8 +442,7 @@ def test_sticky_boundary_prefers_a_reply_that_matches_the_branch_exactly(monkeyp
 
 
 def test_sticky_boundary_still_reads_a_reply_no_branch_message_matches_exactly(monkeypatch):
-    """Preferring an exact match must not become a requirement; stored rows are not always byte-
-    identical."""
+    """Exact match may be preferred, not required; stored rows are not always byte-identical."""
     from core.inference import llama_cpp
 
     _fake_studio_db(
@@ -1296,8 +1295,7 @@ def test_the_branch_boundary_excludes_the_turn_inline_recall_rewrites():
 
 
 def test_a_conversation_search_charges_token_dense_text_properly(archived, monkeypatch):
-    """Four characters per token is an English rule; CJK text needs charging near one token per
-    character."""
+    """Four chars per token is English-only; CJK text is charged near one token per character."""
     from core.rag import config as rag_config
 
     asked = []
@@ -1507,8 +1505,7 @@ def test_both_recall_styles_state_that_a_later_turn_supersedes_an_earlier_one(ar
 
 
 def test_a_single_recalled_turn_makes_no_ordering_claim(archived):
-    """One passage cannot be in an order, and the backoff's last rung is where room is
-    tightest -- so the header must not be spent there."""
+    """A single passage has no order; the backoff's last rung is tightest, so skip the header."""
     built = tools_mod.build_conversation_recall(_conversation(), THREAD, style = "inline", top_k = 1)
 
     assert built is not None
@@ -1557,8 +1554,7 @@ def test_a_dense_ascii_result_is_priced_by_the_callers_tokenizer(archived, monke
 
 
 def test_the_anchor_survives_a_tool_call_message_with_no_text(monkeypatch):
-    """Tool-call messages have no text; the anchor must fall back to their calls or the rebase is
-    skipped."""
+    """Tool-call messages lack text; anchor falls back to their calls or the rebase is skipped."""
     from core.inference import llama_cpp
 
     call = {

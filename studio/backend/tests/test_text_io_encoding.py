@@ -41,8 +41,7 @@ _PATH_OPEN_ENCODING_ARG = _PATH_OPEN_ARGS.index("encoding")
 
 _SUBPROCESS_CALLS = {"run", "Popen", "check_output", "check_call", "call"}
 
-# open(file, mode, buffering, encoding, ...), and os.fdopen forwards the same
-# signature with a descriptor in place of the path.
+# open() takes encoding as its fourth argument, and os.fdopen forwards the same signature.
 _OPEN_ENCODING_ARG = 3
 
 
@@ -273,9 +272,7 @@ def _path_class_names(tree: ast.AST) -> set[str]:
 
 
 def _path_text_names_encoding(node: ast.Call, name: str, path_classes: set[str]) -> bool:
-    """Path.read_text(encoding, errors) / Path.write_text(data, encoding, ...) name an encoding
-    by keyword or positionally. The unbound form, Path.read_text(p), has the path in front, so the
-    position shifts by one."""
+    """Encoding may be a keyword or positional; unbound Path.read_text(p) shifts it by one."""
     for kw in node.keywords:
         if kw.arg == "encoding":
             return not _is_locale_default(kw.value)
@@ -646,9 +643,7 @@ def test_the_legacy_pid_record_is_handed_to_a_live_sibling(tmp_path: Path, monke
 
 
 def test_the_kwargs_guard_only_judges_dicts_that_reach_a_call(tmp_path: Path) -> None:
-    """Only a dict splatted into a call is subprocess configuration. An unrelated
-    payload that happens to carry "text": True is not, and neither is one whose
-    encoding is filled in on a later line."""
+    """Only a dict splatted into a call is subprocess config; an unrelated payload with text=True is not."""
     cases = {
         "offender.py": 'kw = {"text": True}\nrun(cmd, **kw)\n',
         "annotated.py": 'kw: dict = {"universal_newlines": True}\nrun(cmd, **kw)\n',
@@ -696,9 +691,7 @@ def test_the_guard_follows_subprocess_through_an_alias(tmp_path: Path) -> None:
 
 
 def test_the_guard_sees_os_fdopen(tmp_path: Path) -> None:
-    """os.fdopen(fd, mode) is open() on a descriptor and takes the same locale
-    default in text mode, so leaving it out let the swap lock file keep the
-    codepage on the write side while its reader was pinned to UTF-8."""
+    """os.fdopen shares open()'s locale default; missing it let a lock file write in the codepage."""
     cases = {
         "text.py": 'import os\nos.fdopen(fd, "w")\n',
         "default_mode.py": "import os\nos.fdopen(fd)\n",  # defaults to "r", still text
@@ -771,9 +764,8 @@ def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None
 def test_an_undecodable_bootstrap_password_does_not_stop_startup(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """ensure_default_admin calls _load_bootstrap_password for every existing
-    admin and the lifespan calls that with no handler, so a raise here takes the
-    whole backend down instead of ignoring an unusable file."""
+    """Lifespan calls _load_bootstrap_password with no handler, so an unusable file must be ignored
+    rather than raised; a raise takes the backend down."""
     _shared_setup_1(__file__)
     from auth import storage
 

@@ -377,15 +377,8 @@ def converted_host_bytes(
     dequantized: Any = None,
     keep_key: Any = None,
 ) -> int:
-    """Anonymous host RAM bytes loading ``path`` at ``dtype`` writes, from the header alone.
-
-    ``keep_key(key)``: the loader's own key filter (a file bundling other components), so tensors it never
-    reads are not priced.
-
-    Tensors already at the target dtype stay memory-mapped (droppable page cache) and cost 0.
-    ``dequantized(key)``: None = not quantized, 0 / False = kept as codes, else the dense elements each
-    stored element expands to (True = 1; 2 for nvfp4, which packs two columns per byte) when widened
-    to ``dtype``. Unreadable header returns 0 (no claim)."""
+    """Host RAM bytes loading path at dtype from the header; same-dtype mmapped tensors cost 0;
+    nvfp4 widens 2 elements per byte; unreadable header returns 0 (no claim)."""
     from .diffusion_comfy_quant import _read_header
 
     try:
@@ -527,8 +520,7 @@ class HostRamBudget:
             self._refuse_if_over(nbytes, int(available), at_least = True)
 
     def activate(self) -> "HostRamBudget":
-        """Make this the budget the allocating helpers charge, until the enclosing
-        ``host_ram_budget_scope`` returns."""
+        """Charges go to this budget until the enclosing host_ram_budget_scope returns."""
         if self.available_mib is not None:  # check disabled / RAM unreadable: nothing is charged
             _ACTIVE_BUDGET.set(self)
         return self
@@ -547,8 +539,7 @@ _ACTIVE_BUDGET: "contextvars.ContextVar[Optional[HostRamBudget]]" = contextvars.
 
 
 def host_ram_budget_scope(fn: Any) -> Any:
-    """Run ``fn`` with no budget inherited and none left behind: a budget it ``activate()``s lives
-    exactly as long as the call."""
+    """Runs fn with no inherited budget; a budget it activates lasts only for the call."""
     import functools
 
     @functools.wraps(fn)
@@ -637,8 +628,7 @@ def load_original_layout_transformer(
 
 
 def fp8_stored_estimate(keep: Any = ()) -> Any:
-    """``dequantized`` for fp8 storage: 2-D fp8 ``.weight`` outside ``keep`` stays mmapped (0); later widens are
-    charged live."""
+    """fp8 storage: 2-D weights outside keep stay mmapped at 0; later widens are charged live."""
     keep = tuple(keep or ())
 
     def verdict(key: str, meta: Optional[dict] = None) -> Any:

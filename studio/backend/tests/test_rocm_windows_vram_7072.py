@@ -444,8 +444,7 @@ def test_luid_join_beats_a_busy_foreign_adapter(win_rocm, monkeypatch):
 
 
 def test_identical_cards_keep_aggregate_but_not_per_device(win_rocm, monkeypatch):
-    """Two of the same card share one Description AND one arch, so nothing says
-    which counter is which ordinal. The sum does not depend on the pairing."""
+    """Identical cards share Description and arch; keep the sum, not per-device readings."""
     monkeypatch.setitem(
         sys.modules,
         "torch",
@@ -496,8 +495,7 @@ def test_igpu_and_dgpu_each_report_their_own(win_rocm, monkeypatch):
 
 
 def test_a_name_the_two_sides_spell_differently_still_joins(win_rocm, monkeypatch):
-    """DirectX takes the Description from the driver INF and HIP from the ASIC
-    record, so an iGPU reaches the join under two spellings of one card."""
+    """DirectX reads the INF name, HIP the ASIC record; one iGPU gets two spellings."""
     _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         hw,
@@ -513,8 +511,7 @@ def test_a_name_the_two_sides_spell_differently_still_joins(win_rocm, monkeypatc
 
 
 def test_the_arch_answers_when_the_names_do_not(win_rocm, monkeypatch):
-    """A generic iGPU Description that normalizing cannot reconcile. The gfx
-    target both sides carry separates an iGPU from the dGPU beside it."""
+    """A generic iGPU name that normalising cannot fix; the gfx target still separates it."""
     _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         hw,
@@ -566,9 +563,7 @@ def test_a_partial_name_pass_still_lets_the_arch_finish_the_job(win_rocm, monkey
 
 
 def test_the_arch_pass_needs_every_record_to_have_one(win_rocm, monkeypatch):
-    """A driver too old to write AdapterFamily leaves a record the arch cannot
-    key. Running the pass on the rest would let the adapters that do carry one
-    stand in for the adapter that does not, so it does not run at all."""
+    """Records lacking AdapterFamily must abort the arch pass, else others stand in for the missing one."""
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
     monkeypatch.setitem(
         sys.modules,
@@ -597,8 +592,7 @@ def test_the_arch_pass_needs_every_record_to_have_one(win_rocm, monkeypatch):
 
 
 def test_luid_join_declines_and_falls_back(win_rocm, monkeypatch):
-    """Every decline hands the counters back to capacity ranking rather than
-    inventing a figure."""
+    """A decline returns the counters to capacity ranking rather than inventing a figure."""
     dev_meta = [{"name": "AMD Radeon RX 9060 XT", "gfx": "gfx1200", "total_bytes": 16 * GB}]
     join = hw._match_adapter_used_by_luid
 
@@ -731,8 +725,7 @@ def test_registry_reads_optional_dedicated_memory(on_windows, monkeypatch):
 
 
 def test_a_record_that_will_not_read_declines_the_whole_map(on_windows, monkeypatch):
-    """A partial map is indistinguishable from a complete one at the join, which
-    would then hand a visible card its hidden twin's counter."""
+    """A partial map looks complete at the join; one unreadable record declines the whole map."""
     denied = PermissionError(5, "access is denied")
     for broken in (
         denied,
@@ -793,8 +786,7 @@ def _hip_ids(*identities):
 
 
 def test_hip_luid_separates_two_of_one_model(win_rocm, monkeypatch):
-    """What the DirectX join cannot do: one Description and one arch for both
-    cards leaves it the aggregate only, while the LUIDs are still distinct."""
+    """DirectX cannot split identical cards: aggregate only; HIP LUIDs stay distinct."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(TWIN_CARDS, free_equals_total = True))
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(TWIN_ADAPTERS))
@@ -810,9 +802,7 @@ def test_hip_luid_separates_two_of_one_model(win_rocm, monkeypatch):
 
 
 def test_hip_is_asked_about_the_ordinal_that_answered(win_rocm, monkeypatch):
-    """dev_meta is compacted when a device fails to probe, so its positions are
-    not HIP ordinals. Asking by position would hand ordinal 0's LUID to the
-    card that survived at ordinal 1."""
+    """dev_meta compacts when a probe fails, so its positions are not HIP ordinals; ask by ordinal."""
     monkeypatch.setitem(
         sys.modules,
         "torch",
@@ -833,9 +823,7 @@ def test_hip_is_asked_about_the_ordinal_that_answered(win_rocm, monkeypatch):
 
 
 def test_linked_nodes_keep_the_aggregate_but_not_per_device(win_rocm, monkeypatch):
-    """Two ordinals behind one LUID. The counters index the adapter's nodes as
-    phys_N and nothing says which ordinal owns which, so the sum survives and
-    the pairing does not."""
+    """Two ordinals share one LUID; phys_N nodes have no owner map, so only the sum is trusted."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(TWIN_CARDS, free_equals_total = True))
     adapters = [
         ("luid_0x00000000_0x0000aaaa_phys_0", 10 * GB),
@@ -854,9 +842,7 @@ def test_linked_nodes_keep_the_aggregate_but_not_per_device(win_rocm, monkeypatc
 
 
 def test_a_node_the_visible_ordinals_do_not_own_declines(win_rocm, monkeypatch):
-    """One ordinal holding one node of a two-node adapter. The second node's
-    usage is on hardware HIP is not showing, so it is not this card's to claim,
-    and the node mask is what says so."""
+    """One ordinal holds one node of a two-node adapter; the node mask keeps the other node out."""
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
     monkeypatch.setitem(sys.modules, "torch", _fake_torch([TWIN_CARDS[0]], free_equals_total = True))
     adapters = [
@@ -924,9 +910,7 @@ def test_hip_luid_join_declines_and_falls_back(win_rocm, monkeypatch):
 
 
 def test_hip_luid_join_bounds_the_counter_by_the_carve_out(win_rocm, monkeypatch):
-    """A unified APU is shown the whole driver pool as its total, so bounding
-    with that admits any reading at all. The carve-out is what the counter
-    fills, and the DirectX join already declines this."""
+    """Unified APUs report the whole pool as total, so bound the counter by the carve-out instead."""
     apu = [
         {
             "visible_ordinal": 0,
@@ -964,8 +948,7 @@ def _r0600_blob(
     luid,
     node_mask = 0,
 ):
-    """The documented prefix of hipDeviceProp_tR0600: name[256], uuid[16],
-    luid[8], luidDeviceNodeMask[4]."""
+    """hipDeviceProp_tR0600 prefix: name[256], uuid[16], luid[8], luidDeviceNodeMask[4]."""
     return (
         name.encode("utf-8").ljust(256, b"\x00")
         + bytes(16)
@@ -1035,9 +1018,7 @@ def test_hip_probe_reads_the_luid_and_node_mask(hip_probe_host, monkeypatch):
 
 
 def test_hip_probe_needs_the_name_to_read_back(hip_probe_host, monkeypatch):
-    """The R0600 suffix is the ABI version, so the prefix is fixed by the same
-    contract that named it, but the offsets here are still hardcoded. Reading
-    the name back is what catches a layout that ever moved."""
+    """The R0600 offsets are hardcoded, so reading the name back is what catches a moved layout."""
     monkeypatch.setitem(
         sys.modules, "ctypes", _fake_ctypes([_r0600_blob("Some Other Struct", 0x14AD4)])
     )
@@ -1073,8 +1054,7 @@ def test_unified_memory_adopts_torch_total_even_when_used_unknown():
 
 
 def test_unified_memory_overwrites_used_when_torch_used_known():
-    """When torch reports both a larger total and a known used, both are adopted
-    and utilization is recomputed against the corrected total (unchanged path)."""
+    """Torch's larger total and known used are both adopted; utilization is recomputed."""
     metrics = {"vram_total_gb": 8.0, "vram_used_gb": 2.0, "vram_utilization_pct": 25.0}
     hw._apply_unified_memory_correction(metrics, {"total_gb": 124.0, "used_gb": 40.0, "index": 0})
     assert metrics["vram_total_gb"] == 124.0
@@ -1148,9 +1128,7 @@ def test_counter_capacity_prefers_the_dedicated_total():
 
 
 def test_the_luid_join_bounds_counters_by_the_carve_out_not_the_pool():
-    """An impossible counter must still be impossible after the total widens.
-    9 GiB fits no 8 GiB carve-out, so the join has to decline; ranked against a
-    128 GiB pool it fits and would be published on a card that never held it."""
+    """A 9 GiB counter fits no 8 GiB carve-out, so the join declines rather than using the 128 GiB pool."""
     dev_meta = [
         {
             "name": "AMD Radeon(TM) 8060S Graphics",
@@ -1169,9 +1147,7 @@ def test_the_luid_join_bounds_counters_by_the_carve_out_not_the_pool():
 
 
 def test_a_name_collision_falls_through_to_the_gfx_pass(win_rocm, monkeypatch):
-    """Two cards sharing one Description but differing in arch. The name pass
-    succeeds by cardinality yet names neither device, and returning there would
-    keep both unknown when gfx separates them."""
+    """Two cards share a Description but differ in arch, so a name collision must fall through to gfx."""
     monkeypatch.setitem(
         sys.modules,
         "torch",
@@ -1348,8 +1324,7 @@ def test_an_unsettled_classifier_does_not_cost_a_card_its_occupancy(win_rocm, mo
 
 
 def test_a_discrete_card_must_not_pay_a_context_for_its_total(win_rocm, monkeypatch):
-    """Only an APU pays mem_get_info for its total; a poll that attaches a
-    context on a discrete card never gives the memory back."""
+    """Only APUs call mem_get_info for total; a discrete card must not attach a context."""
     torch = _fake_torch(DEVICES, free_equals_total = True)
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setattr(
@@ -1462,9 +1437,7 @@ def test_a_driver_total_below_the_carve_out_is_not_adopted(win_rocm, monkeypatch
 
 
 def test_a_failing_carve_out_probe_keeps_the_device(win_rocm, monkeypatch):
-    """The correction is a probe, and it is the first thing this path asks the
-    classifier. A probe that throws must cost the device its correction, not its
-    place in the visible set: dropping it shows the System tab no GPU at all."""
+    """A throwing carve-out probe costs only the correction, never the device's visible-set slot."""
     torch = _fake_torch(DEVICES, free_equals_total = True)
     monkeypatch.setitem(sys.modules, "torch", torch)
 
@@ -1509,9 +1482,8 @@ def _apu_host(monkeypatch, unified_used = 12.0 * GB):
 
 
 def test_widened_total_survives_get_gpu_utilization(win_rocm, monkeypatch):
-    """The helper is not what the user sees. The corrected total has to reach the
-    payload, and the unknown occupancy has to stay unknown through the legacy
-    primary-device mirror rather than being filled in with a zero."""
+    """The corrected total must reach the get_gpu_utilization payload, and unknown occupancy must
+    stay unknown, not zero, through the legacy primary-device mirror."""
     _apu_host(monkeypatch)
 
     result = hw.get_gpu_utilization()
@@ -1523,9 +1495,8 @@ def test_widened_total_survives_get_gpu_utilization(win_rocm, monkeypatch):
 
 
 def test_the_system_tab_does_not_invent_free_vram_on_an_apu(win_rocm, monkeypatch):
-    """The failure this guards is a 128 GiB card reporting 128 GiB free while a
-    model sits in the shared pool: free is total minus used, and used is unknown,
-    so free must stay unknown rather than defaulting used to zero."""
+    """Guards against a 128 GiB card reporting 128 GiB free while a model sits in the shared pool;
+    free is total minus used, so unknown used must not default to zero."""
     _apu_host(monkeypatch)
 
     devices = hw.get_visible_gpu_utilization()["devices"]
@@ -1535,9 +1506,8 @@ def test_the_system_tab_does_not_invent_free_vram_on_an_apu(win_rocm, monkeypatc
 
 
 def test_a_declining_unified_read_leaves_the_apu_unknown(win_rocm, monkeypatch):
-    """When the sum cannot be established the carve-out reading must not be left
-    standing under a pool-sized total: that is the reading that reports a loaded
-    128 GiB card as almost entirely free."""
+    """If the unified sum cannot be established, the carve-out reading must not stand under a
+    pool-sized total, where it makes a loaded 128 GiB card look nearly free."""
     _apu_host(monkeypatch, unified_used = None)
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
@@ -1547,8 +1517,7 @@ def test_a_declining_unified_read_leaves_the_apu_unknown(win_rocm, monkeypatch):
 
 
 def test_shared_usage_needs_a_positively_unified_part(win_rocm, monkeypatch):
-    """Shared usage is host memory outside props.total_memory, so the sum needs a positively unified
-    part."""
+    """Shared usage is outside props.total_memory; sum it only for positively unified cards."""
     _apu_host(monkeypatch, unified_used = 90.0 * GB)
     monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: False)
 
@@ -1580,9 +1549,8 @@ def test_a_nonzero_sub_threshold_row_declines_the_unified_sum(win_rocm, monkeypa
 
 
 def test_a_negative_counter_never_publishes_negative_usage(win_rocm, monkeypatch):
-    """The helper declines a negative reading at source; this is the consumer end
-    of the same guarantee, driven with the helper stubbed so the clamp that
-    publishes the number is what gets tested rather than the decline above it."""
+    """A negative counter must never publish negative usage; the helper is stubbed here so the
+    consumer clamp, not the helper's decline, is what gets tested."""
     _apu_host(monkeypatch, unified_used = -5.0 * GB)
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
@@ -1711,8 +1679,7 @@ def test_a_confirmed_apu_takes_the_unified_sum_even_unwidened(win_rocm, monkeypa
 
 
 def test_the_unified_sum_is_clamped_to_the_widened_total(win_rocm, monkeypatch):
-    """The unified sum is clamped to the widened total, since driver plus desktop use can exceed the
-    pool."""
+    """Driver and desktop use can exceed the pool, so the unified sum is clamped to the total."""
     _apu_host(monkeypatch, unified_used = 140.0 * GB)
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
@@ -1721,8 +1688,7 @@ def test_the_unified_sum_is_clamped_to_the_widened_total(win_rocm, monkeypatch):
 
 
 def test_the_dedicated_snapshot_is_not_sampled_twice(win_rocm, monkeypatch):
-    """Each counter query is an out-of-process PowerShell call, and re-sampling
-    would also answer from a different instant than the attribution above it."""
+    """Re-sampling would spawn another PowerShell call and answer from a different instant."""
     _apu_host(monkeypatch)
     seen = []
     monkeypatch.setattr(
@@ -1736,9 +1702,8 @@ def test_the_dedicated_snapshot_is_not_sampled_twice(win_rocm, monkeypatch):
 
 
 def test_an_unavailable_dedicated_snapshot_is_not_requeried(win_rocm, monkeypatch):
-    """When the caller's own Dedicated query came back unavailable, handing None
-    to the helper reads as "not supplied" and runs the query a second time, on the
-    polled telemetry path, to arrive at the same None."""
+    """Passing None for an unavailable Dedicated snapshot reads as not supplied, so the helper
+    re-runs the query on the polled telemetry path."""
     _apu_host(monkeypatch)
     monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *a, **k: None)
     seen = []
@@ -1755,9 +1720,8 @@ def test_an_unavailable_dedicated_snapshot_is_not_requeried(win_rocm, monkeypatc
 
 
 def test_a_negative_counter_reading_is_declined(win_rocm, monkeypatch):
-    """A negative cooked counter is a broken reading, not low usage. The caller
-    clamps the upper bound only and the payload derives free as total minus used,
-    so a negative sum would publish a negative used and a free above the total."""
+    """A negative counter is a broken reading, not low usage; the caller clamps only the upper
+    bound, so it would publish negative used and free above total."""
 
     def counters(counter = "Dedicated Usage"):
         if counter == "Dedicated Usage":
@@ -1770,8 +1734,7 @@ def test_a_negative_counter_reading_is_declined(win_rocm, monkeypatch):
 
 @pytest.mark.parametrize("system", ["Linux", "Darwin"])
 def test_the_windows_path_is_inert_off_windows(win_rocm, monkeypatch, system):
-    """Linux, macOS and WSL (which reports Linux) never reach this path, so no
-    change to it can reach them."""
+    """Linux, macOS and WSL (which reports Linux) never reach this path."""
     monkeypatch.setattr(hw.platform, "system", lambda: system)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES))
     monkeypatch.setattr(
@@ -1815,8 +1778,7 @@ def _phoenix_host(
 
 
 def test_a_phoenix_apu_is_positively_unified_by_exact_arch(win_rocm):
-    """gfx1103 is an integrated part and never shipped as a discrete board, so
-    naming it cannot upgrade anything whose total is really carve-out scoped."""
+    """gfx1103 is an integrated part only, so naming it cannot upgrade a carve-out total."""
 
     class _P:
         name = "AMD Radeon(TM) 780M Graphics"
@@ -1832,8 +1794,7 @@ def test_a_phoenix_apu_is_positively_unified_by_exact_arch(win_rocm):
 
 
 def test_a_discrete_card_is_not_positively_unified(win_rocm):
-    """The guarantee the numerator rests on: shared bytes are host memory a
-    discrete card's props.total_memory never counted."""
+    """Shared bytes are host memory that a discrete card's props.total_memory never counted."""
 
     class _P:
         name = "AMD Radeon RX 7900 XTX"
@@ -1858,9 +1819,8 @@ def test_a_phoenix_pool_total_takes_the_shared_sum_not_the_plateau(win_rocm, mon
 
 
 def test_a_discrete_card_on_the_same_runtime_keeps_the_dedicated_counter(win_rocm, monkeypatch):
-    """The other half of the guarantee, through the same fixture: an unsettled
-    runtime does not let Shared Usage into a discrete card's numerator, and its
-    total is never probed for a pool it does not have."""
+    """An unsettled runtime must not let Shared Usage into a discrete card's numerator, and its
+    total is never probed for a pool it lacks."""
     torch = _phoenix_host(monkeypatch, gfx = "gfx1100", name = "AMD Radeon RX 7900 XTX")
     monkeypatch.setattr(
         torch.cuda, "mem_get_info", lambda i: pytest.fail("a discrete card must not be asked")
@@ -1936,9 +1896,8 @@ def test_a_linked_adapters_hidden_nodes_are_not_this_devices_engines(win_rocm, m
 
 
 def test_the_adapter_is_matched_here_and_the_engine_type_in_the_path(win_rocm, monkeypatch):
-    """A LUID in the path hands adapter selection to PDH, which no test here can run.
-    The engine type stays in the path, where it keeps the sample set to one type per
-    process."""
+    """A LUID in the path would hand adapter selection to PDH, which no test here can run; the
+    engine type stays in the path to keep one type per process."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     _, query = _engine_query(monkeypatch, SOLO_ADAPTERS, FOREIGN_ENGINES)

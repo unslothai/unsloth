@@ -195,8 +195,7 @@ class TestFriendlyUpstreamError:
         assert "compile a grammar" in _anthropic_upstream_error("failed to parse grammar")
 
     def test_anthropic_upstream_error_keeps_kv_starvation_out_of_the_overflow_rewrite(self):
-        """KV-cache starvation text must not be reworded as an oversized prompt; that makes clients
-        compact."""
+        """KV-cache starvation must not read as an oversized prompt, or clients would compact."""
         from routes.inference import _anthropic_upstream_error
 
         from routes.inference import _anthropic_upstream_error, _classify_llama_generation_error
@@ -887,9 +886,8 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_a_multi_image_message_closes_the_monitor_row(self, monkeypatch):
-        """The single-image refusal lands after the monitor row opens, so it must
-        close it: a row left running keeps Studio reporting the backend as
-        generating long after the request has been answered with a 400."""
+        """The single-image refusal lands after the monitor row opens, so it must close the row or
+        Studio shows the backend as generating."""
         import routes.inference as inference_route
 
         class _VisionBackend:
@@ -981,8 +979,7 @@ class TestChatCompletionRequestToolFields:
         return self._v1_client(monkeypatch, _LlamaOff(), backend), backend
 
     def test_several_undecodable_images_on_one_message_are_still_refused(self, monkeypatch):
-        """Count image parts, not decodable images: remote URLs decode to nothing yet must still be
-        refused."""
+        """Count parts, not decoded images: undecodable remote URLs must still be refused."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         remote = {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
@@ -1056,9 +1053,8 @@ class TestChatCompletionRequestToolFields:
     def test_an_unreadable_part_plus_a_distinct_legacy_image_is_two_images(
         self, bad_part, monkeypatch
     ):
-        """The count is structural, so a part the extractor cannot read still counts.
-        With a distinct top-level image beside it the caller supplied two, and the
-        part is the one that gets dropped."""
+        """The count is structural, so an unreadable part still counts; beside a distinct top-level
+        image it makes two, and that part would otherwise be dropped."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         resp = client.post(
@@ -1077,8 +1073,7 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_an_unreadable_part_alone_is_still_answered(self, monkeypatch):
-        """Control: one payloadless image and no top-level image is not a multi-image
-        call, and clients relying on that text answer must keep it."""
+        """A lone payloadless image is not multi-image; clients relying on its answer keep it."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         resp = client.post(
@@ -1105,9 +1100,8 @@ class TestChatCompletionRequestToolFields:
     def test_a_tts_model_refuses_an_image_instead_of_speaking_over_it(
         self, n_images, expected, monkeypatch
     ):
-        """The TTS auto-route returns before the standard image path and speaks the
-        newest user text, so an attached image is discarded. It is also why the
-        text-only rejection never sees such a request."""
+        """The TTS auto-route returns before the image path and speaks the newest user text, so an
+        attached image must be refused, not dropped; the text-only check never sees it."""
         import numpy as np
         import routes.inference as inference_route
 
@@ -1167,9 +1161,8 @@ class TestChatCompletionRequestToolFields:
     def test_only_the_newest_user_image_counts_as_the_echo(
         self, legacy_is_newest, expected, monkeypatch
     ):
-        """findLatestUserImageBase64 returns the first image on the newest user turn,
-        so that one value is all the field could carry. Matching anywhere let a
-        client resend an older image while the newest turn supplied its own."""
+        """findLatestUserImageBase64 returns the first image of the newest user turn, the field's
+        only value; matching any turn let an older resent image mask the newest one."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         older = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
@@ -1199,9 +1192,8 @@ class TestChatCompletionRequestToolFields:
             assert len(backend.generated) == 1
 
     def test_a_comma_in_a_remote_url_is_not_an_echo(self, monkeypatch):
-        """Only a data: URL carries an inline payload, the way _extract_content_parts
-        reads it. Splitting every URL on its first comma let a remote URL that merely
-        contains one pose as an echo of the top-level image, hiding a second image."""
+        """Only data: URLs carry an inline payload (as _extract_content_parts reads them); a remote
+        URL with a comma must not pass as an echo and hide an image."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         resp = client.post(
@@ -1229,9 +1221,8 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_a_payloadless_newest_image_does_not_end_the_echo_scan(self, monkeypatch):
-        """findLatestUserImageBase64 walks on past a falsy read, so an empty newest
-        part is not the value the field carries. Stopping on it refused Studio's
-        echo of a valid earlier image as a second attachment."""
+        """findLatestUserImageBase64 walks past a falsy read, so an empty newest part is not the
+        echo; stopping refused Studio's echo of an earlier valid image as a second attachment."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         older = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
@@ -1259,9 +1250,8 @@ class TestChatCompletionRequestToolFields:
         ids = ["image_on_a_gguf_speech_model_is_refused", "no_image_still_speaks"],
     )
     def test_a_gguf_speech_model_refuses_an_image(self, n_images, expected, monkeypatch):
-        """The GGUF audio branch returns before every image check, exactly as the
-        safetensors audio branch does, and speaks the newest user TEXT. An attached
-        image went unread and unmentioned."""
+        """The GGUF audio branch returns before any image check, like the safetensors one, and
+        speaks the newest user text; an attached image must be refused."""
         import numpy as np
         import routes.inference as inference_route
 
@@ -1306,8 +1296,7 @@ class TestChatCompletionRequestToolFields:
             assert len(spoken) == 1
 
     def test_a_legacy_image_alone_is_still_served(self, monkeypatch):
-        """With nothing extracted from the messages the top-level image IS the one
-        that gets used, so it must not be refused as a second image."""
+        """With no message images, the top-level image is used, not refused as a second image."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         resp = client.post(
@@ -1353,8 +1342,7 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_a_text_only_model_closes_the_monitor_row(self, monkeypatch):
-        """Same defect as the multi-image refusal, one branch up: this rejection
-        also lands after the monitor row opens and must finalize it."""
+        """Text-only rejection lands after the monitor row opens and must finalize it too."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor, is_vision = False)
         resp = client.post(
@@ -1374,9 +1362,8 @@ class TestChatCompletionRequestToolFields:
     def test_an_image_with_audio_input_is_refused_not_dropped(
         self, n_images, expected, monkeypatch
     ):
-        """The audio-input branch returns before the standard image path and forwards
-        only the flattened messages plus the audio, so an attached image is
-        discarded. Any count: one is dropped here as silently as two."""
+        """The audio-input branch returns before the image path and forwards only flattened messages
+        and audio, so any image is silently dropped and must be refused."""
         import numpy as np
         import routes.inference as inference_route
 
@@ -1444,9 +1431,8 @@ class TestChatCompletionRequestToolFields:
             assert len(calls) == 1
 
     def test_a_legacy_image_field_with_audio_is_refused(self, monkeypatch):
-        """A client attaching its image through the top-level image_base64
-        extension, with no image parts anywhere, means that image for THIS
-        request. The audio branch cannot forward it, so refuse rather than drop."""
+        """A top-level image_base64 with no image parts anywhere is this request's image; the audio
+        branch cannot forward it, so it must refuse rather than drop it."""
         import numpy as np
         import routes.inference as inference_route
 
@@ -1517,9 +1503,8 @@ class TestChatCompletionRequestToolFields:
         assert [(m["role"], m.get("name")) for m in calls[0]["messages"]] == [("user", "alice")]
 
     def test_a_derived_legacy_image_field_does_not_block_a_voice_follow_up(self, monkeypatch):
-        """Studio fills image_base64 from anywhere in the thread, so it is not a
-        per-turn signal. When an earlier turn carries the image the parts decide,
-        and the voice follow-up must still be answered."""
+        """Studio fills image_base64 from the whole thread, so it is no per-turn signal; the parts
+        decide, and a voice follow-up is still answered."""
         import numpy as np
         import routes.inference as inference_route
 
@@ -1563,9 +1548,8 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_a_new_legacy_image_is_refused_even_with_image_bearing_history(self, monkeypatch):
-        """A direct client can attach a NEW image through the legacy field while the
-        newest turn stays text-only. Studio's own field is copied out of the thread
-        and byte-matches a part; one matching nothing came with this request."""
+        """A direct client can attach a new image via the legacy field on a text-only newest turn;
+        Studio's copy byte-matches a part, so an unmatched one is refused."""
         import numpy as np
         import routes.inference as inference_route
 
@@ -1607,9 +1591,8 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_an_assistant_image_cannot_hide_a_top_level_attachment(self, monkeypatch):
-        """findLatestUserImageBase64 derives the legacy field only from USER turns,
-        so an image on an assistant turn is not something it could be an echo of.
-        Matching any role let an explicitly attached image be discarded here."""
+        """findLatestUserImageBase64 reads only user turns, so an assistant image cannot hide an
+        attached one; matching any role discards it."""
         import numpy as np
         import routes.inference as inference_route
 
@@ -1654,8 +1637,7 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_an_image_on_an_earlier_turn_still_allows_a_voice_follow_up(self, monkeypatch):
-        """The count is scoped to the newest user turn, so asking by voice about a
-        picture attached on an earlier turn keeps working."""
+        """Count only the newest user turn, so voice questions about older images still work."""
         import numpy as np
         import routes.inference as inference_route
 
@@ -1698,8 +1680,7 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_a_failed_image_decode_closes_the_monitor_row(self, monkeypatch):
-        """A single image whose payload is not an image fails inside the decode,
-        after the row opens. That rejection must finalize the row too."""
+        """A bad image fails in the decode, after the row opens, and must still close the row."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         resp = client.post(
@@ -2020,9 +2001,8 @@ class TestChatCompletionRequestToolFields:
         ]
 
     def test_studio_tool_history_still_answers_without_a_tool_template(self, monkeypatch):
-        """Switching a thread that already ran a Studio tool to a toolless GGUF used to 400
-        every later turn: the loop's own replayed calls were read as a client tool contract.
-        They are folded into user text instead, exactly as /v1/messages folds them."""
+        """Replayed Studio tool calls on a toolless GGUF must fold into user text, not read as a
+        client tool contract that 400s."""
         import routes.inference as inference_route
 
         captured = {}
@@ -2132,9 +2112,8 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_studio_tool_history_streams_without_a_tool_template(self, monkeypatch):
-        """The composer sends stream=true, and the fold rewrites payload.messages before the
-        generator runs, so the streamed turn needs its own guard: the non-streaming pass
-        cannot show that the folded list is what the stream generates from."""
+        """The composer sends stream=true and the fold rewrites payload.messages first; the
+        non-streaming pass cannot show the stream uses the folded list."""
         import routes.inference as inference_route
 
         captured = {}
@@ -2175,9 +2154,8 @@ class TestChatCompletionRequestToolFields:
         assert not any(m.get("role") == "tool" for m in captured["messages"])
 
     def test_studio_tool_history_answers_with_studio_tools_left_on(self, monkeypatch):
-        """Switching to a toolless GGUF does not switch Studio's tool toggle off, so the
-        thread's next turn still carries enable_tools. A backend that cannot run the loop
-        must answer in prose rather than reject the turn the toggle cannot undo."""
+        """Switching to a toolless GGUF leaves Studio's tool toggle on, so enable_tools still
+        arrives; the backend must answer in prose, not reject the turn."""
         import routes.inference as inference_route
 
         captured = {}
@@ -2214,8 +2192,7 @@ class TestChatCompletionRequestToolFields:
     def test_studio_tool_history_under_guided_decoding_has_no_adjacent_user_turns(
         self, monkeypatch
     ):
-        """Guided decoding never coalesces, so the tool-result fold must merge adjacent user turns
-        itself."""
+        """Guided decoding never coalesces, so the fold itself must merge adjacent user turns."""
         import routes.inference as inference_route
 
         captured = {}
@@ -2279,8 +2256,7 @@ class TestChatCompletionRequestToolFields:
     def test_studio_tool_history_under_guided_decoding_survives_a_stopped_turn(
         self, monkeypatch, sentinel
     ):
-        """A stopped turn leaves an empty assistant turn, so sanitizing must run before the fold,
-        not after."""
+        """A stopped turn leaves an empty assistant turn; sanitize before the fold, not after."""
         import routes.inference as inference_route
 
         captured = {}
@@ -3818,10 +3794,8 @@ async def fake_send(*_args, **_kwargs):
     return httpx.Response(200, content = b"")
 
 
-# Upper bounds only: the route reaches the hanging client and notices the disconnect (it polls
-# is_disconnected every 0.1 s) in milliseconds here. 0.2 s / 0.5 s timed out on loaded xdist
-# workers (the first embeddings call on a cold worker does extra setup), so allow seconds; a real
-# hang or a missed disconnect still fails, just later.
+# Upper bounds only: 0.2 s and 0.5 s timed out on loaded xdist workers, where a cold first
+# embeddings call does extra setup; a real hang or missed disconnect still fails, just later.
 _HANGING_CLIENT_START_TIMEOUT_S = 10.0
 _DISCONNECT_TO_499_TIMEOUT_S = 5.0
 
@@ -4350,9 +4324,8 @@ class TestGgufVisionMessages:
         }
 
     def test_a_replayed_envelope_alone_does_not_demand_a_vision_model(self):
-        """The capability preflight runs before promote_history strips the envelope
-        for a text-only target, so counting history there strands the conversation:
-        the switch is refused for a picture that model would never be shown."""
+        """Preflight runs before promote_history strips the envelope for text-only targets, so
+        counting history would refuse a picture never shown."""
         from routes.inference import _request_has_attached_image, _request_has_image
 
         req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
@@ -4379,9 +4352,8 @@ class TestGgufVisionMessages:
         assert _request_has_attached_image(req)
 
     def test_admission_charges_a_replayed_envelope_as_images_not_text(self):
-        """Admission prices the payload before the chat path promotes the envelope.
-        Left as text it reserves megabytes of prompt for bytes never sent; ignored
-        it charges zero KV for projector images that really are."""
+        """Admission prices the envelope before promotion: as text it reserves megabytes never sent,
+        and ignored it charges no KV for projector images that really are."""
         from routes.inference import _openai_llama_admission_messages_for_estimate
 
         estimate, image_parts = _openai_llama_admission_messages_for_estimate(
@@ -4416,9 +4388,8 @@ class TestGgufVisionMessages:
         assert image_parts == mcp_images.MAX_TOTAL_MODEL_IMAGES
 
     def test_the_envelope_cap_never_discounts_really_attached_images(self):
-        """#9842 charges per-image KV so parallel vision chats are admitted
-        honestly. The envelope cap bounds what promotion adds, not what the
-        caller actually sent."""
+        """9842 charges per-image KV so parallel vision chats are admitted honestly; the envelope
+        cap bounds only promoted images, never really attached ones."""
         from core.inference import mcp_images
         from routes.inference import _openai_llama_admission_messages_for_estimate
 
@@ -10900,8 +10871,7 @@ class TestExternalProviderParticipantNames:
 
 
 def test_every_gguf_choice_gets_a_seed_of_its_own():
-    """Every GGUF choice needs its own seed; only -1 maps to the random sentinel, other negatives
-    are fixed."""
+    """Each GGUF choice needs its own seed; only -1 is random, and other negatives stay fixed."""
     from routes.inference import _choice_seed
 
     sent = 0xFFFFFFFF
@@ -11259,9 +11229,8 @@ class TestPassthroughImageNormalization:
 
 
 class TestMcpImagesOnTheClientToolPassthrough:
-    """The client-tool passthrough rebuilds its prompt from payload.messages and
-    flattens every content part to text. The MCP payloads survive in gen_kwargs,
-    so the markers have to be put back or the two disagree."""
+    """The client-tool passthrough flattens content parts to text from payload.messages, while MCP
+    payloads survive in gen_kwargs; markers must be restored or the two disagree."""
 
     def test_one_marker_is_restored_per_retained_payload(self):
         from core.inference.mcp_images import append_placeholder_turn
@@ -11285,8 +11254,7 @@ class TestMcpImagesOnTheClientToolPassthrough:
         assert messages[-1]["role"] == "user"
 
     def test_the_route_restores_them_on_that_branch(self):
-        """Scoped to the client-tool branch, not a character window: the code
-        around it moves with every upstream change, the branch does not."""
+        """Scoped to the client-tool branch, not a character window that upstream edits move."""
         import inspect
 
         import routes.inference as inference_route
@@ -11309,9 +11277,8 @@ class TestMcpImagesOnTheClientToolPassthrough:
 
 class TestCodexVisionCapability:
     def test_an_mcp_run_resolves_the_catalog_before_pinning_the_vision_flag(self):
-        """The flag is fixed once for the whole run. A text-only opening turn on a
-        cold worker would pin it False and discard a picture an MCP tool returns
-        later, on a model the picker offered as vision-capable."""
+        """The vision flag is pinned once per run, so the catalog must resolve first: a text-only
+        opening turn on a cold worker would pin False and discard a later MCP picture."""
         import inspect
 
         import routes.inference as inference_route
@@ -11321,9 +11288,8 @@ class TestCodexVisionCapability:
         assert "if _may_receive_image and model not in capabilities" in body
 
     def test_a_replay_only_turn_also_resolves_the_catalog(self):
-        """MCP can be switched off while prior image turns remain. The capability
-        still has to be resolved, or the replay is stripped from a model that
-        could have read it."""
+        """MCP can be switched off while earlier image turns remain; the capability must still be
+        resolved, or the replay is stripped from a model that could read it."""
         import inspect
 
         import routes.inference as inference_route
@@ -11440,9 +11406,8 @@ class TestMcpImageProvenanceAndCounting:
         return msg
 
     def test_admission_strips_a_non_mcp_envelope_but_charges_it_nothing(self):
-        """Generation strips the suffix for everyone, so pricing it as text would
-        over-reserve; and it is never promoted, so charging image KV would reserve
-        the cache for pixels llama-server never sees."""
+        """Generation strips the suffix for everyone, so pricing it as text over-reserves; it is
+        never promoted, so charging image KV reserves cache for pixels never seen."""
         from routes.inference import _openai_llama_admission_messages_for_estimate
 
         estimate, parts = _openai_llama_admission_messages_for_estimate(
@@ -11463,8 +11428,7 @@ class TestMcpImageProvenanceAndCounting:
         assert self._PNG not in json.dumps(estimate)
 
     def test_the_estimator_and_generation_agree_on_provenance(self):
-        """The two must read the same rule, or the reservation and the prompt
-        disagree in whichever direction the mismatch runs."""
+        """The estimator and generation must share a provenance rule or they disagree."""
         from core.inference.mcp_images import promote_history
         from routes.inference import _openai_llama_admission_messages_for_estimate
 
@@ -11497,9 +11461,8 @@ class TestMcpReplayDetectorProvenance:
         return ChatCompletionRequest(model = "default", messages = [msg])
 
     def test_only_a_promotable_envelope_counts_as_a_replayed_image(self):
-        """Promotion preserves a named non-MCP result as plain text, so reading its
-        suffix as images refuses a countable prompt and buys a catalog fetch that
-        nothing needs."""
+        """Promotion keeps a named non-MCP result as plain text, so reading its suffix as images
+        would refuse a countable prompt and fetch a catalog nothing needs."""
         from routes.inference import _request_has_promotable_mcp_images
 
         assert _request_has_promotable_mcp_images(self._req("mcp__fs__read_media_file"))
@@ -11507,8 +11470,7 @@ class TestMcpReplayDetectorProvenance:
         assert _request_has_promotable_mcp_images(self._req(None))
 
     def test_the_count_guard_runs_before_the_mlx_dispatch(self):
-        """_mlx_count_chat_tokens returns its own count, so a guard placed after it
-        never sees a resident MLX vision model."""
+        """Guards placed after _mlx_count_chat_tokens never see a resident MLX vision model."""
         import inspect
 
         import routes.inference as inference_route
@@ -11546,8 +11508,7 @@ def test_a_text_only_qwen_model_is_never_sent_an_mcp_picture():
 
 
 def test_kimi_stays_permissive_because_its_allowlist_already_narrowed_it():
-    """The opposite case, so the conservative set does not grow by reflex: kimi's
-    model_id_allowlist admits only the multimodal pair its own entry documents."""
+    """Kimi stays permissive: its model_id_allowlist already admits only the documented pair."""
     from core.inference.providers import get_provider_info
     from routes.inference import _external_takes_mcp_images
 
@@ -11806,8 +11767,7 @@ _LLAMA_IGNORED = (
     "reasoning_control reasoning_budget_start_tag reasoning_budget_end_tags "
     "reasoning_budget_end_tag reasoning_budget_message"
 )
-# The rest change the text or the shape with no MLX equivalent: a value MLX refuses, and the one
-# that turns the field off.
+# Others change text or shape with no MLX equivalent, or send values MLX refuses or disables.
 _LLAMA_UNSERVED = json.loads(
     '{"best_of": [2, 1], "suffix": ["x", ""],'
     ' "timings_per_token": [true, false], "return_tokens": [true, false],'

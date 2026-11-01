@@ -1353,8 +1353,7 @@ def test_a_shadowed_lock_is_not_resurrected_by_the_pageable_rewrite(argv):
     ids = ["no-mmap-then-mlock", "load-mode-mlock", "load-mode-mlock-equals"],
 )
 def test_an_effective_lock_survives_the_pageable_rewrite(argv, expect_tokens):
-    """The control. "Keep this in RAM" is a real request when nothing shadowed it, so
-    it is carried onto a mapping (mmap+mlock) rather than discarded."""
+    """Control: a keep-in-RAM request is mmap+mlock unless a flag shadows it, not discarded."""
     assert _lsa.resolve_effective_memory_state(argv) == (True, True)
 
     (mlock, reserves), out, _env, overridden = _rewritten_state(argv)

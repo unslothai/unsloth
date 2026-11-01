@@ -508,8 +508,7 @@ def test_partial_marker_split_across_deltas_is_not_broken(executed):
 
 
 def test_unterminated_envelope_is_released_as_prose_and_terminates(executed):
-    """An unclosed tool envelope must be released as visible prose, never swallowed or turned into a
-    call."""
+    """An unclosed tool envelope must surface as prose, never be swallowed or run as a call."""
     transport = FakeTransport(
         [
             [
@@ -1474,8 +1473,7 @@ def test_an_explicit_false_beats_a_process_default_of_on(executed, monkeypatch):
 
 
 def test_an_omitted_flag_still_follows_a_process_default_of_on(executed, monkeypatch):
-    """The contract the explicit false works around: if omission ever stops
-    following the process default, this fails and the false can be reconsidered."""
+    """Omission still follows the process default; if not, reconsider the explicit false."""
     monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
     transport = FakeTransport(
         [
@@ -1750,9 +1748,7 @@ def _call_delta(index, call_id, name, arguments):
 
 
 def test_a_decoded_object_arguments_delta_reaches_the_tool(executed):
-    """A string-only accumulator ran the tool with ``{}``, and the backend's authoritative
-    tool_start then overwrote the payload the frontend had recovered, so both ends are pinned.
-    """
+    """Object-valued argument deltas must reach the tool; a string-only accumulator ran it with {}."""
     transport = FakeTransport(
         [
             [
@@ -1849,8 +1845,7 @@ def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
     result_ids = {message["tool_call_id"] for message in replayed if message.get("role") == "tool"}
     assert result_ids == {"call_a", "call_b"}
     assert not result_ids - called_ids
-    # The refused call is replayed in OpenAI shape only: the parsed arguments
-    # dict the loop keeps for itself must not reach the provider.
+    # Refused calls replay in OpenAI shape only; the parsed arguments dict stays in the loop.
     exhausted = [
         call
         for message in replayed
@@ -1930,8 +1925,7 @@ def test_unlimited_budget_runs_past_the_old_fixed_turn_cap(executed):
 
 
 def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(executed):
-    """A skipped duplicate call must still emit its provider id, so the client closes the card it
-    painted."""
+    """A skipped duplicate must still emit its provider id, so the client can close its card."""
     repeat = [
         _sse({"tool_calls": [_call_delta(0, "call_a", "web_search", '{"query":"a"}')]}),
         _sse(finish = "tool_calls"),
@@ -1958,8 +1952,7 @@ def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(execut
 
 
 def test_a_second_call_at_one_index_keeps_its_own_argument_fragments(executed):
-    """Providers restart tool_calls index at 0 each round, so route fragments by call id, not index
-    alone."""
+    """Providers restart tool_calls index each round; route fragments by call id, not index."""
     transport = FakeTransport(
         [
             [

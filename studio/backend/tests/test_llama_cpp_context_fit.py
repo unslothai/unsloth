@@ -656,9 +656,8 @@ def _install_fake_psutil(
     total,
     available = None,
 ):
-    """psutil stub. The budget reads both, so a test must pin both to be
-    machine-independent: with only `total` stubbed, `available` came from the
-    host running the suite."""
+    """psutil stub: the budget reads both total and available, so a test must pin both or available
+    comes from the host running the suite."""
     fake = _types.ModuleType("psutil")
     vm = _types.SimpleNamespace(total = total)
     if available is not None:
@@ -722,8 +721,7 @@ class TestAppleUnifiedMemoryBudget:
         )
 
     def test_a_busy_machine_budgets_from_what_is_free(self, monkeypatch):
-        """The Metal budget uses free memory, since the static working set answers the same loaded
-        or idle."""
+        """Metal budget uses free memory: the static working set is the same loaded or idle."""
         _force_apple(monkeypatch)
         _install_fake_mlx(monkeypatch, 10 * GIB)
         _install_fake_psutil(monkeypatch, total = 16 * GIB, available = 6 * GIB)

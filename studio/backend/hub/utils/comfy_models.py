@@ -290,8 +290,7 @@ def is_loose_checkpoint_candidate(path: Path) -> bool:
 
 
 def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = None) -> list[Path]:
-    """Loose ``.safetensors`` in ``folder`` offered as diffusion models, sorted; empty for a folder
-    that is itself one model. Never raises."""
+    """Loose .safetensors in folder, sorted; empty when the folder is one model. Never raises."""
     try:
         for marker in (
             "config.json",

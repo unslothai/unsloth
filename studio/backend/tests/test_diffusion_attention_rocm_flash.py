@@ -1197,8 +1197,7 @@ def test_max_abs_error_alone_rejects(max_rel, wins):
     assert att._rocm_flash_wins({**_GOOD, "max_rel": max_rel}) is wins
 
 
-# Lengths: calls are gated per power-of-two length bucket; an unseen bucket is timed on its first eager call and never
-# inherits the 4096 verdict.
+# Gates are per power-of-two length bucket; an unseen bucket is timed, never inheriting 4096.
 
 
 @pytest.mark.parametrize(
@@ -2441,8 +2440,7 @@ def test_admission_key_does_not_alias_geometry_and_lengths(monkeypatch):
     assert len(att.ROCM_FLASH_ADMISSIONS) == 2
 
 
-# A re-apply on the same pipe that no longer picks ROCm flash takes the tracking off with it: the badge and the memory
-# guard must not keep reading the pipe as flash.
+# Native re-apply drops ROCm flash tracking so the badge and memory guard stop reading flash.
 
 
 def test_reapply_to_native_removes_rocm_flash_tracking(monkeypatch):

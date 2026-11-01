@@ -991,8 +991,7 @@ class MtmdSttSidecar:
                 stdout = subprocess.DEVNULL,
                 stderr = subprocess.DEVNULL,
                 stdin = subprocess.DEVNULL,
-                # bundled libs and pip CUDA runtimes on the loader path, secrets scrubbed, as the chat backend spawns
-                # the same binary
+                # Like chat: bundled and pip CUDA libs on the loader path; secrets scrubbed.
                 env = {**_llama_server_child_env(binary), **key_env},
                 # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
@@ -1014,8 +1013,7 @@ class MtmdSttSidecar:
                     with suppress(OSError):
                         key_file.unlink()
             if not ready:
-                # Reap it here: _process was never assigned, so unload() cannot reach a child that ignores SIGTERM and
-                # keeps port and VRAM.
+                # Reap here: _process is unset, so unload() misses a child ignoring SIGTERM.
                 _reap(process)
                 if cancel_event.is_set():
                     # 409 via the route, like other sidecars: expected preemption, not a broken or missing runtime (501).

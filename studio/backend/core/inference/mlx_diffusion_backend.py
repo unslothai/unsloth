@@ -136,10 +136,7 @@ def dense_bits(ram_bytes: Optional[int] = None) -> int:
     return 4 if 0 < ram <= _LOW_RAM_BYTES else 0
 
 
-# Unified-memory plan. Rungs in order of accuracy cost, measured on Z-Image-Turbo (16 renders at 1024, LPIPS vs the
-# all-bf16 MLX render, paired bootstrap): an 8-bit text encoder is within noise of bf16 (+0.002), a 4-bit one is not
-# (+0.029, 13 of 16 images worse); re-quantizing the GGUF's own BF16 tensors to 4 bits costs +0.008. So the 4-bit
-# text encoder is the last rung, taken only when nothing above it fits the Metal working set.
+# The 4-bit text encoder is the last rung, used only when nothing above it fits.
 _TE_BIT_OPTIONS = (8, 4)
 _DENSE_BIT_OPTIONS = (0, 8, 4)
 # Group-64 affine: one bf16 scale and one bf16 bias per 64 weights.
@@ -339,9 +336,8 @@ def compute_precision_name(chip: Optional[str] = None) -> str:
     return "float16" if ("apple m1" in name or "apple m2" in name) else "bfloat16"
 
 
-# Untiled VAE decode working set above the weights (mflux Z-Image VAE, bf16, Apple M1 Metal): 1.99 GiB at 512x512 and
-# 6.64 GiB at 1024x1024, i.e. about 0.44 GiB plus 6.35 KB per output pixel. Tiled (mflux's 512 px tiles) it stays at
-# 2.0 GiB at 1024x1024; a 512x512 image is a single tile, so tiling changes nothing there.
+# Untiled VAE decode above weights ~0.44 GiB plus 6.35 KB per output pixel (mflux Z-Image VAE, bf16,
+# Apple M1 Metal); tiled at 512 px it stays near 2.0 GiB at 1024x1024
 _VAE_DECODE_FIXED_BYTES = int(0.44 * 1024**3)
 _VAE_DECODE_BYTES_PER_PIXEL = 6350
 VAE_TILING_ENV = "UNSLOTH_DIFFUSION_MLX_VAE_TILING"
@@ -794,9 +790,8 @@ def resolve_variant_base(
     fallback: str,
     local_files_only: bool = False,
 ) -> str:
-    """The diffusers loader's base resolution (trusted ``base_model`` card tag, then a named variant,
-    then the family default), so both engines read the same base for one pick. Cache-only reads no
-    card: the base an earlier online load recorded for this repo, else the name, else the default."""
+    """Base the diffusers loader resolves: trusted base_model tag, then named variant, then family
+    default; shared by both engines; cache-only reads use recorded base, then name, then default"""
     if local_files_only:
         return _cached_variant_base(repo_id, fam, gguf_filename, fallback)
     if Path(repo_id).expanduser().exists():
@@ -1227,8 +1222,7 @@ class MlxDiffusionBackend:
                 if self._load_token == _load_token and self._loading is not None:
                     self._loading.error = redact_native_paths(str(exc))
         finally:
-            # A cached exception below (Hub helpers memoize import failures) can retain this frame;
-            # a model left in its locals would then survive unload().
+            # A cached exception can retain this frame, keeping any model in its locals alive.
             model = state = displaced = None
             if building and not published and self._runtime is not None:
                 self._runtime.free()

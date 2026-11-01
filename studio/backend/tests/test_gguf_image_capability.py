@@ -76,9 +76,7 @@ def test_a_model_without_a_projector_takes_no_image():
 
 
 def test_the_load_reads_both_capabilities_from_the_projector_it_attaches():
-    """The read cannot be reached without spawning llama-server, so pin it in the source:
-    both flags must come from one call on the same probed path, or the pair can describe
-    two files."""
+    """Reaching the read needs llama-server, so pin it in source: both flags must share one probed path."""
     with _stub_modules_ctx():
         from core.inference.llama_cpp import LlamaCppBackend
     src = inspect.getsource(LlamaCppBackend.load_model)

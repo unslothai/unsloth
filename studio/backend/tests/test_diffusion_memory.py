@@ -41,8 +41,7 @@ def _target(
     backend = "cuda",
     supports_offload = True,
 ):
-    """A duck-typed stand-in for DiffusionDeviceTarget (only the fields the
-    planner / snapshot read)."""
+    """Duck-typed DiffusionDeviceTarget stand-in with only the fields the planner reads."""
     return types.SimpleNamespace(
         device = device,
         backend = backend,
@@ -213,11 +212,7 @@ def test_host_memory_reclaimer_caches_unsupported_or_missing_apis(monkeypatch):
     reason = "exercises the real glibc allocator symbol",
 )
 def test_host_memory_reclaimer_calls_the_real_glibc_symbol():
-    """Every other reclaimer test replaces ctypes, so none of them would notice if the library,
-    the symbol name or the ABI stopped resolving against a real libc. Spy on the real CDLL
-    instead of standing in for it, so the assertions land on the very function pointer the
-    resolver configured (a fresh CDLL(None).malloc_trim would carry default argtypes and prove
-    nothing)."""
+    """Spy on the real CDLL, not a stub: a fresh CDLL(None).malloc_trim would carry default argtypes."""
     import ctypes
 
     if not hasattr(ctypes.CDLL(None), "malloc_trim"):
@@ -248,9 +243,7 @@ def test_host_memory_reclaimer_calls_the_real_glibc_symbol():
 
 
 def test_host_memory_reclaimer_survives_a_python_without_ctypes(monkeypatch):
-    """A Python built without libffi has no _ctypes. This module is imported by diffusion,
-    video, llama_cpp, sd_cpp_backend and routes.inference, so a hard ctypes dependency would
-    turn a missing optional optimisation into a backend that cannot start at all."""
+    """Without _ctypes (no libffi), the reclaimer must degrade to None, not stop backends from starting."""
     monkeypatch.setattr(diffusion_memory, "ctypes", None)
     diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
     try:
@@ -1244,8 +1237,7 @@ def _unified_plan(
     kind = "unified_memory",
     device = "mps",
 ):
-    """A plan straight from the shipped planner, so the budget arithmetic under test is the
-    real arithmetic rather than a hand-written copy of it."""
+    """Built by the shipped planner, so the tests exercise real budget arithmetic, not a copy."""
     return plan_diffusion_memory(
         target = _target(device = device, backend = device, supports_offload = False),
         device_memory = DeviceMemory(device, device, kind, free_mib, total_mib),
@@ -1292,9 +1284,7 @@ def test_unified_oversize_refuses_and_names_family_and_both_numbers():
 
 
 def test_unified_oversize_ignores_the_soft_runtime_headroom():
-    """The refusal budgets WEIGHTS only. A load whose weights fit but whose weights + activation
-    headroom do not is marginal, and VAE tiling/slicing (always on for mps) cuts the decode peak
-    the headroom estimate does not model, so it must NOT be refused."""
+    """Refusal budgets weights only; VAE tiling cuts the decode peak, so marginal loads are not refused."""
     from core.inference.diffusion_memory import unified_memory_shortfall_message
 
     budget = _MPS_FREE_MIB - max(2048, int(_MPS_TOTAL_MIB * 0.20))
@@ -1366,9 +1356,7 @@ def test_unified_oversize_message_survives_a_malformed_plan():
 
 
 def test_raise_on_unified_memory_shortfall_raises_runtime_error_with_the_message():
-    """RuntimeError matches the llama.cpp unified-memory APU refusal. Both loaders call this on
-    a worker thread inside load_pipeline, where _run_load stringifies it onto load_progress, so
-    the text reaches the UI toast and the 409 mapping of the synchronous route never applies."""
+    """RuntimeError, not a 409: loader threads' _run_load copies it to load_progress for the UI toast."""
     from core.inference.diffusion_memory import (
         raise_on_unified_memory_shortfall,
         unified_memory_shortfall_message,
@@ -1400,8 +1388,7 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
         "ltx-2.5": {16, 24, 32, 64, 96},
         "wan2.2-ti2v-5b": {16, 24, 32},
         "wan2.2-t2v-a14b": {16, 24, 32, 64, 96},
-        # 14.7 GB (1.3B DiT + UMT5-XXL + the Wan2.1 VAE): plus overhead it just misses the ~14.4 GiB
-        # budget of a 24 GiB Mac, and fits from 32 GiB up.
+        # Wan 1.3B (14.7 GB) misses a 24 GiB Mac's ~14.4 GiB budget; fits from 32 GiB up.
         "wan2.1-t2v-1.3b": {16, 24},
         # 40.5 GB (one 14B DiT, same encoder + VAE): plus overhead it just misses the ~38.4 GiB budget
         # at 64 GiB, and fits at 96 GiB and above (unlike the two-expert A14B at 69.1 GB).
@@ -1513,8 +1500,7 @@ def test_streamed_text_encoders_rescue_the_48_minute_plan():
 
 @pytest.mark.parametrize("mode", [None, MEMORY_MODE_FAST])
 def test_plain_group_is_preferred_over_streaming_the_text_encoders(mode):
-    # The tier must only engage as a rescue from whole-module offload.
-    # auto and fast pick tiers via separate branches, so both are covered.
+    # Tier must only rescue whole-module offload; auto and fast reach it by separate branches.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
@@ -1576,9 +1562,7 @@ def test_text_encoder_split_larger_than_the_companions_clamps_at_zero():
 def _legacy_offload_policy(
     *, budget, model_dense_mib, companion_dense_mib, runtime_headroom_mib, base_overhead_mib
 ):
-    """The auto-path decision as it stood BEFORE the streamed-text-encoder tier, written out
-    independently. The back-compat fence below compares the shipped planner against it, so a
-    change that leaks the new tier into a caller that passed no split fails here."""
+    """Pre-streamed-encoder auto policy, kept separate so back-compat tests catch new-tier leaks."""
     required = model_dense_mib + runtime_headroom_mib + base_overhead_mib
     if required <= int(budget * 0.85):
         return OFFLOAD_NONE
@@ -1618,8 +1602,7 @@ def test_no_text_encoder_split_reproduces_the_previous_decision():
 
 
 def _stream_te_pipe(monkeypatch):
-    """A pipe with two text encoders and a VAE, plus a record of which modules got group-offload
-    hooks and which were placed resident."""
+    """Two-encoder pipe that records which modules got group-offload hooks or stayed resident."""
     applied: list[Any] = []
     Mod = _install_fake_torch_and_hooks(monkeypatch, lambda module, **kw: applied.append(module))
 
@@ -1699,8 +1682,7 @@ def _stream_te_kwargs(monkeypatch, **call_kw):
     import core.inference.diffusion_memory as mem
 
     pipe, _applied, *_ = _stream_te_pipe(monkeypatch)
-    # Swap, never re-install: a second install mints a new Module class and isinstance checks
-    # silently fail, leaving only the transformer checked.
+    # Swap, don't re-install: a second install mints a new Module class, breaking isinstance.
     _swap_group_offloading(monkeypatch, _apply)
     assert mem._apply_group_offload(pipe, "cuda", logger = None, **call_kw) is True
     return seen
@@ -1720,8 +1702,7 @@ def test_the_split_leaves_the_weights_only_estimate_terms_untouched():
 
 
 def test_streaming_the_text_encoders_does_not_pin_host_memory(monkeypatch):
-    # This tier rescues small cards from whole-module offload (which pins nothing);
-    # hosts may lack RAM, so encoders must not be pinned.
+    # Hosts may lack RAM, so streamed text encoders must not be pinned.
     import core.inference.diffusion_memory as mem
 
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
@@ -1887,8 +1868,7 @@ def test_guard_refuses_the_oversized_frame_and_passes_the_default_one():
 
 
 def test_guard_counts_the_base_overhead_alongside_the_activations():
-    # The overhead coexists with the pass's tensors; without it a 15.92 GiB card (14,254 MiB budget)
-    # fits 13,872 MiB of activations and the guard stays silent.
+    # Base overhead shares the pass's tensors; omitting it lets 13,872 MiB pass unflagged.
     from core.inference.diffusion_memory import _safe_device_budget_mib
 
     reported_card = _discrete(16_302, 16_302)
@@ -1899,8 +1879,7 @@ def test_guard_counts_the_base_overhead_alongside_the_activations():
 
 
 def test_guard_never_refuses_at_or_below_the_resolution_the_load_planned_for():
-    # The flat headroom is a planning figure; small cards run 1024x1024 below it,
-    # so the guard only applies to requests larger than planned.
+    # Flat headroom is a planning figure, so the guard acts only above the planned resolution.
     small = _discrete(
         int(8 * 1024 * 0.97), 8 * 1024
     )  # safe budget 5898 MiB, under the 6963 default
@@ -2024,9 +2003,7 @@ def test_the_refusal_reports_the_number_it_compared():
 
 
 def test_the_activation_refusal_is_its_own_error_type():
-    """The OpenAI-compatible route sanitises every exception into a bare 500, so the one message
-    written FOR the caller needs a type it can recognise. Still a ValueError, so /images/generate
-    keeps mapping it to a 400 with the reason."""
+    """OpenAI route sanitises errors to a bare 500, so refusal needs its own type; still a ValueError."""
     import pytest as _pytest
 
     from core.inference.diffusion_memory import (
@@ -2067,9 +2044,8 @@ def test_the_streamed_encoders_are_hooked_leaf_by_leaf(monkeypatch):
 
 
 def test_the_batch_remedy_appears_only_when_a_batch_was_budgeted():
-    """The guard budgets one image everywhere except a Windows multi-image chunk, so a refusal
-    almost always means one image does not fit. Telling that caller to use a smaller batch points
-    them at the one change that provably cannot alter the decision."""
+    """Smaller-batch advice only when a batch was budgeted, since it cannot change a single-image
+    refusal."""
     single = _shortfall(1088, 1920)
     assert single is not None
     assert "smaller batch size" not in single

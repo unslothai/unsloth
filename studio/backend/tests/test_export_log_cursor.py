@@ -48,14 +48,12 @@ def _append(
 
 
 def test_run_start_seq_is_zero_before_any_logs(orchestrator) -> None:
-    """run_start_seq == 0 on a new orchestrator, so the first SSE picks up
-    every line from seq 1 onward."""
+    """run_start_seq starts at 0, so a first SSE reads every line from seq 1 onward."""
     assert orchestrator.get_run_start_seq() == 0
 
 
 def test_clear_logs_snapshots_current_seq(orchestrator) -> None:
-    """clear_logs() captures _log_seq BEFORE clearing, so the next run can
-    anchor its SSE cursor at the snapshot."""
+    """clear_logs() snapshots _log_seq before clearing, so the next SSE cursor anchors there."""
     _append(orchestrator, "old run line 1")
     _append(orchestrator, "old run line 2")
     _append(orchestrator, "old run line 3")
@@ -68,9 +66,8 @@ def test_clear_logs_snapshots_current_seq(orchestrator) -> None:
 
 
 def test_sse_default_cursor_catches_all_current_run_lines(orchestrator) -> None:
-    """POST-then-SSE race: worker emits lines right after clear_logs(), SSE
-    connects later. get_run_start_seq() as the default cursor returns every
-    line since clear_logs() (pre-fix it missed them)."""
+    """POST-then-SSE race: lines emitted right after clear_logs() must reach a later SSE, so
+    get_run_start_seq() is the default cursor."""
     _append(orchestrator, "previous run line A")
     _append(orchestrator, "previous run line B")
 
@@ -94,8 +91,7 @@ def test_sse_default_cursor_catches_all_current_run_lines(orchestrator) -> None:
 
 
 def test_sse_default_cursor_excludes_previous_run(orchestrator) -> None:
-    """After clear_logs(), previous-run lines must not leak into the new
-    run's SSE stream (the fix must preserve this)."""
+    """After clear_logs(), previous-run lines must not leak into the new run's SSE stream."""
     _append(orchestrator, "previous run line 1")
     _append(orchestrator, "previous run line 2")
     _append(orchestrator, "previous run line 3")
@@ -111,8 +107,7 @@ def test_sse_default_cursor_excludes_previous_run(orchestrator) -> None:
 
 
 def test_clear_logs_twice_advances_run_start(orchestrator) -> None:
-    """Back-to-back clear_logs() calls each re-anchor run_start at the current
-    seq, giving successive runs a fresh low-water mark."""
+    """Each clear_logs() re-anchors run_start to the current seq as a fresh low-water mark."""
     _append(orchestrator, "run 1 line a")
     _append(orchestrator, "run 1 line b")
 

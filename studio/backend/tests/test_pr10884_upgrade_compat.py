@@ -34,8 +34,7 @@ LEGACY_OVERRIDE = {
 
 
 def test_a_saved_setting_can_never_carry_a_tensor_split():
-    """The allow-list is the whole attack surface for this change. If a ratio
-    cannot be stored, no existing install can begin sending one at upgrade."""
+    """The allow-list is the whole attack surface: a stored override can never carry a ratio."""
     stored = normalize_model_override(dict(LEGACY_OVERRIDE))
     assert "tensor_split" not in stored
 
@@ -49,9 +48,7 @@ def test_a_saved_setting_can_never_carry_a_tensor_split():
     ],
 )
 def test_a_ratio_written_into_the_settings_row_by_hand_is_dropped(smuggled):
-    """Not hypothetical: the row is JSON in a sqlite table a user can edit, and
-    a future version could try to add the key. Either way it must not reach a
-    load through this door without the allow-list being changed deliberately."""
+    """The sqlite row is editable JSON, so a hand-written ratio is dropped unless the allow-list changes."""
     stored = normalize_model_override({**LEGACY_OVERRIDE, **smuggled})
     assert "tensor_split" not in stored
     assert "tensorSplit" not in stored
@@ -75,9 +72,7 @@ def test_the_replayed_load_asks_for_no_ratio(is_gguf):
 
 
 def test_the_replayed_load_is_unchanged_in_every_other_respect():
-    """A pin against silent drift. If a later edit to this area changes what an
-    existing install replays, this says so in terms a reader can check against
-    the saved row above rather than against a golden blob."""
+    """Pins the replayed load so a later edit cannot silently change what an existing install replays."""
     stored = normalize_model_override(dict(LEGACY_OVERRIDE))
     kwargs = model_override_load_kwargs(stored, is_gguf = True)
 
@@ -93,9 +88,7 @@ def test_the_replayed_load_is_unchanged_in_every_other_respect():
 
 
 def test_an_override_from_a_newer_version_loses_nothing_an_older_one_kept():
-    """Forwards compatibility. Round-tripping a stored row through the
-    normalizer must be stable, or an install that upgrades and then rolls back
-    finds its settings rewritten."""
+    """Normalizing a stored row must be idempotent, or a rolled-back install finds settings rewritten."""
     once = normalize_model_override(dict(LEGACY_OVERRIDE))
     twice = normalize_model_override(dict(once))
     assert once == twice

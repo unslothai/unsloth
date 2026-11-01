@@ -517,9 +517,8 @@ async def load_video_model_gated(
         if forced_cpu:
             status_dict = await asyncio.to_thread(begin)
         elif device != "cpu":
-            # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
-            # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps
-            # the same span.
+            # Register the load under the arbiter lock, else a racing acquire evicts VIDEO and both
+            # allocate.
             from core.inference.gpu_residency import media_fit_kwargs
             from routes.inference import _diffusion_training_admission
 
@@ -954,8 +953,7 @@ async def video_status(
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("video")}
     status_dict = {**status_dict, "load_id": load_id, "resident_load_id": resident_load_id}
-    # This route answers long after the request that resolved the reference ended, so there is
-    # no handle in context to put back.
+    # This route answers after the resolving request ended, so no handle is in context to restore.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
@@ -1006,8 +1004,7 @@ async def unload_video_model(
             return MediaUnloadOutcome(unloaded = False, outcome = outcome)
     else:
         status_dict = await asyncio.to_thread(backend.unload, **unload_kwargs)
-    # Drop VIDEO ownership only if nothing is resident AND no load is in flight; the check and release must be ATOMIC
-    # (release_if). Mirrors images.
+    # Release VIDEO only if nothing is resident or loading; release_if keeps the check atomic.
     await asyncio.to_thread(
         release_if,
         VIDEO,

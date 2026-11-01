@@ -10,8 +10,7 @@ import json
 import os
 import sys
 
-# Code-interpreter convention prefixes. Remapping is gated on the prefix being ABSENT (see _remap) so a genuine host
-# mount / user dir is never shadowed.
+# Prefixes remapped only when ABSENT (see _remap), so a real host mount is never shadowed.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
 # /tmp exists on the host; separate only to note that. The absence gate applies alike.
 _CONDITIONAL_PREFIXES = ("/tmp/outputs",)
@@ -221,8 +220,7 @@ def _install():
     # Path.touch() and other low-level opens call os.open directly, so patch it too.
     os.open = _os_open
     os.makedirs = _makedirs
-    # Path.mkdir(parents=True) calls os.mkdir per component, so patch os.mkdir; patch Path.mkdir itself too so
-    # exist_ok/parents land on the mapped path.
+    # Path.mkdir calls os.mkdir per part; patch both, since exist_ok/parents need Path.mkdir.
     os.mkdir = _mkdir
     pathlib.Path.mkdir = _path_mkdir
 
@@ -383,10 +381,8 @@ if _host_packages and not any(isinstance(f, _HostPackagesFinder) for f in sys.me
     sys.meta_path.append(_HostPackagesFinder(_host_packages))
 
 
-# Helper modules the approved script imports by name come from the chat folder, after everything
-# else, so they never shadow anything. Served by a last-resort finder for exactly those names rather
-# than sys.path: site imports `usercustomize` after this file, and a library probing an optional
-# import must not find a module an earlier sandboxed call planted there.
+# Helpers come from the chat folder via a last-resort finder, not sys.path, since site imports
+# usercustomize after this file and an earlier sandboxed call must not plant a module there.
 class _HostWorkdirFinder:
     _skip = frozenset(("sitecustomize", "usercustomize"))
 

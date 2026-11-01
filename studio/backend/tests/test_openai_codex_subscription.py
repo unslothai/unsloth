@@ -1504,8 +1504,7 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
         "call_1",
         "call_2",
     ]
-    # The shared loop carries the local loops' closing nudge, so the tool results
-    # are no longer the tail of the conversation.
+    # The shared loop carries the closing nudge, so tool results are no longer the tail.
     assert replayed[-1]["role"] == "user"
     assert "provide your final answer now" in replayed[-1]["content"]
 
@@ -1636,8 +1635,7 @@ def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
     listed = "gpt-5.7-nova"
     assert listed not in get_provider_info("openai_codex")["default_models"]
 
-    # A catalog that simply does not list it: the refusal is about the model, not the
-    # connection, so the gate never reaches for a refresh.
+    # Refusal is about the model, not the connection, so the gate never refreshes.
     forget_subscription_models("codex-1")
     codex_client._offered_models["codex-1"] = {"gpt-5.4": {"id": "gpt-5.4", "listed": True}}
     refused = _codex_chat_gate(monkeypatch, listed)
@@ -1936,8 +1934,7 @@ def test_chat_does_not_trust_the_saved_row_after_a_rebind(monkeypatch):
         cold = _codex_chat_gate(monkeypatch, stale_slug, saved_models = [stale_slug])
         assert cold.status_code == 401, cold.detail
 
-        # Rebound: the row is not evidence, so the gate reads the new account's catalog
-        # rather than trusting it, and that catalog does not carry the slug.
+        # A rebound row is not evidence; the gate reads the new account's catalog instead.
         codex_client.mark_subscription_catalog_stale("codex-1")
 
         async def _resolve(_provider_id):
@@ -2819,9 +2816,7 @@ def test_a_transient_code_behind_a_generic_message_stays_retryable(monkeypatch):
 
 
 def test_upstream_error_code_survives_a_body_that_cannot_be_read():
-    """Parsing a body whose read failed raises StreamError, which is not an HTTPError. The
-    classification runs after a failed read, so an uncaught one would replace the quota error
-    the caller is supposed to see."""
+    """A failed body read raises StreamError, not HTTPError; uncaught, it would hide the quota error."""
 
     class _FailingStream(httpx.AsyncByteStream):
         async def __aiter__(self):

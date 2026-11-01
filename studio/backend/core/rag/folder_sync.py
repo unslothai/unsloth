@@ -2075,8 +2075,7 @@ def reconcile_folder(job_id: str) -> None:
     """Reconcile and persist a terminal folder state for every unexpected failure."""
     claimed = _claim_job(job_id)
     if claimed is None:
-        # Drop an already-activated claim here, or the heartbeat renews it for the process lifetime and an
-        # unlink waits on a job that will never run.
+        # Release the claim here or the heartbeat renews it forever and unlink waits on it.
         job_leases.release(job_leases.FOLDER_SYNC, job_id)
         return
     _, folder_id = claimed
@@ -2214,8 +2213,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                 try:
                     job = _next_account_job()
                 except Exception:
-                    # Writer-lock contention must not retire the only worker; the initialization and periodic paths
-                    # retry.
+                    # Lock contention must not retire the only worker; the other paths retry.
                     logger.warning("linked-folder queue selection failed", exc_info = True)
                     stop_event.wait(1.0)
                     continue

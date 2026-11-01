@@ -234,8 +234,7 @@ class TestGgufRuntimeBytes:
         assert ri._gguf_offloaded_layer_fraction("manual", 0, runtime.layer_count) == 0.0
 
     def test_a_recurrent_model_keeps_its_layer_count(self, tmp_path):
-        """Pure SSM models (Mamba, RWKV) have a layer count but no attention dims, so the count must
-        be kept."""
+        """SSM models like Mamba have no attention dims, so their layer count must be kept."""
         mamba = _write_gguf(
             tmp_path,
             "mamba",
@@ -287,8 +286,7 @@ class TestKvGbWrapperCompatibility:
         assert ri._estimate_gguf_kv_gb(dimless_gguf, 32768) == 0.0
 
     def test_the_guard_keeps_the_larger_context_the_panel_does_not(self, gqa_gguf):
-        """The panel quotes the smaller -c the launch runs; the guard reserves the larger context
-        instead."""
+        """The panel shows the smaller -c that launches; the guard reserves the larger one."""
         smaller = ["-c", "8192"]
         guard = ri._gguf_runtime_bytes(gqa_gguf, 131072, smaller)
         panel = ri._gguf_runtime_bytes(gqa_gguf, 131072, smaller, ctx_last_wins = True)
@@ -1864,8 +1862,7 @@ _HYBRID_FIELDS = {
 
 
 class TestBlankDraftDepth:
-    """Blank Draft Tokens is the launcher's default depth, so pricing it as zero drops the rollback
-    state."""
+    """Blank Draft Tokens is the default depth; pricing it as zero drops the rollback state."""
 
     @pytest.fixture
     def hybrid(self, tmp_path) -> str:
@@ -2035,8 +2032,7 @@ class TestDrafterEdgeCases:
 
 
 class TestSpeculativeModeTerms:
-    """Target-side terms follow the engaged mode; defaulting to both bills DSpark/DFlash a second KV
-    copy."""
+    """Target terms follow the engaged mode, or DSpark/DFlash would bill a second KV copy."""
 
     @pytest.fixture
     def mla(self, tmp_path) -> str:
@@ -2138,8 +2134,7 @@ class TestSpeculativeModeTerms:
     def test_verification_rows_follow_the_targets_layers(
         self, mla, tmp_path, priced_files, monkeypatch
     ):
-        """They are target compute: on the GPU with the target's layers, whichever
-        device the drafter uses."""
+        """Target compute runs on the GPU with the target's layers, whichever device the drafter uses."""
         verify_rows = 7 * 1024 * 1024
         monkeypatch.setattr(
             ri.LlamaCppBackend, "_spec_verify_rows_bytes", lambda *a, **k: verify_rows
@@ -2244,8 +2239,7 @@ class TestLaunchShapedPricing:
         assert windowed.drafter_runtime_bytes > windowed.kv_bytes - windowed.kv_checkpoint_bytes
 
     def test_a_cpu_device_selection_takes_the_weights_off_the_gpu(self, spec_config, swa):
-        """--device none keeps weights off the GPU whatever -ngl says, as the loader's residency
-        gate does."""
+        """--device none keeps weights off the GPU whatever -ngl says, like the loader's gate."""
         priced = dict(n_ctx = 32768, cache_type_kv = "f16")
         on_gpu = ri._gguf_memory_breakdown(spec_config, swa, **priced)
         for flag in (["--device", "none"], ["--device", "cpu"], ["-dev", "none"]):
@@ -2393,8 +2387,7 @@ class TestLaunchShapedPricing:
 
 
 class TestInheritedEnvironment:
-    """Inherited LLAMA_ARG_SPEC_* is scrubbed if Unsloth owns the spec block; projector path never
-    scrubs."""
+    """LLAMA_ARG_SPEC_* is scrubbed if Unsloth owns the spec; the projector path never scrubs."""
 
     @pytest.fixture
     def bare(self, gqa_gguf):
@@ -3048,8 +3041,7 @@ class TestAnAutoContextIsMarkedShrinkable:
 
     @pytest.mark.parametrize("selected_gpu_ids", [None, [0, 1]])
     def test_tensor_mode_takes_the_layer_fallback_floor(self, wide, monkeypatch, selected_gpu_ids):
-        """Tensor mode falls back to a layer split at launch; the floor is priced as that split when
-        larger."""
+        """Tensor mode falls back to a layer split; floor priced as that split when larger."""
         devices = [(0, 0, 0), (1, 0, 0)]
         monkeypatch.setattr(ri, "_cached_inference_devices", lambda: devices)
         monkeypatch.setattr(ri, "_tensor_split_possible", lambda ids: True)
@@ -3237,8 +3229,7 @@ class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
 
     @pytest.mark.parametrize("spec", ["draft-mtp", "mtp"])
     def test_extras_asking_for_mtp_engage_the_embedded_head(self, head, spec):
-        """Extras asking for MTP engage the embedded head on a NextN GGUF; its cache must count in
-        the total."""
+        """An MTP extra engages the embedded NextN head, whose cache must count in the total."""
         out = ri._gguf_memory_breakdown(
             self._config(head, "org/Qwen3-8B"),
             head,
@@ -3540,8 +3531,7 @@ class TestFourMoreLaunchNormalizations:
         )
 
     def test_a_gpu_pin_beats_a_stale_device_flag(self, basic):
-        """A GPU pin overrides a stale --device flag, since the launch strips the flag that
-        contradicts it."""
+        """A GPU pin overrides a stale --device flag, which the launch strips as contradictory."""
         gguf, config = basic
         cpu_flag = ["--device", "none"]
         unpinned = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192, llama_extra_args = cpu_flag)

@@ -595,9 +595,7 @@ def test_signed_image_link_rejects_tampering_and_expiry(monkeypatch, tmp_path):
 
 
 def test_activation_shortfall_is_an_actionable_400(monkeypatch):
-    """The one exception here whose text is written FOR the caller. Sanitising it into a bare 500
-    left an OpenAI client with a server error for a request only they can fix, while the Unsloth
-    route showed them the resolution, the budget and the remedies."""
+    """Written for the caller, so it stays an actionable 400 rather than a sanitised bare 500."""
     from core.inference.diffusion_memory import ImageActivationShortfallError
 
     reason = (
@@ -664,17 +662,15 @@ def test_local_directory_load_is_not_leaked_into_the_monitor(monkeypatch):
     ],
 )
 def test_a_refused_request_records_nothing(client, body):
-    """size and stream were validated inside the monitor, so a request refused before any
-    work still produced a red error row. /audio/speech and /audio/transcriptions reject
-    their bad parameters before opening a row, and this route now matches them."""
+    """A 400 refusal must record no monitor row, as /audio/speech and /audio/transcriptions do; size
+    and stream checked inside the monitor would leave a red row."""
     api_monitor.clear()
     assert _post(client, body).status_code == 400
     assert api_monitor.snapshot(include_details = False) == []
 
 
 def test_a_failed_generation_does_not_leak_a_local_path_label(monkeypatch):
-    """The relabel only runs after a successful generation, so a failure left whatever the
-    client sent in body.model on a row that goes out over the tunnel."""
+    """Failed generations must not leave client body.model on the row sent over the tunnel."""
     backend = _FakeBackend(loaded = False)
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)

@@ -70,8 +70,7 @@ BACKENDS = [
 
 
 def _budget(n_ctx, slots, kv_unified):
-    """Mirrors _reconcile_effective_ctx_with_server: unified reports one shared cache,
-    non-unified reports the aggregate across per-slot windows."""
+    """Mirrors _reconcile_effective_ctx_with_server: one shared cache if unified, else the sum."""
     return n_ctx * (1 if kv_unified else slots)
 
 
@@ -95,8 +94,7 @@ def test_a_single_slot_backend_behaves_as_it_always_did(label, slots, n_ctx, kv_
 @pytest.mark.parametrize("label,slots,n_ctx,kv_unified", BACKENDS)
 @pytest.mark.asyncio
 async def test_the_slots_a_backend_reports_can_all_be_filled(label, slots, n_ctx, kv_unified):
-    """On any multi-slot backend, ordinary tool chats fill the slots the backend
-    advertises rather than running one at a time."""
+    """Multi-slot backends: ordinary tool chats fill every advertised slot, not one at a time."""
     budget = _budget(n_ctx, slots, kv_unified)
     cost = _tokens(_payload(), budget = budget, capacity = slots, tool_loop = True)
     queue = LlamaAdmissionQueue(label)
@@ -212,9 +210,8 @@ class TestOldCallers:
             assert signature.parameters[name].default is None, f"{name} must be optional"
 
     def test_the_hook_was_appended_rather_than_inserted(self):
-        """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
-        inserting one silently rebinds the arguments after it for positional callers, with
-        no exception to report it."""
+        """No bare ``*`` so every parameter stays positional-or-keyword: inserting one silently
+        rebinds the arguments after it for positional callers."""
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -301,9 +298,8 @@ class TestTheInjectedToolCatalogueIsCharged:
     ]
 
     def test_the_catalogue_is_added_to_the_estimate(self):
-        """Checked on a wide pool, where the floor is small enough that the catalogue sets
-        the price. On a narrow one the floor already exceeds the whole request, so masking
-        it there is correct."""
+        """On a wide pool the floor is small, so the catalogue sets the price; on a narrow one the
+        floor exceeds the whole request, so masking it there is correct."""
         import routes.inference as routes_inference
 
         # share 512, smaller than the catalogue

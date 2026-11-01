@@ -3763,8 +3763,7 @@ def test_keepwarm_does_not_stamp_activity_on_401(monkeypatch):
 
 
 def _stash(monkeypatch, *, idle = 600):
-    """Common setup for the standalone-idle reload paths: feature off, idle TTL on,
-    an idle-freed model in the stash, nothing loaded, no in-flight requests."""
+    """Standalone-idle reload setup: idle-freed model stashed, nothing loaded or in flight."""
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: idle)
     monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: idle > 0)
     monkeypatch.setattr(kw, "_inflight", 0)
@@ -5611,9 +5610,7 @@ def test_a_count_that_stays_idle_is_not_aborted(monkeypatch):
     ids = ["run_started", "still_idle"],
 )
 def test_count_chat_tokens_stands_down_before_tokenizing(monkeypatch, abort, expect_tokenize):
-    """The abort has to escape the template except-block. Swallowed, it would set
-    apply_template_failed and the text fallback would tokenize anyway, which is the work
-    being declined. The control shows the poll alone does not stop an idle count."""
+    """CountAborted must escape the template except-block, or the text fallback tokenizes anyway."""
     from core.inference.llama_cpp import CountAborted, LlamaCppBackend
 
     posted: list = []
@@ -7362,9 +7359,8 @@ def test_a_matching_explicit_ctx_flag_survives_auto_switch(monkeypatch):
 
 
 def test_a_ctx_flag_saved_from_the_picker_reaches_an_api_load(monkeypatch):
-    """#11511: the picker saves its slider context beside a typed -c. Its own load runs at the
-    -c (llama.cpp takes the last one), so an API auto-switch of the same row must too, instead
-    of stripping the flag as a stale shadow of the slider."""
+    """11511: picker saves its slider context beside a typed -c; llama.cpp takes the last -c, so API
+    auto-switch must keep it, not strip it as a stale shadow."""
     _mock_override_store(monkeypatch)
     saved = _put(
         "unsloth/B-GGUF:Q4_K_M",
@@ -8678,8 +8674,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
 
 
 def test_fill_absent_fields_matches_a_legacy_casing_and_never_deletes(override_store):
-    """The stored key can carry the casing an older install typed, and it must not
-    be duplicated or emptied by a fill for the folded spelling."""
+    """A legacy-cased key matches the folded spelling; a fill must not duplicate or empty it."""
     stored = settings_route.ModelOverridePayload(
         model_id = "Unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192
     )
@@ -8715,8 +8710,7 @@ def test_fill_absent_fields_does_not_break_the_empty_payload_removal(override_st
 
 
 def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatch):
-    """The real store, not the in-memory stand-in: the read has to share the write's
-    transaction, or a concurrent writer still slips between them."""
+    """The read must share the write's transaction; else a concurrent writer slips between."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(db, "_schema_ready", set())
 
@@ -8838,8 +8832,7 @@ def test_gpu_ids_dedupe_is_not_a_scan_of_the_list_being_built():
 
 
 def test_gpu_ids_payload_is_bounded():
-    """A list longer than the number of ids the normalizer can store adds nothing
-    but work, so it is rejected at the boundary. A real device list is tiny."""
+    """A list longer than the normalizer can store adds only work, so the payload rejects it."""
     import pydantic
 
     from utils.openai_auto_switch_settings import MAX_GPU_ID
@@ -8889,9 +8882,7 @@ def test_a_loose_gguf_prefers_its_path_keyed_settings_over_the_alias(monkeypatch
 
 
 def test_the_filename_label_key_no_longer_shadows_the_bare_path(monkeypatch):
-    """An early build of this feature keyed a standalone .gguf by the quant label
-    derived from its filename. Those entries stay readable, but the bare path the
-    picker writes today comes first."""
+    """Old filename-label keys stay readable, but the bare path the picker writes must win."""
     path = "/srv/models/Qwen3-8B-Q4_K_M.gguf"
     alias = "Qwen3-8B-Q4_K_M"
     req = _switch_with_overrides(
@@ -8912,9 +8903,7 @@ def test_the_filename_label_key_no_longer_shadows_the_bare_path(monkeypatch):
 
 
 def test_a_variant_qualified_path_key_beats_the_same_quant_under_the_alias(monkeypatch):
-    """An LM Studio dir or a non-active HF cache is configured against its path, so
-    a same-quant entry under the repo id (another copy of the same repo, or a
-    hand-written PUT) must not win over the row the user actually edited."""
+    """Path-keyed rows (LM Studio, non-active HF cache) must beat a same-quant repo-id entry."""
     path = "/srv/lmstudio/publisher/Qwen3-8B-GGUF"
     repo = "publisher/Qwen3-8B-GGUF"
     req = _switch_with_overrides(
@@ -8927,8 +8916,7 @@ def test_a_variant_qualified_path_key_beats_the_same_quant_under_the_alias(monke
 
 
 def test_a_cached_repo_still_resolves_by_its_repo_id(monkeypatch):
-    """The Hub keys a cached repo row by its repo id, which is the advertised id,
-    and no path entry exists for it, so it still resolves on the second try."""
+    """Cached repos have no path entry, so the advertised repo id resolves them on retry."""
     snapshot = "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123"
     repo = "unsloth/Qwen3-8B-GGUF"
     req = _switch_with_overrides(
@@ -9961,8 +9949,7 @@ _CHAT_CONFIG = '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"}'
 
 
 def _safetensors_bytes(nbytes = 32):
-    """Filler standing in for a .safetensors file. The resolver checks the name, not the
-    contents: whether the bytes load is the loader's answer to give."""
+    """Filler for a .safetensors file; the resolver checks the name, not the bytes."""
     return b"\0" * nbytes
 
 
@@ -10520,10 +10507,7 @@ _PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADU
 def test_streaming_responses_refuses_before_load_what_chat_refuses(
     monkeypatch, stream, text, images, mlx_host
 ):
-    # Either source may serve the stream, so its switch carries chat's image facts (a
-    # one-image non-GGUF target refuses two, or a URL it cannot fetch). A grammar-constrained
-    # text.format pins the switch to GGUF only off an MLX host, where the non-GGUF target is
-    # transformers. Non-streaming leaves its preflight to chat.
+    # Streams carry chat's image facts; grammar-constrained text.format pins GGUF off MLX hosts.
     import utils.hardware as hardware
 
     device = hardware.DeviceType.MLX if mlx_host else hardware.DeviceType.CUDA
@@ -10738,9 +10722,8 @@ def test_a_conditional_checkpoint_with_no_vision_sub_config_is_switchable(tmp_pa
 
 
 def test_a_multimodal_encoder_decoder_is_not_switchable(tmp_path):
-    """Declaring a modality does not make a checkpoint servable here: microsoft/udop-large is an
-    encoder-decoder carrying image_size, and the serving path has no AutoModelForSeq2SeqLM branch.
-    The flag is what refuses it, since the modality marker is satisfied."""
+    """The modality marker is not enough: udop, an encoder-decoder with image_size, has no
+    AutoModelForSeq2SeqLM serving branch, and the flag is what refuses it."""
     path = _local_checkpoint(tmp_path, "udop-large")
     info = SimpleNamespace(id = str(path), path = str(path))
     (path / "config.json").write_text(

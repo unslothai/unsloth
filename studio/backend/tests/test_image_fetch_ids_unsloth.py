@@ -39,10 +39,8 @@ _LICENCE_BLOCKED: dict[str, str] = {
 # simply no unsloth GGUF of FLUX.1 Krea dev yet. Its companions already come from unsloth/FLUX.1-Krea-dev.
 _THIRD_PARTY_DENOISER_ROWS: frozenset[str] = frozenset({"quantstack/flux.1-krea-dev-gguf"})
 
-# The base_model card tag of every quantised image repo Studio offers or supports: the companions (VAE, text
-# encoders, tokenizer, scheduler) of a GGUF / bnb pick come from THIS repo, which no family table names for the
-# card-tag-only variants (Edit, Edit-2509, Z-Image). Read off the Hub cards; the catalog test below fails when the
-# catalog gains a quantised row this map does not cover.
+# Card tag of each quantised image repo: GGUF/bnb companions come from this repo, since no family
+# table names the card-tag-only variants; the catalog test flags gaps.
 _CARD_BASES: dict[str, str] = {
     "unsloth/Z-Image-Turbo-GGUF": "Tongyi-MAI/Z-Image-Turbo",
     "unsloth/Z-Image-Turbo-unsloth-bnb-4bit": "Tongyi-MAI/Z-Image-Turbo",
@@ -71,8 +69,7 @@ _CARD_BASES: dict[str, str] = {
     "unsloth/MOSS-Image-Base-GGUF": "OpenMOSS-Team/MOSS-Image-Base",
 }
 
-# These have no separate mirror repo: the official diffusers folders live inside the model's existing unsloth
-# repo (-FP8 where one exists, else -GGUF).
+# No mirror repo: official diffusers folders live in the unsloth repo (-FP8 if any, else -GGUF).
 _NEW_PAIRS = (
     ("Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"),
     ("Qwen/Qwen-Image-Edit", "unsloth/Qwen-Image-Edit-GGUF"),

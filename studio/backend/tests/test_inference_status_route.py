@@ -232,8 +232,7 @@ def test_status_reports_the_mlx_video_capability(monkeypatch):
 
 @pytest.mark.parametrize("via_api_key", [False, True], ids = ["ui_session", "api_key"])
 def test_status_publishes_an_mlx_local_folder_as_the_count_names_it(monkeypatch, via_api_key):
-    """/chat/count_tokens answers with this same id (redacted the same way for an API-key caller);
-    the client drops a count naming any other checkpoint."""
+    """The id must match /chat/count_tokens (redacted for API keys), or the client drops the count."""
     from hub.utils.host_paths import redact_host_paths
 
     active = "/Users/alice/outputs/my-finetune-mlx"
@@ -297,8 +296,7 @@ def test_load_is_registered_before_the_lifecycle_gate_and_always_cleared(monkeyp
 
 
 def test_status_reports_an_on_device_load_by_its_public_id(monkeypatch):
-    """A load still on its way to the backend must not publish the on-disk path the
-    completed load is careful to keep out of the same response."""
+    """An in-flight load must report its public id, never the on-disk path a completed load keeps hidden."""
     _patch_fast_status(monkeypatch)
     monkeypatch.setattr(
         inference_route,

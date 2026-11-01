@@ -25,8 +25,7 @@ assert _m, "could not extract _TOOL_XML_RE source"
 assert "_DS_OPEN_SRC" in _m.group(1) and "tool_call_begin" in _m.group(
     1
 ), "extracted _TOOL_XML_RE is missing expected arms (extraction truncated?)"
-# The regex reuses the parser's shared DeepSeek opener alternation; provide it so the extracted
-# ``_re.compile`` expression resolves the same source.
+# The extracted regex references _DS_OPEN_SRC, so this import is needed for it to resolve.
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
 from core.inference.tool_call_parser import (
     _strip_function_xml_calls,
@@ -96,8 +95,7 @@ def test_route_display_strip_respects_disabled_auto_heal_contract():
 
 
 def test_route_display_strip_preserves_rehearsal_inside_think():
-    # A rehearsed bracket call inside think is reasoning: the block is preserved while a real
-    # call outside it still strips.
+    # Rehearsed calls inside think are kept as reasoning; real calls outside still strip.
     text = '<think>plan: search[ARGS]{"q":"x"}</think> answer [TOOL_CALLS]web_search{"q":"y"} tail'
     out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
     assert '<think>plan: search[ARGS]{"q":"x"}</think>' in out
@@ -576,8 +574,7 @@ def test_core_strip_gates_bare_rehearsal_on_enabled_tools():
 
 
 def test_route_display_strip_gate_preserves_inactive_history_rehearsal():
-    # The GGUF history sanitiser passes the gate, so a documented inactive shape survives in
-    # the replayed prompt context.
+    # GGUF history sanitiser passes the gate, so a documented inactive shape survives replay.
     gate = _display_tool_name_gate([{"function": {"name": "web_search"}}])
     text = 'To call it write foo[ARGS]{"x":1} in your reply.'
     assert 'foo[ARGS]{"x":1}' in _strip_tool_xml_for_display(
@@ -690,8 +687,7 @@ def test_python_tag_strip_consumes_literal_sentinel_in_arg():
     ],
 )
 def test_python_tag_strip_stops_at_real_sentinel(sentinel):
-    # A genuine Llama control sentinel still bounds the strip so following
-    # assistant text is preserved (the arm must not swallow past it).
+    # A real Llama control sentinel bounds the python_tag strip, keeping later text visible.
     text = f'<|python_tag|>{{"name": "x", "parameters": {{}}}}{sentinel}visible answer'
     cleaned = _TOOL_XML_RE.sub("", text)
     assert (

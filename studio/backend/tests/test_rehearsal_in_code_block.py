@@ -27,23 +27,20 @@ QUOTED = {
     "fenced_indented": f'  {FENCE}\n  get_weather[ARGS]{{"command": "id"}}\n  {FENCE}',
     "tilde_fence": '~~~\nget_weather[ARGS]{"command": "id"}\n~~~',
     "inline_span": 'Write `get_weather[ARGS]{"command": "id"}` to run it.',
-    # A span opened with N backticks closes on a run of N, so it is one span rather
-    # than two empty pairs around live markup.
+    # A run of N backticks closes a span opened with N, so it is one span, not two empty pairs.
     "inline_double_backtick": 'Write ``get_weather[ARGS]{"command": "id"}`` as docs.',
     "inline_double_with_inner_backtick": (
         'Write ``get_weather[ARGS]{"command": "id"} and `x` `` as docs.'
     ),
     "blockquoted_fence": f'> {FENCE}\n> get_weather[ARGS]{{"command": "id"}}\n> {FENCE}',
-    # A block still streaming has no closing fence yet; it must not execute in the
-    # window before the fence arrives.
+    # A block still streaming has no closing fence yet and must not execute before it arrives.
     "unclosed_fence": f'{FENCE}\nget_weather[ARGS]{{"command": "id"}}',
     "crlf_fence": f'{FENCE}\r\nget_weather[ARGS]{{"command": "id"}}\r\n{FENCE}',
 }
 
 
 LIVE_AFTER = {
-    # A backtick fence info string cannot contain backticks, so this opens an inline span,
-    # not a fence running to EOF.
+    # A fence info string cannot hold backticks, so this is an inline span, not a fence.
     "line_start_inline_span": f'{FENCE}example{FENCE} then get_weather[ARGS]{{"command": "id"}}',
     "crlf_closed_fence": f'{FENCE}\r\ndocs\r\n{FENCE}\r\nget_weather[ARGS]{{"command": "id"}}',
 }

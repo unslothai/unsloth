@@ -209,9 +209,8 @@ def test_prefill_mode_without_messages_matches_the_single_user_probe():
 
 
 def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:
-    """Mirror sf_tool_stream's reasoning loop: diff each cumulative ``content``
-    snapshot, feed the delta through the extractor, and reset (flushing first) on
-    ``tool_start`` / empty ``status`` so each turn splits independently."""
+    """Mirrors sf_tool_stream's reasoning loop: feeds each cumulative content delta to the extractor
+    and resets (after flushing) on tool_start or empty status."""
     prev_text = ""
     extractor = _ResponsesReasoningExtractor(
         parse_think_markers = True, reasoning_prefilled = prefilled

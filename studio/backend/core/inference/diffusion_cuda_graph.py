@@ -91,10 +91,9 @@ _REFERENCE_KWARGS = ("image_cond_hidden_states", "image_cond_ids")
 
 
 def _image_scope(args: tuple, kwargs: dict) -> tuple:
-    """The non-text part of a call's shape: the key of its first argument, the latents in every variable-length
-    family's denoiser call (``hidden_states`` for Qwen-Image, Qwen-Image-2.1's planned step, FLUX.1 and FLUX.3, the
-    latent list for Z-Image), plus any separate reference images. Resolution, batch and reference images change it;
-    the prompt length does not."""
+    """The non-text part of a call's shape: the key of its first argument (the latents in each
+    variable-length denoiser call) plus any separate reference images; resolution, batch and
+    reference images change it, prompt length does not."""
     first = args[0] if args else next(iter(kwargs.values()), None)
     refs = tuple((name, graph_key(kwargs[name])) for name in _REFERENCE_KWARGS if name in kwargs)
     return (graph_key(first),) + refs if refs else graph_key(first)
@@ -221,15 +220,9 @@ def await_outside_drained() -> None:
 
 @contextlib.contextmanager
 def _capturing():
-    """Mark a capture as recording for the duration of the block.
-
-    The depth MUST be raised before ``torch.cuda.graph`` is entered, which is what makes the
-    ordering above hold; keep this the outermost of the two context managers. Raises
-    ``CaptureRefused`` (depth untouched, nothing recorded) when replica-side work did not drain in time.
-
-    Every capture (whole step, planned or offloaded re-record, per block, per segment) enters here, so this is also
-    where a retired graph pool is handed back before anything records (``_settle_retired_pools``).
-    """
+    """Mark a capture as recording: the depth must rise before torch.cuda.graph is entered, so this
+    stays the outermost context manager; raises CaptureRefused (depth untouched) if replica work
+    did not drain, and every capture settles retired pools here."""
     global _CAPTURE_DEPTH
     own = getattr(_OUTSIDE_LOCAL, "depth", 0)
     mine = getattr(_OUTSIDE_LOCAL, "recording", 0)
@@ -321,11 +314,9 @@ _DEFERRED_RELEASES: "collections.deque" = collections.deque()
 
 
 def run_if_capture_idle(fn: Any) -> bool:
-    """Run ``fn()`` now under the capture lock with no capture recording, else return False without waiting.
-
-    Never blocks on the capture gate, so it is safe from a weakref finalizer: one can run on a thread already holding
-    the (non-reentrant) lock, e.g. inside a ``Condition.wait_for`` setup. ``fn`` may sync and free device memory: no
-    capture can enter while it runs."""
+    """Runs fn under the capture lock when no capture is recording, else returns False; never
+    blocks, so finalizers may call it on a thread holding the non-reentrant lock; fn may sync and
+    free device memory since no capture can enter while it runs."""
     if _OUTSIDE_LOCAL.recording:
         return False
     if _OUTSIDE_LOCAL.lock_held:
@@ -535,10 +526,9 @@ def flush_now_locked(clear_cublas: bool = False) -> bool:
 
 
 def release_cached_outside_capture(clear_cublas: bool = False) -> bool:
-    """The one way graph memory goes back outside a capture's entry: ``empty_cache`` (and the cuBLAS workspaces) now,
-    under the capture lock with no capture recording, acknowledging the retirements counted before it; or, while
-    another thread records (either call is prohibited inside its recording and can invalidate it), counted as a
-    retired pool with the cuBLAS clear owed, so the next capture's entry flush does both."""
+    """The one way graph memory goes back outside a capture entry: empty_cache and the cuBLAS clear
+    run now under the capture lock, else (while another thread records, which forbids both) it is
+    counted as a retired pool with the clear owed to the next capture entry flush."""
     # Owed first, in one step with the cuBLAS debt: a capture entering from here on sees it due, whether or not this
     # flush gets the lock; a successful flush below acknowledges it.
     with _RETIRE_LOCK:
@@ -1181,12 +1171,9 @@ class GraphedForward:
             "length_eager": 0,
         }
         self.valid_token: Any = None
-        # A denoiser whose text length follows the prompt keys a graph per prompt length, so every new prompt recorded
-        # one (warm-up forwards, a sync, the capture) on its render: Qwen-Image captured on generations 2 and 3. Per
-        # image scope (resolution, batch, references: _image_scope) it records the lengths of that scope's first render
-        # only: once one of its graphs replayed (or that render ended, seal_lengths), a prompt length it never recorded
-        # runs the compiled step ungraphed (the same kernels, so the same image) and a recorded one replays. A scope
-        # seen for the first time opens its own window, so a new resolution still records as before.
+        # A text-length-keyed denoiser would record a graph per prompt; each image scope records
+        # lengths only in its first render, sealed once a graph replays or the render ends, then
+        # unseen lengths run ungraphed (same image); a new scope gets its own window.
         self.length_varies = _length_varies(module)
         self._sealed_scopes: set = set()
         self._scope_captures: dict = {}
@@ -1298,10 +1285,9 @@ class GraphedForward:
             # A pending or armed per-block fallback still keys its graphs on the resident groups' addresses: the
             # stable re-pin stays until it is known to be gone (``_engage_fallback`` / ``free``).
             _retire_stable_placement(self.placement)
-        # ``__call__`` short-circuits to eager on ``poisoned`` before it reads the cache, so every
-        # entry is now unreachable and only pins its statics, outputs and slice of the pool for the
-        # life of the load. Freeing is left to the caller's ``_release``, which runs once the failed
-        # capture's own frames are gone, so both go back in one pass.
+        # Poisoned entries are unreachable (__call__ goes eager first) yet pin statics, outputs and
+        # pool slices, so they are dropped; the caller's _release frees both in one pass once the
+        # failed capture's frames are gone.
         dropped = [getattr(e, "pool_token", None) for e in self.cache.values()]
         self.cache.clear()
         _note_dropped_pools(dropped)

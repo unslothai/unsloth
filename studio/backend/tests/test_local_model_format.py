@@ -934,9 +934,8 @@ def test_local_task_probes_the_hf_cache_pipeline_snapshot(tmp_path):
 
 
 def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path, monkeypatch):
-    """Images and Video filter On Device rows on an exact task, so an unclassified denoiser
-    is not reachable from the one page whose pick would pull it down, and lists in Chat
-    instead. The filename carries the family, and it is read without opening the file."""
+    """Images and Video filter On Device rows by exact task, so an unclassified denoiser is not
+    reachable from the one page whose pick would pull it down; it lists in Chat instead."""
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("placeholder contents were read to classify it")

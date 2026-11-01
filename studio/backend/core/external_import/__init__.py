@@ -199,8 +199,7 @@ def first_user_text(messages: list[dict]) -> str:
 
 
 def _thread_row(transcript: Transcript, existing: dict, project_id: str) -> dict:
-    # upsert_chat_thread nulls columns it is not handed, so the stored row is the base:
-    # sandbox container, compare pair and fork origin survive a re-import.
+    # upsert_chat_thread nulls unhanded columns, so sandbox, compare pair, fork origin persist.
     return {
         **existing,
         "id": transcript.thread_id,
@@ -217,8 +216,7 @@ def _thread_row(transcript: Transcript, existing: dict, project_id: str) -> dict
 
 
 def _pending_messages(source: Source, transcript: Transcript, existing: bool) -> list[dict]:
-    # Only turns appended since the last import. The ledger count, not the message rows,
-    # says which those are: a message deleted in Studio leaves no row behind.
+    # Only turns since the last import; the ledger count, not message rows, decides which.
     if not existing:
         return list(transcript.messages)
     stored = studio_db.list_chat_messages(transcript.thread_id)

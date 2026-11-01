@@ -48,8 +48,7 @@ _SIZES = {
 
 
 def _siblings(sizes = _SIZES, content = None):
-    """Hub siblings whose LFS hash stands for the file's bytes: by default the root and 4-bit/ hold
-    the same files, as in the issue's repo."""
+    """Siblings' LFS hash stands for their bytes; by default root and 4-bit/ copies match."""
     content = content or (lambda name: name.replace("4-bit/", "", 1))
     return [
         SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": f"sha-{content(name)}"})

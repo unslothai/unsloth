@@ -308,8 +308,7 @@ def test_a_noncumulative_repo_is_never_compared(monkeypatch):
 
 
 def test_a_case_variant_of_the_official_repo_is_still_official(monkeypatch):
-    # GitHub resolves this to the same repository and the installer persists the
-    # spelling, so a case-sensitive check would label the official repo custom.
+    # Case variants resolve to the official repo, so the check must be case-insensitive.
     releases = {"old": {"body": OLD_BODY}, "new": {"body": LATEST_BODY}}
     monkeypatch.setattr(
         changes,

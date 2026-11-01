@@ -254,8 +254,7 @@ def test_an_approved_script_imports_chat_portions_of_host_pkgutil_namespaces(tmp
     packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
     host = tmp_path / "host"
     extend = "__path__ = __import__('pkgutil').extend_path(__path__, __name__)\n"
-    # Only mentions the namespace helpers (a comment, an unused import, a string, a dead branch):
-    # still a regular package.
+    # Mere mentions of extend_path or declare_namespace leave it a regular package.
     mentions = (
         "# not a namespace: no extend_path or declare_namespace here\n"
         "from pkgutil import extend_path\n"

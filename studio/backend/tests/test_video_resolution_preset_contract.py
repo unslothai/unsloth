@@ -117,9 +117,7 @@ def test_the_frontend_fallback_offers_only_real_family_presets():
 
 
 def test_the_frontend_fallback_is_a_usable_default_for_the_family_it_mirrors():
-    """The fallback exists to populate the select on first paint, so it must be non-empty
-    and its first entry must be some family's DEFAULT (presets[0]) -- the size the loader
-    plans against -- not an arbitrary member of the union."""
+    """The frontend fallback must be non-empty, with its first entry a family's presets[0] default."""
     fallback = _fallback_presets()
     assert len(fallback) >= 1
     firsts = {

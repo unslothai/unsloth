@@ -692,10 +692,7 @@ def defer_streamed_block_pins(
     device: Any,
     logger: Any = None,
 ) -> Any:
-    """``pin_streamed_block_groups`` on Studio's background pinner: the same in-place pin, off the load path.
-
-    Each group's onload waits for its pin, so nothing reads a copy being replaced. Returns the pinner, or None for
-    the up-front pin. ``UNSLOTH_H3_BACKGROUND_BLOCK_PIN=0`` off."""
+    """Background pin of streamed groups, off with UNSLOTH_H3_BACKGROUND_BLOCK_PIN=0; onloads wait on it."""
     off = ("0", "off", "false", "no")
     if str(os.environ.get(H3_BLOCK_PIN_ENV, "")).strip().lower() in off:
         return None
@@ -833,8 +830,7 @@ def install_h3_stream_prefetch(
         depth = 1  # each in-flight group is pinned on the fly; diffusers' own path holds two near a ~1 GiB cap
     # Prefetcher refuses replaced onload_: lift the outside-inference_mode wrappers (torchao int8 cannot be re-pointed inside), install, then rewrap.
     groups = _all_offload_groups(transformer)
-    # A top-level group the H3 pin left unstreamed (kill switch, host refusal) keeps its wrapper, so the generic
-    # top-group adoption cannot pin it.
+    # Unstreamed top group keeps its wrapper, so generic top-group adoption cannot pin it.
     kept = top if top is not None and getattr(top, "stream", None) is None else None
     lifted = [g for g in groups if g is not kept and _lift_outside_inference_wrappers(g)]
     try:

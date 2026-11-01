@@ -291,9 +291,7 @@ def poll(
     worker_id: str,
     next_run_after: Callable[[dict, int], Optional[int]],
 ) -> tuple[Optional[tuple[dict, dict]], Optional[int]]:
-    """A scheduler pass on one connection: fail stale runs, claim what is due, and say when the next run is due.
-
-    Reads first, so an idle pass never takes the writer lock."""
+    """Fails stale runs and claims due work; reads first so an idle pass never takes the writer lock."""
     with _connect() as conn:
         stale, due = _state(conn, now, stale_before)
         if stale:

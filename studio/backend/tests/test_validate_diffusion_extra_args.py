@@ -71,8 +71,7 @@ class TestValidateDropsDiffusionExtraArgs(unittest.TestCase):
         self.assertEqual(self._validate(route, diffusion_kind = True), [[]])
 
     def test_an_ordinary_gguf_still_estimates_with_them(self):
-        # The drop is narrow on purpose: this is the path the editor exists for, and
-        # a --ctx-size here has to reach the estimate that approves the load.
+        # The drop is narrow: a --ctx-size on an ordinary GGUF must reach the load estimate.
         route = _load_route_module("inf_route_diffusion_extra_args_2")
         self.assertEqual(
             self._validate(route, diffusion_kind = False),
@@ -138,8 +137,7 @@ class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
         self.assertIn("two separate arguments", str(caught.exception.detail))
 
     def test_a_malformed_layer_count_is_a_refusal_not_a_crash(self):
-        # parse_gpu_layers_override raises on a non-integer, and it used to run
-        # before the try that turns a bad list into a 400, so this was a 500.
+        # parse_gpu_layers_override raises on non-integers, so it must sit inside the 400 try.
         from fastapi import HTTPException
 
         route = _load_route_module("inf_route_validate_order_2")
@@ -205,8 +203,7 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         self.assertEqual(seen, [(20, [])])
 
     def test_a_zero_layer_override_is_read_the_same_way(self):
-        # The inverse pairing: asked for 20, overridden to 0. Judged as the CPU-only
-        # load it is, rather than refused for VRAM it never takes.
+        # A 0-layer override is judged as a CPU-only load, not refused for VRAM it never uses.
         route = _load_route_module("inf_route_manual_ngl_2")
         seen = self._validate(route, gpu_layers = 20, extra_args = ["-ngl", "0"])
         self.assertEqual(seen, [(0, [])])
@@ -326,9 +323,8 @@ if __name__ == "__main__":
 
 
 class TestValidateRefusesWhatLoadWouldRefuse(unittest.TestCase):
-    """The picker unloads the running model once /validate approves the switch, so a
-    list /load would answer 400 on has to be refused here instead: a refusal leaves
-    the current model alone, a failed switch does not."""
+    """The picker unloads the current model once /validate approves, so /validate must refuse what
+    /load would: a refusal keeps the model, a failed switch does not."""
 
     def _validate(
         self,
@@ -388,9 +384,8 @@ class TestValidateRefusesWhatLoadWouldRefuse(unittest.TestCase):
 
 
 class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
-    """--embedding caps the batch at the micro-batch and llama-server aborts when that
-    is below the slot count, so load_model reduces the slots to it before launching.
-    A floor sized from the pre-clamp count refuses a command the launcher would run."""
+    """--embedding caps the batch at the micro-batch, which llama-server aborts below the slot
+    count; load_model clamps slots first, so the floor must use the clamped count."""
 
     def _clamped(
         self,
@@ -434,8 +429,7 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
         )
 
     def test_the_clamp_floors_at_one_slot(self):
-        # "-b 0" resolves to a zero micro-batch, and --parallel 0 is rejected at arg
-        # parse, which is the floor load_model applies too.
+        # -b 0 gives a zero micro-batch; --parallel 0 fails arg parse; the floor is one slot.
         route = _load_route_module("inf_route_embed_clamp_4")
         self.assertEqual(
             self._clamped(route, is_embedding = True, extra_args = ["-b", "0", "-ub", "0"]),
@@ -462,8 +456,7 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
 
 
 class TestValidateAllowsTheEmbeddingClampedBatch(TestValidateRefusesWhatLoadWouldRefuse):
-    """The preflight has to allow exactly what the load allows, or the picker refuses a
-    switch the load it gates would have completed."""
+    """Preflight must match load exactly, or the picker refuses switches load would complete."""
 
     def test_an_embedding_gguf_may_batch_at_its_micro_batch(self):
         route = _load_route_module("inf_route_validate_embed_1")

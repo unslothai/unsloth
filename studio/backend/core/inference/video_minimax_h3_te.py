@@ -24,9 +24,8 @@ H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
 # two levels of scale and a per-tensor global scale, a different loader and a different kernel, and shipping it needs
 # its own numerical verification. The table is the one place to add it.
 H3_TE_QUANT_FILES: dict[str, str] = {
-    # Built from the official MiniMaxAI text_encoder/ with Studio's quantize_convrot_int8_weight and uploaded under
-    # text_encoders/official/. Byte-identical to the text_encoders/ copy that came from the Comfy-Org repack, which
-    # stays in place for released builds; this build reads only the official-provenance path.
+    # Built from MiniMaxAI text_encoder/ with quantize_convrot_int8_weight; reads the official path
+    # only.
     "int8": "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
 }
 
@@ -388,10 +387,8 @@ def h3_te_stream_enabled() -> bool:
 
 
 def h3_te_pin_allowed(payload_bytes: int = 0, device: Any = None) -> bool:
-    """Whether ``payload_bytes`` (at least one arena) may be pinned. The full payload, not one arena: the hosted
-    weights are mmap views already counted as available, so pinning them takes that much. Honours the group offload
-    pin switch and the ~1 GiB pinned cap of Windows / WSL. ``device``: the onload target (None: the current one).
-    Never raises."""
+    """Whether a payload may be pinned in full (not one arena), under the group switch and the ~1
+    GiB Windows/WSL cap; never raises"""
     try:
         import os
 

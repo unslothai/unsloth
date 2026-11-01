@@ -174,9 +174,7 @@ def _load_image_tensor_planned(
 def _encode_sdxl_prompts(
     prompts: list[str], tokenizers: list, text_encoders: list, device: Any
 ) -> tuple:
-    """Encode a batch of prompts with both SDXL text encoders. Returns
-    (prompt_embeds [B, T, 2048], pooled_prompt_embeds [B, 1280]). Text encoders are
-    frozen, so this runs without grad."""
+    """Encode prompts with both SDXL text encoders to [B, T, 2048] embeds and [B, 1280] pooled; no grad."""
     import torch
 
     embeds_list = []
@@ -371,8 +369,7 @@ def run_diffusion_lora_training(
         pairs = discover_image_caption_pairs(
             cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
         )
-        # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every
-        # downstream read agrees.
+        # Resolve num_epochs to train_steps now the size is known; rebind cfg so reads agree.
         cfg = replace(
             cfg,
             train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
@@ -451,8 +448,7 @@ def run_diffusion_lora_training(
         if weight_dtype != torch.float32:
             cast_training_params(unet, dtype = torch.float32)
 
-        # Regionally torch.compile the U-Net repeated blocks via the DiT trainer's never-fatal wrapper (failure
-        # falls back to eager).
+        # Regional torch.compile of U-Net blocks; never-fatal, falls back to eager.
         from core.training.diffusion_dit_trainer import (
             _compile_engagement_warning,
             _dynamo_compile_counters,
@@ -469,8 +465,7 @@ def run_diffusion_lora_training(
         )
         # A frozen fp16 UNet (pre-Ampere / RDNA2 fallback) underflows the LoRA gradients without loss scaling.
         scaler = torch.amp.GradScaler("cuda", enabled = weight_dtype is torch.float16)
-        # The scheduler advances once per optimizer update, so count warmup/decay in optimizer steps; the
-        # accumulation factor would stretch warmup.
+        # Scheduler ticks per optimizer update: warmup counts optimizer steps, not micro-steps.
         lr_sched = get_scheduler(
             cfg.lr_scheduler,
             optimizer = optimizer,
@@ -481,8 +476,7 @@ def run_diffusion_lora_training(
         vae_scale = vae.config.scaling_factor
         prediction_type = noise_scheduler.config.prediction_type
 
-        # Deterministic, so the precomputed embeddings are bit-identical to in-loop encoding; the ~1.5 GB
-        # CLIP encoders are freed afterwards.
+        # Deterministic, so precomputed embeds are bit-identical; the ~1.5 GB CLIP is freed.
         precompute = os.environ.get("UNSLOTH_DIFFUSION_NO_PRECOMPUTE", "") not in ("1", "true")
         caption_embeds: dict[str, tuple] = {}
         sample_plan = plan_samples(cfg, "sdxl", [c for _, c in pairs])
@@ -560,8 +554,7 @@ def run_diffusion_lora_training(
                     torch.cuda.empty_cache()
         if sample_plan is not None and vae is not None:
             sample_vae = vae
-        # Variant picks use their own stream so the loop index/noise draws stay seed-deterministic whether
-        # or not the cache is enabled.
+        # Variant picks use a separate RNG; seeded loop draws match with or without the cache.
         variant_rng = random.Random(cfg.seed + 1)
 
         _emit(on_event, "model_load_completed", compiled = compiled)
@@ -570,9 +563,8 @@ def run_diffusion_lora_training(
         # Env override and over-budget fallback disable the cache; the paths draw crops from different RNGs.
         identity = with_cache_mode(identity, latent_cache is not None)
 
-        # Permutation-cycle index sampler: each image is visited once per cycle before any repeat, so a
-        # short run does not leave a small dataset partly unseen.
-        # Bucketed runs draw each batch from one bucket so its latents stack into one shape.
+        # Each image once per cycle so short runs see all; bucketed batches draw from one bucket to
+        # stack.
         index_sampler = (
             PermutationBatchSampler(len(pairs), rng)
             if canvases is None
@@ -580,8 +572,7 @@ def run_diffusion_lora_training(
         )
 
         def _next_batch() -> tuple[list[int], list[str], list[str]]:
-            # Draw the full configured batch, not min(batch, n): the sampler refills across cycles so a small
-            # dataset still yields that many indices.
+            # Draw the full batch, not min(batch, n): the sampler refills across cycles.
             idx = index_sampler.next_batch(cfg.train_batch_size)
             if canvases is not None:
                 idx = idx[1]
@@ -606,8 +597,7 @@ def run_diffusion_lora_training(
         if scaler.is_enabled() and isinstance(scaler_state, dict) and scaler_state:
             # Continue at the scale the run had backed off to, not 2**16, which would overflow again.
             scaler.load_state_dict(scaler_state)
-        # Bound HERE: the checkpoint scan and the periodic saves both need it, and the two earlier
-        # assignments live inside early-return branches.
+        # Bound here: earlier assignments sit in early-return branches; scan and saves need it.
         out_dir = Path(cfg.output_dir).expanduser()
         # Foreign bundles in a reused output_dir must be cleared or they outrank this run.
         resumed_here = bool(resumed) and resumed_into_this_dir(cfg, out_dir)

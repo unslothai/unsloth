@@ -261,8 +261,7 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got == str(nested)
 
     def test_nested_fallback_prefers_q8_over_bf16(self, tmp_path):
-        """bf16 sorts first by name and is the worst head: larger and slower,
-        because a draft step is dominated by the LM head."""
+        """bf16 sorts first yet is the worst head: larger and slower, as drafting is LM-head bound."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
         _write_gguf(snap / "MTP" / "mtp-model-BF16.gguf", _MLA_NO_HEAD)
@@ -392,8 +391,7 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got == str(first)
 
     def test_an_incomplete_root_split_falls_through_to_the_nested_tier(self, tmp_path):
-        """The root tier returns early, so an incomplete root set used to hide a
-        usable nested head and leave the load with no drafter at all."""
+        """An incomplete root shard set must fall through to the nested tier, not hide a usable head."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
         _write_gguf(snap / "mtp-model-Q8_0-00001-of-00002.gguf", _MLA_NO_HEAD)
@@ -760,9 +758,7 @@ class TestHostMemoryIsNotChargedToTheCard:
 
 
 class TestAutoAbstainsOverASidecar:
-    """Auto promotes to DSpark or DFlash when the model ships one, so the route must say
-    the reserve is unpriced rather than chart a total without it. Asserted on the OUTCOME: an
-    earlier guard raised NameError into the surrounding except and showed nothing."""
+    """Auto promotes to DSpark or DFlash with a sidecar, so the route must flag the reserve as unpriced."""
 
     def _call(self, monkeypatch, tmp_path, *, sidecar: str | None, supports: bool):
         model_dir = tmp_path / "local-model"
@@ -878,9 +874,7 @@ class TestThePlannerFiguresArrive:
 
 
 class TestADirectGgufFileResolves:
-    """A custom or LM Studio entry whose path is the .gguf itself never goes
-    through variant selection, so there is no quant label to match. The file
-    names the weights on its own."""
+    """A custom or LM Studio .gguf path skips variant selection, since the file names its own weights."""
 
     def test_a_direct_file_is_its_own_resolution(self, tmp_path):
         gguf = _write_gguf(tmp_path / "some-model-Q4_K_M.gguf", _PLAIN_GQA)
@@ -899,9 +893,8 @@ class TestADirectGgufFileResolves:
 
 
 class TestTheInheritedEnvironmentIsPriced:
-    """Studio can be launched with llama.cpp's own environment variables set, and
-    the child inherits them. The estimate has to price what the child will run,
-    not what the request said."""
+    """Inherited llama.cpp env vars reach the child, so the estimate prices what it runs, not the
+    request."""
 
     def test_an_inherited_context_beats_the_native_length(self, monkeypatch, tmp_path):
         # load_model drops an inherited context only when zero; a positive one sets the window.

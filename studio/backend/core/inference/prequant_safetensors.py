@@ -86,9 +86,8 @@ def safetensors_prequant_supported() -> bool:
     return True
 
 
-# The torchao weight subclass a scheme's safetensors file is rebuilt into, for schemes torchao added to its
-# safetensors allowlist after the 0.16 floor (0.16 lists neither; 0.17 lists both). fp8 / int8 are in every
-# release at the floor, so they are not listed here.
+# Torchao subclasses for schemes added to its safetensors allowlist after the 0.16 floor (0.16 lists
+# neither, 0.17 lists both); fp8 and int8 are in every release at the floor.
 _SCHEME_SUBCLASS = {"nvfp4": "NVFP4Tensor", "mxfp8": "MXTensor"}
 
 
@@ -135,9 +134,8 @@ def load_plain_prequant_safetensors(
     device: str = "cpu",
     skip_names: Iterable[str] = (),
 ) -> dict:
-    """Read a plain-tensor prequant checkpoint without torchao; refuses subclass metadata and unlisted tensors.
-
-    ``skip_names`` are validated but never read."""
+    """Reads plain-tensor prequant file without torchao; refuses subclass metadata and unlisted
+    tensors; skip_names are validated but never read."""
     from safetensors import safe_open
 
     with safe_open(path, framework = "pt", device = device) as handle:

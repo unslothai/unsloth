@@ -607,8 +607,7 @@ def _loaded_dtype(key: str, tag: str, dtype: Any, keep_in_fp32: Any) -> Any:
 
 
 def _map_tensor(fd: int, start: int, entry: dict) -> Any:
-    """One tensor over its own private mapping, unmapped when freed (a whole-shard mapping stays resident while any
-    tensor survives)."""
+    """Private mapping per tensor, unmapped when freed; a shard mapping stays while any tensor lives."""
     import mmap
 
     import torch

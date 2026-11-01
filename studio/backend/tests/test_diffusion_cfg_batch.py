@@ -45,8 +45,7 @@ class Flux2Transformer2DModel(torch.nn.Module):
 
 
 class QwenImageTransformer2DModel(torch.nn.Module):
-    """Qwen-Image call shape: a per-prompt-length text with a mask, and a per-sample ``img_shapes`` list (as the
-    zero_cond_t path reads it)."""
+    """Qwen-Image call: per-prompt-length text with a mask, and a per-sample img_shapes list."""
 
     def __init__(self):
         super().__init__()

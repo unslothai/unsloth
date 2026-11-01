@@ -191,9 +191,8 @@ def test_soundfile_duration_limit_stops_before_concatenating(monkeypatch):
 
 
 def test_audio_input_decode_is_bounded_by_the_duration_limit(monkeypatch):
-    """The non-GGUF audio-input path decodes with torchaudio, which used to
-    materialize the whole waveform before any duration check. A low-bitrate AMR
-    or WMA under the 25 MB upload cap can still hold hours of PCM."""
+    """Non-GGUF audio decodes via torchaudio, which must not materialize the whole waveform before
+    the duration check; a low-bitrate AMR/WMA under 25 MB can hold hours of PCM."""
     loads: list[dict] = []
 
     class _FakeTorchaudio:
@@ -219,9 +218,8 @@ def test_audio_input_decode_is_bounded_by_the_duration_limit(monkeypatch):
 
 
 def test_audio_input_decode_streams_a_container_that_hides_its_length(monkeypatch):
-    """A header that does not report num_frames cannot be bounded by num_frames:
-    with several channels the read would still outrun the ceiling, and trimming it
-    would silently truncate a file that is inside the limit. Stream it instead."""
+    """A header without num_frames cannot bound the read: with several channels it would still
+    outrun the ceiling, and trimming would truncate a legal file; stream it instead."""
     streamed: list[bytes] = []
 
     class _FakeTorchaudio:
@@ -278,8 +276,7 @@ def test_a_wide_container_inside_the_clock_is_streamed_not_refused(monkeypatch):
 
 
 def test_audio_input_decode_passes_a_short_recording_through(monkeypatch):
-    # torch is only a source of fake tensors for the fake torchaudio below, so
-    # a machine without it should skip rather than fail, as the av cases do.
+    # Torch only feeds fake tensors to the fake torchaudio, so no torch means skip, not fail.
     torch = pytest.importorskip("torch")
 
     class _FakeTorchaudio:
@@ -300,9 +297,8 @@ def test_audio_input_decode_passes_a_short_recording_through(monkeypatch):
 
 
 def test_a_load_is_capped_by_the_sample_ceiling_not_only_by_the_clock(monkeypatch):
-    """num_frames is the value being distrusted, so a container that understates
-    it must not license a read up to the rate-relative limit: at 192 kHz that is
-    four times the sample ceiling."""
+    """num_frames is the distrusted value, so a container that understates it must not license a
+    read up to the rate-relative limit: at 192 kHz that is four times the sample ceiling."""
     torch = pytest.importorskip("torch")
 
     loads: list[dict] = []
@@ -335,8 +331,7 @@ def test_a_load_is_capped_by_the_sample_ceiling_not_only_by_the_clock(monkeypatc
 
 
 def test_an_honest_length_is_still_read_in_full(monkeypatch):
-    """Capping by both limits must not truncate a file that fits: the read window
-    stays at or above what info() reported."""
+    """Capping by both limits must not cut a file that fits: reads stay at or above info()."""
     torch = pytest.importorskip("torch")
 
     loads: list[dict] = []
@@ -374,8 +369,7 @@ def test_an_honest_length_is_still_read_in_full(monkeypatch):
 
 
 def test_audio_input_decode_stays_bounded_when_the_probe_fails(monkeypatch):
-    """info() failing does not license an unbounded load: a container it cannot
-    read is still handed to the bounded decoder rather than materialized whole."""
+    """A failing info() does not license an unbounded load: unreadable files are still bounded."""
     bounded: list[bytes] = []
 
     class _FakeTorchaudio:
@@ -430,8 +424,7 @@ def test_the_probe_failure_path_still_enforces_the_cap(monkeypatch):
 
 
 def test_a_high_rate_container_is_capped_by_samples_not_only_by_clock(monkeypatch):
-    """The duration cap is rate-relative, so 30 minutes at a high rate retains far
-    more memory than the same speech at 16 kHz. The absolute ceiling bounds it."""
+    """The duration cap is rate-relative, so high rates also need the absolute sample ceiling."""
     decoded_blocks = []
 
     class FakeSoundFile:
@@ -452,8 +445,7 @@ def test_a_high_rate_container_is_capped_by_samples_not_only_by_clock(monkeypatc
             decoded_blocks.append(len(block))
             yield block
 
-    # A small ceiling: the check is what is under test, and the production
-    # constant would allocate 346 MB on every run of this file.
+    # Small ceiling: the check is under test; the production constant would allocate 346 MB.
     ceiling = 64
     monkeypatch.setattr(inference_route, "_MAX_DECODED_SAMPLES", ceiling)
     monkeypatch.setitem(sys.modules, "soundfile", types.SimpleNamespace(SoundFile = FakeSoundFile))
@@ -472,16 +464,14 @@ def test_a_high_rate_container_is_capped_by_samples_not_only_by_clock(monkeypatc
 
 
 def test_the_ceiling_never_bites_before_the_advertised_duration(monkeypatch):
-    """An ordinary rate keeps the full 30 minutes: the ceiling only refuses rates
-    above 48 kHz, so the documented limit still means what it says."""
+    """Ordinary rates keep the full 30 minutes; the ceiling only refuses rates above 48 kHz."""
     assert inference_route._MAX_DECODED_SAMPLES >= 48_000 * inference_route._MAX_AUDIO_SECONDS
     for rate in (8_000, 16_000, 44_100, 48_000):
         assert rate * inference_route._MAX_AUDIO_SECONDS <= inference_route._MAX_DECODED_SAMPLES
 
 
 def test_the_librosa_fallback_reads_only_up_to_the_cap(monkeypatch):
-    """audioread would otherwise materialize the whole waveform and let the check
-    after it run too late."""
+    """audioread would materialize the whole waveform before the length check could run."""
     seen: dict = {}
 
     class _FakeLibrosa:
@@ -514,8 +504,7 @@ def test_the_librosa_fallback_reads_only_up_to_the_cap(monkeypatch):
 
 
 def test_an_unprobeable_rate_is_refused_rather_than_read_unbounded(monkeypatch):
-    """Without a sample rate there is no window that bounds the read: 30 minutes
-    is gigabytes at a high rate. Refusing beats loading it to find out."""
+    """No sample rate, no bounded read: 30 minutes at a high rate is gigabytes, so refuse."""
 
     class _FakeLibrosa:
         @staticmethod
@@ -543,9 +532,8 @@ def test_an_unprobeable_rate_is_refused_rather_than_read_unbounded(monkeypatch):
 
 
 def test_the_block_size_counts_channels_not_only_frames(monkeypatch):
-    """blocks() sizes its buffer as frames * channels and yields a copy, so a
-    frame-only budget let a 255-channel container reach 49 MB twice over from an
-    upload capped at 25."""
+    """blocks() sizes its buffer as frames * channels and yields a copy, so a frame-only budget let
+    a 255-channel container reach 49 MB twice over from a 25 MB upload."""
     sizes = []
 
     class FakeSoundFile:
@@ -656,8 +644,7 @@ def _mp3_frames(seconds: float, bitrate_kbps: int = 8) -> bytes:
 
 
 def test_a_forwarded_wav_is_bounded_by_its_own_header(monkeypatch):
-    """Passthrough returns before every bounded decoder, so the duration cap has
-    to come from the header."""
+    """Passthrough skips every bounded decoder, so the duration cap must come from the header."""
     # small cap, so the fixture can carry the PCM its header declares
     monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 1)
     long_wav = _wav_header(8_000, 1, 8, 8_000 * 2) + b"\x80" * (8_000 * 2)
@@ -727,9 +714,8 @@ def _decode_instead_of_forwarding(monkeypatch):
 
 
 def test_a_container_that_cannot_say_is_decoded_rather_than_forwarded(monkeypatch):
-    """Forwarding an unreadable header applied the cap only to files honest
-    enough to describe themselves, which is the wrong way round. A transcode
-    costs a decode and puts the file back under both ceilings."""
+    """Forwarding an unreadable header capped only files honest enough to describe themselves; a
+    transcode costs a decode but meets both ceilings."""
     _decode_instead_of_forwarding(monkeypatch)
     unreadable = _mp3_frames(5) + b"\x01\x02\x03\x04"
     assert inference_route._mp3_seconds(unreadable, 60.0) is None
@@ -740,8 +726,7 @@ def test_a_container_that_cannot_say_is_decoded_rather_than_forwarded(monkeypatc
 
 
 def test_junk_between_frames_cannot_shorten_a_forwarded_mp3(monkeypatch):
-    """A decoder resynchronises past junk and plays the rest. Counting only the
-    frames before it let four stray bytes present two hours as two seconds."""
+    """Decoders resync past junk and play on, so frames before junk understated two hours."""
     monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 60)
     _decode_instead_of_forwarding(monkeypatch)
     one_frame = len(_mp3_frames(576 / 8_000))
@@ -772,8 +757,7 @@ def test_a_compressed_wav_is_not_measured_with_pcm_arithmetic(monkeypatch):
 
 
 def test_an_extensible_wav_is_measured_by_its_sub_format():
-    """WAVE_FORMAT_EXTENSIBLE carries the real tag in its SubFormat GUID, and a
-    file claiming the tag without the extension has not said what it holds."""
+    """An extensible WAV is measured by its SubFormat GUID; the claimed tag alone says nothing."""
     payload = b"\x80" * 8_000
     pcm_sub = _wav_header(8_000, 1, 8, len(payload), format_tag = 0xFFFE, sub_format = 0x0001) + payload
     assert inference_route._wav_seconds(pcm_sub) == pytest.approx(1.0, rel = 1e-6)
@@ -864,8 +848,7 @@ def test_the_last_resort_decoder_refuses_without_torchcodec(monkeypatch):
 
 
 def test_a_free_format_frame_does_not_authorise_a_passthrough():
-    """Bitrate index 0 carries no length in the header, so the walk cannot
-    establish one and the file has to be bounded by decoding it instead."""
+    """Bitrate index 0 has no header length, so free-format frames must be bounded by decoding."""
     free = bytes([0xFF, 0xE0 | (0x00 << 3) | (0x01 << 1) | 0x01, 0x00, 0x00])
     assert inference_route._mp3_seconds(free + _mp3_frames(5), 60.0) is None
 
@@ -951,8 +934,7 @@ def test_every_path_names_the_limit_the_same_way(monkeypatch):
     """One message, so a client sees one answer wherever the limit was found."""
     monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 90 * 60)
     assert inference_route._audio_too_long_detail() == "Audio is too long (max 90 minutes)."
-    # Explicitly UTF-8: read_text() follows the locale encoding, which is cp1252
-    # on a stock Windows runner, and the module holds bytes cp1252 cannot decode.
+    # Explicit UTF-8: read_text() follows the locale, which cp1252 on Windows cannot decode.
     source = (pathlib.Path(inference_route.__file__)).read_text(encoding = "utf-8")
     assert source.count('f"Audio is too long') == 1
 
@@ -988,8 +970,7 @@ def test_the_sliced_resampler_returns_what_the_whole_array_pass_did(
 
 
 def test_resampling_does_not_allocate_grids_the_length_of_the_recording():
-    """The two float64 grids were 8 bytes per input sample each, so a 30-minute
-    upload spent more on the coordinates than on the audio."""
+    """Two float64 coordinate grids cost 8 bytes per input sample each, more than the audio."""
     import tracemalloc
 
     arr = np.zeros(4_000_000, dtype = np.float32)
@@ -1084,8 +1065,7 @@ def test_an_honest_header_decodes_into_one_array(monkeypatch):
 
 
 def test_a_header_claiming_more_than_it_holds_buys_no_buffer(monkeypatch):
-    """A buffer sized from an unread header is how a small file asks for a large
-    allocation, so the count is only trusted once the decode has met half of it."""
+    """The count is trusted only once half is decoded, so a small file cannot demand memory."""
     sizes = []
     real_empty = np.empty
 

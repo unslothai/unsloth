@@ -1201,8 +1201,7 @@ def test_the_legacy_default_studio_home_keeps_its_install_dir(tmp_path, monkeypa
     assert eng.managed_install_root() == expected
 
 
-# The shipped pin, not a copy of it: a hardcoded tag here silently stops describing what users
-# actually install the moment DEFAULT_TAG moves.
+# Read the shipped DEFAULT_TAG; a hardcoded copy goes stale the moment it moves.
 _TAG = DEFAULT_TAG
 # Exactly what the mirror's CI publishes; the CUDA leg is best effort and may be absent.
 _MIRROR_ASSETS = [
@@ -1242,8 +1241,7 @@ def test_mirror_matrix_resolves_every_cpu_apple_host():
 
 
 def test_mirror_linux_cuda_resolves_the_cuda_bundle():
-    """A CUDA host asking for cuda gets the accelerated build. This is what makes MiniMax-H3
-    usable there: its GGUF path was running on the CPU because no Linux CUDA asset existed, and
+    """Linux CUDA hosts get the CUDA bundle: without it MiniMax-H3 GGUF ran on the CPU, because
     video.py falls back to the CPU prebuilt whenever the accelerated one cannot be resolved."""
     assert (
         _mresolve("Linux", "x86_64", "cuda")
@@ -1259,9 +1257,8 @@ def test_mirror_linux_auto_still_takes_the_plain_cpu_build():
 
 
 def test_mirror_linux_cuda_refuses_a_release_without_one():
-    """The CUDA leg is best effort, so a release can lack the asset. Returning None lets the
-    caller fall back deliberately; handing back the CPU build would leave the caller believing it
-    had a GPU binary, keep the load on the GPU device, and run sd-cli wholly on the CPU."""
+    """CUDA leg is best effort, so a release may lack it; return None so the caller falls back,
+    since a CPU build would keep the GPU device and run sd-cli on the CPU."""
     without = [a for a in _MIRROR_ASSETS if "cuda" not in a]
     assert (
         resolve_release_asset(without, system = "Linux", machine = "x86_64", accelerator = "cuda") is None
@@ -1285,9 +1282,7 @@ def test_shipped_pin_translates_to_a_plain_upstream_tag():
 
 
 def test_upstream_fallback_asks_for_the_translated_pin_not_latest(monkeypatch):
-    """A Linux Vulkan host: the mirror has no such asset, so resolution falls to upstream. It must
-    ask upstream for the pin's upstream base tag and stop there -- reaching an unpinned upstream
-    "latest" is exactly the reproducibility loss the translation exists to prevent."""
+    """Upstream fallback must ask for the translated pin's tag, not an unpinned latest release."""
     monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
     monkeypatch.setenv("UNSLOTH_SD_CPP_TAG", "master-813-bfbef5b-u13b9d92")
     monkeypatch.setattr(sdmod.platform, "system", lambda: "Linux")
@@ -1356,8 +1351,7 @@ def test_the_shipped_pin_falls_back_to_an_upstream_release_that_runs_qwen_image_
     assert repo == sdmod.UPSTREAM_FALLBACK_REPO
     assert chosen.endswith("-win-cuda12-x64.zip")
     assert release["tag_name"] == upstream_tag_for(DEFAULT_TAG)
-    # Qwen-Image-2.1 landed upstream in master-883, its reference-alpha fix in master-896, FLUX.3 in master-968,
-    # MOSS-Image in master-975.
+    # The pin must reach master-975: MOSS-Image landed there, after FLUX.3 at master-968.
     assert int(release["tag_name"].split("-")[1]) >= 975
 
 
@@ -1739,9 +1733,7 @@ def _managed_tree(
 
 
 def test_a_cpu_install_is_reinstalled_when_cuda_is_requested(tmp_path, monkeypatch):
-    """The P1: an upgraded Linux CUDA host already holding the managed CPU bundle. Both ensure_*
-    returned any runnable binary they found, so the new CUDA asset was never installed and native
-    generation silently stayed entirely on the CPU."""
+    """A CUDA host holding a CPU bundle must reinstall: ensure_* accepted any runnable binary."""
     bk, root, server = _shared_setup_1(monkeypatch, tmp_path)
     installs: list = []
 
@@ -1971,8 +1963,7 @@ def test_an_idle_backend_installs_the_matching_build_immediately(tmp_path, monke
 
 
 def test_the_router_entry_point_cannot_replace_a_running_server(tmp_path, monkeypatch):
-    """The refusal lives in _accelerator_changed; select_and_activate_engine calls the installer
-    directly."""
+    """The refusal lives in _accelerator_changed, which the router entry point skips."""
     bk, root, server = _shared_setup_1(monkeypatch, tmp_path)
     installs: list = []
 
@@ -2027,9 +2018,7 @@ def test_the_one_shot_fallback_keeps_the_requested_accelerator(tmp_path, monkeyp
 
 
 def test_a_serverless_deferred_install_still_lands_after_teardown(tmp_path, monkeypatch):
-    """The serverless branch: only sd-cli is installed, so the deferral resolves the load to
-    one-shot, and gating the post-teardown retry on mode == "server" skipped it for good. The
-    archive carries the sd-cli this load generates with, so the install has to run anyway."""
+    """Gating the retry on mode == "server" skipped the sd-cli install a serverless load needs."""
     bk, cli, root = _shared_setup_8(monkeypatch, tmp_path)
     cli.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)
@@ -2151,9 +2140,7 @@ def test_the_tree_stays_in_use_until_a_stopping_server_is_gone(tmp_path, monkeyp
 
 
 def test_a_failed_server_upgrade_is_not_retried_by_the_cli_probe(tmp_path, monkeypatch):
-    """The router probes the server first and the CLI immediately after. With only a usable CPU
-    sd-cli in the tree, the failed server upgrade left no record (fallback was None), so the CLI
-    probe resolved and downloaded the very same bundle a second time inside one selection."""
+    """A failed server upgrade left no record, so the CLI probe re-downloaded the same bundle."""
     bk, cli, root = _shared_setup_8(monkeypatch, tmp_path)
     cli.write_bytes(b"cpu-build")
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)
@@ -2200,8 +2187,7 @@ def test_a_bundle_drops_the_binaries_it_did_not_supply(tmp_path, monkeypatch):
 
 
 def test_a_bundle_keeps_every_binary_it_wrote(tmp_path):
-    """The sweep must key on the archive's member list, not on what is on disk: deleting a copy
-    the bundle just extracted would break every install."""
+    """Sweep keys on the archive's member list; deleting a just-extracted copy breaks installs."""
     target = tmp_path / "sd"
     suffix = ".exe" if sys.platform == "win32" else ""
     d = target / "bin"
@@ -2298,9 +2284,7 @@ def test_an_unreadable_record_does_not_retire_the_memo(tmp_path, monkeypatch):
 
 
 def test_an_external_record_update_retires_the_memo(tmp_path, monkeypatch):
-    """The memo speaks only for the record it could not replace. Once the installer CLI or another
-    Unsloth rewrites that file, the file is the newer answer -- otherwise this process would keep
-    reporting its own stale accelerator and treat the other one's CUDA binaries as a CPU match."""
+    """The memo covers only a record it could not replace; once rewritten by anyone, the file wins."""
     root = _shared_setup_10(tmp_path)
 
     real_open = builtins.open
@@ -2337,9 +2321,7 @@ def test_a_successful_record_write_retires_an_earlier_memo(tmp_path, monkeypatch
 
 
 def test_the_stop_is_reserved_before_the_server_is_unpublished(tmp_path, monkeypatch):
-    """The count has to be claimed in the SAME lock block that clears _state/_pending_server. Doing
-    it inside the stop leaves a gap where the resident, pending, stopping and generating fields are
-    all empty while the process is still executing out of the managed tree."""
+    """Claim the count in the same lock that clears _state/_pending_server, or the tree looks idle."""
     import core.inference.sd_cpp_backend as bk
 
     backend = bk.SdCppDiffusionBackend()
@@ -2362,9 +2344,7 @@ def test_the_stop_is_reserved_before_the_server_is_unpublished(tmp_path, monkeyp
 
 
 def test_a_failed_start_does_not_block_its_own_cli_fallback(tmp_path, monkeypatch):
-    """The fallback resolves the one-shot engine after stopping the server it just started. With
-    that stopped server still in _pending_server the tree reads busy, so the lazy sd-cli install
-    the fallback depends on was disabled and the load re-raised the server error instead."""
+    """A stopped server left in _pending_server makes the tree look busy and disables the CLI fallback."""
     import core.inference.sd_cpp_backend as bk
 
     backend = bk.SdCppDiffusionBackend()
@@ -2378,9 +2358,7 @@ def test_a_failed_start_does_not_block_its_own_cli_fallback(tmp_path, monkeypatc
 
 
 def test_an_unwritable_record_does_not_cost_the_install_or_repeat_it(tmp_path, monkeypatch):
-    """A GPU bundle that extracts fine but cannot write its record used to read as unrecorded
-    forever, and unrecorded is a mismatch for a GPU target: every later selection re-downloaded the
-    same bundle. The install still succeeds, and the accelerator is remembered for this process."""
+    """An unwritable record does not fail the install; the accelerator is remembered for this process."""
     root = tmp_path / "sd"
     root.mkdir()
     (root / sdmod.INSTALL_RECORD).mkdir()
@@ -2393,9 +2371,7 @@ def test_an_unwritable_record_does_not_cost_the_install_or_repeat_it(tmp_path, m
 
 
 def test_a_stale_unwritable_record_does_not_outrank_what_was_just_installed(tmp_path, monkeypatch):
-    """The nastier shape of the same failure: the old record is READABLE but cannot be replaced, so
-    it keeps answering "cpu" after a successful cuda install and every later selection downloads
-    the bundle again. What this process installed is strictly newer than what is on disk."""
+    """A readable but unreplaceable old record keeps answering cpu; the newer install must win."""
     root = _shared_setup_10(tmp_path)
     sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
 
@@ -2537,9 +2513,7 @@ def test_an_incomplete_tree_replacement_is_retried_not_memoised(tmp_path, monkey
 
 
 def test_a_generation_re_resolves_the_cli_the_install_moved(tmp_path, monkeypatch):
-    """The engine is resolved before the wait, and an install that lands during it can put its
-    sd-cli somewhere else and sweep the copy that was resolved. Launching the cached path then
-    fails on a file that is no longer there, which is the failure the wait exists to prevent."""
+    """An install landing during the wait can sweep the resolved sd-cli, so resolve it again."""
     import core.inference.sd_cpp_backend as bk
     from core.inference.sd_cpp_engine import SdCppEngine
 
@@ -2616,9 +2590,7 @@ def test_a_re_found_cli_goes_through_the_usability_gate(tmp_path, monkeypatch):
 
 
 def test_a_cancelled_request_leaves_the_install_wait(tmp_path, monkeypatch):
-    """The caller holds the generate lock across this wait, so a cancel or unload that could not
-    get out of it reads as a hung Unsloth for up to the whole 900s while nothing has even started.
-    Nothing notifies the condition on cancel, so the wait has to re-check rather than block once."""
+    """Nothing notifies the condition on cancel, so the wait re-checks instead of blocking once."""
     import core.inference.sd_cpp_backend as bk
 
     root = _managed_tree(tmp_path, monkeypatch)
@@ -2640,9 +2612,7 @@ def test_a_cancelled_request_leaves_the_install_wait(tmp_path, monkeypatch):
 
 
 def test_the_cuda_runtime_is_fetched_before_anything_is_swept(tmp_path, monkeypatch, capsys):
-    """A cudart download / digest / extract failure after the sweep leaves the old binaries gone,
-    is not a SupersededBinaryError, and so gets memoised as a failed accelerator with the caller
-    holding paths that no longer exist. Fetching it first removes the window entirely."""
+    """Fetching cudart first avoids a post-sweep failure that is memoised with paths already gone."""
     order: list[str] = []
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
@@ -2678,9 +2648,8 @@ def test_a_failure_after_the_sweep_is_an_incomplete_replacement(tmp_path, monkey
 
 
 def test_a_failure_finalising_the_new_tree_is_an_incomplete_replacement(tmp_path, monkeypatch):
-    """The boundary has to reach past the sweep itself. A chmod or a locate failure after the old
-    binaries are gone is still a mixed tree, and reported as an ordinary error it makes ensure_*
-    memoise the accelerator and return a pre-install path the sweep may already have removed."""
+    """A chmod or locate failure after the sweep leaves a mixed tree; as an ordinary error it
+    memoises the accelerator and returns a path the sweep may have removed."""
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
 
@@ -2891,9 +2860,7 @@ def test_a_superseded_load_unpublishes_the_server_it_stops(tmp_path, monkeypatch
 
 
 def test_the_legacy_lookup_uses_the_lexical_parent_of_a_symlinked_home(tmp_path, monkeypatch):
-    """The old code took Path(home).parent, which does not resolve symlinks. For a home that IS a
-    link, the tree an older build created sits next to the LINK, so resolving first looked in the
-    wrong place: a needless re-download, and the old install left orphaned from uninstall too."""
+    """An older build's tree sits beside the link, so the lexical parent of a symlinked home is used."""
     import core.inference.sd_cpp_engine as eng
 
     target = tmp_path / "elsewhere" / "studio"
@@ -2910,9 +2877,7 @@ def test_the_legacy_lookup_uses_the_lexical_parent_of_a_symlinked_home(tmp_path,
 
 
 def test_a_serverless_install_does_not_fall_back_to_the_legacy_server(tmp_path, monkeypatch):
-    """The finder also probes the tree beside the Unsloth home, so when the bundle just installed
-    ships no sd-server the hit can be the legacy one, built for another accelerator. Returning it
-    ran a forced CUDA load on the old CPU build instead of the one-shot CLI."""
+    """A serverless install must not reuse the legacy sd-server, built for another accelerator."""
     bk, home, legacy = _shared_setup_3(monkeypatch, tmp_path)
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
     sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
@@ -2994,9 +2959,7 @@ def test_an_old_pin_legacy_server_is_not_reinstalled_over_a_serverless_current_p
 
 
 def test_a_matching_legacy_server_is_still_preferred_over_the_one_shot_cli(tmp_path, monkeypatch):
-    """The serverless guard must fire only on a MISMATCHED legacy server. One built for the
-    accelerator being asked for is a working resident server, and dropping to the one-shot CLI
-    would re-run the model load on every single generation."""
+    """A matching legacy server must win: the one-shot CLI reloads the model on every generation."""
     bk, home, legacy = _shared_setup_3(monkeypatch, tmp_path)
     server = legacy / "sd-bin" / _SERVER
     server.write_bytes(b"cpu-build")
@@ -3015,8 +2978,7 @@ def test_a_matching_legacy_server_is_still_preferred_over_the_one_shot_cli(tmp_p
 
 
 def test_a_deleted_server_still_reinstalls_rather_than_reading_as_serverless(tmp_path, monkeypatch):
-    """A missing sd-server is not proof the bundle shipped none; only a record saying so blocks
-    reinstall."""
+    """Missing sd-server proves nothing; only a record saying none shipped blocks reinstall."""
     bk, home, legacy = _shared_setup_3(monkeypatch, tmp_path)
     old_server = legacy / "sd-bin" / _SERVER
     old_server.write_bytes(b"cpu-build")
@@ -3060,9 +3022,7 @@ def test_install_records_that_the_bundle_shipped_a_server(tmp_path, monkeypatch)
 
 
 def test_an_unwritable_record_still_remembers_the_server_capability(tmp_path):
-    """Memoised alongside the accelerator or not at all. With only half of it remembered, an
-    unwritable record leaves a serverless install looking server-capable to the very guard the
-    accelerator memo exists to serve, and the load keeps re-downloading the bundle."""
+    """Server capability must be memoised with the accelerator, or serverless installs look capable."""
     root = tmp_path / "sd"
     root.mkdir()
     (root / sdmod.INSTALL_RECORD).mkdir()
@@ -3076,8 +3036,7 @@ def test_an_unwritable_record_still_remembers_the_server_capability(tmp_path):
 
 
 def test_a_stale_record_does_not_outrank_the_server_capability_just_installed(tmp_path):
-    """The readable-but-unreplaceable shape: an older record saying the bundle shipped a server
-    must not survive an install of one that does not."""
+    """An older record claiming a server must not outrank a just-installed bundle without one."""
     root = tmp_path / "sd"
     root.mkdir()
     with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:

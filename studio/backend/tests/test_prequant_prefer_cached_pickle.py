@@ -423,9 +423,7 @@ def _convrot_dit(declared = True):
 
 
 def test_cached_int8_is_not_free_when_a_declared_convrot_is_ahead(hub):
-    """An existing user's INT8 .pt is cached and the family now declares an INT8-ConvRot build.
-    Online the load downloads the ConvRot file first, so the planner and the disk gate must not be
-    told this costs nothing."""
+    """A cached INT8 .pt is not free while a declared ConvRot build is ahead of it online."""
     hub.cache("Model-INT8.pt")
     src = _convrot_dit()
     assert pq.cached_checkpoint_path(src, online = True) is None
@@ -442,9 +440,7 @@ def test_offline_the_cached_int8_is_what_loads(hub):
 
 
 def test_an_unpublished_convrot_stops_blocking_once_the_resolver_saw_its_404(hub):
-    """The code names a ConvRot build the repo does not host yet (merged before the upload). The
-    first load asks, gets a 404, and opens the cached INT8 .pt; from then on the probe agrees with
-    the resolver instead of planning a download that never happens on every load."""
+    """Once the resolver has seen a 404 for an unhosted ConvRot build, the probe must stop blocking."""
     hub.cache("Model-INT8.pt")
     src = _convrot_dit()
     assert pq.cached_checkpoint_path(src, online = True) is None

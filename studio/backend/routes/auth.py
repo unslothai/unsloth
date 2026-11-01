@@ -87,9 +87,8 @@ _CLI_BOOTSTRAP = (
 
 
 def _cli_is_inside(prefix: str) -> bool:
-    """Whether unsloth_cli lives under *prefix*, so -I would still find it. Located rather than
-    imported: this runs in a request handler, and a spec lookup answers the only question asked
-    here, which is where the package is on disk and not whether it starts."""
+    """Whether unsloth_cli sits under prefix, so python -I still finds it; located by spec not
+    import, since this runs in a request handler."""
     try:
         spec = importlib.util.find_spec("unsloth_cli")
         origin = getattr(spec, "origin", None)
@@ -184,8 +183,7 @@ def _overflow_blocked(ip: str, now: float) -> int:
 
 
 def _overflow_take(ip: str, now: float) -> tuple[int, float]:
-    """Pop ip's overflow entry, returning its ``(count, window_start)`` so the
-    count can migrate into a fresh per-IP bucket. ``(0, now)`` if none/expired."""
+    """Pop an IP overflow entry to migrate its count into a fresh bucket; (0, now) if none or expired."""
     entry = _overflow_shard(ip).pop(ip, None)
     if entry is None or now - entry[1] > _LOGIN_WINDOW_SECONDS:
         return 0, now
@@ -299,9 +297,8 @@ def _prune_stale_buckets(now: float) -> None:
 
 
 def _prune_stale_ip_buckets(now: float) -> None:
-    """Drop empty / expired per-IP buckets to bound memory under spray. The dict is otherwise reclaimed only on a
-    successful login, so a failure-only spray from many (or spoofed) IPs would grow it without bound.
-    """
+    """Prune empty or expired per-IP buckets to bound memory under spray; only successful logins
+    otherwise reclaim them, so failure-only spray grows the dict without bound."""
     stale: list[str] = []
     for bucket_ip, bucket in _LOGIN_IP_BUCKETS.items():
         _prune_bucket(bucket, now)
@@ -786,8 +783,7 @@ async def create_api_key(
         expires_at = (
             datetime.now(timezone.utc) + timedelta(days = payload.expires_in_days)
         ).isoformat()
-    # A key minted with an expiring key expires no later than it, so a leaked short-lived key cannot
-    # be turned into a permanent one.
+    # A key minted by an expiring key never outlives it, so leaks stay short-lived.
     parent_expires_at = _api_key_caller_expiry(credentials)
     if parent_expires_at is not None and (
         expires_at is None
@@ -818,8 +814,7 @@ async def create_api_key(
 
 
 def _api_key_caller_expiry(credentials: Optional[HTTPAuthorizationCredentials]) -> Optional[str]:
-    """Expiry of the sk-unsloth key that authenticated this request, or None (UI session, keyless
-    caller, or a key that never expires)."""
+    """Expiry of the sk-unsloth key on this request; None for UI, keyless or non-expiring."""
     if credentials is None or is_keyless(credentials):
         return None
     raw = credentials.credentials or ""

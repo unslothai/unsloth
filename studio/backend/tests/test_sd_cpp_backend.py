@@ -497,10 +497,7 @@ def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
 
 
 def test_download_plan_merges_asset_repos_that_share_one_fetch_repo(monkeypatch):
-    # Two upstream repos can resolve to ONE fetch repo (e.g. two mirrors of the same cached
-    # community repack). Synthetic repos: the mechanism is generic, and no image asset is a repack
-    # any more. Keying the swapped map by fetch repo therefore drops whichever landed first,
-    # taking its files out of the staged entry AND out of the footprint.
+    # Two upstream repos can resolve to one fetch repo; keying by it drops whichever landed first.
     import core.inference.sd_cpp_backend as S
 
     b = SdCppDiffusionBackend(engine = _FakeEngine())
@@ -693,9 +690,8 @@ def test_no_sd_cpp_asset_comes_from_a_community_repack():
 
 
 def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
-    # Every image sd-cli asset is an official upstream file at its upstream path (fetched through the
-    # ungated mirror, which keeps the same path, so the swap is an id change only) or an unsloth GGUF
-    # of the encoder model. A reorganised mirror would 404 sd-cli at load time.
+    # Image sd-cli assets are upstream files at their upstream path on the mirror, or an unsloth
+    # GGUF; a reorganised mirror would 404 sd-cli.
     from core.inference.diffusion_families import _FLUX1_SD_CPP_TEXT_ENCODERS, mirror_repo
 
     flux1 = [(r, f) for r, f, _k in _FLUX1_SD_CPP_TEXT_ENCODERS]
@@ -1339,8 +1335,7 @@ def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
 
 
 def test_offload_device_pin_is_probed_against_the_binary_it_is_given(monkeypatch):
-    # Rebuilt per binary: a deferred accelerator install replaces the build after the offload
-    # policy is computed, and the ggml names come from whichever one runs.
+    # A deferred install swaps the build after the offload policy, so probe the binary given.
     seen: list = []
 
     def _probe(binary, *_args):
@@ -1585,8 +1580,7 @@ def test_an_unowned_build_on_cpu_torch_places_by_its_device_listing(monkeypatch,
 
 @pytest.mark.parametrize("device,expected", [("cuda", "cpu"), ("xpu", "cpu"), ("mps", "mps")])
 def test_the_cpu_build_on_a_gpu_torch_places_on_cpu(monkeypatch, device, expected):
-    # The ladder can leave a CUDA / XPU torch on the CPU build; the macOS bundle is recorded cpu
-    # but renders on Metal.
+    # CUDA or XPU torch can land on the CPU build; macOS is recorded cpu but renders on Metal.
     monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cpu")
     b = SdCppDiffusionBackend()
     _run_server_load(monkeypatch, b, [], device = device)
@@ -2284,9 +2278,7 @@ def _synthetic_legacy_row(monkeypatch):
 def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirror(
     monkeypatch, tmp_path
 ):
-    """reuse repo-id-keyed legacy caches to avoid redownloads and keep offline loads working.
-
-    Synthetic mirror -> repack row: the mechanism is generic, and only video assets still have one."""
+    """Legacy repo-id caches are reused, so a cached community repack avoids redownloads."""
     from core.inference.diffusion_families import prefer_cached_legacy_source
     from core.inference.sd_cpp_backend import _fetch_repo_map
 
@@ -2317,12 +2309,7 @@ def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirro
 def test_a_repack_left_in_the_pre_change_cache_root_still_wins_over_the_mirror(
     monkeypatch, tmp_path
 ):
-    """Changing Unsloth's cache folder must not cost the user the repack they already hold.
-
-    The fetch passes reuse_other_cache_root, so a file cached only under huggingface_hub's
-    import-time root resolves through that root -- but only under the repo id it was filed as.
-    Picking the mirror because the LIVE root looks empty makes those bytes unreachable: several GB
-    re-download online, and offline the load fails. Synthetic mirror -> repack row, as above."""
+    """A repack left in the old cache root must win over the mirror, or its bytes become unreachable."""
     from core.inference.sd_cpp_backend import _fetch_repo_map
 
     repack, mirror = _synthetic_legacy_row(monkeypatch)
@@ -2835,8 +2822,7 @@ def test_a_deferred_cuda_upgrade_keeps_the_selected_card(monkeypatch):
 
 
 def test_the_arbiter_preflight_reads_the_cli_behind_an_unowned_server(monkeypatch):
-    # SD_SERVER_PATH names a build the installer does not own; the router can drop it and run
-    # the managed sd-cli, so that CLI's record is the answer.
+    # SD_SERVER_PATH is not installer-owned, so the managed sd-cli record is the answer.
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/custom/sd-server")
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/managed/sd-cli")
     records = {"/managed/sd-cli": "vulkan"}
@@ -2865,9 +2851,8 @@ def test_only_managed_cpu_binaries_count_as_cpu_only(monkeypatch):
 
 
 def test_a_t5_index_from_the_old_cache_root_gets_its_shards_beside_it(monkeypatch, tmp_path):
-    """After a cache-folder change the T5 index resolves from the old root while its shards land in the active one.
-    sd-cli reads the shards beside the index, so the load links them there instead of refusing a cache that holds
-    every file (an offline user could not repair it by re-downloading)."""
+    """After a cache move the T5 index resolves from the old root; its shards are linked beside it,
+    since sd-cli reads them there rather than refusing a cache holding every file."""
     import json
     from pathlib import Path
 
@@ -2904,9 +2889,8 @@ def test_a_t5_index_from_the_old_cache_root_gets_its_shards_beside_it(monkeypatc
 
 
 def test_a_cross_device_shard_copy_never_leaves_a_truncated_shard(monkeypatch, tmp_path):
-    """Across filesystems the hard link fails and the shard is copied. A copy cut off (full disk) must not leave a
-    file at the final name, since the existence check would accept it, and a short file left by an earlier copy is
-    replaced on the next load."""
+    """A cut-off copy (full disk) must not leave a short file at the final name, since the existence
+    check accepts it; an earlier short file is replaced on next load."""
     import json
     import os
     import shutil
@@ -3002,9 +2986,8 @@ def _png_bytes():
 
 @pytest.mark.parametrize("losses, recovers", [(1, True), (2, False)])
 def test_a_lost_vulkan_device_restarts_the_resident_server(monkeypatch, losses, recovers):
-    # The resident server stays up on a dead device after VK_ERROR_DEVICE_LOST: start the same build again
-    # (a fresh device) and retry the job once; a second loss in a row surfaces where no CPU rung applies (an Arc /
-    # ROCm host keeps Vulkan). Neither records a strike.
+    # After VK_ERROR_DEVICE_LOST, restart the server on a fresh device and retry once; a second loss
+    # surfaces only where no CPU rung applies; no strike.
     monkeypatch.setattr(bk, "_vulkan_cpu_rung_applies", lambda: False)
     events: list = []
     remaining = {"losses": losses}
@@ -3111,9 +3094,8 @@ def _repeated_device_loss_backend(
 
 
 def test_a_vulkan_device_lost_again_after_the_respawn_renders_this_load_on_cpu(monkeypatch):
-    # A host whose driver resets the card on every render (a Windows TDR on a slow iGPU) must not fail every request:
-    # the respawned server losing the device too moves this load alone to the CPU backend. Nothing is persisted, so
-    # the next load resolves the Vulkan build again.
+    # A driver that resets the card on every render (Windows TDR) must not fail every request; if
+    # the respawn also loses the device, only this load moves to CPU; nothing is persisted.
     b, events, persisted = _repeated_device_loss_backend(monkeypatch, losses = 2)
     images, _seeds = b._generate_server(b._state, **_gen_kwargs())
     assert len(images) == 1

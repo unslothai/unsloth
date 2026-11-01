@@ -395,9 +395,8 @@ def test_desktop_secret_authenticates_the_shell_health_probe(monkeypatch):
 
 
 def test_shutdown_cleanup_runs_off_the_event_loop_and_once(monkeypatch):
-    # The cleanup waits seconds on subprocesses (llama-server: 5 s SIGTERM + 5 s SIGKILL). Run on the
-    # loop it kept uvicorn from closing the port until it finished, so Shutdown left the port open past
-    # a 15 s check on a loaded host. The loop must stay free meanwhile, and a second click is no-op.
+    # Cleanup runs off the event loop, since its seconds-long waits would keep uvicorn from closing
+    # the port; the loop must stay free and a second click is a no-op.
     import main
 
     raw = storage.create_desktop_secret()

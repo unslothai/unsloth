@@ -338,10 +338,8 @@ def default_gguf_scope(
     *repo_ids: object,
     key = None,
 ) -> list:
-    """The *items* a bare repo id may default to: the default subdirectory's rows, else root rows, else all.
-
-    Every resolver of a bare id uses this one rule so one id names one checkpoint everywhere.
-    """
+    """Bare repo id defaults: default subdirectory rows, else root rows, else all; every resolver
+    shares this rule so one id names one checkpoint"""
     rows = list(items)
     key_of = key or (lambda item: item)
     subdir = default_gguf_subdir(*repo_ids)

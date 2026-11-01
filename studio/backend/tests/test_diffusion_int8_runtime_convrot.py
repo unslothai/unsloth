@@ -312,8 +312,7 @@ def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypat
         detect_family("Qwen/Qwen-Image-2.1", override = "qwen-image-2.1"), "int8"
     )
     assert pq._resolve_checkpoint_path(source, None, None) == str(plain)
-    # only the first name is asked (the ComfyUI-format twin of the rotated build); the unreachable Hub then
-    # answers from the cache
+    # Only the first name, the ComfyUI twin, is asked; the unreachable Hub answers from cache.
     assert asked == ["Qwen-Image-2.1-INT8-ConvRot-ComfyUI.safetensors"]
     plain.unlink()
     with pytest.raises(LocalEntryNotFoundError):

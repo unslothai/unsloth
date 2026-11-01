@@ -177,8 +177,7 @@ def _run(
 
 
 def test_only_zoo_shadowed_imports_unsloth_first(tmp_path):
-    """Core concern: a unsloth_zoo shadow must not make the guard import
-    unsloth_zoo before unsloth -- that would skip _gpu_init's pre-zoo fixes."""
+    """Importing unsloth_zoo before unsloth would skip _gpu_init's pre-zoo fixes."""
     shadow = tmp_path / "shadow"
     _make_namespace_shadow(shadow, "unsloth_zoo")
     res = _run(tmp_path, shadow_roots = [shadow], real = True)

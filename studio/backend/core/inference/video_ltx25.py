@@ -90,9 +90,7 @@ LTX25_TE_HOSTED_BASE = "Lightricks/LTX-2.5-Diffusers"
 # The pack's latent_upsampler/ (995,743,320 bytes), part of the family table's companions; only two-stage loads hold it.
 LTX25_LATENT_UPSAMPLER_GB = 1.0
 
-# The split single-file release. A DiT picked from it assembles from the companion files beside it (no Diffusers pack):
-# connectors from the DiT file plus the encoder file's text projections, the conv VAE, the audio VAE + vocoder and the
-# spatial upscaler. The encoder file embeds its own config and tokenizer.
+# A split single-file DiT is assembled from its companion files, with no Diffusers pack needed.
 LTX25_SINGLE_FILE_REPO = "Lightricks/LTX-2.5"
 LTX25_SINGLE_TEXT_ENCODER = "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"
 LTX25_SINGLE_VIDEO_VAE = "vae/ltx-2.5-video-vae-conv-bf16.safetensors"
@@ -727,9 +725,8 @@ def ltx25_te_prequant_sources(
         from .diffusion_te_prequant import TePrequantSource
         from .model_ids import hf_cache_repo_id
 
-        # Exact identity (an HF cache snapshot counts as its repo): the worker strict-loads the hosted state dict into
-        # whatever architecture the pack builds, so a same-shaped custom pack that merely shares the folder name
-        # would silently lose its own encoder weights.
+        # Exact identity only (an HF cache snapshot counts as its repo): a same-shaped pack sharing
+        # the folder name would silently lose its own encoder weights
         identity = hf_cache_repo_id(str(base)) or str(base)
         if canonical_base(identity).lower() != canonical_base(LTX25_TE_HOSTED_BASE).lower():
             return {}
@@ -1386,10 +1383,8 @@ def render(
         raise
     finally:
         if image is not None or failed:
-            # The condition pipeline shares pipe's modules but not its offload-hook list, so on every exit (dev,
-            # single stage, two stage, cancel) pipe's own hooks are reset here, or its last onloaded module stays on
-            # the card. A text render that stops between its stages (cancel, error) may hold the DiT stage 1
-            # onloaded (diffusion_multistage.hold_denoiser_between_calls): reset it too.
+            # Reset pipe's offload hooks on every exit: the condition pipeline shares its modules,
+            # not hooks.
             free = getattr(pipe, "maybe_free_model_hooks", None)
             if callable(free):
                 try:

@@ -79,9 +79,8 @@ def _load(path: Path) -> Any:
 def read_model_files(
     flm_binary: Optional[Path], flm_model_path: Path, checkpoint: str
 ) -> Optional[FlmModelFiles]:
-    """The files FastFlowLM expects for ``checkpoint`` (``family:size``), from the manifests it
-    ships next to its binary. None when they cannot be read, so the caller falls back to lemond.
-    """
+    """The files FastFlowLM expects for checkpoint (family:size), read from the manifests beside its
+    binary; None when unreadable, so the caller falls back to lemond."""
     if flm_binary is None or ":" not in checkpoint:
         return None
     family, size = checkpoint.split(":", 1)

@@ -944,9 +944,7 @@ def assign_components(
     *,
     family: str = "",
 ) -> tuple[dict[str, ComponentFileRef], dict[str, str]]:
-    """Each supplied file onto the one base component whose class it can fill (header-only). Raises
-    when a file fits nothing, or two files want the same slot. A CLIP-L vs CLIP-G pair is told apart by
-    width, so HiDream's two CLIP slots resolve in index order."""
+    """Header-only: raises when a file fits no slot or two want one; CLIP-L and CLIP-G split by width."""
     assigned: dict[str, ComponentFileRef] = {}
     kinds: dict[str, str] = {}
     for ref, header in te_headers:
@@ -1352,14 +1350,7 @@ def pick_comfy_text_encoders(
     fits: Callable[[ComponentOverrides], None],
     auto_scheme: Optional[str] = None,
 ) -> list[str]:
-    """The ComfyUI text-encoder files to load in place of the base repo's, one per slot, from ``candidates``.
-
-    A slot takes a file only when it fits that slot's real class strictly (``fits`` raises otherwise) and is
-    the single best by precision: dense, then fp8, then int8, the base repo's own precision first. Under a
-    family's automatic scheme (``auto_scheme``) only files that stay in that scheme once loaded count (int8
-    ConvRot; fp8 and plain int8 load dense), so a larger resident encoder never displaces the one the family
-    loads by default. Two equally good files for one slot (a
-    fine-tune beside the original) leave it to the base repo. Unreadable or unfitting files are skipped."""
+    """Best-precision fitting file per slot; under auto_scheme only in-scheme files count; ties keep base"""
     classes = component_classes_from_index(model_index)
     standalone = _STANDALONE_TE_SLOTS.get(family, ())
     wanted = {classes[c] for c in TEXT_ENCODER_COMPONENTS if c in classes and c not in standalone}

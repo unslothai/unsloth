@@ -319,9 +319,8 @@ def test_the_reasoning_flag_is_not_itself_a_saved_field(override_store):
     ],
 )
 def test_a_reset_tombstone_outlives_a_later_default_save(override_store, fallback):
-    """The -1/"" pair is stored so a qualified row shadows a reasoning flag on a broader entry.
-    A later save with the controls at their defaults omits the pair, and the row must not empty
-    out and be deleted, or the load falls back and hands the reset value straight back."""
+    """The -1/"" pair is stored so a qualified row shadows a broader reasoning flag; a later default
+    save must not empty the row, or the load hands the reset value straight back."""
     bare = "unsloth/Repo-GGUF"
     settings.set_model_override(bare, **fallback)
 

@@ -992,8 +992,7 @@ def test_session_defaults_to_mlx_vlm_prefill_step(fake_mx):
     ids = ["none", "zero", "negative", "string", "unreadable"],
 )
 def test_a_step_no_grid_can_be_built_on_falls_back_instead_of_raising(monkeypatch, default):
-    """The step divides every boundary, so one that cannot must never reach a request:
-    it would take generation down, not just the reuse."""
+    """The step divides every boundary; one that cannot must fall back, not fail generation."""
     module = types.ModuleType("mlx_vlm.generate.common")
     module.DEFAULT_PREFILL_STEP_SIZE = default
     monkeypatch.setitem(sys.modules, "mlx_vlm", types.ModuleType("mlx_vlm"))
@@ -1046,8 +1045,7 @@ class FakeDictKV:
 
 
 def test_copy_walks_a_dict_held_state(fake_mx):
-    """A dict of arrays used to fall through the copier and be shared, so the store
-    would hand back a dict the next generation writes through."""
+    """A dict of arrays must be copied, or the next generation writes into the stored copy."""
     live = [FakeCacheList(FakeDictKV())]
     saved = copy_cache_entries(live)
     assert saved[0].caches[0].tensors is not live[0].caches[0].tensors
@@ -1058,9 +1056,8 @@ def test_copy_walks_a_dict_held_state(fake_mx):
 
 
 def test_copy_refuses_a_cache_it_cannot_walk_rather_than_sharing_it(fake_mx):
-    """The top level already refuses an unrecognised entry. Nested, one used to be
-    returned as itself: a live cache in the store, advanced by the turn that served it.
-    Refusing costs the next turn its reuse; sharing costs it its answer."""
+    """Nested unrecognised caches are refused, not shared: sharing lets a turn advance a live cache
+    and costs the next turn its answer, while refusing only costs reuse."""
     with pytest.raises(TypeError):
         copy_cache_entries([FakeCacheList(FakeSlottedKV())])
 
@@ -1107,9 +1104,8 @@ def test_copy_shares_buffers_yet_keeps_what_the_live_cache_overwrites():
 
 
 def test_session_restores_the_model_when_one_host_is_named_twice(fake_mx):
-    """``policy_hosts`` is (model, language_model), and the second falls back to the
-    first when the wrapper exposes no language model, so the same object can be listed
-    twice. Unpatching it twice must not strand the recording class on the model."""
+    """policy_hosts may list one object twice (the language model falls back to the model), so
+    unpatching twice must not strand the recording class."""
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     host = FakeHost()
     before = type(host)
@@ -1120,8 +1116,7 @@ def test_session_restores_the_model_when_one_host_is_named_twice(fake_mx):
 
 
 def test_session_restores_the_model_even_if_unpatching_fails(fake_mx):
-    """Any failure while unpatching leaves the model wrapped otherwise, and every later
-    request on that load then answers through a stale forward record."""
+    """A failed unpatch must still restore the model, or later requests use a stale forward."""
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     host = FakeHost()
     before = type(host)

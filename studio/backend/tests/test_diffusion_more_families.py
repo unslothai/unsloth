@@ -320,8 +320,7 @@ def test_ideogram4_generation_defaults():
 
 
 def test_ideogram4_bf16_reservation_table_present():
-    # The planner reserves this bf16 footprint for the fp8 base without a cache estimate, so the
-    # ~54 GB pipeline never plans an unfittable resident placement.
+    # With no cache estimate, this bf16 table keeps the ~54 GB pipeline off unfittable plans.
     fam = detect_family("ideogram-ai/ideogram-4-fp8")
     table = family_bf16_components_gb(fam, fam.base_repo)
     assert table is not None
@@ -753,14 +752,7 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
 
 
 def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
-    """The route is only real if the binary the installer pins understands the architecture.
-
-    The tag STRING cannot answer this: two mirror builds can share an upstream base, so the name does
-    not say whether a build carries the architecture. What is asserted here is the pin itself,
-    against the release verified to render this family through Studio's native engine (512x512,
-    12 steps, Q4_K_M, one B200: cuda12 and cuda13 bundles, 26s / 36s, identical images). Bump both
-    together or not at all.
-    """
+    """Tag names cannot show the pinned prebuilt loads Qwen-Image-2.1; bump cuda12 and cuda13 together."""
     import importlib.util
     from pathlib import Path
 

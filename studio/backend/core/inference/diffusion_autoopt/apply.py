@@ -317,8 +317,7 @@ def run_speed_layer(
         and not is_gguf
         and getattr(target, "backend", None) == "rocm"
     ):
-        # The primitive probes the card before it looks at the model: pass the decline so a model with nothing to
-        # compile never pays the ROCm probe.
+        # Pass the decline so a model with nothing to compile never pays the ROCm card probe.
         family_for_apply = _family_with(family, supports_torch_compile = False)
     if plan is not None and plan.generic:
         try:

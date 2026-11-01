@@ -897,8 +897,7 @@ def test_a_budget_of_one_executes_exactly_one_call(executed):
 
 
 def test_a_failing_tool_still_spends_its_budget(executed, monkeypatch):
-    """A call that raised has already run, so letting it retry for free
-    would put the total past max_calls."""
+    """A raised call has already run, so a free retry would push the total past max_calls."""
 
     def _boom(name, arguments, **kwargs):
         executed.append({"name": name, "arguments": arguments})

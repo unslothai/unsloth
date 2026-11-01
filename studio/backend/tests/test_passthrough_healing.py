@@ -929,10 +929,8 @@ class TestNudgeRetryOpenai:
                     cancel_event = cancel_event,
                 )
             )
-            # Both waits only bound a hang, so they are generous: reaching the retry is a whole
-            # upstream round trip plus the nudge decision, 30-60 ms idle but past 1 s on a
-            # saturated CI runner, which a 0.2 s cap turned into a TimeoutError. An absorbed
-            # cancel still fails: the task then waits on the hanging client and never raises.
+            # Waits only bound a hang, so keep them generous (0.2 s timed out on a saturated CI
+            # runner); an absorbed cancel still fails, since the task never raises.
             await asyncio.wait_for(hanging.started.wait(), 10)
             cancel_event.set()
 
@@ -1734,9 +1732,8 @@ class TestClientToolSchemaTyping:
         assert arguments == {"pattern": "false", "head_limit": 25, "multiline": False}
 
     def test_each_call_is_typed_through_its_own_tools_schema(self):
-        """One key, two declarations: `timeout` is milliseconds on Grep and a duration
-        string on WebFetch. A schema picked by position, or merged across the request, has
-        one answer for both keys and so reads one of these calls wrong."""
+        """The same key is milliseconds on Grep but a duration on WebFetch, so type each call by its
+        tool."""
         call = (
             "<function=%s><parameter=%s>x</parameter><parameter=timeout>30</parameter></function>"
         )

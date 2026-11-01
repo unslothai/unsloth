@@ -1455,8 +1455,7 @@ class TestCspHfEndpoints:
     def test_a_path_prefixed_mirror_is_listed_as_an_origin(
         self, main_module, monkeypatch, endpoint, expected_source
     ):
-        """A CSP host-source path not ending in / matches only that exact URL, so list mirrors by
-        origin only."""
+        """Host-source path without trailing / matches only that URL; list mirrors by origin."""
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         sources = _connect_src(main_module._build_csp("NONCE"))
         assert expected_source in sources
@@ -1475,8 +1474,7 @@ class TestCspHfEndpoints:
     def test_a_loopback_endpoint_is_only_reported_to_a_loopback_client(
         self, main_module, monkeypatch, endpoint, loopback_sees, remote_sees
     ):
-        """A loopback endpoint means the BROWSER's localhost anywhere else: dead,
-        or an unrelated service that would be handed the user's Hub token."""
+        """Loopback means browser localhost: elsewhere it is dead or leaks the Hub token."""
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         local = TestClient(main_module.app, client = ("127.0.0.1", 40000))
         assert local.get("/api/health").json()["hf_endpoint"] == loopback_sees
@@ -1484,8 +1482,7 @@ class TestCspHfEndpoints:
         assert remote.get("/api/health").json()["hf_endpoint"] == remote_sees
 
     def test_a_tunneled_client_is_not_mistaken_for_a_local_one(self, main_module, monkeypatch):
-        """Through the managed tunnel the socket peer IS loopback: it is the local
-        cloudflared process, not the visitor."""
+        """Through the tunnel the socket peer is loopback: cloudflared, not the visitor."""
         monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
         c = TestClient(main_module.app, client = ("127.0.0.1", 40000))
         tunneled = c.get("/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"})
@@ -1641,8 +1638,7 @@ def test_health_reports_the_default_for_a_settings_saved_endpoint(main_module, m
 
 
 def test_every_api_write_route_is_body_capped(main_module):
-    # FastAPI reads a body before the route's auth dependency, so an uncapped /api write route let an
-    # unauthenticated client stream an unbounded body into memory.
+    # FastAPI reads bodies before auth, so an uncapped /api write lets anyone send any size.
     writes = [
         route.path
         for route in main_module.app.routes
@@ -1772,12 +1768,8 @@ def test_delete_bodies_and_root_path_are_capped(main_module):
 
 
 def test_a_withheld_body_is_not_counted_as_running_inference(main_module, health_app):
-    """Keep-warm runs inside the body limiter: a request is counted once its body is here.
-
-    A model switch drains the in-flight count with no time limit, holding the gate every chat request needs, and
-    nothing bounds how long a client may withhold a body. Counted from the headers on, an anonymous POST that never
-    sent one stayed in flight until its socket closed: the 401 that uncounts it comes from the route, after the body.
-    """
+    """A request counts only once its body is here, so a withheld body is not counted as running
+    inference."""
     from auth import storage
     from auth.authentication import create_access_token
     from core.inference import llama_keepwarm, media_keepwarm

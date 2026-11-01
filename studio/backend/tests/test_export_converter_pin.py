@@ -163,8 +163,7 @@ def test_the_pin_unwinds_when_the_conversion_raises(monkeypatch):
 
 
 def test_mlx_leaves_the_pinning_to_unsloth_zoo(monkeypatch):
-    """The MLX save path installs llama.cpp and pins it itself, so there is nothing to
-    add here."""
+    """The MLX save path installs and pins llama.cpp itself, so this layer adds no pin."""
     mod = _export_mod(monkeypatch, mlx = True)
     _llama_cpp, calls = _zoo(monkeypatch)
 
@@ -174,9 +173,8 @@ def test_mlx_leaves_the_pinning_to_unsloth_zoo(monkeypatch):
 
 
 def test_mlx_export_does_not_nest_the_pin(monkeypatch):
-    """unsloth_zoo's pin holds a plain threading.Lock for the whole conversion, so
-    entering it here and again inside save_pretrained_gguf hangs a Mac GGUF export
-    for good. The stub raises where the real one would block."""
+    """unsloth_zoo's pin holds a plain threading.Lock for the whole conversion, so nesting it inside
+    save_pretrained_gguf deadlocks a Mac GGUF export."""
     mod = _export_mod(monkeypatch, mlx = True)
     llama_cpp, _calls = _zoo(monkeypatch)
 
@@ -188,9 +186,8 @@ def test_mlx_export_does_not_nest_the_pin(monkeypatch):
 
 
 def test_a_gguf_export_leaves_no_pin_behind(tmp_path, monkeypatch):
-    """End to end through export_gguf: the pin is in force while the model converts and
-    gone once the export returns. The export worker outlives the export, so a variable
-    left here is read by every later export in that process."""
+    """Through export_gguf the pin is active during conversion and gone after return, since the
+    worker outlives the export and would leak to later ones."""
     mod = _export_mod(monkeypatch)
     llama_cpp, calls = _zoo(monkeypatch)
     save_dir = tmp_path / "export"

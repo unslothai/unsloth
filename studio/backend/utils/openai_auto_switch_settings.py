@@ -401,8 +401,7 @@ LEGACY_GPU_INDEX_KIND = "physical"
 
 
 def _mlx_kv_quant_of(entry: dict[str, Any]) -> Optional[str]:
-    """This entry's cache quantization, reading the width it superseded when that is all it
-    holds. Only an entry omitting the field predates the setting."""
+    """Cache quantization for the entry, read from the old bit width when that is all it has."""
     if "mlx_kv_quant" in entry:
         return _clean_str(entry["mlx_kv_quant"], VALID_MLX_KV_QUANT)
     bits = entry.get("mlx_kv_bits")

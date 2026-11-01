@@ -86,8 +86,7 @@ def _without_studio_projector(tmp_path):
 
 
 def test_a_projector_from_mmproj_auto_is_sampled_at_the_default_rate(tmp_path, monkeypatch):
-    """--mmproj itself is denied in the advanced arguments; --mmproj-auto is the
-    allowed way to have llama-server find a projector on its own."""
+    """--mmproj is denied in advanced args; --mmproj-auto is the allowed projector route."""
     monkeypatch.delenv("LLAMA_ARG_VIDEO_FPS", raising = False)
     backend, gguf = _without_studio_projector(tmp_path)
 
@@ -564,9 +563,7 @@ def test_the_route_hands_the_helper_bare_base64_with_any_data_header_gone():
 
 
 def test_an_oversize_upload_is_refused_before_any_conversion_runs():
-    """The 413 has to come first: spawning ffmpeg for a clip the route is about
-    to reject burns a worker thread and up to the shrink timeout for nothing.
-    """
+    """The 413 must come first: spawning ffmpeg for a clip the route will reject burns a worker thread."""
     import routes.inference as inference_route
 
     too_big = "A" * (inference_route._MAX_VIDEO_B64_CHARS + 4)

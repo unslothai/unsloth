@@ -30,8 +30,7 @@ def test_studio_really_has_no_local_code_execution():
 
 @pytest.mark.parametrize("provider_type", ["openai", "anthropic", "gemini"])
 def test_hosted_code_execution_rides_along_with_a_studio_tool(provider_type):
-    """RAG or MCP selects the Unsloth loop; the Tools pill must still reach the
-    provider's sandbox rather than being dropped on the way."""
+    """RAG or MCP picks the Unsloth loop, but code_execution must not be dropped on the way."""
     assert hosted_only_tools(provider_type, ["search_knowledge_base", "code_execution"]) == [
         "code_execution"
     ]

@@ -81,8 +81,7 @@ def test_power_of_four_gate():
 
 
 def test_hadamard_is_symmetric_and_orthogonal():
-    # Both properties are what make the offline/online pair an identity: symmetric so H.T is H,
-    # orthogonal so the two applications cancel.
+    # Symmetry (H.T is H) and orthogonality make the offline/online pair an identity.
     for size in (4, 16, 64, 256):
         h = build_convrot_hadamard(size, device = "cpu", dtype = torch.float32)
         assert h.shape == (size, size)

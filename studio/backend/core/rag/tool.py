@@ -50,11 +50,8 @@ def _resolve_scope(
     scope_project_id: str | None = None,
     scope_conversation_id: str | None = None,
 ) -> str | list[str] | None:
-    """A KB pick replaces the thread scope but keeps the project's (#9485).
-
-    The conversation archive is exclusive too, and takes precedence: it is a different
-    corpus (this chat's evicted turns), so sharing a top-K would have old turns and
-    document passages crowd each other out."""
+    """A KB pick replaces the thread scope but keeps the project (issue 9485); the conversation
+    archive is exclusive too and takes precedence."""
     if scope_conversation_id:
         return conversation_archive_scope(scope_conversation_id)
     scopes = []
@@ -204,8 +201,7 @@ def search_knowledge_base_with_sources(
     model_name: str | None = None,
     mode: str = "hybrid",
 ) -> tuple[str, list[dict]]:
-    """Search -> ``(rendered_text, citation_sources)``; each source aligns with a
-    rendered ``<chunk>`` block's ``id``."""
+    """Returns ``(rendered_text, citation_sources)``; sources align with ``<chunk>`` ids."""
     if not query or not query.strip():
         return "Error: query is empty.", []
     scope = _resolve_scope(scope_kb_id, scope_thread_id, scope_project_id, scope_conversation_id)
