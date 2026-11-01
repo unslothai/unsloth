@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 from fastapi import FastAPI
@@ -66,6 +67,20 @@ def test_unchanged_images_are_not_reopened(client, folder, opens):
     assert opens == []
 
 
+def test_in_place_rewrite_is_reread(client, folder):
+    path = folder / "a.png"
+    Image.new("RGB", (8, 6)).save(path)
+    st = path.stat()
+    assert _dims(client) == {"a.png": (8, 6)}
+    Image.new("RGB", (6, 8)).save(path)
+    # A normal in-place save moves the mtime; pinned forward so a coarse clock cannot hide it.
+    os.utime(path, ns = (st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert _dims(client) == {"a.png": (6, 8)}
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "st_ctime is the creation time on Windows, not the change time"
+)
 def test_rewrite_with_the_old_mtime_is_reread(client, folder, opens):
     path = folder / "a.png"
     Image.new("RGB", (8, 6)).save(path)
