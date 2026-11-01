@@ -229,6 +229,17 @@ def test_refusal_happens_before_any_load():
         )
 
 
+def test_gate_evidence_names_no_local_paths():
+    # Evidence is printed in refusals; a scratch path (outputs/, plans/) means nothing to a user.
+    for name, r in P.RECIPES.items():
+        for gpu, gate in r.gates.items():
+            assert not any(p in gate.evidence for p in ("outputs/", "plans/", ".md")), (
+                name,
+                gpu,
+                gate.evidence,
+            )
+
+
 def test_check_recipe_gate_table():
     with pytest.raises(P.PrecisionRefused, match = "fp8 tensor cores"):
         P.check_recipe("fp8_tensorwise", gpu = "sm75")
