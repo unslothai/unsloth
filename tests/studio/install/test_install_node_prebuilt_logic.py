@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import contextlib
+import dataclasses
 import json
 import os
 import sys
@@ -1701,3 +1702,61 @@ def test_tar_gz_install_is_kept_after_the_switch_to_tar_xz(tmp_path, monkeypatch
     assert M.pin_to_keep(pins, "1.0.0", asset, tmp_path) == "b" * 64
     monkeypatch.setattr(M, "load_metadata", lambda d: None)
     assert M.pin_to_keep(pins, "1.0.0", asset, tmp_path) == "b" * 64
+    monkeypatch.setattr(M, "load_metadata", lambda d: {"asset": "node-v1.0.0-linux-x64.tar.zst"})
+    assert M.pin_to_keep(pins, "1.0.0", asset, tmp_path) == "b" * 64
+
+
+def test_mirror_without_tar_xz_falls_back_to_pinned_tar_gz(tmp_path, monkeypatch):
+    install_dir = tmp_path / "node"
+    version = M.pinned_default_version(M.load_pins())
+    host = dataclasses.replace(_host("linux", "x64"), archive_ext = ".tar.xz")
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "_ensure_npm_floor", lambda d, h: None)
+    fetched = []
+
+    def fake_download(url, path, **kw):
+        fetched.append(path.name)
+        if path.name.endswith(".tar.xz"):
+            raise OSError("HTTP Error 404: Not Found")
+        path.write_bytes(b"gz")
+
+    monkeypatch.setattr(M, "download_file_verified", fake_download)
+    monkeypatch.setattr(
+        M, "extract_archive", lambda a, d: (d / "node-root" / "bin").mkdir(parents = True)
+    )
+
+    assert M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False) == 0
+    gz = f"node-v{version}-linux-x64.tar.gz"
+    assert fetched == [f"node-v{version}-linux-x64.tar.xz", gz]
+    meta = M.load_metadata(install_dir)
+    assert meta["asset"] == gz
+    assert meta["sha256"] == M.pinned_sha256(M.load_pins(), version, gz)
+
+
+def test_format_switched_by_another_installer_while_waiting_is_kept(tmp_path, monkeypatch):
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    pins = M.load_pins()
+    version = M.pinned_default_version(pins)
+    gz, xz = (f"node-v{version}-linux-x64.tar.{ext}" for ext in ("gz", "xz"))
+    M.write_metadata(install_dir, version = version, asset = gz, sha256 = "stale")
+    host = dataclasses.replace(_host("linux", "x64"), archive_ext = ".tar.xz")
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    real_lock = M.install_lock
+
+    @contextlib.contextmanager
+    def lock_after_other_installer(path):
+        M.write_metadata(
+            install_dir, version = version, asset = xz, sha256 = M.pinned_sha256(pins, version, xz)
+        )
+        with real_lock(path):
+            yield
+
+    monkeypatch.setattr(M, "install_lock", lock_after_other_installer)
+    monkeypatch.setattr(M, "download_file_verified", lambda *a, **k: pytest.fail("downloaded"))
+
+    assert M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False) == 0

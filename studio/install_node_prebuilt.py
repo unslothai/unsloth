@@ -123,6 +123,10 @@ def tar_archive_ext() -> str:
     return ".tar.xz"
 
 
+def gzip_alternative(asset: str) -> str:
+    return asset[: -len(".tar.xz")] + ".tar.gz" if asset.endswith(".tar.xz") else asset
+
+
 def detect_host() -> HostInfo:
     system = platform.system()
     machine = platform.machine().lower()
@@ -925,8 +929,22 @@ def _record_runtime_verification_under_lock(
 def pin_to_keep(pins: dict, version: str, asset: str, install_dir: Path) -> str | None:
     """Pin of the recorded archive when it is the same Node build in another format, so a format switch does not re-download."""
     recorded = (load_metadata(install_dir) or {}).get("asset")
-    same_build = isinstance(recorded, str) and recorded.split(".tar.")[0] == asset.split(".tar.")[0]
-    return pinned_sha256(pins, version, recorded if same_build else asset)
+    stem = gzip_alternative(asset)[: -len(".tar.gz")] if ".tar." in asset else None
+    if stem and recorded in (stem + ".tar.gz", stem + ".tar.xz"):
+        return pinned_sha256(pins, version, recorded) or pinned_sha256(pins, version, asset)
+    return pinned_sha256(pins, version, asset)
+
+
+def _download_asset(staging: Path, version: str, asset: str, expected_sha: str) -> Path:
+    archive_path = staging / asset
+    log(f"downloading {node_download_url(version, asset)}")
+    download_file_verified(
+        node_download_url(version, asset),
+        archive_path,
+        expected_sha256 = expected_sha,
+        label = asset,
+    )
+    return archive_path
 
 
 def existing_install_matches(
@@ -1127,6 +1145,9 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         return EXIT_SUCCESS
 
     with install_lock(install_lock_path(install_dir)):
+        # Another installer may have switched archive format while we waited.
+        pin = pin_to_keep(pins, version, asset, install_dir)
+        may_keep = pin is not None or allow_unverified
         if (
             not force
             and may_keep
@@ -1146,14 +1167,18 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             staging_root.mkdir(parents = True, exist_ok = True)
             staging = make_staging_dir(staging_root, f"{install_dir.name}.staging-")
             try:
-                archive_path = staging / asset
-                log(f"downloading {node_download_url(version, asset)}")
-                download_file_verified(
-                    node_download_url(version, asset),
-                    archive_path,
-                    expected_sha256 = expected_sha,
-                    label = asset,
-                )
+                try:
+                    archive_path = _download_asset(staging, version, asset, expected_sha)
+                except Exception as exc:  # noqa: BLE001
+                    # A mirror may carry only .tar.gz.
+                    if gzip_alternative(asset) == asset:
+                        raise
+                    log(f"{asset} unavailable ({exc}); trying {gzip_alternative(asset)}")
+                    asset = gzip_alternative(asset)
+                    expected_sha = resolve_expected_sha256(
+                        pins, version, asset, allow_unverified = allow_unverified
+                    )
+                    archive_path = _download_asset(staging, version, asset, expected_sha)
                 extract_dir = staging / "extracted"
                 extract_archive(archive_path, extract_dir)
 
