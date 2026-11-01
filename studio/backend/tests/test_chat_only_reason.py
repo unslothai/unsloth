@@ -184,7 +184,6 @@ def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatc
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "no_torch"
     assert hw.CHAT_ONLY_DETAIL is None
-    # A Mac trains through MLX, never the CPU backend.
     assert hw.trains_on_cpu("no_torch") is False
 
 
@@ -363,7 +362,6 @@ def test_cpu_only_non_mac_reason(monkeypatch):
     hw.detect_hardware()
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "no_gpu"
-    # Without PyTorch there is nothing to train with.
     assert hw.trains_on_cpu("no_gpu") is False
 
 

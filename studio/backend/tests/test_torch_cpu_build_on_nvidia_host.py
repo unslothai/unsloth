@@ -328,7 +328,6 @@ def test_chat_only_stops_claiming_this_host_has_no_gpu(monkeypatch, cpu_torch_on
     assert hw.CHAT_ONLY_REASON == "torch_cpu_build"
     assert hw.CHAT_ONLY_REASON != "no_gpu"
     assert hw.CHAT_ONLY_DETAIL == "2.11.0+cpu"
-    # A GPU this PyTorch cannot use gets its repair message, not CPU training.
     assert hw.trains_on_cpu(hw.CHAT_ONLY_REASON) is False
 
 
@@ -346,7 +345,6 @@ def test_a_host_that_really_has_no_gpu_still_reads_no_gpu(monkeypatch):
     assert hw.CHAT_ONLY_REASON == "no_gpu"
     assert hw.CHAT_ONLY_DETAIL is None
     assert hw._torch_gpu_mismatch_report() == {}
-    # Chat stays GGUF-only, but Train runs on the CPU backend.
     assert hw.CHAT_ONLY is True
     assert hw.trains_on_cpu(hw.CHAT_ONLY_REASON) is True
 

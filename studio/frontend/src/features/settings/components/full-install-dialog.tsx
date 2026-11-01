@@ -26,7 +26,6 @@ export function FullInstallDialog({
   onConfirm: () => void;
 }): ReactElement {
   const t = useT();
-  // No GPU here: the full install trains on the CPU and adds none of the GPU features.
   const cpuTraining = usePlatformStore((s) => s.cpuTraining);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

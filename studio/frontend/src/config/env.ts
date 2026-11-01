@@ -58,7 +58,6 @@ interface PlatformState {
   isChatOnly: () => boolean;
   // Train and /studio are off: chat-only, except a host that trains on the CPU backend.
   isTrainUnavailable: () => boolean;
-  // Chat-only, but Train runs on the CPU backend ("no_gpu" with cpu_training).
   isCpuTrainingHost: () => boolean;
   // true until /api/health returns a verdict; guesses cannot gate features.
   capabilitiesUnknown: () => boolean;

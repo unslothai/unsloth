@@ -80,14 +80,11 @@ def _health(monkeypatch, *, reason, established) -> dict:
     [
         ("no_gpu", "no_gpu", True),
         ("no_torch", "no_torch", True),
-        # No PyTorch and no --no-torch record: nothing to train with.
         ("no_gpu", None, False),
-        # A GPU this PyTorch cannot use is repaired, not trained around.
         ("torch_cpu_build", "no_gpu", False),
         ("torch_cuda_unavailable", "no_gpu", False),
         ("no_torch", None, False),
         ("detection_failed", "no_gpu", False),
-        # Established under another verdict, e.g. an Apple --no-torch install.
         ("no_torch", "no_gpu", False),
     ],
 )
