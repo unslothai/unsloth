@@ -5,6 +5,7 @@
 
 import json
 import os
+import sys
 import threading
 
 import pytest
@@ -188,6 +189,16 @@ def test_the_cache_stays_bounded_and_correct(monkeypatch):
     monkeypatch.setattr(gallery, "_row_cache_bytes", 0)
     same()
     assert len(gallery._row_cache) == 0
+
+
+def test_the_budget_charges_real_string_storage(monkeypatch):
+    monkeypatch.setattr(gallery, "_row_cache", type(gallery._row_cache)())
+    monkeypatch.setattr(gallery, "_row_cache_bytes", 0)
+    text = "\U0001f600" * 100_000
+    save(text)
+    same()
+    ((_, row, size),) = gallery._row_cache.values()
+    assert size >= sys.getsizeof(text) + sys.getsizeof(row["speakers"])
 
 
 def test_hand_edited_non_scalar_values_list_but_are_not_kept():

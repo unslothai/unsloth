@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import sys
 import threading
 import uuid
 from collections import OrderedDict
@@ -196,16 +197,22 @@ def get(transcript_id: str) -> dict | None:
     return record
 
 
+def _deep_size(value) -> int:
+    if isinstance(value, dict):
+        return sys.getsizeof(value) + sum(_deep_size(k) + _deep_size(v) for k, v in value.items())
+    if isinstance(value, list):
+        return sys.getsizeof(value) + sum(_deep_size(item) for item in value)
+    return sys.getsizeof(value)
+
+
 def _row_size(row: dict) -> int | None:
-    """Rough bytes a cached row pins, or None when a hand-edited base value is not a scalar."""
-    size = 4096
+    """Bytes a cached row pins, or None when a hand-edited base value is not a scalar."""
     for key in _BASE_KEYS:
         value = row[key]
-        if isinstance(value, str):
-            size += len(value)
-        elif value is not None and not isinstance(value, (bool, int, float)):
+        if value is not None and not isinstance(value, (str, bool, int, float)):
             return None
-    return size
+    # getsizeof, not len: non-ASCII text takes 2-4 bytes per character.
+    return 4096 + _deep_size(row)
 
 
 # Listing rows keyed by full path (which includes the account directory) and stat identity.
