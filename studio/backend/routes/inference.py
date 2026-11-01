@@ -48693,7 +48693,7 @@ def _live_preview_kwarg(generate: Any, requested: Optional[bool]) -> dict:
 
 
 def _sampler_kwargs(generate: Any, sampler: Optional[str], schedule_type: Optional[str]) -> dict:
-    """``sampler`` / ``schedule_type`` for an engine whose generate() takes them (diffusers only).
+    """Forward public sampler/schedule choices to an engine whose generate() accepts them.
 
     A real choice sent to another engine is refused (ValueError -> 400) rather than ignored, so a
     recipe never records a sampler that did not run."""
@@ -48704,7 +48704,7 @@ def _sampler_kwargs(generate: Any, sampler: Optional[str], schedule_type: Option
     except (TypeError, ValueError):
         pass
     if sampler not in (None, "default") or schedule_type not in (None, "automatic"):
-        raise ValueError("Choosing a sampler is supported on the diffusers engine only.")
+        raise ValueError("Choosing a sampler is not supported on the loaded engine.")
     return {}
 
 
