@@ -5,9 +5,16 @@
 Run directly with Python, or collect with pytest. No model or network access is needed.
 """
 
+import multiprocessing
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# Only spawned workers (and a direct run) hide the GPUs: pytest's own process keeps its mask for other tests.
+if (
+    __name__ == "__main__"
+    or multiprocessing.parent_process() is not None
+    or getattr(multiprocessing.current_process(), "_inheriting", False)
+):
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import datetime
 import importlib
