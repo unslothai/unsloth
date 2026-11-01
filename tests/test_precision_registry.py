@@ -453,6 +453,20 @@ def test_counter_runs_fullgraph_compiled_calls():
     assert c["_scaled_mm"] == 1
 
 
+def test_counter_warns_when_torch_cannot_keep_compiled_calls(monkeypatch):
+    # Failing before: torch < 2.9 has no ignore_compile_internals hook, so Dynamo ran compiled callables
+    # eagerly inside the counter without saying so.
+    from torch.utils._python_dispatch import TorchDispatchMode
+    from unsloth.precision import engage
+
+    monkeypatch.delattr(TorchDispatchMode, "ignore_compile_internals", raising = False)
+    monkeypatch.setattr(engage, "_EAGER_UNDER_COUNTER_WARNED", False)
+    with pytest.warns(UserWarning, match = "eagerly"):
+        with P.count_lowp_gemms() as c:
+            torch.ones(4, 4) @ torch.ones(4, 4)
+    assert all(v == 0 for v in c.values())
+
+
 def test_decoder_layers_is_the_block_stack_not_an_experts_list():
     # Failing before: the longest ModuleList won, so a model with more experts than layers returned
     # model.layers.0.mlp.experts and first_n / last_n kept experts in high precision instead of blocks.

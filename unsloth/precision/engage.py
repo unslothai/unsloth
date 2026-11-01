@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import os
 import threading
+import warnings
 from typing import Dict
 
 __all__ = [
@@ -113,6 +114,24 @@ def _inside():
     return ids
 
 
+_EAGER_UNDER_COUNTER_WARNED = False
+
+
+def _warn_eager_under_counter(torch):
+    # torch < 2.9 has no TorchDispatchMode.ignore_compile_internals: Dynamo skips compiled code while any
+    # user dispatch mode is active, so counting would silently swap the compiled path for eager.
+    global _EAGER_UNDER_COUNTER_WARNED
+    if _EAGER_UNDER_COUNTER_WARNED:
+        return
+    _EAGER_UNDER_COUNTER_WARNED = True
+    warnings.warn(
+        f"Unsloth: count_lowp_gemms() on torch {torch.__version__} runs torch.compile'd callables eagerly "
+        "while counting (needs torch >= 2.9 to count compiled calls in place). Counts are exact for the "
+        "eager path, not for the compiled kernels.",
+        stacklevel = 3,
+    )
+
+
 def note_lowp_gemm(name):
     """Count one GEMM in every open counter not already inside a counted GEMM; returns the ids to release
     with `release_lowp_gemm` once the call returns."""
@@ -132,9 +151,13 @@ def release_lowp_gemm(entered):
 @contextlib.contextmanager
 def count_lowp_gemms():
     """Count low-precision GEMM dispatches: `with count_lowp_gemms() as c: ...; c['_scaled_mm']`, and
-    `c['unsloth::nvfp4_qat_linear']` for opaque custom ops (LOWP_GEMM_CUSTOM_OPS)."""
+    `c['unsloth::nvfp4_qat_linear']` for opaque custom ops (LOWP_GEMM_CUSTOM_OPS). On torch < 2.9, compiled
+    callables run eagerly inside the counter (warned once)."""
     import torch
     from torch.utils._python_dispatch import TorchDispatchMode
+
+    if not hasattr(TorchDispatchMode, "ignore_compile_internals"):
+        _warn_eager_under_counter(torch)
 
     names = {}
     for name in LOWP_GEMM_OPS:
@@ -145,7 +168,7 @@ def count_lowp_gemms():
     counts = {key: 0 for key in names.values()}
 
     class _Counter(TorchDispatchMode):
-        # Skip Dynamo tracing (a plain mode breaks fullgraph); older torch ignores this hook.
+        # Skip Dynamo tracing (a plain mode breaks fullgraph); torch < 2.9 ignores this hook (warned above).
         @classmethod
         def ignore_compile_internals(cls):
             return True
