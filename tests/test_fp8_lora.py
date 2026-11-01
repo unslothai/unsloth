@@ -410,3 +410,46 @@ def test_registry_row():
     assert r.dgrad.a.dtype == "e5m2" and not r.wgrad.low_precision
     assert "fp32" not in r.input_dtypes
     assert r.gate("sm75").status == "refused" and r.gate("sm80").status == "refused"
+
+
+# ---- rowwise (per-token) activation / gradient scales: UNSLOTH_FP8_LORA_SCALING=row ------------------------
+@pytest.fixture
+def rowwise(monkeypatch):
+    monkeypatch.setattr(FL, "_SCALING", "row")
+    monkeypatch.setattr(FL, "_DGRAD_DTYPE", FL.E4M3)
+    yield
+
+
+def test_rowwise_numerics_and_outlier_tokens(rowwise):
+    W = _weight()
+    x = torch.randn(64, 256).bfloat16()
+    x[0] *= 1e5  # one massive-activation token: tensorwise pushes the rest into e4m3 subnormals
+    dy = torch.randn(64, 384).bfloat16()
+    state = FL.Fp8LoRABaseState(W)
+    assert state.w_inv_fwd.shape == (1, 384) and state.w_inv_dgrad.shape == (1, 256)
+    y = state.matmul(x, W)
+    ref = x.float() @ W.float().t()
+    # Every other token keeps its own scale: the outlier row does not flush them toward zero.
+    rest = _rel(y[1:], ref[1:])
+    assert rest < FP8_FWD_TOL, rest
+    FL._SCALING = "tensor"
+    tensorwise = _rel(FL.Fp8LoRABaseState(W).matmul(x, W)[1:], ref[1:])
+    FL._SCALING = "row"
+    assert tensorwise > 2 * rest, (tensorwise, rest)
+    dx = state.dgrad(dy, W)
+    assert _rel(dx, dy.float() @ W.float()) < FP8_FWD_TOL
+
+
+def test_rowwise_lora_kernels_and_peft_path(rowwise):
+    outs_ref, dX_ref, grads_ref, _ = _run_block("mlp", fp8 = False)
+    FL.reset_fp8_lora_stats()
+    outs, dX, grads, projs = _run_block("mlp", fp8 = True)
+    assert FL.FP8_LORA_STATS["fwd"] == 3 and FL.FP8_LORA_STATS["dgrad"] == 3
+    assert _rel(outs[0], outs_ref[0]) < FP8_FWD_TOL * 1.5 and _rel(dX, dX_ref) < FP8_FWD_TOL * 1.5
+    for g, r in zip(grads, grads_ref):
+        assert _cos(g, r) > 0.99
+    base = torch.nn.Linear(256, 384, bias = False, dtype = torch.bfloat16).requires_grad_(False)
+    FL.attach_fp8_lora_base(base)
+    x = torch.randn(2, 8, 256).bfloat16().requires_grad_(True)
+    base(x).float().sum().backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all()

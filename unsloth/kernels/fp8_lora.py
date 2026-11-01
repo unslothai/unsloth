@@ -35,6 +35,7 @@ __all__ = [
     "fp8_lora_fwd",
     "fp8_lora_dgrad",
     "quantize_tensorwise",
+    "quantize_rowwise",
     "attach_fp8_lora_base",
     "has_fp8_dgrad",
     "reset_fp8_lora_stats",
@@ -53,13 +54,24 @@ def reset_fp8_lora_stats():
         FP8_LORA_STATS[key] = 0
 
 
+# tensor: one scale per activation / gradient tensor (torchao tensorwise); row: one per token (row), the weight
+# keeping its tensorwise scale broadcast over the output columns.
+_SCALING = "row" if os.environ.get("UNSLOTH_FP8_LORA_SCALING", "tensor").strip().lower() in (
+    "row",
+    "rowwise",
+) else "tensor"
+
+
 def _env_dgrad():
-    value = os.environ.get("UNSLOTH_FP8_LORA_DGRAD", "e5m2").strip().lower()
+    value = os.environ.get("UNSLOTH_FP8_LORA_DGRAD", "auto").strip().lower()
     if value in ("0", "false", "off", "no", "bf16", "16bit"):
         return None
     if value == "e4m3":
         return E4M3
-    return E5M2
+    if value == "e5m2":
+        return E5M2
+    # torchao's conventions: tensorwise gradients e5m2, rowwise e4m3.
+    return E4M3 if _SCALING == "row" else E5M2
 
 
 _DGRAD_DTYPE = _env_dgrad()
@@ -136,6 +148,93 @@ def quantize_tensorwise(x: torch.Tensor, fp8_dtype = E4M3):
     return y, (amax / fp8_max).reshape(())
 
 
+if triton is not None:
+
+    @triton.jit
+    def _fp8_rowwise_cast_kernel(
+        x_ptr,
+        y_ptr,
+        inv_ptr,
+        K,
+        stride_xm,
+        FP8_MAX: tl.constexpr,
+        IS_E5M2: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+        ONE_BLOCK: tl.constexpr,
+    ):
+        row = tl.program_id(0).to(tl.int64)
+        x_row = x_ptr + row * stride_xm
+        y_row = y_ptr + row * K
+        offs = tl.arange(0, BLOCK_K)
+        if ONE_BLOCK:
+            x = tl.load(x_row + offs, mask = offs < K, other = 0.0).to(tl.float32)
+            amax = tl.max(tl.abs(x), axis = 0)
+            nans = tl.sum((x != x).to(tl.int32), axis = 0)
+        else:
+            acc = tl.zeros((BLOCK_K,), dtype = tl.float32)
+            cnt = tl.zeros((BLOCK_K,), dtype = tl.int32)
+            for k in range(0, K, BLOCK_K):
+                xk = tl.load(x_row + k + offs, mask = k + offs < K, other = 0.0).to(tl.float32)
+                acc = tl.maximum(acc, tl.abs(xk))
+                cnt += (xk != xk).to(tl.int32)
+            amax = tl.max(acc, axis = 0)
+            nans = tl.sum(cnt, axis = 0)
+        # tl.max drops NaN: put it back so a GradScaler still sees the overflow.
+        amax = tl.where(nans > 0, float("nan"), amax)
+        amax = tl.maximum(amax, 1e-12, propagate_nan = tl.PropagateNan.ALL)
+        scale = FP8_MAX / amax
+        if ONE_BLOCK:
+            y = tl.maximum(x * scale, -FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
+            y = tl.minimum(y, FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
+            if IS_E5M2:
+                tl.store(y_row + offs, y.to(tl.float8e5), mask = offs < K)
+            else:
+                tl.store(y_row + offs, y.to(tl.float8e4nv), mask = offs < K)
+        else:
+            for k in range(0, K, BLOCK_K):
+                mask = k + offs < K
+                xk = tl.load(x_row + k + offs, mask = mask, other = 0.0).to(tl.float32)
+                y = tl.maximum(xk * scale, -FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
+                y = tl.minimum(y, FP8_MAX, propagate_nan = tl.PropagateNan.ALL)
+                if IS_E5M2:
+                    tl.store(y_row + k + offs, y.to(tl.float8e5), mask = mask)
+                else:
+                    tl.store(y_row + k + offs, y.to(tl.float8e4nv), mask = mask)
+        tl.store(inv_ptr + row, amax / FP8_MAX)
+
+
+def quantize_rowwise(x: torch.Tensor, fp8_dtype = E4M3):
+    """x [M, K] -> (fp8 x [M, K] contiguous; fp32 [M, 1] dequant scales, one per row)."""
+    fp8_max = _FP8_MAX[fp8_dtype]
+    if x.stride(-1) != 1:
+        x = x.contiguous()
+    M, K = x.shape
+    if triton is not None and x.is_cuda and x.numel() > 0:
+        y = torch.empty((M, K), dtype = fp8_dtype, device = x.device)
+        inv = torch.empty((M, 1), dtype = torch.float32, device = x.device)
+        one = K <= 8192
+        BLOCK_K = triton.next_power_of_2(K) if one else 2048
+        with torch.cuda.device(x.device) if _MULTI_GPU else contextlib.nullcontext():
+            _fp8_rowwise_cast_kernel[(M,)](
+                x,
+                y,
+                inv,
+                K,
+                x.stride(0),
+                FP8_MAX = fp8_max,
+                IS_E5M2 = fp8_dtype is E5M2,
+                BLOCK_K = BLOCK_K,
+                ONE_BLOCK = one,
+                num_warps = 8 if BLOCK_K >= 4096 else 4,
+            )
+        return y, inv
+    xf = x.float()
+    amax = xf.abs().amax(dim = 1, keepdim = True)
+    amax = torch.where(torch.isnan(xf).any(1, keepdim = True), torch.nan, amax).clamp(min = 1e-12)
+    y = (xf * (fp8_max / amax)).clamp(-fp8_max, fp8_max).to(fp8_dtype)
+    return y, amax / fp8_max
+
+
 def _out_dtype(dtype):
     # The fp8 GEMM never writes float16 (outputs past 65504 overflow there); bf16 out, the caller casts back.
     return torch.float32 if dtype == torch.float32 else torch.bfloat16
@@ -188,10 +287,16 @@ def _fwd_fake(x, w8, w_inv):
 
 @_opaque_under_compile("fp8_lora_fwd", _fwd_fake)
 def fp8_lora_fwd(x: torch.Tensor, w8: torch.Tensor, w_inv: torch.Tensor) -> torch.Tensor:
-    """x [M, K] (16-bit) @ dequant(w8 [N, K]).T -> [M, N] in x.dtype."""
+    """x [M, K] (16-bit) @ dequant(w8 [N, K]).T -> [M, N] in x.dtype. w_inv: 0-d (tensorwise activations) or
+    [1, N] (rowwise activations: the weight's tensorwise scale per output column)."""
     FP8_LORA_STATS["fwd"] += 1
-    x8, x_inv = quantize_tensorwise(x, E4M3)
-    out = _scaled_mm(x8, w8.t(), x_inv, w_inv, _out_dtype(x.dtype), _FWD_FAST_ACCUM)
+    if w_inv.dim() == 2:
+        x8, x_inv = quantize_rowwise(x, E4M3)
+        out_dtype = torch.bfloat16
+    else:
+        x8, x_inv = quantize_tensorwise(x, E4M3)
+        out_dtype = _out_dtype(x.dtype)
+    out = _scaled_mm(x8, w8.t(), x_inv, w_inv, out_dtype, _FWD_FAST_ACCUM)
     return out if out.dtype == x.dtype else out.to(x.dtype)
 
 
@@ -203,8 +308,14 @@ def _dgrad_fake(dy, w8t, w_inv):
 def fp8_lora_dgrad(dy: torch.Tensor, w8t: torch.Tensor, w_inv: torch.Tensor) -> torch.Tensor:
     """dy [M, N] (16-bit) @ dequant(w8t [K, N]).T -> dx [M, K] in dy.dtype."""
     FP8_LORA_STATS["dgrad"] += 1
-    dy8, dy_inv = quantize_tensorwise(dy, _DGRAD_DTYPE or E5M2)
-    out = _scaled_mm(dy8, w8t.t(), dy_inv, w_inv, _out_dtype(dy.dtype), _DGRAD_FAST_ACCUM)
+    if w_inv.dim() == 2:
+        # Rowwise gradients are e4m3 (torchao's rowwise recipe; per-token scales need no e5m2 range).
+        dy8, dy_inv = quantize_rowwise(dy, E4M3)
+        out_dtype = torch.bfloat16
+    else:
+        dy8, dy_inv = quantize_tensorwise(dy, _DGRAD_DTYPE or E5M2)
+        out_dtype = _out_dtype(dy.dtype)
+    out = _scaled_mm(dy8, w8t.t(), dy_inv, w_inv, out_dtype, _DGRAD_FAST_ACCUM)
     return out if out.dtype == dy.dtype else out.to(dy.dtype)
 
 
@@ -228,7 +339,7 @@ class Fp8LoRABaseState:
 
     def __init__(self, weight: torch.Tensor):
         self.dtype = weight.dtype
-        self.w8 = self.w8t = self.w_inv = None
+        self.w8 = self.w8t = self.w_inv = self.w_inv_fwd = self.w_inv_dgrad = None
         self._key = None
         self.quantizations = 0
         self.refresh(weight)
@@ -249,6 +360,12 @@ class Fp8LoRABaseState:
             w = weight.detach()
             self.w8, self.w_inv = quantize_tensorwise(w, E4M3)
             self.w8t = self.w8.t().contiguous() if _CACHE_T else None
+            if _SCALING == "row":
+                # _scaled_mm's rowwise form takes [M, 1] x [1, N] scales: the weight's one scale per column.
+                self.w_inv_fwd = self.w_inv.reshape(1, 1).expand(1, w.shape[0]).contiguous()
+                self.w_inv_dgrad = self.w_inv.reshape(1, 1).expand(1, w.shape[1]).contiguous()
+            else:
+                self.w_inv_fwd = self.w_inv_dgrad = self.w_inv
         self.dtype = weight.dtype
         self._key = key
         self.quantizations += 1
@@ -279,7 +396,7 @@ class Fp8LoRABaseState:
         elif _is_transposed(W):
             result = self.dgrad(X2, W.t())
         else:
-            result = fp8_lora_fwd(X2, self.w8, self.w_inv)
+            result = fp8_lora_fwd(X2, self.w8, self.w_inv_fwd)
         result = result.view(*shape[:-1], result.shape[-1])
         return result if out is None else out.copy_(result)
 
@@ -293,7 +410,7 @@ class Fp8LoRABaseState:
                 raise RuntimeError("Unsloth: 16-bit dgrad needs the base weight")
             result = torch.matmul(dY2, W.to(dY2.dtype))
         else:
-            result = fp8_lora_dgrad(dY2, self._w8t(), self.w_inv)
+            result = fp8_lora_dgrad(dY2, self._w8t(), self.w_inv_dgrad)
         return result.view(*shape[:-1], result.shape[-1])
 
 
@@ -305,11 +422,11 @@ class _Fp8FrozenLinear(torch.autograd.Function):
     """PEFT path (base_layer(x)): y = fp8(x) @ fp8(W).T, dx = fp8(dy) @ fp8(W); no weight gradient."""
 
     @staticmethod
-    def forward(ctx, x, weight, w8, w8t, w_inv):
-        ctx.save_for_backward(weight, w8t, w_inv)
+    def forward(ctx, x, weight, w8, w8t, w_inv_fwd, w_inv_dgrad):
+        ctx.save_for_backward(weight, w8t, w_inv_fwd if w_inv_dgrad is None else w_inv_dgrad)
         shape = x.shape
         x2 = x.reshape(-1, shape[-1])
-        y = fp8_lora_fwd(x2, w8, w_inv)
+        y = fp8_lora_fwd(x2, w8, w_inv_fwd)
         return y.view(*shape[:-1], y.shape[-1])
 
     @staticmethod
@@ -322,7 +439,7 @@ class _Fp8FrozenLinear(torch.autograd.Function):
             dx = torch.matmul(dy2, weight.to(dy2.dtype))
         else:
             dx = fp8_lora_dgrad(dy2, w8t, w_inv)
-        return dx.view(*shape[:-1], dx.shape[-1]), None, None, None, None
+        return dx.view(*shape[:-1], dx.shape[-1]), None, None, None, None, None
 
 
 def _fp8_base_forward(self, x):
@@ -332,7 +449,9 @@ def _fp8_base_forward(self, x):
         FP8_LORA_STATS["fwd_16bit"] += 1
         return torch.nn.functional.linear(x, weight.to(x.dtype), self.bias)
     state.refresh(weight)
-    y = _Fp8FrozenLinear.apply(x, weight, state.w8, state._w8t(), state.w_inv)
+    # Tensorwise: one scale serves both GEMMs (Dynamo rejects the same tensor passed twice to apply).
+    dgrad_scale = None if state.w_inv_dgrad is state.w_inv_fwd else state.w_inv_dgrad
+    y = _Fp8FrozenLinear.apply(x, weight, state.w8, state._w8t(), state.w_inv_fwd, dgrad_scale)
     if self.bias is not None:
         y = y + self.bias.to(y.dtype)
     return y
