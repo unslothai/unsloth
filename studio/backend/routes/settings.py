@@ -1064,6 +1064,7 @@ class ModelOverridePayload(BaseModel):
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
     mlx_ane_prefill: bool = False
+    mlx_fast_verify: bool = False
     # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
     mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
     mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
@@ -2694,6 +2695,7 @@ def update_openai_auto_switch_override(
                 and not payload.disable_vision
                 and not payload.mlx_int8_prefill
                 and not payload.mlx_ane_prefill
+                and not payload.mlx_fast_verify
                 and payload.load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
                 and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
@@ -2706,6 +2708,7 @@ def update_openai_auto_switch_override(
                         "disable_vision",
                         "mlx_int8_prefill",
                         "mlx_ane_prefill",
+                        "mlx_fast_verify",
                         "load_in_4bit",
                     )
                 }
@@ -2932,6 +2935,7 @@ def update_openai_auto_switch_override(
                 disable_vision = payload.disable_vision,
                 mlx_int8_prefill = payload.mlx_int8_prefill,
                 mlx_ane_prefill = payload.mlx_ane_prefill,
+                mlx_fast_verify = payload.mlx_fast_verify,
                 load_in_4bit = payload.load_in_4bit,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
@@ -4556,6 +4560,11 @@ def _is_bundled_avatar_url(value: str) -> bool:
     return path[path.index(marker) :].lower().endswith(".png")
 
 
+_GREETING_DATA_URL_PATTERN = r"^data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$"
+MAX_GREETING_ICON_DATA_URL_LENGTH = 96 * 1024
+MAX_GREETING_IMAGE_DATA_URL_LENGTH = MAX_AVATAR_DATA_URL_BYTES
+
+
 class PersonalizationProfile(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
@@ -4564,6 +4573,25 @@ class PersonalizationProfile(BaseModel):
     avatarDataUrl: Optional[str] = Field(None, max_length = MAX_AVATAR_DATA_URL_BYTES)
     avatarShape: Literal["circle", "rounded"] = "circle"
     showGreetingSloth: bool = True
+    greetingStyle: Literal["text", "image"] = "text"
+    greetingIcon: Literal["sloth", "custom", "none"] = "sloth"
+    greetingIconDataUrl: Optional[str] = Field(
+        None,
+        max_length = MAX_GREETING_ICON_DATA_URL_LENGTH,
+        pattern = _GREETING_DATA_URL_PATTERN,
+    )
+    greetingText: str = Field("", max_length = 100)
+    greetingImageDataUrl: Optional[str] = Field(
+        None,
+        max_length = MAX_GREETING_IMAGE_DATA_URL_LENGTH,
+        pattern = _GREETING_DATA_URL_PATTERN,
+    )
+
+    @field_validator("greetingStyle", "greetingIcon", mode = "before")
+    @classmethod
+    def _known_greeting_choice(cls, value: object, info) -> object:
+        allowed = get_args(cls.model_fields[info.field_name].annotation)
+        return value if value in allowed else cls.model_fields[info.field_name].default
 
     @field_validator("avatarDataUrl")
     @classmethod
@@ -4754,6 +4782,9 @@ class PersonalizationCustomization(BaseModel):
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
     fontSmoothing: bool = True
+    codeLineNumbers: bool = False
+    codeWordWrap: bool = False
+    codeLigatures: bool = True
     sidebarMenu: list[PersonalizationSidebarMenuItem] = Field(
         default_factory = _default_sidebar_menu,
         max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,
@@ -4809,8 +4840,6 @@ class PersonalizationAppearance(BaseModel):
     theme: Literal["light", "dark", "system"] = "system"
     palette: Literal[
         "standard",
-        "classic",
-        "minimal",
         "blueberry",
         "butterfly-pea",
         "cherry",
@@ -4833,17 +4862,7 @@ class PersonalizationAppearance(BaseModel):
         "taro",
         "wasabi",
         "yuzu",
-        "pumpkin",
-        "bloody-valentine",
-        "the-thing",
-        "alien",
-        "gothic",
-        "hexberry",
-        "candycorn",
-        "black-cat",
         "trick-or-treat",
-        "ghost-ship",
-        "midnight-haunt",
     ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(
@@ -4870,6 +4889,7 @@ class PersonalizationResponse(PersonalizationPayload):
     sentAttachmentsSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
+    greetingCustomSaved: bool = False
 
 
 @_account_settings_router.get("/personalization", response_model = PersonalizationResponse)
@@ -4889,6 +4909,7 @@ def get_personalization_settings(
     )
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
+    response.greetingCustomSaved = isinstance(profile, dict) and "greetingStyle" in profile
     return response
 
 

@@ -734,27 +734,87 @@ def _hub_push_token(hf_token: HfTokenArg) -> HfTokenArg:
     return hf_token
 
 
+def _mlx_kept_sidecars(model, folder, written) -> Optional[List[str]]:
+    """unsloth_zoo's MLX save copies source sidecars and its fallback README only when missing:
+    a kept sidecar counts as written if it equals a fresh copy; any other kept one -> None."""
+    try:
+        kept = {
+            path.name
+            for path in Path(folder).iterdir()
+            if path.is_file() and path.name not in written
+        }
+    except OSError as exception:
+        logger.info(f"Could not list the reused folder, staging a second save: {exception}")
+        return None
+    if "README.md" in kept:
+        logger.info("Reused folder keeps README.md, staging a second save")
+        return None
+    source = getattr(model, "_src_path", None)
+    if not kept or not isinstance(source, (str, os.PathLike)) or not os.path.isdir(source):
+        return written
+    try:
+        from unsloth_zoo.mlx.utils import _copy_source_sidecars
+    except Exception as exception:
+        logger.info(f"MLX sidecar rules unavailable, staging a second save: {exception}")
+        return None
+    import filecmp
+
+    written = list(written)
+    try:
+        with tempfile.TemporaryDirectory(prefix = _STAGING_PREFIX) as scratch:
+            # Exactly the sidecars a save into an empty folder copies (small, non-weight files).
+            _copy_source_sidecars(source, scratch)
+            for name in sorted(kept):
+                fresh = Path(scratch, name)
+                if not fresh.is_file():
+                    continue
+                if not filecmp.cmp(fresh, Path(folder, name), shallow = False):
+                    logger.info(f"Reused folder keeps a different {name}, staging a second save")
+                    return None
+                written.append(name)
+    except Exception as exception:
+        logger.info(f"Could not check the kept MLX sidecars, staging a second save: {exception}")
+        return None
+    return sorted(written)
+
+
 def _push_mlx_merged(
-    model, tokenizer, *, save_method, output_path, output_is_fresh, repo_id, hf_token, private
+    model,
+    tokenizer,
+    *,
+    save_method,
+    output_path,
+    output_is_fresh,
+    repo_id,
+    hf_token,
+    private,
+    reused_writes = None,
 ):
     """Upload an MLX merged save; returns the repo id the Hub resolved."""
     with contextlib.ExitStack() as stack:
         upload_dir = output_path
+        written = None
         if not output_is_fresh:
-            # A reused folder can hold leftovers, so upload a clean second save; without a
-            # local save this is the only one.
+            # A reused folder can hold leftovers: upload only what this save wrote
+            written = reused_writes.written() if reused_writes else None
+            if written:
+                written = _mlx_kept_sidecars(model, output_path, written)
+        if not output_is_fresh and not written:
+            # Without a local save this is the only one.
             upload_dir = stack.enter_context(
                 _staging_dir(Path(output_path).parent)
                 if output_path
                 else tempfile.TemporaryDirectory()
             )
             model.save_pretrained_merged(upload_dir, tokenizer, save_method = save_method)
+            written = None
         hf_api = HfApi(token = hf_token)
         repo_id = _open_hub_repo(hf_api, repo_id, private)
         hf_api.upload_folder(
             folder_path = upload_dir,
             repo_id = repo_id,
             repo_type = "model",
+            allow_patterns = _escaped_patterns(written),
             ignore_patterns = _HUB_UPLOAD_IGNORE,
             delete_patterns = [_REAP_REPORT],
         )
@@ -1406,7 +1466,13 @@ class ExportBackend:
     def _export_dir_overlaps_checkpoint(self, save_directory) -> bool:
         """Export dir inside / around the checkpoint or a local base: some files pre-exist."""
         config = getattr(self.current_model, "config", None)
-        for source in (self.current_checkpoint, getattr(config, "_name_or_path", None)):
+        # An MLX model also names the folder its sidecars are copied from.
+        sources = (
+            self.current_checkpoint,
+            getattr(config, "_name_or_path", None),
+            getattr(self.current_model, "_src_path", None),
+        )
+        for source in sources:
             if not isinstance(source, (str, os.PathLike)) or not os.path.isdir(source):
                 continue
             try:
@@ -1604,7 +1670,6 @@ class ExportBackend:
                 ensure_dir(Path(save_directory))
                 if (
                     push_to_hub
-                    and not _IS_MLX
                     and not (is_compressed or is_torchao or save_dir_was_empty)
                     and not self._export_dir_overlaps_checkpoint(save_directory)
                 ):
@@ -1683,6 +1748,7 @@ class ExportBackend:
                         repo_id = repo_id,
                         hf_token = hf_token,
                         private = private,
+                        reused_writes = reused_writes,
                     )
                 else:
                     uploaded = False
@@ -1806,7 +1872,6 @@ class ExportBackend:
                 ensure_dir(Path(save_directory))
                 if (
                     push_to_hub
-                    and not _IS_MLX
                     and not save_dir_was_empty
                     and not self._export_dir_overlaps_checkpoint(save_directory)
                 ):
@@ -1852,6 +1917,7 @@ class ExportBackend:
                         repo_id = repo_id,
                         hf_token = hf_token,
                         private = private,
+                        reused_writes = reused_writes,
                     )
                 else:
                     base_model = base_model_id or _card_base_model(self.current_model)

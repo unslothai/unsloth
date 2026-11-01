@@ -445,7 +445,7 @@ for _name, _dtypes, _note in (
     ("fp8-int4", ("bf16", "fp16", "fp32"), "Float8DynamicActivationInt4WeightConfig, group 128"),
     ("fp8-fp8", ("bf16", "fp16", "fp32"), "Float8DynamicActivationFloat8WeightConfig PerRow"),
     ("nvfp4", ("bf16", "fp32"), "NVFP4DynamicActivationNVFP4WeightConfig, K % 32"),
-    ("mxfp8", ("bf16", "fp32"), "MXDynamicActivationMXWeightConfig, torchao 0.16+"),
+    ("mxfp8", ("bf16",), "MXDynamicActivationMXWeightConfig, torchao 0.16+, bf16 layers only"),
     ("int8-int4", ("bf16", "fp16", "fp32"), "phone-deployment alias"),
     ("int4", ("bf16", "fp16", "fp32"), "Int4WeightOnlyConfig, group 128"),
     ("int8", ("bf16", "fp16", "fp32"), "Int8 weight only"),

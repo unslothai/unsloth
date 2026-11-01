@@ -3,7 +3,8 @@
 
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Delete02Icon, ImageCropIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
+import { ImageCropIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { Button } from "@/components/ui/button";
@@ -252,7 +253,7 @@ export function ImageDropzone({
                 if (inputRef.current) inputRef.current.value = "";
               }}
             >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>Remove</TooltipContent>

@@ -113,9 +113,9 @@ import {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Archive03Icon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
   LayoutAlignRightIcon,
@@ -2489,7 +2489,7 @@ function ProjectLanding({
                           onSelect={() => handleDelete(item)}
                         >
                           <HugeiconsIcon
-                            icon={Delete02Icon}
+                            icon={TrashIcon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />

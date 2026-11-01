@@ -15,8 +15,8 @@ import { getAuthToken } from "@/features/auth";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Edit03Icon,
   Image01Icon,
   Upload01Icon,
@@ -303,7 +303,7 @@ export function ProfilePersonalizationPanel() {
                   className="size-9 shrink-0 rounded-full p-0 text-muted-foreground"
                 >
                   <HugeiconsIcon
-                    icon={Delete02Icon}
+                    icon={TrashIcon}
                     className="size-4"
                     strokeWidth={2}
                   />

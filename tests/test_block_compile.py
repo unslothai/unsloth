@@ -1541,6 +1541,68 @@ def test_zero3_partitioned_training_keeps_the_stock_forward(monkeypatch):
     assert calls
 
 
+def test_router_logits_after_a_forward_without_them(request, monkeypatch):
+    """transformers installs the router_logits hooks on the first forward that asks for them.
+
+    Dynamo does not guard on module hooks (skip_nnmodule_hook_guards), so a block compiled during an
+    earlier forward without output_router_logits kept running without the gate hook: no router logits,
+    and the aux loss raised IndexError in load_balancing_loss_func. The hooks now exist before the
+    first block compiles, and the hook body (guarded on the collector keys) decides per call.
+    """
+    misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
+    if not hasattr(misc, "output_capture_scratch"):
+        pytest.skip("needs an unsloth_zoo with output_capture_scratch (unsloth-zoo#2041)")
+    misc.patch_output_collector_for_compiled_submodules()
+    M = _load()
+    torch.manual_seed(0)
+    model = _tiny_qwen3_moe(request, monkeypatch)
+    ids = torch.randint(0, 100, (2, 8))
+    want = model(input_ids = ids, labels = ids, use_cache = False, output_router_logits = True)
+    model = (
+        type(model)
+        .from_pretrained(
+            "trl-internal-testing/tiny-Qwen3MoeForCausalLM",
+            dtype = torch.float32,
+            experts_implementation = "batched_mm",
+        )
+        .train()
+    )
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    inner = _install_blocks(M, model, monkeypatch)
+    torch._dynamo.reset()
+    model(input_ids = ids, labels = ids, use_cache = False).loss.backward()
+    out = model(input_ids = ids, labels = ids, use_cache = False, output_router_logits = True)
+    out.loss.backward()
+    assert inner, "the blocks did not run compiled"
+    assert len(out.router_logits) == len(want.router_logits) == model.config.num_hidden_layers
+    torch.testing.assert_close(out.aux_loss.detach(), want.aux_loss.detach())
+    torch.testing.assert_close(out.loss.detach(), want.loss.detach())
+    torch._dynamo.reset()
+
+
+def test_router_hooks_are_not_installed_twice_after_an_eager_capture(request, monkeypatch):
+    """Failing before: an eager capturing forward hooks the inner model; installing on the unflagged outer
+    CausalLM recursed into it again and every captured tuple held each layer twice."""
+    misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
+    if not hasattr(misc, "output_capture_scratch"):
+        pytest.skip("needs an unsloth_zoo with output_capture_scratch (unsloth-zoo#2041)")
+    misc.patch_output_collector_for_compiled_submodules()
+    M = _load()
+    torch.manual_seed(0)
+    model = _tiny_qwen3_moe(request, monkeypatch).train()
+    ids = torch.randint(0, 100, (2, 8))
+    kwargs = dict(use_cache = False, output_router_logits = True, output_hidden_states = True)
+    model(input_ids = ids, **kwargs)
+    monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
+    _install_blocks(M, model, monkeypatch)
+    torch._dynamo.reset()
+    out = model(input_ids = ids, **kwargs)
+    layers = model.config.num_hidden_layers
+    assert len(out.router_logits) == layers, len(out.router_logits)
+    assert len(out.hidden_states) == layers + 1, len(out.hidden_states)
+    torch._dynamo.reset()
+
+
 def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
     """A capture hook inside the block appends to an empty scratch list on every call.
 

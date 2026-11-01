@@ -11,6 +11,8 @@ import importlib.util
 import inspect
 import warnings
 
+import types
+
 import pytest
 import torch
 
@@ -451,6 +453,20 @@ def test_counter_runs_fullgraph_compiled_calls():
     assert c["_scaled_mm"] == 1
 
 
+def test_counter_warns_when_torch_cannot_keep_compiled_calls(monkeypatch):
+    # Failing before: torch < 2.9 has no ignore_compile_internals hook, so Dynamo ran compiled callables
+    # eagerly inside the counter without saying so.
+    from torch.utils._python_dispatch import TorchDispatchMode
+    from unsloth.precision import engage
+
+    monkeypatch.delattr(TorchDispatchMode, "ignore_compile_internals", raising = False)
+    monkeypatch.setattr(engage, "_EAGER_UNDER_COUNTER_WARNED", False)
+    with pytest.warns(UserWarning, match = "eagerly"):
+        with P.count_lowp_gemms() as c:
+            torch.ones(4, 4) @ torch.ones(4, 4)
+    assert all(v == 0 for v in c.values())
+
+
 def test_decoder_layers_is_the_block_stack_not_an_experts_list():
     # Failing before: the longest ModuleList won, so a model with more experts than layers returned
     # model.layers.0.mlp.experts and first_n / last_n kept experts in high precision instead of blocks.
@@ -604,3 +620,154 @@ def test_counter_counts_the_real_nvfp4_qat_linear_op():
     with P.count_lowp_gemms() as c:
         op(x, w, None, False, False, False, False, None)
     assert c["unsloth::nvfp4_qat_linear"] == 1
+
+
+def test_counter_hears_eager_fp8_triton_launchers_and_not_the_fp16_gemv():
+    # Failing before: eager fp8 block launchers run Triton without dispatching their op (counted 0), and
+    # fp8_block_gemv, which upcasts the weight before its dot, was counted as a low-precision GEMM.
+    from unsloth.precision import engage
+
+    assert "unsloth::fp8_block_gemv" not in engage.LOWP_GEMM_CUSTOM_OPS
+    with P.count_lowp_gemms() as c:
+        engage.release_lowp_gemm(engage.note_lowp_gemm("unsloth::fp8_block_small_m_linear"))
+    assert c["unsloth::fp8_block_small_m_linear"] == 1
+    engage.note_lowp_gemm("unsloth::fp8_block_small_m_linear")  # no counter open: a no-op
+    assert c["unsloth::fp8_block_small_m_linear"] == 1 and not engage._active()
+
+    fp8 = pytest.importorskip("unsloth.kernels.fp8")
+    names = fp8._EAGER_COUNTED_LOWP_GEMMS
+    assert "fp8_block_gemv" not in names
+    for name in ("fp8_block_matmul_triton", "fp8_block_small_m_linear", "fp8_block_matmul_torchao"):
+        assert name in names and f"unsloth::{name}" in engage.LOWP_GEMM_CUSTOM_OPS
+
+
+def test_mxfp8_qat_registry_admits_only_bfloat16_like_its_backend():
+    # Failing before: the qat:mxfp8 row allowed fp32 while _prepare_model_for_qat quantizes bf16 layers only.
+    assert P.check_recipe("qat:mxfp8", gpu = "sm100", input_dtype = torch.bfloat16, mode = "full")
+    with pytest.raises(ValueError):
+        P.check_recipe("qat:mxfp8", gpu = "sm100", input_dtype = torch.float32, mode = "full")
+
+
+def test_nested_counters_close_by_identity_and_delegated_gemms_count_once():
+    # Failing before: list.remove matched the outer (equal, all-zero) dict when the inner scope closed, so
+    # the outer cleanup raised; and a launcher that delegates to another counted launcher counted twice.
+    from unsloth.precision import engage
+
+    with P.count_lowp_gemms() as outer:
+        with P.count_lowp_gemms() as inner:
+            pass
+        assert any(a is outer for a in engage._active()) and not any(
+            a is inner for a in engage._active()
+        )
+        entered = engage.note_lowp_gemm("unsloth::fp8_block_matmul_torchao")
+        try:  # the delegated Triton launch inside the torchao one
+            engage.release_lowp_gemm(engage.note_lowp_gemm("unsloth::fp8_block_matmul_triton"))
+        finally:
+            engage.release_lowp_gemm(entered)
+    assert not engage._active()
+    assert outer["unsloth::fp8_block_matmul_torchao"] == 1
+    assert outer.get("unsloth::fp8_block_matmul_triton", 0) == 0
+    assert inner.get("unsloth::fp8_block_matmul_torchao", 0) == 0
+
+
+def test_float8_filter_keeps_a_wrapped_router_and_its_inner_linear_in_high_precision():
+    # Failing before: find_routers returns the gating wrapper `wg`, and only that exact fqn was excluded, so
+    # its inner `wg.proj` Linear was converted to fp8 and could flip expert choices.
+    class Gate(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(64, 16, bias = False)
+
+        def forward(self, x):
+            return self.proj(x)
+
+    class Moe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.wg = Gate()
+            self.experts = torch.nn.ModuleList(
+                torch.nn.Linear(64, 64, bias = False) for _ in range(16)
+            )
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.moe = Moe()
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = types.SimpleNamespace(num_experts = 16, num_local_experts = 16)
+            self.layers = torch.nn.ModuleList([Block(), Block()])
+
+    m = Model()
+    routers = P.find_routers(m)
+    assert any(r.endswith("moe.wg") for r in routers), routers
+    fn = f8t.float8_training_filter(m, "tensorwise", size_filter = False)
+    assert not fn(m.layers[0].moe.wg.proj, "layers.0.moe.wg.proj")
+    assert fn(m.layers[0].moe.experts[0], "layers.0.moe.experts.0")
+
+
+def test_float8_filter_keeps_a_router_beside_moduledict_experts_in_high_precision():
+    # Failing before: only a ModuleList counted as an experts collection, so with 16 experts in a ModuleDict
+    # (SwitchTransformers' layout) the wrapped router `wg` was not found and `wg.proj` was converted to fp8.
+    class Gate(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(64, 16, bias = False)
+
+        def forward(self, x):
+            return self.proj(x)
+
+    class Moe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.wg = Gate()
+            self.experts = torch.nn.ModuleDict(
+                {f"expert_{i}": torch.nn.Linear(64, 64, bias = False) for i in range(16)}
+            )
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = types.SimpleNamespace(num_experts = 16)
+            self.layers = torch.nn.ModuleList([Moe(), Moe()])
+
+    m = Model()
+    assert set(P.find_routers(m)) == {"layers.0.wg", "layers.1.wg"}
+    fn = f8t.float8_training_filter(m, "tensorwise", size_filter = False)
+    assert not fn(m.layers[0].wg.proj, "layers.0.wg.proj")
+    assert fn(m.layers[0].experts.expert_0, "layers.0.experts.expert_0")
+
+
+def test_gemm_counters_are_per_thread():
+    # Failing before: the active-counter list was process-global, so an eager launch on one thread was
+    # counted by a counter open on another.
+    import threading
+
+    from unsloth.precision import engage
+
+    seen = {}
+    ready, go = threading.Barrier(2), threading.Event()
+
+    def worker(tag, launches):
+        with P.count_lowp_gemms() as c:
+            ready.wait()
+            for _ in range(launches):
+                engage.release_lowp_gemm(engage.note_lowp_gemm("unsloth::fp8_block_small_m_linear"))
+            go.wait(5)
+        seen[tag] = c.get("unsloth::fp8_block_small_m_linear", 0)
+
+    threads = [
+        threading.Thread(target = worker, args = ("busy", 1)),
+        threading.Thread(target = worker, args = ("idle", 0)),
+    ]
+    for t in threads:
+        t.start()
+    import time
+
+    time.sleep(0.2)
+    go.set()
+    for t in threads:
+        t.join()
+    assert seen == {"busy": 1, "idle": 0}, seen

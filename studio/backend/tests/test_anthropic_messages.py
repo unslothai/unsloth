@@ -2041,7 +2041,8 @@ class TestAnthropicToolNonStreaming:
         monkeypatch.setattr(inf_mod, "_strip_tool_xml_for_display", _slow_strip)
 
         def _run_gen():
-            yield {"type": "content", "text": "ok"}
+            # Carries markup: an event without any is returned as is and never reaches the full strip.
+            yield {"type": "content", "text": "ok </tool_call>"}
 
         async def _run():
             task = asyncio.create_task(

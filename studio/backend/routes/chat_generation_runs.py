@@ -269,6 +269,12 @@ def _require_run(run_id: str) -> dict[str, Any]:
     return run
 
 
+def _require_run_exists(run_id: str) -> None:
+    """_require_run's 404 without reading or parsing the stored request."""
+    if db.get_run_state(run_id) is None:
+        raise HTTPException(status_code = 404, detail = "Chat generation run not found")
+
+
 def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -> None:
     """Signal only the caller's registration: another account may legitimately reuse a bare
     cancel ID, so it is never stashed."""
@@ -405,7 +411,7 @@ def cancel_chat_generation_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id)
+    _require_run_exists(run_id)
     run = db.request_cancel(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
@@ -425,7 +431,7 @@ async def chat_generation_events(
     last_event_id: str | None = Header(None, alias = "Last-Event-ID"),
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id)
+    _require_run_exists(run_id)
     cursor = _event_cursor(after, last_event_id)
     wait_for_events = db.wait_for_events
     if policy.installation_has_managed_accounts():
@@ -440,7 +446,7 @@ async def chat_generation_events(
         nonlocal cursor
         loop = asyncio.get_running_loop()
         # A settled run has nothing to replay; don't hold an event-wait worker for it.
-        opening = await asyncio.to_thread(db.get_run, run_id)
+        opening = await asyncio.to_thread(db.get_run_state, run_id)
         if opening is None:
             return
         if opening["status"] in db.TERMINAL_STATUSES and cursor >= int(opening["lastEventSeq"]):
@@ -456,16 +462,15 @@ async def chat_generation_events(
                 15,
                 True,
             )
-            # Only non-chunk events carry the run, so a chunk-only batch skips parsing request_json.
-            snapshot = await asyncio.to_thread(
-                db.get_run
-                if any(event["type"] != "chunk" for event in events)
-                else db.get_run_state,
-                run_id,
-            )
+            # Only non-chunk events carry the run, spliced in as already encoded text.
+            run_json = None
+            if any(event["type"] != "chunk" for event in events):
+                frame = await asyncio.to_thread(db.get_run_frame, run_id)
+                snapshot, run_json = frame if frame is not None else (None, None)
+            else:
+                snapshot = await asyncio.to_thread(db.get_run_state, run_id)
             if snapshot is None:
                 return
-            run_json = None
             for event in events:
                 cursor = int(event["seq"])
                 event_type = event["type"]
@@ -476,8 +481,6 @@ async def chat_generation_events(
                     f'"payload":{event["payloadJson"]},"createdAt":{int(event["createdAt"])}'
                 )
                 if event_type != "chunk":
-                    if run_json is None:
-                        run_json = _encode_json(snapshot)
                     encoded += f',"run":{run_json}'
                 yield f"id: {cursor}\nevent: {event_type}\ndata: {encoded}}}\n\n"
             if snapshot["status"] in db.TERMINAL_STATUSES and cursor >= int(

@@ -54,7 +54,7 @@ import {
   useFileProjectInSection,
 } from "@/features/chat";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
-import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -62,7 +62,6 @@ import {
   Archive03Icon,
   ArchiveRestoreIcon,
   Cancel01Icon,
-  Delete02Icon,
   LayerIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -1020,7 +1019,9 @@ export function ChatsLibrary({
         {filedProjects}
         {filedProjects && (
           <div className="mt-2">
-            <GroupHeading count={visibleChats.length}>{t("library.chats.sections.chats")}</GroupHeading>
+            <GroupHeading count={visibleChats.length} divider={view === "list"}>
+              {t("library.chats.sections.chats")}
+            </GroupHeading>
           </div>
         )}
         {chatListing()}
@@ -1109,7 +1110,7 @@ export function ChatsLibrary({
           groups.map((group) => (
             <section key={group.key} aria-label={groupBy === "none" ? undefined : groupLabel(group)} className="not-first:mt-6">
               {groupBy !== "none" && (
-                <GroupHeading count={groupTotals.get(group.key) ?? group.items.length}>
+                <GroupHeading count={groupTotals.get(group.key) ?? group.items.length} divider={list}>
                   {groupLabel(group)}
                 </GroupHeading>
               )}
@@ -1211,6 +1212,7 @@ export function ChatsLibrary({
       <div className="@container mt-6">
         <GroupHeading
           count={sectionProjects.length}
+          divider={view === "list"}
           countLabel={t(
             sectionProjects.length === 1
               ? "library.chats.project.oneProject"
@@ -1538,7 +1540,7 @@ export function ChatsLibrary({
                   "bg-destructive/10 text-destructive transition-colors hover:bg-destructive/15",
                 )}
               >
-                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+                <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
                 {t("common.delete")}
               </button>
               <DropdownMenu>

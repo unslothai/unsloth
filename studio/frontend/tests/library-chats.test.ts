@@ -603,11 +603,11 @@ test("a project's home and the Projects page use the Library project menu", () =
 
 test("Edit and Pin read the same, with the sidebar's icon, in the project menus", () => {
   const menu = readSrc("features/chat/components/project-menu-items.tsx");
-  assert.match(menu, /<Item icon=\{Settings02Icon\} onSelect=\{onEdit\}>\s*\{t\("library\.chats\.menu\.edit"\)\}/);
+  assert.match(menu, /<Item icon=\{Settings01Icon\} onSelect=\{onEdit\}>\s*\{t\("library\.chats\.menu\.edit"\)\}/);
   assert.match(menu, /t\(pinned \? "settings\.data\.library\.unpin" : "settings\.data\.library\.pin"\)/);
   assert.doesNotMatch(menu, /Edit project|Pin project|Edit03Icon/);
   const items = readSrc("features/library/chats/chats-items.tsx");
-  assert.match(items, /icon=\{Settings02Icon\}\s*label=\{t\("library\.chats\.menu\.edit"\)\}/);
+  assert.match(items, /icon=\{Settings01Icon\}\s*label=\{t\("library\.chats\.menu\.edit"\)\}/);
   assert.match(readSrc("i18n/locales/en.ts"), /\n        edit: "Edit",/);
 });
 
@@ -650,7 +650,7 @@ test("a section's menu reads New chat, New project and Edit", () => {
   const menu = items.slice(items.indexOf("export function SectionMenuItems("), items.indexOf("function sectionCountLabel("));
   assert.match(menu, /label=\{t\("library\.chats\.toolbar\.newChat"\)\}/);
   assert.match(menu, /icon=\{FolderAddIcon\}\s*label=\{t\("library\.chats\.toolbar\.newProject"\)\}\s*onSelect=\{\(\) => actions\.newProjectInSection\(section\.id\)\}/);
-  assert.match(menu, /icon=\{Settings02Icon\}\s*label=\{t\("shell\.sections\.edit"\)\}/);
+  assert.match(menu, /icon=\{Settings01Icon\}\s*label=\{t\("shell\.sections\.edit"\)\}/);
   assert.doesNotMatch(menu, /newChatInSection"\)|renameTitle/);
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.match(library, /if \(newProjectSection\) fileProjectInSection\(project, newProjectSection\);/);

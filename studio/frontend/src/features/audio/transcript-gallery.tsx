@@ -10,9 +10,9 @@ import {
   type ReactNode,
 } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Archive02Icon,
-  Delete02Icon,
   Download01Icon,
   MoreVerticalIcon,
 } from "@hugeicons/core-free-icons";
@@ -366,7 +366,7 @@ export function TranscriptGallery({
                     void mutate(() => deleteTranscript(record.id), [record.id])
                   }
                 >
-                  <HugeiconsIcon icon={Delete02Icon} />
+                  <HugeiconsIcon icon={TrashIcon} />
                   Delete
                 </DropdownMenuItem>
               </DropdownMenuContent>
