@@ -3926,7 +3926,9 @@ def _refuse_bnb_optimizer_instance(optimizer):
         return
     from ..parallel_capabilities import refuse_shard_unaware_optimizer
 
-    refuse_shard_unaware_optimizer(_inner_optimizer(optimizer), "fsdp2")  # Muon would orthogonalize shards
+    refuse_shard_unaware_optimizer(
+        _inner_optimizer(optimizer), "fsdp2"
+    )  # Muon would orthogonalize shards
     if _localize_bnb_optimizer(optimizer):
         return
     inner = _inner_optimizer(optimizer)

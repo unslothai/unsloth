@@ -487,7 +487,11 @@ def check_pipeline_model(model):
     return parts
 
 
-def _refuse_unsupported(model, parts, at_load = False):
+def _refuse_unsupported(
+    model,
+    parts,
+    at_load = False,
+):
     text = _text_config(model)
     inner = parts.inner
     config = getattr(inner, "config", None)
@@ -903,7 +907,11 @@ class _PPStageModule(nn.Module):
         if ctx.is_first:
             input_ids = x
         else:
-            input_ids = ids if ids is not None else torch.zeros(x.shape[:2], dtype = torch.long, device = x.device)
+            input_ids = (
+                ids
+                if ids is not None
+                else torch.zeros(x.shape[:2], dtype = torch.long, device = x.device)
+            )
             ctx.stage_input = x
         ctx.active = True
         try:
@@ -1105,8 +1113,12 @@ class PipelineParallel:
         # DDP-style data parallel (UNSLOTH_PP_SIZE without UNSLOTH_FSDP2): replicated stage weights, the loss
         # normalised over the dp replicas' tokens, gradients averaged over this mesh by the caller.
         self.ddp_mesh = None
-        self._kept = None  # PPConfig.keep_replica: [(container, key, module, stub)] of the other stages
-        self.replica = None  # pp_env: the whole model is in place (for_inference / generate / exports)
+        self._kept = (
+            None  # PPConfig.keep_replica: [(container, key, module, stub)] of the other stages
+        )
+        self.replica = (
+            None  # pp_env: the whole model is in place (for_inference / generate / exports)
+        )
 
     # composition with FSDP2 (dp) / tensor parallelism (tp): every other mesh dimension must be applied
     @property
@@ -1223,7 +1235,13 @@ class PipelineParallel:
             output = output * self._loss_multiplier
         return output if self._scaler is None else self._scaler.scale(output)
 
-    def _schedule_for(self, mb, seq, n_microbatches = None, train = True):
+    def _schedule_for(
+        self,
+        mb,
+        seq,
+        n_microbatches = None,
+        train = True,
+    ):
         from torch.distributed.pipelining import PipelineStage
 
         m = int(n_microbatches or self.n_microbatches)
@@ -1264,7 +1282,6 @@ class PipelineParallel:
         cls = torch_schedule_class(self.spec)
         if not train and not self.spec.multi:
             from torch.distributed.pipelining import ScheduleGPipe
-
             cls = ScheduleGPipe  # forward only (eval_loss): no backward order to keep
         schedule = cls(
             stages if self.spec.multi else stages[0],
@@ -1299,7 +1316,9 @@ class PipelineParallel:
 
         if self.replica is not None:
             from .pp_env import release_replica
-            release_replica(self)  # a whole model gathered for generate / a save: back to this stage
+            release_replica(
+                self
+            )  # a whole model gathered for generate / a save: back to this stage
         self._check_composed()
         unknown = sorted(set(kwargs) - set(_STEP_KWARGS))
         if unknown:
@@ -1450,7 +1469,9 @@ class PipelineParallel:
         args = (input_ids.to(device),) if self.is_first else ()
         target = step_kwargs["labels"] if self.is_last else None
         has_backward = schedule._has_backward
-        schedule._has_backward = False  # what schedule.eval() does; called directly for return_outputs
+        schedule._has_backward = (
+            False  # what schedule.eval() does; called directly for return_outputs
+        )
         self.ctx.num_items_in_batch = max(int(num_items_in_batch), 1)
         try:
             schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
@@ -1958,14 +1979,12 @@ def apply_pipeline_parallel(
         if callable(getattr(level, "generate", None)):
             if kept is not None:
                 from .pp_env import replica_generate
-
                 level.__dict__["generate"] = replica_generate(level, level.__dict__.get("generate"))
             else:
                 level.__dict__["generate"] = _refuse_generate
     del inner
     if kept is not None:
         from .pp_env import offload_kept
-
         pp_stage._kept = kept
         offload_kept(pp_stage)  # the other stages' weights to the CPU (host RAM)
     import gc

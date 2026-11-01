@@ -120,7 +120,13 @@ def _model_heads(model):
     return heads, kv if isinstance(kv, int) and kv > 0 else heads
 
 
-def resolve_cp_backend(backend, size: int, model = None, tp: int = 1, rl: bool = False) -> str:
+def resolve_cp_backend(
+    backend,
+    size: int,
+    model = None,
+    tp: int = 1,
+    rl: bool = False,
+) -> str:
     """context_parallel_backend = 'auto' (the default): Ulysses, which keeps packing, hybrids, RL, T4 / V100
     and needs no flash kernels; ring only when the attention heads (per tensor parallel rank) cannot be split
     over cp. An explicit backend is returned as given (the checks then honour or refuse it)."""
@@ -726,10 +732,15 @@ def _model_parallel_axes(model) -> list:
     import os
 
     axes = []
-    for name, what in (("UNSLOTH_PP_SIZE", "pipeline parallel"), ("UNSLOTH_TP_SIZE", "tensor parallel")):
+    for name, what in (
+        ("UNSLOTH_PP_SIZE", "pipeline parallel"),
+        ("UNSLOTH_TP_SIZE", "tensor parallel"),
+    ):
         raw = str(os.environ.get(name, "")).strip()
         try:
-            size = int(raw) if raw else 1  # as tp_env._int_env, which raises its own error on a bad value
+            size = (
+                int(raw) if raw else 1
+            )  # as tp_env._int_env, which raises its own error on a bad value
         except ValueError:
             size = 1
         if size > 1:
@@ -751,7 +762,10 @@ def _composed_layout(size: int):
     """The UNSLOTH_PARALLEL / UNSLOTH_TP_SIZE layout whose root mesh has this cp axis, or None."""
     import os
 
-    if not any(str(os.environ.get(k, "")).strip() not in ("", "1") for k in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE")):
+    if not any(
+        str(os.environ.get(k, "")).strip() not in ("", "1")
+        for k in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE")
+    ):
         return None
     from .parallel_env import env_cp_size
 
@@ -763,7 +777,12 @@ def _composed_layout(size: int):
     return layout if layout is not None and layout.cp == size else None
 
 
-def _refuse_model_parallel_cp(size: int, model, trainer_cls = None, config = None) -> None:
+def _refuse_model_parallel_cp(
+    size: int,
+    model,
+    trainer_cls = None,
+    config = None,
+) -> None:
     """Before the trainer's __init__ touches the model: a CP manager building its own (dp, cp) mesh would make
     its cp groups the tensor parallel / pipeline data parallel groups of a tp / pp launch, so the step would run
     and train on mixed-up shards. Context parallel composes through the root mesh only (cp in UNSLOTH_PARALLEL
@@ -787,7 +806,13 @@ def _refuse_model_parallel_cp(size: int, model, trainer_cls = None, config = Non
         except Exception:
             fsdp2 = False
         alone = types.SimpleNamespace(
-            dp = max(world // size, 1), tp = 1, pp = 1, cp = size, fsdp2 = fsdp2, cp_backend = None, schedule = None
+            dp = max(world // size, 1),
+            tp = 1,
+            pp = 1,
+            cp = size,
+            fsdp2 = fsdp2,
+            cp_backend = None,
+            schedule = None,
         )
         backend = getattr(config, "context_parallel_backend", None)
         check_layout(alone, trainer_cls, model, config, cp_backend = backend)
@@ -804,7 +829,7 @@ def _refuse_model_parallel_cp(size: int, model, trainer_cls = None, config = Non
     hint = ""
     if not env_cp and all("UNSLOTH_" in a for a in axes):
         hint = (
-            f" To compose them, put cp in the launch layout instead: UNSLOTH_PARALLEL=\"...,cp={size}\" or "
+            f' To compose them, put cp in the launch layout instead: UNSLOTH_PARALLEL="...,cp={size}" or '
             f"UNSLOTH_CP_SIZE={size} beside the other variables, so the mesh is built with a cp axis."
         )
     raise NotImplementedError(
@@ -852,15 +877,27 @@ def _inject_env_cp(config, kwargs, requested: int, trainer_name: str) -> int:
     return size
 
 
-def _resolve_auto_backend(config, kwargs, size: int, model, rl: bool = False) -> None:
+def _resolve_auto_backend(
+    config,
+    kwargs,
+    size: int,
+    model,
+    rl: bool = False,
+) -> None:
     """Write the backend 'auto' resolves to into the trainer arguments before the trainer's __init__, so auto
     packing and every later check read the same backend. `_unsloth_cp_backend_auto` records that it was auto."""
     in_kwargs = "context_parallel_backend" in kwargs
-    current = kwargs["context_parallel_backend"] if in_kwargs else getattr(config, "context_parallel_backend", None)
+    current = (
+        kwargs["context_parallel_backend"]
+        if in_kwargs
+        else getattr(config, "context_parallel_backend", None)
+    )
     if (current or "auto") != "auto":
         return
     layout = _composed_layout(size)
-    resolved = resolve_cp_backend("auto", size, model, tp = layout.tp if layout is not None else 1, rl = rl)
+    resolved = resolve_cp_backend(
+        "auto", size, model, tp = layout.tp if layout is not None else 1, rl = rl
+    )
     if in_kwargs or config is None:
         kwargs["context_parallel_backend"] = resolved
     else:
@@ -908,7 +945,10 @@ def _refuse_router_aux_loss_after_init(trainer, size: int) -> None:
     # DPO passes output_router_logits per forward instead of writing the config: read the trainer's switch too.
     aux = aux or bool(getattr(trainer, "aux_loss_enabled", False))
     if moe and aux:
-        check(Query(trainer = "sft", moe = True, router_aux_loss = True, cp = size, torch = (99, 0)), cells = False)
+        check(
+            Query(trainer = "sft", moe = True, router_aux_loss = True, cp = size, torch = (99, 0)),
+            cells = False,
+        )
 
 
 def _check_cp_runtime(self, size: int, backend: str) -> None:
@@ -1103,7 +1143,9 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             requested = forwarded if valid else 1
         requested = _inject_env_cp(config, kwargs, requested, "SFTTrainer")
         if requested > 1:
-            _resolve_auto_backend(config, kwargs, requested, _trainer_model_argument((self,) + args, kwargs))
+            _resolve_auto_backend(
+                config, kwargs, requested, _trainer_model_argument((self,) + args, kwargs)
+            )
             _refuse_model_parallel_cp(
                 requested, _trainer_model_argument((self,) + args, kwargs), type(self), config
             )
@@ -1135,7 +1177,10 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         if size > 1 and backend == "auto":
             layout = _composed_layout(size)
             backend = resolve_cp_backend(
-                backend, size, getattr(self, "model", None), tp = layout.tp if layout is not None else 1
+                backend,
+                size,
+                getattr(self, "model", None),
+                tp = layout.tp if layout is not None else 1,
             )
             self.args.context_parallel_backend = backend
         if size <= 1:
@@ -1180,7 +1225,11 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             tp = layout.tp if layout is not None else 1,
         )
         manager = ContextParallelManager(
-            size, backend, rotate_method, fsdp2 = fsdp2, **({"layout": layout} if layout is not None else {})
+            size,
+            backend,
+            rotate_method,
+            fsdp2 = fsdp2,
+            **({"layout": layout} if layout is not None else {}),
         )
         _check_native_fsdp2_reduces_over_cp(self.model, manager)
         self._context_parallel_manager = manager

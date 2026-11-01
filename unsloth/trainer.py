@@ -1927,7 +1927,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
             is_ring_context_parallel = cp_backend == "ring"
             if is_ring_context_parallel and (
-                getattr(config_arg, "packing", False) or getattr(config_arg, "padding_free", None) is True
+                getattr(config_arg, "packing", False)
+                or getattr(config_arg, "padding_free", None) is True
             ):
                 chose = (
                     "context_parallel_backend = 'auto' chose ring because the attention heads cannot be split "
@@ -1983,9 +1984,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         # TRL resolves eval_packing on its own; packed eval batches would hit ring attention's varlen refusal.
         if (
             is_ring_context_parallel or is_pipeline_parallel_env or boundary_blocker is not None
-        ) and getattr(
-            config_arg, "eval_packing", None
-        ):
+        ) and getattr(config_arg, "eval_packing", None):
             setattr(config_arg, "eval_packing", False)
 
         if blocked and requested_pack:

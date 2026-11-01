@@ -1369,6 +1369,7 @@ def _model_parallel_refuses_save(method):
                 # UNSLOTH_PP_SIZE: the whole model back on every rank, rank 0 exports (refused otherwise).
                 _refuse_model_parallel_export(model, method)
                 from .models.pp_env import pp_collective
+
                 _refuse_tp_in_place_merge(fn, method, args, kwargs)
                 return pp_collective(model, method, lambda: fn(*args, **kwargs))
             if model is not None and _is_unsloth_tensor_parallel(model):
@@ -6926,6 +6927,7 @@ def _tp_collective_save(method):
                 arguments = _fsdp2_save_arguments(fn, self, args, kwargs)
                 if not tp_replica._ACTIVE and arguments.get("state_dict") is None:
                     from .models.pp_env import pp_collective, pp_save_adapter
+
                     if method == "save_pretrained" and isinstance(self, PeftModel):
                         # The LoRA weights of every stage, the 1-GPU adapter written by rank 0.
                         return pp_save_adapter(self, args, kwargs)

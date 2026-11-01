@@ -49,7 +49,13 @@ __all__ = [
 _MiB = 1 << 20
 _GENERATE_DEPTH = [0]
 # Trainers whose loss the pipeline computes the way they do (causal LM loss on `labels`).
-_ALLOWED_TRAINERS = {"Trainer", "Seq2SeqTrainer", "SFTTrainer", "UnslothSFTTrainer", "_UnslothSFTTrainer"}
+_ALLOWED_TRAINERS = {
+    "Trainer",
+    "Seq2SeqTrainer",
+    "SFTTrainer",
+    "UnslothSFTTrainer",
+    "_UnslothSFTTrainer",
+}
 # Batch keys the pipeline carries (or that only shaped `labels`, already applied by the collator).
 _BATCH_KEYS = ("input_ids", "labels", "attention_mask", "position_ids")
 _DROPPED_KEYS = ("completion_mask", "assistant_masks", "return_loss", "num_items_in_batch")
@@ -81,7 +87,6 @@ def _hint():
 
 def _stage_of(model):
     from .pp_native import PipelineParallel, pipeline_stage_of
-
     return model if isinstance(model, PipelineParallel) else pipeline_stage_of(model)
 
 
@@ -106,7 +111,12 @@ def pipeline_parallel_env_apply(model, layout):
                 f"{layout.env_vars} pass the Trainer the model loaded and given LoRA as usual."
             )
         return stage
-    keep = os.environ.get("UNSLOTH_PP_KEEP_REPLICA", "1").strip().lower() not in ("0", "false", "no", "off")
+    keep = os.environ.get("UNSLOTH_PP_KEEP_REPLICA", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
     default = layout.microbatches or 2 * layout.pp
     try:
         stage = apply_pipeline_parallel(
@@ -149,7 +159,11 @@ def _gpipe_needs_stage_count():
     return False
 
 
-def resolve_microbatches(stage, batch_size, train = True):
+def resolve_microbatches(
+    stage,
+    batch_size,
+    train = True,
+):
     """(n_microbatches, padded rows) for a batch of `batch_size` rows. UNSLOTH_PP_MICROBATCHES must divide it;
     the default (2 x pp) is lowered to the largest divisor of the batch. A schedule that needs at least pp
     micro-batches (1F1B; GPipe on torch 2.10) gets fully masked filler rows (labels -100: no loss, no gradient)
@@ -157,7 +171,11 @@ def resolve_microbatches(stage, batch_size, train = True):
     layout = getattr(stage, "env_layout", None)
     explicit = layout.microbatches if layout is not None else None
     want = int(explicit or stage.n_microbatches)
-    floor = stage.num_stages if (stage.schedule == "1f1b" and train) or _gpipe_needs_stage_count() else 1
+    floor = (
+        stage.num_stages
+        if (stage.schedule == "1f1b" and train) or _gpipe_needs_stage_count()
+        else 1
+    )
     if batch_size % want == 0:
         m = want
     elif explicit is not None and train:
@@ -278,7 +296,6 @@ def _free_bytes(device):
 
 def _comm_device(stage):
     from .tp_replica import _comm_device
-
     return _comm_device(stage.group, stage.device)
 
 
@@ -295,7 +312,11 @@ def replica_refusal(stage, what):
             f"and run `{what}` on one GPU.{hint}"
         )
     if stage.tp_mesh is not None or stage.dp_mesh is not None:
-        dim = "tensor parallel (UNSLOTH_TP_SIZE)" if stage.tp_mesh is not None else "native FSDP2 data parallel"
+        dim = (
+            "tensor parallel (UNSLOTH_TP_SIZE)"
+            if stage.tp_mesh is not None
+            else "native FSDP2 data parallel"
+        )
         return (
             f"Unsloth: `{what}` is not supported yet on a pipeline parallel x {dim} model (each stage's weights "
             "are sharded over its other ranks). Save the adapter (model.save_pretrained, on every rank) and run "
@@ -304,7 +325,11 @@ def replica_refusal(stage, what):
     return None
 
 
-def gather_replica(model, what = "generate", persistent = True):
+def gather_replica(
+    model,
+    what = "generate",
+    persistent = True,
+):
     """Collective over the world: put the whole model back on every rank (the kept CPU copies moved to this
     GPU, the trained weights of every stage broadcast from it). Refused on every rank alike, with the memory
     numbers, when some rank lacks the room. Returns the stage."""
@@ -485,12 +510,21 @@ def pp_save_adapter(model, args, kwargs):
     except TypeError:
         bound = None
     if bound is None:
-        raise TypeError(f"Unsloth: save_pretrained{args} could not be read as PeftModel.save_pretrained.")
+        raise TypeError(
+            f"Unsloth: save_pretrained{args} could not be read as PeftModel.save_pretrained."
+        )
     values = dict(bound.arguments)
     values.pop("self", None)
     extra = values.pop("kwargs", {}) or {}
     directory = values.pop("save_directory")
-    for key in ("push_to_hub", "token", "state_dict", "save_function", "max_shard_size", "tokenizer"):
+    for key in (
+        "push_to_hub",
+        "token",
+        "state_dict",
+        "save_function",
+        "max_shard_size",
+        "tokenizer",
+    ):
         extra.pop(key, None)
     if values.get("safe_serialization", True) is None:
         values["safe_serialization"] = True
@@ -540,7 +574,9 @@ def pp_trainer_refusals(trainer_cls, args, layout):
     if getattr(args, "deepspeed", None):
         problems.append("DeepSpeed")
     if getattr(args, "fsdp", None) or getattr(args, "parallelism_config", None) is not None:
-        problems.append("accelerate FSDP / ParallelismConfig (UNSLOTH_FSDP2=1 shards the dp dimension)")
+        problems.append(
+            "accelerate FSDP / ParallelismConfig (UNSLOTH_FSDP2=1 shards the dp dimension)"
+        )
     for flag in ("load_best_model_at_end", "push_to_hub"):
         if getattr(args, flag, False):
             problems.append(flag)
@@ -595,7 +631,10 @@ def _global_items(trainer, stage, num_items_in_batch):
         value = int(num_items_in_batch.detach().reshape(-1)[0])
     else:
         value = int(num_items_in_batch)
-    if getattr(trainer.args, "average_tokens_across_devices", False) and trainer.args.world_size > 1:
+    if (
+        getattr(trainer.args, "average_tokens_across_devices", False)
+        and trainer.args.world_size > 1
+    ):
         return value  # already summed over the dp replicas
     dp, _, mesh = _dp_info(stage)
     if dp == 1:
@@ -607,7 +646,14 @@ def _global_items(trainer, stage, num_items_in_batch):
     return int(count[0])
 
 
-def _pp_training_step(self, model, inputs, num_items_in_batch = None, *args, **kwargs):
+def _pp_training_step(
+    self,
+    model,
+    inputs,
+    num_items_in_batch = None,
+    *args,
+    **kwargs,
+):
     stage = self.__dict__["_unsloth_pipeline_parallel"]
     model.train()
     if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
@@ -618,7 +664,13 @@ def _pp_training_step(self, model, inputs, num_items_in_batch = None, *args, **k
     scale = 1.0
     if n is None:
         # No window token count: each step averages its own tokens, the window averages the steps.
-        scale = 1.0 / max(int(getattr(self, "current_gradient_accumulation_steps", 0) or self.args.gradient_accumulation_steps), 1)
+        scale = 1.0 / max(
+            int(
+                getattr(self, "current_gradient_accumulation_steps", 0)
+                or self.args.gradient_accumulation_steps
+            ),
+            1,
+        )
     scaler = getattr(self.accelerator, "scaler", None)
     scaler = scaler if scaler is not None and scaler.is_enabled() else None
     m, pad = resolve_microbatches(stage, input_ids.shape[0])
@@ -658,7 +710,13 @@ def _eval_items(trainer, inputs, labels):
     return int((labels[:, 1:] != -100).sum())
 
 
-def _pp_prediction_step(self, model, inputs, prediction_loss_only, ignore_keys = None):
+def _pp_prediction_step(
+    self,
+    model,
+    inputs,
+    prediction_loss_only,
+    ignore_keys = None,
+):
     stage = self.__dict__["_unsloth_pipeline_parallel"]
     if not prediction_loss_only:
         raise NotImplementedError(
@@ -675,7 +733,11 @@ def _pp_prediction_step(self, model, inputs, prediction_loss_only, ignore_keys =
     return (loss.detach().to(self.args.device), None, None)
 
 
-def _pp_save_model(self, output_dir = None, _internal_call = False):
+def _pp_save_model(
+    self,
+    output_dir = None,
+    _internal_call = False,
+):
     stage = self.__dict__["_unsloth_pipeline_parallel"]
     output_dir = output_dir if output_dir is not None else self.args.output_dir
     model = stage.model
@@ -728,10 +790,15 @@ def _unwrap_optimizer(opt):
 
 def _pp_clip(accelerator, stage):
     from .tp_native import _DP_SYNC, _dp_average
-
-    def clip_grad_norm_(parameters, max_norm, norm_type = 2):
+    def clip_grad_norm_(
+        parameters,
+        max_norm,
+        norm_type = 2,
+    ):
         if float(norm_type) != 2.0:
-            raise RuntimeError("Unsloth: pipeline parallel gradient clipping supports the 2-norm only.")
+            raise RuntimeError(
+                "Unsloth: pipeline parallel gradient clipping supports the 2-norm only."
+            )
         params = [p for p in parameters if p.requires_grad]
         sync = accelerator.__dict__.get(_DP_SYNC)
         if sync is not None:
@@ -740,7 +807,6 @@ def _pp_clip(accelerator, stage):
         scaler = getattr(accelerator, "scaler", None)
         if scaler is not None and scaler.is_enabled():
             from torch.amp.grad_scaler import OptState
-
             for opt in getattr(accelerator, "_optimizers", []):
                 # The torch optimizer AcceleratedOptimizer.step hands the scaler: the scaler keys its
                 # unscaled state by optimizer, so unscaling the wrapper would divide the gradients again there.
@@ -799,7 +865,9 @@ def pp_trainer_setup(trainer):
         handler = getattr(accelerator, "scaler_handler", None)
         user = handler.to_kwargs() if handler is not None and hasattr(handler, "to_kwargs") else {}
         if "init_scale" not in user:
-            accelerator.scaler._init_scale = 2.0**16 / dp  # the loss scale grows with dp, never with pp
+            accelerator.scaler._init_scale = (
+                2.0**16 / dp
+            )  # the loss scale grows with dp, never with pp
     if sync is not None and sync.get("_unsloth_pp_hooked") is None:
         create_optimizer = trainer.create_optimizer
 

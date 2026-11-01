@@ -94,9 +94,10 @@ def _refusal(root, what):
         from .pp_native import pipeline_stage_of
 
         stage = pipeline_stage_of(root)
-        if stage is not None and stage._kept is not None:  # UNSLOTH_PP_SIZE (pp_env): why the replica cannot
+        if (
+            stage is not None and stage._kept is not None
+        ):  # UNSLOTH_PP_SIZE (pp_env): why the replica cannot
             from .pp_env import replica_refusal
-
             refusal = replica_refusal(stage, what)
             if refusal is not None:
                 return refusal

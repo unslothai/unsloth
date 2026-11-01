@@ -14,7 +14,8 @@ import multiprocessing
 import os
 
 if os.environ.get("UNSLOTH_TEST_RANKS_ON_GPU") != "1" and (
-    multiprocessing.parent_process() is not None or getattr(multiprocessing.current_process(), "_inheriting", False)
+    multiprocessing.parent_process() is not None
+    or getattr(multiprocessing.current_process(), "_inheriting", False)
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
@@ -76,7 +77,6 @@ def _checkpoint(tmp, arch = "llama"):
 
 def _full(t):
     from torch.distributed.tensor import DTensor
-
     return (t.full_tensor() if isinstance(t, DTensor) else t).detach().float().cpu().clone()
 
 
@@ -106,7 +106,6 @@ def _block_compile_on_cpu(model):
 def _selected_moe_backend():
     try:
         from unsloth_zoo.temporary_patches import moe_utils
-
         return moe_utils.select_moe_backend()
     except Exception as e:
         return f"unknown: {e!r}"[:200]
@@ -130,7 +129,6 @@ def _count_moe_backend_calls():
         pass
     try:
         from unsloth_zoo.temporary_patches import moe_utils_bnb4bit
-
         modules.append(moe_utils_bnb4bit)
     except Exception:
         pass
@@ -144,13 +142,18 @@ def _count_moe_backend_calls():
         return wrapper
 
     for module in modules:
-        for name in ("forward_native_grouped_mm", "forward_triton_grouped_gemm", "forward_native_moe_loop",
-                     "forward_moe_backend_bnb4bit", "_triton_grouped_mm", "_manual_grouped_mm"):
+        for name in (
+            "forward_native_grouped_mm",
+            "forward_triton_grouped_gemm",
+            "forward_native_moe_loop",
+            "forward_moe_backend_bnb4bit",
+            "_triton_grouped_mm",
+            "_manual_grouped_mm",
+        ):
             if callable(getattr(module, name, None)):
                 setattr(module, name, counted(name, getattr(module, name)))
     try:
         from unsloth.kernels.moe.grouped_gemm import interface
-
         interface.grouped_gemm = counted("unsloth grouped_gemm (Triton)", interface.grouped_gemm)
     except Exception:
         pass
@@ -160,9 +163,26 @@ def _count_moe_backend_calls():
 
 
 def _case_train(
-    rank, world, tmp, ckpt, bs, cp = 1, steps = 2, ga = 2, sft_cp = True, keep = False, compile = False,
-    arch = "llama", router_aux = False, attn = "sdpa", ungate = False, mode = "lora", trl_aux = False,
-    device = "cpu", bypass_pre = False, bypass_post = False,
+    rank,
+    world,
+    tmp,
+    ckpt,
+    bs,
+    cp = 1,
+    steps = 2,
+    ga = 2,
+    sft_cp = True,
+    keep = False,
+    compile = False,
+    arch = "llama",
+    router_aux = False,
+    attn = "sdpa",
+    ungate = False,
+    mode = "lora",
+    trl_aux = False,
+    device = "cpu",
+    bypass_pre = False,
+    bypass_post = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -188,7 +208,6 @@ def _case_train(
             # NCCL_MULTI_RANK_GPU_ENABLE=1 (the driver probes it), else gloo on CUDA tensors.
             os.environ["LOCAL_RANK"], os.environ["LOCAL_WORLD_SIZE"] = "0", "1"
             import torch.distributed as dist
-
             if world > 1 and not dist.is_initialized():
                 dist.init_process_group(os.environ.get("UNSLOTH_TEST_SHARED_GPU_BACKEND", "gloo"))
         torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
@@ -206,7 +225,6 @@ def _case_train(
     if bypass_pre or bypass_post:
         # Evidence runs only: switch off the aux-loss guards to show what each one catches.
         from unsloth import parallel_capabilities
-
         if bypass_pre:
             parallel_capabilities._aux_loss_on = lambda *a, **k: False
         if bypass_post:
@@ -214,22 +232,28 @@ def _case_train(
     if ungate:
         # Measure a cell the registry refuses for lack of evidence (the evidence run itself).
         from unsloth import parallel_capabilities
-
         parallel_capabilities._gated = lambda query: False
     from unsloth.utils import attention_dispatch
 
-    attention_dispatch.HAS_XFORMERS = False  # torch SDPA on every rank (fp32: flash / xformers take 16-bit)
+    attention_dispatch.HAS_XFORMERS = (
+        False  # torch SDPA on every rank (fp32: flash / xformers take 16-bit)
+    )
     attention_dispatch.HAS_FLASH_ATTENTION = False
     layout = tp_env.env_layout()
 
-    def load(model_name, load_in_4bit = True, **kwargs):
+    def load(
+        model_name,
+        load_in_4bit = True,
+        **kwargs,
+    ):
         extra = {}
         if mode == "qlora":
             from transformers import BitsAndBytesConfig
-
             extra = dict(
                 quantization_config = BitsAndBytesConfig(
-                    load_in_4bit = True, bnb_4bit_quant_type = "nf4", bnb_4bit_compute_dtype = torch.float32
+                    load_in_4bit = True,
+                    bnb_4bit_quant_type = "nf4",
+                    bnb_4bit_compute_dtype = torch.float32,
                 ),
                 device_map = {"": torch.cuda.current_device()},
             )
@@ -240,7 +264,11 @@ def _case_train(
     def peft(model):
         torch.manual_seed(1)
         config = LoraConfig(
-            r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False, lora_dropout = 0.0
+            r = 4,
+            lora_alpha = 8,
+            target_modules = "all-linear",
+            init_lora_weights = False,
+            lora_dropout = 0.0,
         )
         return get_peft_model(model, config)
 
@@ -274,7 +302,9 @@ def _case_train(
         rows_read.append([int(r["row"]) for r in rows])
         input_ids = torch.tensor([r["input_ids"] for r in rows])
         batch = {"input_ids": input_ids, "labels": input_ids.clone()}
-        batch["labels"][batch["labels"] % 5 == 0] = -100  # uneven token counts per row and per shard
+        batch["labels"][
+            batch["labels"] % 5 == 0
+        ] = -100  # uneven token counts per row and per shard
         return batch
 
     class SequentialSFT(trl.SFTTrainer):
@@ -284,7 +314,14 @@ def _case_train(
     grads = {}
 
     class Grabber(transformers.TrainerCallback):
-        def on_pre_optimizer_step(self, args, state, control, model = None, **kwargs):
+        def on_pre_optimizer_step(
+            self,
+            args,
+            state,
+            control,
+            model = None,
+            **kwargs,
+        ):
             if grads:
                 return
             target = trainer.model
@@ -345,9 +382,13 @@ def _case_train(
     seen_lengths, ulysses_calls = set(), []
     embed = trainer.model.get_input_embeddings()
     embed.register_forward_pre_hook(lambda m, a: seen_lengths.add(int(a[0].shape[-1])))
-    autocast_seen = set()  # autocast state inside every training forward (pure fp32 cells: {False} only)
+    autocast_seen = (
+        set()
+    )  # autocast state inside every training forward (pure fp32 cells: {False} only)
     autocast_device = "cpu" if device == "cpu" else "cuda"
-    embed.register_forward_pre_hook(lambda m, a: autocast_seen.add(bool(torch.is_autocast_enabled(autocast_device))))
+    embed.register_forward_pre_hook(
+        lambda m, a: autocast_seen.add(bool(torch.is_autocast_enabled(autocast_device)))
+    )
     from unsloth.utils import ulysses_hybrid
 
     original_ulysses = ulysses_hybrid._ulysses_hf_attention
@@ -372,7 +413,11 @@ def _case_train(
     if is_tp:
         state = tp_native.tp_full_state_dict(trainer.model, adapters_only = True)
     else:
-        state = {k: _full(v) for k, v in trainer.model.state_dict().items() if "lora_" in k or mode == "full"}
+        state = {
+            k: _full(v)
+            for k, v in trainer.model.state_dict().items()
+            if "lora_" in k or mode == "full"
+        }
     stage = pp_native.pipeline_stage_of(trainer.model)
     res = {
         "layout": None if layout is None else repr(layout),
@@ -384,7 +429,9 @@ def _case_train(
             for k, v in state.items()
             if "lora_" in k or mode == "full"
         },
-        "cp_group": None if manager is None else sorted(int(r) for r in manager.mesh.mesh.flatten().tolist()),
+        "cp_group": None
+        if manager is None
+        else sorted(int(r) for r in manager.mesh.mesh.flatten().tolist()),
         "is_tp": is_tp,
         "stage": None if stage is None else int(stage.stage_index),
         "seen_lengths": sorted(seen_lengths),
@@ -396,7 +443,9 @@ def _case_train(
         "dataset_rows": len(data),
         "ga": ga,
         "compiled_classes": [getattr(c, "__name__", c) for c in compiled],
-        "native_fsdp2": __import__("unsloth.models.fsdp2_native", fromlist = ["x"]).is_native_fsdp2(trainer.model),
+        "native_fsdp2": __import__("unsloth.models.fsdp2_native", fromlist = ["x"]).is_native_fsdp2(
+            trainer.model
+        ),
         "banner": trainer.__dict__.get("_unsloth_parallel_announced"),
         "output_router_logits": bool(getattr(trainer.model.config, "output_router_logits", False)),
         "compile": compile_used,
@@ -433,7 +482,6 @@ def _worker(rank, world, port, case, tmp, env, kwargs):
             res = CASES[case](rank, world, tmp, **kwargs)
         except Exception as e:
             import traceback
-
             res = {"error": f"{type(e).__name__}: {e}", "trace": traceback.format_exc()}
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
     finally:
@@ -444,7 +492,12 @@ def _worker(rank, world, port, case, tmp, env, kwargs):
                 pass
 
 
-def _spawn(case, world = 1, env = None, **kwargs):
+def _spawn(
+    case,
+    world = 1,
+    env = None,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
@@ -476,7 +529,12 @@ def _spawn(case, world = 1, env = None, **kwargs):
 _REF = {}
 
 
-def _ref(bs, compile = False, arch = "llama", **kwargs):
+def _ref(
+    bs,
+    compile = False,
+    arch = "llama",
+    **kwargs,
+):
     key = (bs, compile, arch, tuple(sorted(kwargs.items())))
     if key not in _REF:
         (_REF[key],) = _spawn("train", 1, bs = bs, compile = compile, arch = arch, **kwargs)
@@ -487,10 +545,17 @@ def _ref(bs, compile = False, arch = "llama", **kwargs):
 def _rows_per_step(res):
     """The dataset rows each optimizer step trained on (one rank's view)."""
     ga, read = res["ga"], res["rows_read"]
-    return [sorted(r for mb in read[i : i + ga] for r in mb) for i in range(0, len(read) - len(read) % ga, ga)]
+    return [
+        sorted(r for mb in read[i : i + ga] for r in mb)
+        for i in range(0, len(read) - len(read) % ga, ga)
+    ]
 
 
-def _same_rows(results, want, what = ""):
+def _same_rows(
+    results,
+    want,
+    what = "",
+):
     """Every step of the composed run trains on exactly the rows one process trains on (data parallel replicas
     split them, cp / tp / pp peers share theirs), and no side read a row twice (no second epoch)."""
     expected = _rows_per_step(want)
@@ -500,27 +565,48 @@ def _same_rows(results, want, what = ""):
     for res in results:
         for i, step in enumerate(_rows_per_step(res)[: len(expected)]):
             union[i] |= set(step)
-    assert [sorted(u) for u in union] == expected, (what, "the composed run read other rows", union, expected)
+    assert [sorted(u) for u in union] == expected, (
+        what,
+        "the composed run read other rows",
+        union,
+        expected,
+    )
 
 
-def _close(got, want, rel = 1e-4, what = "", state_atol = 1e-6):
+def _close(
+    got,
+    want,
+    rel = 1e-4,
+    what = "",
+    state_atol = 1e-6,
+):
     assert "error" not in got, (what, got.get("error"), got.get("trace"))
     # The run must read every row once and no row twice: too few rows for the data parallel replicas wrap the
     # dataloader into a second epoch, and the later steps then train on other rows than one process.
     for side in (got, want):
         if "epoch" in side:
             assert side["epoch"] <= 1.0 + 1e-6, (what, "the dataloader wrapped", side["epoch"])
-    assert got["losses"] == pytest.approx(want["losses"], rel = rel), (what, got["losses"], want["losses"])
+    assert got["losses"] == pytest.approx(want["losses"], rel = rel), (
+        what,
+        got["losses"],
+        want["losses"],
+    )
     assert got["grad_norms"] == pytest.approx(want["grad_norms"], rel = rel), (
         what,
         got["grad_norms"],
         want["grad_norms"],
     )
     for kind in ("grads", "state"):
-        assert set(got[kind]) <= set(want[kind]) and got[kind], (what, kind, sorted(set(got[kind]) - set(want[kind])))
+        assert set(got[kind]) <= set(want[kind]) and got[kind], (
+            what,
+            kind,
+            sorted(set(got[kind]) - set(want[kind])),
+        )
         for key, value in got[kind].items():
             atol = state_atol if kind == "state" else 1e-6
-            torch.testing.assert_close(value, want[kind][key], rtol = rel * 10, atol = atol, msg = f"{what} {kind} {key}")
+            torch.testing.assert_close(
+                value, want[kind][key], rtol = rel * 10, atol = atol, msg = f"{what} {kind} {key}"
+            )
 
 
 def test_cp2_alone_matches_one_process():
@@ -548,16 +634,19 @@ def test_cp2_with_ddp_dp2_matches_one_process():
 @pytest.mark.parametrize("env", [{"UNSLOTH_PP_SIZE": "2"}], ids = ["pp2"])
 def test_cp_with_pipeline_parallel_env_is_refused_before_the_split(env):
     for res in _spawn("train", 4, env, bs = 2, cp = 2):
-        assert "does not compose with" in (res.get("error") or ""), res.get("error") or res["losses"]
+        assert "does not compose with" in (res.get("error") or ""), (
+            res.get("error") or res["losses"]
+        )
         assert "pipeline parallel (UNSLOTH_PP_SIZE=2)" in res["error"]
-
 
 
 def test_cp_from_the_config_beside_a_tp_launch_is_refused_with_the_layout_hint():
     """SFTConfig(context_parallel_size = 2) under UNSLOTH_TP_SIZE=2: the layout was read without a cp axis."""
     for res in _spawn("train", 4, {"UNSLOTH_TP_SIZE": "2"}, bs = 2, cp = 2):
         error = res.get("error") or ""
-        assert "does not compose with" in error and "UNSLOTH_PARALLEL" in error, error or res["losses"]
+        assert "does not compose with" in error and "UNSLOTH_PARALLEL" in error, (
+            error or res["losses"]
+        )
 
 
 @pytest.mark.parametrize(
@@ -566,7 +655,13 @@ def test_cp_from_the_config_beside_a_tp_launch_is_refused_with_the_layout_hint()
         (4, "tp=2,cp=2", 2, 2, "cp 2 x tp 2"),
         (8, "tp=2,cp=2", 2, 4, "dp 2 (DDP) x cp 2 x tp 2"),
         (8, "dp=2,tp=2,cp=2,fsdp=1", 2, 4, "dp 2 (native FSDP2) x cp 2 x tp 2"),
-        (8, "dp=2,tp=2,pp=1,cp=2,fsdp=1,cp_backend=ulysses", 2, 4, "dp 2 (native FSDP2) x cp 2 x tp 2"),
+        (
+            8,
+            "dp=2,tp=2,pp=1,cp=2,fsdp=1,cp_backend=ulysses",
+            2,
+            4,
+            "dp 2 (native FSDP2) x cp 2 x tp 2",
+        ),
     ],
     ids = ["cp2_tp2", "dp2_cp2_tp2", "fsdp2_cp2_tp2", "launcher_form"],
 )
@@ -585,7 +680,9 @@ def test_cp_x_tp_from_unsloth_parallel_matches_one_process(world, flag, bs, ref_
         base = rank - rank % 4
         assert res["cp_group"] == [base + tp_index, base + tp_index + 2], (rank, res["cp_group"])
         # Engaged: 'auto' picked Ulysses, each rank embedded SEQ / cp tokens, every layer's attention exchanged.
-        assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], res["seen_lengths"]
+        assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], res[
+            "seen_lengths"
+        ]
         assert res["ulysses_calls"] >= N_LAYERS, res["ulysses_calls"]
         _close(res, ref, what = (flag, rank))
 
@@ -611,13 +708,26 @@ def test_block_compile_composes_like_one_process(world, flag, ref_bs):
 
     eager = _ref(ref_bs)
     single = _ref(ref_bs, compile = True)
-    assert single["compiled_classes"] == ["LlamaDecoderLayer"] and single["compile"]["unique_graphs"] > 0
+    assert (
+        single["compiled_classes"] == ["LlamaDecoderLayer"]
+        and single["compile"]["unique_graphs"] > 0
+    )
     _close(single, eager, what = "one process compiled")
-    for rank, res in enumerate(_spawn("train", world, {"UNSLOTH_PARALLEL": flag}, bs = 2, cp = 2, sft_cp = False, compile = True)):
+    for rank, res in enumerate(
+        _spawn("train", world, {"UNSLOTH_PARALLEL": flag}, bs = 2, cp = 2, sft_cp = False, compile = True)
+    ):
         assert "error" not in res, (rank, res.get("trace"))
-        assert res["compiled_classes"] == ["LlamaDecoderLayer"] and res["compile"]["unique_graphs"] > 0
-        assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], res["seen_lengths"]
-        assert not not_above(res["compile"], single["compile"]), (rank, res["compile"], single["compile"])
+        assert (
+            res["compiled_classes"] == ["LlamaDecoderLayer"] and res["compile"]["unique_graphs"] > 0
+        )
+        assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], res[
+            "seen_lengths"
+        ]
+        assert not not_above(res["compile"], single["compile"]), (
+            rank,
+            res["compile"],
+            single["compile"],
+        )
         _close(res, eager, what = (flag, "compiled", rank))
 
 
@@ -671,14 +781,18 @@ def test_moe_under_data_and_context_parallel_matches_one_process(mode, world, en
         assert "error" not in res, (rank, res.get("trace"))
         assert not res["output_router_logits"]
         experts = [k for k in res["grads"] if ".experts." in k]
-        assert experts and all(res["grads"][k].abs().sum() > 0 for k in experts), experts  # routed experts train
+        assert experts and all(
+            res["grads"][k].abs().sum() > 0 for k in experts
+        ), experts  # routed experts train
         if mode == "lora":
             assert any("lora_" in k for k in experts), experts
         if cp > 1:
             assert res["seen_lengths"] == [SEQ // cp] and res["ulysses_calls"] >= 2
         # Full finetuning also steps the 151936-row embedding: Adam (lr 1e-2, eps 1e-4) turns 1e-8 gradient noise
         # on a nearly unused row into a 2e-6 weight difference after two steps (losses agree to 1e-7).
-        _close(res, ref, what = (mode, world, env, cp, rank), state_atol = 1e-5 if mode == "full" else 1e-6)
+        _close(
+            res, ref, what = (mode, world, env, cp, rank), state_atol = 1e-5 if mode == "full" else 1e-6
+        )
 
 
 @pytest.mark.parametrize("env", [{}, {"UNSLOTH_FSDP2": "1"}], ids = ["ddp", "fsdp2"])
@@ -713,9 +827,15 @@ def test_moe_block_compile_under_cp_is_compile_clean(mode):
         _close(res, ref, what = ("qwen3_moe cp2 compiled", mode, rank), state_atol = atol)
 
 
-@pytest.mark.parametrize("config_flag", [True, False], ids = ["output_router_logits", "trl_default_coef"])
+@pytest.mark.parametrize(
+    "config_flag", [True, False], ids = ["output_router_logits", "trl_default_coef"]
+)
 def test_moe_with_router_aux_loss_under_cp_is_refused(config_flag):
     """Refused before the split, also when only TRL's default router_aux_loss_coef would turn the loss on."""
-    for res in _spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", router_aux = config_flag, trl_aux = True):
+    for res in _spawn(
+        "train", 2, bs = 2, cp = 2, arch = "qwen3_moe", router_aux = config_flag, trl_aux = True
+    ):
         error = res.get("error") or ""
-        assert "MoE x pp / cp" in error and "router_aux_loss_coef = 0.0" in error, error or res["losses"]
+        assert "MoE x pp / cp" in error and "router_aux_loss_coef = 0.0" in error, (
+            error or res["losses"]
+        )

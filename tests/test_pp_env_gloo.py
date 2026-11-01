@@ -47,8 +47,12 @@ N_LAYERS = 4
 
 def _checkpoint(tmp, arch = "llama"):
     overrides = {"num_hidden_layers": N_LAYERS}
-    if arch == "gemma3":  # sliding / full layers on both stages, window shorter than the 9-token rows
-        overrides.update(layer_types = ["sliding_attention", "full_attention"] * (N_LAYERS // 2), sliding_window = 4)
+    if (
+        arch == "gemma3"
+    ):  # sliding / full layers on both stages, window shorter than the 9-token rows
+        overrides.update(
+            layer_types = ["sliding_attention", "full_attention"] * (N_LAYERS // 2), sliding_window = 4
+        )
     return _save_checkpoint(arch, os.path.join(tmp, "ckpt"), overrides)
 
 
@@ -67,7 +71,6 @@ def _case_units(rank, world, tmp):
     )
     try:
         from trl import SFTConfig, SFTTrainer
-
         packed = SFTConfig(output_dir = tmp, packing = True, report_to = [], use_cpu = True)
         plain_sft = SFTConfig(output_dir = tmp, report_to = [], use_cpu = True)
     except ImportError:
@@ -82,7 +85,20 @@ def _case_units(rank, world, tmp):
             got = tp_env.env_layout()
         except Exception as e:
             return f"{type(e).__name__}: {e}"
-        return None if got is None else (got.pp, got.dp, got.tp, got.world, got.fsdp2, got.microbatches, got.schedule, repr(got))
+        return (
+            None
+            if got is None
+            else (
+                got.pp,
+                got.dp,
+                got.tp,
+                got.world,
+                got.fsdp2,
+                got.microbatches,
+                got.schedule,
+                repr(got),
+            )
+        )
 
     out["pp2"] = layout(UNSLOTH_PP_SIZE = 2, WORLD_SIZE = 2)
     out["pp2_dp2"] = layout(UNSLOTH_PP_SIZE = 2, WORLD_SIZE = 4)
@@ -107,7 +123,13 @@ def _case_units(rank, world, tmp):
 
     calls = []
 
-    def loader(model_name, load_in_4bit = True, fast_inference = False, full_finetuning = False, **kw):
+    def loader(
+        model_name,
+        load_in_4bit = True,
+        fast_inference = False,
+        full_finetuning = False,
+        **kw,
+    ):
         calls.append(model_name)
         return "loaded"
 
@@ -156,7 +178,9 @@ def _case_units(rank, world, tmp):
     moe = tp_env.tensor_parallel_env_load(
         lambda name, load_in_4bit = True: AutoModelForCausalLM.from_config(config)
     )
-    os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(_free_port()), RANK = "0", LOCAL_RANK = "0")
+    os.environ.update(
+        MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(_free_port()), RANK = "0", LOCAL_RANK = "0"
+    )
     layout(UNSLOTH_PP_SIZE = 1, WORLD_SIZE = 1)  # (no world for the mesh here: refusal path only)
     os.environ["UNSLOTH_PP_SIZE"] = "2"
     tp_env._reset_env_layout()
@@ -168,7 +192,9 @@ def _case_units(rank, world, tmp):
 
     from unsloth.models import pp_native
 
-    parts = types.SimpleNamespace(embed = types.SimpleNamespace(weight = torch.zeros(1, dtype = torch.float16)))
+    parts = types.SimpleNamespace(
+        embed = types.SimpleNamespace(weight = torch.zeros(1, dtype = torch.float16))
+    )
     plain, forced = torch.nn.Linear(1, 1), torch.nn.Linear(1, 1)
     forced._unsloth_forced_float32 = True
     out["act_dtype"] = (
@@ -227,9 +253,15 @@ def _case_env(
         # Uneven token counts per micro-batch / replica, the same per row however the rows are batched.
         batch["labels"][batch["labels"] % 5 == 0] = -100
         seen.append(batch["input_ids"].sum().item())
-        return transformers.BatchEncoding(batch)  # what tokenizer-based collators return (a Mapping)
+        return transformers.BatchEncoding(
+            batch
+        )  # what tokenizer-based collators return (a Mapping)
 
-    def load(model_name, load_in_4bit = True, **kwargs):  # FastLanguageModel.from_pretrained's flags
+    def load(
+        model_name,
+        load_in_4bit = True,
+        **kwargs,
+    ):  # FastLanguageModel.from_pretrained's flags
         return AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype = torch.float32, attn_implementation = "eager"
         )
@@ -284,9 +316,11 @@ def _case_env(
     if stage is not None:
         res["stage"] = stage.stage_index
         res["owned"] = sorted(n for n, p in trainer.model.named_parameters() if p.requires_grad)
-        res["kept_on_cpu"] = all(
-            p.device.type == "cpu" for _, _, m, _ in stage._kept for p in m.parameters()
-        ) if stage._kept and stage.tp_mesh is None else None
+        res["kept_on_cpu"] = (
+            all(p.device.type == "cpu" for _, _, m, _ in stage._kept for p in m.parameters())
+            if stage._kept and stage.tp_mesh is None
+            else None
+        )
     if evaluate:
         res["eval_loss"] = trainer.evaluate(eval_data)["eval_loss"]
     save_dir = os.path.join(tmp, "adapter")
@@ -296,18 +330,24 @@ def _case_env(
         trainer.model.save_pretrained(save_dir)
     if dist.is_initialized():
         dist.barrier()
-    res["adapter"] = load_file(os.path.join(save_dir, "adapter_model.safetensors")) if rank == 0 else None
+    res["adapter"] = (
+        load_file(os.path.join(save_dir, "adapter_model.safetensors")) if rank == 0 else None
+    )
     trainer.save_model(os.path.join(tmp, "trainer_save"))
     if dist.is_initialized():
         dist.barrier()
     res["trainer_adapter"] = (
-        load_file(os.path.join(tmp, "trainer_save", "adapter_model.safetensors")) if rank == 0 else None
+        load_file(os.path.join(tmp, "trainer_save", "adapter_model.safetensors"))
+        if rank == 0
+        else None
     )
     if post:
         prompt = ids[:1, :4]
         refusal = pp_env.replica_refusal(stage, "generate") if stage is not None else None
         if refusal is None:
-            out = trainer.model.generate(input_ids = prompt, max_new_tokens = 4, do_sample = False, pad_token_id = 0)
+            out = trainer.model.generate(
+                input_ids = prompt, max_new_tokens = 4, do_sample = False, pad_token_id = 0
+            )
             res["generated"] = out.tolist()
             if stage is not None:
                 res["replica_active"] = stage.replica is not None
@@ -322,7 +362,8 @@ def _case_env(
                 res["export_other"] = sorted(full) if rank != 0 else None
                 pp_env.release_replica(trainer.model)
                 res["released"] = stage.replica is None and all(
-                    not isinstance(layer, torch.nn.Module) or type(layer).__name__ == "_PPPassThrough"
+                    not isinstance(layer, torch.nn.Module)
+                    or type(layer).__name__ == "_PPPassThrough"
                     for i, layer in enumerate(stage.parts.layers)
                     if not (stage.start <= i < stage.end)
                 )
@@ -330,18 +371,30 @@ def _case_env(
                 trainer.args.max_steps = steps + 1
                 res["after_generate"] = _raised(lambda: trainer.train(resume_from_checkpoint = None))
             else:
-                res["export"] = {k: v.detach().clone() for k, v in trainer.model.state_dict().items()}
+                res["export"] = {
+                    k: v.detach().clone() for k, v in trainer.model.state_dict().items()
+                }
         else:
             res["generate_refused"] = _raised(
-                lambda: trainer.model.generate(input_ids = prompt, max_new_tokens = 4, do_sample = False, pad_token_id = 0)
+                lambda: trainer.model.generate(
+                    input_ids = prompt, max_new_tokens = 4, do_sample = False, pad_token_id = 0
+                )
             )
-            res["export_refused"] = _raised(lambda: pp_env.pp_collective(trainer.model, "export", lambda: None))
+            res["export_refused"] = _raised(
+                lambda: pp_env.pp_collective(trainer.model, "export", lambda: None)
+            )
     if dist.is_initialized():
         dist.barrier()
     return res
 
 
-def _case_resume(rank, world, tmp, ckpt, bs = 2):
+def _case_resume(
+    rank,
+    world,
+    tmp,
+    ckpt,
+    bs = 2,
+):
     """save_strategy = "steps" checkpoints (the 1-GPU adapter + per-rank optimizer state) and an exact resume."""
     error = _import_checkout_unsloth()
     if error is not None:
@@ -377,13 +430,22 @@ def _case_resume(rank, world, tmp, ckpt, bs = 2):
 
     def run(out):
         args = _trainer_args(
-            os.path.join(tmp, out), bs, max_steps = 4, adam_epsilon = _ADAM_EPS, save_strategy = "steps", save_steps = 2
+            os.path.join(tmp, out),
+            bs,
+            max_steps = 4,
+            adam_epsilon = _ADAM_EPS,
+            save_strategy = "steps",
+            save_steps = 2,
         )
         return SequentialTrainer(model = fresh(), args = args, train_dataset = data)
 
     def summary(trainer):
         logs = [h for h in trainer.state.log_history if "loss" in h]
-        return {"steps": [h["step"] for h in logs], "losses": [h["loss"] for h in logs], "norms": [h["grad_norm"] for h in logs]}
+        return {
+            "steps": [h["step"] for h in logs],
+            "losses": [h["loss"] for h in logs],
+            "norms": [h["grad_norm"] for h in logs],
+        }
 
     a = run("a")
     a.train()
@@ -393,10 +455,20 @@ def _case_resume(rank, world, tmp, ckpt, bs = 2):
     b.train(resume_from_checkpoint = ckpt2)
     state_a = {n: p.detach().clone() for n, p in a.model.named_parameters() if p.requires_grad}
     state_b = {n: p.detach().clone() for n, p in b.model.named_parameters() if p.requires_grad}
-    return {"a": summary(a), "b": summary(b), "files": files, "same": all(torch.equal(state_a[k], state_b[k]) for k in state_a)}
+    return {
+        "a": summary(a),
+        "b": summary(b),
+        "files": files,
+        "same": all(torch.equal(state_a[k], state_b[k]) for k in state_a),
+    }
 
 
-def _case_scaler_clip(rank, world, tmp, wrapper_unscale = False):
+def _case_scaler_clip(
+    rank,
+    world,
+    tmp,
+    wrapper_unscale = False,
+):
     """float16: the Trainer clip under pp unscales the gradients once, for the torch optimizer the
     AcceleratedOptimizer hands the GradScaler (a second unscale inside scaler.step would shrink the update)."""
     error = _import_checkout_unsloth()
@@ -435,12 +507,20 @@ def _case_scaler_clip(rank, world, tmp, wrapper_unscale = False):
     deltas = [(b - p.detach()) for b, p in zip(before, stage.parameters())]
     return {
         "norm": float(norm),
-        "max_rel": max(float((d - g).abs().max() / g.abs().max().clamp_min(1e-30)) for d, g in zip(deltas, grads)),
+        "max_rel": max(
+            float((d - g).abs().max() / g.abs().max().clamp_min(1e-30))
+            for d, g in zip(deltas, grads)
+        ),
         "scale": scaler.get_scale(),
     }
 
 
-CASES = {"units": _case_units, "env": _case_env, "resume": _case_resume, "scaler_clip": _case_scaler_clip}
+CASES = {
+    "units": _case_units,
+    "env": _case_env,
+    "resume": _case_resume,
+    "scaler_clip": _case_scaler_clip,
+}
 
 
 def _worker(rank, world, port, case, tmp, env, kwargs):
@@ -458,7 +538,9 @@ def _worker(rank, world, port, case, tmp, env, kwargs):
     torch.set_num_threads(2)
     import faulthandler
 
-    faulthandler.dump_traceback_later(max(int(os.environ.get("PP_TEST_TIMEOUT", 600)) - 30, 30), exit = True)
+    faulthandler.dump_traceback_later(
+        max(int(os.environ.get("PP_TEST_TIMEOUT", 600)) - 30, 30), exit = True
+    )
     import torch.distributed as dist
 
     try:
@@ -469,7 +551,12 @@ def _worker(rank, world, port, case, tmp, env, kwargs):
             dist.destroy_process_group()
 
 
-def _spawn(case, world = 1, env = None, **kwargs):
+def _spawn(
+    case,
+    world = 1,
+    env = None,
+    **kwargs,
+):
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
@@ -482,14 +569,15 @@ def _spawn(case, world = 1, env = None, **kwargs):
         for p in procs:
             p.start()
         for p in procs:
-            p.join(int(os.environ.get('PP_TEST_TIMEOUT', 600)))
+            p.join(int(os.environ.get("PP_TEST_TIMEOUT", 600)))
         codes = [p.exitcode for p in procs]
         for p in procs:
             if p.is_alive():
                 p.kill()
         assert codes == [0] * world, f"rank exit codes {codes}"
         results = [
-            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False) for r in range(world)
+            torch.load(os.path.join(tmp, f"result_{r}.pt"), weights_only = False)
+            for r in range(world)
         ]
     if "skip" in results[0]:
         pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
@@ -507,29 +595,54 @@ def _pipelining_available():
 
 
 needs_pipelining = pytest.mark.skipif(
-    not _pipelining_available(), reason = "torch.distributed.pipelining with step(return_outputs) (torch >= 2.10)"
+    not _pipelining_available(),
+    reason = "torch.distributed.pipelining with step(return_outputs) (torch >= 2.10)",
 )
 
 
-def _close(got, want, rel = 1e-5, what = ""):
+def _close(
+    got,
+    want,
+    rel = 1e-5,
+    what = "",
+):
     assert got["steps"] == want["steps"], (what, got["steps"], want["steps"])
-    assert got["losses"] == pytest.approx(want["losses"], rel = rel), (what, got["losses"], want["losses"])
+    assert got["losses"] == pytest.approx(want["losses"], rel = rel), (
+        what,
+        got["losses"],
+        want["losses"],
+    )
     # Step 1 is tight; later steps carry the one-process reference's own run-to-run spread on this host
     # (3e-5 absolute at a 2.3 grad norm between two identical reference runs).
-    assert got["grad_norms"][:1] == pytest.approx(want["grad_norms"][:1], rel = rel), (what, got["grad_norms"])
+    assert got["grad_norms"][:1] == pytest.approx(want["grad_norms"][:1], rel = rel), (
+        what,
+        got["grad_norms"],
+    )
     assert got["grad_norms"] == pytest.approx(want["grad_norms"], rel = 1e-4), (
         what,
         got["grad_norms"],
         want["grad_norms"],
     )
     if "eval_loss" in want:
-        assert got["eval_loss"] == pytest.approx(want["eval_loss"], rel = rel), (what, got["eval_loss"], want["eval_loss"])
+        assert got["eval_loss"] == pytest.approx(want["eval_loss"], rel = rel), (
+            what,
+            got["eval_loss"],
+            want["eval_loss"],
+        )
 
 
-def _same_tensors(got, want, rel = 1e-4, atol = 1e-5, what = ""):
+def _same_tensors(
+    got,
+    want,
+    rel = 1e-4,
+    atol = 1e-5,
+    what = "",
+):
     assert set(got) == set(want) and want, (what, sorted(set(got) ^ set(want))[:6])
     for key, value in want.items():
-        torch.testing.assert_close(got[key], value, rtol = rel, atol = atol, msg = lambda m: f"{what} {key}: {m}")
+        torch.testing.assert_close(
+            got[key], value, rtol = rel, atol = atol, msg = lambda m: f"{what} {key}: {m}"
+        )
 
 
 def _ref(bs, **kwargs):
@@ -545,24 +658,36 @@ def test_pp_env_layout_and_refusals():
     assert res["pp2_tp2"][:5] == (2, 1, 2, 4, False) and res["pp2_tp2"][7] == "pp 2 x tp 2"
     assert res["pp2_tp2_dp2"][:5] == (2, 2, 2, 8, False)
     assert res["pp_one"] is None
-    assert "UNSLOTH_PP_SIZE=3" in res["no_divide"] and "WORLD_SIZE=4" in res["no_divide"], res["no_divide"]
+    assert "UNSLOTH_PP_SIZE=3" in res["no_divide"] and "WORLD_SIZE=4" in res["no_divide"], res[
+        "no_divide"
+    ]
     assert "UNSLOTH_PP_SIZE x UNSLOTH_TP_SIZE = 4" in res["no_divide_tp"], res["no_divide_tp"]
     assert "must be >= 1" in res["zero"] and "must be an integer" in res["text"]
     assert res["mb"][5] == 3 and "UNSLOTH_PP_MICROBATCHES" in res["mb_text"]
     assert res["schedule"][6] == "1f1b" and "UNSLOTH_PP_SCHEDULE" in res["schedule_bad"]
     assert "UNSLOTH_PP_MICROBATCHES >= UNSLOTH_PP_SIZE" in res["schedule_mb"], res["schedule_mb"]
-    assert "native FSDP2 only" in res["accelerate_fsdp"] and "UNSLOTH_PP_SIZE=2" in res["accelerate_fsdp"]
-    assert "vLLM" in res["refuse_vllm"] and "UNSLOTH_PP_SIZE=2 (pipeline parallel)" in res["refuse_vllm"]
+    assert (
+        "native FSDP2 only" in res["accelerate_fsdp"]
+        and "UNSLOTH_PP_SIZE=2" in res["accelerate_fsdp"]
+    )
+    assert (
+        "vLLM" in res["refuse_vllm"]
+        and "UNSLOTH_PP_SIZE=2 (pipeline parallel)" in res["refuse_vllm"]
+    )
     assert "full finetuning" in res["refuse_full_ft"] and res["refused_before_load"]
     for key in ("dpo", "grpo"):
-        assert "Trainer / SFTTrainer only" in (res[key] or "") and "UNSLOTH_PP_SIZE=2" in res[key], res[key]
+        assert (
+            "Trainer / SFTTrainer only" in (res[key] or "") and "UNSLOTH_PP_SIZE=2" in res[key]
+        ), res[key]
     assert "overrides compute_loss" in (res["custom_loss"] or ""), res["custom_loss"]
     assert res["plain"] is None and res["trainer"] is None, (res["plain"], res["trainer"])
     assert "load_best_model_at_end" in (res["best"] or ""), res["best"]
     if res["sft"] != "no trl":
         assert res["sft"] is None, res["sft"]
         assert "packing" in (res["packing"] or ""), res["packing"]
-    assert "mixture-of-experts" in (res["moe"] or "") and "UNSLOTH_PP_SIZE=2: unset it" in res["moe"], res["moe"]
+    assert (
+        "mixture-of-experts" in (res["moe"] or "") and "UNSLOTH_PP_SIZE=2: unset it" in res["moe"]
+    ), res["moe"]
     assert res["act_dtype"] == (torch.float16, torch.float32), res["act_dtype"]
     assert res["stub_dtype"] == torch.float32, res["stub_dtype"]
 
@@ -585,13 +710,21 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
     for rank, res in enumerate(results):
         assert res["is_pp"] and res["pre_split"], res  # whole until the Trainer
         if res["stage"] == 1:
-            assert res["stage_ids"] and sum(res["stage_ids"]) == sum(res["seen"]), (res["stage_ids"], res["seen"])
+            assert res["stage_ids"] and sum(res["stage_ids"]) == sum(res["seen"]), (
+                res["stage_ids"],
+                res["seen"],
+            )
         assert "DistributedDataParallel" not in res["wrapped"]
         _close(res, ref, what = rank)
         stages.add(res["stage"])
     assert stages == {0, 1}
-    owned = [set(r["owned"]) for r in results if r["stage"] == 0][0] | [set(r["owned"]) for r in results if r["stage"] == 1][0]
-    assert not ([set(r["owned"]) for r in results if r["stage"] == 0][0] & [set(r["owned"]) for r in results if r["stage"] == 1][0])
+    owned = [set(r["owned"]) for r in results if r["stage"] == 0][0] | [
+        set(r["owned"]) for r in results if r["stage"] == 1
+    ][0]
+    assert not (
+        [set(r["owned"]) for r in results if r["stage"] == 0][0]
+        & [set(r["owned"]) for r in results if r["stage"] == 1][0]
+    )
     assert owned, owned
     _same_tensors(results[0]["adapter"], ref["adapter"], what = "save_pretrained")
     _same_tensors(results[0]["trainer_adapter"], ref["adapter"], what = "Trainer.save_model")
@@ -600,7 +733,10 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
     for rank, res in enumerate(results):
         by_replica.setdefault(rank % dp if dp > 1 else 0, []).append(res["seen"])
     for replica, seen in by_replica.items():
-        assert all(s == seen[0] for s in seen), (replica, seen)  # every stage of a replica: same rows
+        assert all(s == seen[0] for s in seen), (
+            replica,
+            seen,
+        )  # every stage of a replica: same rows
     if dp > 1:
         assert by_replica[0][0] != by_replica[1][0]
     replica_ok = "UNSLOTH_TP_SIZE" not in env and "UNSLOTH_FSDP2" not in env
@@ -615,9 +751,13 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
             else:
                 assert res["export_other"] == sorted(ref["export"]), res["export_other"]
         else:
-            assert "not supported yet on a pipeline parallel x" in (res["generate_refused"] or ""), res
+            assert "not supported yet on a pipeline parallel x" in (
+                res["generate_refused"] or ""
+            ), res
             assert "UNSLOTH_PP_SIZE=2" in res["generate_refused"], res["generate_refused"]
-            assert res["export_refused"] == res["generate_refused"].replace("`generate`", "`export`")
+            assert res["export_refused"] == res["generate_refused"].replace(
+                "`generate`", "`export`"
+            )
 
 
 @needs_pipelining
@@ -641,7 +781,9 @@ def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule, arc
         env["UNSLOTH_PP_MICROBATCHES"] = mb
     if schedule:
         env["UNSLOTH_PP_SCHEDULE"] = schedule
-    for rank, res in enumerate(_spawn("env", 2, env, bs = bs, ga = ga, evaluate = False, post = False, arch = arch)):
+    for rank, res in enumerate(
+        _spawn("env", 2, env, bs = bs, ga = ga, evaluate = False, post = False, arch = arch)
+    ):
         _close(res, ref, what = rank)
         _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"])
 
@@ -652,7 +794,9 @@ def test_pp_env_checkpoint_resume_equals_uninterrupted(world):
     for rank, res in enumerate(_spawn("resume", world, {"UNSLOTH_PP_SIZE": "2"})):
         a, b = res["a"], res["b"]
         assert a["steps"] == [1, 2, 3, 4] and b["steps"] == [1, 2, 3, 4], (a, b)
-        assert "adapter_model.safetensors" in res["files"] and f"rank{rank:05d}.pt" in res["files"], res["files"]
+        assert (
+            "adapter_model.safetensors" in res["files"] and f"rank{rank:05d}.pt" in res["files"]
+        ), res["files"]
         assert b["losses"][2:] == a["losses"][2:] and b["norms"][2:] == a["norms"][2:], (rank, a, b)
         assert res["same"], rank
 
@@ -660,6 +804,10 @@ def test_pp_env_checkpoint_resume_equals_uninterrupted(world):
 @needs_pipelining
 def test_pp_env_fp16_scaler_unscales_once():
     for res in _spawn("scaler_clip", 2):
-        assert res["norm"] > 0 and res["max_rel"] < 1e-3, res  # update == -lr x the unscaled gradient
+        assert (
+            res["norm"] > 0 and res["max_rel"] < 1e-3
+        ), res  # update == -lr x the unscaled gradient
     for res in _spawn("scaler_clip", 2, wrapper_unscale = True):
-        assert res["max_rel"] > 0.9, res  # unscaled twice: the update is 1 / 1024 of it (the bug this pins)
+        assert (
+            res["max_rel"] > 0.9
+        ), res  # unscaled twice: the update is 1 / 1024 of it (the bug this pins)

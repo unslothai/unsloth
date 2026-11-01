@@ -81,9 +81,13 @@ class Query:
     kernels: bool = False  # Unsloth's fused RoPE / RMSNorm / SwiGLU / LoRA kernels
     loss: str = "standard"  # standard, fused_ce, chunked_ce, fused_rl
     moe: bool = False  # routed experts
-    router_aux_loss: bool = False  # the load balancing loss is on (output_router_logits, or TRL's default coef)
+    router_aux_loss: bool = (
+        False  # the load balancing loss is on (output_router_logits, or TRL's default coef)
+    )
     expert_lora: bool = False  # LoRA on the routed experts (PEFT target_parameters / ParamWrapper)
-    moe_backend: str = ""  # UNSLOTH_MOE_BACKEND: grouped_mm, unsloth_triton, native_torch ("" = default)
+    moe_backend: str = (
+        ""  # UNSLOTH_MOE_BACKEND: grouped_mm, unsloth_triton, native_torch ("" = default)
+    )
     optim: str = ""  # the optimizer (args.optim or the class of a prebuilt one), lower case
 
 
@@ -312,7 +316,9 @@ class Feature:
     produces: tuple = ()
     hooks: tuple = ()
     exclusive: tuple = ()  # hooks it must own alone
-    scope: str = "instance"  # instance: hooks per trainer / model; class: still patches a class (debt)
+    scope: str = (
+        "instance"  # instance: hooks per trainer / model; class: still patches a class (debt)
+    )
 
 
 def _gc(q):
@@ -322,36 +328,66 @@ def _gc(q):
 FEATURES = (
     # Parallel axes.
     Feature(
-        "ddp", "parallel", "transformers / accelerate DDP; tp_native._dp_average under tp / pp",
-        lambda q: q.dp > 1 and not q.fsdp2, mesh = ("dp", "cp"),
-        consumes = ("num_items_in_batch",), hooks = ("Accelerator.prepare_model", "Accelerator.clip_grad_norm_"),
-    ),
-    Feature(
-        "fsdp2", "parallel", "models/fsdp2_native.py",
-        lambda q: q.dp > 1 and q.fsdp2, mesh = ("dp", "cp"),
+        "ddp",
+        "parallel",
+        "transformers / accelerate DDP; tp_native._dp_average under tp / pp",
+        lambda q: q.dp > 1 and not q.fsdp2,
+        mesh = ("dp", "cp"),
         consumes = ("num_items_in_batch",),
-        hooks = ("Trainer.__init__", "Accelerator.prepare_model", "Accelerator.clip_grad_norm_", "optimizer.step"),
+        hooks = ("Accelerator.prepare_model", "Accelerator.clip_grad_norm_"),
     ),
     Feature(
-        "tp", "parallel", "models/tp_native.py, models/tp_env.py",
-        lambda q: q.tp > 1, mesh = ("tp",),
+        "fsdp2",
+        "parallel",
+        "models/fsdp2_native.py",
+        lambda q: q.dp > 1 and q.fsdp2,
+        mesh = ("dp", "cp"),
+        consumes = ("num_items_in_batch",),
         hooks = (
-            "from_pretrained", "get_peft_model", "Trainer.__init__", "Accelerator.prepare_model",
-            "Accelerator.prepare_data_loader", "Accelerator.clip_grad_norm_", "Trainer.save_model",
+            "Trainer.__init__",
+            "Accelerator.prepare_model",
+            "Accelerator.clip_grad_norm_",
+            "optimizer.step",
         ),
     ),
     Feature(
-        "pp", "parallel", "models/pp_native.py, models/pp_env.py",
-        lambda q: q.pp > 1, mesh = ("pp",),
+        "tp",
+        "parallel",
+        "models/tp_native.py, models/tp_env.py",
+        lambda q: q.tp > 1,
+        mesh = ("tp",),
+        hooks = (
+            "from_pretrained",
+            "get_peft_model",
+            "Trainer.__init__",
+            "Accelerator.prepare_model",
+            "Accelerator.prepare_data_loader",
+            "Accelerator.clip_grad_norm_",
+            "Trainer.save_model",
+        ),
+    ),
+    Feature(
+        "pp",
+        "parallel",
+        "models/pp_native.py, models/pp_env.py",
+        lambda q: q.pp > 1,
+        mesh = ("pp",),
         consumes = ("input_ids", "labels", "position_ids", "num_items_in_batch"),
         produces = ("stage_hidden",),
-        hooks = ("Trainer.__init__", "Accelerator.prepare_data_loader", "Accelerator.clip_grad_norm_",
-                 "Trainer.save_model"),
+        hooks = (
+            "Trainer.__init__",
+            "Accelerator.prepare_data_loader",
+            "Accelerator.clip_grad_norm_",
+            "Trainer.save_model",
+        ),
         exclusive = ("Trainer.training_step", "Trainer.prediction_step"),
     ),
     Feature(
-        "cp.ulysses", "parallel", "context_parallel.py, utils/ulysses.py, utils/ulysses_hybrid.py",
-        lambda q: q.cp > 1 and q.cp_backend != "ring", mesh = ("cp",),
+        "cp.ulysses",
+        "parallel",
+        "context_parallel.py, utils/ulysses.py, utils/ulysses_hybrid.py",
+        lambda q: q.cp > 1 and q.cp_backend != "ring",
+        mesh = ("cp",),
         consumes = ("input_ids", "labels", "position_ids", "num_items_in_batch"),
         uses = ("packed_seq_lengths",),
         produces = ("seq_shard", "shift_labels", "position_ids"),
@@ -360,8 +396,11 @@ FEATURES = (
         scope = "class",
     ),
     Feature(
-        "cp.ring", "parallel", "context_parallel.py (torch context_parallel)",
-        lambda q: q.cp > 1 and q.cp_backend == "ring", mesh = ("cp",),
+        "cp.ring",
+        "parallel",
+        "context_parallel.py (torch context_parallel)",
+        lambda q: q.cp > 1 and q.cp_backend == "ring",
+        mesh = ("cp",),
         consumes = ("input_ids", "labels", "position_ids", "num_items_in_batch"),
         produces = ("seq_shard", "shift_labels", "cp_permutation", "position_ids"),
         hooks = ("Trainer.__init__", "attention_function"),
@@ -369,60 +408,114 @@ FEATURES = (
         scope = "class",
     ),
     # Precision.
-    Feature("lora", "precision", "peft + models/lora_init.py", lambda q: q.mode == "lora", hooks = ("get_peft_model",)),
     Feature(
-        "qlora", "precision", "bitsandbytes 4-bit + peft", lambda q: q.mode == "qlora",
+        "lora",
+        "precision",
+        "peft + models/lora_init.py",
+        lambda q: q.mode == "lora",
+        hooks = ("get_peft_model",),
+    ),
+    Feature(
+        "qlora",
+        "precision",
+        "bitsandbytes 4-bit + peft",
+        lambda q: q.mode == "qlora",
         hooks = ("from_pretrained", "get_peft_model"),
     ),
-    Feature("full", "precision", "full finetuning", lambda q: q.mode == "full", hooks = ("from_pretrained",)),
     Feature(
-        "low_precision", "precision", "models/float8_training.py (FP8 / MXFP8 / NVFP4 via torchao)",
-        lambda q: q.mode in ("fp8", "nvfp4", "mxfp8"), hooks = ("from_pretrained", "Trainer.__init__"),
+        "full",
+        "precision",
+        "full finetuning",
+        lambda q: q.mode == "full",
+        hooks = ("from_pretrained",),
+    ),
+    Feature(
+        "low_precision",
+        "precision",
+        "models/float8_training.py (FP8 / MXFP8 / NVFP4 via torchao)",
+        lambda q: q.mode in ("fp8", "nvfp4", "mxfp8"),
+        hooks = ("from_pretrained", "Trainer.__init__"),
     ),
     # Compile.
     Feature(
-        "block_compile", "compile", "models/_block_compile.py (torch.compile per decoder layer)",
-        lambda q: q.compile == "block", hooks = ("decoder_layer.forward",),
+        "block_compile",
+        "compile",
+        "models/_block_compile.py (torch.compile per decoder layer)",
+        lambda q: q.compile == "block",
+        hooks = ("decoder_layer.forward",),
     ),
     # Attention backends.
-    Feature("sdpa", "attention", "torch SDPA", lambda q: q.attention in ("sdpa", "eager"), hooks = ("attention_function",)),
     Feature(
-        "flash", "attention", "utils/attention_dispatch.py (flash dense / xformers)",
-        lambda q: q.attention == "flash", uses = ("attention_mask",), hooks = ("attention_function",),
+        "sdpa",
+        "attention",
+        "torch SDPA",
+        lambda q: q.attention in ("sdpa", "eager"),
+        hooks = ("attention_function",),
     ),
     Feature(
-        "flash_varlen", "attention", "utils/attention_dispatch.py (flash / FA3 / FA4 varlen)",
+        "flash",
+        "attention",
+        "utils/attention_dispatch.py (flash dense / xformers)",
+        lambda q: q.attention == "flash",
+        uses = ("attention_mask",),
+        hooks = ("attention_function",),
+    ),
+    Feature(
+        "flash_varlen",
+        "attention",
+        "utils/attention_dispatch.py (flash / FA3 / FA4 varlen)",
         lambda q: q.attention in ("flash_varlen", "fa3", "fa4"),
-        consumes = ("cu_seqlens",), hooks = ("attention_function",),
+        consumes = ("cu_seqlens",),
+        hooks = ("attention_function",),
     ),
     Feature(
-        "flex", "attention", "utils/attention_dispatch.py (flex attention)",
+        "flex",
+        "attention",
+        "utils/attention_dispatch.py (flex attention)",
         lambda q: q.attention in ("flex", "flex_sparse"),
-        consumes = ("position_ids",), produces = ("block_mask",), hooks = ("attention_function",),
+        consumes = ("position_ids",),
+        produces = ("block_mask",),
+        hooks = ("attention_function",),
     ),
     # Packing.
     Feature(
-        "packing", "packing", "utils/packing.py (sample packing / padding-free)",
-        lambda q: q.packing, produces = ("packed_seq_lengths", "cu_seqlens", "position_ids"), hooks = ("collator",),
+        "packing",
+        "packing",
+        "utils/packing.py (sample packing / padding-free)",
+        lambda q: q.packing,
+        produces = ("packed_seq_lengths", "cu_seqlens", "position_ids"),
+        hooks = ("collator",),
     ),
     # Memory.
     Feature(
-        "gradient_checkpointing", "memory", "torch.utils.checkpoint / unsloth_zoo gradient_checkpointing",
-        _gc, hooks = ("torch.utils.checkpoint",),
+        "gradient_checkpointing",
+        "memory",
+        "torch.utils.checkpoint / unsloth_zoo gradient_checkpointing",
+        _gc,
+        hooks = ("torch.utils.checkpoint",),
     ),
     Feature(
-        "tiled_mlp", "memory", "models/_tiled_mlp_ddp.py + unsloth_zoo tiled MLP",
-        lambda q: q.memory == "tiled_mlp", hooks = ("decoder_layer.forward",),
+        "tiled_mlp",
+        "memory",
+        "models/_tiled_mlp_ddp.py + unsloth_zoo tiled MLP",
+        lambda q: q.memory == "tiled_mlp",
+        hooks = ("decoder_layer.forward",),
     ),
     # Kernels and losses.
     Feature(
-        "unsloth_kernels", "kernels", "kernels/ (RoPE, RMSNorm, SwiGLU, fast LoRA)",
-        lambda q: q.kernels, hooks = ("decoder_layer.forward", "attention_function"),
+        "unsloth_kernels",
+        "kernels",
+        "kernels/ (RoPE, RMSNorm, SwiGLU, fast LoRA)",
+        lambda q: q.kernels,
+        hooks = ("decoder_layer.forward", "attention_function"),
     ),
     Feature(
-        "fused_loss", "loss", "unsloth_zoo fused / chunked CE, models/_fused_rl_logprobs.py",
+        "fused_loss",
+        "loss",
+        "unsloth_zoo fused / chunked CE, models/_fused_rl_logprobs.py",
         lambda q: q.loss in ("fused_ce", "chunked_ce", "fused_rl"),
-        consumes = ("labels",), hooks = ("loss_function",),
+        consumes = ("labels",),
+        hooks = ("loss_function",),
     ),
 )
 
@@ -438,7 +531,11 @@ def check_features(query: Query) -> list:
     sizes = {"dp": query.dp, "tp": query.tp, "pp": query.pp, "cp": query.cp}
     for feature in active:
         # A data parallel feature reduces over (dp, cp); it needs at least one of them.
-        if feature.mesh and feature.kind == "parallel" and not any(sizes.get(a, 1) > 1 for a in feature.mesh):
+        if (
+            feature.mesh
+            and feature.kind == "parallel"
+            and not any(sizes.get(a, 1) > 1 for a in feature.mesh)
+        ):
             raise NotImplementedError(
                 f"Unsloth: {feature.name}: needs the {' / '.join(feature.mesh)} mesh axis. ({_describe(query)})"
             )
@@ -510,29 +607,41 @@ CELLS = (
         "cp x native FSDP2 (dp_shard x cp), eager",
         {**_CP_DP, "fsdp2": (True,), "compile": ("eager",), "dp": (1, 2), "cp": (2,)},
         parity = _FSDP2_CP,
-        engagement = _FSDP2_CP + " (FSDP2 mesh covers the cp group, seq / cp tokens, Ulysses exchanges)",
+        engagement = _FSDP2_CP
+        + " (FSDP2 mesh covers the cp group, seq / cp tokens, Ulysses exchanges)",
         compile = "eager: no compiled region",
     ),
     Cell(
         "cp x tp (DDP dp), eager",
         {**_CP_TP, "fsdp2": (False,), "compile": ("eager",), "dp": (1, 2), "tp": (2,), "cp": (2,)},
         parity = _PARITY + "[cp2_tp2|dp2_cp2_tp2]",
-        engagement = _PARITY + " (seq / cp tokens per rank, one Ulysses exchange per layer, cp group != tp group)",
+        engagement = _PARITY
+        + " (seq / cp tokens per rank, one Ulysses exchange per layer, cp group != tp group)",
         compile = "eager: no compiled region",
     ),
     Cell(
         "cp x tp (FSDP2 dp), eager",
         {**_CP_TP, "fsdp2": (True,), "compile": ("eager",), "dp": (2,), "tp": (2,), "cp": (2,)},
         parity = _PARITY + "[fsdp2_cp2_tp2]",
-        engagement = _PARITY + "[fsdp2_cp2_tp2] (as above, FSDP2 over the flattened (dp_shard, cp) mesh)",
+        engagement = _PARITY
+        + "[fsdp2_cp2_tp2] (as above, FSDP2 over the flattened (dp_shard, cp) mesh)",
         compile = "eager: no compiled region",
     ),
     Cell(
         "cp x tp, Unsloth block compile",
-        {**_CP_TP, "fsdp2": (False, True), "compile": ("block",), "dp": (1, 2), "tp": (2,), "cp": (2,)},
+        {
+            **_CP_TP,
+            "fsdp2": (False, True),
+            "compile": ("block",),
+            "dp": (1, 2),
+            "tp": (2,),
+            "cp": (2,),
+        },
         parity = _GLOO + "test_block_compile_composes_like_one_process",
-        engagement = _GLOO + "test_block_compile_composes_like_one_process (compiled classes, seq / cp tokens)",
-        compile = _GLOO + "test_block_compile_composes_like_one_process (graph breaks / recompiles <= one process)",
+        engagement = _GLOO
+        + "test_block_compile_composes_like_one_process (compiled classes, seq / cp tokens)",
+        compile = _GLOO
+        + "test_block_compile_composes_like_one_process (graph breaks / recompiles <= one process)",
     ),
 )
 
@@ -570,17 +679,24 @@ _MOE_AUX_TEST = _GLOO + "test_moe_with_router_aux_loss_under_ddp_matches_per_mic
 _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 # (family, precision, aux, mode) -> (parity, engagement, compile) for the rows a test proves.
 _MOE_EVIDENCE = {
-    ("qwen3_moe", "lora+experts", False, "ddp"): (_MOE_TEST + "[lora-ddp]",) * 2 + ("eager: no compiled region",),
-    ("qwen3_moe", "lora+experts", False, "fsdp2"): (_MOE_TEST + "[lora-fsdp2]",) * 2 + ("eager: no compiled region",),
-    ("qwen3_moe", "lora+experts", False, "cp"): (_MOE_TEST + "[lora-cp2]",) * 2 + (_MOE_COMPILE + "[lora]",),
+    ("qwen3_moe", "lora+experts", False, "ddp"): (_MOE_TEST + "[lora-ddp]",) * 2
+    + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", False, "fsdp2"): (_MOE_TEST + "[lora-fsdp2]",) * 2
+    + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", False, "cp"): (_MOE_TEST + "[lora-cp2]",) * 2
+    + (_MOE_COMPILE + "[lora]",),
     # Block compile under FSDP2 x cp measured 28 recompiles against 26 in one process (one more
     # ParametrizedQwen3MoeTopKRouter type guard in the router forward and in PEFT's get_base_layer): eager only.
     ("qwen3_moe", "lora+experts", False, "fsdp2_cp"): (_MOE_TEST + "[lora-fsdp2_cp2]",) * 2
     + ("eager: block compile recompiles more than one process",),
-    ("qwen3_moe", "full", False, "fsdp2"): (_MOE_TEST + "[full-fsdp2]",) * 2 + ("eager: no compiled region",),
-    ("qwen3_moe", "full", False, "cp"): (_MOE_TEST + "[full-cp2]",) * 2 + (_MOE_COMPILE + "[full]",),
-    ("qwen3_moe", "lora+experts", True, "ddp"): (_MOE_AUX_TEST,) * 2 + ("eager: no compiled region",),
-    ("qwen3_moe", "lora+experts", True, "fsdp2"): (_MOE_AUX_TEST,) * 2 + ("eager: no compiled region",),
+    ("qwen3_moe", "full", False, "fsdp2"): (_MOE_TEST + "[full-fsdp2]",) * 2
+    + ("eager: no compiled region",),
+    ("qwen3_moe", "full", False, "cp"): (_MOE_TEST + "[full-cp2]",) * 2
+    + (_MOE_COMPILE + "[full]",),
+    ("qwen3_moe", "lora+experts", True, "ddp"): (_MOE_AUX_TEST,) * 2
+    + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", True, "fsdp2"): (_MOE_AUX_TEST,) * 2
+    + ("eager: no compiled region",),
 }
 
 
@@ -607,14 +723,33 @@ def _moe_cells():
             for aux in (False, True):
                 for mode, mmatch in _MOE_MODES.items():
                     evidence = _MOE_EVIDENCE.get((family, precision, aux, mode))
-                    compile_modes = ("eager", "block") if evidence and not evidence[2].startswith("eager:") else ("eager",)
-                    match = {**_MOE_COMMON, **pmatch, **mmatch, "family": (family,), "router_aux_loss": (aux,),
-                             "compile": compile_modes}
+                    compile_modes = (
+                        ("eager", "block")
+                        if evidence and not evidence[2].startswith("eager:")
+                        else ("eager",)
+                    )
+                    match = {
+                        **_MOE_COMMON,
+                        **pmatch,
+                        **mmatch,
+                        "family": (family,),
+                        "router_aux_loss": (aux,),
+                        "compile": compile_modes,
+                    }
                     name = f"MoE {family} x {precision} x aux {'on' if aux else 'off'} x {mode}"
                     if evidence:
                         cells.append(Cell(name, match, *evidence))
                     else:
-                        cells.append(Cell(name, match, None, None, None, note = _moe_note(family, precision, aux, mode)))
+                        cells.append(
+                            Cell(
+                                name,
+                                match,
+                                None,
+                                None,
+                                None,
+                                note = _moe_note(family, precision, aux, mode),
+                            )
+                        )
     return tuple(cells)
 
 
@@ -623,14 +758,20 @@ CELLS = CELLS + _moe_cells()
 
 def _strict() -> bool:
     import os
-
-    return os.environ.get("UNSLOTH_PARALLEL_STRICT", "0").strip().lower() in ("1", "true", "yes", "on")
+    return os.environ.get("UNSLOTH_PARALLEL_STRICT", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _gated(query: Query) -> bool:
     """Compositions opened by the one-flag work, and MoE under context / pipeline parallel: they run only with a
     cell carrying all three kinds of evidence. MoE under tensor parallel alone keeps tp_native's own support."""
-    return (query.cp > 1 and (query.tp > 1 or query.pp > 1)) or (query.moe and (query.cp > 1 or query.pp > 1))
+    return (query.cp > 1 and (query.tp > 1 or query.pp > 1)) or (
+        query.moe and (query.cp > 1 or query.pp > 1)
+    )
 
 
 def cell_status(query: Query) -> tuple:
@@ -647,9 +788,16 @@ def cell_status(query: Query) -> tuple:
         return ("single", None)
     differ = []
     for cell in CELLS:
-        off = [f"{k}={getattr(query, k)!r}" for k, v in cell.match.items() if getattr(query, k) not in v]
+        off = [
+            f"{k}={getattr(query, k)!r}"
+            for k, v in cell.match.items()
+            if getattr(query, k) not in v
+        ]
         differ.append(f"{cell.name!r} differs in {', '.join(off)}")
-    return ("unverified", "no supported cell covers it" + (f" ({'; '.join(differ[:3])})" if differ else ""))
+    return (
+        "unverified",
+        "no supported cell covers it" + (f" ({'; '.join(differ[:3])})" if differ else ""),
+    )
 
 
 def check(query: Query, cells: bool = True) -> None:
@@ -672,13 +820,18 @@ def check(query: Query, cells: bool = True) -> None:
 
 
 def _describe(q: Query) -> str:
-    parts = [f"{name} {getattr(q, name)}" for name in ("pp", "dp", "cp", "tp") if getattr(q, name) > 1]
+    parts = [
+        f"{name} {getattr(q, name)}" for name in ("pp", "dp", "cp", "tp") if getattr(q, name) > 1
+    ]
     if q.cp > 1 and q.cp_backend:
         parts.append(f"cp_backend {q.cp_backend}")
     if q.fsdp2:
         parts.append("FSDP2")
-    return "layout " + (" x ".join(parts) or "single rank") + f", trainer {q.trainer}" + (
-        f", model {q.family}" if q.family else ""
+    return (
+        "layout "
+        + (" x ".join(parts) or "single rank")
+        + f", trainer {q.trainer}"
+        + (f", model {q.family}" if q.family else "")
     )
 
 
@@ -693,7 +846,6 @@ def _torch_version():
 def _sm():
     try:
         import torch
-
         if torch.cuda.is_available() and getattr(torch.version, "cuda", None):
             return torch.cuda.get_device_capability()[0]
     except Exception:
@@ -712,7 +864,15 @@ def _trainer_kind(trainer_cls) -> str:
     ):
         if any(n in markers or n == "Unsloth" + markers[0] for n in names):
             return kind
-    rl = ("ORPOTrainer", "KTOTrainer", "PPOTrainer", "RLOOTrainer", "CPOTrainer", "OnlineDPOTrainer", "RewardTrainer")
+    rl = (
+        "ORPOTrainer",
+        "KTOTrainer",
+        "PPOTrainer",
+        "RLOOTrainer",
+        "CPOTrainer",
+        "OnlineDPOTrainer",
+        "RewardTrainer",
+    )
     if any(n in rl or n.removeprefix("Unsloth") in rl for n in names):
         return "other_rl"
     return "trainer" if "Trainer" in names else "other"
@@ -725,7 +885,9 @@ def _model_traits(model):
     text = getattr(config, "text_config", None) or config
     family = str(getattr(text, "model_type", "") or getattr(config, "model_type", "") or "")
     layer_types = list(getattr(text, "layer_types", None) or [])
-    hybrid = any(t not in ("full_attention", "sliding_attention", "chunked_attention") for t in layer_types)
+    hybrid = any(
+        t not in ("full_attention", "sliding_attention", "chunked_attention") for t in layer_types
+    )
     multimodal = getattr(config, "vision_config", None) is not None
     window = getattr(text, "sliding_window", None)
     windowed = (
@@ -785,7 +947,6 @@ def _attention(model, packing):
 def _memory(model, args):
     try:
         import torch.utils.checkpoint as checkpoint
-
         name = getattr(checkpoint.checkpoint, "__name__", "")
     except Exception:
         name = ""
@@ -807,9 +968,9 @@ def _kernels(model):
     try:
         for m in model.modules():
             forward = getattr(type(m), "forward", None)
-            if getattr(forward, "__module__", "").startswith("unsloth.models.") and type(m).__name__.endswith(
-                "Attention"
-            ):
+            if getattr(forward, "__module__", "").startswith("unsloth.models.") and type(
+                m
+            ).__name__.endswith("Attention"):
                 return True
     except Exception:
         pass
@@ -840,7 +1001,11 @@ def _aux_loss_on(model, args, trainer_kind) -> bool:
         return False
     if configured:
         return True
-    if trainer_kind in ("sft", "dpo", "grpo", "other_rl") and args is not None and hasattr(args, "router_aux_loss_coef"):
+    if (
+        trainer_kind in ("sft", "dpo", "grpo", "other_rl")
+        and args is not None
+        and hasattr(args, "router_aux_loss_coef")
+    ):
         config = getattr(model, "config", None)
         text = getattr(config, "text_config", None) or config
         coef = args.router_aux_loss_coef
@@ -871,7 +1036,13 @@ def _optimizer_name(args, optimizer = None):
 
 
 def query_from(
-    layout = None, trainer_cls = None, model = None, args = None, cp = None, cp_backend = None, optimizer = None
+    layout = None,
+    trainer_cls = None,
+    model = None,
+    args = None,
+    cp = None,
+    cp_backend = None,
+    optimizer = None,
 ):
     family, hybrid, multimodal, windowed = _model_traits(model)
     moe, _ = _moe(model)
@@ -894,14 +1065,18 @@ def query_from(
         pp = getattr(layout, "pp", 1),
         cp = cp if cp is not None else getattr(layout, "cp", 1),
         fsdp2 = bool(getattr(layout, "fsdp2", False)),
-        vllm = bool(getattr(model, "vllm_engine", None) is not None or getattr(args, "use_vllm", False)),
+        vllm = bool(
+            getattr(model, "vllm_engine", None) is not None or getattr(args, "use_vllm", False)
+        ),
         pp_schedule = getattr(layout, "schedule", None) if getattr(layout, "pp", 1) > 1 else None,
         attention = _attention(model, packing),
         compile = _compile_mode(model),
         memory = _memory(model, args),
         kernels = kernels,
         # Unsloth's fast models compute the loss fused / chunked unless logits are asked for.
-        loss = "fused_ce" if kernels and __import__("os").environ.get("UNSLOTH_RETURN_LOGITS", "0") != "1" else "standard",
+        loss = "fused_ce"
+        if kernels and __import__("os").environ.get("UNSLOTH_RETURN_LOGITS", "0") != "1"
+        else "standard",
         moe = moe,
         router_aux_loss = router_aux_loss,
         expert_lora = _expert_lora(model),
@@ -914,19 +1089,33 @@ def refuse_shard_unaware_optimizer(optimizer, what: str) -> None:
     """At the optimizer hooks of native FSDP2 / tensor parallel (the optimizer exists only then): the
     "fsdp2 / tp x optimizer" rule on the optimizer actually built."""
     name = optimizer.lower() if isinstance(optimizer, str) else _optimizer_name(None, optimizer)
-    check(Query(trainer = "trainer", fsdp2 = what == "fsdp2", tp = 2 if what == "tp" else 1, optim = name,
-                torch = _torch_version()), cells = False)
+    check(
+        Query(
+            trainer = "trainer",
+            fsdp2 = what == "fsdp2",
+            tp = 2 if what == "tp" else 1,
+            optim = name,
+            torch = _torch_version(),
+        ),
+        cells = False,
+    )
 
 
 def check_layout(
-    layout, trainer_cls = None, model = None, args = None, cp = None, cp_backend = None, cells = True, optimizer = None
+    layout,
+    trainer_cls = None,
+    model = None,
+    args = None,
+    cp = None,
+    cp_backend = None,
+    cells = True,
+    optimizer = None,
 ):
     """`check` for a ParallelLayout (and what is known of the trainer / model / arguments). `cells = False`:
     the rules and feature declarations only (the model and trainer are not known yet)."""
     size = cp if cp is not None else getattr(layout, "cp", 1)
     if size > 1 and cp_backend in (None, "auto"):
         from .context_parallel import resolve_cp_backend
-
         cp_backend = resolve_cp_backend("auto", size, model, tp = getattr(layout, "tp", 1))
     check(query_from(layout, trainer_cls, model, args, cp, cp_backend, optimizer), cells = cells)
 
@@ -939,15 +1128,25 @@ def markdown_table(kind = "rules") -> str:
             "|---|---|---|---|---|---|---|---|---|---|",
         ]
         for f in FEATURES:
-            cols = [", ".join(x) or "-" for x in (f.mesh, f.consumes, f.uses, f.produces, f.hooks, f.exclusive)]
-            lines.append(f"| {f.name} | {f.kind} | " + " | ".join(cols) + f" | {f.scope} | {f.module} |")
+            cols = [
+                ", ".join(x) or "-"
+                for x in (f.mesh, f.consumes, f.uses, f.produces, f.hooks, f.exclusive)
+            ]
+            lines.append(
+                f"| {f.name} | {f.kind} | " + " | ".join(cols) + f" | {f.scope} | {f.module} |"
+            )
         return "\n".join(lines)
     if kind == "cells":
-        lines = ["| cell | covers | parity | engagement | compile | note |", "|---|---|---|---|---|---|"]
+        lines = [
+            "| cell | covers | parity | engagement | compile | note |",
+            "|---|---|---|---|---|---|",
+        ]
         for c in CELLS:
             covers = "; ".join(f"{k} {'/'.join(map(str, v))}" for k, v in c.match.items())
-            lines.append(f"| {c.name} | {covers} | {c.parity or 'missing'} | {c.engagement or 'missing'} | "
-                         f"{c.compile or 'missing'} | {c.note or '-'} |")
+            lines.append(
+                f"| {c.name} | {covers} | {c.parity or 'missing'} | {c.engagement or 'missing'} | "
+                f"{c.compile or 'missing'} | {c.note or '-'} |"
+            )
         return "\n".join(lines)
     lines = ["| axis | refused cell | why | instead |", "|---|---|---|---|"]
     for rule in RULES:

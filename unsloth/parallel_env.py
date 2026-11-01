@@ -67,7 +67,14 @@ _RESERVED = {
     "ep": "expert parallel (ep) is not supported yet; MoE trains with its experts whole on every rank",
     "efsdp": "expert FSDP (efsdp) is not supported yet",
 }
-_KEYS = _SIZE_KEYS + ("dp_shard", "dp_replicate", "cp_backend", "fsdp", "pp_schedule", "pp_microbatches")
+_KEYS = _SIZE_KEYS + (
+    "dp_shard",
+    "dp_replicate",
+    "cp_backend",
+    "fsdp",
+    "pp_schedule",
+    "pp_microbatches",
+)
 _TRUTHY = ("1", "true", "yes", "on")
 _FALSY = ("0", "false", "no", "off")
 # The variables each key writes, in the form the legacy readers expect.
@@ -119,7 +126,7 @@ def parse_parallel_spec(raw, source = FLAG):
             continue
         if "=" not in part:
             raise ValueError(
-                f"Unsloth: {source}={raw!r}: {part!r} is not key=value (e.g. {FLAG}=\"dp=2,tp=2,cp=2\")."
+                f'Unsloth: {source}={raw!r}: {part!r} is not key=value (e.g. {FLAG}="dp=2,tp=2,cp=2").'
             )
         key, value = (x.strip() for x in part.split("=", 1))
         key = _ALIASES.get(key.lower(), key.lower())
@@ -169,9 +176,13 @@ def parse_parallel_spec(raw, source = FLAG):
         if size is None:
             continue
         if "dp" in spec and spec["dp"] != size:
-            raise ValueError(f"Unsloth: {source}={raw!r}: dp={spec['dp']} disagrees with the dp_shard / dp_replicate size.")
+            raise ValueError(
+                f"Unsloth: {source}={raw!r}: dp={spec['dp']} disagrees with the dp_shard / dp_replicate size."
+            )
         if "fsdp" in spec and spec["fsdp"] != fsdp and size > 1:
-            raise ValueError(f"Unsloth: {source}={raw!r}: fsdp={_format(spec['fsdp'])} disagrees with the dp_shard / dp_replicate key.")
+            raise ValueError(
+                f"Unsloth: {source}={raw!r}: fsdp={_format(spec['fsdp'])} disagrees with the dp_shard / dp_replicate key."
+            )
         spec["dp"] = size
         if size > 1:
             spec["fsdp"] = fsdp
@@ -221,12 +232,12 @@ def translate(spec, environ = None):
         need = spec["dp"] * model_ranks
         if world is not None and world != need:
             raise ValueError(
-                f"Unsloth: {FLAG}=\"{given}\" needs dp x pp x cp x tp = {need} ranks, but WORLD_SIZE={world}; "
+                f'Unsloth: {FLAG}="{given}" needs dp x pp x cp x tp = {need} ranks, but WORLD_SIZE={world}; '
                 f"launch with torchrun --nproc-per-node {need}, or drop dp= to let it fill the world."
             )
     elif world is not None and world % model_ranks:
         raise ValueError(
-            f"Unsloth: {FLAG}=\"{given}\": pp x cp x tp = {model_ranks} must divide the number of ranks "
+            f'Unsloth: {FLAG}="{given}": pp x cp x tp = {model_ranks} must divide the number of ranks '
             f"(WORLD_SIZE={world}); launch with torchrun --nproc-per-node {model_ranks} (or a multiple of it)."
         )
     out = {}
@@ -242,9 +253,13 @@ def translate(spec, environ = None):
         current = _legacy_value(key, environ)
         if key in _SIZE_KEYS and current is None and value == 1:
             continue
-        if current is not None and current != value and not (key in _SIZE_KEYS and current == 1 and value == 1):
+        if (
+            current is not None
+            and current != value
+            and not (key in _SIZE_KEYS and current == 1 and value == 1)
+        ):
             raise ValueError(
-                f"Unsloth: {FLAG}=\"{given}\" sets {key}={_format(value)}, but {_LEGACY[key]}="
+                f'Unsloth: {FLAG}="{given}" sets {key}={_format(value)}, but {_LEGACY[key]}='
                 f"{environ.get(_LEGACY[key])} asks for something else. Use one of the two forms: unset "
                 f"{_LEGACY[key]}, or drop {FLAG}."
             )
@@ -310,7 +325,9 @@ def parallelize(
         if value is None:
             continue
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValueError(f"Unsloth: parallelize({key} = {value!r}): must be a positive integer.")
+            raise ValueError(
+                f"Unsloth: parallelize({key} = {value!r}): must be a positive integer."
+            )
         if value > 1:
             parts.append(f"{key}={value}")
     if dp is not None and (isinstance(dp, bool) or not isinstance(dp, int) or dp < 1):
@@ -330,7 +347,7 @@ def parallelize(
     from_env = bool(current and current.strip()) and not ours
     if from_env and parse_parallel_spec(current) != spec:
         raise ValueError(
-            f"Unsloth: unsloth.parallelize({raw}) disagrees with {FLAG}=\"{current}\" from the environment; "
+            f'Unsloth: unsloth.parallelize({raw}) disagrees with {FLAG}="{current}" from the environment; '
             "use one of the two."
         )
     environ = dict(os.environ)
@@ -482,8 +499,9 @@ class ParallelLayout:
         )
         if len(dims) > 1:
             from .models.pp_native import check_mesh_composition
-
-            check_mesh_composition({name: mesh[name] for name, _ in dims}, f"{self.env_vars} ({self})")
+            check_mesh_composition(
+                {name: mesh[name] for name, _ in dims}, f"{self.env_vars} ({self})"
+            )
         self._mesh = mesh
         if dist.get_rank() == 0:
             what = "pipeline" if self.pp > 1 else "tensor"
@@ -559,7 +577,9 @@ def read_layout():
     microbatches, schedule = None, "gpipe"
     if pp > 1:
         microbatches = _int_env("UNSLOTH_PP_MICROBATCHES")
-        schedule = (os.environ.get("UNSLOTH_PP_SCHEDULE") or "gpipe").strip().lower().replace("-", "")
+        schedule = (
+            (os.environ.get("UNSLOTH_PP_SCHEDULE") or "gpipe").strip().lower().replace("-", "")
+        )
         schedule = schedule.replace("_", "")
         if schedule not in PP_SCHEDULES:
             raise ValueError(
@@ -576,7 +596,9 @@ def read_layout():
         try:
             _check_torch_pipelining()
         except RuntimeError as exc:
-            raise RuntimeError(f"{exc} (UNSLOTH_PP_SIZE={pp}: unset it to run without pipeline parallel.)") from None
+            raise RuntimeError(
+                f"{exc} (UNSLOTH_PP_SIZE={pp}: unset it to run without pipeline parallel.)"
+            ) from None
     from .fsdp2_launch import unsloth_fsdp2_requested
 
     fsdp2 = bool(unsloth_fsdp2_requested())
@@ -589,7 +611,15 @@ def read_layout():
             "Unset UNSLOTH_FSDP2_BACKEND."
         )
     layout = ParallelLayout(
-        tp, world // (pp * tp * cp), world, fsdp2, pp, microbatches, schedule, cp = cp, cp_backend = cp_backend
+        tp,
+        world // (pp * tp * cp),
+        world,
+        fsdp2,
+        pp,
+        microbatches,
+        schedule,
+        cp = cp,
+        cp_backend = cp_backend,
     )
     from .parallel_capabilities import check_layout
 
@@ -597,7 +627,11 @@ def read_layout():
     return layout
 
 
-def describe_trainer_layout(trainer, layout = None, cp_manager = None):
+def describe_trainer_layout(
+    trainer,
+    layout = None,
+    cp_manager = None,
+):
     """One line: the resolved mesh (pp, dp_replicate, dp_shard, cp, tp), schedule and micro-batches, effective
     batch, context parallel backend, attention backend and gradient checkpointing mode."""
     world = _dist_value("get_world_size", 1)
@@ -608,7 +642,6 @@ def describe_trainer_layout(trainer, layout = None, cp_manager = None):
     fsdp2 = getattr(layout, "fsdp2", None)
     if fsdp2 is None:
         from .fsdp2_launch import unsloth_fsdp2_native_requested
-
         try:
             fsdp2 = bool(unsloth_fsdp2_native_requested())
         except Exception:
@@ -623,14 +656,20 @@ def describe_trainer_layout(trainer, layout = None, cp_manager = None):
     parts = [f"mesh ({', '.join(f'{k} {v}' for k, v in mesh.items())}) over {world} ranks"]
     if pp > 1:
         mb = getattr(layout, "microbatches", None)
-        parts.append(f"pp schedule {getattr(layout, 'schedule', 'gpipe')}, {mb or 'auto'} micro-batches")
+        parts.append(
+            f"pp schedule {getattr(layout, 'schedule', 'gpipe')}, {mb or 'auto'} micro-batches"
+        )
     args = getattr(trainer, "args", None)
     if args is not None:
         bs = getattr(args, "per_device_train_batch_size", 1)
         ga = getattr(args, "gradient_accumulation_steps", 1)
-        parts.append(f"effective batch {bs} x {ga} accumulation x {dp} data parallel = {bs * ga * dp} rows")
+        parts.append(
+            f"effective batch {bs} x {ga} accumulation x {dp} data parallel = {bs * ga * dp} rows"
+        )
     if cp > 1:
-        backend = getattr(cp_manager, "backend", None) or getattr(layout, "cp_backend", None) or "auto"
+        backend = (
+            getattr(cp_manager, "backend", None) or getattr(layout, "cp_backend", None) or "auto"
+        )
         parts.append(f"cp backend {backend}")
         if fsdp2 or getattr(cp_manager, "fsdp2_native", False):
             parts.append("FSDP2 shards and reduces over dp_shard x cp")
@@ -647,7 +686,11 @@ def describe_trainer_layout(trainer, layout = None, cp_manager = None):
     return "; ".join(parts)
 
 
-def announce(trainer, layout = None, cp_manager = None):
+def announce(
+    trainer,
+    layout = None,
+    cp_manager = None,
+):
     """Rank 0 prints the resolved layout once per trainer."""
     if getattr(trainer, "__dict__", {}).get("_unsloth_parallel_announced"):
         return None
@@ -664,7 +707,6 @@ def announce(trainer, layout = None, cp_manager = None):
 def _dist_value(name, default):
     try:
         import torch.distributed as dist
-
         return getattr(dist, name)() if dist.is_available() and dist.is_initialized() else default
     except Exception:
         return default

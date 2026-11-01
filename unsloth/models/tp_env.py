@@ -165,7 +165,9 @@ def tensor_parallel_env_load(fn):
         )
         unset = " / ".join(var.split("=")[0] for var in layout.env_vars.split())
         refused = [what_ for key, what_ in _REFUSED_LOAD_FLAGS if values.get(key)]
-        if layout.pp > 1:  # tensor parallel alone trains these; pipeline parallel v1 trains LoRA adapters
+        if (
+            layout.pp > 1
+        ):  # tensor parallel alone trains these; pipeline parallel v1 trains LoRA adapters
             refused += [what_ for key, what_ in _REFUSED_PIPELINE_LOAD_FLAGS if values.get(key)]
         if refused:
             raise NotImplementedError(
@@ -180,7 +182,11 @@ def tensor_parallel_env_load(fn):
             raise NotImplementedError(
                 f"Unsloth: {layout.env_vars} ({what}) does not support "
                 "UNSLOTH_FSDP2_SHARDED_LOAD=1. Unset UNSLOTH_FSDP2_SHARDED_LOAD"
-                + ("; tensor parallel already loads 16-bit weights sharded." if layout.pp == 1 else ".")
+                + (
+                    "; tensor parallel already loads 16-bit weights sharded."
+                    if layout.pp == 1
+                    else "."
+                )
             )
         if layout.tp == 1:
             # Pipeline parallel alone: a whole model on every rank (split at the Trainer), checked now.
@@ -197,7 +203,9 @@ def tensor_parallel_env_load(fn):
             # QAT swaps the loaded Linears for torchao FakeQuantizedLinear copies: load in full, shard later.
             qat = values.get("qat_scheme") is not None
             if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values) or qat:
-                out = fn(*args, **kwargs)  # full load; get_peft_model shards it (Params4bit included)
+                out = fn(
+                    *args, **kwargs
+                )  # full load; get_peft_model shards it (Params4bit included)
                 return _check_pipeline_model(out, layout) if layout.pp > 1 else out
             from .tp_native import sharded_loading
 
@@ -355,7 +363,9 @@ def tensor_parallel_env_trainer_pre(model):
     if layout.pp > 1:
         from .pp_env import pipeline_parallel_env_apply
 
-        pipeline_parallel_env_apply(model, layout)  # also the DDP-style dp start (broadcast, stage.ddp_mesh)
+        pipeline_parallel_env_apply(
+            model, layout
+        )  # also the DDP-style dp start (broadcast, stage.ddp_mesh)
         if layout.tp > 1:
             _apply(model, layout)
             if layout.grad_size > 1 and not layout.fsdp2:

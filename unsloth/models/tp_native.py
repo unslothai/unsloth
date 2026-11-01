@@ -2949,7 +2949,11 @@ def _print_rank0(message):
         print(message)
 
 
-def _refuse_tp_trainer_args(args, cpu_shards = False, pipeline = False):
+def _refuse_tp_trainer_args(
+    args,
+    cpu_shards = False,
+    pipeline = False,
+):
     problems = []
     if getattr(args, "deepspeed", None):
         problems.append("DeepSpeed")
@@ -2959,7 +2963,8 @@ def _refuse_tp_trainer_args(args, cpu_shards = False, pipeline = False):
         )
     if (
         not pipeline  # pp_env: the pipeline evaluates, gathering over the dp group only
-        and _env_data_layout() is not None  # cp x tp: the eval loss is not gathered over the data mesh yet
+        and _env_data_layout()
+        is not None  # cp x tp: the eval loss is not gathered over the data mesh yet
         and _strategy(getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no")))
         != "no"
     ):
@@ -3275,7 +3280,9 @@ def _tp_layout(trainer):
     pp = _pp_size(trainer.model)
     return {
         "world": dist.get_world_size() if dist.is_initialized() else 1,
-        **({"pp": pp} if pp > 1 else {}),  # pp_env Trainer checkpoints (a tp-only layout keeps its old keys)
+        **(
+            {"pp": pp} if pp > 1 else {}
+        ),  # pp_env Trainer checkpoints (a tp-only layout keeps its old keys)
         "tp": tp_mesh.size() if tp_mesh is not None else 1,
         "dp": dp_mesh.size() if dp_mesh is not None else 1,
         "dp_kind": None
@@ -3524,8 +3531,9 @@ def _install_tp_accelerate_hooks():
             return False
         if not is_tensor_parallel(model):
             from .pp_native import is_pipeline_parallel
-
-            if not is_pipeline_parallel(model):  # UNSLOTH_PP_SIZE (pp_env.pp_trainer_setup): no DDP either
+            if not is_pipeline_parallel(
+                model
+            ):  # UNSLOTH_PP_SIZE (pp_env.pp_trainer_setup): no DDP either
                 return False
         try:
             from .fsdp2_native import is_native_fsdp2

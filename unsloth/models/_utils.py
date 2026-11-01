@@ -6336,9 +6336,7 @@ def patch_gradient_accumulation_fix(Trainer):
                     ]
                 )
             if native_fsdp2 and tp_env is not None and tp_env.grad_size == 1:
-                native_fsdp2 = (
-                    False  # UNSLOTH_TP_SIZE x UNSLOTH_PP_SIZE = world size: no data parallel dimension to shard
-                )
+                native_fsdp2 = False  # UNSLOTH_TP_SIZE x UNSLOTH_PP_SIZE = world size: no data parallel dimension to shard
             if tp_env is not None and tp_env.grad_size > 1 and tp_env.fsdp2 and not native_fsdp2:
                 # The dp dimension would be neither FSDP2-sharded nor gradient-averaged: replicas would drift.
                 raise RuntimeError(
@@ -6390,9 +6388,10 @@ def patch_gradient_accumulation_fix(Trainer):
                 # After the tensor parallel setup: the pipeline schedule owns the step, eval, saves and clipping.
                 from .pp_env import pp_trainer_setup
                 pp_trainer_setup(self)
-            if tp_env is not None and (
-                getattr(getattr(self, "args", None), "context_parallel_size", 1) or 1
-            ) <= 1:
+            if (
+                tp_env is not None
+                and (getattr(getattr(self, "args", None), "context_parallel_size", 1) or 1) <= 1
+            ):
                 # With context parallel the CP setup (after this __init__) prints it, backend included.
                 from ..parallel_env import announce
                 announce(self, tp_env)
@@ -6500,6 +6499,7 @@ def _is_env_pipeline_parallel(model):
     if not _is_unsloth_pipeline_parallel(model):
         return False
     from .pp_native import pipeline_stage_of
+
     stage = pipeline_stage_of(model)
     return stage is not None and getattr(stage, "env_layout", None) is not None
 
@@ -6588,6 +6588,7 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
     if not os.environ.get("UNSLOTH_PP_SIZE"):
         return
     from .tp_env import env_layout
+
     layout = env_layout()
     if layout is None or layout.pp == 1:
         return
@@ -6600,6 +6601,7 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
         except (TypeError, ValueError):
             training_args = None
     from .pp_env import pp_trainer_refusals
+
     pp_trainer_refusals(type(trainer), training_args, layout)
 
 
@@ -6647,7 +6649,11 @@ def _refuse_tensor_parallel_env_model_init(layout, init, args, kwargs):
         what = "pipeline parallel" if pp else "tensor parallel"
         if pp and layout.tp > 1:
             what += " x tensor parallel"
-        names = " and ".join(v.split("=")[0] for v in layout.env_vars.split()) if pp else "UNSLOTH_TP_SIZE"
+        names = (
+            " and ".join(v.split("=")[0] for v in layout.env_vars.split())
+            if pp
+            else "UNSLOTH_TP_SIZE"
+        )
         raise RuntimeError(
             f"Unsloth: {layout.env_vars if pp else f'UNSLOTH_TP_SIZE={layout.tp}'} ({what}) does not support "
             "`Trainer(model_init = ...)` or `hyperparameter_search`: the model model_init builds would not "
@@ -6678,9 +6684,11 @@ def _refuse_model_parallel_export(model, method):
     if _is_unsloth_pipeline_parallel(model):
         from .pp_native import pipeline_stage_of
         from .tp_env import env_hint
+
         stage = pipeline_stage_of(model)
         if stage is not None and stage._kept is not None:
             from .pp_env import replica_refusal
+
             refusal = replica_refusal(stage, method)
             if refusal is not None:
                 raise RuntimeError(refusal)
