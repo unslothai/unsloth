@@ -257,6 +257,26 @@ def test_layout_rules_run_when_the_layout_is_read(clean_env):
         tp_env._reset_env_layout()
 
 
+def test_layout_rules_read_the_env_cp_backend_before_the_load(clean_env):
+    # UNSLOTH_CP_BACKEND=ring beside tensor parallel is refused when the layout is read (from_pretrained), before
+    # the tensor parallel split moves any weight, not first at Trainer.__init__.
+    from unsloth.models import tp_env
+
+    clean_env.setenv("WORLD_SIZE", "4")
+    clean_env.setenv("UNSLOTH_TP_SIZE", "2")
+    clean_env.setenv("UNSLOTH_CP_SIZE", "2")
+    clean_env.setenv("UNSLOTH_CP_BACKEND", "ring")
+    tp_env._reset_env_layout()
+    try:
+        with pytest.raises(NotImplementedError, match = r"cp x tp: .*ring backend"):
+            tp_env.env_layout()
+        clean_env.setenv("UNSLOTH_CP_BACKEND", "ulysses")
+        tp_env._reset_env_layout()
+        assert tp_env.env_layout().cp_backend == "ulysses"
+    finally:
+        tp_env._reset_env_layout()
+
+
 # UNSLOTH_CP_SIZE into the trainer arguments.
 
 

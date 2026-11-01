@@ -624,7 +624,9 @@ def read_layout():
     )
     from .parallel_capabilities import check_layout
 
-    check_layout(layout, cells = False)  # the layout-only rules, before any model is loaded under it
+    # The layout-only rules, before any model is loaded under it (UNSLOTH_CP_BACKEND too: ring x tp is refused
+    # here, before the tensor parallel split, not first at Trainer.__init__).
+    check_layout(layout, cells = False, cp_backend = cp_backend)
     return layout
 
 
