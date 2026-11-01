@@ -11759,8 +11759,8 @@ def _git_remote_commit(
         if ref and _COMMIT_REVISION_RE.fullmatch(sha):
             rows[ref] = sha.lower()
     for ref in (
-        f"refs/tags/{revision}^{{}}",
         f"refs/heads/{revision}",
+        f"refs/tags/{revision}^{{}}",
         f"refs/tags/{revision}",
         revision,
     ):

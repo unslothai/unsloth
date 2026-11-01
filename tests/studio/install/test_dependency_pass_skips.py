@@ -641,6 +641,10 @@ def test_the_remote_commit_probe_peels_a_real_annotated_tag(tmp_path) -> None:
     assert stack._git_remote_commit(tmp_path.as_uri(), "v1") == commit
     branch = git("symbolic-ref", "--short", "HEAD")
     assert stack._git_remote_commit(tmp_path.as_uri(), branch) == commit
+    # A same-named branch still wins over the tag, as pip and uv resolve it.
+    git("commit", "-q", "--allow-empty", "-m", "d")
+    git("branch", "v1")
+    assert stack._git_remote_commit(tmp_path.as_uri(), "v1") == git("rev-parse", "HEAD")
 
 
 @pytest.mark.parametrize("name", ["UV_CONSTRAINT", "PIP_CONSTRAINT", "PIP_NO_DEPS", "UV_NO_DEPS"])
