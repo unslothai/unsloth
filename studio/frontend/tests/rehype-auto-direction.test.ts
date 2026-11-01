@@ -47,6 +47,13 @@ test("an English list nested in an RTL list stays left to right", () => {
   assert.match(html, /<ul[^>]* dir="rtl"[\s\S]*<ul[^>]* dir="ltr"/);
 });
 
+test("a tight item's text gets its own direction, the item keeps the list's", () => {
+  const html = render("- سلام\n- English item.\n  - nested");
+  assert.match(html, /<ul[^>]* dir="rtl"/);
+  assert.match(html, /<li[^>]*><span dir="auto">English item\.\s*<\/span>/);
+  assert.doesNotMatch(html, /<li[^>]* dir=/);
+});
+
 test("code is pinned LTR in the stylesheet", () => {
   const css = readFileSync(
     new URL("../src/index.css", import.meta.url),

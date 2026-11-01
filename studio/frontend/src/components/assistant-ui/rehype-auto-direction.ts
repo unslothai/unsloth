@@ -19,6 +19,15 @@ const TEXT_BLOCKS = new Set([
 ]);
 // dir="auto" skips descendants that set their own dir, so it would resolve these from no text at all.
 const CONTAINERS = new Set(["ul", "ol", "blockquote"]);
+const BLOCKS = new Set([
+  ...TEXT_BLOCKS,
+  ...CONTAINERS,
+  "li",
+  "pre",
+  "div",
+  "table",
+  "hr",
+]);
 const LETTER = /\p{L}/u;
 const RTL_LETTER = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
 
@@ -43,11 +52,34 @@ function firstLetter(node: Element | RootContent): string | null {
   return null;
 }
 
+// A tight item's text has no paragraph; an inline dir="auto" wrapper orders it by its own letters
+// while the item keeps the list's direction for its marker.
+function wrapTightItemText(item: Element): void {
+  let end = 0;
+  while (end < item.children.length) {
+    const child = item.children[end];
+    if (child.type === "element" && BLOCKS.has(child.tagName)) break;
+    end += 1;
+  }
+  const inline = item.children.slice(0, end);
+  if (!inline.some((child) => firstLetter(child))) return;
+  const wrapper: Element = {
+    type: "element",
+    tagName: "span",
+    properties: { dir: "auto" },
+    children: inline as Element["children"],
+  };
+  item.children.splice(0, end, wrapper);
+}
+
 /** Each text block takes its direction from its own first letter, so Persian, Arabic or Hebrew replies read right to left. */
 export const rehypeAutoDirection: Plugin<[], Root> =
   function rehypeAutoDirection() {
     return (tree) => {
       function walk(node: Root | RootContent): void {
+        if (node.type === "element" && node.tagName === "li") {
+          wrapTightItemText(node);
+        }
         if (node.type === "element" && node.properties.dir === undefined) {
           if (TEXT_BLOCKS.has(node.tagName)) {
             node.properties.dir = "auto";
