@@ -44156,10 +44156,10 @@ class _AnthropicToolEventRules:
                 self._last_drop_keepalive = _now
                 return [_OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
             return []
-        # The emitter restarts its cumulative cursor here, so a turn's held tag is released first.
+        # Released before the tool block opens (the emitter's cursor still holds the turn) and before a cursor reset.
         released = (
             self._release_held_mention()
-            if etype == "tool_end" or (etype == "status" and not event.get("text"))
+            if etype in ("tool_start", "tool_end") or (etype == "status" and not event.get("text"))
             else []
         )
         if self._drop_until_tool_end:
@@ -44613,6 +44613,8 @@ def _anthropic_tool_response_from_events(
             _release_held_mention()
             prev_text = ""
         elif etype == "tool_start":
+            # Text ahead of the tool_use block, while prev_text still holds the turn.
+            _release_held_mention()
             tool_call_id = event["tool_call_id"]
             arguments = event.get("arguments", {})
             existing_tool_block = tool_blocks_by_id.get(tool_call_id) if tool_call_id else None

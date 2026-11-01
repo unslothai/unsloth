@@ -525,3 +525,47 @@ def test_messages_api_releases_a_held_tag_at_a_turn_boundary(collect, boundary):
     assert text == _guard_full(first) + _guard_full(second)
     # The unclosed `<tool_call> is an opener to the full strip; the released `[ARGS] is shown once.
     assert text == "Checking `[ARGS]Done with `"
+
+
+_TOOL_ROUND = [
+    {"type": "tool_start", "tool_name": "lookup", "tool_call_id": "c1", "arguments": {}},
+    {"type": "tool_end", "tool_name": "lookup", "tool_call_id": "c1", "result": "ok"},
+]
+
+
+def test_messages_api_stream_releases_a_held_tag_before_the_tool_block():
+    from core.inference.anthropic_compat import AnthropicStreamEmitter
+    from routes.inference import _AnthropicToolEventRules
+
+    emitter = AnthropicStreamEmitter(parse_think = False)
+    lines = list(emitter.start("msg_1", "test-model"))
+    rules = _AnthropicToolEventRules(emitter, None, False, None)
+    for event in _turn_events("Checking `[ARGS]") + _TOOL_ROUND:
+        lines.extend(rules.feed(event))
+    lines.extend(rules.finish())
+    open_blocks, order = set(), []
+    for line in lines:
+        for raw in line.split("\n"):
+            if not raw.startswith("data: "):
+                continue
+            ev = json.loads(raw[6:])
+            if ev["type"] == "content_block_start":
+                assert not open_blocks, f"block {ev['index']} opened while {open_blocks} still open"
+                open_blocks.add(ev["index"])
+                order.append(ev["content_block"]["type"])
+            elif ev["type"] == "content_block_stop":
+                open_blocks.discard(ev["index"])
+    assert not open_blocks
+    assert order[0] == "text" and "tool_use" in order
+    assert order.index("tool_use") > 0 and "text" not in order[order.index("tool_use") :]
+
+
+def test_messages_api_reducer_keeps_held_text_ahead_of_the_tool_block():
+    from routes.inference import _anthropic_tool_response_from_events
+
+    response = _anthropic_tool_response_from_events(
+        _turn_events("Checking `[ARGS]") + _TOOL_ROUND, "msg_1", "test-model", parse_think = False
+    )
+    types = [b["type"] for b in json.loads(response.body)["content"]]
+    assert types[0] == "text"
+    assert "text" not in types[1:], types
