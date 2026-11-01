@@ -14,6 +14,7 @@ import {
   type QueuedPrompt,
 } from "@/features/chat/utils/queued-text-attachments";
 import { getAuthSessionEpoch } from "@/features/auth";
+import { useMarkChatWelcome } from "@/features/chat-background";
 
 import {
   ComposerAttachments,
@@ -2758,6 +2759,7 @@ const ThreadWelcome: FC<{
     (s) => s.newChatComposerAtBottom,
   );
   const spooky = useSpookyGreetings();
+  useMarkChatWelcome();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
 

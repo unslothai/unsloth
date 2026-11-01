@@ -29,6 +29,8 @@ import {
 	IMAGE_SIZING,
 	type ImageSizing,
 	POSITIONS,
+	SCOPES,
+	type BackgroundScope,
 	normalizedSize,
 	parsePosition,
 	validUpload,
@@ -50,6 +52,11 @@ const labels: Record<BackgroundEffect, TranslationKey> = {
 	ASCII: "chatBackground.ascii",
 	Halftone: "chatBackground.halftone",
 	Scanlines: "chatBackground.scanlines",
+};
+const scopeLabels: Record<BackgroundScope, TranslationKey> = {
+	newChat: "chatBackground.scopeNewChat",
+	chats: "chatBackground.scopeChats",
+	all: "chatBackground.scopeAll",
 };
 const sizingLabels: Record<ImageSizing, TranslationKey> = {
 	cover: "chatBackground.fill",
@@ -199,7 +206,9 @@ export function ChatBackgroundControls() {
 							className="wallpaper-preview relative h-48 overflow-hidden rounded-xl border border-border bg-background"
 							data-wallpaper-conversation={conversation || undefined}
 						>
-							<ChatBackground />
+							<ChatBackground
+								active={!(conversation && adjustments.scope === "newChat")}
+							/>
 							{!value && (
 								<p className="absolute inset-x-4 top-4 text-center text-xs text-muted-foreground">
 									{t("chatBackground.noBackground")}
@@ -221,7 +230,30 @@ export function ChatBackgroundControls() {
 			</div>
 			{value && (
 				<>
-					<SettingsRow label={t("chatBackground.effect")} className="mt-3 items-start">
+					<SettingsRow label={t("chatBackground.scope")} className="mt-3 items-start">
+						<Select
+							disabled={busy}
+							value={adjustments.scope}
+							onValueChange={(scope) =>
+								patchBackground({ scope: scope as BackgroundScope })
+							}
+						>
+							<SelectTrigger
+								aria-label={t("chatBackground.scope")}
+								className="w-52"
+							>
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{SCOPES.map((scope) => (
+									<SelectItem key={scope} value={scope}>
+										{t(scopeLabels[scope])}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+					</SettingsRow>
+					<SettingsRow label={t("chatBackground.effect")} className="items-start">
 						<Select
 							disabled={!value || busy}
 							value={adjustments.effect}

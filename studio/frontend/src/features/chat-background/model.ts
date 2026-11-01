@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-// Enable to restore wallpaper on every main workspace page. The sidebar stays solid.
-export const BACKGROUND_ON_ALL_PAGES = false;
+// On "all" the sidebar stays solid.
+export const SCOPES = ["newChat", "chats", "all"] as const;
+export type BackgroundScope = (typeof SCOPES)[number];
 
 export const EFFECTS = [
 	"None",
@@ -33,6 +34,7 @@ export const POSITIONS = [
 	"100% 100%",
 ] as const;
 export const DEFAULT_ADJUSTMENTS = {
+	scope: "chats" as BackgroundScope,
 	effect: "None" as BackgroundEffect,
 	visibility: 70,
 	blur: 0,
@@ -61,6 +63,9 @@ export function sanitizeAdjustments(
 			? Math.max(0, Math.min(max, Math.round(v)))
 			: fallback;
 	return {
+		scope: SCOPES.includes(input.scope as BackgroundScope)
+			? input.scope!
+			: "chats",
 		effect: EFFECTS.includes(input.effect as BackgroundEffect)
 			? input.effect!
 			: "None",
