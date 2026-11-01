@@ -454,8 +454,7 @@ async def chat_generation_events(
                 cursor,
                 15,
             )
-            # Only non-chunk events carry the run, spliced in as get_run_frame's JSON text so request_json
-            # is neither parsed nor re-encoded per event; a chunk-only batch reads just the state.
+            # Only non-chunk events carry the run, spliced in as already encoded text.
             run_json = None
             if any(event["type"] != "chunk" for event in events):
                 frame = await asyncio.to_thread(db.get_run_frame, run_id)
@@ -474,7 +473,6 @@ async def chat_generation_events(
                 }
                 encoded = json.dumps(data, ensure_ascii = False, separators = (",", ":"))
                 if event["type"] != "chunk":
-                    # Same text json.dumps gives with data["run"] = get_run(run_id) as the last key.
                     encoded = f'{encoded[:-1]},"run":{run_json}}}'
                 yield f"id: {cursor}\nevent: {event['type']}\ndata: {encoded}\n\n"
             if snapshot["status"] in db.TERMINAL_STATUSES and cursor >= int(

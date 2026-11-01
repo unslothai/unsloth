@@ -657,7 +657,6 @@ class ChatGenerationSupervisor:
             return failure
 
         try:
-            # Only the token is used before the fenced re-read below, so skip parsing the request here.
             worker_token = await asyncio.to_thread(db.get_worker_token, run_id)
             if worker_token is None:
                 return
