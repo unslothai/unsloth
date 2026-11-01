@@ -40,7 +40,6 @@ let statusKnown = false;
 let inflight: Promise<AuthStatusResponse> | null = null;
 const listeners = new Set<() => void>();
 export const getLoginMode = (): LoginMode => loginMode;
-/** The mode once the server has answered, null before: a cached or default mode is only a guess. */
 export const getConfirmedLoginMode = (): LoginMode | null =>
   statusKnown ? loginMode : null;
 export const subscribeLoginMode = (listener: () => void): (() => void) => {
